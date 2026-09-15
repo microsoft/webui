@@ -143,6 +143,16 @@ test('only registered unchanged template HTML enters the sink and each template 
   assert.equal(f.conversions, 1);
 });
 
+test('registered empty templates remain valid compiler output', () => {
+  const f = fixture();
+  configureTrustedTypes('app-compiled');
+  const meta = { h: '' };
+  registerTrustedTemplateBlock(meta);
+  assert.equal(getTemplateFragment(meta), getTemplateFragment(meta));
+  assert.deepEqual(f.parsed.map(value => value.value), ['']);
+  assert.equal(f.conversions, 1);
+});
+
 test('CSS import maps retain nonce and contain only serialized CSS data, not executable source', () => {
   fixture();
   configureTrustedTypes('app-compiled');

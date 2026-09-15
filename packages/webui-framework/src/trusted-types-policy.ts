@@ -22,7 +22,6 @@ interface BrowserTrustedTypes {
 }
 
 interface CompilerPolicy {
-  readonly policyName: string;
   registerBlock(meta: TemplateBlockMeta): void;
   setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void;
   setImportMap(script: HTMLScriptElement, json: string): void;
@@ -51,10 +50,10 @@ declare global {
  */
 export function configureTrustedTypes(policyName: string): void {
   validatePolicyName(policyName);
-  const existing = getDocumentPolicy(window);
-  if (existing) {
-    if (existing.policyName !== policyName) {
-      throw new Error(`[WebUI] Trusted Types already configured as "${existing.policyName}"; configure one name before loading the application.`);
+  if (getDocumentPolicy(window)) {
+    const existing = window.__webuiTrustedTypesPolicyName;
+    if (existing !== policyName) {
+      throw new Error(`[WebUI] Trusted Types already configured as "${existing}". Use that policy name.`);
     }
     return;
   }
@@ -74,21 +73,20 @@ export function configureTrustedTypes(policyName: string): void {
       createScript: authorize,
     });
   } catch (cause) {
-    throw new Error(`[WebUI] Cannot create Trusted Types policy "${policyName}". Allow that exact name in CSP and let configureTrustedTypes() create it before loading the application.`, { cause });
+    throw new Error(`[WebUI] Cannot create policy "${policyName}". Allow that exact name in CSP; let WebUI create it before loading components.`, { cause });
   }
-  const blocks = new WeakMap<object, string>();
-  const boundary: CompilerPolicy = {
-    policyName,
+  const blocks = new WeakMap<TemplateBlockMeta, string>();
+  // Keep opt-in sink checks inside configuration so unused policy code can be
+  // tree-shaken out of applications that never enable Trusted Types.
+  const trust: CompilerPolicy = {
     registerBlock(meta) {
       if (!blocks.has(meta)) blocks.set(meta, meta.h);
     },
     setTemplateContent(target, meta) {
-      const html = meta.h;
-      if (!blocks.has(meta) || blocks.get(meta) !== html) {
-        throw new Error('[WebUI] Unregistered or modified compiled template. Configure Trusted Types before importing components; register only immutable compiler output.');
+      const html = blocks.get(meta);
+      if (html === undefined || html !== meta.h) {
+        throw new Error('[WebUI] Unregistered or modified compiled template. Configure before loading components; register only immutable compiler output.');
       }
-      // A type assertion only bridges the incomplete DOM declaration. The
-      // runtime value remains TrustedHTML, and the native setter enforces it.
       target.innerHTML = policy.createHTML(html, capability) as string & TrustedValue;
     },
     setImportMap(script, json) {
@@ -98,21 +96,21 @@ export function configureTrustedTypes(policyName: string): void {
   // Only inert idempotency metadata crosses module boundaries, never a policy
   // or a callable closure that could supply its private capability.
   Object.defineProperty(window, '__webuiTrustedTypesPolicyName', { value: policyName });
-  (documentPolicies ??= new WeakMap()).set(window, boundary);
+  (documentPolicies ??= new WeakMap()).set(window, trust);
 }
 
 function getDocumentPolicy(view: Window | null): CompilerPolicy | undefined {
   if (!view) return undefined;
   const policy = documentPolicies?.get(view);
   if (!policy && view.__webuiTrustedTypesPolicyName !== undefined) {
-    throw new Error('[WebUI] Trusted Types was configured by another framework module instance. Share one framework module across bootstrap and component bundles instead of bundling independent copies.');
+    throw new Error('[WebUI] Duplicate Trusted Types runtime. Share one framework module across bootstrap and component bundles.');
   }
   return policy;
 }
 
 function validatePolicyName(name: string): void {
   if (typeof name !== 'string' || name.length === 0 || name === 'default') {
-    throw new TypeError('[WebUI] Supply an explicit non-default Trusted Types policy name.');
+    throw new TypeError('[WebUI] Supply a nonempty Trusted Types policy name other than "default".');
   }
   for (let i = 0; i < name.length; i++) {
     const c = name.charCodeAt(i);
@@ -120,7 +118,7 @@ function validatePolicyName(name: string): void {
       (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
       (c >= 48 && c <= 57) || c === 45 || c === 46 || c === 95
     ) continue;
-    throw new TypeError('[WebUI] Trusted Types policy names must contain only ASCII letters, digits, ".", "_" or "-".');
+    throw new TypeError('[WebUI] Policy names allow only ASCII letters, digits, ".", "_" and "-".');
   }
 }
 
@@ -131,8 +129,8 @@ export function registerTrustedTemplateBlock(meta: TemplateBlockMeta): void {
 
 /** @internal Parse registered compiler HTML without exposing a trusted value. */
 export function setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void {
-  const policy = getDocumentPolicy(window);
-  if (policy) policy.setTemplateContent(target, meta);
+  const trust = getDocumentPolicy(window);
+  if (trust) trust.setTemplateContent(target, meta);
   else target.innerHTML = meta.h;
 }
 
@@ -144,12 +142,12 @@ export function setImportMapContent(
   view: Window | null,
 ): void {
   if (script.type !== 'importmap') {
-    throw new TypeError('[WebUI] CSS import map content requires a script with type="importmap".');
+    throw new TypeError('[WebUI] CSS data requires a script with type="importmap".');
   }
   const json = JSON.stringify({
     imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
   });
-  const policy = getDocumentPolicy(view);
-  if (policy) policy.setImportMap(script, json);
+  const trust = getDocumentPolicy(view);
+  if (trust) trust.setImportMap(script, json);
   else script.textContent = json;
 }
