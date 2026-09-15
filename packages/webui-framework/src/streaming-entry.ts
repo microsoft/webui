@@ -21,6 +21,11 @@
  * import './my-component.js';
  * ```
  *
+ * The build-only `esbuildStreaming()` integration in
+ * `@microsoft/webui/streaming.js` can emit an independent early entry and
+ * publish its asset descriptor in one shared ESM graph. The mode marker
+ * preserves deferral and completion when the application arrives first.
+ *
  * Installing is cheap and idempotent: on a non-streaming page it costs exactly
  * one cached meta-tag query and returns.
  */

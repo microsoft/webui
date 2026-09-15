@@ -11,7 +11,8 @@
 //! connection, and preload hints remove it.
 //!
 //! The two inputs meet here. The parser reports each authored
-//! `<script type="module" src>` outside a `<boundary>`; the projection
+//! `<script type="module" src>` outside a `<boundary>`, excluding explicit
+//! `fetchpriority="low"` scripts; the projection
 //! manifest reports each bundler entry's transitive static import closure,
 //! already ordered largest-first. This module joins them and produces the
 //! ordered, servable href list the handler writes into `<head>`.

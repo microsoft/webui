@@ -676,6 +676,7 @@ pub struct HtmlParser {
     /// Scripts *inside* a boundary are deliberately excluded: an island loader
     /// is meant to be requested only when the parser reaches its chunk, so
     /// preloading it would undo the deferral the author asked for.
+    /// Explicit `fetchpriority="low"` modules are excluded for the same reason.
     module_entry_srcs: Vec<String>,
 }
 
@@ -2702,6 +2703,14 @@ impl HtmlParser {
             return;
         };
         if src.is_empty() || src.contains("{{") {
+            return;
+        }
+        if element
+            .attrs()
+            .find(|attr| attr.name.eq_ignore_ascii_case("fetchpriority"))
+            .and_then(|attr| attr.value)
+            .is_some_and(|priority| priority.eq_ignore_ascii_case("low"))
+        {
             return;
         }
         if !element
@@ -8779,6 +8788,41 @@ mod tests {
             parser.module_entry_srcs(),
             ["/b.js"],
             "each entry owns its own critical modules"
+        );
+    }
+
+    #[test]
+    fn module_entry_srcs_preserve_low_priority_script_delivery() {
+        let mut parser = HtmlParser::new();
+        let html = concat!(
+            "<head>",
+            r#"<script type="module" async src="/streaming.js"></script>"#,
+            r#"<script type="module" src="/low-head.js" fetchpriority="LOW"></script>"#,
+            "</head><body>",
+            r#"<script type="module" src="/application.js" fetchpriority="low"></script>"#,
+            r#"<script type="module" src="/low-cased.js" FETCHPRIORITY="LoW"></script>"#,
+            r#"<script type="module" src="/critical.js" fetchpriority="high"></script>"#,
+            r#"<script type="module" src="/ordinary.js"></script>"#,
+            "</body>",
+        );
+        parser.parse("index.html", html).expect("parse");
+        assert_eq!(
+            parser.module_entry_srcs(),
+            ["/streaming.js", "/critical.js", "/ordinary.js"],
+            "low-priority application chunks must not be pulled into head preloads"
+        );
+        let records = parser.into_fragment_records();
+        let raw = records["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(
+            raw.contains(r#"src="/application.js" fetchpriority="low""#),
+            "excluding preloads must preserve the authored script"
         );
     }
 

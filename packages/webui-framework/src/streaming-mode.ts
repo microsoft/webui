@@ -6,9 +6,9 @@
  *
  * Kept in its own leaf module (no imports) so `template-element.ts` can check
  * `isStreamingHydrationMode()` without importing the coordinator
- * (`streaming.ts`), which itself imports `static-host.ts` →
- * `template-element.ts`. A direct import from `template-element.ts` back to
- * `streaming.ts` would close that cycle.
+ * (`streaming.ts`). The coordinator can demand-load `static-host.ts` and
+ * `template-element.ts`; neither the element nor lifecycle entry may import
+ * the coordinator back into the always-shipped graph.
  *
  * It carries only what the always-shipped bundle genuinely needs: mode
  * detection, the two shared hook symbols, the single `data-ws` dormancy

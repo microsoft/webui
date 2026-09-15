@@ -246,6 +246,18 @@ authored `<boundary>` directives through
 `@microsoft/webui-framework` entry has no dependency on the coordinator, so
 normal applications pay no streaming bundle or initialization cost.
 
+To keep the full application out of `<head>`, add `esbuildStreaming()` from
+`@microsoft/webui/streaming.js` to the application's ESM code-splitting build.
+The generated `webui-streaming.json` exposes `coordinator.src` and
+`coordinator.imports`, including configured public paths and hashed filenames.
+Load that module with `type="module" async` and preload only its listed
+dependencies. Marker-based deferral also handles application-first delivery,
+without a manual streaming import or a second framework bundle.
+The application may load later, but early-interactive components still need
+their registration modules. Use `fetchpriority="low"` on deferred authored
+module scripts to exclude them from automatic modulepreload hints. See
+[Separate coordinator and application assets](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets).
+
 Boundaries may be authored in entries and reusable components, including
 runtime conditions, outlets, and selected routes. A boundary-bearing subtree
 reached from a `<for>` body fails the build with `boundary-in-repeat`. A whole

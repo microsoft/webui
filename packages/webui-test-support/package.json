@@ -26,6 +26,10 @@
     "./fixture-server": {
       "types": "./src/fixture-server.ts",
       "default": "./src/fixture-server.ts"
+    },
+    "./fixture-streaming": {
+      "types": "./src/fixture-streaming.ts",
+      "default": "./src/fixture-streaming.ts"
     }
   }
 }

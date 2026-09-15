@@ -16,7 +16,10 @@ import {
   TemplateElement,
 } from './template-element.js';
 import { hasComponentStyleWork } from './element/styles.js';
-import { getTemplateRegistry } from './template.js';
+import {
+  getTemplateRegistry,
+  installTemplateDefinitionPreparation,
+} from './template.js';
 import { templateNeedsStaticHost } from './template-roots.js';
 import {
   ACTIVATION_STATIC_HOST_OPT_OUT,
@@ -139,7 +142,8 @@ function defineTemplateHosts(templates = getTemplateRegistry()): void {
 /**
  * Install the runtime for compiler-owned dormant template hosts.
  *
- * Called once by the framework root. Authored custom elements always win.
+ * Installed by the framework root or demanded by a streamed compiler-owned
+ * root. Authored custom elements always win.
  */
 export function installTemplateElementRuntime(): void {
   if (runtimeInstalled) {
@@ -148,6 +152,7 @@ export function installTemplateElementRuntime(): void {
   }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   runtimeInstalled = true;
+  installTemplateDefinitionPreparation(null);
 
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);

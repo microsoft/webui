@@ -49,8 +49,11 @@ import './ntp-page.js';
 import './search-box.js';
 ```
 
-The application entry must load early with `async`, or an equivalent
-non-blocking strategy, in `<head>`.
+The coordinator must load early with `async`, or an equivalent non-blocking
+strategy, in `<head>`. To keep the application entry separate, use the
+[coordinator asset integration](/guide/concepts/hydration#separate-coordinator-and-application-assets).
+Component registrations may arrive later; a boundary becomes interactive only
+after the registrations it needs are available.
 
 ## Runtime occurrences
 

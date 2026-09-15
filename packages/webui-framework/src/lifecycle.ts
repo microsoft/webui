@@ -27,14 +27,17 @@
  * instead of all at once. `pendingCount` alone would let
  * `webui:hydration-complete` fire the instant an early boundary's components
  * finish, even though later boundaries (and the terminal record) haven't
- * arrived yet. The streaming coordinator (`streaming.ts`) opts a page into a
- * gate with `beginStreamingGate()`, then reports boundary lifecycle with
- * `markBoundaryPending()` / `markBoundaryCommitted()`. Non-streaming pages
- * never call these, so the gate stays inactive and behavior is unchanged.
+ * arrived yet. The mode marker reserves that gate even when the application
+ * arrives first. The streaming coordinator (`streaming.ts`) also opens it
+ * with `beginStreamingGate()` and reports boundary lifecycle with
+ * `markBoundaryPending()` / `markBoundaryCommitted()`. On non-streaming pages
+ * the gate stays inactive and behavior is unchanged.
  *
  * Streamed SSR hosts carry a compiler-owned `data-ws` identity, so the
  * completion gate does not need to expose parser-window state to components.
  */
+
+import { isStreamingHydrationMode } from './streaming-mode.js';
 
 /** How many startup or active-batch hydration operations remain. */
 let pendingCount = 0;
@@ -81,7 +84,7 @@ export function isHydrationStartupPending(): boolean {
 /** Whether a streaming page has opted into the boundary-aware completion gate. */
 let streamingGateActive = false;
 
-/** Whether the terminal streaming record (`[version, seq, 1, {}]`) has committed. */
+/** Whether the terminal streaming record (`[sequence, 4, 0, {}]`) has committed. */
 let terminalReached = false;
 
 /**
@@ -193,6 +196,11 @@ function tryComplete(): void {
     streamingGateAborted ||
     pendingCount !== 0
   ) return;
+  // The application can arrive before the independent coordinator asset.
+  // The server's mode marker still reserves completion for its terminal.
+  if (!streamingGateActive && hasBrowserDocument && isStreamingHydrationMode()) {
+    streamingGateActive = true;
+  }
   if (!started && !streamingGateActive) return;
   if (
     streamingGateActive &&

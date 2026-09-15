@@ -881,7 +881,17 @@ outlets, and selected route content.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
 - Put the async application module in `<head>` before boundary content and
   import `@microsoft/webui-framework/streaming.js` before component
-  registration modules.
+  registration modules, or use `esbuildStreaming()` from
+  `@microsoft/webui/streaming.js` to emit an independent coordinator entry.
+  Read `coordinator.src` and `coordinator.imports` from the generated
+  `webui-streaming.json`; never identify the asset by its filename. Keep all
+  entries in one ESM code-splitting build and load the coordinator with
+  `type="module" async`. See
+  [Separate coordinator and application assets](/guide/concepts/hydration#separate-coordinator-and-application-assets).
+- Deferred application scripts can use `fetchpriority="low"` to stay out of
+  automatic modulepreload hints. Components remain inert and retain pending
+  state until their definitions arrive, so load early-interactive registrations
+  when needed rather than postponing every registration.
 - `start(state)`, `resume(instanceId, state, mode)`, and `advance()` return a
   step with bytes, optional runtime descriptor
   `{ instanceId, declarationId, owner, name, key }`, and `done`.

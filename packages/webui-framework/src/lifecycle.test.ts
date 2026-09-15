@@ -86,7 +86,9 @@ describe('hydration lifecycle — non-streaming pages', () => {
     const documentListeners = new Map<string, () => void>();
     const windowListeners = new Map<string, () => void>();
 
-    class FakeDocument {}
+    class FakeDocument {
+      querySelector(): null { return null; }
+    }
     const fakeDocument = new FakeDocument() as FakeDocument & {
       readyState: DocumentReadyState;
       addEventListener(type: string, listener: () => void): void;
