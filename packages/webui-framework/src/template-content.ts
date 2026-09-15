@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import type { TemplateBlockMeta } from './template-types.js';
+import { setTemplateContent } from './trusted-types-policy.js';
 
 /** Immutable attributes needed to prepare one external component stylesheet. */
 export interface TemplateStylesheetDescriptor {
@@ -82,7 +83,7 @@ function getTemplateContent(
   if (cached) return cached;
 
   const template = document.createElement('template');
-  template.innerHTML = meta.h;
+  setTemplateContent(template, meta);
   const fragment = template.content;
   const stylesheets = (mayContainLink ?? templateHtmlMayContainLink(meta.h))
     ? collectStylesheetDescriptors(fragment)
