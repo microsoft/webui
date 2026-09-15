@@ -115,3 +115,20 @@ if (typeof location === 'undefined') {
     reload() {},
   };
 }
+
+export function enforceTrustedTypesForTest(): () => void {
+  const createElement = document.createElement;
+  document.createElement = ((tag: string) => {
+    const element = createElement.call(document, tag);
+    if (tag === 'script') {
+      Object.defineProperty(element, 'textContent', {
+        set() { throw new TypeError('This document requires TrustedScript assignment.'); },
+      });
+    }
+    Object.defineProperty(element, 'innerHTML', {
+      set() { throw new TypeError('This document requires TrustedHTML assignment.'); },
+    });
+    return element;
+  }) as typeof document.createElement;
+  return () => { document.createElement = createElement; };
+}

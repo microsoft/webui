@@ -17,12 +17,13 @@ npm install @microsoft/webui-router
 
 Only needed when your app has client-side navigation. Server-only apps with full page loads don't need it.
 
-When enforcing Trusted Types with native WebUI, configure the framework's
-[named compiler-output policy](./hydration#trusted-types) before routing or
-preloading starts. Client-side partial navigation is not yet supported under
-enforcement; use full document navigation instead. Configured partial/template
-requests remain same-origin, but fetched condition-source strings are rejected
-even when a document nonce is available.
+Native WebUI uses its [compiler-output policy](./hydration#trusted-types)
+automatically; no setup call or special import order is needed. Client-side
+partial navigation is not yet supported under enforced Trusted Types; use full
+document navigation instead. Partial, preload and template requests are always
+same-origin, including redirects. Configure `templateEndpoint` with a same-origin
+URL. A document nonce does not authorize fetched condition-source strings under
+enforcement; without enforcement, existing source registration remains supported.
 
 ## Quick Start
 

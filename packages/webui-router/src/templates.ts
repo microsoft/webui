@@ -11,13 +11,14 @@
  */
 
 import type { ComponentStyleResource, ComponentStyles } from './types.js';
+import { prepareTemplatePayload, validateTemplatePayload } from './template-payload.js';
+
+export { TrustedTypesPayloadError } from './template-payload.js';
 
 /** Shared event name understood by optional framework runtimes. */
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 const READINESS_COMPLETE = (): true => true;
 const IGNORE_READINESS_RESULTS = (): void => {};
-
-export class TrustedTypesPayloadError extends Error {}
 
 /**
  * Register templates + inject CSS from a server response.
@@ -67,7 +68,7 @@ export function registerTemplatesAndStyles(
   const componentStyles = data.componentStyles
     ? validateComponentStyles(data.componentStyles)
     : undefined;
-  validateTemplatePayload(data.templates, data.templateFunctions);
+  const prepared = prepareTemplatePayload(data.templates, data.templateFunctions, nonce);
   const styleRegistration = componentStyles
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
@@ -75,39 +76,19 @@ export function registerTemplatesAndStyles(
     updateInventory(data.inventory);
   }
 
-  let executableTemplateBody = '';
   let registeredTemplates: Record<string, unknown> | undefined;
   // 1. Template closures: execute only the component-local condition arrays.
   //    TRUST BOUNDARY: closure scripts come from the same-origin server
   //    that compiled the protocol. The CSP nonce gates script execution.
   //    If the server endpoint is compromised, this is an XSS vector —
   //    same risk as the existing fetchPartial pipeline.
-  if (data.templateFunctions) {
-    const tags = Object.keys(data.templateFunctions);
-    if (tags.length > 0) {
-      executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
-    }
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i];
-      const functions = data.templateFunctions[tag];
-      if (!functions) continue;
-      executableTemplateBody += 'f[';
-      executableTemplateBody += JSON.stringify(tag);
-      executableTemplateBody += ']=';
-      executableTemplateBody += functions;
-      executableTemplateBody += ';';
-    }
-  }
-
-  if (executableTemplateBody) {
-    const script = document.createElement('script');
-    if (nonce) script.nonce = nonce;
-    script.textContent = `(function(){${executableTemplateBody}})();`;
-    document.head.appendChild(script);
-    document.head.removeChild(script);
+  if (prepared?.script) {
+    document.head.appendChild(prepared.script);
+    document.head.removeChild(prepared.script);
   }
 
   // 2. Template metadata is published only after resources and closures.
+  if (prepared?.content) document.body.appendChild(prepared.content);
   if (data.templates) {
     const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
     if (!w.__webui) w.__webui = {};
@@ -116,17 +97,7 @@ export function registerTemplatesAndStyles(
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i];
       const template = data.templates[tag];
-      if (typeof template === 'string') {
-        if (template.startsWith('<')) {
-          const container = document.createDocumentFragment();
-          const temp = document.createElement('div');
-          temp.innerHTML = template;
-          while (temp.firstChild) container.appendChild(temp.firstChild);
-          document.body.appendChild(container);
-        } else {
-          throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
-        }
-      } else {
+      if (typeof template !== 'string') {
         w.__webui.templates[tag] = template;
         if (!registeredTemplates) registeredTemplates = {};
         registeredTemplates[tag] = template;
@@ -236,27 +207,6 @@ function sameComponentStyleResource(
   }
 }
 
-function validateTemplatePayload(
-  templates: Record<string, unknown> | undefined,
-  functions?: Record<string, string>,
-): void {
-  const configured = window.__webuiTrustedTypesPolicyName !== undefined;
-  if (templates) {
-    for (const tag of Object.keys(templates)) {
-      const template = templates[tag];
-      if (typeof template === 'string' && configured) {
-        throw new TrustedTypesPayloadError('[Router] The WebUI Trusted Types policy accepts native compiled metadata, not FAST/string templates. Use the native WebUI plugin and full document navigation.');
-      }
-      if (typeof template === 'string' && !template.startsWith('<')) {
-        throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
-      }
-    }
-  }
-  if (configured && functions && Object.keys(functions).length > 0) {
-    throw new TrustedTypesPayloadError('[Router] Trusted Types does not authorize condition-source strings from partial/template responses. Use full document navigation instead of client-side partial navigation.');
-  }
-}
-
 /** Inject CSS stylesheet links from a partial response. */
 export function injectCssLinks(
   data: { css?: string[] },
@@ -316,7 +266,7 @@ export async function fetchComponentTemplates(
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
   const resp = await fetch(url, {
-    mode: window.__webuiTrustedTypesPolicyName !== undefined ? 'same-origin' : undefined,
+    mode: 'same-origin',
   });
   if (!resp.ok) {
     throw new Error(`[Router] ensureLoaded failed: ${resp.status} ${resp.statusText}`);

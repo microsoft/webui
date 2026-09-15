@@ -1,7 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { configureTrustedTypes } from '../../../src/trusted-types.js';
+import { WebUIElement, observable } from '../../../src/index.js';
 
-configureTrustedTypes('review-compiled');
-void import('./src/test-trusted-types/test-trusted-types.js');
+export class TestTrustedTypes extends WebUIElement {
+  @observable rawHtml!: string;
+  @observable count!: number;
+  @observable show!: boolean;
+  @observable items!: string[];
+}
+
+TestTrustedTypes.define('test-trusted-types');

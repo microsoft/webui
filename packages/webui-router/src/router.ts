@@ -634,7 +634,7 @@ export class WebUIRouter {
       const resp = await fetch(fullPath, {
         headers,
         signal: requestSignal,
-        mode: window.__webuiTrustedTypesPolicyName !== undefined ? 'same-origin' : undefined,
+        mode: 'same-origin',
       });
       const result = await this.readPartialResponse(
         resp,

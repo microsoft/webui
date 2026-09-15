@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import './browser-shim.js';
+import { enforceTrustedTypesForTest } from './browser-shim.js';
 
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
@@ -410,13 +410,10 @@ test('template registration remains immediate without a runtime listener', () =>
   );
 });
 
-test('configured compiler boundary accepts metadata without exposing a source installer', () => {
+test('native enforcement accepts metadata without exposing a source installer', () => {
   const registry = window as Window & { __webui?: { templates?: Record<string, unknown> } };
   const functions = { 'trusted-card': '[function(){return true}]' };
-  Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
-    value: 'test-compiled',
-    configurable: true,
-  });
+  const restoreSinks = enforceTrustedTypesForTest();
   try {
     assert.throws(() => registerTemplatesAndStyles({
       templates: { 'trusted-card': { h: '<p>Trusted</p>' } },
@@ -430,15 +427,15 @@ test('configured compiler boundary accepts metadata without exposing a source in
     assert.deepEqual(registry.__webui?.templates?.['trusted-card'], { h: '<p>Trusted</p>' });
     assert.throws(() => registerTemplatesAndStyles({
       templates: { 'fast-card': '<f-template>Not native</f-template>' },
-      templateFunctions: functions,
-    }, 'page-nonce', () => {}), /not FAST\/string templates/);
+      templateFunctions: {},
+    }, 'page-nonce', () => {}), /FAST\/string templates/);
   } finally {
-    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
+    restoreSinks();
     delete registry.__webui?.templates?.['trusted-card'];
   }
 });
 
-test('configured template fetch forbids cross-origin requests and redirects', async () => {
+test('template fetch forbids cross-origin requests and redirects without configuration', async () => {
   const originalFetch = globalThis.fetch;
   const modes: (RequestMode | undefined)[] = [];
   globalThis.fetch = async (_url, options) => {
@@ -447,14 +444,9 @@ test('configured template fetch forbids cross-origin requests and redirects', as
   };
   try {
     await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
-    Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
-      value: 'test-compiled',
-      configurable: true,
-    });
     await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
-    assert.deepEqual(modes, [undefined, 'same-origin']);
+    assert.deepEqual(modes, ['same-origin', 'same-origin']);
   } finally {
     globalThis.fetch = originalFetch;
-    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
   }
 });

@@ -3,9 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { configureTrustedTypes } from './trusted-types.js';
-import * as publicEntry from './trusted-types.js';
-import { registerTrustedTemplateBlock, setImportMapContent } from './trusted-types-policy.js';
+import { registerTrustedTemplateBlock, setImportMapContent, setTemplateContent } from './trusted-types-policy.js';
 import { getTemplateFragment } from './template-content.js';
 
 interface Rules {
@@ -22,12 +20,15 @@ function fixture(options: { absent?: boolean; denied?: boolean } = {}) {
   let rules: Rules | undefined;
   let creations = 0;
   let conversions = 0;
-  const parsed: Trusted[] = [];
+  const parsed: (Trusted | string)[] = [];
+  const names = new Set<string>();
   const fakeWindow = {
     trustedTypes: options.absent ? undefined : {
-      createPolicy(_name: string, supplied: Rules) {
+      createPolicy(name: string, supplied: Rules) {
         creations++;
-        if (options.denied) throw new TypeError('CSP denied name');
+        assert.equal(name, 'webui');
+        if (options.denied || names.has(name)) throw new TypeError('CSP denied name');
+        names.add(name);
         rules = supplied;
         return {
           createHTML(input: string, capability: object) {
@@ -46,13 +47,16 @@ function fixture(options: { absent?: boolean; denied?: boolean } = {}) {
     configurable: true,
     value: {
       createElement(tag: string) {
-        if (tag === 'script') return { remove() {} };
+        if (tag === 'script') return { textContent: '', remove() {} };
         assert.equal(tag, 'template');
         return {
           content: {},
-          set innerHTML(value: Trusted) {
-            assert.ok(value instanceof Trusted);
-            assert.equal(value.kind, 'html');
+          set innerHTML(value: Trusted | string) {
+            if (options.absent) assert.equal(typeof value, 'string');
+            else {
+              assert.ok(value instanceof Trusted);
+              assert.equal(value.kind, 'html');
+            }
             parsed.push(value);
           },
         };
@@ -67,73 +71,66 @@ function fixture(options: { absent?: boolean; denied?: boolean } = {}) {
   };
 }
 
-test('requires an explicit non-default policy name even without browser support', () => {
-  fixture({ absent: true });
-  for (const name of ['', 'default', '*', 'contains space', 'a;b', "'name'"]) {
-    assert.throws(() => configureTrustedTypes(name), TypeError);
-  }
-  configureTrustedTypes('application.templates-1');
-  assert.equal(window.__webuiTrustedTypesPolicyName, undefined);
-});
-
-test('reports blocked/duplicate browser policy creation without installing a boundary', () => {
+test('registration is lazy and policy denial propagates without a string fallback', () => {
   const f = fixture({ denied: true });
-  assert.throws(() => configureTrustedTypes('app-compiled'), error =>
+  const meta = { h: '<p>Compiler output</p>' };
+  registerTrustedTemplateBlock(meta);
+  assert.equal(f.creations, 0);
+  assert.throws(() => getTemplateFragment(meta), error =>
     error instanceof Error &&
-    error.message.includes('Allow that exact name in CSP') &&
+    error.message.includes('Allow "webui" in CSP') &&
     error.cause instanceof TypeError);
   assert.equal(f.creations, 1);
-  assert.equal(window.__webuiTrustedTypesPolicyName, undefined);
+  assert.equal(f.conversions, 0);
+  assert.deepEqual(f.parsed, []);
 });
 
-test('same-name configuration is idempotent; replacement and unscoped conversions fail', () => {
+test('the fixed-name policy is created automatically once and rejects unscoped conversions', () => {
   const f = fixture();
-  configureTrustedTypes('app-compiled');
-  configureTrustedTypes('app-compiled');
+  assert.equal(f.creations, 0);
+  for (const meta of [{ h: '<p>First</p>' }, { h: '<p>Second</p>' }]) {
+    registerTrustedTemplateBlock(meta);
+    getTemplateFragment(meta);
+  }
   assert.equal(f.creations, 1);
-  assert.throws(() => configureTrustedTypes('different'), /already configured/);
+  assert.equal(f.conversions, 2);
   assert.throws(() => f.rules.createHTML('<img>', {}), /Only the compiled-template runtime/);
   assert.throws(() => f.rules.createScript('alert(1)', {}), /Only the compiled-template runtime/);
   assert.equal(Object.hasOwn(f.rules, 'createScriptURL'), false);
-  assert.deepEqual(Object.getOwnPropertyDescriptor(window, '__webuiTrustedTypesPolicyName'), {
-    value: 'app-compiled', writable: false, enumerable: false, configurable: false,
-  });
 });
 
-test('configuration exposes only inert metadata, not HTML or script policy operations', () => {
+test('automatic policy creation exposes no global state or trust operations', () => {
   fixture();
-  const before = new Set(Reflect.ownKeys(window));
-  configureTrustedTypes('app-compiled');
-  const added = Reflect.ownKeys(window).filter(key => !before.has(key));
-  assert.deepEqual(added, ['__webuiTrustedTypesPolicyName']);
-  assert.equal(typeof window.__webuiTrustedTypesPolicyName, 'string');
-  assert.equal(Object.hasOwn(window, '__webuiTrustedTemplates'), false);
-  assert.deepEqual(Object.keys(publicEntry), ['configureTrustedTypes']);
+  const before = Reflect.ownKeys(window);
+  const meta = { h: '<p>Compiler output</p>' };
+  registerTrustedTemplateBlock(meta);
+  getTemplateFragment(meta);
+  assert.deepEqual(Reflect.ownKeys(window), before);
 });
 
-test('an independent framework copy cannot recover policy operations through global metadata', async () => {
+test('an independent framework copy cannot recover an existing policy or bypass duplicate-name denial', async () => {
   const f = fixture();
-  configureTrustedTypes('app-compiled');
+  const first = { h: '<p>First</p>' };
+  registerTrustedTemplateBlock(first);
+  getTemplateFragment(first);
   const duplicate: typeof import('./trusted-types-policy.js') =
     await import(new URL('./trusted-types-policy.js?independent-copy', import.meta.url).href);
-  assert.throws(() => duplicate.configureTrustedTypes('app-compiled'), /Share one framework module/);
-  const meta = { h: '<p>Unregistered</p>' };
-  assert.throws(() => duplicate.registerTrustedTemplateBlock(meta), /Share one framework module/);
-  assert.throws(() => duplicate.setTemplateContent(document.createElement('template'), meta), /Share one framework module/);
-  assert.equal(f.creations, 1);
-  assert.equal(f.conversions, 0);
+  const meta = { h: '<p>Second</p>' };
+  duplicate.registerTrustedTemplateBlock(meta);
+  assert.throws(() => duplicate.setTemplateContent(document.createElement('template'), meta), /share one framework module/);
+  assert.equal(f.creations, 2);
+  assert.equal(f.conversions, 1);
 });
 
 test('only registered unchanged template HTML enters the sink and each template is parsed once', () => {
   const f = fixture();
-  configureTrustedTypes('app-compiled');
   const meta = { h: '<p>Compiler output</p>' };
   assert.throws(() => getTemplateFragment(meta), /Unregistered or modified/);
   registerTrustedTemplateBlock(meta);
   const first = getTemplateFragment(meta);
   assert.equal(first, getTemplateFragment(meta));
   assert.equal(f.conversions, 1);
-  assert.deepEqual(f.parsed.map(value => value.value), ['<p>Compiler output</p>']);
+  assert.deepEqual(f.parsed.map(String), ['<p>Compiler output</p>']);
 
   const changed = { h: '<span>Original</span>' };
   registerTrustedTemplateBlock(changed);
@@ -145,22 +142,35 @@ test('only registered unchanged template HTML enters the sink and each template 
 
 test('registered empty templates remain valid compiler output', () => {
   const f = fixture();
-  configureTrustedTypes('app-compiled');
   const meta = { h: '' };
   registerTrustedTemplateBlock(meta);
   assert.equal(getTemplateFragment(meta), getTemplateFragment(meta));
-  assert.deepEqual(f.parsed.map(value => value.value), ['']);
+  assert.deepEqual(f.parsed.map(String), ['']);
   assert.equal(f.conversions, 1);
 });
 
+test('each document receives its own private policy', () => {
+  const first = fixture();
+  const meta = { h: '<p>Compiler output</p>' };
+  registerTrustedTemplateBlock(meta);
+  setTemplateContent(document.createElement('template'), meta);
+  const second = fixture();
+  registerTrustedTemplateBlock(meta);
+  setTemplateContent(document.createElement('template'), meta);
+  assert.equal(first.creations, 1);
+  assert.equal(second.creations, 1);
+  assert.equal(first.conversions, 1);
+  assert.equal(second.conversions, 1);
+});
+
 test('CSS import maps retain nonce and contain only serialized CSS data, not executable source', () => {
-  fixture();
-  configureTrustedTypes('app-compiled');
+  const f = fixture();
   const script = document.createElement('script');
   script.type = 'importmap';
   script.nonce = 'document-nonce';
   const css = 'a::after{content:"</script><script>bad()</script>"}';
   setImportMapContent(script, 'component-css', css, window);
+  assert.equal(f.creations, 1);
   const value = script.textContent as unknown as Trusted;
   assert.equal(script.nonce, 'document-nonce');
   assert.equal(value.kind, 'script');
@@ -169,14 +179,18 @@ test('CSS import maps retain nonce and contain only serialized CSS data, not exe
   });
   const executable = document.createElement('script');
   assert.throws(() => setImportMapContent(executable, 'component-css', css, window), /type="importmap"/);
-  assert.equal(executable.textContent, undefined);
+  assert.equal(executable.textContent, '');
 });
 
-test('CSS import maps retain the string path on browsers without Trusted Types', () => {
-  fixture({ absent: true });
-  configureTrustedTypes('app-compiled');
+test('template HTML and CSS import maps retain the string path without browser support', () => {
+  const f = fixture({ absent: true });
+  const meta = { h: '<p>Compiler output</p>' };
+  registerTrustedTemplateBlock(meta);
+  getTemplateFragment(meta);
+  assert.deepEqual(f.parsed, [meta.h]);
   const script = document.createElement('script');
   script.type = 'importmap';
   setImportMapContent(script, 'component-css', 'p{color:red}', window);
   assert.equal(script.textContent, '{"imports":{"component-css":"data:text/css,p%7Bcolor%3Ared%7D"}}');
+  assert.equal(f.creations, 0);
 });

@@ -1,20 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { expect, test } from '@playwright/test';
-import type { TestTrustedTypes } from './src/test-trusted-types/test-trusted-types.js';
+import { expect, test, type Page } from '@playwright/test';
+import type { TestTrustedTypes } from './element.js';
 
-test.beforeEach(async ({ page }) => {
+async function serveWithCsp(page: Page, policy: string): Promise<void> {
   await page.route('**/trusted-types/fixture.html', async route => {
     const response = await route.fetch();
     await route.fulfill({
       response,
       headers: {
         ...response.headers(),
-        'content-security-policy': "require-trusted-types-for 'script'; trusted-types review-compiled",
+        'content-security-policy': policy,
       },
     });
   });
+}
+
+test.beforeEach(async ({ page }) => {
+  await serveWithCsp(page, "require-trusted-types-for 'script'; trusted-types webui");
 });
 
 test('enforced Trusted Types preserves rejected raw DOM and the rest of its update batch', async ({ page }) => {
@@ -61,7 +65,6 @@ test('the policy exposes no global trust methods and client-created compiler blo
   await page.waitForFunction(() => customElements.get('test-trusted-types') !== undefined);
 
   const boundary = await page.evaluate(() => {
-    const descriptor = Object.getOwnPropertyDescriptor(window, '__webuiTrustedTypesPolicyName');
     const rejected = (operation: () => void): boolean => {
       try {
         operation();
@@ -72,7 +75,7 @@ test('the policy exposes no global trust methods and client-created compiler blo
       }
     };
     return {
-      descriptor,
+      hasPolicyState: Object.hasOwn(window, '__webuiTrustedTypesPolicyName'),
       hasBridge: Object.hasOwn(window, '__webuiTrustedTemplates'),
       rawHTMLRejected: rejected(() => {
         document.createElement('template').innerHTML = '<p>Untrusted</p>';
@@ -83,7 +86,7 @@ test('the policy exposes no global trust methods and client-created compiler blo
     };
   });
   expect(boundary).toEqual({
-    descriptor: { value: 'review-compiled', writable: false, enumerable: false, configurable: false },
+    hasPolicyState: false,
     hasBridge: false,
     rawHTMLRejected: true,
     rawScriptRejected: true,
@@ -104,3 +107,30 @@ test('the policy exposes no global trust methods and client-created compiler blo
   await expect(created.locator('.item')).toHaveText('Client');
   expect(errors).toEqual([]);
 });
+
+test('without enforcement raw strings retain their normal behavior', async ({ page }) => {
+  await page.unroute('**/trusted-types/fixture.html');
+  const errors: Error[] = [];
+  page.on('pageerror', error => errors.push(error));
+  await page.goto('/trusted-types/fixture.html');
+  await page.waitForFunction(() => customElements.get('test-trusted-types') !== undefined);
+  await page.evaluate(() => {
+    const element = document.querySelector('test-trusted-types') as TestTrustedTypes;
+    element.rawHtml = '<b class="raw-updated">Updated</b>';
+    element.count = 1;
+  });
+  await expect(page.locator('test-trusted-types .raw-updated')).toHaveText('Updated');
+  await expect(page.locator('test-trusted-types .count')).toHaveText('1');
+  expect(errors).toEqual([]);
+});
+
+for (const enforcement of ['', "require-trusted-types-for 'script'; "]) {
+  test(`policy-name denial surfaces an error with ${enforcement ? 'enforced' : 'unenforced'} sinks`, async ({ page }) => {
+    await serveWithCsp(page, `${enforcement}trusted-types 'none'`);
+    const errors: Error[] = [];
+    page.on('pageerror', error => errors.push(error));
+    await page.goto('/trusted-types/fixture.html');
+    await expect.poll(() => errors.some(error => error.message.includes('Allow "webui" in CSP'))).toBe(true);
+    await expect(page.locator('test-trusted-types .raw-initial')).toHaveText('Initial');
+  });
+}

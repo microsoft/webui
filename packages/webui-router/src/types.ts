@@ -18,7 +18,6 @@ declare global {
   interface Window {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
-    readonly __webuiTrustedTypesPolicyName?: string;
   }
 }
 
@@ -73,6 +72,7 @@ export interface RouterConfig {
   /**
    * URL for the component template endpoint used by `Router.ensureLoaded()`.
    * Component tags are appended as a comma-separated `t=` query parameter.
+   * The endpoint and any redirects must remain same-origin.
    *
    * @default "/_webui/templates"
    * @example

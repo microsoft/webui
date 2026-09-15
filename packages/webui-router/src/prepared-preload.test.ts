@@ -66,7 +66,7 @@ test('deduplicates one link intent and hands off raw bytes once', async () => {
   prepared.destroy();
 });
 
-test('configured speculative preload uses same-origin mode without a trust bridge', async () => {
+test('speculative preload uses same-origin mode without configuration', async () => {
   const modes: (RequestMode | undefined)[] = [];
   globalThis.fetch = async (_input, init) => {
     modes.push(init?.mode);
@@ -77,16 +77,11 @@ test('configured speculative preload uses same-origin mode without a trust bridg
     pointerMove?.(pointerEvent('/next'));
     assert.ok(await prepared.take('/next', '0a'));
     prepared.release('/next');
-    Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
-      value: 'test-compiled',
-      configurable: true,
-    });
     pointerMove?.(pointerEvent('/next'));
     assert.ok(await prepared.take('/next', '0a'));
-    assert.deepEqual(modes, [undefined, 'same-origin']);
+    assert.deepEqual(modes, ['same-origin', 'same-origin']);
   } finally {
     prepared.destroy();
-    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
   }
 });
 

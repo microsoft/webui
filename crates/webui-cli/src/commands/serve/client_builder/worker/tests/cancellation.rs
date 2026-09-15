@@ -194,11 +194,13 @@ async fn spawned_worker_can_close_before_initialize_is_polled() -> Result<()> {
 async fn interrupted_close_drains_pipe_backpressure_before_disposal() -> Result<()> {
     let fixture = Fixture::new(
         r#"
-import { createWriteStream, existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 export default async ({ outDir }) => {
-  const raw = createWriteStream("unused", { fd: 1, autoClose: false });
+  // Preserve Node's nonblocking pipe handling while bypassing log redirection.
+  const rawWrite = Writable.prototype.write.bind(process.stdout);
   let finish;
   const flushed = new Promise((resolve, reject) => {
     finish = error => error ? reject(error) : resolve();
@@ -209,8 +211,9 @@ export default async ({ outDir }) => {
       while (!existsSync(join(outDir, "release"))) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      raw.write(Buffer.alloc(1024 * 1024, 120), finish);
+      // stdout may write synchronously; let the parent enter drainage first.
       writeFileSync(join(outDir, "flooded"), "yes");
+      rawWrite(Buffer.alloc(1024 * 1024, 120), finish);
       await flushed;
     },
     async dispose() {
@@ -233,6 +236,7 @@ export default async ({ outDir }) => {
     }
     fs::write(fixture.output.join("release"), "release")?;
     wait_for_marker(&fixture.output.join("flooded")).await?;
+    assert_eq!(fs::read_to_string(fixture.output.join("flooded"))?, "yes");
     builder.close().await?;
     assert_eq!(fs::read_to_string(fixture.output.join("disposed"))?, "done");
     assert!(worker_pid(&builder).is_none());

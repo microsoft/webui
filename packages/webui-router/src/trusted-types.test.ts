@@ -1,28 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import './browser-shim.js';
+import { enforceTrustedTypesForTest } from './browser-shim.js';
 
 import { strict as assert } from 'node:assert';
 import { afterEach, beforeEach, test } from 'node:test';
 import { WebUIRouter } from './router.js';
-import { registerTemplatesAndStyles } from './templates.js';
+import { registerTemplatesAndStyles, TrustedTypesPayloadError } from './templates.js';
 import type { RawPreloadedPartial } from './prepared-preload.js';
 
 const originalFetch = globalThis.fetch;
 const originalRuntime = window.__webui;
 const originalStyles = window.__webuiRegisterComponentStyles;
-const originalMarker = Object.getOwnPropertyDescriptor(window, '__webuiTrustedTypesPolicyName');
 const originalAppend = document.head.appendChild;
 const failure = /Trusted Types.*condition-source.*full document navigation/;
 let appended = 0;
 let stylesRegistered = 0;
+let restoreSinks: () => void;
 
 beforeEach(() => {
-  Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
-    value: 'test-compiled',
-    configurable: true,
-  });
+  restoreSinks = enforceTrustedTypesForTest();
   window.__webui = { inventory: 'before', nonce: 'page-nonce' };
   appended = 0;
   stylesRegistered = 0;
@@ -41,11 +38,7 @@ afterEach(() => {
   document.head.appendChild = originalAppend;
   window.__webui = originalRuntime;
   window.__webuiRegisterComponentStyles = originalStyles;
-  if (originalMarker) {
-    Object.defineProperty(window, '__webuiTrustedTypesPolicyName', originalMarker);
-  } else {
-    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
-  }
+  restoreSinks();
 });
 
 function unsupportedPayload() {
@@ -71,7 +64,7 @@ function assertUnchanged(): void {
   assert.deepEqual(window.__webui, { inventory: 'before', nonce: 'page-nonce' });
 }
 
-test('configured registration rejects condition source before any response publication', () => {
+test('native enforcement rejects condition source before any response publication without a marker', () => {
   let inventoryChanged = false;
   assert.throws(() => registerTemplatesAndStyles(
     unsupportedPayload(),
@@ -82,7 +75,7 @@ test('configured registration rejects condition source before any response publi
   assertUnchanged();
 });
 
-test('configured registration rejects source even without template metadata', () => {
+test('native enforcement rejects source even without template metadata', () => {
   assert.throws(() => registerTemplatesAndStyles({
     templateFunctions: unsupportedPayload().templateFunctions,
     inventory: 'after',
@@ -90,7 +83,16 @@ test('configured registration rejects source even without template metadata', ()
   assertUnchanged();
 });
 
-test('configured registration rejects empty source entries without creating a wrapper script', () => {
+test('native rejection preserves the browser TypeError as its cause', () => {
+  assert.throws(() => registerTemplatesAndStyles(
+    unsupportedPayload(), 'page-nonce', () => {},
+  ), error => error instanceof TrustedTypesPayloadError
+    && error.cause instanceof TypeError
+    && error.cause.message.includes('TrustedScript'));
+  assertUnchanged();
+});
+
+test('native enforcement rejects empty source entries without publishing a wrapper script', () => {
   assert.throws(() => registerTemplatesAndStyles({
     templateFunctions: { 'empty-card': '' },
     inventory: 'after',
@@ -98,14 +100,15 @@ test('configured registration rejects empty source entries without creating a wr
   assertUnchanged();
 });
 
-test('configured registration rejects FAST strings before publishing resources', () => {
+test('native enforcement rejects FAST strings before publishing resources', () => {
   const payload = {
     ...unsupportedPayload(),
     templates: { 'fast-card': '<f-template>Untrusted</f-template>' },
+    templateFunctions: {},
   };
   assert.throws(
     () => registerTemplatesAndStyles(payload, '', () => {}),
-    /not FAST\/string templates/,
+    /Trusted Types.*FAST\/string templates.*full document navigation/,
   );
   assertUnchanged();
 });
@@ -120,7 +123,7 @@ interface RouterRequests {
 }
 
 for (const streaming of [false, true]) {
-  test(`configured ${streaming ? 'NDJSON' : 'JSON'} navigation surfaces rejection without publication`, async () => {
+  test(`native enforcement during ${streaming ? 'NDJSON' : 'JSON'} navigation surfaces rejection without publication`, async () => {
     let cancelled = false;
     let requestMode: RequestMode | undefined;
     const payload = unsupportedPayload();
@@ -149,7 +152,7 @@ for (const streaming of [false, true]) {
   });
 }
 
-test('configured prepared navigation releases the preload and surfaces rejection', async () => {
+test('native enforcement during prepared navigation releases the preload and surfaces rejection', async () => {
   let released: string | undefined;
   const router = new WebUIRouter() as unknown as RouterRequests;
   router.preparedPreload = {
