@@ -2621,46 +2621,51 @@ starting routing/preloads or installing optional hydration runtimes. Names
 contain only ASCII letters/digits/`.`/`_`/`-`, are nonempty, and cannot be
 `default`. The application explicitly permits that exact name in CSP's
 `trusted-types` directive. A denied/already-created policy or attempt to change
-the name throws; repeating the same name is idempotent across split or duplicated
-module graphs in one document. Browsers without Trusted Types preserve the
-existing path. No default policy is created, and nonce-based script/style
-authorization remains a separate concern.
+the name throws; repeating the same name is idempotent across entries sharing
+one framework module instance.
+Independently bundled framework copies are rejected with guidance to share the
+runtime: native policies cannot be recovered by another module without exposing
+trust-producing capabilities.
+Browsers without Trusted Types preserve the existing path. No default policy is
+created, and nonce-based script/style authorization remains a separate concern.
 
-The document owns one immutable `__webuiTrustedTemplates` bridge so the router
-remains framework-independent. The policy and its private invocation capability
-are never exposed: callbacks reject calls lacking that capability, and no generic
-public HTML/script conversion API or `createScriptURL` rule exists. Compiler
-normalization registers each block's immutable `h` in a weak map. A cache miss
-in `template-content.ts` requires that exact registered string before constructing
-TrustedHTML; the existing weak parsed-fragment cache and cloning remain unchanged.
-Without configuration there is no trust map or per-template entry. Registration
-(`registerTemplateData`, SSR metadata, trusted component asset modules and
-router/streaming templates) accepts compiler programs, never request state or
-user HTML. This is a provenance contract, not a sanitizer or signature check on
-compiler output.
+The document exposes only an immutable `__webuiTrustedTypesPolicyName` string.
+The policy, invocation capability, and trust-producing operations remain private
+to the framework module; there is no globally callable trust bridge. Callbacks
+reject calls lacking the private capability, and no generic public HTML/script
+conversion API or `createScriptURL` rule exists. Compiler normalization registers
+each block's immutable `h` in a weak map. A cache miss in `template-content.ts` requires that
+exact registered string before constructing TrustedHTML; the existing weak
+parsed-fragment cache and cloning remain unchanged. Without configuration there
+is no trust map or per-template entry. Registration (`registerTemplateData`, SSR
+metadata and trusted component asset modules) accepts compiler programs, never
+request state or user HTML. This is a provenance contract, not a sanitizer or
+signature check on compiler output.
 
-The router delegates compiler condition-array installation to the bridge, which
-constructs its fixed wrapper and applies the original document nonce before
-appending the TrustedScript. CSS Module import maps are generated from serialized
-specifier/CSS data and receive TrustedScript while retaining their nonce.
-Configured router partial, template and speculative preload fetches use
-`mode: 'same-origin'`, including redirects. Native streamed boundary payloads
-are parsed from browser-created inert script nodes; SSR executable checkpoints
-use the renderer's nonce and do not enter a client string sink. Deferred
-activation, lazy/component-asset mounts and reactive condition/repeat insertion
-all reuse registered compiler blocks.
+No framework API accepts compiler condition source strings for execution.
+The framework-independent router observes only the inert policy-name marker:
+configured partial, template and speculative preload fetches use
+`mode: 'same-origin'`, including redirects. Configured registration rejects
+nonempty condition-source payloads and FAST/string templates before publishing
+styles, inventory or template metadata. These errors propagate through navigation
+and `ensureLoaded` with full-document navigation guidance; a rejected NDJSON
+registration cancels and releases its reader. No source installer, replacement
+policy or check of the temporary function registry grants an exception.
+Client-side router partial navigation under enforcement remains unsupported.
+CSS Module import maps are generated
+from serialized specifier/CSS data and receive TrustedScript only on import-map
+nodes, retaining their nonce. Native streamed boundary payloads are parsed from
+browser-created inert script nodes; deferred activation, lazy/component-asset mounts and reactive
+condition/repeat insertion all reuse registered compiler blocks.
 
 Runtime triple-brace strings are not compiler output and do not enter the policy:
 the native Range sink still rejects them under enforcement. Parsing precedes
 deletion, so rejection leaves the existing raw range intact. Flush errors
-propagate without leaving the scheduling gate latched: independently queued
-re-entrant writes and subsequent updates can run, while the rejected batch is not
-automatically retried. Dynamic attribute/property bindings are not promoted;
-parser restrictions and native Trusted Types enforcement remain applicable.
-FAST/string template payloads are rejected before registration when this native
-boundary is configured. Validation retains strict enforcement with an explicit
-allowlist, nonce CSP and `trustedTypes.defaultPolicy === null`, separately
-testing raw-string rejection.
+propagate without leaving the scheduling gate latched: unprocessed paths in the
+current batch are requeued alongside independently queued re-entrant writes.
+Already processed paths and the rejected path are not automatically retried.
+Subsequent updates can still run. Dynamic attribute/property bindings are not
+promoted; parser restrictions and native Trusted Types enforcement remain applicable.
 
 ### Metadata object format
 

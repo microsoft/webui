@@ -387,16 +387,21 @@ WebUI does not create a `default` policy or require `'unsafe-eval'`.
 
 Names must be nonempty ASCII letters, digits, `.`, `_`, or `-`; `default` is
 forbidden. Let WebUI create the policy: do not pre-create a same-named policy.
-Repeated configuration with the same name is idempotent across bundles in one
-document; a different name or a CSP-denied/already-created policy throws an
-actionable error. Configure each new document separately. On browsers without
-Trusted Types, configuration leaves the existing rendering behavior unchanged.
+Repeated configuration with the same name is idempotent when bootstrap and
+component entries share one framework module instance, for example through a
+shared bundler chunk. Independently bundled framework copies are not supported;
+WebUI reports an error asking you to share the runtime rather than exposing the
+policy globally. A different name or a CSP-denied/already-created policy also
+throws an actionable error. Configure each new document separately. On browsers
+without Trusted Types, configuration leaves the existing rendering behavior unchanged.
 
-The policy covers native compiled templates (including condition/repeat blocks),
-router-provided compiled condition functions, and generated CSS import maps.
-The router remains framework-independent and uses the configured policy when
-native WebUI is present. Configured router partial, preload and template requests
-are same-origin only, including redirects.
+The policy covers native compiled templates (including condition/repeat blocks)
+and generated CSS import maps. Client-side router partial navigation is not yet
+supported with enforced Trusted Types; use full document navigation instead.
+Configured router partial, preload and template requests remain same-origin only,
+including redirects, but fetched condition-source strings and FAST/string
+templates are rejected before registration. A nonce does not authorize these
+strings under Trusted Types.
 
 **This policy is not an HTML sanitizer.** Treat compiled template metadata,
 component asset modules, and template/partial endpoints as executable application

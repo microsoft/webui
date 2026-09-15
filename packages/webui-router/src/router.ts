@@ -54,6 +54,7 @@ import {
   notifyTemplatesRegistered,
   registerInitialTemplatesAndStyles,
   waitForTemplateReadiness,
+  TrustedTypesPayloadError,
 } from './templates.js';
 import type {
   StreamingContext,
@@ -633,7 +634,7 @@ export class WebUIRouter {
       const resp = await fetch(fullPath, {
         headers,
         signal: requestSignal,
-        mode: window.__webuiTrustedTemplates ? 'same-origin' : undefined,
+        mode: window.__webuiTrustedTypesPolicyName !== undefined ? 'same-origin' : undefined,
       });
       const result = await this.readPartialResponse(
         resp,
@@ -645,6 +646,10 @@ export class WebUIRouter {
       hasDeferredReader = result.hasDeferredReader;
       return result.data;
     } catch (error) {
+      if (error instanceof TrustedTypesPayloadError) {
+        requestController.abort();
+        throw error;
+      }
       if (signal?.aborted) throw error;
       return null;
     } finally {
@@ -697,6 +702,10 @@ export class WebUIRouter {
       return result.data;
     } catch (error) {
       this.preparedPreload?.release(requestPath);
+      if (error instanceof TrustedTypesPayloadError) {
+        requestController.abort();
+        throw error;
+      }
       if (signal?.aborted) throw error;
       return null;
     } finally {

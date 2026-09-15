@@ -410,44 +410,35 @@ test('template registration remains immediate without a runtime listener', () =>
   );
 });
 
-test('configured compiler boundary receives closures before metadata, preserving the nonce', () => {
-  const original = window.__webuiTrustedTemplates;
+test('configured compiler boundary accepts metadata without exposing a source installer', () => {
   const registry = window as Window & { __webui?: { templates?: Record<string, unknown> } };
   const functions = { 'trusted-card': '[function(){return true}]' };
-  let called = false;
-  const boundary = {
-    policyName: 'test-compiled',
-    registerBlock() {},
-    setTemplateContent() {},
-    setImportMap() {},
-    installTemplateFunctions(value: Record<string, string>, nonce: string) {
-      assert.equal(value, functions);
-      assert.equal(nonce, 'page-nonce');
-      assert.equal(registry.__webui?.templates?.['trusted-card'], undefined);
-      called = true;
-    },
-  };
-  window.__webuiTrustedTemplates = boundary;
+  Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
+    value: 'test-compiled',
+    configurable: true,
+  });
   try {
-    registerTemplatesAndStyles({
+    assert.throws(() => registerTemplatesAndStyles({
       templates: { 'trusted-card': { h: '<p>Trusted</p>' } },
       templateFunctions: functions,
+    }, 'page-nonce', () => {}), /condition-source strings/);
+    assert.equal(registry.__webui?.templates?.['trusted-card'], undefined);
+    registerTemplatesAndStyles({
+      templates: { 'trusted-card': { h: '<p>Trusted</p>' } },
+      templateFunctions: {},
     }, 'page-nonce', () => {});
-    assert.equal(called, true);
-    called = false;
+    assert.deepEqual(registry.__webui?.templates?.['trusted-card'], { h: '<p>Trusted</p>' });
     assert.throws(() => registerTemplatesAndStyles({
       templates: { 'fast-card': '<f-template>Not native</f-template>' },
       templateFunctions: functions,
     }, 'page-nonce', () => {}), /not FAST\/string templates/);
-    assert.equal(called, false);
   } finally {
-    window.__webuiTrustedTemplates = original;
+    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
     delete registry.__webui?.templates?.['trusted-card'];
   }
 });
 
 test('configured template fetch forbids cross-origin requests and redirects', async () => {
-  const original = window.__webuiTrustedTemplates;
   const originalFetch = globalThis.fetch;
   const modes: (RequestMode | undefined)[] = [];
   globalThis.fetch = async (_url, options) => {
@@ -456,18 +447,14 @@ test('configured template fetch forbids cross-origin requests and redirects', as
   };
   try {
     await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
-    const boundary = {
-      policyName: 'test-compiled',
-      registerBlock() {},
-      setTemplateContent() {},
-      setImportMap() {},
-      installTemplateFunctions() {},
-    };
-    window.__webuiTrustedTemplates = boundary;
+    Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
+      value: 'test-compiled',
+      configurable: true,
+    });
     await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
     assert.deepEqual(modes, [undefined, 'same-origin']);
   } finally {
     globalThis.fetch = originalFetch;
-    window.__webuiTrustedTemplates = original;
+    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
   }
 });

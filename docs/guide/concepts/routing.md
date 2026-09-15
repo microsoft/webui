@@ -19,8 +19,10 @@ Only needed when your app has client-side navigation. Server-only apps with full
 
 When enforcing Trusted Types with native WebUI, configure the framework's
 [named compiler-output policy](./hydration#trusted-types) before routing or
-preloading starts. Configured partial/template requests remain same-origin, and
-the original document nonce still authorizes generated condition scripts.
+preloading starts. Client-side partial navigation is not yet supported under
+enforcement; use full document navigation instead. Configured partial/template
+requests remain same-origin, but fetched condition-source strings are rejected
+even when a document nonce is available.
 
 ## Quick Start
 

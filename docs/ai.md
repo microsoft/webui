@@ -102,13 +102,17 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 **Enforced Trusted Types:** In a bootstrap entry, import `configureTrustedTypes`
 from `@microsoft/webui-framework/trusted-types.js`, call
 `configureTrustedTypes('app-compiled')`, then `await import('./app.js')`. Configure
-before component definitions/router/preloads/streaming. Allow exactly
+before component definitions/router/preloads/streaming. Use one shared framework
+module instance across bootstrap and component bundles. Allow exactly
 `trusted-types app-compiled` alongside `require-trusted-types-for 'script'` and
 the normal nonce CSP; let WebUI create the named policy, never a default policy.
 Names use ASCII letters/digits/`.`/`_`/`-` and cannot be `default`. The policy
 trusts only immutable native compiler output, not raw triple-brace state HTML,
-FAST templates or arbitrary scripts/URLs. Configured router fetches are
-same-origin only. See [Trusted Types](/guide/concepts/hydration#trusted-types).
+FAST templates or arbitrary scripts/URLs. Client-side router partial navigation
+is not yet supported under enforcement; use full document navigation.
+Configured router fetches remain same-origin, but a nonce does not authorize
+condition-source strings from their responses.
+See [Trusted Types](/guide/concepts/hydration#trusted-types).
 
 ```
 BUILD TIME          SERVER RENDER         CLIENT HYDRATION

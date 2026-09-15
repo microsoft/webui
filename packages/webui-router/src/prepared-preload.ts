@@ -226,7 +226,7 @@ async function fetchRawPartial(
     const response = await fetch(path, {
       headers,
       signal,
-      mode: window.__webuiTrustedTemplates ? 'same-origin' : undefined,
+      mode: window.__webuiTrustedTypesPolicyName !== undefined ? 'same-origin' : undefined,
     });
     const contentType = response.headers.get('content-type') ?? '';
     if (

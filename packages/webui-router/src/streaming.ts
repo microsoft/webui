@@ -114,14 +114,14 @@ export async function readStreamingPartial(
 
   // Register templates/styles from Chunk 1
   const gen = ctx.navGeneration;
-  const stylesReady = registerTemplatesAndStyles(
-    chunk1,
-    ctx.nonce,
-    ctx.injectedCss,
-    ctx.updateInventory,
-  );
-  injectCssLinks(chunk1, ctx.injectedCss);
   try {
+    const stylesReady = registerTemplatesAndStyles(
+      chunk1,
+      ctx.nonce,
+      ctx.injectedCss,
+      ctx.updateInventory,
+    );
+    injectCssLinks(chunk1, ctx.injectedCss);
     if (
       stylesReady &&
       !await waitForTemplateReadiness(stylesReady, signal)

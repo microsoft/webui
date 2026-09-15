@@ -21,7 +21,9 @@ router.
 Native WebUI applications with enforced Trusted Types must configure the
 framework's named compiler policy before starting routing or preloading. See
 [Trusted Types setup](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types).
-The router uses that optional boundary without importing the framework.
+Client-side partial navigation is not yet supported under enforcement; use full
+document navigation. Same-origin fetches and a document nonce do not authorize
+fetched condition-source strings.
 
 ## Installation
 

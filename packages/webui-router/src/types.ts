@@ -4,11 +4,6 @@
 import type { PreparedRoutePreload } from './prepared-preload.js';
 
 declare global {
-  interface WebUITrustedTemplates {
-    readonly policyName: string;
-    installTemplateFunctions(functions: Record<string, string>, nonce: string): void;
-  }
-
   interface WebUIRuntimeGlobal {
     chain?: unknown[];
     inventory?: string;
@@ -23,7 +18,7 @@ declare global {
   interface Window {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
-    __webuiTrustedTemplates?: WebUITrustedTemplates;
+    readonly __webuiTrustedTypesPolicyName?: string;
   }
 }
 

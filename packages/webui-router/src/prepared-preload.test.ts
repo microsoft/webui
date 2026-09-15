@@ -66,6 +66,30 @@ test('deduplicates one link intent and hands off raw bytes once', async () => {
   prepared.destroy();
 });
 
+test('configured speculative preload uses same-origin mode without a trust bridge', async () => {
+  const modes: (RequestMode | undefined)[] = [];
+  globalThis.fetch = async (_input, init) => {
+    modes.push(init?.mode);
+    return jsonResponse({ path: '/next', chain: [] });
+  };
+  const prepared = prepareRoutePreload();
+  try {
+    pointerMove?.(pointerEvent('/next'));
+    assert.ok(await prepared.take('/next', '0a'));
+    prepared.release('/next');
+    Object.defineProperty(window, '__webuiTrustedTypesPolicyName', {
+      value: 'test-compiled',
+      configurable: true,
+    });
+    pointerMove?.(pointerEvent('/next'));
+    assert.ok(await prepared.take('/next', '0a'));
+    assert.deepEqual(modes, [undefined, 'same-origin']);
+  } finally {
+    prepared.destroy();
+    Reflect.deleteProperty(window, '__webuiTrustedTypesPolicyName');
+  }
+});
+
 test('hands off NDJSON after chunk one without waiting for EOF', async () => {
   let fetchSignal: AbortSignal | undefined;
   globalThis.fetch = async (_input, init) => {

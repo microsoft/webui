@@ -1620,18 +1620,26 @@ export class TemplateElement extends HTMLElement {
         const dirty = this.$dirtyPaths;
         this.$dirtyPaths = null;
 
-        for (const path of dirty) {
-          if (!this.$pathIndex) this.$buildPathIndex();
-          const entry = this.$pathIndex?.get(path);
-          if (entry) {
-            this.$updateBindings(
-              entry.texts,
-              entry.attrs,
-              entry.conds,
-              entry.repeats,
-              requireKnownState,
-            );
+        const paths = dirty.values();
+        try {
+          for (const path of paths) {
+            if (!this.$pathIndex) this.$buildPathIndex();
+            const entry = this.$pathIndex?.get(path);
+            if (entry) {
+              this.$updateBindings(
+                entry.texts,
+                entry.attrs,
+                entry.conds,
+                entry.repeats,
+                requireKnownState,
+              );
+            }
           }
+        } catch (error) {
+          // The Set iterator is past the rejected path. Preserve only its
+          // unprocessed tail, alongside writes queued by re-entrant setters.
+          for (const path of paths) (this.$dirtyPaths ??= new Set()).add(path);
+          throw error;
         }
         // Update wildcard bindings once per flush (not per dirty path)
         if (!this.$pathIndex) this.$buildPathIndex();
@@ -1649,7 +1657,7 @@ export class TemplateElement extends HTMLElement {
       }
     } finally {
       // A rejected sink still propagates its error. Release scheduling and keep
-      // independently queued re-entrant writes, without retrying the failed batch.
+      // unprocessed and re-entrant writes, without retrying the failed path.
       this.$pendingFlush = false;
       if (this.$dirtyPaths?.size) {
         this.$pendingFlush = true;
