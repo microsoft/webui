@@ -201,7 +201,8 @@ is still rendering. Author a
 </main>
 ```
 
-Import the coordinator before registrations:
+For a manually authored early entry, import the coordinator before the
+component registrations needed for early interactivity:
 
 ```typescript
 import '@microsoft/webui-framework/streaming.js';
@@ -221,6 +222,87 @@ Boundaries can also occur in true conditions and selected route content. A
 boundary-bearing subtree reached from a `<for>` body fails the build with
 `boundary-in-repeat`. A complete `<for>` may instead sit inside one boundary,
 and boundaries before or after a `<for>` are valid.
+
+### Separate coordinator and application assets
+
+Use `esbuildStreaming()` from `@microsoft/webui/streaming.js` to load the
+coordinator without loading your application entry in `<head>`:
+
+```js
+import { build } from 'esbuild';
+import { esbuildStreaming } from '@microsoft/webui/streaming.js';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+
+await build({
+  entryPoints: { application: 'src/index.ts' },
+  outdir: 'dist',
+  publicPath: '/assets',
+  entryNames: '[name]-[hash]',
+  bundle: true,
+  format: 'esm',
+  splitting: true,
+  platform: 'browser',
+  plugins: [esbuildProjection(), esbuildStreaming()],
+});
+```
+
+Place `esbuildStreaming()` last in the plugin list so earlier build validation
+finishes before it publishes the asset manifest.
+The streaming plugin emits `dist/webui-streaming.json`. Its
+`coordinator.src` identifies the coordinator module and `coordinator.imports`
+lists only its required static framework chunks, in preload order. Read these
+fields instead of matching generated filenames. `publicPath` applies to these
+URLs; without it, they are relative to the output-directory mount. A nonempty
+public path must be HTTP(S) or root-relative, without a query or fragment.
+There are no plugin-specific options. With `write: false`, the manifest is returned in esbuild's
+`outputFiles` instead of being written to disk. The adapter rejects external
+runtime imports, mixed framework copies, preserved symlinks, JavaScript
+banners/footers, and global `inject` files. Use explicit application imports
+instead of global code injection.
+
+Pass the coordinator descriptor and your application asset URL to your HTML
+renderer. For example, a WebUI entry can use:
+
+```html
+<head>
+  <for each="href in streaming.imports">
+    <link rel="modulepreload" href="{{href}}">
+  </for>
+  <script type="module" async src="{{streaming.src}}"></script>
+</head>
+<body>
+  <ntp-page></ntp-page>
+  <script type="module" src="{{applicationSrc}}" fetchpriority="low"></script>
+</body>
+```
+
+Here `streaming` is the manifest's `coordinator` object and `applicationSrc`
+comes from your application build's output mapping. Load the manifest once
+when preparing the host's asset configuration, not for every boundary.
+Continue passing `webui-projection.json` to the WebUI build for state
+projection; the streaming asset manifest does not replace it.
+
+The server's mode marker keeps definitions deferred and prevents premature
+hydration completion if the application module loads first. An explicit
+application import of
+`@microsoft/webui-framework/streaming.js` is not required with this plugin.
+Keep the entries in the same code-splitting build: required framework chunks
+are shared, not independently rebundled. The early dependency graph excludes
+application code and does not preload the hydration engine. Compiler-owned
+scriptless hosts can request framework support when needed without importing
+your application.
+
+The coordinator must execute while the document is still parsing, so use
+`type="module" async` for its head script. A module without `async` waits for
+document parsing to finish. Do not preload deferred application chunks.
+WebUI also excludes authored `fetchpriority="low"` module scripts from its
+automatic modulepreload hints; moving a script to the footer alone does not
+disable those hints.
+
+Delaying all component definitions also delays interactivity and keeps their
+pending state alive longer. Load the small set of registrations needed by
+early-interactive boundaries when needed, and defer unrelated startup work.
+Boundary processing does not require all application components to be defined.
 
 ### Timing and lifecycle
 

@@ -29,6 +29,12 @@ import {
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import { applyStateUpdate } from './streaming-state.js';
+import { templateNeedsStaticHost } from './template-roots.js';
+import {
+  invalidateTemplateHostRuntime,
+  loadTemplateHostRuntime,
+  resetTemplateHostRuntimeForTests,
+} from './streaming-template-hosts.js';
 
 // Coordinator-internal walk results, deliberately in a decade disjoint from the
 // shared `ACTIVATION_*` outcomes (1..4) declared in `streaming-mode.ts`. Both
@@ -101,6 +107,7 @@ const pendingTagWaiters = new Map<string, PendingTagWaiter>();
 const pendingBarrierRoots = new Set<Element>();
 let pendingUndefinedRoots = 0;
 let activationGeneration = 0;
+let templateHostRuntimeRequested = false;
 let failureHandler: ((reason: string) => void) | null = null;
 /**
  * The offending value behind the most recent `ELEMENT_INVALID_OUTCOME`.
@@ -274,6 +281,7 @@ function activateMarkedElement(
     customElements
       .whenDefined(tag)
       .then(() => onTagDefined(tag, generation));
+    requestTemplateHostRuntime(tag, generation);
   }
   if (!waiter.roots.has(el)) {
     waiter.roots.add(el);
@@ -281,6 +289,21 @@ function activateMarkedElement(
   }
   (el as PendingRoot)[PENDING_ROOT_CONNECTED] = resumePendingRoot;
   return ELEMENT_DEFERRED;
+}
+
+function requestTemplateHostRuntime(tag: string, generation: number): void {
+  if (templateHostRuntimeRequested) return;
+  const meta = window.__webui?.templates?.[tag];
+  if (!meta || !templateNeedsStaticHost(meta)) return;
+  if (window.__webui?.templateHostExclusions?.has(tag)) return;
+  templateHostRuntimeRequested = true;
+  // One module request per document, only for an actual compiler-owned root.
+  // Authored components keep using the existing per-tag definition waiters.
+  void loadTemplateHostRuntime()?.catch((error: unknown) => {
+    if (generation === activationGeneration) {
+      fail(`failed to load template-host runtime: ${streamingErrorMessage(error)}`);
+    }
+  });
 }
 
 /** Retain one root whose hook reported an unfinished ancestor barrier. */
@@ -562,6 +585,8 @@ function abandonDeferredTree(el: Element): void {
 
 /** Balance and clear every pending undefined-tag waiter exactly once. */
 export function abandonPendingWaiters(): void {
+  activationGeneration++;
+  invalidateTemplateHostRuntime();
   if (pendingBarrierRoots.size !== 0) {
     for (const el of pendingBarrierRoots) clearPendingRoot(el);
     pendingBarrierRoots.clear();
@@ -666,7 +691,8 @@ function invokeActivationHook(
 /** Reset retained activation state and invalidate uncancellable waiters. */
 export function resetDeferredActivationForTests(): void {
   abandonPendingWaiters();
-  activationGeneration++;
+  templateHostRuntimeRequested = false;
+  resetTemplateHostRuntimeForTests();
 }
 
 export function pendingTagWaiterCountForTests(): number {

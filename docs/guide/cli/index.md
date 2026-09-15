@@ -314,6 +314,13 @@ exactly one manifest entry. Build external component bundles separately and
 repeat the flag for each fragment. See
 [Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
+For progressive pages, the browser build can also use
+[`esbuildStreaming()`](/guide/concepts/hydration#separate-coordinator-and-application-assets)
+to emit a coordinator asset descriptor. That descriptor configures the host's
+script delivery; it is not a `--projection-manifest` input. Authored module
+scripts with `fetchpriority="low"` are excluded from automatic modulepreload
+hints so deferred application code does not get promoted into the head.
+
 ### `webui inspect`
 
 Inspect a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to tools like `jq`.

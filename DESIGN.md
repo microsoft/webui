@@ -3355,11 +3355,11 @@ events, including `head_start`, `body_end`, and compiler-owned streaming roots.
 Authored bindings with the same visible text remain ordinary state paths. Typed
 boundary declarations do not use start/end signal pairs.
 
-The application entry imports
-`@microsoft/webui-framework/streaming.js` before component registration modules
-and loads with `async`, or an equivalent non-blocking strategy, in `<head>`
-before the first possible checkpoint. This installs the coordinator while the
-HTML parser is still consuming the response.
+The coordinator loads with `async`, or an equivalent non-blocking strategy,
+in `<head>` before the first possible checkpoint. A manually authored early
+application entry imports `@microsoft/webui-framework/streaming.js` before
+component registration modules. The independent asset integration below
+also supports either module arriving first without an early application entry.
 
 ### Generated response shape
 
@@ -3503,6 +3503,115 @@ This keeps the coordinator out of ordinary application bundles and installs it
 synchronously before any authored `.define()` call in the same module graph.
 The head marker lets that entry no-op safely on non-streaming pages.
 
+#### Independent streaming assets
+
+The build-only `@microsoft/webui/streaming.js` subpath exports
+`esbuildStreaming()`. It never enters the root SSR package's import
+graph and uses the application-owned esbuild instance, not a second bundler
+pass. The plugin requires a bundled browser ESM build with code splitting and
+an output directory. It adds a synthetic coordinator entry importing the public
+`@microsoft/webui-framework/streaming.js` module. It does not globally inject
+that entry into application or framework modules: such injection creates import
+cycles that can capture uninitialized shared constants in top-level arrays.
+Global `inject`, JS banners/footers, and `preserveSymlinks` are unsupported:
+they can introduce those cycles, unrelated code, or duplicate module identities.
+Normal ESM dependency evaluation initializes the shared contract before the
+coordinator, and code splitting preserves its identity across all entries.
+
+Application-first delivery is handled by the existing mode marker, not a
+forced dependency on the coordinator. Definitions remain metadata-gated and
+streamed roots remain marker-deferred. Before publishing completion, the
+lifecycle tracker reserves the terminal gate when the cached mode detector says
+streaming, even if coordinator installation has not run yet. Thus early
+client-created hydration cannot publish completion while the streaming asset
+is still downloading. The host must load the descriptor's coordinator asset.
+
+The output is always `<outdir>/webui-streaming.json`; the plugin has no
+separate configuration surface:
+
+```typescript
+interface StreamingAssetsManifest {
+  readonly schema: "webui.streaming-assets/v1";
+  readonly coordinator: {
+    readonly src: string;
+    readonly type: "module";
+    readonly async: true;
+    readonly imports: readonly string[];
+  };
+}
+```
+
+The synthetic metafile entry identity, never a generated filename, identifies
+the coordinator output. The descriptor contains served URLs honoring
+`publicPath`; absent a public path, URLs are relative to the output-directory
+mount. `imports` is the deduplicated transitive static output closure ordered
+largest-first, with deterministic path ordering for ties. It excludes dynamic
+hydration imports and application entries. The adapter verifies framework
+ownership of emitted dependencies and rejects externalized or
+application-contaminated coordinator graphs. Shared framework-only chunks
+are intentional: independently rebundling them would duplicate lifecycle,
+template normalization, pending definitions, and stylesheet catalogs.
+
+The streaming plugin must be last, after other plugins' `onEnd` validation.
+The descriptor is deterministic and is emitted only after successful build
+validation, atomically for disk builds and through `outputFiles` for
+`write: false`. Hosts read it when preparing asset delivery, not per boundary
+or as part of a handler render. The projection manifest remains separate and
+continues to prove component state surfaces. No browser wire/protobuf field
+changes and no request-time graph traversal are introduced.
+
+`StreamingBuildError` carries a stable `code` and a color-free message with
+actionable help.
+Setup failures remain available through esbuild's `errors[].detail`; callback
+failures expose the stable code in `errors[].id`.
+
+| Code | Failure category |
+| --- | --- |
+| `STREAM-B001` | Unsupported configuration or plugin order |
+| `STREAM-B002` | Missing or external browser runtime dependency |
+| `STREAM-B003` | Unproven isolation or framework module identity |
+| `STREAM-B004` | Manifest or reserved entry collision |
+| `STREAM-B005` | Unsafe served URL or output path |
+| `STREAM-B006` | Artifact or package-identity I/O failure |
+
+`streaming-bootstrap.ts` registers metadata through the lightweight
+`template-registry.ts` and `element/style-catalog.ts`. These own the original
+normalization sets, definition waiters, and document catalogs, not copies.
+The `template.ts` facade attaches Link resource preparation to the existing
+registration listener only when the hydration runtime loads. It does not add
+a second template listener or rescan the accumulated catalog at every
+checkpoint. Native SSR styles remain responsible for initial paint.
+
+The streaming entry has no static dependency on `TemplateElement`, the DOM
+stylesheet installer, or Link client-mount guards. When a bounded activation
+walk first encounters an undefined compiler-owned (`th`) root, it requests the
+existing `static-host.ts` runtime once and uses the existing per-tag waiter.
+Merely receiving metadata for an unrendered compiler-owned template does not
+trigger a download. An excluded or authored tag never triggers that request.
+Load/installation failure halts the coordinator through normal bounded
+cleanup. Abandonment invalidates the activation generation so an outstanding
+module load cannot install hosts for a failed/reset stream.
+
+An external template registration carrying a `waitUntil` readiness barrier
+also demands dormant-host support when necessary. This preserves navigation
+from a native-only streamed shell whose initial ranges never needed that
+runtime. The existing registry listener reuses its registration key array,
+joins the consumer's barrier, and prepares styles after the newly loaded
+runtime installs its resource hook. Successful host-runtime installation
+permanently releases the demand hook; no extra listener, duplicate catalog, or
+per-root promise is created. Readiness-load failures reject the requesting
+navigation, whereas a load demanded by a streamed root uses stream failure
+cleanup.
+
+This split does not introduce a second hydration implementation, whole-response
+buffer, or extra per-root promise. Undefined roots still retain the exact
+checkpoint-local state reference until activation, and updatable roots may
+retain their collapsed patch past terminal until late activation consumes it.
+Moving every registration to the footer prolongs that retention and delays
+interactivity; small critical registration entries may still load with their
+boundaries. Explicit `fetchpriority="low"` module scripts opt out of automatic
+modulepreloads without changing ordinary module-entry preload behavior.
+
 ### Boundary lifecycle and races
 
 Streaming reuses `TemplateElement`'s existing deferred SSR activation seam.
@@ -3557,6 +3666,8 @@ already has it in hand:
   island-owned by definition. Only non-boundary module entries are recorded,
   so an island loader is excluded without any subtraction pass. This matters:
   preloading the island is precisely the regression the hint exists to remove.
+  Explicit `fetchpriority="low"` scripts are also excluded, so a footer
+  application can retain its chosen delivery priority.
   A chunk the island *shares* with the critical entry still gets preloaded,
   because it is genuinely critical.
 - **The output import graph.** A shared runtime chunk defines no component, so
@@ -3952,7 +4063,7 @@ runtime dependency.
 
 ### Package architecture
 
-The `@microsoft/webui` package exposes one build-only subpath:
+The `@microsoft/webui` package exposes projection through a build-only subpath:
 
 ```typescript
 import { compileProjection, esbuildProjection } from '@microsoft/webui/projection.js';
@@ -3961,6 +4072,8 @@ import { compileProjection, esbuildProjection } from '@microsoft/webui/projectio
 The root `@microsoft/webui` entry does **not** import or re-export the
 projection subpath so that render/build consumers do not load compiler or
 adapter code.
+The independent `@microsoft/webui/streaming.js` build subpath supplies streaming
+asset delivery without loading the TypeScript projection compiler.
 
 Internal source organization:
 

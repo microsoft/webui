@@ -27,6 +27,7 @@ describe('installLazyHydrationCoordinator — idempotency', () => {
 
     class FakeDocument extends EventTarget {
       readonly readyState = 'interactive';
+      querySelector(): null { return null; }
     }
     class FakeIntersectionObserver {
       observe(): void {}

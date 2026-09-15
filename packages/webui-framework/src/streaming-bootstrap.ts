@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { registerTemplateData } from './template.js';
-import { registerComponentStyles } from './element/styles.js';
+import { registerTemplateData } from './template-registry.js';
+import { registerComponentStyles } from './element/style-catalog.js';
 import type {
   BoundaryBootstrap,
   SpanCompletionPayload,

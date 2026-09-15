@@ -307,6 +307,14 @@ are discovered at runtime through entries, reusable components, conditions, and
 the selected route. A boundary-bearing subtree under `<for>` fails the build
 with `boundary-in-repeat`; a whole `<for>` may sit inside one boundary.
 
+For a coordinator-only head script, use the build-only
+[`esbuildStreaming()` integration](/guide/concepts/hydration#separate-coordinator-and-application-assets)
+from `@microsoft/webui/streaming.js`. Its asset manifest identifies the early
+module and required preloads without loading the application. Read the
+descriptor when configuring your host's HTML renderer; the native
+`StreamingSession` does not read asset manifests. Application registrations
+may load later, but are required before their components become interactive.
+
 ### StreamingSession
 
 | Member | Description |

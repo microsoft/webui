@@ -8,13 +8,8 @@
  * the application-owned esbuild instance supplies the plugin API and version.
  */
 
-import {
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-} from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeAtomic } from "../atomic-write.js";
 import * as path from "node:path";
 import type {
   BuildResult,
@@ -74,7 +69,6 @@ const SOURCE_EXTENSIONS = new Set([
   ".mjs",
   ".cjs",
 ]);
-let temporaryFileSequence = 0;
 
 /** Create the official esbuild projection plugin. */
 export function esbuildProjection(
@@ -640,27 +634,6 @@ function pathKey(value: string): string {
   return process.platform === "win32"
     ? resolved.toLowerCase()
     : resolved;
-}
-
-async function writeAtomic(
-  manifestPath: string,
-  contents: string
-): Promise<void> {
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  const sequence = temporaryFileSequence++;
-  const temporaryPath = `${manifestPath}.tmp-${process.pid}-${sequence}`;
-  try {
-    const handle = await open(temporaryPath, "wx");
-    try {
-      await handle.writeFile(contents, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporaryPath, manifestPath);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
 }
 
 function validateEsbuildVersion(
