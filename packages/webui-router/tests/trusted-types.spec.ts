@@ -58,6 +58,55 @@ for (const enforced of [true, false]) {
       }));
     });
 
+    test('condition registry keys remain literal data at the native script text sink', async ({ page }) => {
+      const keys = [
+        'quote-"];window.registryKeyExecuted=true;//',
+        'slash-\\line-\n\u2028\u2029',
+        'markup-</script><script nonce="document-nonce">window.registryKeyExecuted=true</script>',
+      ];
+      await page.route('**/_webui/templates?*', route => route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          templateFunctions: Object.fromEntries(keys.map(key => [key, '[function(){return 42}]'])),
+        }),
+      }));
+      await page.goto('/router-trusted-types.html');
+      await expect(page.locator('compiled-start')).toHaveText('Compiled start');
+      const outcome = await page.evaluate(async keys => {
+        const scriptsBefore = document.scripts.length;
+        let message = '';
+        try {
+          await window.routerTrustTest.ensureLoaded('registry-key-probe');
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          message = error.message;
+        }
+        const functions = (window.__webui as typeof window.__webui & {
+          templateFns?: Record<string, unknown>;
+        })?.templateFns;
+        return {
+          message,
+          executed: Object.hasOwn(window, 'registryKeyExecuted'),
+          scriptsUnchanged: document.scripts.length === scriptsBefore,
+          keys: Object.keys(functions ?? {}),
+          values: keys.map(key => {
+            const entry = functions?.[key];
+            return Array.isArray(entry) && typeof entry[0] === 'function' ? entry[0]() : null;
+          }),
+        };
+      }, keys);
+      expect(outcome).toEqual({
+        message: enforced
+          ? expect.stringMatching(/Trusted Types.*condition-source.*full document navigation/)
+          : '',
+        executed: false,
+        scriptsUnchanged: true,
+        keys: enforced ? [] : keys,
+        values: enforced ? keys.map(() => null) : keys.map(() => 42),
+      });
+      await expect(page.locator('#current')).toHaveText('Current route');
+    });
+
     for (const mode of ['templates', 'json', 'ndjson', 'fast'] as const) {
       test(`${mode} registration follows native enforcement, not policy creation`, async ({ page }) => {
         await page.route(mode === 'templates' || mode === 'fast' ? '**/_webui/templates?*' : '**/next', route => {
