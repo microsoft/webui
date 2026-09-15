@@ -11,6 +11,8 @@ hello-world/
 ├── src/
 │   └── templates/
 │       └── index.html
+├── assets/
+│   └── styles.css
 └── state.json
 ```
 
@@ -44,6 +46,13 @@ Create a simple template in `src/templates/index.html`:
 </html>
 ```
 
+## Creating the Styles
+
+Create a stylesheet in `assets/styles.css`. For focus, we'll keep it blank.
+
+```css
+```
+
 ## Creating the State
 
 Create a `state.json` file with the data for rendering:
@@ -68,7 +77,7 @@ Create a `state.json` file with the data for rendering:
 The fastest way to preview your app during development is the built-in dev server:
 
 ```bash
-webui serve ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch
+webui serve ./src/templates --state ./state.json --servedir ./assets --watch
 ```
 
 This will:
@@ -77,12 +86,12 @@ This will:
 3. Serve the result at `http://127.0.0.1:3000/`
 4. With `--watch`, watch for file changes and automatically reload
 
-Open `http://127.0.0.1:3000/` in your browser to see the rendered output. With `--watch`, editing `templates/index.html` or `data/state.json` triggers automatic reload.
+Open `http://127.0.0.1:3000/` in your browser to see the rendered output. With `--watch`, editing `src/templates/index.html` or `state.json` triggers automatic reload.
 
 You can also specify a custom port:
 
 ```bash
-webui serve ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch --port 9090
+webui serve ./src/templates --state ./state.json --servedir ./assets --watch --port 9090
 ```
 
 ## Building for Production
@@ -90,7 +99,7 @@ webui serve ./hello-world/templates --state ./hello-world/data/state.json --serv
 To produce a `protocol.bin` for use with a handler in production:
 
 ```bash
-webui build ./hello-world/templates --out ./hello-world/dist
+webui build ./src/templates --out ./dist
 ```
 
 ## Rendering with Rust
@@ -98,9 +107,10 @@ webui build ./hello-world/templates --out ./hello-world/dist
 Here's how to render a pre-built protocol programmatically with Rust:
 
 ```rust
-use std::fs;
 use serde_json::Value;
-use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use std::fs;
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_protocol::WebUIProtocol;
 
 struct StdoutWriter;
 
@@ -109,16 +119,16 @@ impl ResponseWriter for StdoutWriter {
         print!("{content}");
         Ok(())
     }
-    
+
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
-    let state: Value = serde_json::from_str(&fs::read_to_string("data/state.json")?)?;
-    
+    let protocol = WebUIProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
+    let state: Value = serde_json::from_str(&fs::read_to_string("state.json")?)?;
+
     let handler = WebUIHandler::new();
     let mut writer = StdoutWriter;
     handler.render(
@@ -127,7 +137,7 @@ fn main() -> anyhow::Result<()> {
         &RenderOptions::new("index.html", "/"),
         &mut writer,
     )?;
-    
+
     Ok(())
 }
 ```
