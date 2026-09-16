@@ -3852,8 +3852,6 @@ impl HtmlParser {
                     }
                 } else if is_component {
                     let value = html_escape::decode_html_entities(val);
-                    let escape_value =
-                        matches!(value, std::borrow::Cow::Owned(_)) || val.contains('"');
                     let frag = Self::component_attribute(
                         WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
@@ -3861,7 +3859,6 @@ impl HtmlParser {
                                     name: attr_name.to_string(),
                                     value: value.into_owned(),
                                     raw_value: true,
-                                    escape_value,
                                     ..Default::default()
                                 },
                             )),
@@ -3916,7 +3913,6 @@ impl HtmlParser {
     ) -> WebUIFragment {
         if let Some(web_ui_fragment::Fragment::Attribute(ref mut attr)) = frag.fragment {
             attr.attr_skip = Self::is_skipped_attribute(&attr.name);
-            attr.boolean = webui_protocol::attrs::is_boolean_attribute(&attr.name);
         }
         Self::maybe_mark_attr_start(frag, first_dynamic_emitted)
     }

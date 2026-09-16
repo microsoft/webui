@@ -333,12 +333,11 @@ message WebUIFragmentAttribute {
   ConditionExpr condition_tree = 8;
   // Exact projected component property name; empty uses canonical HTML mapping.
   string property = 9;
-  // Attribute presence supplies true to component state, independently of text.
+  // Declared boolean-mode attribute presence supplies true to component state.
   // Conditional and direct property bindings retain their typed values.
   bool boolean = 10;
-  // Static value is decoded text requiring HTML escaping. False preserves
-  // verbatim values in protocols produced before decoded literal propagation.
-  bool escape_value = 11;
+  reserved 11;
+  reserved "escape_value";
 }
 
 // A condition expression tree.

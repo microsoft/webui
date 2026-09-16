@@ -3808,11 +3808,7 @@ impl WebUIHandler {
         if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                let value = if attr.escape_value {
-                    crate::html_encode::encode_safe(&attr.value)
-                } else {
-                    Cow::Borrowed(attr.value.as_str())
-                };
+                let value = crate::html_encode::encode_safe(&attr.value);
                 write_attr(context.writer, &attr.name, &value)?;
                 if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;

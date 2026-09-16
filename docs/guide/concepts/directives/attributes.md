@@ -170,9 +170,16 @@ you build with the bundler's projection manifest.
 <dialog ?open="{{open}}" aria-label="{{ariaLabel}}"><slot></slot></dialog>
 ```
 
-Boolean attributes use presence semantics: `open`, `open=""`, and `open="false"`
+```typescript
+@attr({ mode: 'boolean' }) open = false;
+@attr({ attribute: 'aria-label' }) ariaLabel = '';
+```
+
+Build with the bundler's projection manifest so the declared boolean mode applies
+to the component's SSR state. For that input, `open`, `open=""`, and `open="false"`
 all mean open. Use `?open="{{isOpen}}"` for a conditional boolean, not
 `open="{{isOpen}}"`. Empty string attributes are valid inputs and override a
-nonempty state value. Each instance receives its own host inputs; omitted inputs
+nonempty state value; their names do not imply a property type. Each instance
+receives its own host inputs; omitted inputs
 use the supplied server state. Supply SSR defaults in state JSON rather than
 relying on JavaScript field initializers.

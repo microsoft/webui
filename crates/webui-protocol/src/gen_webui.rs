@@ -398,18 +398,11 @@ pub struct WebUiFragmentAttribute {
     pub condition_tree: ::core::option::Option<ConditionExpr>,
     /// Exact projected component property name; empty uses canonical HTML mapping.
     #[prost(string, tag = "9")]
-    #[serde(default)]
     pub property: ::prost::alloc::string::String,
-    /// Attribute presence supplies true to component state, independently of text.
+    /// Declared boolean-mode attribute presence supplies true to component state.
     /// Conditional and direct property bindings retain their typed values.
     #[prost(bool, tag = "10")]
-    #[serde(default)]
     pub boolean: bool,
-    /// Static value is decoded text requiring HTML escaping. False preserves
-    /// verbatim values in protocols produced before decoded literal propagation.
-    #[prost(bool, tag = "11")]
-    #[serde(default)]
-    pub escape_value: bool,
 }
 /// A condition expression tree.
 #[derive(serde::Serialize, serde::Deserialize)]

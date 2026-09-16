@@ -519,7 +519,7 @@ Card.define('mutable-card');
 });
 
 describe("projection manifest hashing", () => {
-  test("covers exact attributes after entry closures without changing legacy IDs", () => {
+  test("covers empty and populated attribute declarations after entry closures", () => {
     const params = {
       producerName: "@microsoft/webui/projection.js",
       producerVersion: "0.0.18",
@@ -534,8 +534,8 @@ describe("projection manifest hashing", () => {
       ] as const,
       sortedEntryClosures: [["dist/a.js", []]] as const,
     };
-    const legacy = computeBuildId(params);
-    assert.equal(computeBuildId({ ...params, sortedComponentAttributes: [] }), legacy);
+    const empty = computeBuildId(params);
+    assert.equal(computeBuildId({ ...params, sortedComponentAttributes: [] }), empty);
     const hash = (definition: readonly [string, string, string, 0 | 1]) =>
       computeBuildId({ ...params, sortedComponentAttributes: [definition] });
     const original = hash(["a-card", "arbitrary-alias", "displayValue", 0]);
@@ -543,7 +543,7 @@ describe("projection manifest hashing", () => {
       original,
       "sha256:021035acc1709ea71c8b90c4112ce1f9598a404b9efb9db0f27fb9d355ca43e8"
     );
-    assert.notEqual(original, legacy);
+    assert.notEqual(original, empty);
     assert.notEqual(original, hash(["a-card", "arbitrary-alias", "displayValue", 1]));
     assert.notEqual(original, hash(["a-card", "display-value", "displayValue", 0]));
     assert.notEqual(original, hash(["a-card", "other-alias", "displayValue", 0]));
@@ -693,7 +693,7 @@ class Card extends WebUIElement {
 
     assert.equal(
       buildId,
-      "sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18"
+      "sha256:439764b5adbf055a080369870085bc81aed17ebba83a05c0e12fd94b1c9808cb"
     );
   });
 

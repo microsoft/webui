@@ -293,10 +293,8 @@ pub struct WebUIFragmentAttribute {
     pub condition_tree: Option<ConditionExpr>,
     /// Exact projected component property; empty uses the canonical HTML mapping.
     pub property: String,
-    /// An ordinary host attribute supplies true by presence, regardless of its text.
+    /// Declared boolean-mode input; attribute presence supplies true.
     pub boolean: bool,
-    /// Escape decoded static text; false preserves legacy verbatim literals.
-    pub escape_value: bool,
 }
 ```
 
@@ -309,9 +307,9 @@ later component.
 
 Bare and empty component attributes participate in the same collection window as
 nonempty literals. Static strings are decoded as HTML attribute values at build
-time and escaped once on output when `escape_value` is set; older protocols
-without this bit retain their verbatim static output. Native boolean attribute names such as `open`
-use presence semantics: `open`, `open=""`, and `open="false"` all supply `true`.
+time and escaped once on output. Empty literals remain empty strings; parser core
+does not infer a component property's type from its HTML attribute name.
+For a declared boolean-mode input, `open`, `open=""`, and `open="false"` all supply `true`.
 Ordinary dynamic attributes also remain present regardless of their string value;
 use `?open="{{condition}}"` to make presence conditional. Conditional bindings
 store the evaluated boolean, including `false`; `:` property bindings preserve
@@ -323,8 +321,8 @@ projection declaration claims them. Validated projection metadata overrides both
 the property name and the boolean mode, including explicit aliases that differ
 from the canonical casing. This is compiled onto each host's attribute fragments
 after template parsing, identically in native and WASM builds. No decorator
-metadata or class source is interpreted during rendering. Existing protocols
-without the new fields retain canonical naming and their existing value modes.
+metadata or class source is interpreted during rendering. Protocol literals use
+one decoded-text representation; there is no legacy verbatim-literal mode.
 
 Host inputs override supplied server state for that component. Missing inputs
 continue to use supplied state; JavaScript constructors and initializers are not
@@ -4433,8 +4431,7 @@ export interface ProjectionManifest {
    *
    * Every known entry is present even when its closure is empty, which
    * preserves entry ownership for basename disambiguation. The field is absent
-   * when the adapter cannot report entry ownership, so manifests produced
-   * before this field existed keep reproducing their original `buildId`.
+   * when the adapter cannot report entry ownership.
    */
   readonly entryClosures?: Record<string, readonly string[]>;
 }
@@ -4569,7 +4566,7 @@ component(
 entryClosures(count)                    ... omitted entirely when empty
 entryClosure(entry, member-count, members...)
   ... sorted by UTF-8 entry bytes; members in their given load order
-componentAttributes(count)             ... omitted entirely when empty
+componentAttributes(count)             ... always present, including zero
 componentAttribute(tag, attribute, property, mode)
   ... sorted by UTF-8 tag bytes, then attribute bytes
 ```
@@ -4580,7 +4577,8 @@ Multiple inbound attributes may target one property with different modes.
 Projected string-mode attributes supply the rendered
 string value, while explicit conditional and direct property bindings retain
 their typed values.
-The optional records preserve old manifest IDs when no declarations are present.
+The canonical proof always includes the attribute count. Manifests must be
+produced with this proof format; earlier build IDs are not retained.
 
 The manifest describes the effective `attrByAttribute` registry, not just the
 outbound `attrByProperty` map. Inherited and stacked aliases survive a property's
@@ -4604,9 +4602,7 @@ UTF-16 code units. The final identifier is:
 ```
 
 The two `entryClosures` records are appended **only when the map is non-empty**.
-That is what keeps a manifest written before the field existed hashing to
-exactly the value it hashed to then, which the cross-language golden vector
-below pins. Closure member order participates in the hash on purpose: reordering
+Closure member order participates in the hash on purpose: reordering
 preloads measurably changes page load, so it is a real input, not noise to
 normalize away.
 
@@ -4622,7 +4618,8 @@ output = dist/a.js / sha256:3333333333333333333333333333333333333333333333333333
 component = a-card / src/a.ts / [dist/a.js]
             / hydration [displayValue]
             / navigation [displayValue, é]
-buildId = sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18
+componentAttributes = 0
+buildId = sha256:439764b5adbf055a080369870085bc81aed17ebba83a05c0e12fd94b1c9808cb
 ```
 
 #### Stale validation

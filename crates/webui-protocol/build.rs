@@ -14,12 +14,6 @@ fn main() -> std::io::Result<()> {
         config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
         config.type_attribute("webui.ComponentData", "#[serde(deny_unknown_fields)]");
         config.type_attribute("webui.WebUIProtocol", "#[serde(deny_unknown_fields)]");
-        config.field_attribute("webui.WebUIFragmentAttribute.property", "#[serde(default)]");
-        config.field_attribute("webui.WebUIFragmentAttribute.boolean", "#[serde(default)]");
-        config.field_attribute(
-            "webui.WebUIFragmentAttribute.escape_value",
-            "#[serde(default)]",
-        );
 
         // Build into OUT_DIR first (prost-build requirement), then copy to src/.
         config.compile_protos(&["proto/webui.proto"], &["proto/"])?;

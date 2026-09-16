@@ -74,6 +74,18 @@ mod tests {
     use prost::Message;
 
     #[test]
+    fn serialized_attributes_require_the_current_metadata_fields() {
+        for field in ["property", "boolean"] {
+            let mut value = serde_json::to_value(WebUIFragmentAttribute::default()).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<WebUIFragmentAttribute>(value).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
     fn resolves_exact_aliases_modes_and_property_bindings_only_on_their_host() {
         let attributes = BTreeMap::from([
             (

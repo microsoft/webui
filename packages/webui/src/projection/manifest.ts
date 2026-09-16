@@ -64,8 +64,7 @@ export function computeBuildId(params: {
    * Per-entry static import closures, keyed by entry output and sorted by key.
    *
    * Member order is load order (largest-first) and is therefore covered by the
-   * build ID rather than normalized away. Omitted entirely when empty so
-   * manifests produced before this field existed keep their original ID.
+   * build ID rather than normalized away. Omitted entirely when empty.
    */
   readonly sortedEntryClosures?: ReadonlyArray<
     readonly [entry: string, closure: ReadonlyArray<string>]
@@ -74,7 +73,7 @@ export function computeBuildId(params: {
   /**
    * Inbound metadata sorted by tag, then HTML attribute name, using UTF-8 bytes.
    * Attribute names are resolved even when the decorator uses a default name.
-   * Omitted when empty to preserve build IDs for older manifests.
+   * The canonical proof includes the attribute count even when empty.
    */
   readonly sortedComponentAttributes?: ReadonlyArray<
     readonly [tag: string, attribute: string, property: string, mode: 0 | 1]
@@ -133,15 +132,13 @@ export function computeBuildId(params: {
     }
   }
   const componentAttributes = params.sortedComponentAttributes ?? [];
-  if (componentAttributes.length > 0) {
-    appendRecord(records, "componentAttributes", [
-      String(componentAttributes.length),
+  appendRecord(records, "componentAttributes", [
+    String(componentAttributes.length),
+  ]);
+  for (const [tag, attribute, property, mode] of componentAttributes) {
+    appendRecord(records, "componentAttribute", [
+      tag, attribute, property, String(mode),
     ]);
-    for (const [tag, attribute, property, mode] of componentAttributes) {
-      appendRecord(records, "componentAttribute", [
-        tag, attribute, property, String(mode),
-      ]);
-    }
   }
   return hashContent(records.join(""));
 }
@@ -263,8 +260,7 @@ export interface ProjectionManifest {
    * The bundler is the only party that knows output sizes, so it sorts here
    * and consumers use the order as given. Every known entry is present, even
    * when its closure is empty, so consumers can disambiguate equal basenames
-   * across merged builds. Absent on manifests produced before this field
-   * existed.
+   * across merged builds. Omitted when the adapter supplies no entry ownership.
    */
   readonly entryClosures?: Readonly<Record<string, ReadonlyArray<string>>>;
 }

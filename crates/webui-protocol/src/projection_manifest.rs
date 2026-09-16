@@ -84,8 +84,7 @@ pub struct ProjectionManifest {
     /// The bundler is the only party that knows output sizes, so it sorts.
     /// Consumers use the order as given rather than re-deriving it.
     ///
-    /// Optional so manifests produced before this field existed still validate
-    /// and still reproduce their original [`build_id`](Self::build_id).
+    /// Omitted when the adapter supplies no entry ownership information.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[serde(deserialize_with = "deserialize_unique_map")]
     pub entry_closures: BTreeMap<String, Vec<String>>,
@@ -252,8 +251,7 @@ impl ProjectionManifest {
             append_record(&mut canonical, "component", &fields);
         }
 
-        // Appended only when present so manifests produced before this field
-        // existed keep reproducing their original build ID.
+        // Entry closures carry ordered adapter-provided ownership information.
         if !self.entry_closures.is_empty() {
             let closure_count = self.entry_closures.len().to_string();
             append_record(&mut canonical, "entryClosures", &[&closure_count]);
@@ -271,20 +269,18 @@ impl ProjectionManifest {
             .values()
             .map(|entry| entry.attributes.len())
             .sum();
-        if attribute_count > 0 {
-            append_record(
-                &mut canonical,
-                "componentAttributes",
-                &[&attribute_count.to_string()],
-            );
-            for (tag, entry) in &self.components {
-                for (name, attribute) in &entry.attributes {
-                    append_record(
-                        &mut canonical,
-                        "componentAttribute",
-                        &[tag, name, &attribute.property, &attribute.mode.to_string()],
-                    );
-                }
+        append_record(
+            &mut canonical,
+            "componentAttributes",
+            &[&attribute_count.to_string()],
+        );
+        for (tag, entry) in &self.components {
+            for (name, attribute) in &entry.attributes {
+                append_record(
+                    &mut canonical,
+                    "componentAttribute",
+                    &[tag, name, &attribute.property, &attribute.mode.to_string()],
+                );
             }
         }
         hash_bytes(canonical.as_bytes())
@@ -630,7 +626,7 @@ mod tests {
         manifest.build_id = manifest.compute_build_id();
         assert_eq!(
             manifest.build_id,
-            "sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18"
+            "sha256:439764b5adbf055a080369870085bc81aed17ebba83a05c0e12fd94b1c9808cb"
         );
         assert!(manifest.validate().is_ok());
     }

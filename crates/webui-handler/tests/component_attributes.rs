@@ -36,7 +36,7 @@ fn render_with_attributes(
         .component_registry_mut()
         .register_component(ComponentRegistration::new(
             "test-dialog",
-            r#"<dialog ?open="{{open}}" aria-label="{{ariaLabel}}" aria-describedby="{{ariaDescribedBy}}">{{label}}</dialog>"#,
+            r#"<dialog ?open="{{open}}" aria-label="{{ariaLabel}}" aria-describedby="{{ariaDescribedBy}}">{{label}}</dialog><output>{{open}}</output>"#,
             None,
             true,
         ))
@@ -93,13 +93,14 @@ fn render_with_attributes(
 }
 
 #[test]
-fn literal_boolean_presence_and_aria_attributes_reach_component_scope() {
+fn declared_boolean_presence_and_aria_attributes_reach_component_scope() {
     for attribute in ["open", r#"open="""#, r#"open="open""#, r#"open="false""#] {
-        let html = render(
+        let html = render_with_attributes(
             &format!(
                 r#"<test-dialog {attribute} aria-label="Canvas information" aria-describedby="details"></test-dialog>"#
             ),
             &test_json!({"open": false, "ariaLabel": "Global name"}),
+            &[("open", "open", true)],
         );
         assert!(
             html.contains(
@@ -125,9 +126,10 @@ fn empty_literals_override_global_state_and_remain_present() {
 
 #[test]
 fn sibling_instances_keep_independent_attributes_and_absence_defaults() {
-    let html = render(
+    let html = render_with_attributes(
         r#"<test-dialog open aria-label="First"></test-dialog><test-dialog></test-dialog>"#,
         &test_json!({"open": false, "ariaLabel": "Default"}),
+        &[("open", "open", true)],
     );
     assert!(
         html.contains(r#"<dialog open aria-label="First""#),
@@ -163,10 +165,11 @@ fn component_attribute_entities_are_decoded_once_for_child_state() {
 }
 
 #[test]
-fn ordinary_boolean_attribute_bindings_follow_presence_not_string_truthiness() {
-    let html = render(
+fn declared_boolean_attribute_bindings_follow_presence_not_string_truthiness() {
+    let html = render_with_attributes(
         r#"<test-dialog open="{{enabled}}" aria-label="Bound"></test-dialog>"#,
         &test_json!({"enabled": false}),
+        &[("open", "open", true)],
     );
     assert!(html.contains(r#"<test-dialog open="false""#), "{html}");
     assert!(
@@ -231,7 +234,7 @@ fn projected_modes_distinguish_string_boolean_and_direct_property_inputs() {
 }
 
 #[test]
-fn legacy_static_protocol_literals_keep_their_verbatim_output() {
+fn static_protocol_literals_are_escaped_once() {
     use webui_protocol::{
         web_ui_fragment::Fragment, FragmentList, WebUIFragment, WebUIFragmentAttribute,
     };
@@ -243,7 +246,7 @@ fn legacy_static_protocol_literals_keep_their_verbatim_output() {
                 WebUIFragment {
                     fragment: Some(Fragment::Attribute(WebUIFragmentAttribute {
                         name: "title".into(),
-                        value: "A &amp; B".into(),
+                        value: "A & B".into(),
                         raw_value: true,
                         ..Default::default()
                     })),
@@ -263,4 +266,26 @@ fn legacy_static_protocol_literals_keep_their_verbatim_output() {
         )
         .unwrap();
     assert_eq!(writer.0, r#"<p title="A &amp; B"></p>"#);
+}
+
+#[test]
+fn untyped_empty_attributes_remain_strings_regardless_of_their_names() {
+    let html = render(
+        r#"<test-dialog open label=""></test-dialog>"#,
+        &test_json!({"open": true, "label": "Default"}),
+    );
+    assert!(html.contains(r#"<test-dialog open="" label="">"#), "{html}");
+    assert!(html.contains("<output></output>"), "{html}");
+    assert!(!html.contains("<dialog open"), "{html}");
+}
+
+#[test]
+fn native_empty_and_boolean_attributes_are_preserved_without_type_inference() {
+    for input in [
+        r#"<dialog open aria-label=""></dialog>"#,
+        r#"<dialog open="" aria-label=""></dialog>"#,
+        r#"<dialog open="false" aria-label=""></dialog>"#,
+    ] {
+        assert_eq!(render(input, &test_json!({})), input);
+    }
 }
