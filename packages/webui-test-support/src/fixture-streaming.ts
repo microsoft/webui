@@ -5,8 +5,7 @@ import { build as buildClient } from 'esbuild';
 import { build as buildProtocol, Protocol } from '@microsoft/webui';
 import type { StreamStep } from '@microsoft/webui';
 import { esbuildProjection } from '@microsoft/webui/projection.js';
-import { esbuildStreaming } from '@microsoft/webui/streaming.js';
-import { readFileSync } from 'node:fs';
+import { esbuildStreaming, getStreamingAsset } from '@microsoft/webui/streaming.js';
 import { relative, resolve, sep } from 'node:path';
 import type { FixtureRequestContext } from './fixture-server.js';
 
@@ -40,7 +39,6 @@ export async function prepareStreamingFixture({
 }: StreamingFixtureOptions): Promise<(context: FixtureRequestContext) => boolean> {
   const publicPath = '/dist/streaming-bootstrap/';
   const applicationPath = resolve(fixturePath, 'application.ts');
-  const manifestPath = resolve(outDir, 'webui-streaming.json');
   const projectionPath = resolve(outDir, 'webui-projection.json');
   const built = await buildClient({
     absWorkingDir: fixturePath,
@@ -64,14 +62,14 @@ export async function prepareStreamingFixture({
     ],
   });
   if (!built.metafile) throw new Error('Streaming fixture has no esbuild output metadata.');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-    coordinator: CoordinatorAsset;
-  };
+  const coordinator = getStreamingAsset(built);
+  const servedUrl = (output: string): string =>
+    publicPath + relative(outDir, resolve(fixturePath, output)).split(sep).join('/');
   let application: string | undefined;
   let templateHostRuntime: string | undefined;
   for (const [output, details] of Object.entries(built.metafile.outputs)) {
     if (!details.entryPoint) continue;
-    const href = publicPath + relative(outDir, resolve(fixturePath, output)).split(sep).join('/');
+    const href = servedUrl(output);
     if (resolve(fixturePath, details.entryPoint) === applicationPath) application = href;
     if (
       details.entryPoint.endsWith('/static-host.js') ||
@@ -85,7 +83,7 @@ export async function prepareStreamingFixture({
     throw new Error('Streaming fixture is missing its application or lazy template-host entry.');
   }
   const assets: StreamingFixtureAssets = {
-    coordinator: manifest.coordinator,
+    coordinator: { src: servedUrl(coordinator.entry), imports: coordinator.imports.map(servedUrl) },
     application,
     templateHostRuntime,
   };

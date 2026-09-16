@@ -225,15 +225,66 @@ and boundaries before or after a `<for>` are valid.
 
 ### Separate coordinator and application assets
 
-Use `esbuildStreaming()` from `@microsoft/webui/streaming.js` to load the
-coordinator without loading your application entry in `<head>`:
+Streaming does not require a particular bundler. The browser entry
+`@microsoft/webui-framework/streaming.js` installs the coordinator independently
+of your application. To load only that work in `<head>`, configure your
+bundler to:
+
+- Emit the streaming entry separately from application startup, preserving its
+  initialization side effect.
+- Share framework modules between the entries rather than bundling duplicate
+  registries or lifecycle state.
+- Identify the coordinator output and its static dependencies through the
+  bundler's entry metadata, not generated filenames. Keep application code and
+  dynamic hydration imports out of its early preload list.
+
+Use your existing asset handoff to map those outputs to deployed URLs. WebUI
+does not require a separate streaming manifest, runtime asset-graph lookup, or
+a universal bundler adapter. Other bundlers can follow this same contract;
+the optional esbuild integration below implements it for esbuild.
+
+Render the resolved URLs in your page:
+
+```html
+<head>
+  <for each="href in streamingImports">
+    <link rel="modulepreload" href="{{href}}">
+  </for>
+  <script type="module" async src="{{streamingUrl}}"></script>
+</head>
+<body>
+  <ntp-page></ntp-page>
+  <script type="module" src="{{applicationUrl}}" fetchpriority="low"></script>
+</body>
+```
+
+The coordinator must execute while the document is still parsing, so use
+`type="module" async` for its head script. A module without `async` waits for
+parsing to finish. The mode marker keeps streamed roots deferred and prevents
+premature completion if the application arrives first.
+
+Do not globally inject the coordinator into every module. Load its entry
+explicitly instead. Do not preload deferred application chunks; authored
+`fetchpriority="low"` modules are excluded from WebUI's automatic modulepreload
+hints. Footer placement alone does not disable those hints.
+
+Delaying every component definition also delays interactivity and keeps pending
+state alive longer. Load registrations needed for early-interactive boundaries
+when needed, and defer unrelated application startup. Compiler-owned scriptless
+hosts can load framework support on demand without importing your application.
+
+#### Optional esbuild integration
+
+`esbuildStreaming()` adds the coordinator to your existing ESM code-splitting
+build. After each successful build or rebuild, `getStreamingAsset(result)`
+checks the emitted dependency graph and returns its output identities:
 
 ```js
 import { build } from 'esbuild';
-import { esbuildStreaming } from '@microsoft/webui/streaming.js';
+import { esbuildStreaming, getStreamingAsset } from '@microsoft/webui/streaming.js';
 import { esbuildProjection } from '@microsoft/webui/projection.js';
 
-await build({
+const result = await build({
   entryPoints: { application: 'src/index.ts' },
   outdir: 'dist',
   publicPath: '/assets',
@@ -242,67 +293,28 @@ await build({
   format: 'esm',
   splitting: true,
   platform: 'browser',
-  plugins: [esbuildProjection(), esbuildStreaming()],
+  plugins: [esbuildStreaming(), esbuildProjection()],
 });
+
+const streaming = getStreamingAsset(result);
+// streaming.entry: coordinator key in result.metafile.outputs
+// streaming.imports: static dependency keys, in preload order
 ```
 
-Place `esbuildStreaming()` last in the plugin list so earlier build validation
-finishes before it publishes the asset manifest.
-The streaming plugin emits `dist/webui-streaming.json`. Its
-`coordinator.src` identifies the coordinator module and `coordinator.imports`
-lists only its required static framework chunks, in preload order. Read these
-fields instead of matching generated filenames. `publicPath` applies to these
-URLs; without it, they are relative to the output-directory mount. A nonempty
-public path must be HTTP(S) or root-relative, without a query or fragment.
-There are no plugin-specific options. With `write: false`, the manifest is returned in esbuild's
-`outputFiles` instead of being written to disk. The adapter rejects external
-runtime imports, mixed framework copies, preserved symlinks, JavaScript
-banners/footers, and global `inject` files. Use explicit application imports
-instead of global code injection.
+These are exact metafile keys, including hashed filenames, **not URLs**.
+Apply the same output-to-URL mapping used for application assets, consistent
+with esbuild's `publicPath`, and include them in your existing deployment
+handoff if one is needed. Inspect the result before publishing assets.
+The adapter emits no JSON and performs no filesystem reads or writes.
 
-Pass the coordinator descriptor and your application asset URL to your HTML
-renderer. For example, a WebUI entry can use:
+The two plugins may appear in either order. `getStreamingAsset()` works with
+disk, `write: false`, and `context.rebuild()` results. The adapter requires
+bundled browser ESM, splitting, and `outdir`; it rejects global `inject` and
+`preserveSymlinks`. Comment-only license banners are supported; application
+startup belongs in the application entry, not in a banner or footer.
 
-```html
-<head>
-  <for each="href in streaming.imports">
-    <link rel="modulepreload" href="{{href}}">
-  </for>
-  <script type="module" async src="{{streaming.src}}"></script>
-</head>
-<body>
-  <ntp-page></ntp-page>
-  <script type="module" src="{{applicationSrc}}" fetchpriority="low"></script>
-</body>
-```
-
-Here `streaming` is the manifest's `coordinator` object and `applicationSrc`
-comes from your application build's output mapping. Load the manifest once
-when preparing the host's asset configuration, not for every boundary.
-Continue passing `webui-projection.json` to the WebUI build for state
-projection; the streaming asset manifest does not replace it.
-
-The server's mode marker keeps definitions deferred and prevents premature
-hydration completion if the application module loads first. An explicit
-application import of
-`@microsoft/webui-framework/streaming.js` is not required with this plugin.
-Keep the entries in the same code-splitting build: required framework chunks
-are shared, not independently rebundled. The early dependency graph excludes
-application code and does not preload the hydration engine. Compiler-owned
-scriptless hosts can request framework support when needed without importing
-your application.
-
-The coordinator must execute while the document is still parsing, so use
-`type="module" async` for its head script. A module without `async` waits for
-document parsing to finish. Do not preload deferred application chunks.
-WebUI also excludes authored `fetchpriority="low"` module scripts from its
-automatic modulepreload hints; moving a script to the footer alone does not
-disable those hints.
-
-Delaying all component definitions also delays interactivity and keeps their
-pending state alive longer. Load the small set of registrations needed by
-early-interactive boundaries when needed, and defer unrelated startup work.
-Boundary processing does not require all application components to be defined.
+State projection is separate: continue passing `webui-projection.json` from
+`esbuildProjection()` to the WebUI build when using that integration.
 
 ### Timing and lifecycle
 

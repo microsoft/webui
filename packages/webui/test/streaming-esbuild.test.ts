@@ -8,8 +8,7 @@ import * as path from "node:path";
 import { gzipSync } from "node:zlib";
 import { test, type TestContext } from "node:test";
 import * as esbuild from "esbuild";
-import { esbuildStreaming, StreamingBuildError, STREAMING_ASSETS_SCHEMA } from "@microsoft/webui/streaming.js";
-import type { StreamingAssetsManifest } from "@microsoft/webui/streaming.js";
+import { esbuildStreaming, getStreamingAsset, StreamingBuildError } from "@microsoft/webui/streaming.js";
 import { esbuildProjection } from "@microsoft/webui/projection.js";
 
 const SOURCE = path.resolve("..", "webui-framework", "src");
@@ -51,14 +50,13 @@ function options(root: string, extra: esbuild.BuildOptions = {}): esbuild.BuildO
   };
 }
 
-function descriptor(root: string, result: esbuild.BuildResult): StreamingAssetsManifest {
-  const output = result.outputFiles?.find(file => file.path === path.join(root, "dist", "webui-streaming.json"));
-  assert.ok(output);
-  return JSON.parse(output.text) as StreamingAssetsManifest;
-}
-
 function diagnostic(code: string): (error: unknown) => boolean {
   return error => {
+    if (error instanceof StreamingBuildError) {
+      assert.equal(error.code, code);
+      assert.ok(error.message.includes("help:"));
+      return true;
+    }
     assert.ok(error instanceof Error && "errors" in error);
     const failures = (error as esbuild.BuildFailure).errors;
     assert.ok(failures.some(failure =>
@@ -78,7 +76,7 @@ test("identifies hashed assets and enforces the real early-runtime footprint", a
     minify: true,
     define: { __WEBUI_DEV__: "false" },
   }));
-  const manifest = descriptor(root, result);
+  const asset = getStreamingAsset(result);
   const meta = result.metafile!;
   const entry = Object.keys(meta.outputs).find(id => meta.outputs[id]!.entryPoint === ENTRY)!;
   const early = new Set([entry]);
@@ -104,14 +102,12 @@ test("identifies hashed assets and enforces the real early-runtime footprint", a
   }
   assert.ok(bytes <= 32 * 1024, `${bytes} initial bytes exceed the 32 KiB budget`);
   assert.ok(compressed <= 11 * 1024, `${compressed} gzip bytes exceed the 11 KiB budget`);
-  assert.equal(manifest.schema, STREAMING_ASSETS_SCHEMA);
-  assert.equal(manifest.coordinator.src, "https://cdn.example.test/assets/" + path.relative(path.join(root, "dist"), path.resolve(root, entry)).split(path.sep).join("/"));
-  assert.equal(manifest.coordinator.type, "module");
-  assert.equal(manifest.coordinator.async, true);
+  assert.equal(asset.entry, entry, "return the output key, not a guessed URL");
   const expected = [...early].filter(id => id !== entry).sort((a, b) =>
     meta.outputs[b]!.bytes - meta.outputs[a]!.bytes || Buffer.compare(Buffer.from(a), Buffer.from(b))
-  ).map(id => "https://cdn.example.test/assets/" + path.relative(path.join(root, "dist"), path.resolve(root, id)).split(path.sep).join("/"));
-  assert.deepEqual(manifest.coordinator.imports, expected);
+  );
+  assert.deepEqual(asset.imports, expected);
+  assert.equal(result.outputFiles!.some(file => file.path.endsWith(".json")), false);
   for (const module of ["lifecycle.ts", "template-registry.ts", "style-catalog.ts"]) {
     const owners = Object.values(meta.outputs).filter(output =>
       Object.entries(output.inputs).some(([id, data]) => path.basename(id) === module && data.bytesInOutput > 0)
@@ -129,27 +125,27 @@ test("rebuilds deterministic descriptors without retaining obsolete application 
     await writeFile(path.join(root, "app.ts"), "export const changedApplication = true;");
     const second = await context.rebuild();
     const third = await context.rebuild();
-    assert.deepEqual(descriptor(root, second), descriptor(root, third));
+    assert.deepEqual(getStreamingAsset(second), getStreamingAsset(third));
     assert.notDeepEqual(Object.keys(first.metafile!.outputs), Object.keys(second.metafile!.outputs));
   } finally {
     await context.dispose();
   }
 });
 
-test("coexists with projection and preserves the last disk manifest on build failure", async t => {
+test("coexists with projection in either plugin order without another disk artifact", async t => {
   const root = await fixture(t);
-  const settings = options(root, {
-    write: true,
-    plugins: [esbuildProjection(), esbuildStreaming()],
-  });
-  await esbuild.build(settings);
-  const filename = path.join(root, "dist", "webui-streaming.json");
-  const previous = await readFile(filename, "utf8");
-  assert.equal(JSON.parse(previous).schema, STREAMING_ASSETS_SCHEMA);
-  await access(path.join(root, "dist", "webui-projection.json"));
+  for (const plugins of [
+    [esbuildStreaming(), esbuildProjection()],
+    [esbuildProjection(), esbuildStreaming()],
+  ]) {
+    const result = await esbuild.build(options(root, { write: true, plugins }));
+    const asset = getStreamingAsset(result);
+    assert.ok((await readFile(path.resolve(root, asset.entry))).length > 0);
+    await access(path.join(root, "dist", "webui-projection.json"));
+    await assert.rejects(access(path.join(root, "dist", "webui-streaming.json")));
+  }
   await writeFile(path.join(root, "app.ts"), "export const broken = ;");
-  await assert.rejects(esbuild.build(settings));
-  assert.equal(await readFile(filename, "utf8"), previous);
+  await assert.rejects(esbuild.build(options(root)));
 });
 
 test("rejects configurations that introduce global code or duplicate module identities", async t => {
@@ -158,9 +154,8 @@ test("rejects configurations that introduce global code or duplicate module iden
     { format: "iife" as const },
     { splitting: false },
     { inject: [ENTRY] },
-    { banner: { js: "console.log('application')" } },
     { preserveSymlinks: true },
-    { plugins: [esbuildStreaming(), { name: "later", setup() {} }] },
+    { plugins: [esbuildStreaming(), esbuildStreaming()] },
   ]) {
     await assert.rejects(esbuild.build(options(root, extra)), diagnostic("STREAM-B001"));
   }
@@ -171,39 +166,107 @@ test("rejects external runtimes, wrong framework aliases and contaminated early 
   await assert.rejects(esbuild.build(options(root, {
     external: [path.join(SOURCE, "streaming-entry.ts")],
   })), diagnostic("STREAM-B002"));
-  await assert.rejects(esbuild.build(options(root, {
+  const aliased = await esbuild.build(options(root, {
     alias: {
       "@microsoft/webui-framework": path.join(SOURCE, "index.ts"),
       [RUNTIME]: path.join(root, "app.ts"),
     },
-  })), diagnostic("STREAM-B003"));
-  await assert.rejects(esbuild.build(options(root, {
+  }));
+  assert.throws(() => getStreamingAsset(aliased), diagnostic("STREAM-B003"));
+  const contaminated = await esbuild.build(options(root, {
     plugins: [{
       name: "contaminated-runtime",
       setup(build) {
         build.onLoad({ filter: /streaming-entry\.ts$/ }, () => ({
-          contents: `import ${JSON.stringify(path.join(root, "app.ts"))};`,
+          contents: `import ${JSON.stringify(path.join(root, "app.ts"))}; console.log('altered-runtime');`,
           loader: "ts",
           resolveDir: SOURCE,
         }));
       },
     }, esbuildStreaming()],
-  })), diagnostic("STREAM-B003"));
+  }));
+  assert.throws(() => getStreamingAsset(contaminated), diagnostic("STREAM-B003"));
 });
 
-test("does not overwrite a generated asset with the manifest", async t => {
+test("preserves required initialization when delegated resolution marks it side-effect-free", async t => {
   const root = await fixture(t);
-  await assert.rejects(esbuild.build(options(root, {
-    outExtension: { ".js": ".json" },
-  })), diagnostic("STREAM-B004"));
+  const result = await esbuild.build(options(root, {
+    minify: true,
+    define: { __WEBUI_DEV__: "false" },
+    plugins: [
+      esbuildStreaming(),
+      {
+        name: "side-effect-free-resolution",
+        setup(build) {
+          build.onResolve({ filter: /^@microsoft\/webui-framework\/streaming\.js$/ }, () => ({
+            path: path.join(SOURCE, "streaming-entry.ts"), sideEffects: false,
+          }));
+        },
+      },
+    ],
+  }));
+  const asset = getStreamingAsset(result);
+  assert.ok([asset.entry, ...asset.imports].some(id =>
+    Object.entries(result.metafile!.outputs[id]!.inputs).some(([input, value]) =>
+      input.endsWith("/streaming-entry.ts") && value.bytesInOutput > 0
+    )
+  ));
 });
 
-test("validates asset delivery paths and exposes structured build errors", async t => {
+test("rejects a successful build whose coordinator initialization was removed by another plugin", async t => {
   const root = await fixture(t);
-  await assert.rejects(esbuild.build(options(root, { publicPath: "/assets?query" })), diagnostic("STREAM-B005"));
-  await mkdir(path.join(root, "dist", "webui-streaming.json"), { recursive: true });
-  await assert.rejects(esbuild.build(options(root, { write: true })), diagnostic("STREAM-B006"));
+  const result = await esbuild.build(options(root, {
+    plugins: [{
+      name: "eliminated-entry",
+      setup(build) {
+        build.onResolve({ filter: /^@microsoft\/webui-framework\/streaming\.js$/ }, () => ({
+          path: path.join(SOURCE, "streaming-entry.ts"), sideEffects: false,
+        }));
+      },
+    }, esbuildStreaming()],
+  }));
+  assert.throws(() => getStreamingAsset(result), diagnostic("STREAM-B002"));
+});
+
+test("supports ordinary license banners and host-owned deployment mapping", async t => {
+  const root = await fixture(t);
+  const result = await esbuild.build(options(root, {
+    publicPath: "https://cdn.example.test/site/v2",
+    banner: { js: "/* Application license */" },
+    footer: { js: "// end of bundle" },
+    entryNames: "entry space/[name]-[hash]",
+    chunkNames: "chunk space/[name]-[hash]",
+  }));
+  const asset = getStreamingAsset(result);
+  assert.ok(asset.entry.startsWith("dist/entry space/"));
+  for (const id of [asset.entry, ...asset.imports]) {
+    assert.ok(result.metafile!.outputs[id]);
+    assert.ok(result.outputFiles!.find(file => file.path === path.resolve(root, id))!.text
+      .includes("/* Application license */"));
+  }
   const error = new StreamingBuildError("STREAM-B001", "Invalid configuration", "Use browser ESM.");
   assert.equal(error.code, "STREAM-B001");
   assert.ok(error.message.includes("help:"));
+});
+
+test("requires a successful build before handing off coordinator output", async t => {
+  const root = await fixture(t);
+  const result = await esbuild.build(options(root));
+  assert.throws(() => getStreamingAsset({
+    ...result,
+    errors: [{ id: "", pluginName: "later-validation", text: "rejected", location: null, notes: [], detail: undefined }],
+  }), diagnostic("STREAM-B002"));
+  assert.throws(() => getStreamingAsset({ ...result, metafile: undefined }), diagnostic("STREAM-B002"));
+});
+
+test("the public browser entry can be bundled directly without the optional adapter", async t => {
+  const root = await fixture(t);
+  const result = await esbuild.build(options(root, {
+    entryPoints: { coordinator: RUNTIME, app: "app.ts" },
+    plugins: [],
+  }));
+  assert.ok(Object.values(result.metafile!.outputs).some(output =>
+    output.entryPoint?.endsWith("/streaming-entry.ts") && output.bytes > 0
+  ));
+  assert.equal(result.outputFiles!.some(file => file.path.endsWith(".json")), false);
 });

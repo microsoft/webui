@@ -314,10 +314,10 @@ exactly one manifest entry. Build external component bundles separately and
 repeat the flag for each fragment. See
 [Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
-For progressive pages, the browser build can also use
-[`esbuildStreaming()`](/guide/concepts/hydration#separate-coordinator-and-application-assets)
-to emit a coordinator asset descriptor. That descriptor configures the host's
-script delivery; it is not a `--projection-manifest` input. Authored module
+For progressive pages, use the
+[bundler-independent coordinator delivery contract](/guide/concepts/hydration#separate-coordinator-and-application-assets)
+to keep application startup separate. The host's existing asset handoff owns
+script URLs; there is no additional streaming manifest input. Authored module
 scripts with `fetchpriority="low"` are excluded from automatic modulepreload
 hints so deferred application code does not get promoted into the head.
 

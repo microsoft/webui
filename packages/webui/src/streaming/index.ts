@@ -1,44 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
 import * as path from "node:path";
-import type { BuildOptions, BuildResult, Metafile, Plugin } from "esbuild";
-import { writeAtomic } from "../projection/atomic-write.js";
+import type { BuildOptions, BuildResult, Plugin } from "esbuild";
+import { outputImportClosure } from "../projection/adapters/esbuild-graph.js";
 
-/** Host-facing asset descriptor version, independent of the streaming wire format. */
-export const STREAMING_ASSETS_SCHEMA = "webui.streaming-assets/v1";
-
-/** Coordinator module and its ordered static framework dependencies. */
-export interface StreamingCoordinatorAsset {
-  /** Served module URL, relative to the output mount without publicPath. */
-  readonly src: string;
-  readonly type: "module";
-  readonly async: true;
-  /** Static framework dependency URLs in largest-first preload order. */
+/** Esbuild output identities, not served URLs or a deployment manifest. */
+export interface StreamingAsset {
+  /** Coordinator key in result.metafile.outputs. */
+  readonly entry: string;
+  /** Other static output keys in largest-first preload order. */
   readonly imports: readonly string[];
 }
 
-/** Emitted as <outdir>/webui-streaming.json after a successful build. */
-export interface StreamingAssetsManifest {
-  readonly schema: typeof STREAMING_ASSETS_SCHEMA;
-  readonly coordinator: StreamingCoordinatorAsset;
-}
+/** Unsupported configuration, missing coordinator, or invalid dependency isolation. */
+export type StreamingBuildDiagnosticCode = "STREAM-B001" | "STREAM-B002" | "STREAM-B003";
 
-/** Stable build diagnostic categories: configuration, dependency, isolation, collision, URL, I/O. */
-export type StreamingBuildDiagnosticCode =
-  | "STREAM-B001" | "STREAM-B002" | "STREAM-B003"
-  | "STREAM-B004" | "STREAM-B005" | "STREAM-B006";
-
-/** Recoverable, actionable error exposed through esbuild's errors[].detail/id. */
+/** Recoverable error from streaming build setup or output inspection. */
 export class StreamingBuildError extends Error {
-  /** Describe a failed build and the corrective action without terminal styling. */
-  constructor(
-    readonly code: StreamingBuildDiagnosticCode,
-    message: string,
-    help: string
-  ) {
+  /** Describe a failed integration and its corrective action without terminal styling. */
+  constructor(readonly code: StreamingBuildDiagnosticCode, message: string, help: string) {
     super(`${code}: ${message}\nhelp: ${help}`);
     this.name = "StreamingBuildError";
   }
@@ -48,15 +29,13 @@ const NAME = "webui-streaming-assets";
 const ENTRY = "webui-streaming:coordinator";
 const FRAMEWORK = "@microsoft/webui-framework";
 const RUNTIME = `${FRAMEWORK}/streaming.js`;
-const MANIFEST = "webui-streaming.json";
 
 /**
- * Emit an independent coordinator in the application's one code-splitting build.
+ * Optional esbuild adapter for the bundler-independent streaming entry.
  *
- * Place last, after esbuildProjection() if used. Requires bundled browser ESM
- * with outdir; global injection, JS banners/footers and preserved symlinks are
- * unsupported because they defeat isolation or shared module identity.
- * All delivery/naming options come from esbuild; there is no second build.
+ * Adds one coordinator entry in the application's bundled browser ESM graph.
+ * After a successful build/rebuild, call getStreamingAsset(result) before
+ * publishing assets. No files, URLs, or manifest formats are added by the adapter.
  */
 export function esbuildStreaming(): Plugin {
   return {
@@ -65,9 +44,6 @@ export function esbuildStreaming(): Plugin {
       const options = build.initialOptions;
       validateOptions(options);
       const working = path.resolve(options.absWorkingDir ?? process.cwd());
-      const outdir = path.resolve(working, options.outdir!);
-      const publicPath = options.publicPath ?? "";
-      validatePublicPath(publicPath);
       const entries = options.entryPoints ?? [];
       const normalized = Array.isArray(entries)
         ? entries.filter(entry => (typeof entry === "string" ? entry : entry.in) !== ENTRY)
@@ -80,60 +56,55 @@ export function esbuildStreaming(): Plugin {
       build.onLoad({ filter: /^coordinator$/, namespace: "webui-streaming" }, () => ({
         contents: `import ${JSON.stringify(RUNTIME)};`, loader: "js", resolveDir: working,
       }));
-      build.onEnd(async result => {
-        if (result.errors.length) return;
-        try {
-          await publish(result, { working, outdir, publicPath, write: options.write !== false });
-        } catch (error: unknown) {
-          const failure = error instanceof StreamingBuildError ? error : new StreamingBuildError(
-            "STREAM-B006",
-            error instanceof Error ? error.message : String(error),
-            "Check the framework package and output directory are readable/writable."
-          );
-          return { errors: [{ id: failure.code, text: failure.message, detail: failure }] };
+      build.onResolve(
+        { filter: /^@microsoft\/webui-framework\/streaming\.js$/, namespace: "webui-streaming" },
+        async args => {
+          const resolved = await build.resolve(args.path, {
+            kind: "import-statement", resolveDir: working,
+          });
+          if (resolved.errors.length) return resolved;
+          if (resolved.external || resolved.namespace !== "file" || resolved.suffix) {
+            throw new StreamingBuildError("STREAM-B002", "coordinator must be bundled with its module identity intact",
+              `Resolve ${RUNTIME} to a physical framework module without externalization or URL suffixes.`);
+          }
+          // Initialization is required, even if a resolver marks modules side-effect-free.
+          return { ...resolved, sideEffects: true };
         }
-      });
+      );
     },
   };
 }
 
-function validateOptions(options: BuildOptions): void {
-  if (
-    !options.bundle || options.format !== "esm" || !options.splitting ||
-    !options.outdir || options.outfile || (options.platform && options.platform !== "browser") ||
-    options.inject?.length || options.banner?.js || options.footer?.js || options.preserveSymlinks
-  ) {
-    throw new StreamingBuildError("STREAM-B001", "unsupported streaming build configuration",
-      'Use bundle:true, format:"esm", splitting:true and outdir. Import application code explicitly, without global inject/banner/footer or preserveSymlinks.');
-  }
-  const plugins = options.plugins ?? [];
-  if (plugins.at(-1)?.name !== NAME || plugins.filter(plugin => plugin.name === NAME).length !== 1) {
-    throw new StreamingBuildError("STREAM-B001", "streaming plugin must appear once, last",
-      "Place esbuildStreaming() after other plugins so failed validation never publishes assets.");
-  }
-}
-
-interface OutputContext {
-  working: string;
-  outdir: string;
-  publicPath: string;
-  write: boolean;
-}
-
-async function publish(result: BuildResult, context: OutputContext): Promise<void> {
+/**
+ * Inspect a successful esbuild result and identify its isolated coordinator.
+ *
+ * Returns exact metafile output keys, including hashed names. The host maps
+ * these keys to its deployed URLs and may store them in its existing asset
+ * manifest. Works with disk, in-memory and context.rebuild() results.
+ */
+export function getStreamingAsset(result: BuildResult): StreamingAsset {
   const meta = result.metafile;
-  const coordinator = meta && Object.keys(meta.outputs).find(id => meta.outputs[id]!.entryPoint === ENTRY);
+  const entry = meta && Object.keys(meta.outputs).find(id => meta.outputs[id]!.entryPoint === ENTRY);
   const runtime = meta?.inputs[ENTRY]?.imports.find(edge => (edge.original ?? edge.path) === RUNTIME);
-  if (!meta || !coordinator || !runtime || runtime.external) {
-    throw new StreamingBuildError("STREAM-B002", "missing bundled coordinator",
-      `Bundle ${RUNTIME}; do not externalize or replace its virtual entry.`);
+  if (result.errors.length || !meta || !entry || !runtime || runtime.external) {
+    throw new StreamingBuildError("STREAM-B002", "no successful coordinator output",
+      "Use esbuildStreaming() and inspect the result only after all build plugins have succeeded.");
   }
-  const implementation = path.dirname(path.resolve(context.working, runtime.path));
-  await requireFrameworkPackage(implementation);
-  const reached = closure(meta, coordinator, true);
-  for (const output of reached) {
-    for (const [input, contribution] of Object.entries(meta.outputs[output]!.inputs)) {
-      if (input !== ENTRY && contribution.bytesInOutput && !within(implementation, path.resolve(context.working, input))) {
+  const imports = outputImportClosure(meta, entry);
+  const staticOutputs = [entry, ...imports];
+  if (!staticOutputs.some(id => (meta.outputs[id]?.inputs[runtime.path]?.bytesInOutput ?? 0) > 0)) {
+    throw new StreamingBuildError("STREAM-B002", "coordinator initialization was eliminated",
+      "Preserve the streaming entry's initialization when applying loaders or tree shaking.");
+  }
+  const implementation = path.posix.dirname(runtime.path);
+  for (const id of [entry, ...outputImportClosure(meta, entry, true)]) {
+    const output = meta.outputs[id];
+    if (!output || output.cssBundle || output.imports.some(edge => edge.external)) {
+      throw new StreamingBuildError("STREAM-B003", "coordinator has an unbundled dependency",
+        "Keep the coordinator and its deferred framework support in the same browser JavaScript build.");
+    }
+    for (const [input, contribution] of Object.entries(output.inputs)) {
+      if (input !== ENTRY && contribution.bytesInOutput && !within(implementation, input)) {
         throw new StreamingBuildError("STREAM-B003", "application code entered the coordinator graph",
           "Keep application imports out of the coordinator and its deferred framework dependencies.");
       }
@@ -143,122 +114,31 @@ async function publish(result: BuildResult, context: OutputContext): Promise<voi
     for (const edge of input.imports) {
       const specifier = edge.original ?? edge.path;
       if (specifier !== FRAMEWORK && !specifier.startsWith(`${FRAMEWORK}/`)) continue;
-      if (edge.external || !within(implementation, path.resolve(context.working, edge.path))) {
+      if (edge.external || !within(implementation, edge.path)) {
         throw new StreamingBuildError("STREAM-B003", "framework imports have different module identities",
           "Resolve application and coordinator imports to one bundled framework source tree.");
       }
     }
   }
-  const dependencies = [...closure(meta, coordinator, false)].filter(id => id !== coordinator);
-  dependencies.sort((a, b) => meta.outputs[b]!.bytes - meta.outputs[a]!.bytes ||
-    Buffer.compare(Buffer.from(a), Buffer.from(b)));
-  const manifest: StreamingAssetsManifest = {
-    schema: STREAMING_ASSETS_SCHEMA,
-    coordinator: {
-      src: servedUrl(coordinator, context), type: "module", async: true,
-      imports: dependencies.map(id => servedUrl(id, context)),
-    },
-  };
-  const filename = path.join(context.outdir, MANIFEST);
-  let physicalOutdir = context.outdir;
-  try { physicalOutdir = await realpath(context.outdir); }
-  catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const physicalManifest = key(path.join(physicalOutdir, MANIFEST));
-  for (const id of [...Object.keys(meta.inputs), ...Object.keys(meta.outputs)]) {
-    const candidate = key(path.resolve(context.working, id));
-    if (candidate === key(filename) || candidate === physicalManifest) {
-      throw new StreamingBuildError("STREAM-B004", "streaming manifest collides with a build input/output",
-        `Reserve ${MANIFEST} for the streaming descriptor.`);
-    }
-  }
-  const text = JSON.stringify(manifest);
-  if (context.write) await writeAtomic(filename, text);
-  else {
-    if (!result.outputFiles) throw new Error("esbuild omitted outputFiles for write:false");
-    const contents = Buffer.from(text);
-    result.outputFiles.push({
-      path: filename, contents, hash: createHash("sha256").update(contents).digest("hex"),
-      get text() {
-        return Buffer.from(this.contents.buffer, this.contents.byteOffset, this.contents.byteLength).toString("utf8");
-      },
-    });
-  }
+  return { entry, imports };
 }
 
-function closure(meta: Metafile, entry: string, dynamic: boolean): Set<string> {
-  const outputs = new Set([entry]);
-  for (const id of outputs) {
-    const output = meta.outputs[id];
-    if (!output || output.cssBundle) throw new StreamingBuildError("STREAM-B003", "invalid coordinator output graph",
-      "Keep coordinator dependencies in browser JavaScript modules.");
-    for (const edge of output.imports) {
-      if (!dynamic && edge.kind !== "import-statement") continue;
-      if (edge.external) throw new StreamingBuildError("STREAM-B002", "external coordinator dependency",
-        "Bundle the coordinator and its deferred framework dependencies in the same build.");
-      outputs.add(edge.path);
-    }
+function validateOptions(options: BuildOptions): void {
+  if (
+    !options.bundle || options.format !== "esm" || !options.splitting ||
+    !options.outdir || options.outfile || (options.platform && options.platform !== "browser") ||
+    options.inject?.length || options.preserveSymlinks
+  ) {
+    throw new StreamingBuildError("STREAM-B001", "unsupported streaming build configuration",
+      'Use bundle:true, format:"esm", splitting:true and outdir, without global inject or preserveSymlinks.');
   }
-  return outputs;
-}
-
-async function requireFrameworkPackage(directory: string): Promise<void> {
-  let current = directory;
-  while (true) {
-    try {
-      const owner: { name?: unknown } = JSON.parse(await readFile(path.join(current, "package.json"), "utf8"));
-      if (owner.name === FRAMEWORK) return;
-      break;
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = path.dirname(current);
-      if (parent === current) break;
-      current = parent;
-    }
+  if (options.plugins?.filter(plugin => plugin.name === NAME).length !== 1) {
+    throw new StreamingBuildError("STREAM-B001", "streaming plugin must appear once",
+      "Add one esbuildStreaming() instance to this build.");
   }
-  throw new StreamingBuildError("STREAM-B003", "streaming entry is not owned by the framework",
-    `Resolve ${RUNTIME} to the installed framework or its actual source.`);
 }
 
 function within(root: string, file: string): boolean {
-  const relative = path.relative(root, file);
-  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
-
-function key(file: string): string {
-  return process.platform === "win32" ? file.toLowerCase() : file;
-}
-
-function validatePublicPath(value: string): void {
-  if (!value) return;
-  let url: URL;
-  try {
-    url = new URL(value, "https://webui.invalid");
-  } catch {
-    throw new StreamingBuildError("STREAM-B005", "invalid publicPath",
-      "Use a root-relative or HTTP(S) asset base.");
-  }
-  if (
-    (!value.startsWith("/") && !value.startsWith("https://") && !value.startsWith("http://")) ||
-    value.includes("?") || value.includes("#") || value.includes("\\") ||
-    url.username || url.password || (url.protocol !== "http:" && url.protocol !== "https:")
-  ) throw new StreamingBuildError("STREAM-B005", "invalid publicPath",
-    "Use a root-relative or HTTP(S) asset base without credentials, query or fragment.");
-}
-
-function servedUrl(id: string, context: OutputContext): string {
-  const file = path.resolve(context.working, id);
-  const relative = path.relative(context.outdir, file);
-  const segments = relative.split(path.sep);
-  if (!within(context.outdir, file) || !relative || segments.some(segment =>
-    segment.includes("%") || segment.includes("?") || segment.includes("#") || segment.includes("\\")
-  )) {
-    throw new StreamingBuildError("STREAM-B005", "invalid emitted asset path",
-      "Keep outputs within outdir without URL delimiters in filenames.");
-  }
-  const suffix = segments.map(encodeURIComponent).join("/");
-  return context.publicPath
-    ? `${context.publicPath}${context.publicPath.endsWith("/") ? "" : "/"}${suffix}`
-    : suffix;
+  const relative = path.posix.relative(root, file);
+  return relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
 }
