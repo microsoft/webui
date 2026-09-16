@@ -551,7 +551,9 @@ impl ContinuationVm {
                     handler.process_attribute(
                         attribute,
                         prepared.and_then(|prepared| prepared.target(index)),
-                        prepared.and_then(|prepared| prepared.component_attr_name(index)),
+                        prepared
+                            .map(|prepared| prepared.attribute_binding(index))
+                            .unwrap_or_default(),
                         context,
                     )?;
                 }

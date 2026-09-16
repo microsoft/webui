@@ -7,7 +7,7 @@
 /// Per-component metadata keyed by tag name.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ComponentData {
     /// Non-WebUI client-side template payload.
     /// FAST plugins store complete <f-template> HTML here.
@@ -62,6 +62,23 @@ pub struct ComponentData {
     /// Compiler-owned client work policy. Zero/eager is absent on the wire.
     #[prost(enumeration = "ComponentWorkPolicy", tag = "11")]
     pub work_policy: i32,
+    /// Declared inbound attributes, shared by every instance of this component.
+    #[prost(map = "string, message", tag = "12")]
+    pub attribute_bindings: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ComponentAttributeBinding,
+    >,
+}
+/// One declared inbound attribute of a component.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ComponentAttributeBinding {
+    /// Exact JavaScript property receiving this HTML attribute.
+    #[prost(string, tag = "1")]
+    pub property: ::prost::alloc::string::String,
+    /// Whether the declaration uses boolean presence rather than string mode.
+    #[prost(bool, tag = "2")]
+    pub boolean: bool,
 }
 /// Link stylesheet metadata for one static component asset root.
 ///
@@ -384,10 +401,10 @@ pub struct WebUiFragmentAttribute {
     /// True for :-prefixed complex attributes.
     #[prost(bool, tag = "4")]
     pub complex: bool,
-    /// True for the first collected or skipped attribute on a component element.
+    /// True for the first dynamic attribute on a component element.
     #[prost(bool, tag = "5")]
     pub attr_start: bool,
-    /// True for host-only attributes (class, style, role, data-*) unless projected.
+    /// True for skipped attributes (class, style, role, data-*, aria-*).
     #[prost(bool, tag = "6")]
     pub attr_skip: bool,
     /// True for static attribute values on components.
@@ -396,13 +413,6 @@ pub struct WebUiFragmentAttribute {
     /// For ?-prefixed boolean attributes, the condition tree.
     #[prost(message, optional, tag = "8")]
     pub condition_tree: ::core::option::Option<ConditionExpr>,
-    /// Exact projected component property name; empty uses canonical HTML mapping.
-    #[prost(string, tag = "9")]
-    pub property: ::prost::alloc::string::String,
-    /// Declared boolean-mode attribute presence supplies true to component state.
-    /// Conditional and direct property bindings retain their typed values.
-    #[prost(bool, tag = "10")]
-    pub boolean: bool,
 }
 /// A condition expression tree.
 #[derive(serde::Serialize, serde::Deserialize)]

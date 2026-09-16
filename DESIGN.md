@@ -114,6 +114,15 @@ pub struct ComponentData {
     /// Eager, lazy hydration, lazy rendering, interaction hydration, or the
     /// combined lazy-render/interaction policy.
     pub work_policy: ComponentWorkPolicy,
+    /// Declared inbound HTML attribute names mapped to component properties.
+    pub attribute_bindings: HashMap<String, ComponentAttributeBinding>,
+}
+
+pub struct ComponentAttributeBinding {
+    /// Exact JavaScript property name.
+    pub property: String,
+    /// Boolean presence mode; false means string mode.
+    pub boolean: bool,
 }
 
 pub enum ComponentWorkPolicy {
@@ -283,18 +292,14 @@ pub struct WebUIFragmentAttribute {
     pub template: String,
     /// True for `:`-prefixed complex attributes.
     pub complex: bool,
-    /// True for the first attribute on a component element, including host-only attributes.
+    /// True for the first dynamic attribute on a component element.
     pub attr_start: bool,
-    /// True for host-only attributes (class, style, role, data-*) unless projected.
+    /// True for skipped attributes (class, style, role, data-*, aria-*).
     pub attr_skip: bool,
     /// True for static attribute values on components.
     pub raw_value: bool,
     /// For `?`-prefixed boolean attributes, the condition tree.
     pub condition_tree: Option<ConditionExpr>,
-    /// Exact projected component property; empty uses the canonical HTML mapping.
-    pub property: String,
-    /// Declared boolean-mode input; attribute presence supplies true.
-    pub boolean: bool,
 }
 ```
 
@@ -305,30 +310,24 @@ component fragment is entered. Attributes on native elements never carry
 attribute state — a native attribute cannot become a local variable of a
 later component.
 
-Bare and empty component attributes participate in the same collection window as
-nonempty literals. Static strings are decoded as HTML attribute values at build
-time and escaped once on output. Empty literals remain empty strings; parser core
-does not infer a component property's type from its HTML attribute name.
-For a declared boolean-mode input, `open`, `open=""`, and `open="false"` all supply `true`.
-Ordinary dynamic attributes also remain present regardless of their string value;
-use `?open="{{condition}}"` to make presence conditional. Conditional bindings
-store the evaluated boolean, including `false`; `:` property bindings preserve
-the resolved value without string or presence coercion.
+Static component attributes remain present when their value is empty. Bare
+component attributes are normalized to empty string literals using the existing
+`Attribute` fragment; their names do not imply a property type.
 
-ARIA attributes are ordinary component inputs, normalized using the shared name
-mapper. Class, style, role, and data attributes remain host-only unless an exact
-projection declaration claims them. Validated projection metadata overrides both
-the property name and the boolean mode, including explicit aliases that differ
-from the canonical casing. This is compiled onto each host's attribute fragments
-after template parsing, identically in native and WASM builds. No decorator
-metadata or class source is interpreted during rendering. Protocol literals use
-one decoded-text representation; there is no legacy verbatim-literal mode.
+The projection compiler records declared inbound attributes once per component.
+Native and WASM builders copy those declarations into
+`ComponentData.attribute_bindings`; `WebUIFragmentAttribute` needs no additional
+fields. At protocol load, the render index resolves each component callsite's
+attribute names and modes into its prepared plan. Renders do not look up the
+declaration map. Undeclared inputs retain ordinary attribute handling.
+This metadata is not included in client template or bootstrap scripts.
 
-Host inputs override supplied server state for that component. Missing inputs
-continue to use supplied state; JavaScript constructors and initializers are not
-executed during SSR. Attribute expressions resolve in the parent scope before
-the child's isolated scope is entered, and sibling instances do not inherit each
-other's inputs.
+Declared boolean inputs use presence, including empty values and `"false"`;
+declared string inputs retain their rendered string values. Explicit `?` and `:`
+bindings retain their typed values. Host HTML names are not rewritten to property
+names. Static attribute text is decoded at build time and escaped on output.
+Bootstrap state cannot override any effective inbound host alias. This consults
+the existing decorator registry without allocating additional alias lists.
 
 ##### Attribute Name Mapping
 
@@ -4249,11 +4248,9 @@ For each class declaration or expression that is exported or associated with a
    - If the resolved export is `attr` from `@microsoft/webui-framework`,
      record the **JavaScript property name** in both surfaces.
      `@attr({ attribute: "display-value" }) displayValue` therefore emits
-     `displayValue`: framework state addresses the property registry. Also emit
-     each effective inbound HTML attribute, JavaScript property, and mode in `attributes`, so the
-     server and client address the same property and use the same presence
-     semantics. Attribute factory options must be statically proven rather than
-     inferred from property names or executed as JavaScript.
+     `displayValue`: framework state addresses the property registry, while an
+     existing `display-value` host attribute takes precedence during SSR
+     hydration.
 3. Walk the class `extends` clause. Resolve the base class through the symbol
    graph. Collect the base class's keys recursively (iterative: push unresolved
    bases onto a stack). Stop at `WebUIElement` or any class from
@@ -4431,7 +4428,8 @@ export interface ProjectionManifest {
    *
    * Every known entry is present even when its closure is empty, which
    * preserves entry ownership for basename disambiguation. The field is absent
-   * when the adapter cannot report entry ownership.
+   * when the adapter cannot report entry ownership, so manifests produced
+   * before this field existed keep reproducing their original `buildId`.
    */
   readonly entryClosures?: Record<string, readonly string[]>;
 }
@@ -4445,9 +4443,8 @@ export interface ComponentEntry {
   readonly hydrationKeys: readonly string[];
   /** Sorted exact @observable + @attr property keys used by navigation. */
   readonly navigationKeys: readonly string[];
-  /** Exact inbound @attr declarations keyed by HTML attribute, omitted when empty. */
+  /** Exact inbound declarations keyed by HTML attribute name. */
   readonly attributes?: Readonly<Record<string, {
-    /** JavaScript property updated by this attribute. */
     readonly property: string;
     /** String (0) or boolean presence (1). */
     readonly mode: 0 | 1;
@@ -4566,33 +4563,10 @@ component(
 entryClosures(count)                    ... omitted entirely when empty
 entryClosure(entry, member-count, members...)
   ... sorted by UTF-8 entry bytes; members in their given load order
-componentAttributes(count)             ... always present, including zero
+componentAttributes(count)              ... always present, including zero
 componentAttribute(tag, attribute, property, mode)
   ... sorted by UTF-8 tag bytes, then attribute bytes
 ```
-
-Attribute declarations are covered by the build ID and validated against the
-component hydration keys. Unknown modes and invalid attribute names are rejected.
-Multiple inbound attributes may target one property with different modes.
-Projected string-mode attributes supply the rendered
-string value, while explicit conditional and direct property bindings retain
-their typed values.
-The canonical proof always includes the attribute count. Manifests must be
-produced with this proof format; earlier build IDs are not retained.
-
-The manifest describes the effective `attrByAttribute` registry, not just the
-outbound `attrByProperty` map. Inherited and stacked aliases survive a property's
-outbound remapping. For the same HTML name, later field registrations override
-earlier ones, derived class registrations override base registrations, and
-stacked decorators execute bottom-up. Host attribute source order determines
-the last input when multiple present aliases target the same property.
-
-SSR bootstrap tests every effective inbound alias before applying a fallback
-state property. Normal single-alias properties retain direct lookup; only a
-remapped or stacked multi-alias property retains an additional shared alias
-list. Subclass remapping never mutates its base class's alias list, and an alias
-that now targets another property cannot suppress the original property's
-fallback state.
 
 Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
 UTF-16 code units. The final identifier is:
@@ -4602,7 +4576,9 @@ UTF-16 code units. The final identifier is:
 ```
 
 The two `entryClosures` records are appended **only when the map is non-empty**.
-Closure member order participates in the hash on purpose: reordering
+That is what keeps a manifest written before the field existed hashing to
+exactly the value it hashed to then, which the cross-language golden vector
+below pins. Closure member order participates in the hash on purpose: reordering
 preloads measurably changes page load, so it is a real input, not noise to
 normalize away.
 

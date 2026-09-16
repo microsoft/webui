@@ -602,6 +602,30 @@ impl<'protocol> RenderFragmentList<'protocol> {
         self.attr_names
             .get(start..start + prepared.attr_len as usize)
     }
+
+    fn attribute_binding(self, index: usize) -> AttributeBinding<'protocol> {
+        AttributeBinding {
+            name: self.component_attr_name(index),
+            mode: self
+                .metadata
+                .get(index)
+                .map_or(AttributeMode::Untyped, |entry| entry.attr_mode),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum AttributeMode {
+    #[default]
+    Untyped,
+    String,
+    Boolean,
+}
+
+#[derive(Clone, Copy, Default)]
+struct AttributeBinding<'a> {
+    name: Option<&'a str>,
+    mode: AttributeMode,
 }
 
 /// Sentinel for "this fragment does not descend into another fragment list".
@@ -611,7 +635,7 @@ const NO_ATTR_NAME: u32 = u32::MAX;
 
 /// Per-fragment values hoisted out of the render loop at protocol load time.
 ///
-/// Deliberately a flat 12-byte `Copy` record with no owned allocations: a large
+/// A flat `Copy` record with no owned allocations: a large
 /// protocol keeps one contiguous arena instead of one heap block per fragment.
 #[derive(Clone, Copy)]
 struct RenderFragmentMetadata {
@@ -622,6 +646,7 @@ struct RenderFragmentMetadata {
     /// Offset into the index's shared attribute-name arena, or [`NO_ATTR_NAME`].
     attr_start: u32,
     attr_len: u32,
+    attr_mode: AttributeMode,
 }
 
 /// Build-time render plan for every fragment list in a protocol.
@@ -687,6 +712,7 @@ impl RenderFragmentIndex {
                 continue;
             };
             let mut has_routes = false;
+            let metadata_start = metadata.len();
             for fragment in &list.fragments {
                 let inner = fragment.fragment.as_ref();
                 if matches!(inner, Some(Fragment::Route(_))) {
@@ -695,34 +721,19 @@ impl RenderFragmentIndex {
                 let target = fragment_target_id(fragment)
                     .and_then(|target| slots.get(target).copied())
                     .unwrap_or(NO_RENDER_SLOT);
-                let (attr_start, attr_len) = match inner {
-                    // `attr_skip` attributes are never collected into component
-                    // props, so preparing a name for them would be pure load-time
-                    // cost for something no render ever reads.
-                    Some(Fragment::Attribute(attribute)) if !attribute.attr_skip => {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let start = attr_names.len() as u32;
-                        let before = attr_names.len();
-                        if attribute.property.is_empty() {
-                            push_component_attr_name(
-                                &mut attr_names,
-                                component_attr_source(attribute),
-                            );
-                        } else {
-                            attr_names.push_str(&attribute.property);
-                        }
-                        #[allow(clippy::cast_possible_truncation)]
-                        let len = (attr_names.len() - before) as u32;
-                        (start, len)
-                    }
-                    _ => (NO_ATTR_NAME, 0),
-                };
                 metadata.push(RenderFragmentMetadata {
                     target,
-                    attr_start,
-                    attr_len,
+                    attr_start: NO_ATTR_NAME,
+                    attr_len: 0,
+                    attr_mode: AttributeMode::Untyped,
                 });
             }
+            prepare_attribute_bindings(
+                &list.fragments,
+                &mut metadata[metadata_start..],
+                &mut attr_names,
+                &protocol.components,
+            );
             if has_routes {
                 route_presence[slot / 64] |= 1u64 << (slot % 64);
             }
@@ -756,6 +767,79 @@ impl RenderFragmentIndex {
             index: self,
             protocol,
         }
+    }
+}
+
+fn prepare_attribute_bindings(
+    fragments: &[WebUIFragment],
+    metadata: &mut [RenderFragmentMetadata],
+    names: &mut String,
+    components: &HashMap<String, webui_protocol::ComponentData>,
+) {
+    let mut start = None;
+    for (index, fragment) in fragments.iter().enumerate() {
+        match fragment.fragment.as_ref() {
+            Some(Fragment::Attribute(attribute)) if attribute.attr_start => start = Some(index),
+            Some(Fragment::Component(component)) => {
+                if let (Some(start), Some(component)) =
+                    (start.take(), components.get(&component.fragment_id))
+                {
+                    prepare_declared_attributes(
+                        &fragments[start..index],
+                        &mut metadata[start..index],
+                        names,
+                        &component.attribute_bindings,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    for (fragment, prepared) in fragments.iter().zip(metadata.iter_mut()) {
+        if let Some(Fragment::Attribute(attribute)) = fragment.fragment.as_ref() {
+            if !attribute.attr_skip && prepared.attr_start == NO_ATTR_NAME {
+                #[allow(clippy::cast_possible_truncation)]
+                let start = names.len() as u32;
+                push_component_attr_name(names, component_attr_source(attribute));
+                prepared.attr_start = start;
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    prepared.attr_len = names.len() as u32 - start;
+                }
+            }
+        }
+    }
+}
+
+fn prepare_declared_attributes(
+    fragments: &[WebUIFragment],
+    metadata: &mut [RenderFragmentMetadata],
+    names: &mut String,
+    declarations: &HashMap<String, webui_protocol::ComponentAttributeBinding>,
+) {
+    for (fragment, prepared) in fragments.iter().zip(metadata.iter_mut()) {
+        let Some(Fragment::Attribute(attribute)) = fragment.fragment.as_ref() else {
+            continue;
+        };
+        if attribute.complex {
+            continue;
+        }
+        let Some(declaration) = declarations.get(&attribute.name) else {
+            continue;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let start = names.len() as u32;
+        names.push_str(&declaration.property);
+        prepared.attr_start = start;
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            prepared.attr_len = declaration.property.len() as u32;
+        }
+        prepared.attr_mode = if declaration.boolean {
+            AttributeMode::Boolean
+        } else {
+            AttributeMode::String
+        };
     }
 }
 
@@ -1287,18 +1371,6 @@ fn push_component_attr_name(buffer: &mut String, name: &str) {
 #[inline(never)]
 fn missing_component_attr_name_error() -> HandlerError {
     HandlerError::Invariant("prepared component attribute name is missing".to_string())
-}
-
-fn component_attribute_value(value: Option<Cow<'_, Value>>, string_mode: bool) -> Value {
-    match value {
-        Some(value) if string_mode && !value.is_string() => Value::String(if value.is_null() {
-            String::new()
-        } else {
-            value.as_ref().to_string()
-        }),
-        Some(value) => value.into_owned(),
-        None => Value::String(String::new()),
-    }
 }
 
 /// Fixed-capacity [`fmt::Write`] sink used to render JSON scalars on the stack.
@@ -2359,7 +2431,7 @@ impl WebUIHandler {
                     self.process_attribute(
                         attr,
                         fragment_list.target(index),
-                        fragment_list.component_attr_name(index),
+                        fragment_list.attribute_binding(index),
                         context,
                     )?;
                 }
@@ -3749,9 +3821,12 @@ impl WebUIHandler {
         &self,
         attr: &'protocol webui_protocol::WebUIFragmentAttribute,
         template_target: Option<usize>,
-        component_name: Option<&'protocol str>,
+        binding: AttributeBinding<'protocol>,
         context: &mut WebUIProcessContext<'protocol, 'state, '_>,
     ) -> Result<()> {
+        let component_name = binding.name;
+        let collect = !attr.attr_skip || binding.mode != AttributeMode::Untyped;
+        let boolean = binding.mode == AttributeMode::Boolean;
         // Initialize component attribute accumulator on attrStart. Clearing the
         // pooled map keeps its bucket capacity instead of allocating a fresh one.
         if attr.attr_start {
@@ -3764,7 +3839,7 @@ impl WebUIHandler {
         if let Some(condition) = &attr.condition_tree {
             let condition_met = self.evaluate_condition(condition, context)?;
 
-            if context.collecting_component_attrs && !attr.attr_skip {
+            if context.collecting_component_attrs && collect {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                 context.component_borrowed_attrs.remove(name);
                 context
@@ -3779,7 +3854,7 @@ impl WebUIHandler {
             return Ok(());
         }
 
-        if attr.boolean && !attr.complex && context.collecting_component_attrs && !attr.attr_skip {
+        if boolean && context.collecting_component_attrs {
             let name = component_name.ok_or_else(missing_component_attr_name_error)?;
             context.component_borrowed_attrs.remove(name);
             context
@@ -3794,7 +3869,7 @@ impl WebUIHandler {
             let escaped = crate::html_encode::encode_safe(&raw_value);
             write_attr(context.writer, &attr.name, &escaped)?;
 
-            if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
+            if context.collecting_component_attrs && collect && !boolean {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                 context.component_borrowed_attrs.remove(name);
                 context
@@ -3808,9 +3883,12 @@ impl WebUIHandler {
         if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                let value = crate::html_encode::encode_safe(&attr.value);
-                write_attr(context.writer, &attr.name, &value)?;
-                if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
+                write_attr(
+                    context.writer,
+                    &attr.name,
+                    &crate::html_encode::encode_safe(&attr.value),
+                )?;
+                if context.collecting_component_attrs && collect && !boolean {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                     context.component_borrowed_attrs.remove(name);
                     context
@@ -3819,7 +3897,7 @@ impl WebUIHandler {
                 }
             } else if attr.complex {
                 // Complex attribute — resolve value, don't render to HTML, store as state
-                if context.collecting_component_attrs && !attr.attr_skip {
+                if context.collecting_component_attrs && collect {
                     // Streaming starts borrowed too. The continuation VM
                     // materializes these values only when the target component
                     // can actually suspend; boundary-free components finish in
@@ -3849,7 +3927,7 @@ impl WebUIHandler {
                 // As above, a boundary-bearing continuation materializes a
                 // borrowed component scope before it can escape this call.
                 let state_backed_value =
-                    if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
+                    if context.collecting_component_attrs && collect && !boolean {
                         resolve_state_backed_value(
                             &attr.value,
                             &context.loop_vars,
@@ -3860,7 +3938,7 @@ impl WebUIHandler {
                             },
                             context.state,
                         )
-                        .filter(|value| attr.property.is_empty() || value.is_string())
+                        .filter(|value| binding.mode != AttributeMode::String || value.is_string())
                     } else {
                         None
                     };
@@ -3910,7 +3988,7 @@ impl WebUIHandler {
                     }
                 }
 
-                if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
+                if context.collecting_component_attrs && collect && !boolean {
                     if let Some(borrowed) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_attrs.remove(name);
@@ -3920,7 +3998,20 @@ impl WebUIHandler {
                         context.component_borrowed_attrs.remove(name);
                         context.component_attrs.insert(
                             name.to_owned(),
-                            component_attribute_value(value, !attr.property.is_empty()),
+                            match value {
+                                Some(value)
+                                    if binding.mode == AttributeMode::String
+                                        && !value.is_string() =>
+                                {
+                                    Value::String(if value.is_null() {
+                                        String::new()
+                                    } else {
+                                        value.as_ref().to_string()
+                                    })
+                                }
+                                Some(value) => value.into_owned(),
+                                None => Value::String(String::new()),
+                            },
                         );
                     }
                 }
@@ -5860,6 +5951,139 @@ mod tests {
     }
 
     // ── Component attribute state tests ───────────────────────────────
+
+    #[test]
+    fn component_declarations_apply_without_attribute_fragment_fields() {
+        let cases = [
+            (
+                r#"<my-dialog data-expanded dialog-title="Canvas"></my-dialog>"#,
+                true,
+                "Canvas",
+            ),
+            (
+                r#"<my-dialog data-expanded="" dialog-title=""></my-dialog>"#,
+                true,
+                "",
+            ),
+            (
+                r#"<my-dialog data-expanded="false" dialog-title="Named"></my-dialog>"#,
+                true,
+                "Named",
+            ),
+            (
+                r#"<my-dialog ?data-expanded="{{closed}}" dialog-title="Closed"></my-dialog>"#,
+                false,
+                "Closed",
+            ),
+        ];
+        for (input, open, label) in cases {
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-dialog",
+                    r#"<dialog ?open="{{open}}" aria-label="{{label}}"></dialog>"#,
+                    None,
+                    true,
+                ))
+                .unwrap();
+            parser.parse("index.html", input).unwrap();
+            let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+            protocol.components.insert(
+                "my-dialog".into(),
+                webui_protocol::ComponentData {
+                    attribute_bindings: HashMap::from([
+                        (
+                            "data-expanded".into(),
+                            webui_protocol::ComponentAttributeBinding {
+                                property: "open".into(),
+                                boolean: true,
+                            },
+                        ),
+                        (
+                            "dialog-title".into(),
+                            webui_protocol::ComponentAttributeBinding {
+                                property: "label".into(),
+                                boolean: false,
+                            },
+                        ),
+                    ]),
+                    ..Default::default()
+                },
+            );
+            let protocol = WebUIProtocol::from_protobuf(&protocol.to_protobuf().unwrap()).unwrap();
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({"open": false, "closed": false, "label": "Fallback"}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            let expected = format!(
+                r#"<dialog{} aria-label="{label}"></dialog>"#,
+                if open { " open" } else { "" }
+            );
+            assert!(
+                writer.get_content().contains(&expected),
+                "{}",
+                writer.get_content()
+            );
+        }
+    }
+
+    #[test]
+    fn parser_preserves_empty_component_attributes() {
+        let cases = [
+            (
+                r#"<my-comp label="" class="" style="" role="" data-empty="" aria-label=""></my-comp>"#,
+                r#"<my-comp label="" class="" style="" role="" data-empty="" aria-label=""><span></span></my-comp>"#,
+            ),
+            (
+                "<my-comp label class style role data-empty aria-label></my-comp>",
+                r#"<my-comp label="" class="" style="" role="" data-empty="" aria-label=""><span></span></my-comp>"#,
+            ),
+            (
+                r#"<my-comp label=""></my-comp><my-comp></my-comp>"#,
+                r#"<my-comp label=""><span></span></my-comp><my-comp><span>Default</span></my-comp>"#,
+            ),
+            (
+                r#"<my-comp label="{{empty}}" ?disabled="{{disabled}}"></my-comp>"#,
+                r#"<my-comp label=""><span></span></my-comp>"#,
+            ),
+            (
+                r#"<my-comp label="Value"></my-comp>"#,
+                r#"<my-comp label="Value"><span>Value</span></my-comp>"#,
+            ),
+            (
+                r#"<input disabled aria-label="">"#,
+                r#"<input disabled aria-label="">"#,
+            ),
+        ];
+        for (input, expected) in cases {
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-comp",
+                    "<span>{{label}}</span>",
+                    None,
+                    true,
+                ))
+                .unwrap();
+            parser.parse("index.html", input).unwrap();
+            let protocol = WebUIProtocol::new(parser.into_fragment_records());
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({"label": "Default", "empty": "", "disabled": false}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            assert_eq!(writer.get_content(), expected, "{input}");
+        }
+    }
 
     #[test]
     fn test_component_attr_state_simple() {

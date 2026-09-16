@@ -49,6 +49,16 @@ message ComponentData {
   bool uses_shadow_dom = 10;
   // Compiler-owned client work policy. Zero/eager is absent on the wire.
   ComponentWorkPolicy work_policy = 11;
+  // Declared inbound attributes, shared by every instance of this component.
+  map<string, ComponentAttributeBinding> attribute_bindings = 12;
+}
+
+// One declared inbound attribute of a component.
+message ComponentAttributeBinding {
+  // Exact JavaScript property receiving this HTML attribute.
+  string property = 1;
+  // Whether the declaration uses boolean presence rather than string mode.
+  bool boolean = 2;
 }
 
 // Per-component client work scheduling policy.
@@ -323,21 +333,14 @@ message WebUIFragmentAttribute {
   string template = 3;
   // True for :-prefixed complex attributes.
   bool complex = 4;
-  // True for the first collected or skipped attribute on a component element.
+  // True for the first dynamic attribute on a component element.
   bool attr_start = 5;
-  // True for host-only attributes (class, style, role, data-*) unless projected.
+  // True for skipped attributes (class, style, role, data-*, aria-*).
   bool attr_skip = 6;
   // True for static attribute values on components.
   bool raw_value = 7;
   // For ?-prefixed boolean attributes, the condition tree.
   ConditionExpr condition_tree = 8;
-  // Exact projected component property name; empty uses canonical HTML mapping.
-  string property = 9;
-  // Declared boolean-mode attribute presence supplies true to component state.
-  // Conditional and direct property bindings retain their typed values.
-  bool boolean = 10;
-  reserved 11;
-  reserved "escape_value";
 }
 
 // A condition expression tree.

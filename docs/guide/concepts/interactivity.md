@@ -202,23 +202,6 @@ initial state metadata. If SSR already emitted the corresponding host
 attribute, that attribute is authoritative during hydration. Projected state
 fills the property only when the host attribute is absent.
 
-Inherited and stacked `@attr` aliases remain valid inputs. A fallback state value
-is applied only when none of that property's effective host aliases is present.
-If several aliases for one property are present, the last attribute in the host
-markup supplies the initial value.
-
-Projection also preserves explicit `attribute` aliases and boolean modes for SSR:
-
-```typescript
-@attr({ attribute: 'aria-describedby' }) ariaDescribedby = '';
-@attr({ attribute: 'expanded', mode: 'boolean' }) isExpanded = false;
-```
-
-Use literal options so the build can prove this mapping. Attribute presence
-includes an empty value or the text `"false"`; use a `?` binding for conditional
-presence. Provide initial server values in state JSON: SSR does not execute class
-field initializers. See [Attribute Directives](./directives/attributes).
-
 ### `@observable` - Reactive State
 
 Use `@observable` for internal state that changes over time. When an observable value changes, the framework automatically updates any template bindings that reference it.

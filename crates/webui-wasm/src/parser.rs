@@ -197,11 +197,6 @@ pub(crate) fn parse_to_protocol_with_dom(
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
     protocol.component_render_css = component_render_css;
     let projection = merge_projection_manifests(projection_manifests)?;
-    if let Some(entries) = &projection {
-        webui_protocol::projection_manifest::apply_component_attributes(&mut protocol, |tag| {
-            entries.get(tag).map(|entry| &entry.attributes)
-        });
-    }
     protocol.initial_state_strategy = if projection.is_some() {
         InitialStateStrategy::Components as i32
     } else {
@@ -237,6 +232,13 @@ pub(crate) fn parse_to_protocol_with_dom(
         component.template = artifact.template;
         component.template_json = artifact.template_json;
         component.template_functions = artifact.template_functions;
+        if let Some(entry) = manifest_entry {
+            component.attribute_bindings = entry
+                .attributes
+                .iter()
+                .map(|(name, attribute)| (name.clone(), attribute.into()))
+                .collect();
+        }
         let hydration = manifest_entry.map_or(artifact.hydration, |entry| {
             StateSurface::Keys(entry.hydration_keys.clone())
         });
@@ -396,8 +398,7 @@ mod tests {
         let files = HashMap::from([
             (
                 "index.html".to_string(),
-                r#"<html><body><my-card aria-label="From host"></my-card></body></html>"#
-                    .to_string(),
+                "<html><body><my-card></my-card></body></html>".to_string(),
             ),
             (
                 "my-card.html".to_string(),
@@ -460,13 +461,8 @@ mod tests {
         );
         assert_eq!(component.hydration_keys, ["name"]);
         assert_eq!(component.navigation_keys, ["label", "name"]);
-        assert!(protocol.fragments["index.html"].fragments.iter().any(|fragment| {
-            matches!(
-                &fragment.fragment,
-                Some(webui_protocol::web_ui_fragment::Fragment::Attribute(attribute))
-                    if attribute.property == "name" && !attribute.attr_skip && !attribute.boolean
-            )
-        }));
+        assert_eq!(component.attribute_bindings["aria-label"].property, "name");
+        assert!(!component.attribute_bindings["aria-label"].boolean);
     }
 
     #[test]
