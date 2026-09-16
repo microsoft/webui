@@ -12,6 +12,9 @@ use std::marker::PhantomData;
 use std::path::{Component, Path};
 use thiserror::Error;
 
+mod lower;
+pub use lower::lower_component_attributes;
+
 /// Stable manifest diagnostic codes shared by all hosts.
 pub mod codes {
     pub const UNSUPPORTED_SCHEMA: &str = "PROJ-M002";
@@ -133,15 +136,6 @@ pub struct ProjectionAttribute {
     pub property: String,
     /// String mode (`0`) or boolean presence mode (`1`).
     pub mode: u8,
-}
-
-impl From<&ProjectionAttribute> for crate::ComponentAttributeBinding {
-    fn from(attribute: &ProjectionAttribute) -> Self {
-        Self {
-            property: attribute.property.clone(),
-            boolean: attribute.mode == 1,
-        }
-    }
 }
 
 impl ProjectionManifest {
@@ -593,19 +587,6 @@ fn is_sorted_unique(values: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn component_binding_retains_property_and_declared_mode() {
-        for mode in [0, 1] {
-            let source = ProjectionAttribute {
-                property: "ariaLabel".into(),
-                mode,
-            };
-            let binding = crate::ComponentAttributeBinding::from(&source);
-            assert_eq!(binding.property, "ariaLabel");
-            assert_eq!(binding.boolean, mode == 1);
-        }
-    }
 
     #[test]
     fn cross_language_build_id_matches() {

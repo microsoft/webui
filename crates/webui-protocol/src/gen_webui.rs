@@ -7,7 +7,7 @@
 /// Per-component metadata keyed by tag name.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ComponentData {
     /// Non-WebUI client-side template payload.
     /// FAST plugins store complete <f-template> HTML here.
@@ -62,23 +62,6 @@ pub struct ComponentData {
     /// Compiler-owned client work policy. Zero/eager is absent on the wire.
     #[prost(enumeration = "ComponentWorkPolicy", tag = "11")]
     pub work_policy: i32,
-    /// Declared inbound attributes, shared by every instance of this component.
-    #[prost(map = "string, message", tag = "12")]
-    pub attribute_bindings: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ComponentAttributeBinding,
-    >,
-}
-/// One declared inbound attribute of a component.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ComponentAttributeBinding {
-    /// Exact JavaScript property receiving this HTML attribute.
-    #[prost(string, tag = "1")]
-    pub property: ::prost::alloc::string::String,
-    /// Whether the declaration uses boolean presence rather than string mode.
-    #[prost(bool, tag = "2")]
-    pub boolean: bool,
 }
 /// Link stylesheet metadata for one static component asset root.
 ///

@@ -176,21 +176,6 @@ export function attributeNameForProperty(
   return attrPropertyMapFor(ctor)?.get(property)?.attribute;
 }
 
-/** Check inbound declarations, which can retain multiple aliases for one property. */
-export function hasAttributeForProperty(
-  ctor: Function,
-  property: string,
-  element: Pick<HTMLElement, 'hasAttribute'>,
-): boolean {
-  const attributes = attrByAttribute.get(ctor) ?? inheritedAttrMap(attrByAttribute, ctor);
-  if (attributes) {
-    for (const definition of attributes.values()) {
-      if (definition.property === property && element.hasAttribute(definition.attribute)) return true;
-    }
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Attribute reflection
 // ---------------------------------------------------------------------------

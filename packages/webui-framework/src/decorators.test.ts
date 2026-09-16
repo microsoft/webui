@@ -8,7 +8,6 @@ import {
   attributeNameForProperty,
   attr,
   getObservableNames,
-  hasAttributeForProperty,
   isAttributeProperty,
   observable,
   toKebabCase,
@@ -122,21 +121,6 @@ describe('toKebabCase', () => {
 });
 
 describe('observable decorators', () => {
-  test('SSR precedence checks effective inbound aliases rather than reflection names', () => {
-    class Base extends FakeElement {}
-    attr({ attribute: 'old-value', mode: 'boolean' })(Base.prototype, 'value');
-    class Child extends Base {}
-    attr({ attribute: 'new-value' })(Child.prototype, 'value');
-    const element = new Child();
-    element.$ready = false;
-    element.setAttribute('old-value', '');
-    assert.equal(hasAttributeForProperty(Child, 'value', element), true);
-    attr({ attribute: 'old-value' })(Child.prototype, 'other');
-    assert.equal(hasAttributeForProperty(Child, 'value', element), false);
-    assert.equal(hasAttributeForProperty(Child, 'other', element), true);
-    assert.equal(hasAttributeForProperty(Base, 'value', element), true);
-  });
-
   test('@observable registers reactive property names', () => {
     class TestElement {}
     observable(TestElement.prototype, 'count');

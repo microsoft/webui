@@ -49,16 +49,6 @@ message ComponentData {
   bool uses_shadow_dom = 10;
   // Compiler-owned client work policy. Zero/eager is absent on the wire.
   ComponentWorkPolicy work_policy = 11;
-  // Declared inbound attributes, shared by every instance of this component.
-  map<string, ComponentAttributeBinding> attribute_bindings = 12;
-}
-
-// One declared inbound attribute of a component.
-message ComponentAttributeBinding {
-  // Exact JavaScript property receiving this HTML attribute.
-  string property = 1;
-  // Whether the declaration uses boolean presence rather than string mode.
-  bool boolean = 2;
 }
 
 // Per-component client work scheduling policy.

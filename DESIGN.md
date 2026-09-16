@@ -114,15 +114,6 @@ pub struct ComponentData {
     /// Eager, lazy hydration, lazy rendering, interaction hydration, or the
     /// combined lazy-render/interaction policy.
     pub work_policy: ComponentWorkPolicy,
-    /// Declared inbound HTML attribute names mapped to component properties.
-    pub attribute_bindings: HashMap<String, ComponentAttributeBinding>,
-}
-
-pub struct ComponentAttributeBinding {
-    /// Exact JavaScript property name.
-    pub property: String,
-    /// Boolean presence mode; false means string mode.
-    pub boolean: bool,
 }
 
 pub enum ComponentWorkPolicy {
@@ -314,20 +305,15 @@ Static component attributes remain present when their value is empty. Bare
 component attributes are normalized to empty string literals using the existing
 `Attribute` fragment; their names do not imply a property type.
 
-The projection compiler records declared inbound attributes once per component.
-Native and WASM builders copy those declarations into
-`ComponentData.attribute_bindings`; `WebUIFragmentAttribute` needs no additional
-fields. At protocol load, the render index resolves each component callsite's
-attribute names and modes into its prepared plan. Renders do not look up the
-declaration map. Undeclared inputs retain ordinary attribute handling.
-This metadata is not included in client template or bootstrap scripts.
-
-Declared boolean inputs use presence, including empty values and `"false"`;
-declared string inputs retain their rendered string values. Explicit `?` and `:`
-bindings retain their typed values. Host HTML names are not rewritten to property
-names. Static attribute text is decoded at build time and escaped on output.
-Bootstrap state cannot override any effective inbound host alias. This consults
-the existing decorator registry without allocating additional alias lists.
+Native and WASM builds lower declared `@attr` inputs into existing attribute and
+property-binding fragments. Canonical string inputs use ordinary attribute
+collection. Aliases use `:` property bindings without changing the host's HTML
+attribute name. Boolean presence becomes a constant `true` binding; explicit
+`?` and `:` inputs retain their expressions and typed values. Literal boolean
+conditions evaluate identically on the server and in generated client closures.
+Property bindings never emit HTML, including static, template, and condition
+values. Static attribute text is decoded at build time and escaped on output.
+No attribute-declaration container or new fields are stored in the protobuf.
 
 ##### Attribute Name Mapping
 
