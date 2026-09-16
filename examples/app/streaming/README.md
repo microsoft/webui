@@ -38,8 +38,8 @@ instruction instead of silently falling back to full-state payloads.
 This example keeps a small critical registration entry in the head. For a
 coordinator-only head entry with application startup deferred, use
 the [bundler-independent delivery contract](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets),
-with an optional esbuild adapter that returns output identities rather than a
-second deployment manifest.
+with an explicit streaming import in a small application-owned entry and no
+streaming build plugin or second deployment manifest.
 Early-interactive boundaries still need their component registration modules;
 deferring unrelated application work does not require deferring those modules.
 

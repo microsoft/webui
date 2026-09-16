@@ -225,10 +225,17 @@ and boundaries before or after a `<for>` are valid.
 
 ### Separate coordinator and application assets
 
-Streaming does not require a particular bundler. The browser entry
-`@microsoft/webui-framework/streaming.js` installs the coordinator independently
-of your application. To load only that work in `<head>`, configure your
-bundler to:
+The application must explicitly import the coordinator. To keep unrelated
+application code out of `<head>`, author a small entry containing only:
+
+```typescript
+// src/streaming.ts
+import '@microsoft/webui-framework/streaming.js';
+```
+
+Register this file as a normal entry in your bundler, alongside the application
+entry. WebUI does not create entries, inject this import, or provide a streaming
+build plugin. Streaming does not require a particular bundler:
 
 - Emit the streaming entry separately from application startup, preserving its
   initialization side effect.
@@ -238,10 +245,8 @@ bundler to:
   bundler's entry metadata, not generated filenames. Keep application code and
   dynamic hydration imports out of its early preload list.
 
-Use your existing asset handoff to map those outputs to deployed URLs. WebUI
-does not require a separate streaming manifest, runtime asset-graph lookup, or
-a universal bundler adapter. Other bundlers can follow this same contract;
-the optional esbuild integration below implements it for esbuild.
+Use your bundler's existing output metadata and asset handoff to map those
+outputs to deployed URLs. No separate WebUI streaming manifest is required.
 
 Render the resolved URLs in your page:
 
@@ -273,19 +278,21 @@ state alive longer. Load registrations needed for early-interactive boundaries
 when needed, and defer unrelated application startup. Compiler-owned scriptless
 hosts can load framework support on demand without importing your application.
 
-#### Optional esbuild integration
+#### Example: explicit esbuild entries
 
-`esbuildStreaming()` adds the coordinator to your existing ESM code-splitting
-build. After each successful build or rebuild, `getStreamingAsset(result)`
-checks the emitted dependency graph and returns its output identities:
+For esbuild, these are ordinary entries in the application's existing build.
+The projection plugin handles state projection only; it does not enable
+streaming or add the import:
 
 ```js
 import { build } from 'esbuild';
-import { esbuildStreaming, getStreamingAsset } from '@microsoft/webui/streaming.js';
 import { esbuildProjection } from '@microsoft/webui/projection.js';
 
 const result = await build({
-  entryPoints: { application: 'src/index.ts' },
+  entryPoints: {
+    streaming: 'src/streaming.ts',
+    application: 'src/index.ts',
+  },
   outdir: 'dist',
   publicPath: '/assets',
   entryNames: '[name]-[hash]',
@@ -293,25 +300,17 @@ const result = await build({
   format: 'esm',
   splitting: true,
   platform: 'browser',
-  plugins: [esbuildStreaming(), esbuildProjection()],
+  metafile: true,
+  plugins: [esbuildProjection()],
 });
-
-const streaming = getStreamingAsset(result);
-// streaming.entry: coordinator key in result.metafile.outputs
-// streaming.imports: static dependency keys, in preload order
 ```
 
-These are exact metafile keys, including hashed filenames, **not URLs**.
-Apply the same output-to-URL mapping used for application assets, consistent
-with esbuild's `publicPath`, and include them in your existing deployment
-handoff if one is needed. Inspect the result before publishing assets.
-The adapter emits no JSON and performs no filesystem reads or writes.
-
-The two plugins may appear in either order. `getStreamingAsset()` works with
-disk, `write: false`, and `context.rebuild()` results. The adapter requires
-bundled browser ESM, splitting, and `outdir`; it rejects global `inject` and
-`preserveSymlinks`. Comment-only license banners are supported; application
-startup belongs in the application entry, not in a banner or footer.
+Identify the streaming output by its `entryPoint: "src/streaming.ts"` in
+`result.metafile.outputs`, not its generated filename. Static
+`import-statement` dependencies describe the shared chunks needed by that
+entry. Output keys are paths, not served URLs; use the same deployment mapping
+as the application entry, consistent with `publicPath`. Preserve the
+coordinator's side effect when configuring tree shaking.
 
 State projection is separate: continue passing `webui-projection.json` from
 `esbuildProjection()` to the WebUI build when using that integration.

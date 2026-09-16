@@ -21,7 +21,6 @@
     "dist/install.*",
     "dist/platform.*",
     "dist/projection/",
-    "dist/streaming/index.*",
     "wasm/"
   ],
   "scripts": {
@@ -29,7 +28,7 @@
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js dist/test/streaming-esbuild.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js dist/test/streaming-entry.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -52,12 +51,6 @@
       "import": {
         "types": "./dist/projection/index.d.ts",
         "default": "./dist/projection/index.js"
-      }
-    },
-    "./streaming.js": {
-      "import": {
-        "types": "./dist/streaming/index.d.ts",
-        "default": "./dist/streaming/index.js"
       }
     }
   },

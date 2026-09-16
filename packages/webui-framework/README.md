@@ -246,15 +246,13 @@ authored `<boundary>` directives through
 `@microsoft/webui-framework` entry has no dependency on the coordinator, so
 normal applications pay no streaming bundle or initialization cost.
 
-To keep the full application out of `<head>`, emit the streaming module as its
-own entry with your bundler, preserve its side effect, and share framework
-modules with the application. Identify its output and static dependencies
-through bundler metadata, then map them to URLs with your existing asset
-handoff. No separate streaming manifest is required.
+To keep the full application out of `<head>`, put the explicit
+`import '@microsoft/webui-framework/streaming.js'` in a small application-owned
+entry. Register that file with your bundler, preserve its side effect, and
+share framework modules with the application. Identify its output and static
+dependencies through native bundler metadata and your existing asset handoff.
+WebUI does not create entries, inject imports, or require a streaming manifest.
 
-For esbuild, the optional `esbuildStreaming()` / `getStreamingAsset(result)`
-integration from `@microsoft/webui/streaming.js` returns the coordinator's
-metafile output key and static dependency keys without emitting JSON.
 Load the coordinator with `type="module" async`; marker-based deferral handles
 application-first delivery without a second framework bundle.
 The application may load later, but early-interactive components still need

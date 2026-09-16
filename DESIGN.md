@@ -3507,12 +3507,21 @@ The head marker lets that entry no-op safely on non-streaming pages.
 
 The streaming runtime and its delivery contract are bundler-independent.
 `@microsoft/webui-framework/streaming.js` is the public side-effect entry.
-An integration emits it separately, preserves its initialization, identifies
-its output through the bundler's entry metadata, and shares framework modules
-with application entries. Its early static closure must exclude application
-code and deferred hydration imports. The host owns served URLs and may persist
-the output identities through its existing asset handoff. No WebUI-specific
-streaming manifest or universal bundler SPI is required.
+Applications explicitly import it, either before registrations in an existing
+early entry or in a small application-owned streaming entry:
+
+```typescript
+// src/streaming.ts
+import '@microsoft/webui-framework/streaming.js';
+```
+
+The application registers that source with its bundler. WebUI supplies no
+streaming build plugin, synthetic entry, asset-inspection API, or deployment
+manifest. The bundler preserves initialization and shares framework modules
+with the application. Its native entry metadata identifies generated outputs
+without filename heuristics; the host owns served URLs and any persisted asset
+handoff. The early static closure must exclude unrelated application code and
+deferred hydration imports.
 
 Do not globally inject that entry into application or framework modules:
 injection creates import cycles that can capture uninitialized shared constants
@@ -3525,55 +3534,8 @@ streamed roots remain marker-deferred. Before publishing completion, the
 lifecycle tracker reserves the terminal gate when the cached mode detector says
 streaming, even if coordinator installation has not run yet. Thus early
 client-created hydration cannot publish completion while the streaming asset
-is still downloading. The host must load the descriptor's coordinator asset.
-
-The optional build-only `@microsoft/webui/streaming.js` subpath exports
-`esbuildStreaming()` and `getStreamingAsset(result)`. It never enters the
-root SSR or browser import graph and imports only esbuild types. The plugin
-adds a synthetic coordinator entry to one application-owned bundled browser
-ESM build with splitting and `outdir`. Global `inject` and `preserveSymlinks`
-are rejected; deployment naming, `publicPath`, and banners remain esbuild's
-responsibility. Application startup must not be inserted through banners.
-
-```typescript
-interface StreamingAsset {
-  readonly entry: string;
-  readonly imports: readonly string[];
-}
-```
-
-After each successful build/rebuild, the host calls `getStreamingAsset` before
-publishing assets. The helper returns exact `metafile.outputs` keys, not URLs:
-`entry` identifies the synthetic coordinator output and `imports` gives its
-transitive static closure, largest-first with UTF-8 tie breaking. Projection
-and streaming reuse `esbuild-graph.ts` for that traversal and ordering. The
-projection manifest retains its existing conservative `publicPath` handling;
-the streaming helper does not reinterpret it or synthesize served URLs.
-
-The adapter's scoped resolver preserves the real entry's side effects.
-Inspection also requires a live contribution from that entry in the emitted
-static closure; presence in the input graph alone does not prove initialization
-survived tree shaking. External dependencies, application-contaminated
-coordinator/deferred support outputs, and mixed framework source trees are
-rejected. Required framework chunks remain shared rather than independently
-rebundled.
-
-Neither function reads/writes files, emits JSON, or retains a build result.
-There is no publisher plugin-order constraint: the host inspects only a
-successful returned result after all plugins finish, for disk or in-memory
-builds. State projection remains a separate build contract. No browser wire,
-protobuf, request-time graph processing, or runtime code is added by the adapter.
-
-`StreamingBuildError` carries a stable `code` and a color-free message with
-actionable help.
-Setup/resolution failures are available through esbuild's `errors[].detail`;
-post-build inspection throws that typed error directly.
-
-| Code | Failure category |
-| --- | --- |
-| `STREAM-B001` | Unsupported configuration or duplicate plugin |
-| `STREAM-B002` | Failed build, missing output, or eliminated coordinator initialization |
-| `STREAM-B003` | Unproven isolation or framework module identity |
+is still downloading. The host must load the application's streaming entry.
+If the import is omitted, WebUI does not install the coordinator implicitly.
 
 `streaming-bootstrap.ts` registers metadata through the lightweight
 `template-registry.ts` and `element/style-catalog.ts`. These own the original
@@ -4073,8 +4035,6 @@ import { compileProjection, esbuildProjection } from '@microsoft/webui/projectio
 The root `@microsoft/webui` entry does **not** import or re-export the
 projection subpath so that render/build consumers do not load compiler or
 adapter code.
-The independent `@microsoft/webui/streaming.js` build subpath supplies streaming
-asset delivery without loading the TypeScript projection compiler.
 
 Internal source organization:
 

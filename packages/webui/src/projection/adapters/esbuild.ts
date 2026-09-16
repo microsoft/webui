@@ -8,8 +8,13 @@
  * the application-owned esbuild instance supplies the plugin API and version.
  */
 
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { outputImportClosure } from "./esbuild-graph.js";
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+} from "node:fs/promises";
 import * as path from "node:path";
 import type {
   BuildResult,
@@ -465,8 +470,34 @@ function buildEntryClosures(
       continue;
     }
 
+    // Iterative worklist: an output import graph may contain cycles, and the
+    // repo bans recursion in graph walks.
+    const reached = new Set<string>([outputPath]);
+    const pending = [outputPath];
+    const members: string[] = [];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      const imports = metafile.outputs[current]?.imports;
+      if (!imports) continue;
+      for (const edge of imports) {
+        if (edge.kind !== "import-statement" || edge.external === true) {
+          continue;
+        }
+        if (reached.has(edge.path)) continue;
+        reached.add(edge.path);
+        pending.push(edge.path);
+        members.push(edge.path);
+      }
+    }
+    members.sort((left, right) => {
+      const bySize =
+        (metafile.outputs[right]?.bytes ?? 0) -
+        (metafile.outputs[left]?.bytes ?? 0);
+      return bySize !== 0 ? bySize : compareUtf8(left, right);
+    });
+
     const resolved: string[] = [];
-    for (const member of outputImportClosure(metafile, outputPath)) {
+    for (const member of members) {
       const memberId = outputIds.get(member);
       if (memberId) resolved.push(memberId);
     }
@@ -611,13 +642,15 @@ function pathKey(value: string): string {
     : resolved;
 }
 
-async function writeAtomic(manifestPath: string, contents: string): Promise<void> {
+async function writeAtomic(
+  manifestPath: string,
+  contents: string
+): Promise<void> {
   await mkdir(path.dirname(manifestPath), { recursive: true });
-  const temporaryPath = `${manifestPath}.tmp-${process.pid}-${temporaryFileSequence++}`;
-  let created = false;
+  const sequence = temporaryFileSequence++;
+  const temporaryPath = `${manifestPath}.tmp-${process.pid}-${sequence}`;
   try {
     const handle = await open(temporaryPath, "wx");
-    created = true;
     try {
       await handle.writeFile(contents, "utf8");
       await handle.sync();
@@ -626,7 +659,7 @@ async function writeAtomic(manifestPath: string, contents: string): Promise<void
     }
     await rename(temporaryPath, manifestPath);
   } finally {
-    if (created) await rm(temporaryPath, { force: true });
+    await rm(temporaryPath, { force: true });
   }
 }
 

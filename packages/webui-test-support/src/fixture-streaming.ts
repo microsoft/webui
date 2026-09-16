@@ -5,7 +5,6 @@ import { build as buildClient } from 'esbuild';
 import { build as buildProtocol, Protocol } from '@microsoft/webui';
 import type { StreamStep } from '@microsoft/webui';
 import { esbuildProjection } from '@microsoft/webui/projection.js';
-import { esbuildStreaming, getStreamingAsset } from '@microsoft/webui/streaming.js';
 import { relative, resolve, sep } from 'node:path';
 import type { FixtureRequestContext } from './fixture-server.js';
 
@@ -39,10 +38,11 @@ export async function prepareStreamingFixture({
 }: StreamingFixtureOptions): Promise<(context: FixtureRequestContext) => boolean> {
   const publicPath = '/dist/streaming-bootstrap/';
   const applicationPath = resolve(fixturePath, 'application.ts');
+  const streamingPath = resolve(fixturePath, 'streaming.ts');
   const projectionPath = resolve(outDir, 'webui-projection.json');
   const built = await buildClient({
     absWorkingDir: fixturePath,
-    entryPoints: { application: applicationPath },
+    entryPoints: { application: applicationPath, streaming: streamingPath },
     outdir: outDir,
     publicPath,
     entryNames: '[name]-[hash]',
@@ -58,19 +58,19 @@ export async function prepareStreamingFixture({
     metafile: true,
     plugins: [
       esbuildProjection({ manifest: projectionPath }),
-      esbuildStreaming(),
     ],
   });
   if (!built.metafile) throw new Error('Streaming fixture has no esbuild output metadata.');
-  const coordinator = getStreamingAsset(built);
   const servedUrl = (output: string): string =>
     publicPath + relative(outDir, resolve(fixturePath, output)).split(sep).join('/');
   let application: string | undefined;
+  let coordinatorOutput: string | undefined;
   let templateHostRuntime: string | undefined;
   for (const [output, details] of Object.entries(built.metafile.outputs)) {
     if (!details.entryPoint) continue;
     const href = servedUrl(output);
     if (resolve(fixturePath, details.entryPoint) === applicationPath) application = href;
+    if (resolve(fixturePath, details.entryPoint) === streamingPath) coordinatorOutput = output;
     if (
       details.entryPoint.endsWith('/static-host.js') ||
       details.entryPoint.endsWith('/static-host.ts')
@@ -79,11 +79,22 @@ export async function prepareStreamingFixture({
       templateHostRuntime = href;
     }
   }
-  if (!application || !templateHostRuntime) {
-    throw new Error('Streaming fixture is missing its application or lazy template-host entry.');
+  if (!application || !templateHostRuntime || !coordinatorOutput) {
+    throw new Error('Streaming fixture is missing an application, streaming, or lazy template-host entry.');
   }
+  const closure = new Set([coordinatorOutput]);
+  for (const output of closure) {
+    for (const dependency of built.metafile.outputs[output].imports) {
+      if (dependency.kind === 'import-statement' && !dependency.external) closure.add(dependency.path);
+    }
+  }
+  closure.delete(coordinatorOutput);
+  const imports = [...closure].sort((a, b) =>
+    built.metafile!.outputs[b].bytes - built.metafile!.outputs[a].bytes ||
+    Buffer.compare(Buffer.from(a), Buffer.from(b)),
+  );
   const assets: StreamingFixtureAssets = {
-    coordinator: { src: servedUrl(coordinator.entry), imports: coordinator.imports.map(servedUrl) },
+    coordinator: { src: servedUrl(coordinatorOutput), imports: imports.map(servedUrl) },
     application,
     templateHostRuntime,
   };

@@ -879,12 +879,12 @@ outlets, and selected route content.
   entry traversal requires `key`; it must resolve to a unique live string or
   finite number. Independent entries that each reach it once do not.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
-- Load `@microsoft/webui-framework/streaming.js` early with `type="module" async`,
-  either in a small application entry before registrations or as its own entry.
-  Streaming is bundler-independent: preserve initialization, share framework
-  modules, and identify outputs through the bundler's metadata. The optional
-  `esbuildStreaming()` / `getStreamingAsset(result)` integration returns output
-  keys for the host's existing asset handoff; no streaming JSON file is required.
+- Explicitly import `@microsoft/webui-framework/streaming.js` in application
+  code. For a coordinator-only head script, put that import in a small
+  `src/streaming.ts` entry and load its output with `type="module" async`.
+  WebUI never creates the entry or injects the import. With any bundler, preserve
+  initialization, share framework modules, and use native output metadata for
+  the host's existing asset handoff. No streaming JSON file is required.
   See
   [Separate coordinator and application assets](/guide/concepts/hydration#separate-coordinator-and-application-assets).
 - Deferred application scripts can use `fetchpriority="low"` to stay out of

@@ -311,8 +311,8 @@ For a coordinator-only head script, follow the
 [bundler-independent delivery contract](/guide/concepts/hydration#separate-coordinator-and-application-assets).
 Configure script URLs through your existing asset handoff; the native
 `StreamingSession` does not depend on a bundler or read asset manifests.
-For esbuild, `getStreamingAsset(result)` identifies the emitted coordinator and
-static dependency output keys after a build using `esbuildStreaming()`.
+The application explicitly imports `@microsoft/webui-framework/streaming.js`
+in its own early entry and registers that entry with its bundler.
 Application registrations may load later, but are required before their
 components become interactive.
 
