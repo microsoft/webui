@@ -283,14 +283,20 @@ pub struct WebUIFragmentAttribute {
     pub template: String,
     /// True for `:`-prefixed complex attributes.
     pub complex: bool,
-    /// True for the first dynamic attribute on a component element.
+    /// True for the first attribute on a component element, including host-only attributes.
     pub attr_start: bool,
-    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    /// True for host-only attributes (class, style, role, data-*) unless projected.
     pub attr_skip: bool,
     /// True for static attribute values on components.
     pub raw_value: bool,
     /// For `?`-prefixed boolean attributes, the condition tree.
     pub condition_tree: Option<ConditionExpr>,
+    /// Exact projected component property; empty uses the canonical HTML mapping.
+    pub property: String,
+    /// An ordinary host attribute supplies true by presence, regardless of its text.
+    pub boolean: bool,
+    /// Escape decoded static text; false preserves legacy verbatim literals.
+    pub escape_value: bool,
 }
 ```
 
@@ -300,6 +306,31 @@ component fragment is entered. Attributes on native elements never carry
 `attr_start`, so they render directly to HTML and never enter component
 attribute state — a native attribute cannot become a local variable of a
 later component.
+
+Bare and empty component attributes participate in the same collection window as
+nonempty literals. Static strings are decoded as HTML attribute values at build
+time and escaped once on output when `escape_value` is set; older protocols
+without this bit retain their verbatim static output. Native boolean attribute names such as `open`
+use presence semantics: `open`, `open=""`, and `open="false"` all supply `true`.
+Ordinary dynamic attributes also remain present regardless of their string value;
+use `?open="{{condition}}"` to make presence conditional. Conditional bindings
+store the evaluated boolean, including `false`; `:` property bindings preserve
+the resolved value without string or presence coercion.
+
+ARIA attributes are ordinary component inputs, normalized using the shared name
+mapper. Class, style, role, and data attributes remain host-only unless an exact
+projection declaration claims them. Validated projection metadata overrides both
+the property name and the boolean mode, including explicit aliases that differ
+from the canonical casing. This is compiled onto each host's attribute fragments
+after template parsing, identically in native and WASM builds. No decorator
+metadata or class source is interpreted during rendering. Existing protocols
+without the new fields retain canonical naming and their existing value modes.
+
+Host inputs override supplied server state for that component. Missing inputs
+continue to use supplied state; JavaScript constructors and initializers are not
+executed during SSR. Attribute expressions resolve in the parent scope before
+the child's isolated scope is entered, and sibling instances do not inherit each
+other's inputs.
 
 ##### Attribute Name Mapping
 
@@ -4220,9 +4251,11 @@ For each class declaration or expression that is exported or associated with a
    - If the resolved export is `attr` from `@microsoft/webui-framework`,
      record the **JavaScript property name** in both surfaces.
      `@attr({ attribute: "display-value" }) displayValue` therefore emits
-     `displayValue`: framework state addresses the property registry, while an
-     existing `display-value` host attribute takes precedence during SSR
-     hydration.
+     `displayValue`: framework state addresses the property registry. Also emit
+     each effective inbound HTML attribute, JavaScript property, and mode in `attributes`, so the
+     server and client address the same property and use the same presence
+     semantics. Attribute factory options must be statically proven rather than
+     inferred from property names or executed as JavaScript.
 3. Walk the class `extends` clause. Resolve the base class through the symbol
    graph. Collect the base class's keys recursively (iterative: push unresolved
    bases onto a stack). Stop at `WebUIElement` or any class from
@@ -4415,6 +4448,13 @@ export interface ComponentEntry {
   readonly hydrationKeys: readonly string[];
   /** Sorted exact @observable + @attr property keys used by navigation. */
   readonly navigationKeys: readonly string[];
+  /** Exact inbound @attr declarations keyed by HTML attribute, omitted when empty. */
+  readonly attributes?: Readonly<Record<string, {
+    /** JavaScript property updated by this attribute. */
+    readonly property: string;
+    /** String (0) or boolean presence (1). */
+    readonly mode: 0 | 1;
+  }>>;
 }
 ```
 
@@ -4529,7 +4569,32 @@ component(
 entryClosures(count)                    ... omitted entirely when empty
 entryClosure(entry, member-count, members...)
   ... sorted by UTF-8 entry bytes; members in their given load order
+componentAttributes(count)             ... omitted entirely when empty
+componentAttribute(tag, attribute, property, mode)
+  ... sorted by UTF-8 tag bytes, then attribute bytes
 ```
+
+Attribute declarations are covered by the build ID and validated against the
+component hydration keys. Unknown modes and invalid attribute names are rejected.
+Multiple inbound attributes may target one property with different modes.
+Projected string-mode attributes supply the rendered
+string value, while explicit conditional and direct property bindings retain
+their typed values.
+The optional records preserve old manifest IDs when no declarations are present.
+
+The manifest describes the effective `attrByAttribute` registry, not just the
+outbound `attrByProperty` map. Inherited and stacked aliases survive a property's
+outbound remapping. For the same HTML name, later field registrations override
+earlier ones, derived class registrations override base registrations, and
+stacked decorators execute bottom-up. Host attribute source order determines
+the last input when multiple present aliases target the same property.
+
+SSR bootstrap tests every effective inbound alias before applying a fallback
+state property. Normal single-alias properties retain direct lookup; only a
+remapped or stacked multi-alias property retains an additional shared alias
+list. Subclass remapping never mutates its base class's alias list, and an alias
+that now targets another property cannot suppress the original property's
+fallback state.
 
 Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
 UTF-16 code units. The final identifier is:

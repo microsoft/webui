@@ -85,6 +85,7 @@ interface AttrDefinition {
   attribute: string;
   property: string;
   boolean: boolean;
+  aliases?: readonly string[];
 }
 
 /** Marks the attribute currently being reflected so the reverse
@@ -174,6 +175,29 @@ export function attributeNameForProperty(
   property: string,
 ): string | undefined {
   return attrPropertyMapFor(ctor)?.get(property)?.attribute;
+}
+
+/** Whether an effective inbound attribute supplies this property during SSR adoption. */
+export function hasAttributeForProperty(
+  ctor: Function,
+  property: string,
+  element: Pick<HTMLElement, 'hasAttribute'>,
+): boolean {
+  const definition = attrPropertyMapFor(ctor)?.get(property);
+  if (!definition) return false;
+  if (
+    attrDefinitionFor(ctor, definition.attribute)?.property === property
+    && element.hasAttribute(definition.attribute)
+  ) return true;
+  if (definition.aliases) {
+    for (const alias of definition.aliases) {
+      if (
+        attrDefinitionFor(ctor, alias)?.property === property
+        && element.hasAttribute(alias)
+      ) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +372,22 @@ function applyAttr(
     property: name,
     boolean: options?.mode === 'boolean',
   };
+  const previous = attrPropertyMapFor(ctor)?.get(name);
+  if (previous) {
+    if (previous.attribute === attrName) {
+      definition.aliases = previous.aliases;
+    } else {
+      // Inbound aliases survive remapping; only outbound reflection is replaced.
+      const aliases: string[] = [];
+      if (previous.aliases) {
+        for (const alias of previous.aliases) {
+          if (alias !== attrName) aliases.push(alias);
+        }
+      }
+      aliases.push(previous.attribute);
+      definition.aliases = aliases;
+    }
+  }
 
   // 1. Install the reactive getter/setter (same as @observable), with
   // attribute reflection enabled after the element finishes hydration.

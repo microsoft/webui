@@ -12,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, test } from "node:test";
 import * as esbuild from "esbuild";
 import {
@@ -445,6 +446,9 @@ DiskCard.define('disk-card');
       manifest.components["probe-card"]?.navigationKeys,
       ["displayValue", "value"]
     );
+    assert.deepEqual(manifest.components["probe-card"]?.attributes, {
+      "display-value": { property: "displayValue", mode: 0 },
+    });
     const componentOutputs =
       manifest.components["probe-card"]?.outputs ?? [];
     assert.equal(componentOutputs.length, 1);
@@ -464,6 +468,209 @@ DiskCard.define('disk-card');
       false,
       "atomic manifest temporary files must be cleaned"
     );
+  });
+
+  test("emits inherited exact aliases and modes without executing constructors", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "src", "base.ts"), `
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+export class Base extends WebUIElement {
+  @attr({ attribute: 'custom-attribute' }) unrelated = 'base';
+  @attr({ mode: 'boolean' }) inherited = false;
+}
+`);
+    await writeFile(path.join(root, "src", "entry.ts"), `
+import { Base } from './base.ts';
+import { attr, observable } from '@microsoft/webui-framework';
+class Card extends Base {
+  @attr ariaDescribedby = '';
+  @attr({ attribute: 'derived-custom-attribute' }) unrelated = 'child';
+  @observable inherited = true;
+  @attr({ attribute: 'custom-boolean', mode: 'boolean' }) enabled = false;
+  constructor() { super(); throw new Error('must not execute'); }
+}
+Card.define('test-card');
+`);
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      external: ["@microsoft/webui-framework"],
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+      plugins: [esbuildProjection()],
+    });
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+    assert.deepEqual(manifest.components["test-card"]?.attributes, {
+      "aria-describedby": { property: "ariaDescribedby", mode: 0 },
+      "custom-attribute": { property: "unrelated", mode: 0 },
+      "custom-boolean": { property: "enabled", mode: 1 },
+      "derived-custom-attribute": { property: "unrelated", mode: 0 },
+      inherited: { property: "inherited", mode: 1 },
+    });
+  });
+
+  test("rejects dynamic attr options instead of emitting guessed metadata", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "src", "entry.ts"), `
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+const options = { attribute: 'custom-attribute' };
+class Card extends WebUIElement { @attr(options) unrelated = ''; }
+Card.define('test-card');
+`);
+    await assert.rejects(esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      external: ["@microsoft/webui-framework"],
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+      logLevel: "silent",
+      plugins: [esbuildProjection()],
+    }), /PROJ-C007/);
+    await assert.rejects(access(path.join(root, "dist", "webui-projection.json")));
+  });
+
+  test("resolves inherited alias overrides by registration rather than property order", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(path.join(root, "src", "entry.ts"), `
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+class Base extends WebUIElement {
+  @attr({ attribute: 'shared-name' }) zBase = '';
+}
+class Card extends Base {
+  @attr({ attribute: 'shared-name', mode: 'boolean' }) aDerived = false;
+}
+Card.define('test-card');
+`);
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      external: ["@microsoft/webui-framework"],
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true } },
+      logLevel: "silent",
+      plugins: [esbuildProjection()],
+    });
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+    assert.deepEqual(manifest.components["test-card"]?.attributes, {
+      "shared-name": { property: "aDerived", mode: 1 },
+    });
+    assert.deepEqual(manifest.components["test-card"]?.hydrationKeys, ["aDerived", "zBase"]);
+  });
+
+  test("matches actual inbound decorators with experimental TypeScript registration order", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const frameworkStub = path.join(root, "src", "framework.ts");
+    const decoratorsPath = path.join(path.dirname(FRAMEWORK_ENTRY), "decorators.ts");
+    await writeFile(frameworkStub, `
+export { attr, observable } from ${JSON.stringify(decoratorsPath)};
+export class WebUIElement { static define(_tag: string) {} }
+`);
+    await writeFile(path.join(root, "src", "entry.ts"), `
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
+class Base extends WebUIElement {
+  @attr({ attribute: 'old-expanded', mode: 'boolean' }) expanded = false;
+  @attr({ attribute: 'same-alias', mode: 'boolean' }) same = false;
+  @attr({ attribute: 'shared-target', mode: 'boolean' }) zBase = false;
+  @attr({ attribute: 'retained', mode: 'boolean' }) retained = false;
+}
+export class Card extends Base {
+  @attr({ attribute: 'new-expanded' }) expanded = '';
+  @attr({ attribute: 'same-alias' }) same = '';
+  @attr({ attribute: 'shared-target' }) aDerived = '';
+  @observable retained = false;
+  @attr({ attribute: 'own-target' }) zFirst = '';
+  @attr({ attribute: 'own-target', mode: 'boolean' }) aLast = false;
+  @attr({ attribute: 'stack-first', mode: 'boolean' })
+  @attr({ attribute: 'stack-second' })
+  stacked = '';
+  @attr({ attribute: 'stack-same', mode: 'boolean' })
+  @attr({ attribute: 'stack-same' })
+  stackedSame = false;
+}
+Card.define('test-card');
+`);
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      outExtension: { ".js": ".mjs" },
+      bundle: true,
+      format: "esm",
+      target: "es2020",
+      alias: { "@microsoft/webui-framework": frameworkStub },
+      tsconfigRaw: {
+        compilerOptions: {
+          experimentalDecorators: true,
+          useDefineForClassFields: false,
+        },
+      },
+      plugins: [esbuildProjection()],
+    });
+    const manifest = await readManifest(root);
+    const component = manifest.components["test-card"]!;
+    assert.deepEqual(component.attributes, {
+      "new-expanded": { property: "expanded", mode: 0 },
+      "old-expanded": { property: "expanded", mode: 1 },
+      "own-target": { property: "aLast", mode: 1 },
+      retained: { property: "retained", mode: 1 },
+      "same-alias": { property: "same", mode: 0 },
+      "shared-target": { property: "aDerived", mode: 0 },
+      "stack-first": { property: "stacked", mode: 1 },
+      "stack-same": { property: "stackedSame", mode: 1 },
+      "stack-second": { property: "stacked", mode: 0 },
+    });
+    assert.deepEqual(component.hydrationKeys, [
+      "aDerived", "aLast", "expanded", "retained", "same", "stacked",
+      "stackedSame", "zBase", "zFirst",
+    ]);
+    assert.deepEqual(component.navigationKeys, component.hydrationKeys);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+
+    interface DecoratedInstance {
+      [property: string]: unknown;
+      attributeChangedCallback(
+        name: string,
+        oldValue: string | null,
+        newValue: string | null
+      ): void;
+    }
+    const { Card }: {
+      Card: { new(): DecoratedInstance; readonly observedAttributes: string[] };
+    } = await import(pathToFileURL(path.join(root, "dist", "entry.mjs")).href);
+    assert.deepEqual(
+      [...new Set(Card.observedAttributes)].sort(),
+      Object.keys(component.attributes!)
+    );
+    for (const [attribute, definition] of Object.entries(component.attributes!)) {
+      const instance = new Card();
+      const before: ReadonlyMap<string, unknown> = new Map(
+        component.hydrationKeys.map((key) => [key, instance[key]])
+      );
+      instance.attributeChangedCallback(attribute, null, "present");
+      for (const key of component.hydrationKeys) {
+        assert.equal(
+          instance[key],
+          key === definition.property
+            ? definition.mode === 1 ? true : "present"
+            : before.get(key),
+          `${attribute} must route only to ${definition.property}`
+        );
+      }
+      instance.attributeChangedCallback(attribute, "present", null);
+      assert.equal(instance[definition.property], definition.mode === 1 ? false : null);
+    }
   });
 
   test("records each entry's static import closure, largest first", async (t) => {

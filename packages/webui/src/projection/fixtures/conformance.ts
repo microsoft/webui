@@ -14,6 +14,7 @@ import type {
   ResolvedImport,
 } from "../graph.js";
 import type {
+  AttributeEntry,
   ComponentEntry,
   ProjectionManifest,
 } from "../manifest.js";
@@ -237,6 +238,13 @@ function validateSuccessManifest(
           entry.navigationKeys,
         ] as const
     ),
+    sortedComponentAttributes: Object.entries(manifest.components).flatMap(
+      ([tag, entry]) => Object.entries(entry.attributes ?? {})
+        .sort((left, right) => compareUtf8(left[0], right[0]))
+        .map(([attribute, definition]) =>
+          [tag, attribute, definition.property, definition.mode] as const
+        )
+    ),
   });
   return manifest.buildId === expectedBuildId
     ? undefined
@@ -388,13 +396,15 @@ function component(
   module: string,
   outputs: ReadonlyArray<string>,
   hydrationKeys: ReadonlyArray<string>,
-  navigationKeys: ReadonlyArray<string> = hydrationKeys
+  navigationKeys: ReadonlyArray<string> = hydrationKeys,
+  attributes?: Readonly<Record<string, AttributeEntry>>
 ): ComponentEntry {
   return {
     module,
     outputs,
     hydrationKeys,
     navigationKeys,
+    ...(attributes === undefined ? {} : { attributes }),
   };
 }
 
@@ -489,7 +499,12 @@ export const ALL_CASES: ReadonlyArray<ConformanceCase> = [
       "contact-card": component(
         "src/contact-card.ts",
         ["dist/index.js"],
-        ["email", "firstName", "lastName"]
+        ["email", "firstName", "lastName"],
+        ["email", "firstName", "lastName"],
+        {
+          "first-name": { property: "firstName", mode: 0 },
+          "last-name": { property: "lastName", mode: 0 },
+        }
       ),
     }
   ),
@@ -849,7 +864,9 @@ Shared.define('shared-btn');
       "shared-btn": component(
         "src/shared.ts",
         ["dist/chunks/shared.js"],
-        ["label"]
+        ["label"],
+        ["label"],
+        { label: { property: "label", mode: 0 } }
       ),
     }
   ),

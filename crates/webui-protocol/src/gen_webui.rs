@@ -384,10 +384,10 @@ pub struct WebUiFragmentAttribute {
     /// True for :-prefixed complex attributes.
     #[prost(bool, tag = "4")]
     pub complex: bool,
-    /// True for the first dynamic attribute on a component element.
+    /// True for the first collected or skipped attribute on a component element.
     #[prost(bool, tag = "5")]
     pub attr_start: bool,
-    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    /// True for host-only attributes (class, style, role, data-*) unless projected.
     #[prost(bool, tag = "6")]
     pub attr_skip: bool,
     /// True for static attribute values on components.
@@ -396,6 +396,20 @@ pub struct WebUiFragmentAttribute {
     /// For ?-prefixed boolean attributes, the condition tree.
     #[prost(message, optional, tag = "8")]
     pub condition_tree: ::core::option::Option<ConditionExpr>,
+    /// Exact projected component property name; empty uses canonical HTML mapping.
+    #[prost(string, tag = "9")]
+    #[serde(default)]
+    pub property: ::prost::alloc::string::String,
+    /// Attribute presence supplies true to component state, independently of text.
+    /// Conditional and direct property bindings retain their typed values.
+    #[prost(bool, tag = "10")]
+    #[serde(default)]
+    pub boolean: bool,
+    /// Static value is decoded text requiring HTML escaping. False preserves
+    /// verbatim values in protocols produced before decoded literal propagation.
+    #[prost(bool, tag = "11")]
+    #[serde(default)]
+    pub escape_value: bool,
 }
 /// A condition expression tree.
 #[derive(serde::Serialize, serde::Deserialize)]

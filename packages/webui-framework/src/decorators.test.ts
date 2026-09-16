@@ -8,6 +8,7 @@ import {
   attributeNameForProperty,
   attr,
   getObservableNames,
+  hasAttributeForProperty,
   isAttributeProperty,
   observable,
   toKebabCase,
@@ -121,6 +122,53 @@ describe('toKebabCase', () => {
 });
 
 describe('observable decorators', () => {
+  test('SSR host precedence includes retained inbound aliases without changing the base', () => {
+    class Base extends FakeElement {}
+    attr({ attribute: 'old-expanded', mode: 'boolean' })(Base.prototype, 'expanded');
+    class Child extends Base {}
+    attr({ attribute: 'new-expanded' })(Child.prototype, 'expanded');
+    const element = new Child();
+    element.$ready = false;
+    element.setAttribute('old-expanded', '');
+    assert.equal(hasAttributeForProperty(Child, 'expanded', element), true);
+    assert.equal(attributeNameForProperty(Child, 'expanded'), 'new-expanded');
+    element.removeAttribute('old-expanded');
+    element.setAttribute('new-expanded', '');
+    assert.equal(hasAttributeForProperty(Child, 'expanded', element), true);
+    assert.equal(hasAttributeForProperty(Base, 'expanded', element), false);
+    assert.equal(hasAttributeForProperty(Child, 'missing', element), false);
+  });
+
+  test('SSR host precedence ignores aliases that now target a different property', () => {
+    class Element extends FakeElement {}
+    attr({ attribute: 'old-label' })(Element.prototype, 'label');
+    attr({ attribute: 'new-label' })(Element.prototype, 'label');
+    attr({ attribute: 'old-label' })(Element.prototype, 'other');
+    const element = new Element();
+    element.$ready = false;
+    element.setAttribute('old-label', 'Other');
+    assert.equal(hasAttributeForProperty(Element, 'label', element), false);
+    assert.equal(hasAttributeForProperty(Element, 'other', element), true);
+    element.setAttribute('new-label', 'Label');
+    assert.equal(hasAttributeForProperty(Element, 'label', element), true);
+  });
+
+  test('same-name mode overrides and remapping back retain distinct aliases once', () => {
+    class Element extends FakeElement {}
+    attr({ attribute: 'first', mode: 'boolean' })(Element.prototype, 'value');
+    attr({ attribute: 'second' })(Element.prototype, 'value');
+    attr({ attribute: 'second', mode: 'boolean' })(Element.prototype, 'value');
+    attr({ attribute: 'first' })(Element.prototype, 'value');
+    const element = new Element();
+    element.$ready = false;
+    element.setAttribute('second', '');
+    assert.equal(hasAttributeForProperty(Element, 'value', element), true);
+    element.removeAttribute('second');
+    assert.equal(hasAttributeForProperty(Element, 'value', element), false);
+    element.setAttribute('first', '');
+    assert.equal(hasAttributeForProperty(Element, 'value', element), true);
+  });
+
   test('@observable registers reactive property names', () => {
     class TestElement {}
     observable(TestElement.prototype, 'count');

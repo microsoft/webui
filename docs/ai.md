@@ -610,6 +610,13 @@ JavaScript - not to make it render.
   another component, a parent template, or the router sets it as an HTML
   attribute.
 
+Host attributes supply per-instance SSR inputs. With the bundler projection
+manifest, explicit `@attr({ attribute: 'aria-label' })` aliases and
+`@attr({ mode: 'boolean' })` presence semantics apply on the server too.
+`open`, `open=""`, and `open="false"` all mean present; use a `?` binding for
+conditional presence. Supply SSR defaults in server state, not JavaScript field
+initializers. See [Attribute Directives](./guide/concepts/directives/attributes).
+
 ```typescript
 // Justified: the click handler mutates it, the template renders it.
 @observable count = 0;

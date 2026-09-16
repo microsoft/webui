@@ -127,6 +127,12 @@ pub fn camel_to_kebab(name: &str) -> String {
     if let Some(attr) = property_to_attribute(name) {
         return attr.to_string();
     }
+    if name.starts_with("aria") && name.as_bytes().get(4).is_some_and(u8::is_ascii_uppercase) {
+        let mut result = String::with_capacity(name.len() + 1);
+        result.push_str("aria-");
+        result.extend(name[4..].chars().flat_map(char::to_lowercase));
+        return result;
+    }
     let mut result = String::with_capacity(name.len() + 4);
     for ch in name.chars() {
         if ch.is_uppercase() && !result.is_empty() {
@@ -172,6 +178,40 @@ pub fn attribute_to_camel(name: &str) -> String {
         }
     }
     result
+}
+
+/// Whether an HTML attribute uses native presence/absence boolean semantics.
+///
+/// ARIA attributes and enumerated attributes such as `contenteditable` are strings.
+#[must_use]
+pub fn is_boolean_attribute(name: &str) -> bool {
+    matches!(
+        name,
+        "allowfullscreen"
+            | "async"
+            | "autofocus"
+            | "autoplay"
+            | "checked"
+            | "controls"
+            | "default"
+            | "defer"
+            | "disabled"
+            | "formnovalidate"
+            | "inert"
+            | "ismap"
+            | "itemscope"
+            | "loop"
+            | "multiple"
+            | "muted"
+            | "nomodule"
+            | "novalidate"
+            | "open"
+            | "playsinline"
+            | "readonly"
+            | "required"
+            | "reversed"
+            | "selected"
+    )
 }
 
 #[cfg(test)]
@@ -234,5 +274,27 @@ mod tests {
     fn attribute_to_camel_regular() {
         assert_eq!(attribute_to_camel("aria-label"), "ariaLabel");
         assert_eq!(attribute_to_camel("data-title"), "dataTitle");
+    }
+
+    #[test]
+    fn default_aria_attribute_names_match_client_decorators() {
+        assert_eq!(camel_to_kebab("ariaDescribedby"), "aria-describedby");
+        assert_eq!(camel_to_kebab("ariaCustomValue"), "aria-customvalue");
+    }
+
+    #[test]
+    fn native_boolean_attributes_exclude_string_and_aria_attributes() {
+        for name in ["open", "disabled", "checked", "readonly", "inert"] {
+            assert!(is_boolean_attribute(name), "{name}");
+        }
+        for name in [
+            "aria-hidden",
+            "contenteditable",
+            "draggable",
+            "title",
+            "expanded",
+        ] {
+            assert!(!is_boolean_attribute(name), "{name}");
+        }
     }
 }

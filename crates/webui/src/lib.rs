@@ -717,6 +717,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     // parser work with an in-flight client bundle through a pending source.
     let merged_manifest = projection::load_and_merge(&options.projection_manifests)?;
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
+    if let Some(merged) = &merged_manifest {
+        webui_protocol::projection_manifest::apply_component_attributes(&mut protocol, |tag| {
+            merged.components.get(tag).map(|entry| &entry.attributes)
+        });
+    }
     protocol.initial_state_strategy = if merged_manifest.is_some() {
         webui_protocol::InitialStateStrategy::Components as i32
     } else {

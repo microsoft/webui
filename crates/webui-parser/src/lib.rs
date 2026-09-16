@@ -3808,63 +3808,11 @@ impl HtmlParser {
                         binding_count += 1;
                     }
                 }
-            } else if is_component && Self::is_skipped_attribute(attr_name) {
-                if let Some(val) = attr_value {
-                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                        let frag = WebUIFragment {
-                            fragment: Some(web_ui_fragment::Fragment::Attribute(
-                                WebUIFragmentAttribute {
-                                    name: attr_name.to_string(),
-                                    value: signal_name.to_string(),
-                                    attr_skip: true,
-                                    ..Default::default()
-                                },
-                            )),
-                        };
-                        self.add_fragment(frag, fragments);
-                        binding_count += 1;
-                    } else if Self::contains_handlebars(val) {
-                        let template_id = self.id_counter.next_id("attr");
-                        let parsed = self.handlebars_parser.parse(val)?;
-                        self.fragment_records.insert(
-                            template_id.clone(),
-                            FragmentList {
-                                fragments: parsed,
-                                contains_boundary: false,
-                            },
-                        );
-                        let frag = WebUIFragment {
-                            fragment: Some(web_ui_fragment::Fragment::Attribute(
-                                WebUIFragmentAttribute {
-                                    name: attr_name.to_string(),
-                                    template: template_id,
-                                    attr_skip: true,
-                                    ..Default::default()
-                                },
-                            )),
-                        };
-                        self.add_fragment(frag, fragments);
-                        binding_count += 1;
-                    } else {
-                        let frag = WebUIFragment {
-                            fragment: Some(web_ui_fragment::Fragment::Attribute(
-                                WebUIFragmentAttribute {
-                                    name: attr_name.to_string(),
-                                    value: val.to_string(),
-                                    raw_value: true,
-                                    attr_skip: true,
-                                    ..Default::default()
-                                },
-                            )),
-                        };
-                        self.add_fragment(frag, fragments);
-                    }
-                }
             } else if let Some(val) = attr_value {
                 if Self::contains_handlebars(val) {
                     if is_component {
                         if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                            let frag = Self::maybe_mark_attr_start(
+                            let frag = Self::component_attribute(
                                 WebUIFragment::attribute(attr_name, signal_name),
                                 &mut first_dynamic_emitted,
                             );
@@ -3872,7 +3820,18 @@ impl HtmlParser {
                             binding_count += 1;
                         } else {
                             let template_id = self.id_counter.next_id("attr");
-                            let parsed = self.handlebars_parser.parse(val)?;
+                            let mut parsed = self.handlebars_parser.parse(val)?;
+                            for fragment in &mut parsed {
+                                if let Some(web_ui_fragment::Fragment::Raw(raw)) =
+                                    &mut fragment.fragment
+                                {
+                                    if let std::borrow::Cow::Owned(decoded) =
+                                        html_escape::decode_html_entities(&raw.value)
+                                    {
+                                        raw.value = decoded;
+                                    }
+                                }
+                            }
                             self.fragment_records.insert(
                                 template_id.clone(),
                                 FragmentList {
@@ -3880,7 +3839,7 @@ impl HtmlParser {
                                     contains_boundary: false,
                                 },
                             );
-                            let frag = Self::maybe_mark_attr_start(
+                            let frag = Self::component_attribute(
                                 WebUIFragment::attribute_template(attr_name, template_id),
                                 &mut first_dynamic_emitted,
                             );
@@ -3892,13 +3851,17 @@ impl HtmlParser {
                         binding_count += 1;
                     }
                 } else if is_component {
-                    let frag = Self::maybe_mark_attr_start(
+                    let value = html_escape::decode_html_entities(val);
+                    let escape_value =
+                        matches!(value, std::borrow::Cow::Owned(_)) || val.contains('"');
+                    let frag = Self::component_attribute(
                         WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
                                     name: attr_name.to_string(),
-                                    value: val.to_string(),
+                                    value: value.into_owned(),
                                     raw_value: true,
+                                    escape_value,
                                     ..Default::default()
                                 },
                             )),
@@ -3910,6 +3873,20 @@ impl HtmlParser {
                     self.add_raw_fragment(" ");
                     self.add_raw_fragment(attr.raw);
                 }
+            } else if is_component {
+                let frag = Self::component_attribute(
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: attr_name.to_string(),
+                                raw_value: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    &mut first_dynamic_emitted,
+                );
+                self.add_fragment(frag, fragments);
             } else {
                 self.add_raw_fragment(" ");
                 self.add_raw_fragment(attr_name);
@@ -3918,7 +3895,7 @@ impl HtmlParser {
         Ok(binding_count)
     }
 
-    /// Set `attr_start = true` on the first non-skipped attribute fragment for
+    /// Set `attr_start = true` on the first attribute fragment for
     /// a component element.
     fn maybe_mark_attr_start(
         mut frag: WebUIFragment,
@@ -3931,6 +3908,17 @@ impl HtmlParser {
             *first_dynamic_emitted = true;
         }
         frag
+    }
+
+    fn component_attribute(
+        mut frag: WebUIFragment,
+        first_dynamic_emitted: &mut bool,
+    ) -> WebUIFragment {
+        if let Some(web_ui_fragment::Fragment::Attribute(ref mut attr)) = frag.fragment {
+            attr.attr_skip = Self::is_skipped_attribute(&attr.name);
+            attr.boolean = webui_protocol::attrs::is_boolean_attribute(&attr.name);
+        }
+        Self::maybe_mark_attr_start(frag, first_dynamic_emitted)
     }
 
     /// Process a boolean attribute (?prefix). Silently drops if value is not a
@@ -4513,7 +4501,7 @@ impl HtmlParser {
     /// Skipped attribute names for components.
     const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
     /// Skipped attribute prefixes for components.
-    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-", "aria-"];
+    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-"];
     const ADOPTED_STYLESHEETS_ATTR: &str = "shadowrootadoptedstylesheets";
 
     fn is_skipped_attribute(name: &str) -> bool {
@@ -7214,7 +7202,7 @@ mod tests {
         let records = parser.into_fragment_records();
 
         // <custom-element, :config(attrStart), class(attrSkip), style(attrSkip),
-        // role(attrSkip), data-test(attrSkip), aria-test(attrSkip), >, component, </custom-element>
+        // role(attrSkip), data-test(attrSkip), aria-test, >, component, </custom-element>
         assert_fragments!(
             records["index.html"].fragments,
             [
@@ -7226,7 +7214,7 @@ mod tests {
                 attr_skip("style", "value1"),
                 attr_skip("role", "value2"),
                 attr_skip("data-test", "value3"),
-                attr_skip("aria-test", "value4"),
+                attr("aria-test", "value4"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
@@ -7259,8 +7247,15 @@ mod tests {
             records["index.html"].fragments,
             [
                 raw("<item-group"),
-                attr_skip_raw("role", "list"),
-                attr_skip_template("aria-labelledby", "attr-1"),
+                FragmentMatcher::Attribute(AttrMatcher {
+                    name: "role".into(),
+                    value: Some("list".into()),
+                    raw_value: true,
+                    attr_start: true,
+                    attr_skip: true,
+                    ..Default::default()
+                }),
+                attr_template("aria-labelledby", "attr-1"),
                 attr_skip_template("data-testid", "attr-2"),
                 attr_skip_raw("class", "fixed-class"),
                 structural_matcher("streaming_root:item-group"),

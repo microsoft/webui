@@ -703,7 +703,14 @@ impl RenderFragmentIndex {
                         #[allow(clippy::cast_possible_truncation)]
                         let start = attr_names.len() as u32;
                         let before = attr_names.len();
-                        push_component_attr_name(&mut attr_names, component_attr_source(attribute));
+                        if attribute.property.is_empty() {
+                            push_component_attr_name(
+                                &mut attr_names,
+                                component_attr_source(attribute),
+                            );
+                        } else {
+                            attr_names.push_str(&attribute.property);
+                        }
                         #[allow(clippy::cast_possible_truncation)]
                         let len = (attr_names.len() - before) as u32;
                         (start, len)
@@ -1280,6 +1287,18 @@ fn push_component_attr_name(buffer: &mut String, name: &str) {
 #[inline(never)]
 fn missing_component_attr_name_error() -> HandlerError {
     HandlerError::Invariant("prepared component attribute name is missing".to_string())
+}
+
+fn component_attribute_value(value: Option<Cow<'_, Value>>, string_mode: bool) -> Value {
+    match value {
+        Some(value) if string_mode && !value.is_string() => Value::String(if value.is_null() {
+            String::new()
+        } else {
+            value.as_ref().to_string()
+        }),
+        Some(value) => value.into_owned(),
+        None => Value::String(String::new()),
+    }
 }
 
 /// Fixed-capacity [`fmt::Write`] sink used to render JSON scalars on the stack.
@@ -3760,6 +3779,14 @@ impl WebUIHandler {
             return Ok(());
         }
 
+        if attr.boolean && !attr.complex && context.collecting_component_attrs && !attr.attr_skip {
+            let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+            context.component_borrowed_attrs.remove(name);
+            context
+                .component_attrs
+                .insert(name.to_owned(), Value::Bool(true));
+        }
+
         // Template attribute (mixed static + dynamic)
         if !attr.template.is_empty() {
             let raw_value =
@@ -3767,7 +3794,7 @@ impl WebUIHandler {
             let escaped = crate::html_encode::encode_safe(&raw_value);
             write_attr(context.writer, &attr.name, &escaped)?;
 
-            if context.collecting_component_attrs && !attr.attr_skip {
+            if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                 context.component_borrowed_attrs.remove(name);
                 context
@@ -3778,11 +3805,16 @@ impl WebUIHandler {
         }
 
         // Simple attribute
-        if !attr.value.is_empty() {
+        if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                write_attr(context.writer, &attr.name, &attr.value)?;
-                if context.collecting_component_attrs && !attr.attr_skip {
+                let value = if attr.escape_value {
+                    crate::html_encode::encode_safe(&attr.value)
+                } else {
+                    Cow::Borrowed(attr.value.as_str())
+                };
+                write_attr(context.writer, &attr.name, &value)?;
+                if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                     context.component_borrowed_attrs.remove(name);
                     context
@@ -3820,20 +3852,22 @@ impl WebUIHandler {
                 // Dynamic attribute — resolve and render
                 // As above, a boundary-bearing continuation materializes a
                 // borrowed component scope before it can escape this call.
-                let state_backed_value = if context.collecting_component_attrs && !attr.attr_skip {
-                    resolve_state_backed_value(
-                        &attr.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    )
-                } else {
-                    None
-                };
+                let state_backed_value =
+                    if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
+                        resolve_state_backed_value(
+                            &attr.value,
+                            &context.loop_vars,
+                            context.visible_loop_scope,
+                            LocalValueSources {
+                                owned: &context.local_vars,
+                                borrowed: &context.local_borrowed_vars,
+                            },
+                            context.state,
+                        )
+                        .filter(|value| attr.property.is_empty() || value.is_string())
+                    } else {
+                        None
+                    };
                 // Reuse the immutable-state lookup for both HTML output and the
                 // child scope instead of resolving every component attribute twice.
                 let value = match state_backed_value {
@@ -3880,7 +3914,7 @@ impl WebUIHandler {
                     }
                 }
 
-                if context.collecting_component_attrs && !attr.attr_skip {
+                if context.collecting_component_attrs && !attr.attr_skip && !attr.boolean {
                     if let Some(borrowed) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_attrs.remove(name);
@@ -3890,9 +3924,7 @@ impl WebUIHandler {
                         context.component_borrowed_attrs.remove(name);
                         context.component_attrs.insert(
                             name.to_owned(),
-                            value
-                                .map(Cow::into_owned)
-                                .unwrap_or(Value::String(String::new())),
+                            component_attribute_value(value, !attr.property.is_empty()),
                         );
                     }
                 }

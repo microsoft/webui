@@ -49,6 +49,7 @@ const HASH_BUFFER_BYTES: usize = 16 * 1024;
 pub(crate) struct ComponentEntry {
     pub hydration_keys: Vec<String>,
     pub navigation_keys: Vec<String>,
+    pub attributes: BTreeMap<String, projection_manifest::ProjectionAttribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -211,6 +212,7 @@ fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<ProjectionSnapshot, 
                 ComponentEntry {
                     hydration_keys: entry.hydration_keys,
                     navigation_keys: entry.navigation_keys,
+                    attributes: entry.attributes,
                 },
             )
         })
@@ -733,6 +735,7 @@ pub(crate) mod test_support {
                         .iter()
                         .map(|value| (*value).to_string())
                         .collect(),
+                    attributes: BTreeMap::new(),
                 },
             );
         }
@@ -849,6 +852,7 @@ mod tests {
                 outputs: vec!["dist/index.js".to_string()],
                 hydration_keys: vec!["name".to_string()],
                 navigation_keys: vec!["name".to_string()],
+                attributes: BTreeMap::new(),
             },
         )]);
         let mut projection = ProjectionManifest {
@@ -1091,6 +1095,7 @@ mod tests {
             ComponentEntry {
                 hydration_keys: vec!["client".to_string()],
                 navigation_keys: vec!["client".to_string()],
+                attributes: BTreeMap::new(),
             },
         )]);
         assert!(validate_coverage(&merged, &["demo-card"]).is_ok());

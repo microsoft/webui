@@ -12,6 +12,9 @@ use std::marker::PhantomData;
 use std::path::{Component, Path};
 use thiserror::Error;
 
+mod attributes;
+pub use attributes::apply_component_attributes;
+
 /// Stable manifest diagnostic codes shared by all hosts.
 pub mod codes {
     pub const UNSUPPORTED_SCHEMA: &str = "PROJ-M002";
@@ -120,6 +123,20 @@ pub struct ProjectionComponent {
     pub hydration_keys: Vec<String>,
     /// Exact navigation `@observable + @attr` keys.
     pub navigation_keys: Vec<String>,
+    /// Exact inbound bindings keyed by HTML attribute name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(deserialize_with = "deserialize_unique_map")]
+    pub attributes: BTreeMap<String, ProjectionAttribute>,
+}
+
+/// One statically proven `@attr` declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionAttribute {
+    /// Exact JavaScript property updated by this HTML attribute.
+    pub property: String,
+    /// String mode (`0`) or boolean presence mode (`1`).
+    pub mode: u8,
 }
 
 impl ProjectionManifest {
@@ -249,6 +266,27 @@ impl ProjectionManifest {
                 append_record(&mut canonical, "entryClosure", &fields);
             }
         }
+        let attribute_count: usize = self
+            .components
+            .values()
+            .map(|entry| entry.attributes.len())
+            .sum();
+        if attribute_count > 0 {
+            append_record(
+                &mut canonical,
+                "componentAttributes",
+                &[&attribute_count.to_string()],
+            );
+            for (tag, entry) in &self.components {
+                for (name, attribute) in &entry.attributes {
+                    append_record(
+                        &mut canonical,
+                        "componentAttribute",
+                        &[tag, name, &attribute.property, &attribute.mode.to_string()],
+                    );
+                }
+            }
+        }
         hash_bytes(canonical.as_bytes())
     }
 }
@@ -362,6 +400,22 @@ fn validate_components(manifest: &ProjectionManifest) -> Result<(), ProjectionMa
             return Err(invalid_field(&format!(
                 "component <{tag}> key surfaces are invalid or navigation is not a hydration superset"
             )));
+        }
+        for (name, attribute) in &component.attributes {
+            if component
+                .hydration_keys
+                .binary_search(&attribute.property)
+                .is_err()
+                || attribute.mode > 1
+                || name.is_empty()
+                || name.bytes().any(|ch| {
+                    ch <= b' ' || matches!(ch, b'"' | b'\'' | b'<' | b'>' | b'/' | b'=' | b'`')
+                })
+            {
+                return Err(invalid_field(&format!(
+                    "component <{tag}> attribute '{name}' must name a hydration property, a valid HTML attribute, and mode 0 or 1"
+                )));
+            }
         }
     }
     Ok(())
@@ -568,6 +622,7 @@ mod tests {
                     outputs: vec!["dist/a.js".to_string()],
                     hydration_keys: vec!["displayValue".to_string()],
                     navigation_keys: vec!["displayValue".to_string(), "é".to_string()],
+                    attributes: BTreeMap::new(),
                 },
             )]),
             entry_closures: BTreeMap::new(),
@@ -632,6 +687,117 @@ mod tests {
             vec!["dist/chunk.js".to_string()],
         )]));
         assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn attribute_metadata_is_validated_hashed_and_round_tripped() {
+        let mut manifest = manifest_with_closures(BTreeMap::new());
+        manifest.components.insert(
+            "a-card".into(),
+            ProjectionComponent {
+                module: "src/a.ts".into(),
+                outputs: vec!["dist/index.js".into()],
+                hydration_keys: vec!["label".into()],
+                navigation_keys: vec!["label".into()],
+                attributes: BTreeMap::from([(
+                    "aria-label".into(),
+                    ProjectionAttribute {
+                        property: "label".into(),
+                        mode: 0,
+                    },
+                )]),
+            },
+        );
+        manifest.build_id = manifest.compute_build_id();
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        assert!(ProjectionManifest::from_slice(&bytes).is_ok());
+        let before = manifest.build_id.clone();
+        manifest
+            .components
+            .get_mut("a-card")
+            .unwrap()
+            .attributes
+            .get_mut("aria-label")
+            .unwrap()
+            .mode = 1;
+        assert_ne!(before, manifest.compute_build_id());
+        assert_eq!(
+            manifest.validate().unwrap_err().code(),
+            codes::BUILD_ID_MISMATCH
+        );
+        manifest
+            .components
+            .get_mut("a-card")
+            .unwrap()
+            .attributes
+            .get_mut("aria-label")
+            .unwrap()
+            .mode = 2;
+        assert_eq!(
+            manifest.validate().unwrap_err().code(),
+            codes::INVALID_FIELD
+        );
+        let attribute = manifest
+            .components
+            .get_mut("a-card")
+            .unwrap()
+            .attributes
+            .get_mut("aria-label")
+            .unwrap();
+        attribute.mode = 0;
+        attribute.property = "undeclared".into();
+        assert_eq!(
+            manifest.validate().unwrap_err().code(),
+            codes::INVALID_FIELD
+        );
+    }
+
+    #[test]
+    fn attribute_property_must_be_a_string() {
+        assert!(
+            serde_json::from_str::<ProjectionAttribute>(r#"{"mode":0,"property":"label"}"#).is_ok()
+        );
+        assert!(serde_json::from_str::<ProjectionAttribute>(r#"{"mode":0}"#).is_err());
+        assert!(
+            serde_json::from_str::<ProjectionAttribute>(r#"{"mode":0,"property":null}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn multiple_aliases_for_one_property_retain_their_own_modes() {
+        let mut manifest = manifest_with_closures(BTreeMap::new());
+        manifest.components.insert(
+            "a-card".into(),
+            ProjectionComponent {
+                module: "src/a.ts".into(),
+                outputs: vec!["dist/index.js".into()],
+                hydration_keys: vec!["value".into()],
+                navigation_keys: vec!["value".into()],
+                attributes: BTreeMap::from([
+                    (
+                        "old-expanded".into(),
+                        ProjectionAttribute {
+                            property: "value".into(),
+                            mode: 1,
+                        },
+                    ),
+                    (
+                        "new-expanded".into(),
+                        ProjectionAttribute {
+                            property: "value".into(),
+                            mode: 0,
+                        },
+                    ),
+                ]),
+            },
+        );
+        manifest.build_id = manifest.compute_build_id();
+        assert!(manifest.validate().is_ok());
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        assert_eq!(
+            ProjectionManifest::from_slice(&bytes).unwrap().components["a-card"].attributes,
+            manifest.components["a-card"].attributes,
+        );
     }
 
     #[test]

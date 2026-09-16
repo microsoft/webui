@@ -33,7 +33,7 @@ import {
   STREAMED_HOST_ATTR,
 } from './streaming-mode.js';
 import {
-  attributeNameForProperty,
+  hasAttributeForProperty,
   getObservableNames,
   syncAttrProperties,
 } from './decorators.js';
@@ -207,11 +207,11 @@ export class WebUIElement extends TemplateElement {
   }
 
   protected override $shouldApplySSRState(key: string): boolean {
-    const attribute = attributeNameForProperty(
+    return !hasAttributeForProperty(
       this.constructor as Function,
       key,
+      this,
     );
-    return attribute === undefined || !this.hasAttribute(attribute);
   }
 
   protected override $syncAuthoredAttributes(): void {

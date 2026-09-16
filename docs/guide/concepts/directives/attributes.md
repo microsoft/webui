@@ -153,3 +153,26 @@ You can mix static, dynamic, boolean, and complex attributes on the same element
 ```
 
 Static attributes (like `id="comp"`) are passed through as-is. Dynamic, boolean, and complex attributes are resolved from state at render time.
+
+## Attributes Passed to Components
+
+Host attributes also provide inputs to the component's server-rendered template.
+For example, `aria-label="Canvas information"` supplies `ariaLabel`. An explicit
+`@attr({ attribute: 'aria-label' })` alias uses the declared property name when
+you build with the bundler's projection manifest.
+
+```html
+<my-dialog open aria-label="Canvas information"></my-dialog>
+```
+
+```html
+<!-- my-dialog.html -->
+<dialog ?open="{{open}}" aria-label="{{ariaLabel}}"><slot></slot></dialog>
+```
+
+Boolean attributes use presence semantics: `open`, `open=""`, and `open="false"`
+all mean open. Use `?open="{{isOpen}}"` for a conditional boolean, not
+`open="{{isOpen}}"`. Empty string attributes are valid inputs and override a
+nonempty state value. Each instance receives its own host inputs; omitted inputs
+use the supplied server state. Supply SSR defaults in state JSON rather than
+relying on JavaScript field initializers.

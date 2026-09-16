@@ -1,0 +1,10 @@
+{
+  "open": false,
+  "expanded": false,
+  "ariaLabel": "Default name",
+  "ariaDescribedby": "",
+  "heading": "Default title",
+  "initiallyOpen": true,
+  "initiallyClosed": false,
+  "name": "Dynamic name"
+}

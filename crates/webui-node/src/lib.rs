@@ -1362,6 +1362,7 @@ mod tests {
                     outputs: vec!["bundle.js".to_string()],
                     hydration_keys: vec!["name".to_string()],
                     navigation_keys: vec!["label".to_string(), "name".to_string()],
+                    attributes: BTreeMap::new(),
                 },
             )]),
             entry_closures: BTreeMap::new(),

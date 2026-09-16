@@ -36,6 +36,7 @@ export type {
   ProducerInfo,
   AdapterInfo,
   ComponentEntry,
+  AttributeEntry,
 } from "./manifest.js";
 export { MANIFEST_SCHEMA, validateManifestSchema } from "./manifest.js";
 

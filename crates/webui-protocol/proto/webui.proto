@@ -323,14 +323,22 @@ message WebUIFragmentAttribute {
   string template = 3;
   // True for :-prefixed complex attributes.
   bool complex = 4;
-  // True for the first dynamic attribute on a component element.
+  // True for the first collected or skipped attribute on a component element.
   bool attr_start = 5;
-  // True for skipped attributes (class, style, role, data-*, aria-*).
+  // True for host-only attributes (class, style, role, data-*) unless projected.
   bool attr_skip = 6;
   // True for static attribute values on components.
   bool raw_value = 7;
   // For ?-prefixed boolean attributes, the condition tree.
   ConditionExpr condition_tree = 8;
+  // Exact projected component property name; empty uses canonical HTML mapping.
+  string property = 9;
+  // Attribute presence supplies true to component state, independently of text.
+  // Conditional and direct property bindings retain their typed values.
+  bool boolean = 10;
+  // Static value is decoded text requiring HTML escaping. False preserves
+  // verbatim values in protocols produced before decoded literal propagation.
+  bool escape_value = 11;
 }
 
 // A condition expression tree.
