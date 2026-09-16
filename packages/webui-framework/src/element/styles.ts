@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import { installComponentLinkStyles } from './link-styles.js';
+import { setImportMapContent } from '../trusted-types-policy.js';
 import { catalogFor } from './style-catalog.js';
 import type { ComponentStyleResource, DocumentCatalog } from './style-catalog.js';
 
@@ -360,9 +361,7 @@ function installModuleImportMap(
   script.type = 'importmap';
   const nonce = readNonce(target);
   if (nonce) script.nonce = nonce;
-  script.textContent = JSON.stringify({
-    imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
-  });
+  setImportMapContent(script, specifier, css, owner.defaultView);
   owner.head.appendChild(script);
   installedSpecifiers.add(specifier);
 }

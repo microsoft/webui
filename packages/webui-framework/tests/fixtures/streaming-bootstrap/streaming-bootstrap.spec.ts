@@ -16,77 +16,79 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('processes streamed checkpoints before downloading the application or hydration engine', async ({
-  page, request,
-}) => {
-  const assets: StreamingFixtureAssets = await (await request.get('/streaming-bootstrap/assets')).json();
-  const appGate = Promise.withResolvers<void>();
-  await page.route(`**${assets.application}`, async (route) => {
-    await appGate.promise;
-    await route.continue();
-  });
-  const scripts: string[] = [];
-  page.on('request', (req) => {
-    if (req.resourceType() === 'script') scripts.push(new URL(req.url()).pathname);
-  });
-  const id = randomUUID();
-  try {
-    await page.goto(`/streaming-bootstrap/fixture.html?id=${id}`, { waitUntil: 'commit' });
-    await page.waitForFunction(() => performance.getEntriesByName('webui:boundary:0:update').length === 1);
-    await expect(page.locator('h1')).toHaveText('Server-rendered before application startup');
-    await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 0');
-    expect(await page.evaluate(() => ({
-      loading: document.readyState === 'loading',
-      application: window.__streamingApplicationStarted,
-      defined: !!customElements.get('test-stream-parent'),
-      state: window.__webui?.state,
-      completions: window.__streamingCompletions,
-    }))).toEqual({
-      loading: true, application: undefined, defined: false, state: undefined, completions: 0,
+for (const trustedTypes of [false, true]) {
+  test(`processes streamed checkpoints before the application loads${trustedTypes ? ' with Trusted Types enforced' : ''}`, async ({
+    page, request,
+  }) => {
+    const assets: StreamingFixtureAssets = await (await request.get('/streaming-bootstrap/assets')).json();
+    const appGate = Promise.withResolvers<void>();
+    await page.route(`**${assets.application}`, async (route) => {
+      await appGate.promise;
+      await route.continue();
     });
-    const early = new Set([assets.coordinator.src, ...assets.coordinator.imports]);
-    expect(scripts.length).toBeGreaterThan(0);
-    expect(scripts.every((src) => early.has(src))).toBe(true);
-    const payloads = await Promise.all([...new Set(scripts)].map(async (src) => {
-      const response = await request.get(src);
-      expect(response.ok()).toBe(true);
-      return response.body();
-    }));
-    expect(payloads.reduce((sum, body) => sum + body.length, 0)).toBeLessThanOrEqual(32 * 1024);
-    expect(payloads.reduce((sum, body) => sum + gzipSync(body).length, 0)).toBeLessThanOrEqual(11 * 1024);
-    await expect(page.locator('script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
-
-    await request.post(`/streaming-bootstrap/release?id=${id}`);
-    await page.waitForFunction(() => performance.getEntriesByName('webui:streaming:terminal').length === 1);
-    expect(await page.evaluate(() => window.__streamingCompletions)).toBe(0);
-    appGate.resolve();
-    await page.waitForFunction(() => window.__streamingCompletions === 1);
-
-    await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 1');
-    await expect(page.locator('test-stream-parent .active')).toHaveText('Active');
-    const order = await page.evaluate(() => window.__streamingActivationOrder ?? []);
-    expect(order.filter((name) =>
-      name === 'test-stream-parent' || name === 'test-stream-counter:Nested',
-    )).toEqual(['test-stream-parent', 'test-stream-counter:Nested']);
-    expect(order.filter((name) => name === 'test-stream-counter:Last')).toHaveLength(1);
-    await page.locator('test-stream-parent button').click();
-    await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 2');
-    await expect(page.locator('[data-ws], script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
-    expect(await page.evaluate(() => window.__webui?.state)).toBeUndefined();
-
-    // A fresh mount needs the catalog the early bootstrap already registered.
-    await page.evaluate(() => {
-      const counter = document.createElement('test-stream-counter');
-      counter.id = 'client-mount';
-      document.body.appendChild(counter);
+    const scripts: string[] = [];
+    page.on('request', (req) => {
+      if (req.resourceType() === 'script') scripts.push(new URL(req.url()).pathname);
     });
-    await expect(page.locator('#client-mount button')).toHaveCSS('color', 'rgb(17, 34, 51)');
-    expect(await page.evaluate(() => window.__streamingCompletions)).toBe(1);
-  } finally {
-    appGate.resolve();
-    await request.post(`/streaming-bootstrap/release?id=${id}`);
-  }
-});
+    const id = randomUUID();
+    try {
+      await page.goto(`/streaming-bootstrap/fixture.html?id=${id}${trustedTypes ? '&trusted=1' : ''}`, { waitUntil: 'commit' });
+      await page.waitForFunction(() => performance.getEntriesByName('webui:boundary:0:update').length === 1);
+      await expect(page.locator('h1')).toHaveText('Server-rendered before application startup');
+      await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 0');
+      expect(await page.evaluate(() => ({
+        loading: document.readyState === 'loading',
+        application: window.__streamingApplicationStarted,
+        defined: !!customElements.get('test-stream-parent'),
+        state: window.__webui?.state,
+        completions: window.__streamingCompletions,
+      }))).toEqual({
+        loading: true, application: undefined, defined: false, state: undefined, completions: 0,
+      });
+      const early = new Set([assets.coordinator.src, ...assets.coordinator.imports]);
+      expect(scripts.length).toBeGreaterThan(0);
+      expect(scripts.every((src) => early.has(src))).toBe(true);
+      const payloads = await Promise.all([...new Set(scripts)].map(async (src) => {
+        const response = await request.get(src);
+        expect(response.ok()).toBe(true);
+        return response.body();
+      }));
+      expect(payloads.reduce((sum, body) => sum + body.length, 0)).toBeLessThanOrEqual(32 * 1024);
+      expect(payloads.reduce((sum, body) => sum + gzipSync(body).length, 0)).toBeLessThanOrEqual(11 * 1024);
+      await expect(page.locator('script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
+
+      await request.post(`/streaming-bootstrap/release?id=${id}`);
+      await page.waitForFunction(() => performance.getEntriesByName('webui:streaming:terminal').length === 1);
+      expect(await page.evaluate(() => window.__streamingCompletions)).toBe(0);
+      appGate.resolve();
+      await page.waitForFunction(() => window.__streamingCompletions === 1);
+
+      await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 1');
+      await expect(page.locator('test-stream-parent .active')).toHaveText('Active');
+      const order = await page.evaluate(() => window.__streamingActivationOrder ?? []);
+      expect(order.filter((name) =>
+        name === 'test-stream-parent' || name === 'test-stream-counter:Nested',
+      )).toEqual(['test-stream-parent', 'test-stream-counter:Nested']);
+      expect(order.filter((name) => name === 'test-stream-counter:Last')).toHaveLength(1);
+      await page.locator('test-stream-parent button').click();
+      await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 2');
+      await expect(page.locator('[data-ws], script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
+      expect(await page.evaluate(() => window.__webui?.state)).toBeUndefined();
+
+      // A fresh mount needs the catalog the early bootstrap already registered.
+      await page.evaluate(() => {
+        const counter = document.createElement('test-stream-counter');
+        counter.id = 'client-mount';
+        document.body.appendChild(counter);
+      });
+      await expect(page.locator('#client-mount button')).toHaveCSS('color', 'rgb(17, 34, 51)');
+      expect(await page.evaluate(() => window.__streamingCompletions)).toBe(1);
+    } finally {
+      appGate.resolve();
+      await request.post(`/streaming-bootstrap/release?id=${id}`);
+    }
+  });
+}
 
 test('keeps definitions deferred when the application arrives before the coordinator', async ({
   page, request,

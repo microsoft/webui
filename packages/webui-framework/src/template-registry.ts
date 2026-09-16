@@ -63,6 +63,8 @@ import type {
   TemplateMeta,
 } from './template-types.js';
 
+import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
+
 const WEBUI_DATA_ID = 'webui-data';
 const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
 const TEMPLATE_FN_COUNT = Symbol.for('microsoft.webui.templateFnCount');
@@ -212,6 +214,8 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
  *
  * Used by component assets and tests. Registration also lets the dormant-host
  * runtime claim newly available scriptless templates.
+ * This accepts trusted compiler output, not user HTML or request state. Under
+ * Trusted Types it grants the immutable static HTML permission to enter DOM sinks.
  */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
@@ -371,6 +375,7 @@ function normalizeTemplateConditions(
   while (stack.length > 0) {
     const block = stack.pop();
     if (!block) continue;
+    registerTrustedTemplateBlock(block);
     if (block.a) {
       for (let i = 0; i < block.a.length; i++) {
         const attr = block.a[i];

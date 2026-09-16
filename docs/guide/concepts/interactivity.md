@@ -7,6 +7,10 @@ components intentionally participate in the owning CSS tree's global cascade.
 Only components that need interactivity ship JavaScript - everything else stays
 as static server-rendered HTML.
 
+WebUI uses [Trusted Types](./hydration#trusted-types) automatically for compiled
+templates. Applications control enforcement through CSP; raw state HTML is not
+promoted through the compiler policy.
+
 ## Component Files
 
 Every interactive component consists of three separate files. Templates are declarative - no JavaScript mixing.

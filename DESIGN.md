@@ -2611,6 +2611,45 @@ This section specifies only the cross-crate wire contract for `--plugin=webui`: 
 
 It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead, WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
+### Compiled-template Trusted Types boundary
+
+Native framework sinks use Trusted Types automatically when the browser supports
+them, independently of CSP enforcement. No configuration API, setup entry point
+or special import order exists. The first compiler HTML or CSS import-map sink
+creates the fixed-name `webui` policy, cached privately by document window.
+Ordinary module imports and metadata registration do not create a policy.
+Policy denial, including browser rejection of a pre-created or duplicated name,
+throws actionable CSP/shared-module guidance without falling back to strings.
+Browsers without Trusted Types preserve the string path. No default policy is
+created; nonce-based script/style authorization remains separate.
+
+No policy, capability, callable trust bridge, or policy-name marker is placed on
+`window`. Policy callbacks reject calls lacking the private capability; there is
+no public HTML/script conversion API or `createScriptURL` rule. On browsers with
+Trusted Types, compiler normalization records each block's immutable `h` in a
+module-private weak map. A template-cache miss checks that exact registered
+string before constructing TrustedHTML; parsed-fragment caching and cloning are
+unchanged. Unsupported browsers allocate no trust maps. Registration
+(`registerTemplateData`, SSR metadata and trusted component asset modules) accepts
+compiler programs, never request state or user HTML. This is a provenance
+contract, not a sanitizer or signature check on compiler output.
+
+No API accepts compiler condition source strings for execution; router integration
+is separate from this framework boundary. CSS Module import maps are generated
+from serialized specifier/CSS data and receive TrustedScript only on import-map
+nodes, retaining their nonce. Native streamed boundary payloads are parsed from
+browser-created inert script nodes; deferred activation, lazy/component-asset mounts and reactive
+condition/repeat insertion all reuse registered compiler blocks.
+
+Runtime triple-brace strings are not compiler output and do not enter the policy:
+the native Range sink still rejects them under enforcement. Parsing precedes
+deletion, so rejection leaves the existing raw range intact. Flush errors
+propagate without leaving the scheduling gate latched: unprocessed paths in the
+current batch are requeued alongside independently queued re-entrant writes.
+Already processed paths and the rejected path are not automatically retried.
+Subsequent updates can still run. Dynamic attribute/property bindings are not
+promoted; parser restrictions and native Trusted Types enforcement remain applicable.
+
 ### Metadata object format
 
 Each component's compiled template metadata is emitted as JSON-safe data in

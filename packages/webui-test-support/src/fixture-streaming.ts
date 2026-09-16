@@ -163,7 +163,8 @@ export async function prepareStreamingFixture({
     }
     res.setHeader(
       'Content-Security-Policy',
-      "script-src 'self' 'nonce-streaming-fixture'; style-src 'self' 'unsafe-inline'; object-src 'none'",
+      "script-src 'self' 'nonce-streaming-fixture'; style-src 'self' 'unsafe-inline'; object-src 'none'" +
+        (url.searchParams.has('trusted') ? "; require-trusted-types-for 'script'; trusted-types webui" : ''),
     );
     const id = url.searchParams.get('id') ?? '';
     if (!id || id.length > 128 || pending.has(id) || pending.size >= 32) {
