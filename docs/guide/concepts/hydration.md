@@ -278,43 +278,6 @@ state alive longer. Load registrations needed for early-interactive boundaries
 when needed, and defer unrelated application startup. Compiler-owned scriptless
 hosts can load framework support on demand without importing your application.
 
-#### Example: explicit esbuild entries
-
-For esbuild, these are ordinary entries in the application's existing build.
-The projection plugin handles state projection only; it does not enable
-streaming or add the import:
-
-```js
-import { build } from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
-
-const result = await build({
-  entryPoints: {
-    streaming: 'src/streaming.ts',
-    application: 'src/index.ts',
-  },
-  outdir: 'dist',
-  publicPath: '/assets',
-  entryNames: '[name]-[hash]',
-  bundle: true,
-  format: 'esm',
-  splitting: true,
-  platform: 'browser',
-  metafile: true,
-  plugins: [esbuildProjection()],
-});
-```
-
-Identify the streaming output by its `entryPoint: "src/streaming.ts"` in
-`result.metafile.outputs`, not its generated filename. Static
-`import-statement` dependencies describe the shared chunks needed by that
-entry. Output keys are paths, not served URLs; use the same deployment mapping
-as the application entry, consistent with `publicPath`. Preserve the
-coordinator's side effect when configuring tree shaking.
-
-State projection is separate: continue passing `webui-projection.json` from
-`esbuildProjection()` to the WebUI build when using that integration.
-
 ### Timing and lifecycle
 
 When a boundary pauses inside a component, WebUI generates a span around the

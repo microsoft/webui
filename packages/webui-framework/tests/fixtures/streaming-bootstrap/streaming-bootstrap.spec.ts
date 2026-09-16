@@ -3,6 +3,7 @@
 
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import type { StreamingFixtureAssets } from '@microsoft/webui-test-support/fixture-streaming';
 import type { TemplateMeta } from '../../../src/template-types.js';
 
@@ -46,6 +47,13 @@ test('processes streamed checkpoints before downloading the application or hydra
     const early = new Set([assets.coordinator.src, ...assets.coordinator.imports]);
     expect(scripts.length).toBeGreaterThan(0);
     expect(scripts.every((src) => early.has(src))).toBe(true);
+    const payloads = await Promise.all([...new Set(scripts)].map(async (src) => {
+      const response = await request.get(src);
+      expect(response.ok()).toBe(true);
+      return response.body();
+    }));
+    expect(payloads.reduce((sum, body) => sum + body.length, 0)).toBeLessThanOrEqual(32 * 1024);
+    expect(payloads.reduce((sum, body) => sum + gzipSync(body).length, 0)).toBeLessThanOrEqual(11 * 1024);
     await expect(page.locator('script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
 
     await request.post(`/streaming-bootstrap/release?id=${id}`);
