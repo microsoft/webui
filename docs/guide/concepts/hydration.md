@@ -273,6 +273,12 @@ explicitly instead. Do not preload deferred application chunks; authored
 `fetchpriority="low"` modules are excluded from WebUI's automatic modulepreload
 hints. Footer placement alone does not disable those hints.
 
+When you deliver an application entry, deliver any required static shared-chunk
+`modulepreload` links alongside it. Otherwise the browser must fetch the entry
+before discovering those chunks, adding a network round trip. For a deferred
+entry, keep these links beside that entry in the body rather than moving them
+to the head. Use your bundler's existing dependency metadata for their URLs.
+
 Delaying every component definition also delays interactivity and keeps pending
 state alive longer. Load registrations needed for early-interactive boundaries
 when needed, and defer unrelated application startup. Compiler-owned scriptless

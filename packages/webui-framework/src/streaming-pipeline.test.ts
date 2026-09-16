@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { beforeEach, describe, test } from 'node:test';
+import { resumeStreamingRoot } from './streaming-mode.js';
 
 /**
  * Coordinator pipeline tests.
@@ -23,7 +24,6 @@ import { beforeEach, describe, test } from 'node:test';
 
 const ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
 const ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
-const RESUME_PENDING = Symbol.for('microsoft.webui.pendingRootConnected');
 
 interface FakeNode {
   nodeType: number;
@@ -51,7 +51,6 @@ interface FakeElement extends FakeNode {
     bypassAncestor?: FakeElement,
   ) => number;
   [ABANDON]?: () => void;
-  [RESUME_PENDING]?: () => void;
 }
 
 let elementRegistry: FakeElement[] = [];
@@ -2622,6 +2621,7 @@ describe('streaming coordinator pipeline', () => {
     const a = element('my-late', { hook() { activated.push('a'); } });
     const c = element('my-late', { hook() { activated.push('c'); } });
     const b = buildBoundary(0, 0, [a, c], { state: {} });
+    const fields = Reflect.ownKeys(a);
 
     enqueue(b.sentinel);
     await flush();
@@ -2637,6 +2637,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(lc.completed, false, 'completion is gated on the late activation');
     assert.equal(lc.pendingLateActivations, 1, 'one late-activation wait outstanding');
     assert.equal(__pendingTagWaiterCountForTests(), 1, 'one tag waiter outstanding');
+    assert.deepEqual(Reflect.ownKeys(a), fields, 'pending state never changes the root object shape');
 
     defineTag('my-late');
     await flush();
@@ -2647,6 +2648,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(lc.completed, true, 'hydration completes once the late activation resolves');
     assert.equal(hasPending(a), false, 'stashed state consumed');
     assert.equal(hasPending(c), false, 'stashed state consumed');
+    assert.deepEqual(Reflect.ownKeys(a), fields, 'late activation adds or deletes no temporary root fields');
   });
 
   test('one tag waiter activates more than 10k exact roots across boundaries', async () => {
@@ -2726,8 +2728,8 @@ describe('streaming coordinator pipeline', () => {
     const reattachedBody = body();
     link(reattachedBody, [late]);
     customElements.upgrade(late as unknown as Element);
-    assert.equal(typeof late[RESUME_PENDING], 'function', 'one shared reconnect seam is installed');
-    late[RESUME_PENDING]!();
+    assert.equal(typeof resumeStreamingRoot, 'function', 'one shared reconnect seam is installed');
+    assert.equal(resumeStreamingRoot!(late as unknown as Element), true);
     await flush();
 
     assert.deepEqual(received, { resumed: true });

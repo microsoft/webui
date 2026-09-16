@@ -24,7 +24,7 @@ import {
   ACTIVATION_ANCESTOR_BARRIER,
   ACTIVATION_MISSING_TEMPLATE,
   ACTIVATION_STATIC_HOST_OPT_OUT,
-  PENDING_ROOT_CONNECTED,
+  registerStreamingRootResume,
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
@@ -93,9 +93,8 @@ interface PendingTagWaiter {
 /**
  * Everything one deferred root must replay when it finally activates.
  *
- * Held as a single symbol-keyed record rather than three parallel properties:
- * one hidden-class transition per retained root instead of three, one delete
- * instead of three, and no absent-vs-`undefined` sentinels.
+ * Kept off the element: deleting temporary own properties after custom-element
+ * upgrade leaves every instance with persistent dictionary-mode storage.
  */
 interface PendingRootRecord {
   readonly state: Record<string, unknown> | undefined;
@@ -118,7 +117,8 @@ let failureHandler: ((reason: string) => void) | null = null;
  */
 let invalidActivationOutcome: unknown;
 
-const PENDING_RECORD = Symbol();
+let pendingRootRecords: WeakMap<Element, PendingRootRecord> | undefined;
+registerStreamingRootResume(resumeRetainedElement);
 
 /** One boundary-owned shallow patch shared by every deferred root. */
 export interface PendingBoundaryUpdates {
@@ -156,10 +156,6 @@ export interface DeferredActivationOptions {
    */
   countRetention?: boolean;
 }
-
-type PendingRoot = Element & {
-  [PENDING_ROOT_CONNECTED]?: () => void;
-};
 
 /** Install the coordinator's fatal-error callback once for this document. */
 export function configureStreamingFailureHandler(
@@ -287,8 +283,14 @@ function activateMarkedElement(
     waiter.roots.add(el);
     pendingUndefinedRoots++;
   }
-  (el as PendingRoot)[PENDING_ROOT_CONNECTED] = resumePendingRoot;
   return ELEMENT_DEFERRED;
+}
+
+function resumeRetainedElement(el: Element): boolean {
+  if (!hasPendingRecord(el)) return false;
+  if (pendingBarrierRoots.has(el)) resumeBarrierRoot.call(el);
+  else resumePendingRoot.call(el);
+  return true;
 }
 
 function requestTemplateHostRuntime(tag: string, generation: number): void {
@@ -315,12 +317,10 @@ function deferBehindBarrier(
 ): void {
   stashPendingRecord(el, state, updates, bypass);
   pendingBarrierRoots.add(el);
-  (el as PendingRoot)[PENDING_ROOT_CONNECTED] = resumeBarrierRoot;
 }
 
 function activatePendingBarrierRoot(el: Element): number {
   if (!pendingBarrierRoots.delete(el)) return ELEMENT_IGNORED;
-  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
   const record = takePendingRecord(el);
   const updates = releaseUpdates(record);
   try {
@@ -416,7 +416,6 @@ function resumePendingRoot(this: Element): void {
     waiter.generation !== activationGeneration ||
     !waiter.roots.has(this)
   ) {
-    delete (this as PendingRoot)[PENDING_ROOT_CONNECTED];
     return;
   }
   activatePendingRoot(tag, waiter, this);
@@ -429,7 +428,6 @@ function activatePendingRoot(
 ): void {
   if (!waiter.roots.delete(el)) return;
   pendingUndefinedRoots--;
-  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
   const record = takePendingRecord(el);
   const updates = releaseUpdates(record);
   const state = record?.state;
@@ -599,11 +597,11 @@ export function abandonPendingWaiters(): void {
     pendingTagWaiters.clear();
   }
   pendingUndefinedRoots = 0;
+  pendingRootRecords = undefined;
 }
 
 function clearPendingRoot(el: Element): void {
   releaseUpdates(takePendingRecord(el));
-  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
   abandonDeferredTree(el);
 }
 
@@ -613,22 +611,24 @@ function stashPendingRecord(
   updates: PendingBoundaryUpdates | undefined,
   bypass: SpanBypass | undefined,
 ): void {
-  (el as unknown as Record<symbol, PendingRootRecord>)[PENDING_RECORD] = {
+  (pendingRootRecords ??= new WeakMap()).set(el, {
     state,
     updates,
     bypass,
-  };
+  });
   if (updates) updates.pendingRoots++;
 }
 
 function hasPendingRecord(el: Element): boolean {
-  return Object.prototype.hasOwnProperty.call(el, PENDING_RECORD);
+  return pendingRootRecords?.has(el) ?? false;
 }
 
 function takePendingRecord(el: Element): PendingRootRecord | undefined {
-  const store = el as unknown as Record<symbol, PendingRootRecord | undefined>;
-  const record = store[PENDING_RECORD];
-  delete store[PENDING_RECORD];
+  const record = pendingRootRecords?.get(el);
+  pendingRootRecords?.delete(el);
+  if (pendingUndefinedRoots === 0 && pendingBarrierRoots.size === 0) {
+    pendingRootRecords = undefined;
+  }
   return record;
 }
 

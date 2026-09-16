@@ -11,6 +11,8 @@ import {
   ACTIVATION_STATIC_HOST_OPT_OUT,
   isStreamingHydrationMode,
   resetStreamingModeForTests,
+  registerStreamingRootResume,
+  resumeStreamingRoot,
 } from './streaming-mode.js';
 import type { ActivationOutcome } from './streaming-mode.js';
 import {
@@ -49,6 +51,19 @@ function withDocument<T>(meta: string | null, run: () => T): T {
 }
 
 describe('streaming-mode detection', () => {
+  test('the optional resume seam preserves element identity and absence', () => {
+    const previous = resumeStreamingRoot;
+    const el = {} as Element;
+    try {
+      registerStreamingRootResume(undefined);
+      assert.equal(Boolean(resumeStreamingRoot), false);
+      registerStreamingRootResume(root => root === el);
+      assert.equal(resumeStreamingRoot?.(el), true);
+      assert.equal(resumeStreamingRoot?.({} as Element), false);
+    } finally {
+      registerStreamingRootResume(previous);
+    }
+  });
   test('detects streaming mode from the meta tag', () => {
     resetStreamingModeForTests();
     withDocument('1', () => {

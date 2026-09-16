@@ -3896,6 +3896,15 @@ and retains root references only for updatable occurrences and pending
 definitions or barriers. Fatal cleanup alone may perform one bounded document
 sweep when marker-local cleanup is impossible.
 
+Pending root records live in a lazily allocated coordinator-owned `WeakMap`,
+not temporary element properties. Adding and deleting properties around native
+custom-element upgrade can leave the final instance in dictionary mode even
+after all state was released. One optional module-level resume function lets
+`TemplateElement` return control to the coordinator without adding a per-root
+callback or closure. Pending records are removed on activation or abandonment;
+the empty registry is released when the last undefined/barrier root settles.
+Non-streaming entries allocate no pending registry and import no coordinator.
+
 ### Reference scenario
 
 The primary scenario has one `<ntp-page>` in the entry. Its reusable component
