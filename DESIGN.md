@@ -3713,8 +3713,11 @@ CSS delivery strategy is selected once per build and is not boundary-local.
 
 1. Validates sequence, size, marker closure, template indexes, state arity,
    and response identity.
-2. Registers new templates/functions and compiler-owned hosts immediately;
-   streamed registrations do not wait for `DOMContentLoaded`.
+2. Registers new template metadata/functions immediately, without waiting for
+   `DOMContentLoaded`. Eligible compiler-owned hosts are defined at registration
+   if their runtime is already installed. Otherwise the range walk demand-loads
+   that runtime for undefined compiler-owned roots; definitions can complete
+   after the checkpoint commits, with roots held by shared per-tag waiters.
 3. Resolves the boundary's `HydrationRange` (`resolveBoundaryRange()` — the
    only placement-aware step), then walks that range once in boundary order,
    including open declarative shadow roots, without a root list or per-element
