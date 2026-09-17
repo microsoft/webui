@@ -3749,7 +3749,7 @@ impl HtmlParser {
         let mut binding_count: u32 = 0;
         for attr in attrs {
             let attr_name = attr.name;
-            let attr_value = attr.value.or(is_component.then_some(""));
+            let attr_value = attr.value;
             let is_property_binding = attr_name.starts_with(':')
                 && attr_value
                     .and_then(Self::extract_single_handlebars)
@@ -3821,7 +3821,6 @@ impl HtmlParser {
                                 },
                             )),
                         };
-                        let frag = Self::maybe_mark_attr_start(frag, &mut first_dynamic_emitted);
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     } else if Self::contains_handlebars(val) {
@@ -3844,7 +3843,6 @@ impl HtmlParser {
                                 },
                             )),
                         };
-                        let frag = Self::maybe_mark_attr_start(frag, &mut first_dynamic_emitted);
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     } else {
@@ -3859,9 +3857,11 @@ impl HtmlParser {
                                 },
                             )),
                         };
-                        let frag = Self::maybe_mark_attr_start(frag, &mut first_dynamic_emitted);
                         self.add_fragment(frag, fragments);
                     }
+                } else {
+                    self.add_raw_fragment(" ");
+                    self.add_raw_fragment(attr_name);
                 }
             } else if let Some(val) = attr_value {
                 if Self::contains_handlebars(val) {
@@ -3913,6 +3913,12 @@ impl HtmlParser {
                     self.add_raw_fragment(" ");
                     self.add_raw_fragment(attr.raw);
                 }
+            } else if is_component {
+                let fragment = Self::maybe_mark_attr_start(
+                    WebUIFragment::attribute_boolean(attr_name, ConditionExpr::identifier("true")),
+                    &mut first_dynamic_emitted,
+                );
+                self.add_fragment(fragment, fragments);
             } else {
                 self.add_raw_fragment(" ");
                 self.add_raw_fragment(attr_name);
@@ -3935,7 +3941,7 @@ impl HtmlParser {
         Ok(fragments)
     }
 
-    /// Set `attr_start = true` on the first attribute fragment for
+    /// Set `attr_start = true` on the first non-skipped attribute fragment for
     /// a component element.
     fn maybe_mark_attr_start(
         mut frag: WebUIFragment,
@@ -4530,7 +4536,7 @@ impl HtmlParser {
     /// Skipped attribute names for components.
     const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
     /// Skipped attribute prefixes for components.
-    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-", "aria-"];
+    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-"];
     const ADOPTED_STYLESHEETS_ATTR: &str = "shadowrootadoptedstylesheets";
 
     fn is_skipped_attribute(name: &str) -> bool {
@@ -7231,7 +7237,7 @@ mod tests {
         let records = parser.into_fragment_records();
 
         // <custom-element, :config(attrStart), class(attrSkip), style(attrSkip),
-        // role(attrSkip), data-test(attrSkip), aria-test(attrSkip), >, component, </custom-element>
+        // role(attrSkip), data-test(attrSkip), aria-test, >, component, </custom-element>
         assert_fragments!(
             records["index.html"].fragments,
             [
@@ -7243,7 +7249,7 @@ mod tests {
                 attr_skip("style", "value1"),
                 attr_skip("role", "value2"),
                 attr_skip("data-test", "value3"),
-                attr_skip("aria-test", "value4"),
+                attr("aria-test", "value4"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
@@ -7276,15 +7282,13 @@ mod tests {
             records["index.html"].fragments,
             [
                 raw("<item-group"),
+                attr_skip_raw("role", "list"),
                 FragmentMatcher::Attribute(AttrMatcher {
-                    name: "role".into(),
-                    value: Some("list".into()),
-                    raw_value: true,
+                    name: "aria-labelledby".into(),
+                    template: Some("attr-1".into()),
                     attr_start: true,
-                    attr_skip: true,
                     ..Default::default()
                 }),
-                attr_skip_template("aria-labelledby", "attr-1"),
                 attr_skip_template("data-testid", "attr-2"),
                 attr_skip_raw("class", "fixed-class"),
                 structural_matcher("streaming_root:item-group"),

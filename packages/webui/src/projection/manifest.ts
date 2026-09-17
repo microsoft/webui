@@ -9,7 +9,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { isValidAttributeName } from "./attribute-names.js";
 
 /** The only valid schema string for this version. */
 export const MANIFEST_SCHEMA = "webui.state-projection/v1" as const;
@@ -64,19 +63,11 @@ export function computeBuildId(params: {
    * Per-entry static import closures, keyed by entry output and sorted by key.
    *
    * Member order is load order (largest-first) and is therefore covered by the
-   * build ID rather than normalized away. Omitted entirely when empty.
+   * build ID rather than normalized away. Omitted entirely when empty so
+   * manifests produced before this field existed keep their original ID.
    */
   readonly sortedEntryClosures?: ReadonlyArray<
     readonly [entry: string, closure: ReadonlyArray<string>]
-  >;
-
-  /**
-   * Inbound metadata sorted by tag, then HTML attribute name, using UTF-8 bytes.
-   * Attribute names are resolved even when the decorator uses a default name.
-   * The canonical proof includes the attribute count even when empty.
-   */
-  readonly sortedComponentAttributes?: ReadonlyArray<
-    readonly [tag: string, attribute: string, property: string, mode: 0 | 1]
   >;
 }): string {
   const records: string[] = [];
@@ -131,15 +122,6 @@ export function computeBuildId(params: {
       ]);
     }
   }
-  const componentAttributes = params.sortedComponentAttributes ?? [];
-  appendRecord(records, "componentAttributes", [
-    String(componentAttributes.length),
-  ]);
-  for (const [tag, attribute, property, mode] of componentAttributes) {
-    appendRecord(records, "componentAttribute", [
-      tag, attribute, property, String(mode),
-    ]);
-  }
   return hashContent(records.join(""));
 }
 
@@ -161,11 +143,15 @@ export function serializeManifestCanonical(
 ): string {
   const inputs = sortRecord(manifest.inputs);
   const outputs = sortRecord(manifest.outputs);
-  const components: string[] = [];
+  const components: Record<string, ComponentEntry> = {};
   for (const tag of Object.keys(manifest.components).sort(compareUtf8)) {
-    components.push(
-      `${JSON.stringify(tag)}:${serializeComponentCanonical(manifest.components[tag]!)}`
-    );
+    const entry = manifest.components[tag]!;
+    components[tag] = {
+      module: entry.module,
+      outputs: [...entry.outputs].sort(compareUtf8),
+      hydrationKeys: [...entry.hydrationKeys].sort(compareUtf8),
+      navigationKeys: [...entry.navigationKeys].sort(compareUtf8),
+    };
   }
   const entryClosures = manifest.entryClosures ?? {};
   const entryClosureKeys = Object.keys(entryClosures).sort(compareUtf8);
@@ -173,7 +159,7 @@ export function serializeManifestCanonical(
   for (const entry of entryClosureKeys) {
     sortedEntryClosures[entry] = entryClosures[entry]!;
   }
-  const prefix = JSON.stringify({
+  return JSON.stringify({
     schema: manifest.schema,
     producer: manifest.producer,
     adapter: manifest.adapter,
@@ -182,33 +168,13 @@ export function serializeManifestCanonical(
     buildId: manifest.buildId,
     outputs,
     inputs,
+    components,
+    // Omitted when empty so the JSON matches a pre-`entryClosures` manifest
+    // byte for byte, exactly like the Rust `skip_serializing_if`.
+    ...(entryClosureKeys.length > 0
+      ? { entryClosures: sortedEntryClosures }
+      : {}),
   });
-  const closures = entryClosureKeys.length > 0
-    ? `,"entryClosures":${JSON.stringify(sortedEntryClosures)}`
-    : "";
-  return `${prefix.slice(0, -1)},"components":{${components.join(",")}}${closures}}`;
-}
-
-function serializeComponentCanonical(entry: ComponentEntry): string {
-  const json = JSON.stringify({
-    module: entry.module,
-    outputs: [...entry.outputs].sort(compareUtf8),
-    hydrationKeys: [...entry.hydrationKeys].sort(compareUtf8),
-    navigationKeys: [...entry.navigationKeys].sort(compareUtf8),
-  });
-  const attributes = Object.entries(entry.attributes ?? {}).sort(
-    (left, right) => compareUtf8(left[0], right[0])
-  );
-  if (attributes.length === 0) return json;
-  // JSON.stringify reorders integer-like object keys numerically. Write name
-  // records explicitly so every valid HTML alias retains UTF-8 lexical order.
-  const records = attributes.map(([attribute, definition]) =>
-    `${JSON.stringify(attribute)}:${JSON.stringify({
-      property: definition.property,
-      mode: definition.mode,
-    })}`
-  );
-  return `${json.slice(0, -1)},"attributes":{${records.join(",")}}}`;
 }
 
 function sortRecord(
@@ -260,7 +226,8 @@ export interface ProjectionManifest {
    * The bundler is the only party that knows output sizes, so it sorts here
    * and consumers use the order as given. Every known entry is present, even
    * when its closure is empty, so consumers can disambiguate equal basenames
-   * across merged builds. Omitted when the adapter supplies no entry ownership.
+   * across merged builds. Absent on manifests produced before this field
+   * existed.
    */
   readonly entryClosures?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
@@ -297,17 +264,6 @@ export interface ComponentEntry {
    * HTML attribute names.
    */
   readonly navigationKeys: ReadonlyArray<string>;
-
-  /** Exact inbound `@attr` registry, keyed by resolved HTML attribute name. */
-  readonly attributes?: Readonly<Record<string, AttributeEntry>>;
-}
-
-/** One inbound attribute target; multiple aliases may address the same property. */
-export interface AttributeEntry {
-  /** JavaScript property receiving this attribute's value. */
-  readonly property: string;
-  /** String attribute value (0) or boolean presence (1). */
-  readonly mode: 0 | 1;
 }
 
 /**
@@ -440,7 +396,7 @@ function validateComponents(
     }
     rejectUnknownKeys(
       rawEntry,
-      ["module", "outputs", "hydrationKeys", "navigationKeys", "attributes"],
+      ["module", "outputs", "hydrationKeys", "navigationKeys"],
       errors
     );
     const module = rawEntry["module"];
@@ -483,47 +439,6 @@ function validateComponents(
       hydrationKeys.some(
         (key) => binarySearch(navigationKeys, key) === false
       )
-    ) {
-      errors.add("PROJ-M009");
-    }
-    validateAttributes(rawEntry["attributes"], hydrationKeys, errors);
-  }
-}
-
-function validateAttributes(
-  value: unknown,
-  hydrationKeys: unknown,
-  errors: Set<string>
-): void {
-  if (value === undefined) return;
-  if (!isRecord(value) || !isStringArray(hydrationKeys)) {
-    errors.add("PROJ-M009");
-    return;
-  }
-  const names = Object.keys(value);
-  // Object.keys has already moved integer-index names into numeric order;
-  // only the remaining keys preserve an order that can be validated here.
-  const orderedNames = names.filter((name) => {
-    const index = Number(name);
-    return !(Number.isInteger(index) && index >= 0 &&
-      index < 0xffff_ffff && String(index) === name);
-  });
-  if (names.length === 0 || !isSortedUnique(orderedNames)) {
-    errors.add("PROJ-M009");
-  }
-  for (const [attribute, definition] of Object.entries(value)) {
-    if (
-      !isValidAttributeName(attribute) ||
-      !isRecord(definition)
-    ) {
-      errors.add("PROJ-M009");
-      continue;
-    }
-    rejectUnknownKeys(definition, ["property", "mode"], errors);
-    if (
-      (definition["mode"] !== 0 && definition["mode"] !== 1) ||
-      typeof definition["property"] !== "string" ||
-      !binarySearch(hydrationKeys, definition["property"])
     ) {
       errors.add("PROJ-M009");
     }

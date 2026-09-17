@@ -22,11 +22,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import * as ts from "./typescript-api.js";
 import type { AdapterContext, ModuleNode } from "./graph.js";
-import type {
-  AttributeEntry,
-  ComponentEntry,
-  ProjectionManifest,
-} from "./manifest.js";
+import type { ComponentEntry, ProjectionManifest } from "./manifest.js";
 import {
   MANIFEST_SCHEMA,
   VIRTUAL_HASH,
@@ -36,7 +32,6 @@ import {
 } from "./manifest.js";
 import { ProjectionError, createDiagnostic } from "./diagnostics.js";
 import type { ProjectionDiagnostic } from "./diagnostics.js";
-import { defaultAttributeName, isValidAttributeName } from "./attribute-names.js";
 
 /** The well-known framework package specifier recognized by literal text. */
 const FRAMEWORK_SPECIFIER = "@microsoft/webui-framework";
@@ -102,7 +97,6 @@ interface ModuleAnalysis {
 interface ExactStateKeys {
   readonly hydrationKeys: string[];
   readonly navigationKeys: string[];
-  readonly attributes: Readonly<Record<string, AttributeEntry>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,7 +1080,6 @@ function computeExactKeys(
 ): ExactStateKeys | undefined {
   const hydrationKeys = new Set<string>();
   const navigationKeys = new Set<string>();
-  const attributes = new Map<string, AttributeEntry>();
   const stack: Array<{ moduleId: string; node: ts.ClassLikeDeclaration }> = [
     { moduleId: startModuleId, node: startNode },
   ];
@@ -1107,7 +1100,6 @@ function computeExactKeys(
         node,
         hydrationKeys,
         navigationKeys,
-        attributes,
         diagnostics
       ) && ok;
     ok = climbBaseClass(ctx, analyses, moduleId, node, stack, diagnostics) && ok;
@@ -1117,9 +1109,6 @@ function computeExactKeys(
     ? {
         hydrationKeys: [...hydrationKeys].sort(compareUtf8),
         navigationKeys: [...navigationKeys].sort(compareUtf8),
-        attributes: Object.fromEntries(
-          [...attributes].sort((left, right) => compareUtf8(left[0], right[0]))
-        ),
       }
     : undefined;
 }
@@ -1131,37 +1120,28 @@ function collectOwnKeys(
   node: ts.ClassLikeDeclaration,
   hydrationKeys: Set<string>,
   navigationKeys: Set<string>,
-  attributes: Map<string, AttributeEntry>,
   diagnostics: ProjectionDiagnostic[]
 ): boolean {
   let ok = true;
-  const ownAttributes = new Map<string, AttributeEntry>();
   for (const member of node.members) {
     if (!ts.isPropertyDeclaration(member)) continue;
     const decorators = nodeModifiers(member).filter(
       (modifier): modifier is ts.Decorator =>
         modifier.kind === ts.SyntaxKind.Decorator
     );
-    // Legacy decorators apply bottom-up; the final @attr registration wins.
-    for (let index = decorators.length - 1; index >= 0; index--) {
+    for (const decorator of decorators) {
       ok =
         applyDecorator(
           ctx,
           analyses,
           moduleId,
           member,
-          decorators[index]!,
+          decorator,
           hydrationKeys,
           navigationKeys,
-          ownAttributes,
           diagnostics
         ) && ok;
     }
-  }
-  // The walk visits derived classes first. @observable never removes an
-  // inherited entry from the framework's inbound attribute registry.
-  for (const [attribute, definition] of ownAttributes) {
-    if (!attributes.has(attribute)) attributes.set(attribute, definition);
   }
   return ok;
 }
@@ -1174,7 +1154,6 @@ function applyDecorator(
   decorator: ts.Decorator,
   hydrationKeys: Set<string>,
   navigationKeys: Set<string>,
-  attributes: Map<string, AttributeEntry>,
   diagnostics: ProjectionDiagnostic[]
 ): boolean {
   if (!ts.isIdentifier(member.name)) {
@@ -1193,7 +1172,7 @@ function applyDecorator(
     diagnostics.push(
       createDiagnostic("PROJ-C007", {
         location: moduleId,
-        help: "Use bare @observable/@attr, a namespaced member, or @attr({ attribute: 'name', mode: 'boolean' }) with literal options.",
+        help: "Only a bare @observable/@attr identifier, a namespaced member, or @attr({ attribute }) is supported.",
       })
     );
     return false;
@@ -1215,14 +1194,10 @@ function applyDecorator(
     return true;
   }
   if (identity.kind === "frameworkAttr") {
-    const definition = parseAttributeOptions(parsed, moduleId, diagnostics);
-    if (definition === undefined) return false;
-    const attribute = definition.attribute ?? defaultAttributeName(propertyName);
     // SSR host attributes win when present. Bootstrap state remains necessary
     // for authored @attr values that are not materialized on the host.
     hydrationKeys.add(propertyName);
     navigationKeys.add(propertyName);
-    attributes.set(attribute, { property: propertyName, mode: definition.mode });
     return true;
   }
   if (identity.kind === "other") return true;
@@ -1247,67 +1222,6 @@ type ParsedDecorator =
   | { readonly kind: "bare"; readonly calleeExpr: ts.Expression }
   | { readonly kind: "call"; readonly calleeExpr: ts.Expression; readonly call: ts.CallExpression }
   | { readonly kind: "unsupported" };
-
-interface ParsedAttributeOptions {
-  readonly attribute?: string;
-  readonly mode: 0 | 1;
-}
-
-function parseAttributeOptions(
-  decorator: Exclude<ParsedDecorator, { readonly kind: "unsupported" }>,
-  moduleId: string,
-  diagnostics: ProjectionDiagnostic[]
-): ParsedAttributeOptions | undefined {
-  if (decorator.kind === "bare" || decorator.call.arguments.length === 0) {
-    return { mode: 0 };
-  }
-  const options = decorator.call.arguments[0]!;
-  if (
-    decorator.call.arguments.length !== 1 ||
-    !ts.isObjectLiteralExpression(options)
-  ) {
-    return unsupportedAttributeOptions(moduleId, diagnostics);
-  }
-  let attribute: string | undefined;
-  let mode: 0 | 1 = 0;
-  for (const option of options.properties) {
-    if (
-      !ts.isPropertyAssignment(option) ||
-      (!ts.isIdentifier(option.name) && !ts.isStringLiteral(option.name)) ||
-      (!ts.isStringLiteral(option.initializer) &&
-        !ts.isNoSubstitutionTemplateLiteral(option.initializer))
-    ) {
-      return unsupportedAttributeOptions(moduleId, diagnostics);
-    }
-    if (
-      option.name.text === "attribute" &&
-      isValidAttributeName(option.initializer.text)
-    ) {
-      attribute = option.initializer.text;
-    } else if (
-      option.name.text === "mode" &&
-      option.initializer.text === "boolean"
-    ) {
-      mode = 1;
-    } else {
-      return unsupportedAttributeOptions(moduleId, diagnostics);
-    }
-  }
-  return { ...(attribute === undefined ? {} : { attribute }), mode };
-}
-
-function unsupportedAttributeOptions(
-  moduleId: string,
-  diagnostics: ProjectionDiagnostic[]
-): undefined {
-  diagnostics.push(
-    createDiagnostic("PROJ-C007", {
-      location: moduleId,
-      help: "Use @attr, @attr(), or @attr({ attribute: 'valid-html-name', mode: 'boolean' }). Options must be literal properties without computed keys, spreads, or dynamic values; omit mode for string attributes. Attribute names cannot contain spaces, control characters, quotes, angle brackets, slash, equals, or backtick.",
-    })
-  );
-  return undefined;
-}
 
 function parseDecoratorExpression(expr: ts.Expression): ParsedDecorator {
   if (ts.isIdentifier(expr) || ts.isPropertyAccessExpression(expr)) {
@@ -1403,9 +1317,6 @@ function buildManifest(
 ): ProjectionManifest {
   const root = manifestRoot(ctx);
   const components: Record<string, ComponentEntry> = {};
-  const sortedComponentAttributes: Array<
-    readonly [string, string, string, 0 | 1]
-  > = [];
 
   for (const tag of [...candidates.keys()].sort(compareUtf8)) {
     const { moduleId, stateKeys } = candidates.get(tag)!;
@@ -1419,16 +1330,7 @@ function buildManifest(
       outputs,
       hydrationKeys: stateKeys.hydrationKeys,
       navigationKeys: stateKeys.navigationKeys,
-      ...(Object.keys(stateKeys.attributes).length > 0
-        ? { attributes: stateKeys.attributes }
-        : {}),
     };
-    for (const [attribute, definition] of Object.entries(stateKeys.attributes)
-      .sort((left, right) => compareUtf8(left[0], right[0]))) {
-      sortedComponentAttributes.push([
-        tag, attribute, definition.property, definition.mode,
-      ]);
-    }
   }
 
   const inputs = buildInputsMap(ctx);
@@ -1461,7 +1363,6 @@ function buildManifest(
     ...(entryClosures
       ? { sortedEntryClosures: Object.entries(entryClosures) }
       : {}),
-    sortedComponentAttributes,
   });
 
   return {

@@ -285,7 +285,7 @@ pub struct WebUIFragmentAttribute {
     pub complex: bool,
     /// True for the first dynamic attribute on a component element.
     pub attr_start: bool,
-    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    /// True for host-only attributes (class, style, role, data-*).
     pub attr_skip: bool,
     /// True for static attribute values on components.
     pub raw_value: bool,
@@ -301,19 +301,14 @@ component fragment is entered. Attributes on native elements never carry
 attribute state — a native attribute cannot become a local variable of a
 later component.
 
-Static component attributes remain present when their value is empty. Bare
-component attributes are normalized to empty string literals using the existing
-`Attribute` fragment; their names do not imply a property type.
-
-Native and WASM builds lower declared `@attr` inputs into existing attribute and
-property-binding fragments. Canonical string inputs use ordinary attribute
-collection. Aliases use `:` property bindings without changing the host's HTML
-attribute name. Boolean presence becomes a constant `true` binding; explicit
-`?` and `:` inputs retain their expressions and typed values. Literal boolean
-conditions evaluate identically on the server and in generated client closures.
-Property bindings never emit HTML, including static, template, and condition
-values. Static attribute text is decoded at build time and escaped on output.
-No attribute-declaration container or new fields are stored in the protobuf.
+Valueless component inputs are presence flags: `<my-drawer open>` supplies
+boolean `open: true` to that component's template through an existing constant
+boolean-attribute fragment. Explicit `?` inputs retain their evaluated boolean;
+literal values, including empty strings, remain literal values. Native HTML
+attributes retain their authored presence. ARIA inputs use the existing attribute
+name mapping and are not excluded from component scope. None of this reads
+JavaScript decorators or requires projection metadata. Literal component
+attribute text is decoded at build time and escaped once on output.
 
 ##### Attribute Name Mapping
 
@@ -4429,12 +4424,6 @@ export interface ComponentEntry {
   readonly hydrationKeys: readonly string[];
   /** Sorted exact @observable + @attr property keys used by navigation. */
   readonly navigationKeys: readonly string[];
-  /** Exact inbound declarations keyed by HTML attribute name. */
-  readonly attributes?: Readonly<Record<string, {
-    readonly property: string;
-    /** String (0) or boolean presence (1). */
-    readonly mode: 0 | 1;
-  }>>;
 }
 ```
 
@@ -4549,9 +4538,6 @@ component(
 entryClosures(count)                    ... omitted entirely when empty
 entryClosure(entry, member-count, members...)
   ... sorted by UTF-8 entry bytes; members in their given load order
-componentAttributes(count)              ... always present, including zero
-componentAttribute(tag, attribute, property, mode)
-  ... sorted by UTF-8 tag bytes, then attribute bytes
 ```
 
 Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
@@ -4580,8 +4566,7 @@ output = dist/a.js / sha256:3333333333333333333333333333333333333333333333333333
 component = a-card / src/a.ts / [dist/a.js]
             / hydration [displayValue]
             / navigation [displayValue, é]
-componentAttributes = 0
-buildId = sha256:439764b5adbf055a080369870085bc81aed17ebba83a05c0e12fd94b1c9808cb
+buildId = sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18
 ```
 
 #### Stale validation

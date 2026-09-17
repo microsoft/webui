@@ -3753,7 +3753,7 @@ impl WebUIHandler {
                     .insert(name.to_owned(), Value::Bool(condition_met));
             }
 
-            if condition_met && !attr.complex {
+            if condition_met {
                 context.writer.write(" ")?;
                 context.writer.write(&attr.name)?;
             }
@@ -3764,10 +3764,8 @@ impl WebUIHandler {
         if !attr.template.is_empty() {
             let raw_value =
                 self.render_template_attr_value(&attr.template, template_target, context)?;
-            if !attr.complex {
-                let escaped = crate::html_encode::encode_safe(&raw_value);
-                write_attr(context.writer, &attr.name, &escaped)?;
-            }
+            let escaped = crate::html_encode::encode_safe(&raw_value);
+            write_attr(context.writer, &attr.name, &escaped)?;
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
@@ -3783,13 +3781,11 @@ impl WebUIHandler {
         if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                if !attr.complex {
-                    write_attr(
-                        context.writer,
-                        &attr.name,
-                        &crate::html_encode::encode_safe(&attr.value),
-                    )?;
-                }
+                write_attr(
+                    context.writer,
+                    &attr.name,
+                    &crate::html_encode::encode_safe(&attr.value),
+                )?;
                 if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                     context.component_borrowed_attrs.remove(name);
@@ -5842,58 +5838,61 @@ mod tests {
     // ── Component attribute state tests ───────────────────────────────
 
     #[test]
-    fn literal_property_bindings_set_state_without_emitting_attributes() {
-        let mut name = WebUIFragment::attribute_complex(":ariaLabel", "Canvas information");
-        let Some(Fragment::Attribute(attribute)) = &mut name.fragment else {
-            unreachable!()
-        };
-        attribute.raw_value = true;
-        attribute.attr_start = true;
-        let mut open = WebUIFragment::attribute_boolean(":open", ConditionExpr::identifier("true"));
-        let Some(Fragment::Attribute(attribute)) = &mut open.fragment else {
-            unreachable!()
-        };
-        attribute.complex = true;
-        let protocol = WebUIProtocol::new(HashMap::from([
+    fn html_component_inputs_forward_flags_and_aria_without_javascript_metadata() {
+        let cases = [
             (
-                "index.html".into(),
-                FragmentList {
-                    fragments: vec![
-                        WebUIFragment::raw(r#"<mai-drawer open aria-label="Canvas information""#),
-                        name,
-                        open,
-                        WebUIFragment::raw(">"),
-                        WebUIFragment::component("mai-drawer"),
-                        WebUIFragment::raw("</mai-drawer>"),
-                    ],
-                    contains_boundary: false,
-                },
+                r#"<my-drawer open aria-label="Canvas information"></my-drawer>"#,
+                test_json!({}),
+                r#"<dialog open aria-label="Canvas information"></dialog>"#,
             ),
             (
-                "mai-drawer".into(),
-                FragmentList {
-                    fragments: vec![
-                        WebUIFragment::raw("<dialog"),
-                        WebUIFragment::attribute_boolean("open", ConditionExpr::identifier("open")),
-                        WebUIFragment::attribute("aria-label", "ariaLabel"),
-                        WebUIFragment::raw("></dialog>"),
-                    ],
-                    contains_boundary: false,
-                },
+                r#"<my-drawer ?open="{{open}}" aria-label="Canvas information"></my-drawer>"#,
+                test_json!({"open": true}),
+                r#"<dialog open aria-label="Canvas information"></dialog>"#,
             ),
-        ]));
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            r#"<mai-drawer open aria-label="Canvas information"><dialog open aria-label="Canvas information"></dialog></mai-drawer>"#
-        );
+            (
+                r#"<my-drawer ?open="{{open}}" aria-label="Canvas information"></my-drawer>"#,
+                test_json!({"open": false}),
+                r#"<dialog aria-label="Canvas information"></dialog>"#,
+            ),
+            (
+                r#"<my-drawer aria-label=""></my-drawer>"#,
+                test_json!({"ariaLabel": "Fallback"}),
+                r#"<dialog aria-label=""></dialog>"#,
+            ),
+            (
+                r#"<my-drawer open aria-label="Canvas &amp; information"></my-drawer>"#,
+                test_json!({}),
+                r#"<dialog open aria-label="Canvas &amp; information"></dialog>"#,
+            ),
+        ];
+        for (input, state, expected) in cases {
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-drawer",
+                    r#"<dialog ?open="{{open}}" aria-label="{{ariaLabel}}"></dialog>"#,
+                    None,
+                    true,
+                ))
+                .unwrap();
+            parser.parse("index.html", input).unwrap();
+            let protocol = WebUIProtocol::new(parser.into_fragment_records());
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            assert!(
+                writer.get_content().contains(expected),
+                "{input}: {}",
+                writer.get_content()
+            );
+        }
     }
 
     #[test]

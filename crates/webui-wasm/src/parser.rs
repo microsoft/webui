@@ -197,12 +197,6 @@ pub(crate) fn parse_to_protocol_with_dom(
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
     protocol.component_render_css = component_render_css;
     let projection = merge_projection_manifests(projection_manifests)?;
-    if let Some(entries) = &projection {
-        webui_protocol::projection_manifest::lower_component_attributes(&mut protocol, |tag| {
-            entries.get(tag).map(|entry| &entry.attributes)
-        })
-        .map_err(|error| WasmError::Projection(error.to_string()))?;
-    }
     protocol.initial_state_strategy = if projection.is_some() {
         InitialStateStrategy::Components as i32
     } else {
@@ -390,8 +384,7 @@ mod tests {
     fn parse_to_protocol_applies_manifest_surfaces() {
         use std::collections::BTreeMap;
         use webui_protocol::projection_manifest::{
-            ProjectionAdapter, ProjectionAttribute, ProjectionComponent, ProjectionProducer,
-            PRODUCER_NAME, SCHEMA_ID,
+            ProjectionAdapter, ProjectionComponent, ProjectionProducer, PRODUCER_NAME, SCHEMA_ID,
         };
 
         let files = HashMap::from([
@@ -433,13 +426,6 @@ mod tests {
                     outputs: vec!["bundle.js".to_string()],
                     hydration_keys: vec!["name".to_string()],
                     navigation_keys: vec!["label".to_string(), "name".to_string()],
-                    attributes: BTreeMap::from([(
-                        "aria-label".into(),
-                        ProjectionAttribute {
-                            property: "name".into(),
-                            mode: 0,
-                        },
-                    )]),
                 },
             )]),
             entry_closures: BTreeMap::new(),
