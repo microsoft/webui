@@ -53,6 +53,7 @@ async function interceptDashboardPartial(
   pathname: string,
   dashboardTitle?: string,
   delayMs = 0,
+  release?: Promise<void>,
 ): Promise<{ response?: DashboardPartial }> {
   const capture: { response?: DashboardPartial } = {};
   await page.route('**/*', async route => {
@@ -78,6 +79,7 @@ async function interceptDashboardPartial(
     } else {
       state.dashboardTitle = dashboardTitle;
     }
+    await release;
     await route.fulfill({
       response,
       json: {
@@ -151,12 +153,16 @@ test.describe('SSR deep links', () => {
         marker: 'projects-ssr',
       });
 
-      const rootPartial = await interceptDashboardPartial(page, '/', 'Catalog', 350);
-      await page.evaluate(() => {
-        window.navigation.navigate('/');
-      });
-
-      await expect(page.locator('loading-skeleton[data-webui-pending]')).toBeVisible();
+      const release = Promise.withResolvers<void>();
+      const rootPartial = await interceptDashboardPartial(page, '/', 'Catalog', 0, release.promise);
+      try {
+        await page.locator('a[href="/"]').click();
+        await expect.poll(() => rootPartial.response).toBeDefined();
+        await expect.soft(page.locator('loading-skeleton[data-webui-pending]'))
+          .toBeVisible({ timeout: 1000 });
+      } finally {
+        release.resolve();
+      }
       await expect(
         page.locator(
           'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
@@ -174,7 +180,7 @@ test.describe('SSR deep links', () => {
       expect(await dashboardRouteState(page)).toEqual({
         path: '',
         pending: 'loading-skeleton',
-        error: null,
+        error: 'error-display',
         keepAlive: false,
         marker: null,
       });
@@ -206,7 +212,7 @@ test.describe('SSR deep links', () => {
       expect(await dashboardRouteState(page)).toEqual({
         path: '',
         pending: 'loading-skeleton',
-        error: null,
+        error: 'error-display',
         keepAlive: false,
         marker: null,
       });
@@ -910,38 +916,31 @@ test.describe('view transition rejection ownership', () => {
 test.describe('pending UI', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await page.waitForFunction(() => {
-      const el = document.querySelector('route-shell');
-      return el && (el as any).$ready === true;
-    }, null);
-    await page.waitForFunction(
-      () => !!(window as any).navigation,
-      null,
-      { timeout: 5000 },
-    );
-    await page.waitForTimeout(300);
+    await waitForDashboardRoute(page);
   });
 
   test('shows pending skeleton during slow navigation then replaces with real content', async ({ page }) => {
-    // Intercept the partial JSON fetch for /slow and delay it by 500ms
+    const received = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     await page.route('**/slow', async (route) => {
       const request = route.request();
       if (request.headers()['accept']?.includes('application/json')) {
-        // Delay the response to trigger pending UI (threshold is 150ms)
-        await new Promise(r => setTimeout(r, 500));
-        await route.continue();
+        const response = await route.fetch();
+        received.resolve();
+        await release.promise;
+        await route.fulfill({ response });
       } else {
         await route.continue();
       }
     });
 
-    // Navigate to the slow page
-    await page.click('a[href="/slow"]');
-
-    // The loading skeleton element should appear after ~150ms
-    await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
-
-    // After the fetch completes (~500ms), real content should replace the skeleton
+    try {
+      await page.click('a[href="/slow"]');
+      await received.promise;
+      await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
+    } finally {
+      release.resolve();
+    }
     await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('h2')).toContainText('Slow Page');
     await expect(page.locator('loading-skeleton')).toHaveCount(0);
@@ -1170,6 +1169,21 @@ test.describe('error boundaries', () => {
 
     // The error display element should be mounted
     await expect(page.locator('error-display')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('shows the root error boundary after a catch-all SSR entry', async ({ page }) => {
+    await page.goto('/not-found');
+    await page.waitForFunction(() => (window as Window & {
+      __testRouter?: { activeComponent: string };
+    }).__testRouter?.activeComponent === 'page-alpha');
+    await page.route('**/', route => route.fulfill({
+      status: 503,
+      contentType: 'text/plain',
+      body: 'Service unavailable',
+    }));
+
+    await page.locator('a[href="/"]').click();
+    await expect(page.locator('error-display[data-webui-error]')).toBeVisible();
   });
 
   test('shows the destination error boundary after a prior route is active', async ({ page }) => {

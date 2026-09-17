@@ -146,7 +146,6 @@ function findBestBoundaryRoute(
   const routes = root.querySelectorAll<HTMLElement>(ROUTE_SELECTOR);
   let best: BoundaryRouteMatch | null = null;
   let bestSpecificity = -1;
-  let ambiguous = false;
   for (let i = 0; i < routes.length; i++) {
     const route = routes[i];
     const ancestorRoute = route.parentElement?.closest(ROUTE_SELECTOR);
@@ -170,12 +169,9 @@ function findBestBoundaryRoute(
           getRouteMeta(route)?.keepAlive === true,
       };
       bestSpecificity = match.specificity;
-      ambiguous = false;
-    } else if (match.specificity === bestSpecificity) {
-      ambiguous = true;
     }
   }
-  return ambiguous ? null : best;
+  return best;
 }
 
 export function splitBoundaryPath(requestPath: string): string[] {

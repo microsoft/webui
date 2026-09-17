@@ -14,6 +14,7 @@
   <route path="/" component="route-shell">
     <route path="" component="route-dashboard" exact
            pending="loading-skeleton"
+           error="error-display"
            cache-tags="catalog-route"
            invalidates="catalog-route" />
     <route path="projects" component="route-dashboard" exact keep-alive
@@ -31,6 +32,7 @@
     <route path="loader" component="page-loader" exact />
     <route path="slow" component="page-slow" exact pending="loading-skeleton" />
     <route path="failing" component="page-failing" exact error="error-display" />
+    <route path="*rest" component="page-alpha" exact />
   </route>
 
   <script type="module" src="/index.js"></script>
