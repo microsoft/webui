@@ -2401,7 +2401,9 @@ impl WebUIHandler {
             }
         }
 
+        let after_match = best.as_ref().map_or(0, |(idx, _)| idx + 1);
         if let Some((idx, ref rm)) = best {
+            route_renderer::write_hidden_routes(context.writer, &children[..idx])?;
             let descended = descend_into(&mut children, idx);
             let Some(matched_child) = children.get(idx) else {
                 return Ok(());
@@ -2474,28 +2476,7 @@ impl WebUIHandler {
             }
         }
 
-        // Render non-matched siblings as hidden
-        for (idx, child) in children.iter().enumerate() {
-            let is_matched = best.as_ref().is_some_and(|(bi, _)| *bi == idx);
-            if !is_matched && !child.fragment_id.is_empty() {
-                context.writer.write("<webui-route")?;
-                context.writer.write(" path=\"")?;
-                context.writer.write(&child.path)?;
-                context.writer.write("\"")?;
-                context.writer.write(" component=\"")?;
-                context.writer.write(&child.fragment_id)?;
-                context.writer.write("\"")?;
-                if child.exact {
-                    context.writer.write(" exact")?;
-                }
-                route_renderer::write_route_navigation_attrs(context.writer, child)?;
-                context
-                    .writer
-                    .write(" style=\"display:none\"></webui-route>")?;
-            }
-        }
-
-        Ok(())
+        route_renderer::write_hidden_routes(context.writer, &children[after_match..])
     }
 
     /// Emit a `<script type="importmap">` tag that registers a component's
@@ -9839,6 +9820,55 @@ mod tests {
             html.contains(r#"component="topic-comp" exact style="display:none">"#),
             "topic should be hidden: {html}"
         );
+    }
+
+    #[test]
+    fn test_nested_routes_preserve_sibling_declaration_order() {
+        let mut protocol = make_nested_route_protocol();
+        let Some(Fragment::Route(root)) = protocol
+            .fragments
+            .get_mut("index.html")
+            .and_then(|entry| entry.fragments.first_mut())
+            .and_then(|fragment| fragment.fragment.as_mut())
+        else {
+            panic!("nested route fixture must have a root route");
+        };
+        root.children.insert(
+            0,
+            webui_protocol::WebUiFragmentRoute {
+                path: String::new(),
+                fragment_id: "topic-comp".into(),
+                exact: true,
+                ..Default::default()
+            },
+        );
+        root.children.push(webui_protocol::WebUiFragmentRoute {
+            path: "*rest".into(),
+            fragment_id: "topic-comp".into(),
+            exact: true,
+            ..Default::default()
+        });
+
+        for path in ["/", "/sections/frontend", "/missing"] {
+            let mut writer = TestWriter::new();
+            WebUIHandler::new()
+                .handle(
+                    &protocol,
+                    &test_json!({}),
+                    &RenderOptions::new("index.html", path),
+                    &mut writer,
+                )
+                .expect("render failed");
+            let html = writer.get_content();
+            let first = html.find(r#"<webui-route path="""#).expect("empty route");
+            let middle = html
+                .find(r#"<webui-route path="sections/:id""#)
+                .expect("section route");
+            let last = html
+                .find(r#"<webui-route path="*rest""#)
+                .expect("catch-all route");
+            assert!(first < middle && middle < last, "{path}: {html}");
+        }
     }
 
     #[test]
