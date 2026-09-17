@@ -416,6 +416,9 @@ To customize the animation, use `view-transition-name` on specific elements and 
 ```
 
 The router awaits `transition.updateCallbackDone` (not `.finished`), so rapid navigations supersede each other without queuing animations.
+Resizing or starting a newer transition may skip the animation without failing
+the committed route. Route commit errors still follow normal navigation error handling
+without duplicate unhandled transition rejections.
 
 ### `Router.back()`
 

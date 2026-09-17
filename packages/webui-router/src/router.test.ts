@@ -10,7 +10,7 @@ import { WebUIRouter } from './router.js';
 import { parseQuery, filterQuery } from './route-element.js';
 import { resolveLoaders } from './loaders.js';
 import { ensureComponentLoaded } from './loaders.js';
-import { NavigationCache } from './cache.js';
+import { NavigationCache, type PartialResponse } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
 import {
   registerInitialTemplatesAndStyles,
@@ -34,6 +34,13 @@ interface RouteChainEntry {
 interface RouterInternals {
   inventory: string;
   activeChain: RouteChainEntry[];
+  commitWithData(
+    data: PartialResponse,
+    path: string,
+    query: Record<string, string>,
+    navigationGeneration: number,
+    boundaryGeneration: number,
+  ): Promise<boolean>;
 }
 
 /** Cast a WebUIRouter to expose private fields for test setup. */
@@ -1190,6 +1197,77 @@ describe('WebUIRouter', () => {
   });
 
   describe('view transition timing', () => {
+    let savedStartViewTransition: typeof document.startViewTransition;
+    beforeEach(() => {
+      savedStartViewTransition = document.startViewTransition;
+    });
+    afterEach(() => {
+      document.startViewTransition = savedStartViewTransition;
+    });
+
+    const partial: PartialResponse = {
+      chain: [{ component: '', path: '/next', params: {} }],
+      componentStyles: emptyComponentStyles(),
+      templates: {},
+      path: '/next',
+    };
+
+    test('commits while ready and finished are still pending', async () => {
+      const update = Promise.withResolvers<void>();
+      const ready = new Promise<void>(() => {});
+      const finished = new Promise<void>(() => {});
+      document.startViewTransition = callback => {
+        assert.ok(typeof callback === 'function');
+        callback();
+        return {
+          ready, finished, updateCallbackDone: update.promise,
+          types: new Set<string>(), skipTransition() {},
+        };
+      };
+      const router = new WebUIRouter();
+      let settled = false;
+      const commit = internals(router).commitWithData(
+        partial, '/next', {}, 0, 0,
+      ).then(result => {
+        settled = true;
+        return result;
+      });
+
+      await new Promise(setImmediate);
+      assert.equal(settled, false, 'must await the update callback');
+      update.resolve();
+      await new Promise(setImmediate);
+      assert.equal(settled, true, 'must not await animation readiness or completion');
+      assert.equal(await commit, true);
+    });
+
+    for (const failure of [
+      new Error('route commit failed'),
+      new DOMException('route commit failed', 'InvalidStateError'),
+    ]) {
+      test(`propagates a commit callback ${failure.name} without duplicate rejection`, async (t) => {
+        t.mock.method(document, 'createElement', () => { throw failure; });
+        document.startViewTransition = callback => {
+          assert.ok(typeof callback === 'function');
+          const updateCallbackDone = Promise.resolve().then(callback);
+          const ready = updateCallbackDone.then(() => {});
+          const finished = updateCallbackDone.then(() => {});
+          return {
+            ready, finished, updateCallbackDone,
+            types: new Set<string>(), skipTransition() {},
+          };
+        };
+        const router = new WebUIRouter();
+        await assert.rejects(
+          internals(router).commitWithData(
+            partial, '/next', {}, 0, 0,
+          ),
+          error => error === failure,
+        );
+        await new Promise(setImmediate);
+      });
+    }
+
     test('startViewTransition awaits updateCallbackDone not finished', () => {
       // Regression: awaiting .finished blocks the Navigation API intercept
       // handler until the CSS animation completes, serializing navigations
@@ -1203,7 +1281,7 @@ describe('WebUIRouter', () => {
         'should await updateCallbackDone on the view transition',
       );
       assert.ok(
-        !source.includes('transition.finished'),
+        !source.includes('await transition.finished'),
         'should NOT await transition.finished on the view transition — it blocks rapid navigation',
       );
     });
