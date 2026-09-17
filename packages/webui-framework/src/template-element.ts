@@ -68,7 +68,7 @@ import {
   ACTIVATION_MISSING_TEMPLATE,
   ACTIVATION_STATIC_HOST_OPT_OUT,
   isStreamingHydrationMode,
-  PENDING_ROOT_CONNECTED,
+  resumeStreamingRoot,
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
@@ -613,7 +613,7 @@ export class TemplateElement extends HTMLElement {
   /**
    * Hand control back to whoever retained this root, if anyone did.
    *
-   * The streaming coordinator installs the hook on roots it is holding — for a
+   * The streaming coordinator retains roots it is holding — for a
    * pending definition or a pending ancestor barrier — and owns every
    * continuation from there: eager activation, re-registration behind a
    * barrier, lazy observation, or a static-host opt-out. Re-entering ordinary
@@ -621,12 +621,7 @@ export class TemplateElement extends HTMLElement {
    * boundary update.
    */
   private $resumeRetainedRoot(): boolean {
-    const resume = (
-      this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void }
-    )[PENDING_ROOT_CONNECTED];
-    if (typeof resume !== 'function') return false;
-    resume.call(this);
-    return true;
+    return resumeStreamingRoot?.(this) ?? false;
   }
 
   /**

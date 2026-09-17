@@ -6,12 +6,12 @@
  *
  * Kept in its own leaf module (no imports) so `template-element.ts` can check
  * `isStreamingHydrationMode()` without importing the coordinator
- * (`streaming.ts`), which itself imports `static-host.ts` →
- * `template-element.ts`. A direct import from `template-element.ts` back to
- * `streaming.ts` would close that cycle.
+ * (`streaming.ts`). The coordinator can demand-load `static-host.ts` and
+ * `template-element.ts`; neither the element nor lifecycle entry may import
+ * the coordinator back into the always-shipped graph.
  *
  * It carries only what the always-shipped bundle genuinely needs: mode
- * detection, the two shared hook symbols, the single `data-ws` dormancy
+ * detection, activation and optional resume seams, the single `data-ws` dormancy
  * marker, and the numeric activation-outcome codes both sides of the
  * `STREAMING_BOUNDARY_ACTIVATE` contract speak. Everything span-shaped — the
  * `data-ws-span` / `data-ws-enclosing` attribute names and the open-span
@@ -26,10 +26,15 @@ let cached: boolean | undefined;
 export const STREAMING_BOUNDARY_ACTIVATE = Symbol.for(
   'microsoft.webui.boundaryActivate',
 );
-/** Shared resume hook for definition and ancestor-barrier deferred roots. */
-export const PENDING_ROOT_CONNECTED = Symbol.for(
-  'microsoft.webui.pendingRootConnected',
-);
+/** Optional coordinator-owned resume seam; ordinary pages allocate no registry. */
+export let resumeStreamingRoot: ((element: Element) => boolean) | undefined;
+
+/** Install the document coordinator without attaching temporary fields to roots. */
+export function registerStreamingRootResume(
+  resume: typeof resumeStreamingRoot,
+): void {
+  resumeStreamingRoot = resume;
+}
 /** Compiler-owned marker for an uncommitted streamed host. */
 export const STREAMED_HOST_ATTR = 'data-ws';
 

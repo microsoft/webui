@@ -4,6 +4,7 @@
 import { buildFixtureEntries } from '@microsoft/webui-test-support/fixture-build';
 import { renderFixtures } from '@microsoft/webui-test-support/fixture-render';
 import { startFixtureServer } from '@microsoft/webui-test-support/fixture-server';
+import { prepareStreamingFixture } from '@microsoft/webui-test-support/fixture-streaming';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,12 +38,19 @@ const rendered = renderFixtures({
   fixturesRoot,
   projectionManifest,
 });
+const handleStreaming = await prepareStreamingFixture({
+  fixturePath: resolve(fixturesRoot, 'streaming-bootstrap'),
+  outDir: resolve(outDir, 'streaming-bootstrap'),
+  tsconfig,
+});
 
 startFixtureServer({
   name: 'webui-framework',
   fixturesRoot,
   port,
-  handleRequest({ url, send, serveStatic }) {
+  handleRequest(context) {
+    if (handleStreaming(context)) return true;
+    const { url, send, serveStatic } = context;
     if (url.pathname === '/') {
       send(200, 'webui-framework fixture server');
       return true;

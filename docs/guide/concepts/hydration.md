@@ -201,7 +201,8 @@ is still rendering. Author a
 </main>
 ```
 
-Import the coordinator before registrations:
+For a manually authored early entry, import the coordinator before the
+component registrations needed for early interactivity:
 
 ```typescript
 import '@microsoft/webui-framework/streaming.js';
@@ -221,6 +222,67 @@ Boundaries can also occur in true conditions and selected route content. A
 boundary-bearing subtree reached from a `<for>` body fails the build with
 `boundary-in-repeat`. A complete `<for>` may instead sit inside one boundary,
 and boundaries before or after a `<for>` are valid.
+
+### Separate coordinator and application assets
+
+The application must explicitly import the coordinator. To keep unrelated
+application code out of `<head>`, author a small entry containing only:
+
+```typescript
+// src/streaming.ts
+import '@microsoft/webui-framework/streaming.js';
+```
+
+Register this file as a normal entry in your bundler, alongside the application
+entry. WebUI does not create entries, inject this import, or provide a streaming
+build plugin. Streaming does not require a particular bundler:
+
+- Emit the streaming entry separately from application startup, preserving its
+  initialization side effect.
+- Share framework modules between the entries rather than bundling duplicate
+  registries or lifecycle state.
+- Identify the coordinator output and its static dependencies through the
+  bundler's entry metadata, not generated filenames. Keep application code and
+  dynamic hydration imports out of its early preload list.
+
+Use your bundler's existing output metadata and asset handoff to map those
+outputs to deployed URLs. No separate WebUI streaming manifest is required.
+
+Render the resolved URLs in your page:
+
+```html
+<head>
+  <for each="href in streamingImports">
+    <link rel="modulepreload" href="{{href}}">
+  </for>
+  <script type="module" async src="{{streamingUrl}}"></script>
+</head>
+<body>
+  <ntp-page></ntp-page>
+  <script type="module" src="{{applicationUrl}}" fetchpriority="low"></script>
+</body>
+```
+
+The coordinator must execute while the document is still parsing, so use
+`type="module" async` for its head script. A module without `async` waits for
+parsing to finish. The mode marker keeps streamed roots deferred and prevents
+premature completion if the application arrives first.
+
+Do not globally inject the coordinator into every module. Load its entry
+explicitly instead. Do not preload deferred application chunks; authored
+`fetchpriority="low"` modules are excluded from WebUI's automatic modulepreload
+hints. Footer placement alone does not disable those hints.
+
+When you deliver an application entry, deliver any required static shared-chunk
+`modulepreload` links alongside it. Otherwise the browser must fetch the entry
+before discovering those chunks, adding a network round trip. For a deferred
+entry, keep these links beside that entry in the body rather than moving them
+to the head. Use your bundler's existing dependency metadata for their URLs.
+
+Delaying every component definition also delays interactivity and keeps pending
+state alive longer. Load registrations needed for early-interactive boundaries
+when needed, and defer unrelated application startup. Compiler-owned scriptless
+hosts can load framework support on demand without importing your application.
 
 ### Timing and lifecycle
 

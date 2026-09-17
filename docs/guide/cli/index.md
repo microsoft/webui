@@ -314,6 +314,13 @@ exactly one manifest entry. Build external component bundles separately and
 repeat the flag for each fragment. See
 [Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
+For progressive pages, use the
+[bundler-independent coordinator delivery contract](/guide/concepts/hydration#separate-coordinator-and-application-assets)
+to keep application startup separate. The host's existing asset handoff owns
+script URLs; there is no additional streaming manifest input. Authored module
+scripts with `fetchpriority="low"` are excluded from automatic modulepreload
+hints so deferred application code does not get promoted into the head.
+
 ### `webui inspect`
 
 Inspect a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to tools like `jq`.

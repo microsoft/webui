@@ -307,6 +307,15 @@ are discovered at runtime through entries, reusable components, conditions, and
 the selected route. A boundary-bearing subtree under `<for>` fails the build
 with `boundary-in-repeat`; a whole `<for>` may sit inside one boundary.
 
+For a coordinator-only head script, follow the
+[bundler-independent delivery contract](/guide/concepts/hydration#separate-coordinator-and-application-assets).
+Configure script URLs through your existing asset handoff; the native
+`StreamingSession` does not depend on a bundler or read asset manifests.
+The application explicitly imports `@microsoft/webui-framework/streaming.js`
+in its own early entry and registers that entry with its bundler.
+Application registrations may load later, but are required before their
+components become interactive.
+
 ### StreamingSession
 
 | Member | Description |

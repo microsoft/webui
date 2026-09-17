@@ -35,6 +35,14 @@ The client build's `dist/webui-projection.json` is required. It keeps every
 checkpoint's initial state boundary-local; the server fails with a build
 instruction instead of silently falling back to full-state payloads.
 
+This example keeps a small critical registration entry in the head. For a
+coordinator-only head entry with application startup deferred, use
+the [bundler-independent delivery contract](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets),
+with an explicit streaming import in a small application-owned entry and no
+streaming build plugin or second deployment manifest.
+Early-interactive boundaries still need their component registration modules;
+deferring unrelated application work does not require deferring those modules.
+
 ### Boundary order and pacing
 
 | Boundary ID | Boundary      | Delivery               |

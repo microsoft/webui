@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Independent streaming bootstrap</title>
+</head>
+<body>
+  <h1>Server-rendered before application startup</h1>
+  <boundary name="first">
+    <test-stream-parent></test-stream-parent>
+  </boundary>
+  <boundary name="last">
+    <test-stream-counter label="Last"></test-stream-counter>
+  </boundary>
+</body>
+</html>

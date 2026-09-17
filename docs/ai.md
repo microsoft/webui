@@ -888,9 +888,18 @@ outlets, and selected route content.
   entry traversal requires `key`; it must resolve to a unique live string or
   finite number. Independent entries that each reach it once do not.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
-- Put the async application module in `<head>` before boundary content and
-  import `@microsoft/webui-framework/streaming.js` before component
-  registration modules.
+- Explicitly import `@microsoft/webui-framework/streaming.js` in application
+  code. For a coordinator-only head script, put that import in a small
+  `src/streaming.ts` entry and load its output with `type="module" async`.
+  WebUI never creates the entry or injects the import. With any bundler, preserve
+  initialization, share framework modules, and use native output metadata for
+  the host's existing asset handoff. No streaming JSON file is required.
+  See
+  [Separate coordinator and application assets](/guide/concepts/hydration#separate-coordinator-and-application-assets).
+- Deferred application scripts can use `fetchpriority="low"` to stay out of
+  automatic modulepreload hints. Components remain inert and retain pending
+  state until their definitions arrive, so load early-interactive registrations
+  when needed rather than postponing every registration.
 - `start(state)`, `resume(instanceId, state, mode)`, and `advance()` return a
   step with bytes, optional runtime descriptor
   `{ instanceId, declarationId, owner, name, key }`, and `done`.

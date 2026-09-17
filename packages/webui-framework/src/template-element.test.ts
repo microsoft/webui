@@ -4,6 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import type { TemplateMeta } from './template.js';
+import { registerStreamingRootResume, resumeStreamingRoot } from './streaming-mode.js';
 
 /**
  * `TemplateElement extends HTMLElement` at module scope, so `HTMLElement`
@@ -105,7 +106,6 @@ const {
 /** The activation hook the streaming coordinator invokes on a committed boundary. */
 const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
-const PENDING_ROOT_CONNECTED = Symbol.for('microsoft.webui.pendingRootConnected');
 
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
@@ -356,7 +356,6 @@ describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral
       $hydrated: boolean;
       setAttribute(name: string, value: string): void;
       removeAttribute(name: string): void;
-      [PENDING_ROOT_CONNECTED]?: () => void;
       [STREAMING_BOUNDARY_ACTIVATE](
         state?: Record<string, unknown>,
       ): number;
@@ -364,16 +363,22 @@ describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral
     raw.tagName = tag;
     raw.$hydrated = true;
     raw.setAttribute('data-ws', '');
-    raw[PENDING_ROOT_CONNECTED] = () => {
+    const previousResume = resumeStreamingRoot;
+    registerStreamingRootResume((root) => {
+      assert.equal(root, el);
       received = { status: 'ready' };
       assert.equal(
         raw[STREAMING_BOUNDARY_ACTIVATE](received),
         ACTIVATION_ACTIVATED,
       );
       raw.removeAttribute('data-ws');
-    };
-
-    el.connectedCallback();
+      return true;
+    });
+    try {
+      el.connectedCallback();
+    } finally {
+      registerStreamingRootResume(previousResume);
+    }
 
     assert.deepEqual(received, { status: 'ready' });
     assert.equal(raw.$deferredSSR, false);

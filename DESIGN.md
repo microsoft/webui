@@ -3394,11 +3394,11 @@ events, including `head_start`, `body_end`, and compiler-owned streaming roots.
 Authored bindings with the same visible text remain ordinary state paths. Typed
 boundary declarations do not use start/end signal pairs.
 
-The application entry imports
-`@microsoft/webui-framework/streaming.js` before component registration modules
-and loads with `async`, or an equivalent non-blocking strategy, in `<head>`
-before the first possible checkpoint. This installs the coordinator while the
-HTML parser is still consuming the response.
+The coordinator loads with `async`, or an equivalent non-blocking strategy,
+in `<head>` before the first possible checkpoint. A manually authored early
+application entry imports `@microsoft/webui-framework/streaming.js` before
+component registration modules. The independent asset integration below
+also supports either module arriving first without an early application entry.
 
 ### Generated response shape
 
@@ -3542,6 +3542,78 @@ This keeps the coordinator out of ordinary application bundles and installs it
 synchronously before any authored `.define()` call in the same module graph.
 The head marker lets that entry no-op safely on non-streaming pages.
 
+#### Independent streaming assets
+
+The streaming runtime and its delivery contract are bundler-independent.
+`@microsoft/webui-framework/streaming.js` is the public side-effect entry.
+Applications explicitly import it, either before registrations in an existing
+early entry or in a small application-owned streaming entry:
+
+```typescript
+// src/streaming.ts
+import '@microsoft/webui-framework/streaming.js';
+```
+
+The application registers that source with its bundler. WebUI supplies no
+streaming build plugin, synthetic entry, asset-inspection API, or deployment
+manifest. The bundler preserves initialization and shares framework modules
+with the application. Its native entry metadata identifies generated outputs
+without filename heuristics; the host owns served URLs and any persisted asset
+handoff. The early static closure must exclude unrelated application code and
+deferred hydration imports.
+
+Do not globally inject that entry into application or framework modules:
+injection creates import cycles that can capture uninitialized shared constants
+in top-level arrays. Normal ESM evaluation initializes dependencies first, and
+one shared module graph preserves registry and lifecycle identities.
+
+Application-first delivery is handled by the existing mode marker, not a
+forced dependency on the coordinator. Definitions remain metadata-gated and
+streamed roots remain marker-deferred. Before publishing completion, the
+lifecycle tracker reserves the terminal gate when the cached mode detector says
+streaming, even if coordinator installation has not run yet. Thus early
+client-created hydration cannot publish completion while the streaming asset
+is still downloading. The host must load the application's streaming entry.
+If the import is omitted, WebUI does not install the coordinator implicitly.
+
+`streaming-bootstrap.ts` registers metadata through the lightweight
+`template-registry.ts` and `element/style-catalog.ts`. These own the original
+normalization sets, definition waiters, and document catalogs, not copies.
+The `template.ts` facade attaches Link resource preparation to the existing
+registration listener only when the hydration runtime loads. It does not add
+a second template listener or rescan the accumulated catalog at every
+checkpoint. Native SSR styles remain responsible for initial paint.
+
+The streaming entry has no static dependency on `TemplateElement`, the DOM
+stylesheet installer, or Link client-mount guards. When a bounded activation
+walk first encounters an undefined compiler-owned (`th`) root, it requests the
+existing `static-host.ts` runtime once and uses the existing per-tag waiter.
+Merely receiving metadata for an unrendered compiler-owned template does not
+trigger a download. An excluded or authored tag never triggers that request.
+Load/installation failure halts the coordinator through normal bounded
+cleanup. Abandonment invalidates the activation generation so an outstanding
+module load cannot install hosts for a failed/reset stream.
+
+An external template registration carrying a `waitUntil` readiness barrier
+also demands dormant-host support when necessary. This preserves navigation
+from a native-only streamed shell whose initial ranges never needed that
+runtime. The existing registry listener reuses its registration key array,
+joins the consumer's barrier, and prepares styles after the newly loaded
+runtime installs its resource hook. Successful host-runtime installation
+permanently releases the demand hook; no extra listener, duplicate catalog, or
+per-root promise is created. Readiness-load failures reject the requesting
+navigation, whereas a load demanded by a streamed root uses stream failure
+cleanup.
+
+This split does not introduce a second hydration implementation, whole-response
+buffer, or extra per-root promise. Undefined roots still retain the exact
+checkpoint-local state reference until activation, and updatable roots may
+retain their collapsed patch past terminal until late activation consumes it.
+Moving every registration to the footer prolongs that retention and delays
+interactivity; small critical registration entries may still load with their
+boundaries. Explicit `fetchpriority="low"` module scripts opt out of automatic
+modulepreloads without changing ordinary module-entry preload behavior.
+
 ### Boundary lifecycle and races
 
 Streaming reuses `TemplateElement`'s existing deferred SSR activation seam.
@@ -3596,6 +3668,8 @@ already has it in hand:
   island-owned by definition. Only non-boundary module entries are recorded,
   so an island loader is excluded without any subtraction pass. This matters:
   preloading the island is precisely the regression the hint exists to remove.
+  Explicit `fetchpriority="low"` scripts are also excluded, so a footer
+  application can retain its chosen delivery priority.
   A chunk the island *shares* with the critical entry still gets preloaded,
   because it is genuinely critical.
 - **The output import graph.** A shared runtime chunk defines no component, so
@@ -3639,8 +3713,11 @@ CSS delivery strategy is selected once per build and is not boundary-local.
 
 1. Validates sequence, size, marker closure, template indexes, state arity,
    and response identity.
-2. Registers new templates/functions and compiler-owned hosts immediately;
-   streamed registrations do not wait for `DOMContentLoaded`.
+2. Registers new template metadata/functions immediately, without waiting for
+   `DOMContentLoaded`. Eligible compiler-owned hosts are defined at registration
+   if their runtime is already installed. Otherwise the range walk demand-loads
+   that runtime for undefined compiler-owned roots; definitions can complete
+   after the checkpoint commits, with roots held by shared per-tag waiters.
 3. Resolves the boundary's `HydrationRange` (`resolveBoundaryRange()` — the
    only placement-aware step), then walks that range once in boundary order,
    including open declarative shadow roots, without a root list or per-element
@@ -3819,6 +3896,15 @@ and retains root references only for updatable occurrences and pending
 definitions or barriers. Fatal cleanup alone may perform one bounded document
 sweep when marker-local cleanup is impossible.
 
+Pending root records live in a lazily allocated coordinator-owned `WeakMap`,
+not temporary element properties. Adding and deleting properties around native
+custom-element upgrade can leave the final instance in dictionary mode even
+after all state was released. One optional module-level resume function lets
+`TemplateElement` return control to the coordinator without adding a per-root
+callback or closure. Pending records are removed on activation or abandonment;
+the empty registry is released when the last undefined/barrier root settles.
+Non-streaming entries allocate no pending registry and import no coordinator.
+
 ### Reference scenario
 
 The primary scenario has one `<ntp-page>` in the entry. Its reusable component
@@ -3991,7 +4077,7 @@ runtime dependency.
 
 ### Package architecture
 
-The `@microsoft/webui` package exposes one build-only subpath:
+The `@microsoft/webui` package exposes projection through a build-only subpath:
 
 ```typescript
 import { compileProjection, esbuildProjection } from '@microsoft/webui/projection.js';
