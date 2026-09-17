@@ -37,6 +37,29 @@ pub(crate) fn write_route_navigation_attrs(
     Ok(())
 }
 
+// Keep hidden siblings in declaration order so client boundary ties match SSR.
+pub(crate) fn write_hidden_routes(
+    writer: &mut dyn ResponseWriter,
+    routes: &[WebUiFragmentRoute],
+) -> Result<()> {
+    for route in routes {
+        if route.fragment_id.is_empty() {
+            continue;
+        }
+        writer.write("<webui-route path=\"")?;
+        writer.write(&route.path)?;
+        writer.write("\" component=\"")?;
+        writer.write(&route.fragment_id)?;
+        writer.write("\"")?;
+        if route.exact {
+            writer.write(" exact")?;
+        }
+        write_route_navigation_attrs(writer, route)?;
+        writer.write(" style=\"display:none\"></webui-route>")?;
+    }
+    Ok(())
+}
+
 /// Escape HTML special characters in an attribute value and write directly to the writer.
 ///
 /// Escapes `&`, `"`, `<`, and `>` using HTML entities. Writes unescaped

@@ -99,6 +99,10 @@ When multiple sibling routes match, the most specific one wins (most literal seg
 
 `/users/add` matches the first route (2 literals) over the second (1 literal + 1 param).
 
+Equal-specificity ties use declaration order, including pending and error UI.
+Declare an empty exact route before a catch-all sibling: both can match an empty
+remaining path.
+
 ## Security
 
 Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (`{{param}}`), but **not** when rendered with triple braces (`{{{param}}}`).

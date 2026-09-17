@@ -604,6 +604,68 @@ fn handler_protocol_construction_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn handler_route_outlet_bench(c: &mut Criterion) {
+    use webui_protocol::WebUiFragmentRoute;
+
+    let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+        (
+            "index.html".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    children: ["", "projects", "*rest"]
+                        .into_iter()
+                        .map(|path| WebUiFragmentRoute {
+                            path: path.into(),
+                            fragment_id: "bench-page".into(),
+                            exact: true,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                })],
+                ..Default::default()
+            },
+        ),
+        (
+            "app-shell".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+                ..Default::default()
+            },
+        ),
+        (
+            "bench-page".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Page</p>")],
+                ..Default::default()
+            },
+        ),
+    ])));
+    let handler = WebUIHandler::new();
+    let state = Value::Null;
+    let mut writer = BenchWriter::new(1024);
+    let mut group = c.benchmark_group("handler_route_outlet");
+    for path in ["/", "/projects", "/missing"] {
+        let options = RenderOptions::new("index.html", path);
+        writer.clear();
+        handler
+            .render(&protocol, &state, &options, &mut writer)
+            .unwrap_or_else(|error| panic!("route warmup failed: {error}"));
+        group.throughput(Throughput::Bytes(writer.len() as u64));
+        group.bench_function(path, |b| {
+            b.iter(|| {
+                writer.clear();
+                handler
+                    .render(black_box(&protocol), &state, &options, &mut writer)
+                    .unwrap_or_else(|error| panic!("route render failed: {error}"));
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     handler_plugin_fast_bench,
@@ -611,6 +673,7 @@ criterion_group!(
     handler_condition_variety_bench,
     handler_nested_components_bench,
     handler_state_depth_bench,
-    handler_protocol_construction_bench
+    handler_protocol_construction_bench,
+    handler_route_outlet_bench
 );
 criterion_main!(benches);
