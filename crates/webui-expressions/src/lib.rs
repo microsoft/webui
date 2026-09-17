@@ -138,6 +138,8 @@ where
             Ok(!result)
         }
         Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, resolver),
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" => Ok(true),
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "false" => Ok(false),
         Some(condition_expr::Expr::Identifier(id)) => {
             if let Some(val) = resolver(&id.value) {
                 match val.as_ref() {
@@ -341,6 +343,19 @@ mod tests {
     use std::borrow::Cow;
     use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
     use webui_test_utils::test_json;
+
+    #[test]
+    fn boolean_literals_do_not_resolve_state_keys() {
+        let state = test_json!({"true": false, "false": true});
+        assert_eq!(
+            evaluate(&ConditionExpr::identifier("true"), &state).unwrap(),
+            true
+        );
+        assert_eq!(
+            evaluate(&ConditionExpr::identifier("false"), &state).unwrap(),
+            false
+        );
+    }
 
     #[test]
     fn test_simple_identifier() {

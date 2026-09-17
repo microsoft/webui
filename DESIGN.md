@@ -285,7 +285,7 @@ pub struct WebUIFragmentAttribute {
     pub complex: bool,
     /// True for the first dynamic attribute on a component element.
     pub attr_start: bool,
-    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    /// True for host-only attributes (class, style, role, data-*).
     pub attr_skip: bool,
     /// True for static attribute values on components.
     pub raw_value: bool,
@@ -300,6 +300,15 @@ component fragment is entered. Attributes on native elements never carry
 `attr_start`, so they render directly to HTML and never enter component
 attribute state — a native attribute cannot become a local variable of a
 later component.
+
+Valueless component inputs are presence flags: `<my-drawer open>` supplies
+boolean `open: true` to that component's template through an existing constant
+boolean-attribute fragment. Explicit `?` inputs retain their evaluated boolean;
+literal values, including empty strings, remain literal values. Native HTML
+attributes retain their authored presence. ARIA inputs use the existing attribute
+name mapping and are not excluded from component scope. None of this reads
+JavaScript decorators or requires projection metadata. Literal component
+attribute text is decoded at build time and escaped once on output.
 
 ##### Attribute Name Mapping
 

@@ -1208,6 +1208,9 @@ fn emit_json_condition_ref(
 /// Emit the JS expression body for a condition (no wrapping).
 fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
     match &condition.expr {
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
+            out.push_str(&id.value);
+        }
         Some(condition_expr::Expr::Identifier(id)) => {
             // Truthiness check: !!v("path",s)
             out.push_str("!!v(");
@@ -1298,6 +1301,8 @@ fn emit_js_predicate_right(value: &str, out: &mut String) {
 /// Collect all identifier paths referenced by a condition.
 fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
     match &condition.expr {
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
+        }
         Some(condition_expr::Expr::Identifier(id)) => {
             paths.push(id.value.clone());
         }
@@ -3370,6 +3375,19 @@ mod whitespace_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boolean_literal_conditions_have_no_state_dependencies() {
+        for value in ["true", "false"] {
+            let condition = ConditionExpr::identifier(value);
+            let mut javascript = String::new();
+            emit_js_condition_expr(&condition, &mut javascript);
+            assert_eq!(javascript, value);
+            let mut paths = Vec::new();
+            collect_condition_paths(&condition, &mut paths);
+            assert!(paths.is_empty());
+        }
+    }
 
     #[test]
     fn component_metadata_erases_boundary_directive_tags() {

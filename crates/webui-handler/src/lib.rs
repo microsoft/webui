@@ -3778,10 +3778,14 @@ impl WebUIHandler {
         }
 
         // Simple attribute
-        if !attr.value.is_empty() {
+        if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                write_attr(context.writer, &attr.name, &attr.value)?;
+                write_attr(
+                    context.writer,
+                    &attr.name,
+                    &crate::html_encode::encode_safe(&attr.value),
+                )?;
                 if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                     context.component_borrowed_attrs.remove(name);
@@ -5832,6 +5836,64 @@ mod tests {
     }
 
     // ── Component attribute state tests ───────────────────────────────
+
+    #[test]
+    fn html_component_inputs_forward_flags_and_aria_without_javascript_metadata() {
+        let cases = [
+            (
+                r#"<my-drawer open aria-label="Canvas information"></my-drawer>"#,
+                test_json!({}),
+                r#"<dialog open aria-label="Canvas information"></dialog>"#,
+            ),
+            (
+                r#"<my-drawer ?open="{{open}}" aria-label="Canvas information"></my-drawer>"#,
+                test_json!({"open": true}),
+                r#"<dialog open aria-label="Canvas information"></dialog>"#,
+            ),
+            (
+                r#"<my-drawer ?open="{{open}}" aria-label="Canvas information"></my-drawer>"#,
+                test_json!({"open": false}),
+                r#"<dialog aria-label="Canvas information"></dialog>"#,
+            ),
+            (
+                r#"<my-drawer aria-label=""></my-drawer>"#,
+                test_json!({"ariaLabel": "Fallback"}),
+                r#"<dialog aria-label=""></dialog>"#,
+            ),
+            (
+                r#"<my-drawer open aria-label="Canvas &amp; information"></my-drawer>"#,
+                test_json!({}),
+                r#"<dialog open aria-label="Canvas &amp; information"></dialog>"#,
+            ),
+        ];
+        for (input, state, expected) in cases {
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-drawer",
+                    r#"<dialog ?open="{{open}}" aria-label="{{ariaLabel}}"></dialog>"#,
+                    None,
+                    true,
+                ))
+                .unwrap();
+            parser.parse("index.html", input).unwrap();
+            let protocol = WebUIProtocol::new(parser.into_fragment_records());
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            assert!(
+                writer.get_content().contains(expected),
+                "{input}: {}",
+                writer.get_content()
+            );
+        }
+    }
 
     #[test]
     fn test_component_attr_state_simple() {

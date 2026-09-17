@@ -3834,7 +3834,7 @@ impl HtmlParser {
                         binding_count += 1;
                     } else if Self::contains_handlebars(val) {
                         let template_id = self.id_counter.next_id("attr");
-                        let parsed = self.handlebars_parser.parse(val)?;
+                        let parsed = self.parse_attribute_template(val)?;
                         self.fragment_records.insert(
                             template_id.clone(),
                             FragmentList {
@@ -3859,7 +3859,7 @@ impl HtmlParser {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
                                     name: attr_name.to_string(),
-                                    value: val.to_string(),
+                                    value: html_escape::decode_html_entities(val).into_owned(),
                                     raw_value: true,
                                     attr_skip: true,
                                     ..Default::default()
@@ -3868,6 +3868,9 @@ impl HtmlParser {
                         };
                         self.add_fragment(frag, fragments);
                     }
+                } else {
+                    self.add_raw_fragment(" ");
+                    self.add_raw_fragment(attr_name);
                 }
             } else if let Some(val) = attr_value {
                 if Self::contains_handlebars(val) {
@@ -3881,7 +3884,7 @@ impl HtmlParser {
                             binding_count += 1;
                         } else {
                             let template_id = self.id_counter.next_id("attr");
-                            let parsed = self.handlebars_parser.parse(val)?;
+                            let parsed = self.parse_attribute_template(val)?;
                             self.fragment_records.insert(
                                 template_id.clone(),
                                 FragmentList {
@@ -3906,7 +3909,7 @@ impl HtmlParser {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
                                     name: attr_name.to_string(),
-                                    value: val.to_string(),
+                                    value: html_escape::decode_html_entities(val).into_owned(),
                                     raw_value: true,
                                     ..Default::default()
                                 },
@@ -3919,12 +3922,32 @@ impl HtmlParser {
                     self.add_raw_fragment(" ");
                     self.add_raw_fragment(attr.raw);
                 }
+            } else if is_component {
+                let fragment = Self::maybe_mark_attr_start(
+                    WebUIFragment::attribute_boolean(attr_name, ConditionExpr::identifier("true")),
+                    &mut first_dynamic_emitted,
+                );
+                self.add_fragment(fragment, fragments);
             } else {
                 self.add_raw_fragment(" ");
                 self.add_raw_fragment(attr_name);
             }
         }
         Ok(binding_count)
+    }
+
+    fn parse_attribute_template(&mut self, value: &str) -> Result<Vec<WebUIFragment>> {
+        let mut fragments = self.handlebars_parser.parse(value)?;
+        for fragment in &mut fragments {
+            if let Some(web_ui_fragment::Fragment::Raw(raw)) = &mut fragment.fragment {
+                if let std::borrow::Cow::Owned(decoded) =
+                    html_escape::decode_html_entities(&raw.value)
+                {
+                    raw.value = decoded;
+                }
+            }
+        }
+        Ok(fragments)
     }
 
     /// Set `attr_start = true` on the first non-skipped attribute fragment for
@@ -4522,7 +4545,7 @@ impl HtmlParser {
     /// Skipped attribute names for components.
     const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
     /// Skipped attribute prefixes for components.
-    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-", "aria-"];
+    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-"];
     const ADOPTED_STYLESHEETS_ATTR: &str = "shadowrootadoptedstylesheets";
 
     fn is_skipped_attribute(name: &str) -> bool {
@@ -7223,7 +7246,7 @@ mod tests {
         let records = parser.into_fragment_records();
 
         // <custom-element, :config(attrStart), class(attrSkip), style(attrSkip),
-        // role(attrSkip), data-test(attrSkip), aria-test(attrSkip), >, component, </custom-element>
+        // role(attrSkip), data-test(attrSkip), aria-test, >, component, </custom-element>
         assert_fragments!(
             records["index.html"].fragments,
             [
@@ -7235,7 +7258,7 @@ mod tests {
                 attr_skip("style", "value1"),
                 attr_skip("role", "value2"),
                 attr_skip("data-test", "value3"),
-                attr_skip("aria-test", "value4"),
+                attr("aria-test", "value4"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
@@ -7269,7 +7292,12 @@ mod tests {
             [
                 raw("<item-group"),
                 attr_skip_raw("role", "list"),
-                attr_skip_template("aria-labelledby", "attr-1"),
+                FragmentMatcher::Attribute(AttrMatcher {
+                    name: "aria-labelledby".into(),
+                    template: Some("attr-1".into()),
+                    attr_start: true,
+                    ..Default::default()
+                }),
                 attr_skip_template("data-testid", "attr-2"),
                 attr_skip_raw("class", "fixed-class"),
                 structural_matcher("streaming_root:item-group"),
