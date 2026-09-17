@@ -525,6 +525,16 @@ emit WebUI `templates` or `templateFns`.
 8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 9. Parent components and their state are preserved.
 
+For non-query-only commits, the router owns the explicit view transition's
+`ready` rejection immediately after `startViewTransition()`. Animation skips,
+including supersession and invalid snapshot state, do not fail a committed route.
+`updateCallbackDone` remains the only awaited transition promise and propagates
+the original commit callback failure. The browser marks `finished` handled by
+specification; it only rejects with that same callback failure. Neither `ready`
+nor `finished` delays route notification or queues subsequent navigations. The
+`ready` rejection handler is shared, without per-navigation closure or retained
+transition state.
+
 **Partial response:** `Protocol::render_partial()` accepts owned
 `serde_json::Value` state and returns the complete response with projected
 top-level `state`, moving selected values without a serialize/reparse cycle.

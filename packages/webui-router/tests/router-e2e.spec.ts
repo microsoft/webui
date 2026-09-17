@@ -30,6 +30,11 @@ interface DashboardPartial {
   cacheTags?: string[];
 }
 
+type TransitionTestWindow = typeof window & {
+  __viewTransitions: ViewTransition[];
+  __transitionRejections: Array<{ name: string; message: string; promise: string }>;
+};
+
 async function waitForDashboardRoute(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const dashboard = document.querySelector('route-shell')?.shadowRoot
@@ -798,6 +803,108 @@ test.describe('route loaders', () => {
     // State is added by the caller (the dev server adds it at the top level)
     expect(body.state).toBeDefined();
   });
+});
+
+test.describe('view transition rejection ownership', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await waitForDashboardRoute(page);
+    await page.evaluate(() => {
+      const runtime = window as TransitionTestWindow;
+      runtime.__viewTransitions = [];
+      runtime.__transitionRejections = [];
+      const start = document.startViewTransition.bind(document);
+      document.startViewTransition = (...args) => {
+        const transition = start(...args);
+        runtime.__viewTransitions.push(transition);
+        return transition;
+      };
+      window.addEventListener('unhandledrejection', event => {
+        const transition = runtime.__viewTransitions.find(candidate =>
+          candidate.ready === event.promise ||
+          candidate.finished === event.promise ||
+          candidate.updateCallbackDone === event.promise,
+        );
+        runtime.__transitionRejections.push({
+          name: event.reason?.name,
+          message: event.reason?.message,
+          promise: !transition ? 'other'
+            : event.promise === transition.ready ? 'ready'
+              : event.promise === transition.finished ? 'finished' : 'updateCallbackDone',
+        });
+      });
+    });
+  });
+
+  test('a committed route can immediately resize without an unhandled rejection', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.evaluate(() => new Promise<void>(resolve => {
+      window.addEventListener('webui:route:navigated', () => resolve(), { once: true });
+      window.navigation.navigate('/alpha');
+    }));
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    // Let the browser dispatch rejection events before inspecting the promises.
+    await page.evaluate(() => new Promise<void>(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    ));
+    const result = await page.evaluate(async () => {
+      const runtime = window as TransitionTestWindow;
+      const transition = runtime.__viewTransitions[0];
+      await transition.finished;
+      return {
+        rejections: runtime.__transitionRejections,
+      };
+    });
+    expect(result.rejections).toEqual([]);
+    expect(errors).toEqual([]);
+    await expect(page.locator('h2')).toHaveText('Alpha Page');
+  });
+
+  for (const reason of ['superseded', 'invalidated'] as const) {
+    test(`${reason} native transitions do not reject a committed route`, async ({ page }) => {
+      const errors: string[] = [];
+      page.on('pageerror', error => errors.push(error.message));
+      await page.evaluate(cause => new Promise<void>(resolve => {
+        if (cause === 'invalidated') {
+          // Duplicate snapshot names invalidate native animation preparation.
+          document.documentElement.style.viewTransitionName = 'duplicate';
+          document.body.style.viewTransitionName = 'duplicate';
+        }
+        window.addEventListener('webui:route:navigated', () => {
+          if (cause === 'superseded') {
+            document.startViewTransition(() => {});
+          }
+          resolve();
+        }, { once: true });
+        window.navigation.navigate('/alpha');
+      }), reason);
+      await page.evaluate(() => new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ));
+      const result = await page.evaluate(async () => {
+        const runtime = window as TransitionTestWindow;
+        const transition = runtime.__viewTransitions[0];
+        const states = await Promise.allSettled([
+          transition.ready, transition.updateCallbackDone, transition.finished,
+        ]);
+        return {
+          states: states.map(state => state.status === 'fulfilled'
+            ? 'fulfilled' : state.reason.name),
+          rejections: runtime.__transitionRejections,
+        };
+      });
+      expect(result.states).toEqual([
+        reason === 'superseded' ? 'AbortError' : 'InvalidStateError',
+        'fulfilled',
+        'fulfilled',
+      ]);
+      expect(result.rejections).toEqual([]);
+      expect(errors).toEqual([]);
+      await expect(page.locator('h2')).toHaveText('Alpha Page');
+    });
+  }
 });
 
 test.describe('pending UI', () => {
