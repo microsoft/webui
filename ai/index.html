@@ -352,7 +352,9 @@ reached from inside a shadow root:</p><code-block><template shadowrootmode="open
 cross-document transitions conflict with intercepted routes that fall back to
 SSR document requests. <code>Router.destroy()</code> removes the override. The router
 awaits <code>updateCallbackDone</code> (not <code>.finished</code>) so rapid navigations supersede
-each other without queuing.</p><h2 id="interactivity">Interactivity <a class="header-anchor" href="/webui/ai/#interactivity" aria-label="Link to Interactivity">#</a></h2><h3 id="start-scriptless">Start scriptless <a class="header-anchor" href="/webui/ai/#start-scriptless" aria-label="Link to Start scriptless">#</a></h3><p>Most components should have only <code>.html</code> and <code>.css</code>. A scriptless component
+each other without queuing. Resizing or superseding the animation does not fail
+a committed route; route commit errors still follow normal navigation error handling
+without duplicate unhandled transition rejections.</p><h2 id="interactivity">Interactivity <a class="header-anchor" href="/webui/ai/#interactivity" aria-label="Link to Interactivity">#</a></h2><h3 id="start-scriptless">Start scriptless <a class="header-anchor" href="/webui/ai/#start-scriptless" aria-label="Link to Start scriptless">#</a></h3><p>Most components should have only <code>.html</code> and <code>.css</code>. A scriptless component
 renders bindings, <code>&lt;if&gt;</code>, and <code>&lt;for&gt;</code> on the server and contributes no bootstrap
 state to the client.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">&lt;!--</span><span class="hl-comment"> user-card.html - no .ts file, nothing to add </span><span class="hl-comment">--&gt;</span>
 &lt;<span class="hl-tag">h2</span>&gt;&#123;&#123;user.name&#125;&#125;&lt;/<span class="hl-tag">h2</span>&gt;
