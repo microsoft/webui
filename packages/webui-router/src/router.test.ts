@@ -1252,8 +1252,6 @@ describe('WebUIRouter', () => {
           const updateCallbackDone = Promise.resolve().then(callback);
           const ready = updateCallbackDone.then(() => {});
           const finished = updateCallbackDone.then(() => {});
-          // The browser marks finished handled; ready is the owner's responsibility.
-          void finished.catch(() => {});
           return {
             ready, finished, updateCallbackDone,
             types: new Set<string>(), skipTransition() {},
@@ -1283,7 +1281,7 @@ describe('WebUIRouter', () => {
         'should await updateCallbackDone on the view transition',
       );
       assert.ok(
-        !source.includes('transition.finished'),
+        !source.includes('await transition.finished'),
         'should NOT await transition.finished on the view transition — it blocks rapid navigation',
       );
     });

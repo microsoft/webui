@@ -90,7 +90,8 @@ routes that may need the document fallback. `Router.destroy()` removes the
 override.
 Route readiness does not wait for the animation to finish. Resizing or starting
 a newer transition may skip the animation without failing the committed route;
-route commit errors still follow normal navigation error handling.
+route commit errors still follow normal navigation error handling without
+duplicate unhandled transition rejections.
 
 ## Nested Routes
 

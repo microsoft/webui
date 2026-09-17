@@ -568,7 +568,8 @@ cross-document transitions conflict with intercepted routes that fall back to
 SSR document requests. `Router.destroy()` removes the override. The router
 awaits `updateCallbackDone` (not `.finished`) so rapid navigations supersede
 each other without queuing. Resizing or superseding the animation does not fail
-a committed route; route commit errors still follow normal navigation error handling.
+a committed route; route commit errors still follow normal navigation error handling
+without duplicate unhandled transition rejections.
 
 ## Interactivity
 

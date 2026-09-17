@@ -868,6 +868,69 @@ test.describe('view transition rejection ownership', () => {
     await expect(page.locator('h2')).toHaveText('Alpha Page');
   });
 
+  test('a throwing route destroy logs the original error without duplicate native rejections', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const response = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/alpha' &&
+      response.request().headers()['accept']?.includes('application/json') === true,
+    );
+    const result = await page.evaluate(async () => {
+      const runtime = window as TransitionTestWindow;
+      const dashboard = document.querySelector('route-shell')?.shadowRoot
+        ?.querySelector<HTMLElement & { $destroy(): void }>('route-dashboard');
+      if (!dashboard) throw new Error('the dashboard route must be mounted');
+      const failure = new Error('route destroy failed');
+      const destroy = dashboard.$destroy;
+      const logError = console.error;
+      const loggedErrors: unknown[] = [];
+      let notifications = 0;
+      const onNavigated = (): void => { notifications++; };
+      window.addEventListener('webui:route:navigated', onNavigated);
+      dashboard.$destroy = () => { throw failure; };
+      console.error = (...args: unknown[]) => {
+        if (args[0] === '[Router] Navigation error:') loggedErrors.push(args[1]);
+        logError(...args);
+      };
+      try {
+        await window.navigation.navigate('/alpha').finished;
+        // Observe native promises only after unhandledrejection can be dispatched.
+        await new Promise<void>(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        const transition = runtime.__viewTransitions[0];
+        const states = await Promise.allSettled([
+          transition.ready, transition.updateCallbackDone, transition.finished,
+        ]);
+        return {
+          transitions: runtime.__viewTransitions.length,
+          states: states.map(state =>
+            state.status === 'rejected' && state.reason === failure),
+          loggedErrors: loggedErrors.map(error => error === failure),
+          notifications,
+          rejections: runtime.__transitionRejections,
+        };
+      } finally {
+        dashboard.$destroy = destroy;
+        console.error = logError;
+        window.removeEventListener('webui:route:navigated', onNavigated);
+      }
+    });
+    const partialResponse = await response;
+    expect(partialResponse.ok()).toBe(true);
+    expect((await partialResponse.json()).chain).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'page-alpha' }),
+    ]));
+    expect(result.transitions).toBe(1);
+    expect(result.states).toEqual([true, true, true]);
+    expect(result.loggedErrors).toEqual([true]);
+    expect(result.notifications).toBe(0);
+    expect(result.rejections).toEqual([]);
+    expect(errors).toEqual([]);
+    await expect(page.locator('route-dashboard')).toHaveCount(1);
+    await expect(page.locator('page-alpha')).toHaveCount(0);
+  });
+
   for (const reason of ['superseded', 'invalidated'] as const) {
     test(`${reason} native transitions do not reject a committed route`, async ({ page }) => {
       const errors: string[] = [];

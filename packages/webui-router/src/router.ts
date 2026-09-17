@@ -1103,7 +1103,8 @@ export class WebUIRouter {
     if (document.startViewTransition && !isQueryOnlyChange) {
       const transition = document.startViewTransition(commitNavigation);
       // Animation skips are non-fatal; updateCallbackDone still owns commit errors.
-      void transition.ready.catch(ignoreTransitionReadyRejection);
+      void transition.ready.catch(ignoreTransitionRejection);
+      void transition.finished.catch(ignoreTransitionRejection);
       await transition.updateCallbackDone;
     } else {
       commitNavigation();
@@ -1113,7 +1114,7 @@ export class WebUIRouter {
 
 }
 
-function ignoreTransitionReadyRejection(): void {}
+function ignoreTransitionRejection(): void {}
 
 function loadWebUIDataBlock(): void {
   const runtime = window.__webui as RouterRuntimeGlobal | undefined;
