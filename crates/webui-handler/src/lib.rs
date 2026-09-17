@@ -9,12 +9,14 @@
 pub mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
+mod protocol_options;
 mod response_writer;
 pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 pub(crate) mod streaming;
 
+pub use protocol_options::{ConditionEvaluation, ProtocolOptions};
 #[doc(hidden)]
 pub use response_writer::{
     append_attribute_to_bytes, append_attribute_to_string, append_boolean_attribute_to_bytes,
@@ -58,7 +60,7 @@ pub use streaming::{
     MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 use thiserror::Error;
-use webui_expressions::{ExpressionError, PreparedCondition};
+use webui_expressions::{evaluate_with_resolver, ExpressionError, PreparedCondition};
 use webui_protocol::{
     web_ui_fragment::Fragment, ComponentAssetStylePreload, ComponentWorkPolicy, FragmentList,
     InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -612,9 +614,24 @@ impl<'protocol> RenderFragmentList<'protocol> {
             .get(start..start + prepared.attr_len as usize)
     }
 
-    fn condition(self, index: usize) -> Option<&'protocol PreparedCondition> {
-        let slot = self.metadata.get(index)?.condition;
-        self.prepared.conditions.get(slot as usize)
+    fn condition(self, index: usize) -> Option<RenderCondition<'protocol>> {
+        match self.prepared.condition_evaluation {
+            ConditionEvaluation::Prepared => {
+                let slot = self.metadata.get(index)?.condition;
+                self.prepared
+                    .conditions
+                    .get(slot as usize)
+                    .map(RenderCondition::Prepared)
+            }
+            ConditionEvaluation::Direct => {
+                let source = match self.fragments.get(index)?.fragment.as_ref()? {
+                    Fragment::IfCond(fragment) => fragment.condition.as_ref(),
+                    Fragment::Attribute(fragment) => fragment.condition_tree.as_ref(),
+                    _ => None,
+                };
+                source.map(RenderCondition::Direct)
+            }
+        }
     }
 
     fn attribute_metadata(self, index: usize) -> PreparedAttribute<'protocol> {
@@ -629,7 +646,13 @@ impl<'protocol> RenderFragmentList<'protocol> {
 struct PreparedAttribute<'protocol> {
     target: Option<usize>,
     component_name: Option<&'protocol str>,
-    condition: Option<&'protocol PreparedCondition>,
+    condition: Option<RenderCondition<'protocol>>,
+}
+
+#[derive(Clone, Copy)]
+enum RenderCondition<'protocol> {
+    Prepared(&'protocol PreparedCondition),
+    Direct(&'protocol webui_protocol::ConditionExpr),
 }
 
 /// Sentinel for "this fragment does not descend into another fragment list".
@@ -668,6 +691,7 @@ pub(crate) struct RenderFragmentIndex {
     /// Every prepared component prop name concatenated into one allocation.
     attr_names: Box<str>,
     conditions: Box<[PreparedCondition]>,
+    condition_evaluation: ConditionEvaluation,
     /// One bit per fragment list: does it contain a route fragment?
     route_presence: Box<[u64]>,
 }
@@ -697,6 +721,7 @@ impl RenderFragmentIndex {
         protocol: &WebUIProtocol,
         ids: &[Arc<str>],
         slots: &HashMap<Arc<str>, u32>,
+        condition_evaluation: ConditionEvaluation,
     ) -> Self {
         let total_fragments = protocol
             .fragments
@@ -748,13 +773,13 @@ impl RenderFragmentIndex {
                     _ => None,
                 };
                 let condition = match condition {
-                    Some(condition) => {
+                    Some(condition) if condition_evaluation == ConditionEvaluation::Prepared => {
                         #[allow(clippy::cast_possible_truncation)]
                         let slot = conditions.len() as u32;
                         conditions.push(PreparedCondition::new(condition));
                         slot
                     }
-                    None => NO_CONDITION,
+                    _ => NO_CONDITION,
                 };
                 metadata.push(RenderFragmentMetadata {
                     target,
@@ -776,6 +801,7 @@ impl RenderFragmentIndex {
             ranges: ranges.into_boxed_slice(),
             attr_names: attr_names.into_boxed_str(),
             conditions: conditions.into_boxed_slice(),
+            condition_evaluation,
             route_presence: route_presence.into_boxed_slice(),
         }
     }
@@ -3159,7 +3185,7 @@ impl WebUIHandler {
     /// Missing identifier operands are falsy before logical operators are applied.
     /// Missing predicate values make the complete condition false.
     fn evaluate_condition(
-        condition: &PreparedCondition,
+        condition: RenderCondition<'_>,
         context: &WebUIProcessContext,
     ) -> Result<bool> {
         let loop_vars = &context.loop_vars;
@@ -3169,9 +3195,14 @@ impl WebUIHandler {
             borrowed: &context.local_borrowed_vars,
         };
         let state = context.state;
-        match condition.evaluate_with_resolver(|path| {
+        let resolver = |path: &str| {
             resolve_value_from_sources(path, loop_vars, visible_loop_scope, local_values, state)
-        }) {
+        };
+        let result = match condition {
+            RenderCondition::Prepared(condition) => condition.evaluate_with_resolver(resolver),
+            RenderCondition::Direct(condition) => evaluate_with_resolver(condition, resolver),
+        };
+        match result {
             Ok(result) => Ok(result),
             Err(ExpressionError::MissingValue(_)) => Ok(false),
             Err(e) => Err(HandlerError::Evaluation(e.to_string())),
@@ -3737,7 +3768,7 @@ impl WebUIHandler {
         &self,
         if_cond: &webui_protocol::WebUIFragmentIf,
         target: Option<usize>,
-        condition: Option<&PreparedCondition>,
+        condition: Option<RenderCondition<'_>>,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         let condition = condition
@@ -4754,6 +4785,92 @@ mod tests {
             .expect("label should exist")
             .condition(0)
             .is_none());
+    }
+
+    #[test]
+    fn direct_protocol_options_skip_condition_storage_for_both_constructors() {
+        let document = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<input"),
+                        WebUIFragment::attribute_boolean(
+                            "disabled",
+                            ConditionExpr::negated(ConditionExpr::identifier("ready")),
+                        ),
+                        WebUIFragment::raw(">"),
+                        WebUIFragment::if_cond(
+                            ConditionExpr::predicate(
+                                "status",
+                                ComparisonOperator::Equal,
+                                "'active'",
+                            ),
+                            "body",
+                        ),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "body".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("active")],
+                    contains_boundary: false,
+                },
+            ),
+        ]));
+        let wire = document.to_protobuf().expect("document should encode");
+        for mode in [ConditionEvaluation::Prepared, ConditionEvaluation::Direct] {
+            let options = ProtocolOptions {
+                condition_evaluation: mode,
+            };
+            let protocols = [
+                Protocol::new_with_options(document.clone(), options),
+                Protocol::from_protobuf_with_options(&wire, options).expect("protocol should load"),
+            ];
+            for protocol in protocols {
+                let index = protocol.render_fragments();
+                assert_eq!(index.condition_evaluation, mode);
+                assert_eq!(
+                    index.conditions.len(),
+                    if mode == ConditionEvaluation::Direct {
+                        0
+                    } else {
+                        2
+                    },
+                );
+                if mode == ConditionEvaluation::Direct {
+                    assert!(index
+                        .metadata
+                        .iter()
+                        .all(|item| item.condition == NO_CONDITION));
+                }
+                for (state, expected) in [
+                    (
+                        test_json!({"ready": true, "status": "active"}),
+                        "<input>active",
+                    ),
+                    (
+                        test_json!({"ready": false, "status": "inactive"}),
+                        "<input disabled>",
+                    ),
+                ] {
+                    let mut writer = TestWriter::new();
+                    WebUIHandler::new()
+                        .render(
+                            &protocol,
+                            &state,
+                            &RenderOptions::new("index.html", "/"),
+                            &mut writer,
+                        )
+                        .expect("configured protocol should render");
+                    assert_eq!(writer.get_content(), expected);
+                }
+                assert_eq!(protocol.protocol(), &document);
+            }
+            assert!(Protocol::from_protobuf_with_options(&[0xff], options).is_err());
+        }
     }
 
     #[test]

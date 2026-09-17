@@ -901,8 +901,15 @@ mixed-operator checks retain their precedence. Errors in unevaluated branches
 remain unevaluated, and a missing left comparison operand still takes precedence
 over an invalid right literal or comparison operator.
 
-The runtime `Protocol` prepares both `<if>` conditions and boolean-attribute
-conditions once, storing numeric condition slots in its render metadata.
+By default, the runtime `Protocol` prepares both `<if>` conditions and
+boolean-attribute conditions once, storing numeric condition slots in its render
+metadata. `ProtocolOptions.condition_evaluation` selects `Prepared` (the default)
+or `Direct` once at load time. `Direct` skips all condition preparation and keeps
+the prepared-condition arena empty; rendering borrows the original expression
+trees and uses the iterative direct evaluator. Both modes retain the same fixed
+per-fragment render metadata, but only `Prepared` allocates condition plans,
+copied paths, and parsed literals. This is a runtime option, not a protobuf
+field or per-request setting.
 Buffered rendering and progressive streaming share these plans and the same
 lexical/local/global resolver. Partial-navigation template/state serialization
 and client patch evaluation remain unchanged. The protobuf schema and mutable
@@ -1011,8 +1018,8 @@ helper never scans or rewrites rendered HTML.
 
 `Protocol` is the one public runtime protocol type. It owns a decoded
 `WebUIProtocol`, a deterministic component index, and a lazily populated
-template-metadata cache. Its load-time render plan also owns reusable prepared
-conditions for conditional fragments and boolean attributes. Construct it once when the server loads
+template-metadata cache. By default, its load-time render plan also owns reusable
+prepared conditions for conditional fragments and boolean attributes. Construct it once when the server loads
 `protocol.bin`, then share it across full renders, partial navigation,
 component-template requests, and token queries.
 
@@ -1036,9 +1043,23 @@ pub struct Protocol {
     /* decoded protocol + component index + RwLock<template metadata> */
 }
 
+pub enum ConditionEvaluation {
+    Prepared, // Default: retain plans for faster repeated rendering.
+    Direct,   // Evaluate borrowed wire trees without retained condition plans.
+}
+
+pub struct ProtocolOptions {
+    pub condition_evaluation: ConditionEvaluation,
+}
+
 impl Protocol {
     pub fn from_protobuf(bytes: &[u8]) -> Result<Self, ProtocolError>;
+    pub fn from_protobuf_with_options(
+        bytes: &[u8],
+        options: ProtocolOptions,
+    ) -> Result<Self, ProtocolError>;
     pub fn new(protocol: WebUIProtocol) -> Self;
+    pub fn new_with_options(protocol: WebUIProtocol, options: ProtocolOptions) -> Self;
     pub fn protocol(&self) -> &WebUIProtocol;
     pub fn tokens(&self) -> &[String];
     pub fn render_partial(

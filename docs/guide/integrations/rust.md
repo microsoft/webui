@@ -12,6 +12,35 @@ serde_json = "1"
 
 The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
 
+## Choosing memory or rendering speed
+
+`Protocol::new` and `Protocol::from_protobuf` use prepared condition evaluation
+by default. It trades additional per-protocol storage and startup work for less
+work on repeated renders. For infrequently rendered or memory-constrained
+protocols, select direct evaluation when loading:
+
+```rust
+use webui::{ConditionEvaluation, Protocol, ProtocolOptions};
+
+let bytes = std::fs::read("./dist/protocol.bin")?;
+let protocol = Protocol::from_protobuf_with_options(
+    &bytes,
+    ProtocolOptions {
+        condition_evaluation: ConditionEvaluation::Direct,
+    },
+)?;
+```
+
+Use `Protocol::new_with_options(document, options)` for an already decoded
+`WebUIProtocol`. These types are also available directly from `webui_handler`.
+
+`Direct` does not retain prepared condition plans, copied paths, or parsed
+literals. Other protocol indices and fixed fragment metadata remain. Both modes
+evaluate the current render's state, preserve the same output and errors, and
+apply to buffered rendering and progressive streaming. Neither mode caches
+condition results or changes the browser's initial state. The policy is fixed
+for the loaded protocol; construct a new one to change it.
+
 ## Examples
 
 <webui-press-tabs>

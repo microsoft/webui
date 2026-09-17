@@ -96,23 +96,48 @@ impl Protocol {
     ///
     /// Returns a protocol error when `bytes` is not a valid WebUI protobuf.
     pub fn from_protobuf(bytes: &[u8]) -> std::result::Result<Self, webui_protocol::ProtocolError> {
+        Self::from_protobuf_with_options(bytes, crate::ProtocolOptions::default())
+    }
+
+    /// Decode a protocol with explicit process-local rendering options.
+    ///
+    /// Use [`crate::ConditionEvaluation::Direct`] to avoid retaining prepared
+    /// conditions. Both modes evaluate the current request's state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protocol error for invalid protobuf or component style metadata.
+    pub fn from_protobuf_with_options(
+        bytes: &[u8],
+        options: crate::ProtocolOptions,
+    ) -> std::result::Result<Self, webui_protocol::ProtocolError> {
         let protocol = WebUIProtocol::from_protobuf(bytes)?;
         if let Some(error) = Self::validate_component_style_metadata(&protocol) {
             return Err(webui_protocol::ProtocolError::Validation(error));
         }
-        Ok(Self::new_with_style_metadata(protocol, None))
+        Ok(Self::new_with_style_metadata(protocol, None, options))
     }
 
     /// Create a reusable runtime protocol from an already decoded document.
     #[must_use]
     pub fn new(protocol: WebUIProtocol) -> Self {
+        Self::new_with_options(protocol, crate::ProtocolOptions::default())
+    }
+
+    /// Create a runtime protocol with explicit process-local rendering options.
+    ///
+    /// The selected condition policy applies to every buffered and streaming
+    /// render using this protocol and cannot be changed after construction.
+    #[must_use]
+    pub fn new_with_options(protocol: WebUIProtocol, options: crate::ProtocolOptions) -> Self {
         let style_metadata_error = Self::validate_component_style_metadata(&protocol);
-        Self::new_with_style_metadata(protocol, style_metadata_error)
+        Self::new_with_style_metadata(protocol, style_metadata_error, options)
     }
 
     fn new_with_style_metadata(
         mut protocol: WebUIProtocol,
         style_metadata_error: Option<String>,
+        options: crate::ProtocolOptions,
     ) -> Self {
         let css_strategy = protocol.css_strategy();
         let component_asset_style_preloads =
@@ -150,8 +175,12 @@ impl Protocol {
         // Render slots reuse the continuation slot numbering, so the prepared
         // index shares the interned IDs instead of duplicating every string, and
         // resolves targets through the slot map instead of re-searching by name.
-        let render_fragments =
-            crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
+        let render_fragments = crate::RenderFragmentIndex::new(
+            &protocol,
+            &fragment_ids,
+            &fragment_slots,
+            options.condition_evaluation,
+        );
         Self {
             protocol,
             style_metadata_error,

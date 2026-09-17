@@ -37,9 +37,9 @@ pub use webui_handler::route_handler::{encode_inventory, get_needed_components, 
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
     plugin::HandlerPlugin, BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode,
-    FlushWriter, HandlerError, Protocol, RenderOptions, ResponseWriter, SessionOptions,
-    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
-    WebUIHandler,
+    ConditionEvaluation, FlushWriter, HandlerError, Protocol, ProtocolOptions, RenderOptions,
+    ResponseWriter, SessionOptions, SpanInstanceId, StreamStatus, StreamStep, StreamingResponse,
+    StreamingSession, StreamingState, WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;

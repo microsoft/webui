@@ -3,14 +3,14 @@
 
 #![allow(clippy::disallowed_methods)]
 
-//! Condition behavior through the serialized server pipeline and continuation VM.
+//! Both condition modes through the serialized server pipeline and continuation VM.
 
 use std::sync::Arc;
 
 use serde_json::Value;
 use webui_handler::{
-    BoundaryMode, HandlerError, Protocol, RenderOptions, ResponseWriter, SessionOptions,
-    StreamingSession, WebUIHandler,
+    BoundaryMode, ConditionEvaluation, HandlerError, Protocol, ProtocolOptions, RenderOptions,
+    ResponseWriter, SessionOptions, StreamingSession, WebUIHandler,
 };
 use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
 use webui_protocol::{
@@ -33,8 +33,16 @@ fn parsed_data(source: &str, components: &[(&str, &str)]) -> WebUIProtocol {
     data
 }
 
-fn round_trip(data: &WebUIProtocol) -> Arc<Protocol> {
-    Arc::new(Protocol::from_protobuf(&data.to_protobuf().unwrap()).unwrap())
+fn round_trip(data: &WebUIProtocol, condition_evaluation: ConditionEvaluation) -> Arc<Protocol> {
+    Arc::new(
+        Protocol::from_protobuf_with_options(
+            &data.to_protobuf().unwrap(),
+            ProtocolOptions {
+                condition_evaluation,
+            },
+        )
+        .unwrap(),
+    )
 }
 
 #[derive(Default)]
@@ -64,8 +72,39 @@ fn render(protocol: &Protocol, state: &Value) -> Result<String, HandlerError> {
     Ok(writer.output)
 }
 
-#[test]
-fn condition_variants_and_boolean_attributes_follow_each_render_state() {
+macro_rules! condition_mode_tests {
+    ($($scenario:ident),+ $(,)?) => {
+        mod prepared {
+            $(
+                #[test]
+                fn $scenario() {
+                    super::$scenario(super::ConditionEvaluation::Prepared);
+                }
+            )+
+        }
+
+        mod direct {
+            $(
+                #[test]
+                fn $scenario() {
+                    super::$scenario(super::ConditionEvaluation::Direct);
+                }
+            )+
+        }
+    };
+}
+
+condition_mode_tests!(
+    condition_variants_and_boolean_attributes_follow_each_render_state,
+    identifier_truthiness_preserves_empty_and_nonempty_value_boundaries,
+    missing_comparison_operands_differ_from_missing_bare_identifiers,
+    loop_dotted_paths_and_component_props_do_not_leak_between_items_or_renders,
+    negation_does_not_turn_missing_comparison_errors_into_true,
+    malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error,
+    progressive_conditions_resume_with_fresh_state_and_updates_are_patch_records,
+);
+
+fn condition_variants_and_boolean_attributes_follow_each_render_state(mode: ConditionEvaluation) {
     let initial = test_json!({
         "ready": true, "busy": false, "fallback": false,
         "stock": 3, "minimum": 1, "name": "Zoë", "status": "ready", "discount": -1
@@ -93,7 +132,7 @@ fn condition_variants_and_boolean_attributes_follow_each_render_state() {
         let source = format!(
             r#"<if condition="{condition}"><p>selected</p></if><button ?disabled="{{{{{condition}}}}}">Save</button>"#
         );
-        let protocol = round_trip(&parsed_data(&source, &[]));
+        let protocol = round_trip(&parsed_data(&source, &[]), mode);
         // Reuse the loaded protocol, including a return to the original state.
         for (state, expected) in [
             (&initial, "<p>selected</p><button disabled>Save</button>"),
@@ -105,12 +144,14 @@ fn condition_variants_and_boolean_attributes_follow_each_render_state() {
     }
 }
 
-#[test]
-fn identifier_truthiness_preserves_empty_and_nonempty_value_boundaries() {
-    let protocol = round_trip(&parsed_data(
-        r#"<if condition="value">yes</if><if condition="!value">no</if><input ?required="{{value}}">"#,
-        &[],
-    ));
+fn identifier_truthiness_preserves_empty_and_nonempty_value_boundaries(mode: ConditionEvaluation) {
+    let protocol = round_trip(
+        &parsed_data(
+            r#"<if condition="value">yes</if><if condition="!value">no</if><input ?required="{{value}}">"#,
+            &[],
+        ),
+        mode,
+    );
     for (value, truthy) in [
         (test_json!(null), false),
         (test_json!(false), false),
@@ -137,8 +178,7 @@ fn identifier_truthiness_preserves_empty_and_nonempty_value_boundaries() {
     assert_eq!(render(&protocol, &test_json!({})).unwrap(), "no<input>");
 }
 
-#[test]
-fn missing_comparison_operands_differ_from_missing_bare_identifiers() {
+fn missing_comparison_operands_differ_from_missing_bare_identifiers(mode: ConditionEvaluation) {
     let state = test_json!({"ready": true, "count": 3});
     for (condition, selected) in [
         ("missing", false),
@@ -154,7 +194,7 @@ fn missing_comparison_operands_differ_from_missing_bare_identifiers() {
         let source = format!(
             r#"<if condition="{condition}">yes</if><input ?disabled="{{{{{condition}}}}}">"#
         );
-        let protocol = round_trip(&parsed_data(&source, &[]));
+        let protocol = round_trip(&parsed_data(&source, &[]), mode);
         assert_eq!(
             render(&protocol, &state).unwrap(),
             if selected {
@@ -167,24 +207,28 @@ fn missing_comparison_operands_differ_from_missing_bare_identifiers() {
     }
 }
 
-#[test]
-fn loop_dotted_paths_and_component_props_do_not_leak_between_items_or_renders() {
-    let protocol = round_trip(&parsed_data(
-        concat!(
-            r#"<for each="item in items">"#,
-            r#"<if condition="item.profile.active && item.quantity >= minimum"><b>{{item.profile.name}}</b></if>"#,
-            r#"<stock-card :product="{{item}}" :minimum="{{minimum}}"></stock-card>"#,
-            "</for>",
-            r#"<if condition="item.profile.active"><footer>global restored</footer></if>"#,
-        ),
-        &[(
-            "stock-card",
+fn loop_dotted_paths_and_component_props_do_not_leak_between_items_or_renders(
+    mode: ConditionEvaluation,
+) {
+    let protocol = round_trip(
+        &parsed_data(
             concat!(
-                r#"<if condition="product.profile.active && product.quantity >= minimum"><span>{{product.profile.name}}</span></if>"#,
-                r#"<button ?disabled="{{!product.profile.active}}">{{product.profile.name}}</button>"#,
+                r#"<for each="item in items">"#,
+                r#"<if condition="item.profile.active && item.quantity >= minimum"><b>{{item.profile.name}}</b></if>"#,
+                r#"<stock-card :product="{{item}}" :minimum="{{minimum}}"></stock-card>"#,
+                "</for>",
+                r#"<if condition="item.profile.active"><footer>global restored</footer></if>"#,
             ),
-        )],
-    ));
+            &[(
+                "stock-card",
+                concat!(
+                    r#"<if condition="product.profile.active && product.quantity >= minimum"><span>{{product.profile.name}}</span></if>"#,
+                    r#"<button ?disabled="{{!product.profile.active}}">{{product.profile.name}}</button>"#,
+                ),
+            )],
+        ),
+        mode,
+    );
     let state = test_json!({
         "minimum": 2,
         "item": {"profile": {"active": true}},
@@ -243,7 +287,7 @@ fn compound(op: LogicalOperator, right: Option<ConditionExpr>) -> ConditionExpr 
     }
 }
 
-fn raw_condition_protocol(condition: ConditionExpr) -> Arc<Protocol> {
+fn raw_condition_protocol(condition: ConditionExpr, mode: ConditionEvaluation) -> Arc<Protocol> {
     // Keep the parsed fragment graph and real wire boundary; replace only the
     // AST to exercise inputs that valid template syntax cannot express.
     let mut data = parsed_data(
@@ -260,21 +304,23 @@ fn raw_condition_protocol(condition: ConditionExpr) -> Arc<Protocol> {
         })
         .unwrap();
     target.condition = Some(condition);
-    round_trip(&data)
+    round_trip(&data, mode)
 }
 
-#[test]
-fn negation_does_not_turn_missing_comparison_errors_into_true() {
+fn negation_does_not_turn_missing_comparison_errors_into_true(mode: ConditionEvaluation) {
     for (left, right) in [("missing", "0"), ("count", "missing")] {
-        let protocol = raw_condition_protocol(ConditionExpr {
-            expr: Some(Expr::Not(Box::new(NotCondition {
-                condition: Some(Box::new(predicate(
-                    left,
-                    ComparisonOperator::GreaterThan as i32,
-                    right,
-                ))),
-            }))),
-        });
+        let protocol = raw_condition_protocol(
+            ConditionExpr {
+                expr: Some(Expr::Not(Box::new(NotCondition {
+                    condition: Some(Box::new(predicate(
+                        left,
+                        ComparisonOperator::GreaterThan as i32,
+                        right,
+                    ))),
+                }))),
+            },
+            mode,
+        );
         assert_eq!(
             render(&protocol, &test_json!({"count": 3})).unwrap(),
             "<i>before</i><u>after</u>"
@@ -282,8 +328,7 @@ fn negation_does_not_turn_missing_comparison_errors_into_true() {
     }
 }
 
-#[test]
-fn malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error() {
+fn malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error(mode: ConditionEvaluation) {
     for (rhs, message) in [
         (ConditionExpr { expr: None }, "Empty condition expression"),
         (
@@ -309,7 +354,7 @@ fn malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error() {
             ),
             (LogicalOperator::And, false, "<i>before</i><u>after</u>"),
         ] {
-            let protocol = raw_condition_protocol(compound(op, Some(rhs.clone())));
+            let protocol = raw_condition_protocol(compound(op, Some(rhs.clone())), mode);
             let skipped = test_json!({"ready": skip_state, "count": 3});
             assert_eq!(render(&protocol, &skipped).unwrap(), expected);
             let error =
@@ -320,7 +365,7 @@ fn malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error() {
         }
     }
     for (op, ready) in [(LogicalOperator::Or, true), (LogicalOperator::And, false)] {
-        let protocol = raw_condition_protocol(compound(op, None));
+        let protocol = raw_condition_protocol(compound(op, None), mode);
         assert!(render(&protocol, &test_json!({"ready": ready}))
             .unwrap_err()
             .to_string()
@@ -328,20 +373,24 @@ fn malformed_rhs_is_lazy_but_a_missing_rhs_node_is_an_error() {
     }
 }
 
-#[test]
-fn progressive_conditions_resume_with_fresh_state_and_updates_are_patch_records() {
-    let protocol = round_trip(&parsed_data(
-        concat!(
-            "<html><head></head><body>",
-            r#"<if condition="ready && count >= 0 && !busy"><boundary name="live">"#,
-            r#"<button ?disabled="{{!available}}">Buy</button><if condition="available && count > 0"><p>{{count}} available</p></if>"#,
-            "</boundary></if>",
-            r#"<if condition="later || count > 0"><boundary name="next">"#,
-            r#"<button ?disabled="{{!available}}">Next</button><if condition="available"><p>available</p></if>"#,
-            "</boundary></if><footer>tail</footer></body></html>",
+fn progressive_conditions_resume_with_fresh_state_and_updates_are_patch_records(
+    mode: ConditionEvaluation,
+) {
+    let protocol = round_trip(
+        &parsed_data(
+            concat!(
+                "<html><head></head><body>",
+                r#"<if condition="ready && count >= 0 && !busy"><boundary name="live">"#,
+                r#"<button ?disabled="{{!available}}">Buy</button><if condition="available && count > 0"><p>{{count}} available</p></if>"#,
+                "</boundary></if>",
+                r#"<if condition="later || count > 0"><boundary name="next">"#,
+                r#"<button ?disabled="{{!available}}">Next</button><if condition="available"><p>available</p></if>"#,
+                "</boundary></if><footer>tail</footer></body></html>",
+            ),
+            &[],
         ),
-        &[],
-    ));
+        mode,
+    );
     let new_session = || {
         StreamingSession::new(
             Arc::new(WebUIHandler::new()),

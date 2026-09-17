@@ -20,7 +20,7 @@ WebUI itself.
 | `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, watcher hashing, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
-| `cargo bench -p microsoft-webui-handler --bench condition_render_bench` | criterion render | ~40 s | condition-heavy loops at 10/100/1000 rows, boolean attributes, and protocol preparation | expression runtime changes |
+| `cargo bench -p microsoft-webui-handler --bench condition_render_bench` | criterion render | ~3 min | prepared/direct loops at 10/100/1000 rows, 1000 distinct conditions, and protocol preparation | expression runtime changes |
 | `cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench` | criterion micro | ~20 s | small/large file hashing and event bursts with reused scratch | watcher hashing CPU and I/O tradeoffs |
 | `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
@@ -170,6 +170,15 @@ branches are measured as well as fully evaluated conditions. Keep
 once trades startup work and retained storage for less per-request computation.
 Use `handler_bench` as a control for pages dominated by signals and ordinary
 loops rather than conditions.
+
+`condition_render_bench` runs both `ConditionEvaluation::Prepared` and `Direct`
+with identical fixtures. Existing `condition_render` names select prepared
+evaluation; `condition_render_direct` selects direct evaluation.
+`distinct_conditions_1000` additionally renders 1,000 distinct condition
+fragments with distinct state paths, for identifiers, string comparisons, and
+compound checks in each mode. It asserts all 1,000 output bytes before timing.
+These are full renderer timings, excluding protocol loading, state construction,
+and HTTP/network work; do not present them as total HTTP request latency.
 
 ### `streaming-resource` (counting allocator + getrusage)
 

@@ -154,6 +154,12 @@ conditions as well as rendering metadata; rebuilding it per request repeats that
 work. Conditions still resolve the current request's state, including loop and
 component-local values.
 
+For rarely rendered or memory-constrained protocols, Rust callers can choose
+`ConditionEvaluation::Direct` through `ProtocolOptions` at load time. This avoids
+retaining prepared conditions in exchange for more evaluation work per render.
+Prepared evaluation remains the default. See
+[choosing memory or rendering speed](/guide/integrations/rust#choosing-memory-or-rendering-speed).
+
 Node, Bun, Deno, Python, and other bindings remain useful when integration
 cost matters more than the last increment of throughput. Measure with the
 deployment host you intend to run.

@@ -858,7 +858,7 @@ impl ContinuationVm {
     fn begin_if(
         &mut self,
         if_cond: &WebUIFragmentIf,
-        condition: Option<&webui_expressions::PreparedCondition>,
+        condition: Option<crate::RenderCondition<'_>>,
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
