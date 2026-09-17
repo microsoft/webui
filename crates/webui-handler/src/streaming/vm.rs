@@ -547,11 +547,13 @@ impl ContinuationVm {
                     self.process_signal(signal, handler, context)?;
                 }
                 Some(Fragment::Attribute(attribute)) => {
-                    let prepared = context.render_fragments.list(frame.render_slot);
+                    let prepared = context
+                        .render_fragments
+                        .list(frame.render_slot)
+                        .ok_or_else(|| unknown_fragment_slot_error(frame.slot))?;
                     handler.process_attribute(
                         attribute,
-                        prepared.and_then(|prepared| prepared.target(index)),
-                        prepared.and_then(|prepared| prepared.component_attr_name(index)),
+                        prepared.attribute_metadata(index),
                         context,
                     )?;
                 }
@@ -612,21 +614,23 @@ impl ContinuationVm {
                     return Ok(None);
                 }
                 Some(Fragment::IfCond(if_cond)) => {
-                    let target = context
+                    let prepared = context
                         .render_fragments
                         .list(frame.render_slot)
-                        .and_then(|prepared| prepared.target(index));
+                        .ok_or_else(|| unknown_fragment_slot_error(frame.slot))?;
+                    let target = prepared.target(index);
+                    let condition = prepared.condition(index);
                     if target
                         .and_then(|target| context.render_fragments.list(target))
                         .is_some_and(|list| !list.contains_boundary)
                     {
                         self.render_boundary_free(context, |context| {
-                            handler.process_if(if_cond, target, context)
+                            handler.process_if(if_cond, target, condition, context)
                         })?;
                         continue;
                     }
                     self.push(Frame::Fragment(frame))?;
-                    self.begin_if(if_cond, handler, protocol, context)?;
+                    self.begin_if(if_cond, condition, protocol, context)?;
                     return Ok(None);
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
@@ -854,15 +858,12 @@ impl ContinuationVm {
     fn begin_if(
         &mut self,
         if_cond: &WebUIFragmentIf,
-        handler: &WebUIHandler,
+        condition: Option<&webui_expressions::PreparedCondition>,
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        let condition = if_cond
-            .condition
-            .as_ref()
-            .ok_or_else(missing_if_condition_error)?;
-        let condition_met = handler.evaluate_condition(condition, context)?;
+        let condition = condition.ok_or_else(missing_if_condition_error)?;
+        let condition_met = WebUIHandler::evaluate_condition(condition, context)?;
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_if_start(&if_cond.fragment_id, context.writer)?;
         }

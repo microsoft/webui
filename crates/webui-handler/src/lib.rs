@@ -58,7 +58,7 @@ pub use streaming::{
     MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 use thiserror::Error;
-use webui_expressions::{evaluate_with_resolver, ExpressionError};
+use webui_expressions::{ExpressionError, PreparedCondition};
 use webui_protocol::{
     web_ui_fragment::Fragment, ComponentAssetStylePreload, ComponentWorkPolicy, FragmentList,
     InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -194,6 +194,14 @@ fn route_style_plan_length_error(routes: usize, targets: usize) -> HandlerError 
     HandlerError::Invariant(format!(
         "matched route style target count {targets} does not match route count {routes}"
     ))
+}
+
+#[cold]
+#[inline(never)]
+fn missing_prepared_condition_error() -> HandlerError {
+    HandlerError::Invariant(
+        "condition render plan is missing; recreate Protocol from the source document".to_string(),
+    )
 }
 
 /// Interface for writing rendered output
@@ -578,7 +586,7 @@ impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
 pub(crate) struct RenderFragmentList<'protocol> {
     fragments: &'protocol [WebUIFragment],
     metadata: &'protocol [RenderFragmentMetadata],
-    attr_names: &'protocol str,
+    prepared: &'protocol RenderFragmentIndex,
     contains_boundary: bool,
     /// True when this list contains at least one `<webui-route>` fragment.
     /// Renders skip the sibling route pre-scan entirely when it is false.
@@ -599,19 +607,40 @@ impl<'protocol> RenderFragmentList<'protocol> {
             return None;
         }
         let start = prepared.attr_start as usize;
-        self.attr_names
+        self.prepared
+            .attr_names
             .get(start..start + prepared.attr_len as usize)
     }
+
+    fn condition(self, index: usize) -> Option<&'protocol PreparedCondition> {
+        let slot = self.metadata.get(index)?.condition;
+        self.prepared.conditions.get(slot as usize)
+    }
+
+    fn attribute_metadata(self, index: usize) -> PreparedAttribute<'protocol> {
+        PreparedAttribute {
+            target: self.target(index),
+            component_name: self.component_attr_name(index),
+            condition: self.condition(index),
+        }
+    }
+}
+
+struct PreparedAttribute<'protocol> {
+    target: Option<usize>,
+    component_name: Option<&'protocol str>,
+    condition: Option<&'protocol PreparedCondition>,
 }
 
 /// Sentinel for "this fragment does not descend into another fragment list".
 const NO_RENDER_SLOT: u32 = u32::MAX;
 /// Sentinel for "this fragment is not an attribute fragment".
 const NO_ATTR_NAME: u32 = u32::MAX;
+const NO_CONDITION: u32 = u32::MAX;
 
 /// Per-fragment values hoisted out of the render loop at protocol load time.
 ///
-/// Deliberately a flat 12-byte `Copy` record with no owned allocations: a large
+/// Deliberately a flat 16-byte `Copy` record with no owned allocations: a large
 /// protocol keeps one contiguous arena instead of one heap block per fragment.
 #[derive(Clone, Copy)]
 struct RenderFragmentMetadata {
@@ -622,6 +651,7 @@ struct RenderFragmentMetadata {
     /// Offset into the index's shared attribute-name arena, or [`NO_ATTR_NAME`].
     attr_start: u32,
     attr_len: u32,
+    condition: u32,
 }
 
 /// Build-time render plan for every fragment list in a protocol.
@@ -637,6 +667,7 @@ pub(crate) struct RenderFragmentIndex {
     ranges: Box<[u32]>,
     /// Every prepared component prop name concatenated into one allocation.
     attr_names: Box<str>,
+    conditions: Box<[PreparedCondition]>,
     /// One bit per fragment list: does it contain a route fragment?
     route_presence: Box<[u64]>,
 }
@@ -678,6 +709,7 @@ impl RenderFragmentIndex {
         // arena from repeatedly reallocating and copying as it is filled.
         let mut attr_names = String::with_capacity(total_fragments * 8);
         let mut route_presence = vec![0u64; ids.len().div_ceil(64)];
+        let mut conditions = Vec::new();
 
         for (slot, id) in ids.iter().enumerate() {
             // Record counts are bounded by the compiled graph, well inside u32.
@@ -710,10 +742,25 @@ impl RenderFragmentIndex {
                     }
                     _ => (NO_ATTR_NAME, 0),
                 };
+                let condition = match inner {
+                    Some(Fragment::IfCond(fragment)) => fragment.condition.as_ref(),
+                    Some(Fragment::Attribute(fragment)) => fragment.condition_tree.as_ref(),
+                    _ => None,
+                };
+                let condition = match condition {
+                    Some(condition) => {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let slot = conditions.len() as u32;
+                        conditions.push(PreparedCondition::new(condition));
+                        slot
+                    }
+                    None => NO_CONDITION,
+                };
                 metadata.push(RenderFragmentMetadata {
                     target,
                     attr_start,
                     attr_len,
+                    condition,
                 });
             }
             if has_routes {
@@ -728,6 +775,7 @@ impl RenderFragmentIndex {
             metadata: metadata.into_boxed_slice(),
             ranges: ranges.into_boxed_slice(),
             attr_names: attr_names.into_boxed_str(),
+            conditions: conditions.into_boxed_slice(),
             route_presence: route_presence.into_boxed_slice(),
         }
     }
@@ -797,7 +845,7 @@ impl<'protocol> ResolvedRenderFragmentIndex<'protocol> {
         Some(RenderFragmentList {
             fragments: &fragment_list.fragments,
             metadata,
-            attr_names: &self.index.attr_names,
+            prepared: self.index,
             contains_boundary: fragment_list.contains_boundary,
             has_routes,
         })
@@ -2334,15 +2382,15 @@ impl WebUIHandler {
                     self.process_signal(signal, context)?;
                 }
                 Some(Fragment::IfCond(if_cond)) => {
-                    self.process_if(if_cond, fragment_list.target(index), context)?;
-                }
-                Some(Fragment::Attribute(attr)) => {
-                    self.process_attribute(
-                        attr,
+                    self.process_if(
+                        if_cond,
                         fragment_list.target(index),
-                        fragment_list.component_attr_name(index),
+                        fragment_list.condition(index),
                         context,
                     )?;
+                }
+                Some(Fragment::Attribute(attr)) => {
+                    self.process_attribute(attr, fragment_list.attribute_metadata(index), context)?;
                 }
                 Some(Fragment::Plugin(plugin_frag)) => {
                     if let Some(p) = &mut context.plugin {
@@ -3111,8 +3159,7 @@ impl WebUIHandler {
     /// Missing identifier operands are falsy before logical operators are applied.
     /// Missing predicate values make the complete condition false.
     fn evaluate_condition(
-        &self,
-        condition: &webui_protocol::ConditionExpr,
+        condition: &PreparedCondition,
         context: &WebUIProcessContext,
     ) -> Result<bool> {
         let loop_vars = &context.loop_vars;
@@ -3122,7 +3169,7 @@ impl WebUIHandler {
             borrowed: &context.local_borrowed_vars,
         };
         let state = context.state;
-        match evaluate_with_resolver(condition, |path| {
+        match condition.evaluate_with_resolver(|path| {
             resolve_value_from_sources(path, loop_vars, visible_loop_scope, local_values, state)
         }) {
             Ok(result) => Ok(result),
@@ -3690,13 +3737,12 @@ impl WebUIHandler {
         &self,
         if_cond: &webui_protocol::WebUIFragmentIf,
         target: Option<usize>,
+        condition: Option<&PreparedCondition>,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        let condition = if_cond
-            .condition
-            .as_ref()
+        let condition = condition
             .ok_or_else(|| HandlerError::Rendering("If fragment missing condition".to_string()))?;
-        let condition_met = self.evaluate_condition(condition, context)?;
+        let condition_met = Self::evaluate_condition(condition, context)?;
 
         if let Some(p) = &mut context.plugin {
             p.on_if_start(&if_cond.fragment_id, context.writer)?;
@@ -3723,16 +3769,20 @@ impl WebUIHandler {
 
     /// Process an attribute fragment by rendering the attribute name/value pair.
     ///
-    /// `template_target` and `component_name` are prepared once per protocol by
+    /// Targets, component names, and conditions are prepared once per protocol by
     /// [`RenderFragmentIndex`], so neither the template fragment lookup nor the
     /// camelCase prop-name conversion is repeated per render.
     fn process_attribute<'protocol, 'state>(
         &self,
         attr: &'protocol webui_protocol::WebUIFragmentAttribute,
-        template_target: Option<usize>,
-        component_name: Option<&'protocol str>,
+        prepared: PreparedAttribute<'protocol>,
         context: &mut WebUIProcessContext<'protocol, 'state, '_>,
     ) -> Result<()> {
+        let PreparedAttribute {
+            target: template_target,
+            component_name,
+            condition,
+        } = prepared;
         // Initialize component attribute accumulator on attrStart. Clearing the
         // pooled map keeps its bucket capacity instead of allocating a fresh one.
         if attr.attr_start {
@@ -3742,8 +3792,9 @@ impl WebUIHandler {
         }
 
         // Boolean attribute with condition tree
-        if let Some(condition) = &attr.condition_tree {
-            let condition_met = self.evaluate_condition(condition, context)?;
+        if attr.condition_tree.is_some() {
+            let condition = condition.ok_or_else(missing_prepared_condition_error)?;
+            let condition_met = Self::evaluate_condition(condition, context)?;
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
@@ -4645,6 +4696,64 @@ mod tests {
         // Only lists that actually contain a route pay for the sibling scan.
         assert!(entry.has_routes);
         assert!(!page.has_routes);
+    }
+
+    #[test]
+    fn prepared_graph_indexes_only_conditions_and_preserves_wire_data() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<button"),
+                    WebUIFragment::attribute_boolean(
+                        "disabled",
+                        ConditionExpr::negated(ConditionExpr::identifier("ready")),
+                    ),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::if_cond(
+                        ConditionExpr::predicate("status", ComparisonOperator::Equal, "'active'"),
+                        "label",
+                    ),
+                    WebUIFragment::raw("</button>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+        fragments.insert(
+            "label".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("Ready")],
+                contains_boundary: false,
+            },
+        );
+        let document = WebUIProtocol::new(fragments);
+        let wire = document.to_protobuf().expect("document should encode");
+        let protocol = Protocol::new(document);
+        assert_eq!(std::mem::size_of::<RenderFragmentMetadata>(), 16);
+        assert_eq!(protocol.render_fragments().conditions.len(), 2);
+        assert_eq!(
+            protocol
+                .protocol()
+                .to_protobuf()
+                .expect("document should encode"),
+            wire
+        );
+
+        let resolved = protocol.render_fragments().resolve(protocol.protocol());
+        let entry = resolved
+            .list_by_id("index.html")
+            .expect("entry should exist");
+        for index in [0, 2, 4, usize::MAX] {
+            assert!(entry.condition(index).is_none());
+        }
+        assert!(entry.condition(1).is_some());
+        assert!(entry.condition(3).is_some());
+        assert!(resolved
+            .list_by_id("label")
+            .expect("label should exist")
+            .condition(0)
+            .is_none());
     }
 
     #[test]

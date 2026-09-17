@@ -327,6 +327,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
 const CRITERION_BENCHES: &[(&str, &str)] = &[
     ("microsoft-webui-parser", "parser_bench"),
     ("microsoft-webui-handler", "handler_bench"),
+    ("microsoft-webui-handler", "condition_render_bench"),
     ("microsoft-webui-handler", "bootstrap_state_bench"),
     ("microsoft-webui-handler", "streaming_hydration_bench"),
     ("microsoft-webui-protocol", "protocol_bench"),
@@ -1085,6 +1086,11 @@ mod tests {
     #[test]
     fn criterion_bench_table_includes_watcher_hashing() {
         assert!(CRITERION_BENCHES.contains(&("microsoft-webui-dev-server", "watch_hash_bench")));
+    }
+
+    #[test]
+    fn criterion_bench_table_includes_condition_rendering() {
+        assert!(CRITERION_BENCHES.contains(&("microsoft-webui-handler", "condition_render_bench")));
     }
 
     #[test]

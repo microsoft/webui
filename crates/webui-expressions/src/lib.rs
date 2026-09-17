@@ -10,13 +10,20 @@ use std::borrow::Cow;
 use serde_json::Value;
 use thiserror::Error;
 use webui_protocol::{
-    condition_expr, ComparisonOperator, CompoundCondition, ConditionExpr, LogicalOperator,
-    Predicate,
+    condition_expr, ComparisonOperator, ConditionExpr, LogicalOperator, Predicate,
 };
 use webui_state::find_value_by_dotted_path_ref;
 
+mod prepared;
+mod traversal;
+
+#[cfg(test)]
+mod prepared_tests;
+
+pub use prepared::PreparedCondition;
+
 /// Error types for expression evaluation.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum ExpressionError {
     #[error("Evaluation error: {0}")]
     Evaluation(String),
@@ -43,6 +50,7 @@ pub type Result<T> = std::result::Result<T, ExpressionError>;
 ///
 /// Missing identifier paths are falsy operands. Missing values used by
 /// comparison predicates remain evaluation errors.
+#[inline]
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
     evaluate_with_resolver(condition, |path| find_value_by_dotted_path_ref(path, state))
 }
@@ -53,145 +61,30 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
 /// returns the resolved value. This allows callers to provide merged views
 /// (e.g., local variables overlaid on global state) without cloning the
 /// entire state tree.
+#[inline]
 pub fn evaluate_with_resolver<'a, F>(condition: &ConditionExpr, resolver: F) -> Result<bool>
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
-    // Single-term conditions carry no logical operators, so the traversal in
-    // `count_logical_operators` (and the allocation backing its stack) is pure
-    // overhead for the most common template conditions.
+    // Keep the common direct API path independent of NOT handling and stacks.
     if matches!(
         condition.expr,
         Some(condition_expr::Expr::Identifier(_)) | Some(condition_expr::Expr::Predicate(_))
     ) {
-        return evaluate_expr(condition, &resolver);
+        return traversal::evaluate_term(condition, &resolver);
     }
-
-    let (logical_op_count, has_mixed_ops) = count_logical_operators(condition);
-
-    if logical_op_count > 5 {
-        return Err(ExpressionError::TooManyOperators(logical_op_count));
-    }
-
-    if has_mixed_ops {
-        return Err(ExpressionError::MixedOperators);
-    }
-
-    evaluate_expr(condition, &resolver)
+    traversal::evaluate_nested(condition, &resolver)
 }
 
-// Helper function to count logical operators and check if they're mixed
-fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
-    let mut count = 0;
-    let mut last_op: Option<i32> = None;
-    let mut has_mixed = false;
-
-    // We need to use a stack to avoid recursion
-    let mut stack = vec![condition];
-
-    while let Some(expr) = stack.pop() {
-        match &expr.expr {
-            Some(condition_expr::Expr::Compound(compound)) => {
-                count += 1;
-
-                // Check if we're mixing operators
-                if let Some(last) = last_op {
-                    if last != compound.op {
-                        has_mixed = true;
-                    }
-                } else {
-                    last_op = Some(compound.op);
-                }
-
-                // Push sub-expressions to stack
-                if let Some(right) = compound.right.as_ref() {
-                    stack.push(right);
-                }
-                if let Some(left) = compound.left.as_ref() {
-                    stack.push(left);
-                }
-            }
-            Some(condition_expr::Expr::Not(not_cond)) => {
-                if let Some(inner) = not_cond.condition.as_ref() {
-                    stack.push(inner);
-                }
-            }
-            _ => {} // Predicates and identifiers don't have logical operators
-        }
-    }
-
-    (count, has_mixed)
-}
-
-// Iterative evaluation of expressions using a resolver closure
-fn evaluate_expr<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
-where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
-{
-    match &condition.expr {
-        Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, resolver),
-        Some(condition_expr::Expr::Not(not_cond)) => {
-            let inner = not_cond.condition.as_ref().ok_or_else(|| {
-                ExpressionError::Evaluation("Not condition missing inner expression".to_string())
-            })?;
-            let result = evaluate_expr(inner, resolver)?;
-            Ok(!result)
-        }
-        Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, resolver),
-        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" => Ok(true),
-        Some(condition_expr::Expr::Identifier(id)) if id.value == "false" => Ok(false),
-        Some(condition_expr::Expr::Identifier(id)) => {
-            if let Some(val) = resolver(&id.value) {
-                match val.as_ref() {
-                    Value::Bool(b) => Ok(*b),
-                    Value::Null => Ok(false),
-                    Value::Number(n) => Ok(!(n.as_f64() == Some(0.0))),
-                    Value::String(s) => Ok(!s.is_empty()),
-                    Value::Array(a) => Ok(!a.is_empty()),
-                    Value::Object(o) => Ok(!o.is_empty()),
-                }
-            } else {
-                Ok(false)
-            }
-        }
-        None => Err(ExpressionError::Evaluation(
-            "Empty condition expression".to_string(),
-        )),
-    }
-}
-
-fn evaluate_compound<'a, F>(compound: &CompoundCondition, resolver: &F) -> Result<bool>
-where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
-{
-    let left = compound.left.as_ref().ok_or_else(|| {
-        ExpressionError::Evaluation("Compound missing left expression".to_string())
-    })?;
-    let right = compound.right.as_ref().ok_or_else(|| {
-        ExpressionError::Evaluation("Compound missing right expression".to_string())
-    })?;
-
-    let left_result = evaluate_expr(left, resolver)?;
-    let op = LogicalOperator::try_from(compound.op).map_err(|_| {
-        ExpressionError::Evaluation(format!("Invalid logical operator: {}", compound.op))
-    })?;
-
-    match op {
-        LogicalOperator::And => {
-            if !left_result {
-                return Ok(false);
-            }
-            evaluate_expr(right, resolver)
-        }
-        LogicalOperator::Or => {
-            if left_result {
-                return Ok(true);
-            }
-            evaluate_expr(right, resolver)
-        }
-        LogicalOperator::Unspecified => Err(ExpressionError::Evaluation(
-            "Unspecified logical operator".to_string(),
-        )),
+#[inline]
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Null => false,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
     }
 }
 
@@ -201,7 +94,7 @@ where
 {
     let left_val = match resolver(&predicate.left) {
         Some(val) => val,
-        None => return Err(ExpressionError::MissingValue(predicate.left.clone())),
+        None => return Err(missing_value(&predicate.left)),
     };
 
     let right_val = if is_literal(&predicate.right) {
@@ -209,16 +102,11 @@ where
     } else {
         match resolver(&predicate.right) {
             Some(val) => val,
-            None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
+            None => return Err(missing_value(&predicate.right)),
         }
     };
 
-    let op = ComparisonOperator::try_from(predicate.operator).map_err(|_| {
-        ExpressionError::Evaluation(format!(
-            "Invalid comparison operator: {}",
-            predicate.operator
-        ))
-    })?;
+    let op = comparison_operator(predicate.operator)?;
 
     compare_values(left_val.as_ref(), &op, right_val.as_ref())
 }
@@ -242,7 +130,9 @@ fn is_literal(s: &str) -> bool {
 // Parse a literal string into a JSON value
 fn parse_literal(s: &str) -> Result<Value> {
     // Handle quoted strings
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+        && s.len() >= 2
+    {
         let content = &s[1..s.len() - 1];
         return Ok(Value::String(content.to_string()));
     }
@@ -291,9 +181,7 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
         ComparisonOperator::LessThan => compare_ordered(left, right, |a, b| a < b),
         ComparisonOperator::GreaterThanOrEqual => compare_ordered(left, right, |a, b| a >= b),
         ComparisonOperator::LessThanOrEqual => compare_ordered(left, right, |a, b| a <= b),
-        ComparisonOperator::Unspecified => Err(ExpressionError::Evaluation(
-            "Unspecified comparison operator".to_string(),
-        )),
+        ComparisonOperator::Unspecified => Err(evaluation_error("Unspecified comparison operator")),
     }
 }
 
@@ -337,6 +225,32 @@ fn extract_number(val: &Value) -> Result<f64> {
     }
 }
 
+fn comparison_operator(value: i32) -> Result<ComparisonOperator> {
+    ComparisonOperator::try_from(value).map_err(|_| invalid_operator("comparison", value))
+}
+
+fn logical_operator(value: i32) -> Result<LogicalOperator> {
+    LogicalOperator::try_from(value).map_err(|_| invalid_operator("logical", value))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_operator(kind: &str, value: i32) -> ExpressionError {
+    ExpressionError::Evaluation(format!("Invalid {kind} operator: {value}"))
+}
+
+#[cold]
+#[inline(never)]
+fn missing_value(path: &str) -> ExpressionError {
+    ExpressionError::MissingValue(path.to_owned())
+}
+
+#[cold]
+#[inline(never)]
+fn evaluation_error(message: &str) -> ExpressionError {
+    ExpressionError::Evaluation(message.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,14 +261,14 @@ mod tests {
     #[test]
     fn boolean_literals_do_not_resolve_state_keys() {
         let state = test_json!({"true": false, "false": true});
-        assert_eq!(
-            evaluate(&ConditionExpr::identifier("true"), &state).unwrap(),
-            true
-        );
-        assert_eq!(
-            evaluate(&ConditionExpr::identifier("false"), &state).unwrap(),
-            false
-        );
+        assert!(matches!(
+            evaluate(&ConditionExpr::identifier("true"), &state),
+            Ok(true)
+        ));
+        assert!(matches!(
+            evaluate(&ConditionExpr::identifier("false"), &state),
+            Ok(false)
+        ));
     }
 
     #[test]

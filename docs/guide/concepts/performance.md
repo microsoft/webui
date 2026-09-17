@@ -149,6 +149,11 @@ For maximum single-core throughput:
 - render directly from Rust
 - avoid a JavaScript-to-native state serialization round trip
 
+Reuse the same `Protocol` for requests with different state. Loading it prepares
+conditions as well as rendering metadata; rebuilding it per request repeats that
+work. Conditions still resolve the current request's state, including loop and
+component-local values.
+
 Node, Bun, Deno, Python, and other bindings remain useful when integration
 cost matters more than the last increment of throughput. Measure with the
 deployment host you intend to run.

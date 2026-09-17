@@ -1,10 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+
+#![allow(clippy::disallowed_methods)]
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use std::hint::black_box;
-use webui_expressions::evaluate;
+use webui_expressions::{evaluate, PreparedCondition};
 use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
+
+fn prepared_benches(
+    c: &mut Criterion,
+    name: &str,
+    state: &serde_json::Value,
+    fixtures: &[(&str, &ConditionExpr)],
+) {
+    let mut group = c.benchmark_group(name);
+    for (name, condition) in fixtures {
+        let prepared = PreparedCondition::new(condition);
+        // Prove every fixture still produces the original result outside timing.
+        assert_eq!(
+            prepared.evaluate(state).unwrap(),
+            evaluate(condition, state).unwrap()
+        );
+        group.bench_function(*name, |b| {
+            b.iter(|| black_box(&prepared).evaluate(black_box(state)));
+        });
+    }
+    group.finish();
+}
 
 fn expr_identifier_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("expr_identifier");
@@ -46,6 +70,17 @@ fn expr_identifier_bench(c: &mut Criterion) {
     });
 
     group.finish();
+    prepared_benches(
+        c,
+        "prepared_identifier",
+        &state,
+        &[
+            ("boolean", &cond_bool),
+            ("number", &cond_num),
+            ("string", &cond_str),
+            ("deep_path", &cond_deep),
+        ],
+    );
 }
 
 fn expr_predicate_bench(c: &mut Criterion) {
@@ -89,6 +124,18 @@ fn expr_predicate_bench(c: &mut Criterion) {
     });
 
     group.finish();
+    prepared_benches(
+        c,
+        "prepared_predicate",
+        &state,
+        &[
+            ("string_eq", &eq_str),
+            ("string_neq", &neq_str),
+            ("numeric_gt", &gt_num),
+            ("numeric_lte", &lte_num),
+            ("var_vs_var", &var_cmp),
+        ],
+    );
 }
 
 fn expr_compound_bench(c: &mut Criterion) {
@@ -158,6 +205,18 @@ fn expr_compound_bench(c: &mut Criterion) {
     });
 
     group.finish();
+    prepared_benches(
+        c,
+        "prepared_compound",
+        &state,
+        &[
+            ("and_2_terms", &and_2),
+            ("and_3_terms", &and_3),
+            ("or_short_circuit", &or_short),
+            ("or_full_eval", &or_full),
+            ("and_short_circuit", &and_short),
+        ],
+    );
 }
 
 fn expr_negation_bench(c: &mut Criterion) {
@@ -186,6 +245,12 @@ fn expr_negation_bench(c: &mut Criterion) {
     });
 
     group.finish();
+    prepared_benches(
+        c,
+        "prepared_negation",
+        &state,
+        &[("simple", &neg_simple), ("predicate", &neg_pred)],
+    );
 }
 
 fn expr_realistic_bench(c: &mut Criterion) {
@@ -233,6 +298,19 @@ fn expr_realistic_bench(c: &mut Criterion) {
     });
 
     group.finish();
+    prepared_benches(
+        c,
+        "prepared_realistic",
+        &state,
+        &[
+            ("admin_check", &admin_check),
+            ("auth_guard", &auth_guard),
+            ("state_check", &state_check),
+        ],
+    );
+    c.bench_function("prepare_admin_check", |b| {
+        b.iter(|| PreparedCondition::new(black_box(&admin_check)));
+    });
 }
 
 criterion_group!(

@@ -871,6 +871,44 @@ Existing JSON values are returned as `Cow::Borrowed` so handler and expression h
 ```rust
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, ExpressionError>
 ```
+
+`evaluate_with_resolver` accepts a borrowed-state resolver returning
+`Option<Cow<'a, serde_json::Value>>`. Callers repeatedly evaluating the same
+condition can prepare it once:
+
+```rust
+pub struct PreparedCondition { /* immutable evaluation plan */ }
+
+impl PreparedCondition {
+    pub fn new(condition: &ConditionExpr) -> Self;
+    pub fn evaluate(&self, state: &serde_json::Value) -> Result<bool, ExpressionError>;
+    pub fn evaluate_with_resolver<'a, F>(&self, resolver: F) -> Result<bool, ExpressionError>
+    where
+        F: Fn(&str) -> Option<Cow<'a, serde_json::Value>>;
+}
+```
+
+Preparation performs state-independent work once, including logical-operator
+validation and literal parsing. Execution is iterative, preserves left-to-right
+short-circuiting, and does not allocate traversal storage or reparse literals.
+Resolver-owned synthetic values and error construction may still allocate.
+Prepared conditions are immutable and can be shared across requests without
+locks; evaluation never retains resolved request-state values.
+
+Preparation is infallible: it retains malformed-expression errors for execution
+rather than changing which renders fail. The global logical-operator limit and
+mixed-operator checks retain their precedence. Errors in unevaluated branches
+remain unevaluated, and a missing left comparison operand still takes precedence
+over an invalid right literal or comparison operator.
+
+The runtime `Protocol` prepares both `<if>` conditions and boolean-attribute
+conditions once, storing numeric condition slots in its render metadata.
+Buffered rendering and progressive streaming share these plans and the same
+lexical/local/global resolver. Partial-navigation template/state serialization
+and client patch evaluation remain unchanged. The protobuf schema and mutable
+build model remain unchanged. Prepared storage is additional process-local
+memory, not a smaller wire representation.
+
 ### Evaluation Requirements
 - **No recursion:** All evaluation must be iterative
 - **No parentheses:** Expression grouping is handled by the ConditionExpr structure
@@ -886,12 +924,12 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, Expres
 ### Error Types
 ```rust
 pub enum ExpressionError {
+    Evaluation(String),
+    MissingValue(String),
+    TypeError(String),
     MixedOperators,
     TooManyOperators(usize),
-    ValueNotFound(String),
-    TypeMismatch { expected: String, found: String },
-    InvalidComparison(String),
-    // Other error types...
+    Comparison(String),
 }
 ```
 
@@ -973,7 +1011,8 @@ helper never scans or rewrites rendered HTML.
 
 `Protocol` is the one public runtime protocol type. It owns a decoded
 `WebUIProtocol`, a deterministic component index, and a lazily populated
-template-metadata cache. Construct it once when the server loads
+template-metadata cache. Its load-time render plan also owns reusable prepared
+conditions for conditional fragments and boolean attributes. Construct it once when the server loads
 `protocol.bin`, then share it across full renders, partial navigation,
 component-template requests, and token queries.
 

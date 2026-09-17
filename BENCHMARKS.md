@@ -20,6 +20,7 @@ WebUI itself.
 | `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, watcher hashing, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
+| `cargo bench -p microsoft-webui-handler --bench condition_render_bench` | criterion render | ~40 s | condition-heavy loops at 10/100/1000 rows, boolean attributes, and protocol preparation | expression runtime changes |
 | `cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench` | criterion micro | ~20 s | small/large file hashing and event bursts with reused scratch | watcher hashing CPU and I/O tradeoffs |
 | `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
@@ -121,6 +122,9 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-parser/benches/parser_bench.rs`
 * `crates/webui-protocol/benches/protocol_bench.rs`
 * `crates/webui-handler/benches/handler_bench.rs`
+* `crates/webui-handler/benches/condition_render_bench.rs`: full renders with
+  nested conditions, short-circuiting, local state, and boolean attributes;
+  verifies exact HTML before timing and separately measures protocol load cost
 * `crates/webui-handler/benches/streaming_hydration_bench.rs` - buffered,
   fused-streaming, and async-resumable split-path comparisons
 * `crates/webui-expressions/benches/expressions_bench.rs`
@@ -151,6 +155,21 @@ Report small-file bursts as well as large files: bounded reads can trade extra
 I/O calls for lower content-buffer allocation. Distinguish Criterion's printed
 time estimates from extracted median estimates, and source-derived buffer
 bounds from measured process RSS.
+
+For expression changes, measure both the evaluator and complete renders:
+
+```bash
+cargo bench -p microsoft-webui-expressions --bench expressions_bench -- --save-baseline before
+cargo bench -p microsoft-webui-handler --bench condition_render_bench -- --save-baseline before
+# Repeat with --baseline before after the change.
+```
+
+The condition-render fixture includes all-visible and mixed rows so skipped
+branches are measured as well as fully evaluated conditions. Keep
+`condition_protocol_load` separate from warm rendering: preparing expressions
+once trades startup work and retained storage for less per-request computation.
+Use `handler_bench` as a control for pages dominated by signals and ordinary
+loops rather than conditions.
 
 ### `streaming-resource` (counting allocator + getrusage)
 
