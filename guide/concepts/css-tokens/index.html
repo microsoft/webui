@@ -92,15 +92,21 @@
   <span class="hl-property">color</span>: var(<span class="hl-property">--</span><span class="hl-property">a</span>, var(<span class="hl-property">--</span><span class="hl-property">b</span>, var(<span class="hl-property">--</span><span class="hl-property">c</span>)));
 &#125;
 </code></pre></code-block><p>Literal fallback values (like <code>16px</code>) are ignored - only variable references are extracted.
-Malformed <code>var()</code> calls fail the build instead of hoisting partial token names.</p><h3 id="local-definition-exclusion">Local Definition Exclusion <a class="header-anchor" href="/webui/guide/concepts/css-tokens/#local-definition-exclusion" aria-label="Link to Local Definition Exclusion">#</a></h3><p>If a custom property is defined in the same CSS file, or by an ancestor
-component/root CSS scope, matching token candidates are <strong>excluded</strong> from the
-token set. This prevents locally-scoped variables from being hoisted:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>:host &#123;
+Malformed <code>var()</code> calls fail the build instead of hoisting partial token names.</p><h3 id="local-definition-exclusion">Local Definition Exclusion <a class="header-anchor" href="/webui/guide/concepts/css-tokens/#local-definition-exclusion" aria-label="Link to Local Definition Exclusion">#</a></h3><p>A custom property defined in the same declaration block is <strong>excluded</strong> from
+that block's token requirements. Unconditional <code>:host</code> or <code>:root</code> defaults also
+satisfy references in the current or descendant components:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>:host &#123;
   <span class="hl-property">--</span><span class="hl-property">internal-spacing</span>: <span class="hl-property">8</span><span class="hl-keyword">px</span>;             <span class="hl-comment">/*</span><span class="hl-comment"> definition </span><span class="hl-comment">*/</span>
   <span class="hl-property">padding</span>: var(<span class="hl-property">--</span><span class="hl-property">internal-spacing</span>);     <span class="hl-comment">/*</span><span class="hl-comment"> usage </span><span class="hl-comment">*/</span>
   <span class="hl-property">color</span>: var(<span class="hl-property">--</span><span class="hl-property">designSystemColor</span>);      <span class="hl-comment">/*</span><span class="hl-comment"> usage only → HOISTED </span><span class="hl-comment">*/</span>
 &#125;
 <span class="hl-comment">/*</span><span class="hl-comment"> Result: only "designSystemColor" is hoisted </span><span class="hl-comment">*/</span>
-</code></pre></code-block><p>Definitions are excluded even when the variable appears in a nested fallback:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>:host &#123;
+</code></pre></code-block><p>Selector-scoped overrides do not replace theme defaults outside their matching
+elements. For example, <code>.green &#123; --brand: var(--green-brand); &#125;</code> still requires
+the theme's <code>brand</code> token when another rule or child component uses
+<code>var(--brand)</code>. Conditional defaults inside <code>@media</code>, <code>@supports</code>, or
+<code>@container</code> likewise do not replace unconditional defaults. Put shared
+component defaults in a bare <code>:host</code> rule and document defaults in <code>:root</code>;
+these can also live inside cascade layers.</p><p>Definitions are excluded even when the variable appears in a nested fallback:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>:host &#123;
   <span class="hl-property">--</span><span class="hl-property">token-a</span>: red;
   <span class="hl-property">--</span><span class="hl-property">foo-bar</span>: var(<span class="hl-property">--</span><span class="hl-property">token-a</span>, var(<span class="hl-property">--</span><span class="hl-property">token-b</span>, var(<span class="hl-property">--</span><span class="hl-property">token-c</span>)));
 &#125;
@@ -108,7 +114,8 @@ token set. This prevents locally-scoped variables from being hoisted:</p><code-b
 </code></pre></code-block><h3 id="theme-validation">Theme Validation <a class="header-anchor" href="/webui/guide/concepts/css-tokens/#theme-validation" aria-label="Link to Theme Validation">#</a></h3><p>When a build is given a theme (<code>webui build --theme</code>, <code>webui serve --theme</code>, or
 API build options with a theme), every <strong>required</strong> token must exist in every
 theme. For <code>var(--a, var(--b, var(--c)))</code>, the theme must provide <code>a</code>, <code>b</code>, and
-<code>c</code> unless any of those tokens are defined by local or ancestor CSS. Missing
+<code>c</code> unless those references are covered by same-block definitions or
+unconditional local/ancestor defaults. Missing
 tokens fail with <code>missing-theme-token</code>; theme token values that reference an
 undefined or cyclic <code>var(--token)</code> are trusted and left to browser CSS
 semantics.</p><p>Both the error and the typo advisory point at the offending CSS
