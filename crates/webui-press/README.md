@@ -141,7 +141,7 @@ seconds after a stop request before terminating the owned server process tree;
 a second stop request escalates sooner. Forced shutdown returns nonzero and can
 leave incomplete outputs. Supervised mode reserves stdin and cannot forward
 interactive build input. See the [bounded shutdown reference](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
-for confirmation behavior and platform limits.
+for platform limits.
 
 Use `webui-press build --show=content` or `webui-press serve --show=content`
 for a shell-free gallery or documentation view. Omit the flag for the complete

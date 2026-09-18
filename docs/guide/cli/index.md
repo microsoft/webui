@@ -394,26 +394,24 @@ webui-press serve --shutdown-timeout 10
 
 Without the flag, shutdown waits for the active rebuild to finish with no
 deadline. With it, one supervised server process remains alive across rebuilds,
-retaining the warm build cache. A first Ctrl-C (or Unix SIGTERM, SIGQUIT, or
-SIGHUP) requests HTTP
-stop, then waits for the active rebuild within the specified grace period.
-Existing HTTP connections are stopped using the same policy as ordinary Ctrl-C,
-not drained. This applies to all stop signals in opt-in mode; in particular,
-SIGTERM no longer selects Actix's default graceful HTTP drain.
+retaining the warm build cache. A first Ctrl-C (or Unix SIGTERM or SIGHUP when
+supported by the platform signal handler) requests HTTP stop, then waits for the
+active rebuild within the specified grace period. Existing HTTP connections are
+stopped rather than drained.
 A second stop request or an expired grace period terminates the owned server
 process tree and returns a nonzero status. The flag also applies during initial
 build and when `webui serve` runs without `--watch`.
 
-The supervisor allows up to two additional seconds to confirm process-tree
-termination. If confirmation fails, the command reports an error: **do not assume
-output cleanup is safe**. Forced termination can leave incomplete generated files;
-rebuild before using them. Normal child failures retain their exit codes.
+The supervisor allows up to two additional seconds to confirm the server child
+exited. Forced termination can leave incomplete generated files; rebuild before
+using them. Normal child failures retain their exit codes.
 
 Containment uses Windows Job Objects or Unix process groups. It does not cover
 descendants that escape containment or daemonize, uninterruptible kernel tasks,
-or force-killing the external Unix supervisor. OS scheduling also means the
-timeout is not a hard real-time guarantee. In supervised mode, stdin is reserved
-for shutdown control rather than forwarded to interactive build tools.
+or force-killing the supervisor. OS scheduling means the timeout is not a hard
+real-time guarantee. In supervised mode, stdin is reserved for shutdown control.
+On Unix, output is relayed by the foreground supervisor so terminals with
+`TOSTOP` do not suspend the contained server when it writes output.
 
 **What it does:**
 

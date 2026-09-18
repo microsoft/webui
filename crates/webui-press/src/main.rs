@@ -116,15 +116,7 @@ fn main() {
         Ok(0) => {}
         Ok(code) => process::exit(code),
         Err(e) => {
-            if let Some(shutdown) = e
-                .chain()
-                .find_map(|cause| cause.downcast_ref::<shutdown::Error>())
-            {
-                eprintln!("{} {e:#}", style("✘").red().bold());
-                eprintln!("{} {}", style("help:").cyan().bold(), shutdown.help());
-            } else {
-                eprintln!("{} {e}", style("✘").red().bold());
-            }
+            eprintln!("{} {e}", style("✘").red().bold());
             process::exit(1);
         }
     }

@@ -1331,7 +1331,7 @@ add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
 retain the default wait for an active rebuild with no deadline. Forced shutdown
 returns nonzero and may leave incomplete outputs; supervised mode reserves
 stdin. See [bounded shutdown](/guide/cli/#bounded-dev-server-shutdown) for
-confirmation behavior and platform limits.
+platform limits.
 
 Unwrapped components default to Shadow. Under `--dom light`, they use
 authored/global Light DOM while a sole top-level

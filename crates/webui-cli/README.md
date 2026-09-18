@@ -70,7 +70,7 @@ request cannot finish within ten seconds; a second stop request escalates
 sooner. Forced shutdown returns nonzero and can leave incomplete outputs.
 Supervised mode reserves stdin, so interactive build tools are unsupported.
 See [bounded shutdown](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
-for confirmation behavior and platform limits.
+for platform limits.
 
 Features:
 - Renders HTML at `/` and all route paths

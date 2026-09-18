@@ -138,13 +138,6 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
             map.insert("help".into(), Value::Null);
         }
     }
-    if let Some(shutdown) = err
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<webui_dev_server::shutdown::Error>())
-    {
-        map.insert("code".into(), Value::from(shutdown.code()));
-        map.insert("help".into(), Value::from(shutdown.help()));
-    }
     map.insert("chain".into(), Value::Array(chain));
     Value::Object(map)
 }

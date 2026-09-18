@@ -263,12 +263,6 @@ pub fn execute(args: &ServeArgs) -> Result<i32> {
         if let Some(cli_err) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
             output::hint(cli_err.hint());
         }
-        if let Some(shutdown) = err
-            .chain()
-            .find_map(|c| c.downcast_ref::<shutdown::Error>())
-        {
-            output::hint(shutdown.help());
-        }
         eprintln!();
     })
 }

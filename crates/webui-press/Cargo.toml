@@ -53,4 +53,3 @@ include_dir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.28" }
