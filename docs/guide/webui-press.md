@@ -1,5 +1,13 @@
 # WebUI Press
 
+## Dev-server shutdown
+
+`webui-press serve --shutdown-timeout 10` opts in to a ten-second shutdown grace
+period. Without the flag, stopping waits for the active rebuild without a
+deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
+See [bounded dev-server shutdown](/guide/cli/#bounded-dev-server-shutdown) for
+second-stop behavior, stdin restrictions, and platform limits.
+
 ## Content-only sites
 
 The native `webui-press` binary supports the same display modes for static

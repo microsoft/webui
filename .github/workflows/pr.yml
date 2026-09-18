@@ -69,6 +69,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
 
+      - name: Test native dev-server shutdown
+        run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
+
   build-windows:
     name: Build (Windows)
     runs-on: windows-latest
@@ -76,6 +79,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+
+      - name: Test native dev-server shutdown
+        run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

@@ -24,13 +24,15 @@ mod state;
 mod types;
 
 use std::fs;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use console::style;
 use include_dir::{include_dir, Dir, DirEntry};
+use webui_dev_server::shutdown::{self, Control, Mode};
 
 use crate::types::{DocsConfig, ShowMode};
 
@@ -68,27 +70,35 @@ enum Commands {
     },
 
     /// Build, watch sources, and serve with live reload (dev only)
-    Serve {
-        /// Path to config.json
-        #[arg(short, long, default_value = ".webui-press/config.json")]
-        config: String,
+    Serve(ServeArgs),
+}
 
-        /// Path to the template directory (overrides bundled assets)
-        #[arg(short, long)]
-        template: Option<String>,
+#[derive(Args)]
+struct ServeArgs {
+    /// Path to config.json
+    #[arg(short, long, default_value = ".webui-press/config.json")]
+    config: String,
 
-        /// Generate the complete site or only page content (default: all)
-        #[arg(long, value_enum)]
-        show: Option<ShowMode>,
+    /// Path to the template directory (overrides bundled assets)
+    #[arg(short, long)]
+    template: Option<String>,
 
-        /// Port to bind
-        #[arg(short, long, default_value_t = 3333)]
-        port: u16,
+    /// Generate the complete site or only page content (default: all)
+    #[arg(long, value_enum)]
+    show: Option<ShowMode>,
 
-        /// Host to bind
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-    },
+    /// Port to bind
+    #[arg(short, long, default_value_t = 3333)]
+    port: u16,
+
+    /// Host to bind
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Opt in to supervised shutdown with this grace period in seconds.
+    /// A second stop request forces termination sooner.
+    #[arg(long, value_name = "SECONDS")]
+    shutdown_timeout: Option<NonZeroU64>,
 }
 
 fn main() {
@@ -98,19 +108,17 @@ fn main() {
             config,
             template,
             show,
-        } => run_build(&config, template.as_deref(), show),
-        Commands::Serve {
-            config,
-            template,
-            show,
-            port,
-            host,
-        } => run_serve_blocking(&config, template.as_deref(), &host, port, show),
+        } => run_build(&config, template.as_deref(), show).map(|()| 0),
+        Commands::Serve(args) => run_serve_command(&args),
     };
 
-    if let Err(e) = result {
-        eprintln!("{} {}", style("✘").red().bold(), e);
-        process::exit(1);
+    match result {
+        Ok(0) => {}
+        Ok(code) => process::exit(code),
+        Err(e) => {
+            eprintln!("{} {e}", style("✘").red().bold());
+            process::exit(1);
+        }
     }
 }
 
@@ -253,27 +261,35 @@ fn run_build(config_path: &str, template_dir: Option<&str>, show: Option<ShowMod
     Ok(())
 }
 
-fn run_serve_blocking(
-    config_path: &str,
-    template_dir: Option<&str>,
-    host: &str,
-    port: u16,
-    show_override: Option<ShowMode>,
-) -> Result<()> {
-    let (docs_config, config_dir, template) = load_config(config_path, template_dir)?;
-    let config_path_buf = Path::new(config_path).to_path_buf();
+fn run_serve_command(args: &ServeArgs) -> Result<i32> {
+    // Gate before load_config can extract embedded assets or acquire cache locks.
+    match shutdown::prepare(args.shutdown_timeout)? {
+        Mode::Direct => run_serve_blocking(args, None).map(|()| 0),
+        Mode::Child(control) => {
+            run_serve_blocking(args, Some(control)).map(|()| shutdown::JOINED_EXIT_CODE)
+        }
+        Mode::Supervisor(code) => Ok(code),
+    }
+}
+
+fn run_serve_blocking(args: &ServeArgs, control: Option<Control>) -> Result<()> {
+    let (docs_config, config_dir, template) = load_config(&args.config, args.template.as_deref())?;
+    let config_path_buf = Path::new(&args.config).to_path_buf();
 
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| anyhow::anyhow!("Cannot start tokio runtime: {e}"))?;
-    rt.block_on(serve::run_serve(serve::ServeConfig {
-        config: docs_config,
-        config_dir,
-        template_dir: template,
-        config_path: config_path_buf,
-        host: host.to_string(),
-        port,
-        show_override,
-    }))
+    rt.block_on(serve::run_serve(
+        serve::ServeConfig {
+            config: docs_config,
+            config_dir,
+            template_dir: template,
+            config_path: config_path_buf,
+            host: args.host.clone(),
+            port: args.port,
+            show_override: args.show,
+        },
+        control,
+    ))
 }
 
 #[cfg(test)]
@@ -288,14 +304,45 @@ mod tests {
                 ("--show=content", ShowMode::Content),
             ] {
                 let cli = Cli::try_parse_from(["webui-press", command, flag])?;
-                let (Commands::Build { show, .. } | Commands::Serve { show, .. }) = cli.command;
+                let show = match cli.command {
+                    Commands::Build { show, .. } | Commands::Serve(ServeArgs { show, .. }) => show,
+                };
                 assert_eq!(show, Some(expected));
             }
             let cli = Cli::try_parse_from(["webui-press", command])?;
-            let (Commands::Build { show, .. } | Commands::Serve { show, .. }) = cli.command;
+            let show = match cli.command {
+                Commands::Build { show, .. } | Commands::Serve(ServeArgs { show, .. }) => show,
+            };
             assert_eq!(show, None);
             assert!(Cli::try_parse_from(["webui-press", command, "--show=invalid"]).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_timeout_is_opt_in_and_positive() -> Result<()> {
+        let Commands::Serve(args) = Cli::try_parse_from(["webui-press", "serve"])?.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.shutdown_timeout, None);
+        for value in ["1", "30"] {
+            let Commands::Serve(args) =
+                Cli::try_parse_from(["webui-press", "serve", "--shutdown-timeout", value])?.command
+            else {
+                panic!("expected serve command");
+            };
+            assert_eq!(
+                args.shutdown_timeout.map(NonZeroU64::get),
+                value.parse().ok()
+            );
+        }
+        for value in ["0", "-1", "1.5", "invalid"] {
+            assert!(
+                Cli::try_parse_from(["webui-press", "serve", "--shutdown-timeout", value,])
+                    .is_err()
+            );
+        }
+        assert!(Cli::try_parse_from(["webui-press", "build", "--shutdown-timeout", "1"]).is_err());
         Ok(())
     }
 

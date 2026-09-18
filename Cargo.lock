@@ -1861,14 +1861,18 @@ dependencies = [
  "async-stream",
  "console",
  "criterion",
+ "ctrlc",
  "futures-util",
+ "libc",
  "mime_guess",
  "notify",
  "notify-debouncer-mini",
  "percent-encoding",
  "tempfile",
+ "thiserror",
  "time",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

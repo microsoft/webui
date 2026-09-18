@@ -5259,6 +5259,40 @@ This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
 inside the server lifetime, so normal shutdown cannot leave output writers
 behind. Forced process termination is outside this graceful-shutdown contract.
 
+Both native serve commands additionally accept an opt-in positive integer
+`--shutdown-timeout <SECONDS>`, including `webui serve` without `--watch`.
+Omitting it preserves the in-process server and unbounded join above; no
+supervisor process, control thread, or signal handler is added. Enabled mode
+uses one contained same-executable child for the entire server lifetime, so the
+existing build cache and worker remain warm across rebuilds.
+
+The internal `webui-dev-server::shutdown` module gates the child on a private
+stdin pipe before config extraction, output writes, watchers, or build
+subprocesses. The parent releases startup only after checked Windows Job
+assignment or Unix process-group creation. Windows uses a non-inherited
+kill-on-close Job; Unix uses a dedicated process group. Containment failure
+never falls back to unsupervised execution. The private child environment
+marker is removed before application threads or subprocesses start. On Unix,
+the foreground supervisor relays child stdout/stderr so the child's background
+process group cannot be suspended by a terminal with `TOSTOP` enabled.
+
+The parent installs the platform signal handling provided by `ctrlc`. The first
+request sends a control byte and starts the grace deadline. The child disables
+Actix's signal handlers, stops HTTP with `ServerHandle::stop(false)`, and returns
+through the existing watcher-drop/worker-join path. The stop future and server
+future are polled concurrently because the server drives stop acknowledgement.
+HTTP or control errors must not bypass worker joining. Expiry or a second
+request terminates the owned process scope rather than abandoning an in-process
+thread.
+
+The child reserves exit status 125 solely for successful return after normal
+server teardown and joining; the parent translates it to success. Other child
+exit codes are preserved. Forced termination waits up to two additional seconds
+for the direct child to exit and reports failure if it cannot confirm that exit.
+Output may be incomplete after forced termination. Descendants that escape the
+Job or process group, uninterruptible kernel work, and force-killing the parent
+are outside the contract. Supervised mode reserves stdin for control.
+
 The WebUI Press template may declare compile-time extension regions with
 `<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
 Child markup is the default; matching site configuration may replace it with

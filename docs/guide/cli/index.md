@@ -364,6 +364,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--state <FILE>` | Path to JSON state file for rendering | *(required)* |
 | `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
 | `--watch` | Enable file watching + HMR | `false` |
+| `--shutdown-timeout <SECONDS>` | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` | *(none)* |
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
@@ -381,6 +382,36 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
+
+#### Bounded dev-server shutdown
+
+Both `webui serve` and `webui-press serve` accept `--shutdown-timeout`:
+
+```bash
+webui serve ./src --watch --shutdown-timeout 10
+webui-press serve --shutdown-timeout 10
+```
+
+Without the flag, shutdown waits for the active rebuild to finish with no
+deadline. With it, one supervised server process remains alive across rebuilds,
+retaining the warm build cache. A first Ctrl-C (or Unix SIGTERM or SIGHUP when
+supported by the platform signal handler) requests HTTP stop, then waits for the
+active rebuild within the specified grace period. Existing HTTP connections are
+stopped rather than drained.
+A second stop request or an expired grace period terminates the owned server
+process tree and returns a nonzero status. The flag also applies during initial
+build and when `webui serve` runs without `--watch`.
+
+The supervisor allows up to two additional seconds to confirm the server child
+exited. Forced termination can leave incomplete generated files; rebuild before
+using them. Normal child failures retain their exit codes.
+
+Containment uses Windows Job Objects or Unix process groups. It does not cover
+descendants that escape containment or daemonize, uninterruptible kernel tasks,
+or force-killing the supervisor. OS scheduling means the timeout is not a hard
+real-time guarantee. In supervised mode, stdin is reserved for shutdown control.
+On Unix, output is relayed by the foreground supervisor so terminals with
+`TOSTOP` do not suspend the contained server when it writes output.
 
 **What it does:**
 

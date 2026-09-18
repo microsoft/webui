@@ -14,12 +14,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
 use webui::{Diagnostic, Protocol, WebUIHandler};
+use webui_dev_server::shutdown::{self, Control, Mode};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
@@ -57,6 +59,11 @@ pub struct ServeArgs {
     /// Enable file watching + HMR (disabled by default)
     #[arg(long)]
     pub watch: bool,
+
+    /// Opt in to supervised shutdown with this grace period in seconds.
+    /// A second stop request forces termination sooner.
+    #[arg(long, value_name = "SECONDS")]
+    pub shutdown_timeout: Option<NonZeroU64>,
 
     /// Port of the user's API server to proxy route requests to. Encoded path
     /// and query bytes are forwarded unchanged, except the entry route: `/` and
@@ -250,8 +257,8 @@ fn watch_disabled_by_env() -> bool {
     }
 }
 
-pub fn execute(args: &ServeArgs) -> Result<()> {
-    run(args).inspect_err(|err| {
+pub fn execute(args: &ServeArgs) -> Result<i32> {
+    execute_mode(args).inspect_err(|err| {
         output::error(err);
         if let Some(cli_err) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
             output::hint(cli_err.hint());
@@ -260,7 +267,16 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
     })
 }
 
-fn run(args: &ServeArgs) -> Result<()> {
+fn execute_mode(args: &ServeArgs) -> Result<i32> {
+    // Containment must precede initial builds, output writes, and watcher setup.
+    match shutdown::prepare(args.shutdown_timeout)? {
+        Mode::Direct => run(args, None).map(|()| 0),
+        Mode::Child(control) => run(args, Some(control)).map(|()| shutdown::JOINED_EXIT_CODE),
+        Mode::Supervisor(code) => Ok(code),
+    }
+}
+
+fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     let paths = ServePaths::from_args(args)?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
@@ -400,7 +416,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     let server_result = actix_web::rt::System::new()
         .block_on(async move {
-            HttpServer::new(move || {
+            let mut server = HttpServer::new(move || {
                 let mut app = App::new()
                     .app_data(server_context.clone())
                     .route("/", web::get().to(handle_index))
@@ -425,12 +441,18 @@ fn run(args: &ServeArgs) -> Result<()> {
                     .default_service(web::route().to(handle_not_found));
 
                 app
-            })
-            .bind(&bind_addr)
-            .map_err(|error| map_bind_error(server_port, &bind_addr, error))?
-            .run()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            });
+            if control.is_some() {
+                server = server.disable_signals();
+            }
+            let server = server
+                .bind(&bind_addr)
+                .map_err(|error| map_bind_error(server_port, &bind_addr, error))?
+                .run();
+            match control {
+                Some(control) => control.serve(server).await.map_err(anyhow::Error::from),
+                None => server.await.map_err(|error| anyhow::anyhow!("{error}")),
+            }
         })
         .with_context(|| format!("Failed to start actix-web server on {addr}"));
 

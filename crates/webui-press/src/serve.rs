@@ -31,6 +31,7 @@ use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{anyhow, Context, Result};
 use console::style;
 use webui_dev_server::path::normalize_base_path;
+use webui_dev_server::shutdown::Control;
 use webui_dev_server::{
     default_ignore_paths, serve_static_file, spawn_rebuild_worker, spawn_watcher, sse_handler,
     LiveReload, NotFoundStrategy, StaticServeConfig, WatchConfig, WatcherHandle,
@@ -60,7 +61,7 @@ pub struct ServeConfig {
 }
 
 /// Run the dev server until interrupted.
-pub async fn run_serve(opts: ServeConfig) -> Result<()> {
+pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()> {
     let ServeConfig {
         config,
         config_dir,
@@ -192,18 +193,25 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     );
     println!();
 
-    let server_result = HttpServer::new(move || {
+    let mut server = HttpServer::new(move || {
         App::new()
             .app_data(static_data.clone())
             .app_data(lr_data.clone())
             .route(RELOAD_PATH, web::get().to(sse_handler))
             .default_service(web::get().to(static_handler))
-    })
-    .bind(&bind)
-    .with_context(|| format!("Cannot bind {bind}"))?
-    .run()
-    .await
-    .context("Dev server failed");
+    });
+    if control.is_some() {
+        server = server.disable_signals();
+    }
+    let server = server
+        .bind(&bind)
+        .with_context(|| format!("Cannot bind {bind}"))?
+        .run();
+    let server_result: Result<()> = match control {
+        Some(control) => control.serve(server).await.map_err(Into::into),
+        None => server.await.map_err(Into::into),
+    };
+    let server_result = server_result.context("Dev server failed");
 
     drop(watcher);
     worker.shutdown()?;

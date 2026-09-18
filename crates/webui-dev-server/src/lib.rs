@@ -24,6 +24,8 @@ pub mod livereload;
 pub mod path;
 pub mod reporter;
 pub mod serve;
+#[doc(hidden)]
+pub mod shutdown;
 pub mod watch;
 pub mod worker;
 

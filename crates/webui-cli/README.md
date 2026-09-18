@@ -55,6 +55,7 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--api-port` | *(none)* | Proxy API requests; JSON provides buffered state and `application/x-webui-stream` drives progressive boundaries |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
 | `--watch` | off | Enable file watching + HMR |
+| `--shutdown-timeout <SECONDS>` | *(none)* | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
@@ -62,6 +63,14 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 webui serve ./src --state ./data/state.json --port 3000 --watch
 webui serve ./src --plugin webui --servedir ./dist --port 3004 --api-port 3014 --watch
 ```
+
+By default, shutdown waits for an active rebuild without a deadline. Add
+`--shutdown-timeout 10` to terminate the owned server process tree when a stop
+request cannot finish within ten seconds; a second stop request escalates
+sooner. Forced shutdown returns nonzero and can leave incomplete outputs.
+Supervised mode reserves stdin, so interactive build tools are unsupported.
+See [bounded shutdown](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
+for platform limits.
 
 Features:
 - Renders HTML at `/` and all route paths
