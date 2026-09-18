@@ -3922,6 +3922,69 @@ mod tests {
     }
 
     #[test]
+    fn test_build_scoped_parent_overrides_preserve_theme_defaults() {
+        for selector in [
+            ".green",
+            ":host([split]) plain-control",
+            ":host([active])",
+            "@media (width > 10000px) { :host",
+            "@supports (display: unknown) { :host",
+            "@container (width > 10000px) { :host",
+        ] {
+            let mut css = format!("{selector} {{ --brand: var(--green); }}");
+            if selector.starts_with('@') {
+                css.push('}');
+            }
+            let app = create_app_dir(&[
+                ("index.html", "<layout-container></layout-container>"),
+                (
+                    "layout-container.html",
+                    "<plain-control></plain-control><div class=\"green\"><plain-control></plain-control></div>",
+                ),
+                ("layout-container.css", &css),
+                ("plain-control.html", "<button>Primary</button>"),
+                ("plain-control.css", "button { color: var(--brand); }"),
+            ]);
+            let mut options = default_options(app.path());
+            options.theme = Some(TokenFile {
+                themes: HashMap::from([(
+                    "light".to_string(),
+                    HashMap::from([
+                        ("brand".to_string(), "black".to_string()),
+                        ("green".to_string(), "green".to_string()),
+                    ]),
+                )]),
+            });
+            let result = build(options).expect("scoped overrides should build");
+            assert_eq!(result.protocol.tokens, ["brand", "green"], "{selector}");
+
+            let mut options = default_options(app.path());
+            options.theme = Some(TokenFile {
+                themes: HashMap::from([(
+                    "light".to_string(),
+                    HashMap::from([("green".to_string(), "green".to_string())]),
+                )]),
+            });
+            let error = build(options).expect_err("uncovered child still requires --brand");
+            assert!(error.chain_message().contains("missing-theme-token"));
+        }
+    }
+
+    #[test]
+    fn test_build_scoped_inline_overrides_preserve_theme_defaults() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<style>.green { --brand: var(--green); }</style><plain-control></plain-control><div class=\"green\"><plain-control></plain-control></div>",
+            ),
+            ("plain-control.html", "<button>Primary</button>"),
+            ("plain-control.css", "button { color: var(--brand); }"),
+        ]);
+        let result = build(default_options(app.path())).expect("build");
+        assert_eq!(result.protocol.tokens, ["brand", "green"]);
+    }
+
+    #[test]
     fn test_build_does_not_use_sibling_component_definitions_for_theme_validation() {
         let app = create_app_dir(&[
             (

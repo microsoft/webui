@@ -47,7 +47,7 @@ pub struct Component {
     /// The CSS content of the component, if any
     pub css_content: Option<String>,
 
-    /// CSS custom property definitions from this component's CSS.
+    /// Unconditional `:host`/`:root` custom property defaults from this component's CSS.
     pub css_definitions: Vec<String>,
 
     /// CSS `var()` fallback chains from this component's CSS.
@@ -411,9 +411,9 @@ impl ComponentRegistry {
 
     /// Strip comments and extract CSS definitions/fallback requirements.
     fn process_css_content(&mut self, css_content: &str) -> Result<ProcessedCss> {
-        let (_tokens, definitions, requirements, stripped) = self
+        let (definitions, requirements, stripped) = self
             .css_parser
-            .extract_tokens_definitions_requirements_and_strip_comments(
+            .extract_definitions_requirements_and_strip_comments(
                 css_content,
                 self.legal_comments,
             )?;
