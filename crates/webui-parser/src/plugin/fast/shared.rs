@@ -6,8 +6,34 @@
 use super::super::{AttributeAction, ComponentSource, TransformedComponentSource};
 use super::convert::{convert_template, F_TEMPLATE_NAME};
 use super::diagnostic::converter_error;
-use crate::html_parser::{leading_content, parse_tag};
+use crate::html_parser::{leading_content, parse_tag, Event, Walker};
 use crate::Result;
+
+pub(super) fn reject_named_for_references(owner: &str, source: &str) -> Result<()> {
+    let mut ranges = Vec::with_capacity(8);
+    ranges.push(0..source.len());
+    while let Some(range) = ranges.pop() {
+        for event in Walker::new_range(source, range.start, range.end) {
+            let Event::Element(element) = event else {
+                continue;
+            };
+            if element.name() == "for" && element.self_closing() && element.has_attr("id") {
+                return Err(super::diagnostic::named_for_unsupported(
+                    owner, source, &element,
+                ));
+            }
+            if !element.inner().is_empty()
+                && !element.name().eq_ignore_ascii_case("script")
+                && !element.name().eq_ignore_ascii_case("style")
+                && !element.name().eq_ignore_ascii_case("textarea")
+                && !element.name().eq_ignore_ascii_case("title")
+            {
+                ranges.push(element.inner());
+            }
+        }
+    }
+    Ok(())
+}
 
 // Classify client-only FAST attributes that SSR skips but hydration counts.
 #[inline]

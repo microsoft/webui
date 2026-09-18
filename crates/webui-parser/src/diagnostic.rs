@@ -69,6 +69,14 @@ pub mod codes {
     pub const INVALID_FOR_IDENTIFIER: &str = "invalid-for-identifier";
     /// An explicit repeat key is malformed or used on an invalid element.
     pub const INVALID_FOR_KEY: &str = "invalid-for-key";
+    /// `<for>` has an invalid, conflicting, or unsupported identifier attribute.
+    pub const INVALID_FOR_ID: &str = "invalid-for-id";
+    /// More than one `<for>` body defines the same identifier in one file.
+    pub const DUPLICATE_FOR_ID: &str = "duplicate-for-id";
+    /// A named `<for>` reference has no definition in its owning file.
+    pub const UNKNOWN_FOR_ID: &str = "unknown-for-id";
+    /// A named `<for>` reference uses a different item variable from its body.
+    pub const INCOMPATIBLE_FOR_ITEM: &str = "incompatible-for-item";
     /// `<if>` element is missing its required `condition` attribute.
     pub const MISSING_IF_CONDITION: &str = "missing-if-condition";
     /// `<if condition>` value is not a parseable expression.

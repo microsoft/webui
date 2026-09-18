@@ -13,6 +13,24 @@ pub(crate) const FAST_LIGHT_DOM_UNSUPPORTED: &str = "fast-light-dom-unsupported"
 pub(crate) const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-f-templates";
 // A FAST source uses malformed or unsupported syntax.
 pub(crate) const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
+pub(crate) const FAST_NAMED_FOR_UNSUPPORTED: &str = "fast-named-for-unsupported";
+
+#[cold]
+#[inline(never)]
+pub(super) fn named_for_unsupported(
+    owner: &str,
+    source: &str,
+    element: &crate::html_parser::Element<'_>,
+) -> ParserError {
+    Diagnostic::error("FAST client templates do not support named <for> references")
+        .code(FAST_NAMED_FOR_UNSUPPORTED)
+        .component(owner)
+        .element("for")
+        .at_offset(source, element.start)
+        .snippet(element.opening())
+        .help("use the WebUI plugin for recursive client rendering, or use ordinary nested loops in FAST components")
+        .into()
+}
 
 // Build a diagnostic from a FAST conversion failure.
 #[cold]

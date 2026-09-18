@@ -155,6 +155,7 @@ impl ParserPlugin for FastV3ParserPlugin {
 
     fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
         require_fast_shadow_dom(context.component.tag_name.as_str(), context.uses_shadow_dom)?;
+        super::shared::reject_named_for_references(&context.component.tag_name, context.template)?;
         self.track_component(context);
         Ok(())
     }
@@ -480,7 +481,7 @@ fn convert_if_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     let attr_value = extract_attribute_value(tag_content, "condition")?;
 
     result.push_str("<f-when value=\"{{");
-    result.push_str(attr_value);
+    result.push_str(crate::strip_condition_braces(attr_value));
     result.push_str("}}\">");
 
     Some(close + 1)

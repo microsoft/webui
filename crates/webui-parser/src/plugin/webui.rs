@@ -78,6 +78,9 @@ use std::fmt::Write;
 use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
+mod named_repeats;
+use named_repeats::CompileBlocks;
+
 /// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
 /// can prefer processed HTML over raw component source.
@@ -533,6 +536,8 @@ struct ParsedForBlock {
     collection: String,
     item_var: String,
     key_path: Option<String>,
+    id: Option<String>,
+    definition: bool,
     body: String,
     consumed: usize,
 }
@@ -549,6 +554,7 @@ struct ParsedRepeatKey {
 struct TemplateMeta {
     root: TemplateSectionMeta,
     blocks: Vec<TemplateSectionMeta>,
+    has_named_repeats: bool,
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
     root_events: Vec<EventBinding>,
@@ -635,6 +641,7 @@ struct TemplatePayloadOptions {
 
 struct RootScope<'a> {
     name: &'a str,
+    block_index: usize,
     parent: Option<usize>,
 }
 
@@ -709,7 +716,8 @@ impl ConditionFunctionEmitter {
 /// # Errors
 ///
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
-/// `@event` handler, non-braced `w-ref`, or invalid concrete-child repeat key.
+/// `@event` handler, non-braced `w-ref`, invalid concrete-child repeat key,
+/// or an invalid, duplicate, unresolved, or item-incompatible named repeat.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     Ok(generate_compiled_template_with_root_source(
         tag_name,
@@ -1064,10 +1072,16 @@ fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata
 
         for repeat in &block.repeats {
             add_root(&mut roots, &repeat.collection, &scopes, visit.scope);
+            if meta.has_named_repeats
+                && named_repeats::is_ancestor_block(repeat.block_index, &scopes, visit.scope)
+            {
+                continue;
+            }
             if let Some(child) = meta.blocks.get(repeat.block_index) {
                 let scope = scopes.len();
                 scopes.push(RootScope {
                     name: &repeat.item_var,
+                    block_index: repeat.block_index,
                     parent: visit.scope,
                 });
                 stack.push(RootVisit {
@@ -1499,15 +1513,17 @@ fn compile_to_metadata(
     input: &str,
     root_events: Vec<EventBinding>,
 ) -> Result<TemplateMeta> {
-    let mut blocks = Vec::new();
+    let mut blocks = CompileBlocks::default();
     let mut root = compile_section(component, input, &mut blocks)?;
+    blocks.resolve(component, input, &mut root)?;
     finalize_template_section(&mut root);
-    for block in &mut blocks {
+    for block in &mut blocks.blocks {
         finalize_template_section(block);
     }
     Ok(TemplateMeta {
         root,
-        blocks,
+        has_named_repeats: blocks.has_named_repeats(),
+        blocks: blocks.blocks,
         root_events,
     })
 }
@@ -1515,7 +1531,7 @@ fn compile_to_metadata(
 fn compile_section(
     component: &str,
     input: &str,
-    blocks: &mut Vec<TemplateSectionMeta>,
+    blocks: &mut CompileBlocks,
 ) -> Result<TemplateSectionMeta> {
     let mut meta = TemplateSectionMeta {
         html: String::with_capacity(input.len()),
@@ -1563,10 +1579,9 @@ fn compile_section(
                 .map(|tag| tag.name);
             if opening_name == Some("if") {
                 if let Some((cond, body, consumed)) = parse_if_block(remaining) {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
+                    let block_index = blocks.reserve();
                     let block = compile_section(component, body, blocks)?;
-                    blocks[block_index] = block;
+                    blocks.blocks[block_index] = block;
                     let idx = meta.conditionals.len();
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
@@ -1578,10 +1593,11 @@ fn compile_section(
             // <for each="item in collection">...</for> → marker + repeat
             if opening_name == Some("for") {
                 if let Some(repeat) = parse_for_block(component, remaining)? {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &repeat.body, blocks)?;
-                    blocks[block_index] = block;
+                    let block_index = blocks.repeat_index(component, &repeat)?;
+                    if repeat.definition {
+                        let block = compile_section(component, &repeat.body, blocks)?;
+                        blocks.blocks[block_index] = block;
+                    }
                     let idx = meta.repeats.len();
                     meta.repeats.push(CompiledRepeat {
                         collection: repeat.collection,
@@ -2578,6 +2594,7 @@ fn parse_if_block(input: &str) -> Option<(ConditionExpr, &str, usize)> {
 }
 
 fn compile_condition_expr(input: &str) -> ConditionExpr {
+    let input = crate::strip_condition_braces(input);
     let parser = ConditionParser::new();
     match parser.parse(input) {
         Ok(condition) => condition,
@@ -2597,22 +2614,35 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
     let Some(tag) = parse_tag(input) else {
         return Ok(None);
     };
-    let Some((body_end, close_end)) = find_matching_end(input, tag.name, tag.close + 1) else {
-        return Ok(None);
-    };
-    if tag.has_attr("key") {
-        return Err(invalid_repeat_key_placement(component, tag.name).into());
+    let mut each = None;
+    let mut has_id = false;
+    for attr in tag.attrs() {
+        match attr.name {
+            "each" if each.is_none() => each = Some(attr.value),
+            "id" => has_id = true,
+            "template" => return Err(crate::unsupported_for_template(component)),
+            "key" => return Err(invalid_repeat_key_placement(component, tag.name).into()),
+            _ => {}
+        }
     }
-    let Some(each_val) = tag.attr("each") else {
+    let id = if has_id {
+        crate::validate_for_id(component, &tag)?.map(str::to_owned)
+    } else {
+        None
+    };
+    let (body_end, close_end) = if tag.self_closing && id.is_some() {
+        (tag.close + 1, tag.close + 1)
+    } else {
+        let Some(bounds) = find_matching_end(input, tag.name, tag.close + 1) else {
+            return Ok(None);
+        };
+        bounds
+    };
+    let Some(Some(each_val)) = each else {
         return Ok(None);
     };
 
-    let mut parts = each_val.split_whitespace();
-    let (Some(item_var), Some("in"), Some(collection), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Ok(None);
-    };
+    let (item_var, collection) = crate::parse_for_each(component, each_val)?;
     let body_source = input[tag.close + 1..body_end].trim();
     let repeat_key = first_child_repeat_key(component, item_var, body_source)?;
     let (key_path, body) = if let Some(repeat_key) = repeat_key {
@@ -2632,6 +2662,8 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
         collection: collection.to_string(),
         item_var: item_var.to_string(),
         key_path,
+        id,
+        definition: !tag.self_closing,
         body,
         consumed: close_end,
     }))

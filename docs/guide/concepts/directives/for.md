@@ -54,13 +54,71 @@ Where:
 - `itemName` is the name for the current item variable
 - `collectionName` is the path to the array in the state object
 
+Write the `each` expression directly, without binding braces.
+
+## Recursive Loops
+
+Give a loop an `id` to reuse its body. A self-closing `<for>` with the same `id`
+renders that body for a different collection, including an item's children:
+
+```html
+<ul>
+  <for id="tree-item" each="child in items">
+    <li>
+      <span>{{child.name}}</span>
+      <if condition="child.children.length">
+        <ul>
+          <for id="tree-item" each="child in child.children" />
+        </ul>
+      </if>
+    </li>
+  </for>
+</ul>
+```
+
+Each level binds `child` to its own item. Returning from the nested loop restores
+the parent's `child`. Missing or empty child arrays stop the nested repeat.
+Use finite tree data and iterate over a smaller child collection at each level;
+repeating the original collection indefinitely does not terminate.
+
+An `id` is local to its entry or component file, so different files can both
+define `tree-item`. Define its body once with a paired `<for>...</for>` and use
+self-closing references elsewhere in that file. References may appear before
+the definition. The defining loop also renders normally; it is not a hidden
+template declaration. A second definition with children fails with
+`duplicate-for-id`; use a self-closing reference instead.
+
+A reference must use the definition's item name. For a definition using
+`each="foo in bar"`, recurse with `each="foo in foo.children"`. The collection
+`foo.children` is evaluated using the parent's `foo` first; each child then
+becomes the new `foo` inside the shared body. Returning from the nested loop
+restores the parent's binding. A reference reuses only the body, not the
+definition's original collection expression.
+
+IDs are static, non-empty names containing ASCII letters, digits, `_`, or `-`.
+`id` is the only supported naming attribute; replace `template` with `id` on
+definitions and references. The removed `template` spelling is a build error.
+An unknown reference, duplicate definition, incompatible item variable, or
+conflicting identifier fails the build with an actionable diagnostic.
+
+Recursive repeats use the same positional or explicit-key reconciliation as
+ordinary repeats. Put an optional `key` on the definition's first concrete
+child; references reuse that key, with uniqueness checked within each sibling
+collection.
+
+Named recursion is supported in server-rendered templates and the native WebUI
+client. FAST component builds reject named references with
+`fast-named-for-unsupported`; use the WebUI plugin for interactive recursive
+trees or ordinary nested loops in FAST components.
+
 ## Notes and Limitations
 
 - The collection must be an array
 - The item variable is only available within the loop body
 - You can access nested properties of the item using dot notation
-- If the collection doesn't exist or isn't an array, an error will be raised during rendering
-- **Empty `<for>` bodies** (with no children) are silently skipped - no output is generated
+- A missing collection renders zero items; a present non-array collection is a rendering error
+- **Unnamed empty `<for>` bodies** (with no children) are silently skipped.
+  A paired named loop can define an empty body; a self-closing named loop is a reference.
 
 ## Repeat Reconciliation
 

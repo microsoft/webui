@@ -5562,6 +5562,88 @@ mod tests {
 
     // ── Nested for loop tests ─────────────────────────────────────────
 
+    fn render_named_for(template: &str, state: &Value) -> String {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser.parse("index.html", template).unwrap();
+        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
+        let mut writer = TestWriter::new();
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        writer.get_content()
+    }
+
+    #[test]
+    fn named_for_renders_the_issue_tree_and_restores_shadowed_items() {
+        let source = r#"<ul><for each="child in items" id="tree-item"><li>{{child.name}}</li><if condition="{{child.children}}"><ul><for id="tree-item" each="child in child.children" /></ul></if><i>{{child.name}}</i></for></ul><b>{{child.name}}</b>"#;
+        let state = test_json!({
+            "child": { "name": "global" },
+            "items": [
+                { "name": "Colors", "children": [{ "name": "Ali" }, { "name": "Alice" }, { "name": "Bob" }] },
+                { "name": "Name", "children": [] },
+                { "name": "Hobbies", "children": [{ "name": "Sports", "children": [{ "name": "Futbol" }, { "name": "Cricket" }] }] }
+            ]
+        });
+        assert_eq!(render_named_for(source, &state), "<ul><li>Colors</li><ul><li>Ali</li><i>Ali</i><li>Alice</li><i>Alice</i><li>Bob</li><i>Bob</i></ul><i>Colors</i><li>Name</li><i>Name</i><li>Hobbies</li><ul><li>Sports</li><ul><li>Futbol</li><i>Futbol</i><li>Cricket</li><i>Cricket</i></ul><i>Sports</i></ul><i>Hobbies</i></ul><b>global</b>");
+    }
+
+    #[test]
+    fn named_for_missing_and_empty_children_stop_recursion_without_an_if() {
+        let source = r#"<for id="tree" each="item in items">{{item.name}}<for id="tree" each="item in item.children" />{{item.name}}</for>"#;
+        let state = test_json!({
+            "items": [{ "name": "a", "children": [{ "name": "b" }, { "name": "c", "children": [] }] }]
+        });
+        assert_eq!(render_named_for(source, &state), "abbcca");
+        assert_eq!(render_named_for(source, &test_json!({"items": []})), "");
+    }
+
+    #[test]
+    fn named_for_forward_and_mutual_references_follow_finite_data() {
+        let source = r#"<for id="a" each="item in items" /><for id="a" each="item in empty"><b>{{item.name}}</b><for id="b" each="item in item.children" /></for><for id="b" each="item in empty"><i>{{item.name}}</i><for id="a" each="item in item.children" /></for>"#;
+        let state = test_json!({
+            "items": [{ "name": "a", "children": [{ "name": "b", "children": [{ "name": "c" }] }] }],
+            "empty": []
+        });
+        assert_eq!(render_named_for(source, &state), "<b>a</b><i>b</i><b>c</b>");
+    }
+
+    #[test]
+    fn named_for_preserves_enclosing_scope_and_escapes_nested_values() {
+        let source = r#"<for each="group in groups"><for id="tree" each="item in group.items">{{group.name}}:{{item.name}};<for id="tree" each="item in item.children" /></for></for>"#;
+        let state = test_json!({
+            "groups": [
+                { "name": "one", "items": [{ "name": "<root>", "children": [{ "name": "&leaf" }] }] },
+                { "name": "two", "items": [{ "name": "last" }] }
+            ]
+        });
+        assert_eq!(
+            render_named_for(source, &state),
+            "one:&lt;root&gt;;one:&amp;leaf;two:last;"
+        );
+    }
+
+    #[test]
+    fn named_for_non_array_collection_returns_the_existing_type_error() {
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", r#"<for id="tree" each="item in items"><for id="tree" each="item in item.children" /></for>"#).unwrap();
+        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
+        let mut writer = TestWriter::new();
+        let error = WebUIHandler::new()
+            .render(
+                &protocol,
+                &test_json!({"items": [{"children": 1}]}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap_err();
+        assert!(matches!(error, HandlerError::TypeError(_)));
+    }
+
     #[test]
     fn test_nested_for_loop() {
         let mut fragments = HashMap::new();

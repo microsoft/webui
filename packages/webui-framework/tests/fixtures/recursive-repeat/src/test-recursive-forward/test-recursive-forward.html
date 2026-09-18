@@ -1,0 +1,8 @@
+<ul class="forward"><for id="tree-item" each="child in forwardItems" /></ul>
+<for id="tree-item" each="child in none">
+  <li key="{{child.id}}" data-id="{{child.id}}">
+    <button class="forward-name" @click="{selectForward(child.id)}">{{child.name}}</button>
+    <ul><for id="tree-item" each="child in child.children" /></ul>
+  </li>
+</for>
+<output class="forward-selected">{{forwardSelected}}</output>
