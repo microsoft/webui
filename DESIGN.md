@@ -2393,7 +2393,8 @@ surfaced on every rebuild attempt.
   Native WebUI supports cyclic client block references. FAST v2/v3 reject
   named self-closing references in component artifacts with the actionable
   `fast-named-for-unsupported` diagnostic; server-only entry loops remain
-  supported without requiring FAST client template reuse.
+  supported without requiring FAST client template reuse. This rejection uses
+  the FAST converters' ASCII-case-insensitive tag matching.
 - **<if>:** Extract and parse condition, process children into separate fragment
   (optional surrounding `{{...}}` is accepted).
 - **<body>:** Injects `body_start` and `body_end` raw signals around the body content
@@ -5291,6 +5292,12 @@ State-root collection must terminate on those cycles while retaining roots
 visible in every lexical callsite scope. Recursive references reuse the
 definition's optional repeat key. No new wire fields, runtime identifier
 resolution, or per-item metadata copies are required.
+
+Native compilation carries original source spans through trimmed content,
+Shadow DOM wrappers, and nested blocks. Repeat keys are skipped during
+attribute emission without rewriting or copying the body source. Named-repeat
+errors therefore point to the actual offending tag; unresolved names are
+reported in source order, independently of hash-map iteration order.
 
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 

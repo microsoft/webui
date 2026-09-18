@@ -67,7 +67,7 @@ fn nested_closing_directive_preserves_footer_owner() -> Result<()> {
 fn crlf_between_complete_tags_control() -> Result<()> {
     let source =
         "<article>\r\n<if condition=\"enabled\"><button>{{label}}</button></if>\r\n</article>";
-    let meta = compile_to_metadata("test-whitespace", source, Vec::new())?;
+    let meta = compile_to_metadata("test-whitespace", source.into(), Vec::new())?;
     assert_eq!(meta.root.html, "<article>\r\n\r\n</article>");
     assert_eq!(meta.root.conditionals.len(), 1);
     assert_eq!(meta.blocks.len(), 1);
@@ -164,7 +164,7 @@ fn matching_ignores_directive_text_in_attributes_and_comments() -> Result<()> {
         .replace("</if></article>", "</if \n></article>")
         .replace("</span></for>", "</span></for\t>");
     assert_same_metadata(&source, control)?;
-    let meta = compile_to_metadata("test-whitespace", &source, Vec::new())?;
+    let meta = compile_to_metadata("test-whitespace", source.as_str().into(), Vec::new())?;
     assert_eq!(meta.root.conditionals.len(), 1);
     assert_eq!(meta.blocks.len(), 2);
     assert!(meta.blocks[0].html.contains("&lt;if&gt; native text"));

@@ -17,7 +17,10 @@ pub(super) fn reject_named_for_references(owner: &str, source: &str) -> Result<(
             let Event::Element(element) = event else {
                 continue;
             };
-            if element.name() == "for" && element.self_closing() && element.has_attr("id") {
+            if element.name().eq_ignore_ascii_case("for")
+                && element.self_closing()
+                && element.has_attr("id")
+            {
                 return Err(super::diagnostic::named_for_unsupported(
                     owner, source, &element,
                 ));
@@ -196,6 +199,25 @@ mod tests {
         INVALID_FAST_TEMPLATE, UNSUPPORTED_MULTIPLE_F_TEMPLATES,
     };
     use crate::ParserError;
+
+    #[test]
+    fn named_for_rejection_matches_fast_directive_case_handling() {
+        for tag in ["for", "FOR", "FoR"] {
+            let source = format!(
+                "\n<template>\n  <{tag} id=\"tree\" each=\"item in items\" />\n</template>"
+            );
+            let error = reject_named_for_references("test-tree", &source).unwrap_err();
+            let ParserError::Template(diagnostic) = error else {
+                panic!("expected a FAST authoring diagnostic");
+            };
+            assert_eq!(
+                diagnostic.error_code(),
+                Some(super::super::diagnostic::FAST_NAMED_FOR_UNSUPPORTED)
+            );
+            assert_eq!(diagnostic.position_line_column(), Some((3, 3)));
+            assert!(diagnostic.help_text().is_some());
+        }
+    }
 
     // --- is_hoisted_shadow_attr / hoisted_shadow_options / strip_hoisted_shadow_options ---
     //

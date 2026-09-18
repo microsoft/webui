@@ -33,7 +33,7 @@ impl CompileBlocks {
     pub(super) fn repeat_index(
         &mut self,
         component: &str,
-        repeat: &ParsedForBlock,
+        repeat: &ParsedForBlock<'_>,
     ) -> Result<usize> {
         let Some(id) = &repeat.id else {
             return Ok(self.reserve());
@@ -44,11 +44,24 @@ impl CompileBlocks {
     fn named_repeat_index(
         &mut self,
         component: &str,
-        repeat: &ParsedForBlock,
+        repeat: &ParsedForBlock<'_>,
         id: &str,
     ) -> Result<usize> {
         self.validation
-            .register(component, id, &repeat.item_var, (repeat.definition, 0))?;
+            .register(
+                component,
+                id,
+                &repeat.item_var,
+                (repeat.definition, repeat.offset),
+            )
+            .map_err(|error| {
+                let source = super::TemplateSource {
+                    source: repeat.body.source,
+                    range: repeat.offset..repeat.offset,
+                    repeat_key: None,
+                };
+                source.locate_error(error)
+            })?;
         if let Some(named) = self.named.iter_mut().find(|named| named.id == id) {
             if repeat.definition {
                 named.key_path.clone_from(&repeat.key_path);
@@ -127,7 +140,7 @@ mod tests {
     #[test]
     fn self_reference_reuses_one_body_and_normalizes_condition_braces() {
         let source = r#"<for id="tree-item" each="child in items"><li>{{child.name}}</li><if condition="{{child.children}}"><ul><for id="tree-item" each="child in child.children" /></ul></if></for>"#;
-        let meta = compile_to_metadata("test-tree", source, Vec::new()).unwrap();
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
         assert_eq!(meta.blocks.len(), 2);
         assert_eq!(meta.root.repeats[0].block_index, 0);
         assert_eq!(meta.root.repeats[0].collection, "items");
@@ -145,7 +158,7 @@ mod tests {
     #[test]
     fn forward_references_inherit_definition_keys_without_copying_blocks() {
         let source = r#"<for id="node" each="item in first"/><for id="node" each="item in second"><span key="{{item.id}}">{{item.name}}</span><for id="node" each="item in item.children"/></for>"#;
-        let meta = compile_to_metadata("test-tree", source, Vec::new()).unwrap();
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
         assert_eq!(meta.blocks.len(), 1);
         assert_eq!(meta.root.repeats.len(), 2);
         for repeat in meta.root.repeats.iter().chain(&meta.blocks[0].repeats) {
@@ -162,7 +175,7 @@ mod tests {
     #[test]
     fn mutual_references_are_finite_and_collect_roots_in_every_callsite_scope() {
         let source = r#"<for each="outside in groups"><for id="a" each="node in outside.nodes"><span>{{outside.label}} {{title}} {{node.name}}</span><for id="b" each="node in node.children"/></for></for><for id="a" each="node in roots"/><for id="b" each="node in extras"><button @click="{select(node.id)}">{{footer}}</button><for id="a" each="node in node.children"/></for>"#;
-        let meta = compile_to_metadata("test-tree", source, Vec::new()).unwrap();
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
         assert_eq!(meta.blocks.len(), 3);
         assert_eq!(meta.blocks[1].repeats[0].block_index, 2);
         assert_eq!(meta.blocks[2].repeats[0].block_index, 1);
@@ -179,7 +192,7 @@ mod tests {
     #[test]
     fn item_scopes_are_restored_for_siblings_after_recursive_blocks() {
         let source = r#"<for id="node" each="item in items"><span>{{item.name}}</span><for id="node" each="item in item.children"/></for><p>{{item.name}}</p>"#;
-        let meta = compile_to_metadata("test-tree", source, Vec::new()).unwrap();
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
         let mut roots = collect_template_build_metadata(&meta).roots;
         roots.sort();
         assert_eq!(roots, ["item", "items"]);
@@ -194,7 +207,7 @@ mod tests {
         let named = generate_compiled_template("test-tree", &named).unwrap();
         assert_eq!(ordinary, named);
         for tag in ["test-first", "test-second"] {
-            let meta = compile_to_metadata(tag, r#"<for id="node" each="item in items"><i>{{item.name}}</i><for id="node" each="item in item.children"/></for>"#, Vec::new()).unwrap();
+            let meta = compile_to_metadata(tag, r#"<for id="node" each="item in items"><i>{{item.name}}</i><for id="node" each="item in item.children"/></for>"#.into(), Vec::new()).unwrap();
             assert_eq!(meta.blocks.len(), 1);
             assert_eq!(meta.blocks[0].repeats[0].block_index, 0);
         }
@@ -257,12 +270,80 @@ mod tests {
                 codes::INCOMPATIBLE_FOR_ITEM,
             ),
         ] {
-            let result = compile_to_metadata("test-tree", source, Vec::new());
+            let result = compile_to_metadata("test-tree", source.into(), Vec::new());
             let Err(ParserError::Template(diagnostic)) = result else {
                 panic!("expected {code}: {source}");
             };
             assert_eq!(diagnostic.error_code(), Some(code));
             assert!(diagnostic.help_text().is_some());
         }
+    }
+
+    fn assert_diagnostic_site(source: &str, code: &'static str, position: (usize, usize)) {
+        let server = crate::HtmlParser::new()
+            .parse("test-tree", source)
+            .unwrap_err();
+        let client = generate_compiled_template("test-tree", source).unwrap_err();
+        for error in [server, client] {
+            let ParserError::Template(diagnostic) = error else {
+                panic!("expected an authoring diagnostic");
+            };
+            assert_eq!(diagnostic.error_code(), Some(code));
+            assert_eq!(diagnostic.position_line_column(), Some(position));
+            assert!(diagnostic.help_text().is_some());
+        }
+    }
+
+    #[test]
+    fn unresolved_named_repeats_report_the_first_source_site_deterministically() {
+        let source = concat!(
+            "\r\n",
+            "<!-- header -->\r\n",
+            "<template shadowrootmode=\"open\">\r\n",
+            "  <for each=\"row in rows\">\r\n",
+            "    <if condition=\"row.visible\">\r\n",
+            "      <section key=\"{{row.id}}\">\r\n",
+            "        <for id=\"z-first\" each=\"item in row.children\" />\r\n",
+            "      </section>\r\n",
+            "    </if>\r\n",
+            "  </for>\r\n",
+            "  <for id=\"a-later\" each=\"item in items\" />\r\n",
+            "</template>\r\n",
+        );
+        for _ in 0..32 {
+            assert_diagnostic_site(source, codes::UNKNOWN_FOR_ID, (7, 9));
+        }
+    }
+
+    #[test]
+    fn named_repeat_errors_preserve_sites_inside_keyed_conditional_bodies() {
+        for (reference, code) in [
+            (
+                r#"<for id="node" each="item in item.children"><b>duplicate</b></for>"#,
+                codes::DUPLICATE_FOR_ID,
+            ),
+            (
+                r#"<for id="node" each="child in item.children" />"#,
+                codes::INCOMPATIBLE_FOR_ITEM,
+            ),
+            (
+                r#"<for id="" each="item in item.children" />"#,
+                codes::INVALID_FOR_ID,
+            ),
+        ] {
+            let source = format!(
+                "\n<template shadowrootmode=\"open\">\n  <for id=\"node\" each=\"item in items\">\n    <if condition=\"item.visible\">\n      <section key=\"{{{{item.id}}}}\">\n        {reference}\n      </section>\n    </if>\n  </for>\n</template>"
+            );
+            assert_diagnostic_site(&source, code, (6, 9));
+        }
+    }
+
+    #[test]
+    fn named_repeat_error_columns_are_not_shifted_by_unicode_or_stripped_keys() {
+        let source = concat!(
+            "\n<for id=\"node\" each=\"item in items\"><p key=\"{{item.id}}\">",
+            "\u{00e9}</p><for id=\"node\" each=\"child in item.children\" /></for>"
+        );
+        assert_diagnostic_site(source, codes::INCOMPATIBLE_FOR_ITEM, (2, 63));
     }
 }
