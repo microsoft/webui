@@ -344,10 +344,10 @@ fn run(args: &ServeArgs) -> Result<()> {
         entry: args.app_args.entry.clone(),
     }));
 
-    // The watcher handle must outlive the server; dropping it stops the
-    // background watcher thread. We store it in an `Option` so that the
+    // Keep both the watcher and rebuild worker alive until the server stops.
+    // We store them in an `Option` so that the
     // `--watch=false` branch is a no-op.
-    let _watcher_handle = if let Some(active_lr) = &livereload {
+    let watcher_handle = if let Some(active_lr) = &livereload {
         let mut watch_paths_list = paths.watch_paths();
 
         // Also watch local path component sources
@@ -398,7 +398,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     let has_api_proxy = server_context.api_port.is_some();
 
-    actix_web::rt::System::new()
+    let server_result = actix_web::rt::System::new()
         .block_on(async move {
             HttpServer::new(move || {
                 let mut app = App::new()
@@ -432,8 +432,13 @@ fn run(args: &ServeArgs) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
         })
-        .with_context(|| format!("Failed to start actix-web server on {addr}"))?;
+        .with_context(|| format!("Failed to start actix-web server on {addr}"));
 
+    if let Some((watcher, worker)) = watcher_handle {
+        drop(watcher);
+        worker.shutdown()?;
+    }
+    server_result?;
     Ok(())
 }
 
@@ -1375,10 +1380,14 @@ struct WatcherConfig {
 }
 
 /// Start a debounced filesystem watcher that rebuilds and re-renders
-/// when template, data, or asset files change. The returned handle owns
-/// the background watcher thread; it must be kept alive for the lifetime
-/// of the server.
-fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
+/// when template, data, or asset files change. Keep both returned handles
+/// alive for the lifetime of the server.
+fn start_file_watcher(
+    config: WatcherConfig,
+) -> Result<(
+    webui_dev_server::WatcherHandle,
+    webui_dev_server::RebuildWorker,
+)> {
     let WatcherConfig {
         watch_paths,
         projection_manifests,
@@ -1403,7 +1412,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     let state_for_rebuild = Arc::clone(&state);
     let retry_state = Arc::clone(&state);
     let metafile_ignore = render_config.metafile.clone();
-    let tick_tx = webui_dev_server::spawn_rebuild_worker(livereload, move || {
+    let worker = webui_dev_server::spawn_rebuild_worker(livereload, move || {
         let warnings =
             rebuild_and_update_state(&render_config, &lr_for_inject, &state_for_rebuild)?;
         Ok(take_new_warnings(&mut seen, warnings))
@@ -1416,7 +1425,8 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
 
     let ignore = watcher_ignore_paths(metafile_ignore.as_deref());
 
-    spawn_watcher(
+    let tick_tx = worker.sender();
+    let watcher = spawn_watcher(
         WatchConfig {
             paths: watch_paths,
             explicit_files: projection_manifests,
@@ -1430,7 +1440,8 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
             // ignore send errors.
             let _ = tick_tx.try_send(paths);
         },
-    )
+    )?;
+    Ok((watcher, worker))
 }
 
 /// Return the colorized display bodies for warnings in `current` that were not

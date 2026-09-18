@@ -127,7 +127,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     // itself, so the mutex is uncontended in practice.
     let cache = Arc::new(Mutex::new(initial_cache));
 
-    let tick_tx = {
+    let worker = {
         let config_path = config_path.clone();
         let config_dir = config_dir.clone();
         let template_dir = template_dir.clone();
@@ -145,8 +145,8 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         })
     };
 
-    let _watcher: WatcherHandle = {
-        let tx = tick_tx.clone();
+    let watcher: WatcherHandle = {
+        let tx = worker.sender();
         let watched = watch_paths(
             &config_dir,
             &config_path,
@@ -192,7 +192,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     );
     println!();
 
-    HttpServer::new(move || {
+    let server_result = HttpServer::new(move || {
         App::new()
             .app_data(static_data.clone())
             .app_data(lr_data.clone())
@@ -203,10 +203,11 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     .with_context(|| format!("Cannot bind {bind}"))?
     .run()
     .await
-    .context("Dev server failed")?;
+    .context("Dev server failed");
 
-    // Hold the watcher until the server returns so it isn't dropped early.
-    drop(_watcher);
+    drop(watcher);
+    worker.shutdown()?;
+    server_result?;
     Ok(())
 }
 
