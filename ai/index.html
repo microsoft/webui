@@ -760,7 +760,12 @@ unwrapped even when the build fallback is Shadow.</li></ul><h2 id="build-and-run
 <code>--css-bundle</code> (merge component stylesheets into shared chunks; not valid with
 <code>--css module</code>), <code>--components</code>, <code>--theme</code>,
 <code>--projection-manifest</code>, <code>--emit-component-assets</code>, <code>--metafile</code>,
-<code>--format json</code>.</p><p>Unwrapped components default to Shadow. Under <code>--dom light</code>, they use
+<code>--format json</code>.</p><p>On <code>webui serve</code> (with or without <code>--watch</code>) and <code>webui-press serve</code>, optionally
+add <code>--shutdown-timeout 10</code> for a ten-second shutdown grace period. Omit it to
+retain the default wait for an active rebuild with no deadline. Forced shutdown
+returns nonzero and may leave incomplete outputs; supervised mode reserves
+stdin. See <a href="/webui/guide/cli/#bounded-dev-server-shutdown">bounded shutdown</a> for
+platform limits.</p><p>Unwrapped components default to Shadow. Under <code>--dom light</code>, they use
 authored/global Light DOM while a sole top-level
 <code>&lt;template shadowrootmode="open"&gt;</code> remains a Shadow island. A sole bare
 <code>&lt;template&gt;</code> explicitly selects Light and is unwrapped.</p><p>Authoring mistakes fail the build with a structured diagnostic carrying a stable
