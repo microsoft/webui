@@ -67,7 +67,7 @@ impl Scope {
         Ok(false)
     }
 
-    pub(super) fn terminate(&self) -> io::Result<()> {
+    pub(super) fn terminate(&self, child: &Child) -> io::Result<()> {
         if self.group <= 0 {
             return Err(io::Error::other("refusing an unowned process-group signal"));
         }
@@ -77,6 +77,11 @@ impl Scope {
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else if error.raw_os_error() == Some(libc::EPERM) && self.root_exited(child)? {
+            // Darwin reports EPERM when a retained zombie leader is the only
+            // remaining group member. The caller still reaps the leader and
+            // requires a separate empty-group confirmation before succeeding.
             Ok(())
         } else {
             Err(error)

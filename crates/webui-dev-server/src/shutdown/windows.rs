@@ -76,7 +76,7 @@ impl Scope {
         Ok(self.root_exited(child)? && self.active_count()? > 0)
     }
 
-    pub(super) fn terminate(&self) -> io::Result<()> {
+    pub(super) fn terminate(&self, _child: &Child) -> io::Result<()> {
         // SAFETY: The job contains only the gated child and its descendants.
         if unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) } == 0 {
             return Err(io::Error::last_os_error());

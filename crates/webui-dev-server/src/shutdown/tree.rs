@@ -79,7 +79,7 @@ impl Tree {
         let descendants = self.scope.descendants_after_exit(&self.child);
         // Never reap a Unix leader before this final group kill: retaining its
         // PID prevents accidentally signaling a reused PID/process group.
-        let termination = self.scope.terminate();
+        let termination = self.scope.terminate(&self.child);
         self.control.take();
         // Even a failed query/kill gets a checked confirmation attempt. Do not
         // short-circuit before cleanup or retry with an extra budget from Drop.
