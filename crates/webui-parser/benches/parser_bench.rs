@@ -652,6 +652,25 @@ fn parser_isolated_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn css_token_analysis_bench(c: &mut Criterion) {
+    c.bench_function("css_token_analysis/scoped_parent", |b| {
+        b.iter(|| {
+            let mut parser = HtmlParser::new();
+            for (name, html, css) in [
+                ("layout-container", "<plain-control></plain-control><div class=\"green\"><plain-control></plain-control></div>", ".green { --brand: var(--green); --foreground: var(--on-green); }"),
+                ("plain-control", "<button>Primary</button>", "button { color: var(--foreground); background: var(--brand); }"),
+            ] {
+                parser.component_registry_mut()
+                    .register_component(webui_parser::ComponentRegistration::new(name, html, Some(css), false))
+                    .unwrap_or_else(|error| panic!("register: {error}"));
+            }
+            parser.parse("index.html", "<layout-container></layout-container>")
+                .unwrap_or_else(|error| panic!("parse: {error}"));
+            black_box(parser.token_analysis())
+        });
+    });
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
@@ -663,6 +682,7 @@ criterion_group!(
     parser_text_vs_directive_bench,
     parser_adversarial_bench,
     client_template_directives_bench,
-    parser_isolated_bench
+    parser_isolated_bench,
+    css_token_analysis_bench
 );
 criterion_main!(benches);

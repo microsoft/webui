@@ -437,6 +437,9 @@ my-component[variant="primary"] {
   generates or reserves them for Light CSS.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
+- Scoped token overrides do not replace theme defaults for other elements.
+  Use bare `:host` rules for shared Shadow component defaults or `:root` for
+  document defaults. See [design tokens](/guide/concepts/css-tokens).
 - Malformed CSS fails the build, including unterminated `var()` calls,
   comments, strings, and unmatched delimiters.
 
