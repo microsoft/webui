@@ -19,7 +19,7 @@ WebUI itself.
 |---|---|---|---|---|
 | `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, watcher hashing, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
-| `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
+| `cargo xtask bench contact-book` | criterion micro | varies by filter | plugin-specific rendering at 10/100/1000 contacts and WebUI application compilation | compiler/handler/state investigations; use the WebUI-only filters below |
 | `cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench` | criterion micro | ~20 s | small/large file hashing and event bursts with reused scratch | watcher hashing CPU and I/O tradeoffs |
 | `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
@@ -101,9 +101,17 @@ Streaming RPS** is selected by default. Copy only the generated
 and machine evidence in `webui-benchmarks` or its CI artifacts; do not copy
 them into the WebUI documentation tree.
 
-### Threshold guidance
+### Noise investigation guidance
 
-| Source | Treat as noise | Treat as signal |
+The magnitudes below are investigation heuristics, not acceptance allowances.
+A consistent smaller difference can be a real regression. Use repeated,
+interleaved before/after pairs and same-binary A/A controls to estimate
+uncertainty; do not subtract A/A variation from the measured change.
+An interval spanning zero is inconclusive, not evidence of equivalence.
+Allocation counts, requested bytes, peak heap, and retained heap are separate
+metrics; an improvement in one does not cancel a regression in another.
+
+| Source | Typical variation to investigate | Larger changes to investigate |
 |---|---|---|
 | criterion (well-isolated wall-clock) | < ±2% | > ±5% |
 | streaming-resource (alloc count) | exact; any change matters | any non-zero |
@@ -125,7 +133,7 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
   fused-streaming, and async-resumable split-path comparisons
 * `crates/webui-expressions/benches/expressions_bench.rs`
 * `crates/webui-state/benches/state_bench.rs`
-* `crates/webui/benches/contact_book_bench.rs`: end-to-end render
+* `crates/webui/benches/contact_book_bench.rs`: end-to-end render and WebUI application compilation
 * `crates/webui/benches/streaming_bench.rs`: writer-path wall-clock + TTFB
 * `crates/webui-dev-server/benches/watch_hash_bench.rs`: file hashing and
   32-file bursts with one reusable scratch buffer
@@ -151,6 +159,36 @@ Report small-file bursts as well as large files: bounded reads can trade extra
 I/O calls for lower content-buffer allocation. Distinguish Criterion's printed
 time estimates from extracted median estimates, and source-derived buffer
 bounds from measured process RSS.
+
+### WebUI-only contact-book controls
+
+Use explicit filters when measuring the WebUI plugin:
+
+```bash
+cargo bench -p microsoft-webui --bench contact_book_bench -- contact_book_contacts_render_webui_plugin
+cargo bench -p microsoft-webui --bench contact_book_bench -- contact_book_compile_webui_plugin
+```
+
+Both use the unchanged contact-book example, `Some(Plugin::WebUI)`, and
+`CssStrategy::Style`. They require compiled WebUI templates and full bootstrap
+state, rather than silently reducing the workload with a projection manifest.
+These filters skip the legacy plugin-free/FAST setup and custom summary pass.
+Plugin-free or FAST results are not substitutes for WebUI measurements.
+
+The render group measures 10, 100, and 1000 contacts with compilation, state
+construction, and writer allocation outside the timed loop. The compile case,
+`contact_book_compile_webui_plugin/hot_filesystem_end_to_end`, measures fresh
+options construction and the normal `webui::build` pipeline against a warmed
+filesystem. It excludes destruction of the returned build result and retains
+at most one such result per iteration. It measures application compilation,
+not Rust compilation or rendering.
+
+For a before/after comparison, overlay identical benchmark code on complete,
+immutable source snapshots and record both source identities. A dirty working
+tree is not identified by its Git HEAD commit alone. Match package/target
+selection, toolchain, profiles, and effective flags; audit any intentional
+dependency-feature differences. Use equal-length application paths for
+compiler allocation comparisons and verify equivalent output and state.
 
 ### `streaming-resource` (counting allocator + getrusage)
 

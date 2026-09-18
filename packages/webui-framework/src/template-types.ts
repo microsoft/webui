@@ -36,7 +36,14 @@ export type TemplateSlot = [
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
+/**
+ * Complete compiler-owned SSR successor; omission means the actual parent end.
+ * `1` identifies a raw binding itself. Otherwise `8 * index + kind` uses
+ * kinds 2/3/4/5 for local conditional/repeat/render/raw indexes, 6 for the
+ * section element index minus one, and 7 for a parent-local authored comment.
+ * No runtime successor inference or older metadata decoding is supported.
+ */
+export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], successor?: number];
 export type CompiledAttrGroupMeta = [
   target: TemplateNodeIndex,
   start: number,
@@ -70,6 +77,10 @@ export type CompiledRepeatMeta = [
   slot: TemplateSlot,
   keyPath?: string,
 ];
+/** A build-resolved local fragment invocation and its caller-side input. */
+export type CompiledRenderMeta =
+  | [blockIndex: number, slot: TemplateSlot]
+  | [blockIndex: number, slot: TemplateSlot, scopePath: string, alias: string];
 export type CompiledEventArg =
   | ['e']
   | ['p', string]
@@ -93,6 +104,7 @@ export interface TemplateBlockMeta {
   ag?: CompiledAttrGroupMeta[];
   c?: CompiledConditionalMeta[];
   r?: CompiledRepeatMeta[];
+  u?: CompiledRenderMeta[];
   eg?: CompiledEventGroupMeta[];
 }
 

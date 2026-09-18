@@ -82,6 +82,235 @@ unsafe fn read_protocol_tokens(bytes: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn named_fragment_compiled_protocol_renders_through_c_abi() {
+    let source = include_str!("../../webui-test-utils/fixtures/recursive-fragments.html");
+    let state = CString::new(include_str!(
+        "../../webui-test-utils/fixtures/recursive-fragments.json"
+    ))
+    .expect("fixture state");
+    let mut parser = webui_parser::HtmlParser::new();
+    parser
+        .parse("index.html", source)
+        .expect("compile fragments");
+    let bytes = WebUIProtocol::new(parser.into_fragment_records())
+        .to_protobuf()
+        .expect("serialize fragments");
+    let entry = CString::new("index.html").expect("entry");
+    let path = CString::new("/").expect("path");
+    // SAFETY: All input buffers and C strings outlive their calls; returned
+    // handles and strings are destroyed exactly once after their last use.
+    unsafe {
+        let protocol = prepare_protocol(&bytes);
+        let handler = webui_handler_create();
+        for _ in 0..2 {
+            let output = webui_handler_render(
+                handler,
+                protocol,
+                state.as_ptr(),
+                entry.as_ptr(),
+                path.as_ptr(),
+            );
+            assert!(!output.is_null(), "{:?}", last_error_string());
+            let html = CStr::from_ptr(output).to_str().expect("UTF-8");
+            assert!(html.contains("<h2>Tree</h2>"));
+            assert!(html.contains(
+                "<li><span>Oak</span><ul><li><span>Leaf &amp; bud</span></li></ul></li>"
+            ));
+            assert_eq!(html.matches("<li>").count(), 3);
+            assert!(!html.contains("<fragment"));
+            webui_free(output);
+        }
+        webui_handler_destroy(handler);
+        webui_protocol_destroy(protocol);
+    }
+}
+
+#[test]
+fn named_fragment_missing_scope_returns_c_error_without_poisoning_protocol() {
+    let mut parser = webui_parser::HtmlParser::new();
+    parser
+        .parse(
+            "index.html",
+            concat!(
+                r#"<fragment name="value"><p>{{value}}</p></fragment>"#,
+                r#"<render fragment="value" scope="{{input}}" as="value"></render>"#,
+            ),
+        )
+        .expect("compile scalar call");
+    let bytes = WebUIProtocol::new(parser.into_fragment_records())
+        .to_protobuf()
+        .expect("serialize");
+    let entry = CString::new("index.html").expect("entry");
+    let path = CString::new("/").expect("path");
+    let missing = CString::new("{}").expect("missing");
+    let null = CString::new(r#"{"input":null}"#).expect("null");
+    // SAFETY: All pointers refer to live owned inputs or live FFI handles;
+    // every successful returned string is released with webui_free.
+    unsafe {
+        let protocol = prepare_protocol(&bytes);
+        let handler = webui_handler_create();
+        let missing = webui_handler_render(
+            handler,
+            protocol,
+            missing.as_ptr(),
+            entry.as_ptr(),
+            path.as_ptr(),
+        );
+        assert!(missing.is_null());
+        assert!(last_error_string().is_some_and(|error| error.contains("input")));
+        let output = webui_handler_render(
+            handler,
+            protocol,
+            null.as_ptr(),
+            entry.as_ptr(),
+            path.as_ptr(),
+        );
+        assert!(!output.is_null(), "{:?}", last_error_string());
+        webui_free(output);
+        webui_handler_destroy(handler);
+        webui_protocol_destroy(protocol);
+    }
+}
+
+#[test]
+fn named_fragment_cycles_remain_visible_to_c_partial_and_template_endpoints() {
+    let records = [
+        (
+            "index.html",
+            vec![WebUIFragment::render("entry-body", "", "")],
+        ),
+        (
+            "entry-body",
+            vec![WebUIFragment::route("/tree", "tree-view")],
+        ),
+        (
+            "tree-view",
+            vec![WebUIFragment::render("walk", "items", "items")],
+        ),
+        (
+            "walk",
+            vec![
+                WebUIFragment::component("tree-label"),
+                WebUIFragment::render("walk", "items", "items"),
+            ],
+        ),
+        ("tree-label", vec![WebUIFragment::raw("<span>label</span>")]),
+    ];
+    let mut wire = WebUIProtocol::new(
+        records
+            .into_iter()
+            .map(|(name, fragments)| {
+                (
+                    name.to_string(),
+                    FragmentList {
+                        fragments,
+                        contains_boundary: false,
+                    },
+                )
+            })
+            .collect(),
+    );
+    for tag in ["tree-view", "tree-label"] {
+        wire.components
+            .entry(tag.to_string())
+            .or_default()
+            .template_json = r#"{"h":"<span></span>"}"#.to_string();
+    }
+    wire.populate_style_closures(&["index.html"]);
+    let bytes = wire.to_protobuf().expect("encode graph");
+    let state = CString::new(r#"{"items":[]}"#).expect("state");
+    let entry = CString::new("index.html").expect("entry");
+    let path = CString::new("/tree").expect("path");
+    let inventory = CString::new("").expect("inventory");
+    let tags = CString::new(r#"["tree-view","tree-label"]"#).expect("tags");
+    // SAFETY: Protocol and all C strings remain live through each call, and
+    // independently allocated response strings are freed exactly once.
+    unsafe {
+        let protocol = prepare_protocol(&bytes);
+        let partial = webui_protocol_render_partial(
+            protocol,
+            state.as_ptr(),
+            entry.as_ptr(),
+            path.as_ptr(),
+            inventory.as_ptr(),
+        );
+        assert!(!partial.is_null(), "{:?}", last_error_string());
+        let value: serde_json::Value =
+            serde_json::from_str(CStr::from_ptr(partial).to_str().expect("partial UTF-8"))
+                .expect("partial JSON");
+        assert_eq!(value["templates"].as_object().expect("templates").len(), 2);
+        webui_free(partial);
+        let templates = webui_ffi::webui_protocol_render_component_templates(
+            protocol,
+            tags.as_ptr(),
+            inventory.as_ptr(),
+        );
+        assert!(!templates.is_null(), "{:?}", last_error_string());
+        let value: serde_json::Value =
+            serde_json::from_str(CStr::from_ptr(templates).to_str().expect("templates UTF-8"))
+                .expect("templates JSON");
+        assert_eq!(value["templates"].as_object().expect("templates").len(), 2);
+        webui_free(templates);
+        webui_protocol_destroy(protocol);
+    }
+}
+
+#[test]
+fn named_fragment_capture_survives_c_stream_resume_and_input_release() {
+    let source = concat!(
+        "<html><head></head><body>",
+        r#"<fragment name="card"><boundary name="ready">"#,
+        r#"<p>{{row.name}}/{{title}}</p></boundary><i>{{row.name}}</i></fragment>"#,
+        r#"<render fragment="card" scope="{{source}}" as="row"></render>"#,
+        "</body></html>",
+    );
+    let mut parser = webui_parser::HtmlParser::new();
+    parser
+        .parse("index.html", source)
+        .expect("compile scoped boundary");
+    let bytes = WebUIProtocol::new(parser.into_fragment_records())
+        .to_protobuf()
+        .expect("encode scoped boundary");
+    let initial =
+        CString::new(r#"{"source":{"name":"OLD"},"title":"before"}"#).expect("initial state");
+    let overlay =
+        CString::new(r#"{"source":{"name":"NEW"},"title":"resumed"}"#).expect("resume state");
+    // SAFETY: Sessions own handler/protocol references; step bytes are read
+    // before destruction, and every opaque handle is released exactly once.
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&bytes);
+        let session = open_streaming_session(handler, protocol);
+        webui_handler_destroy(handler);
+        webui_protocol_destroy(protocol);
+        let start = webui_streaming_session_start(session, initial.as_ptr());
+        assert!(!start.is_null(), "{:?}", last_error_string());
+        let mut instance = 0;
+        assert!(webui_streaming_step_boundary_instance_id(
+            start,
+            &mut instance
+        ));
+        webui_streaming_step_destroy(start);
+        drop(initial);
+        let commit = webui_streaming_session_resume(
+            session,
+            instance,
+            overlay.as_ptr(),
+            WEBUI_BOUNDARY_MODE_FINAL,
+        );
+        assert!(!commit.is_null(), "{:?}", last_error_string());
+        assert!(step_bytes(commit).contains("<p>OLD/resumed</p>"));
+        webui_streaming_step_destroy(commit);
+        let done = webui_streaming_session_advance(session);
+        assert!(!done.is_null(), "{:?}", last_error_string());
+        assert!(step_bytes(done).contains("<i>OLD</i>"));
+        assert!(webui_streaming_step_done(done));
+        webui_streaming_step_destroy(done);
+        webui_streaming_session_destroy(session);
+    }
+}
+
+#[test]
 fn handler_create_and_destroy() {
     unsafe {
         let handler = webui_handler_create();

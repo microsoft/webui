@@ -18,6 +18,7 @@ interface BrowserGlobals {
     getElementById(id: string): null;
     querySelector(): null;
     querySelectorAll(): unknown[];
+    createTreeWalker(): { nextNode(): null };
     addEventListener(): void;
     removeEventListener(): void;
     body: { children: never[]; appendChild(): void };
@@ -61,6 +62,7 @@ if (typeof document === 'undefined') {
     getElementById: () => null,
     querySelector: () => null,
     querySelectorAll: () => [],
+    createTreeWalker: () => ({ nextNode: () => null }),
     addEventListener() {},
     removeEventListener() {},
     body: { children: [], appendChild() {} },

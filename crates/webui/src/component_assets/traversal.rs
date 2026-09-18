@@ -145,6 +145,7 @@ fn enqueue_dependency(
 ) -> Result<(), WebUIError> {
     let dependency = match fragment {
         Some(Fragment::Component(component)) => Some(component.fragment_id.as_str()),
+        Some(Fragment::Render(render)) => Some(render.fragment_id.as_str()),
         Some(Fragment::ForLoop(for_loop)) => Some(for_loop.fragment_id.as_str()),
         Some(Fragment::IfCond(if_cond)) => Some(if_cond.fragment_id.as_str()),
         Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {

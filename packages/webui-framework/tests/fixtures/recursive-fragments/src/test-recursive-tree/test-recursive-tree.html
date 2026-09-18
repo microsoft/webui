@@ -1,0 +1,6 @@
+<fragment name="heading"><h2>{{title}}</h2></fragment>
+<fragment name="tree-items"><ul><for each="child in items"><li key="{{child.id}}" data-id="{{child.id}}"><span class="name">{{child.name}}</span><input aria-label="{{child.name}}" value="{{child.name}}" @focus="{recordFocus(child.id)}"><button class="select" @click="{select(child.id, child.name)}">Select</button><if condition="child.children.length"><render fragment="tree-items" scope="{{child.children}}" as="items"></render></if></li></for></ul></fragment>
+<render fragment="heading"></render>
+<render fragment="tree-items" scope="{{items}}" as="items"></render>
+<output class="selected">{{selected}}</output>
+<output class="focused">{{focused}}</output>

@@ -1,0 +1,12 @@
+{
+  "rawHtml": "<!--w0--><!--/w0--><!--wo--><!--/wo-->",
+  "showPrimary": true,
+  "prefix": "left",
+  "suffix": "right",
+  "emptyPrefix": "empty-left",
+  "emptySuffix": "empty-right",
+  "fragmentPrefix": "fragment-left",
+  "fragmentSuffix": "fragment-right",
+  "serverLabel": "server-label",
+  "serverItems": [{ "name": "server-item" }]
+}

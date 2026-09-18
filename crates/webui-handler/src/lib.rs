@@ -6,13 +6,37 @@
 //! This crate provides functionality to process and render WebUI protocols
 //! into final HTML output based on provided data.
 
+macro_rules! value_sources {
+    ($context:expr) => {
+        crate::render_scope::Sources {
+            scopes: &$context.scopes,
+            loops: &$context.loop_vars,
+            visible: $context.visible_loop_scope,
+            locals: crate::LocalValueSources {
+                owned: &$context.local_vars,
+                borrowed: &$context.local_borrowed_vars,
+            },
+            state: $context.state,
+        }
+    };
+}
+
 pub mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
+#[cfg(test)]
+mod prepared_index_tests;
+#[cfg(test)]
+mod prepared_shadow_tests;
+mod render_buffer;
+mod render_routes;
+mod render_scope;
 mod response_writer;
 pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
+mod script_json;
+mod state_view;
 pub(crate) mod streaming;
 
 #[doc(hidden)]
@@ -21,6 +45,13 @@ pub use response_writer::{
     append_boolean_attribute_to_string,
 };
 pub use route_handler::Protocol;
+pub(crate) use script_json::write_script_safe_json;
+pub use state_view::StateView;
+
+/// Maximum simultaneously active named fragment invocations.
+pub const MAX_FRAGMENT_CALL_DEPTH: usize = 256;
+/// Maximum named fragment invocations across one complete response.
+pub const MAX_FRAGMENT_INVOCATIONS: usize = 100_000;
 
 /// Minimal HTML escaper for the 6 XSS-critical characters
 /// (`& < > " ' /`). Returns `Cow::Borrowed` when no escaping is
@@ -42,16 +73,11 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
-use streaming::{
-    consume_streaming_component_root, ensure_no_pending_streaming_root,
-    prepare_generated_streaming_root, record_checkpoint_tag, streaming_template_already_sent,
-    validate_pending_streaming_root, validate_streaming_root_opening, ComponentHostOrigin,
-    StreamingRenderState,
-};
+use streaming::vm::{ContinuationVm, StepGoal};
+use streaming::{streaming_template_already_sent, StreamingRenderState};
 pub use streaming::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, BufferSink, SessionOptions,
     SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
@@ -60,7 +86,7 @@ pub use streaming::{
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{
-    web_ui_fragment::Fragment, ComponentAssetStylePreload, ComponentWorkPolicy, FragmentList,
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, ComponentWorkPolicy,
     InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
 };
 use webui_state::find_value_by_dotted_path_ref;
@@ -68,6 +94,21 @@ use webui_state::find_value_by_dotted_path_ref;
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
+    /// A fragment invocation could not resolve its explicit input.
+    #[error("fragment `{}` scope `{}` is missing; help: provide the dotted input path before invoking the fragment", .0.fragment_id, .0.scope)]
+    FragmentScopeMissing(Box<FragmentScopeError>),
+    /// Active fragment invocations exceeded the render's depth allowance.
+    #[error("fragment call depth exceeded {limit}; help: terminate recursive fragment calls before this depth")]
+    FragmentCallDepth {
+        /// Maximum simultaneously active invocations.
+        limit: usize,
+    },
+    /// A response exhausted its fragment invocation budget.
+    #[error("fragment invocation budget exceeded {limit}; help: reduce the rendered input or terminate recursive fragment calls")]
+    FragmentCallBudget {
+        /// Maximum total invocations per response.
+        limit: usize,
+    },
     #[error("Rendering error: {0}")]
     Rendering(String),
 
@@ -166,19 +207,18 @@ pub struct StreamingBoundaryError {
     pub reason: String,
 }
 
-pub type Result<T> = std::result::Result<T, HandlerError>;
-
-#[cold]
-#[inline(never)]
-fn invalid_fragment_range_error(
-    range: &std::ops::Range<usize>,
-    fragment_count: usize,
-) -> HandlerError {
-    HandlerError::Invariant(format!(
-        "fragment range {}..{} exceeds fragment count {fragment_count}",
-        range.start, range.end
-    ))
+/// Details of an unresolved named-fragment input.
+///
+/// Boxed in [`HandlerError`] so cold scope errors do not widen render results.
+#[derive(Debug)]
+pub struct FragmentScopeError {
+    /// Target fragment record.
+    pub fragment_id: String,
+    /// Unresolved caller-scope path.
+    pub scope: String,
 }
+
+pub type Result<T> = std::result::Result<T, HandlerError>;
 
 #[cold]
 #[inline(never)]
@@ -267,7 +307,7 @@ pub trait ResponseWriter {
 /// of the current full-state projection. The browser merges the emitted delta
 /// over that exact prior range state.
 struct StateWithoutSelectedKeys<'a> {
-    value: &'a Value,
+    value: StateView<'a>,
     keys: KeyView<'a>,
 }
 
@@ -276,11 +316,11 @@ impl Serialize for StateWithoutSelectedKeys<'_> {
     where
         S: serde::Serializer,
     {
-        let Value::Object(map) = self.value else {
+        if !self.value.is_object() {
             return serializer.serialize_map(Some(0))?.end();
-        };
+        }
         let mut out = serializer.serialize_map(None)?;
-        for (key, value) in map {
+        for (key, value) in self.value.iter() {
             if key != STATE_INJECT_KEY && !self.keys.contains(key) {
                 out.serialize_entry(key, value)?;
             }
@@ -363,7 +403,8 @@ impl<'state> StateInject<'state> {
     /// missing, null, empty, or not a string. Malformed input is inert rather than an error: the reserved
     /// key is an optional side channel, and a render must not fail because a
     /// host wrote the wrong shape into it.
-    pub(crate) fn resolve(state: &'state Value) -> Self {
+    pub(crate) fn resolve(state: impl Into<StateView<'state>>) -> Self {
+        let state = state.into();
         let Some(Value::Object(map)) = state.get(STATE_INJECT_KEY) else {
             return Self::default();
         };
@@ -480,6 +521,7 @@ struct LocalValueSources<'ctx, 'protocol, 'state> {
 }
 
 /// Route level an `<outlet />` matches against.
+#[cfg(test)]
 pub(crate) type RouteChildren<'protocol> = Cow<'protocol, [webui_protocol::WebUiFragmentRoute]>;
 
 #[derive(Default)]
@@ -487,6 +529,22 @@ struct BorrowedScope<'protocol, 'state> {
     inline: [Option<(&'protocol str, &'state Value)>; INLINE_SCOPE_SLOTS],
     inline_len: usize,
     overflow: Vec<(&'protocol str, &'state Value)>,
+}
+
+// Repeated native attributes reuse scratch without retaining an unusually large
+// user value for the rest of the response or across streaming suspension.
+#[derive(Default)]
+struct AttributeBuffers {
+    raw: String,
+    escaped: String,
+}
+
+impl AttributeBuffers {
+    fn recycle(&mut self) {
+        for buffer in [&mut self.raw, &mut self.escaped] {
+            crate::html_encode::recycle_buffer(buffer);
+        }
+    }
 }
 
 impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
@@ -558,60 +616,111 @@ impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
         self.inline_len = 0;
         self.overflow.clear();
     }
+}
 
-    fn clone_into_owned(&self, target: &mut HashMap<String, Value>) {
-        for (name, value) in self.inline[..self.inline_len].iter().flatten() {
-            target.insert((*name).to_owned(), (*value).clone());
-        }
-        for (name, value) in &self.overflow {
-            target.insert((*name).to_owned(), (*value).clone());
-        }
+/// Compact, immutable address of one protocol record and its prepared metadata.
+#[derive(Clone, Copy, yoke::Yokeable)]
+pub(crate) struct RenderFragmentList<'protocol> {
+    list: &'protocol webui_protocol::FragmentList,
+    metadata_start: u32,
+    /// The high bit marks routes; the low bits hold a biased Shadow style index,
+    /// zero for no owned CSS tree, or the fallible-lookup sentinel. Sharing this
+    /// word keeps the descriptor compact on both 32-bit and 64-bit hosts.
+    flags: u32,
+}
+
+impl RenderFragmentList<'_> {
+    #[cfg(test)]
+    fn has_routes(&self) -> bool {
+        self.flags & RENDER_HAS_ROUTES != 0
+    }
+
+    fn owns_css_tree(&self) -> bool {
+        self.flags & RENDER_STYLE_MASK != 0
+    }
+
+    fn shadow_style_index(&self) -> Option<u32> {
+        let style = self.flags & RENDER_STYLE_MASK;
+        (style != 0 && style != UNPREPARED_SHADOW_STYLE).then(|| style - 1)
     }
 }
 
-/// A fragment list paired with the render metadata prepared for it when the
-/// runtime [`Protocol`] was loaded.
-///
-/// `fragments` still points at the protocol's own storage, so passing this by
-/// value never copies or clones a fragment graph.
+/// Borrowed execution slices resolved once on record entry, not per repeat item.
 #[derive(Clone, Copy)]
-pub(crate) struct RenderFragmentList<'protocol> {
+pub(crate) struct RenderFragmentView<'protocol> {
     fragments: &'protocol [WebUIFragment],
     metadata: &'protocol [RenderFragmentMetadata],
     attr_names: &'protocol str,
-    contains_boundary: bool,
-    /// True when this list contains at least one `<webui-route>` fragment.
-    /// Renders skip the sibling route pre-scan entirely when it is false.
-    has_routes: bool,
+    next_attr_start: u32,
+    flags: u32,
 }
 
-impl<'protocol> RenderFragmentList<'protocol> {
+impl<'protocol> RenderFragmentView<'protocol> {
+    fn has_routes(&self) -> bool {
+        self.flags & RENDER_HAS_ROUTES != 0
+    }
+
     /// Render slot the fragment at `index` descends into, if any.
-    fn target(self, index: usize) -> Option<usize> {
+    fn target(&self, index: usize) -> Option<usize> {
         let target = self.metadata.get(index)?.target;
         (target != NO_RENDER_SLOT).then_some(target as usize)
     }
 
     /// Canonical camelCase component prop name prepared for an attribute fragment.
-    fn component_attr_name(self, index: usize) -> Option<&'protocol str> {
-        let prepared = self.metadata.get(index)?;
-        if prepared.attr_start == NO_ATTR_NAME {
+    #[cfg(test)]
+    fn component_attr_name(&self, index: usize) -> Option<&'protocol str> {
+        let Some(Fragment::Attribute(attribute)) = self.fragments.get(index)?.fragment.as_ref()
+        else {
+            return None;
+        };
+        self.attribute_name(index, attribute.attr_skip)
+    }
+
+    fn attribute_name(&self, index: usize, skipped: bool) -> Option<&'protocol str> {
+        if skipped {
             return None;
         }
-        let start = prepared.attr_start as usize;
-        self.attr_names
-            .get(start..start + prepared.attr_len as usize)
+        let prepared = self.metadata.get(index)?;
+        let next = self
+            .metadata
+            .get(index + 1)
+            .map_or(self.next_attr_start, |next| next.attr_start);
+        self.attr_names.get(prepared.name_range(next)?)
     }
 }
 
 /// Sentinel for "this fragment does not descend into another fragment list".
 const NO_RENDER_SLOT: u32 = u32::MAX;
-/// Sentinel for "this fragment is not an attribute fragment".
+/// Preserve the existing reserved attribute-name offset.
 const NO_ATTR_NAME: u32 = u32::MAX;
+const RENDER_HAS_ROUTES: u32 = 1 << 31;
+const RENDER_STYLE_MASK: u32 = RENDER_HAS_ROUTES - 1;
+/// Preserve the existing fallible lookup for missing metadata or an index that
+/// cannot share the descriptor word. This does not narrow protocol indices.
+const UNPREPARED_SHADOW_STYLE: u32 = RENDER_STYLE_MASK;
+
+fn prepare_render_flags(
+    protocol: &WebUIProtocol,
+    component: &str,
+    component_index: &HashMap<String, u32>,
+    has_routes: bool,
+) -> u32 {
+    let routes = if has_routes { RENDER_HAS_ROUTES } else { 0 };
+    if !WebUIHandler::component_owns_css_tree(component, protocol) {
+        return routes;
+    }
+    let style = component_index
+        .get(component)
+        .filter(|_| protocol.style_closures.contains_key(component))
+        .and_then(|index| index.checked_add(1))
+        .filter(|index| *index < UNPREPARED_SHADOW_STYLE)
+        .unwrap_or(UNPREPARED_SHADOW_STYLE);
+    routes | style
+}
 
 /// Per-fragment values hoisted out of the render loop at protocol load time.
 ///
-/// Deliberately a flat 12-byte `Copy` record with no owned allocations: a large
+/// Deliberately a flat eight-byte `Copy` record with no owned allocations: a large
 /// protocol keeps one contiguous arena instead of one heap block per fragment.
 #[derive(Clone, Copy)]
 struct RenderFragmentMetadata {
@@ -619,40 +728,49 @@ struct RenderFragmentMetadata {
     /// string hash lookup per component, loop, condition, and template attribute.
     /// [`NO_RENDER_SLOT`] when the fragment renders inline.
     target: u32,
-    /// Offset into the index's shared attribute-name arena, or [`NO_ATTR_NAME`].
+    /// Name arena offset before this fragment. The next record supplies its end.
     attr_start: u32,
-    attr_len: u32,
+}
+
+impl RenderFragmentMetadata {
+    fn name_range(&self, next: u32) -> Option<std::ops::Range<usize>> {
+        if self.attr_start == NO_ATTR_NAME {
+            return None;
+        }
+        let start = self.attr_start as usize;
+        // Adjacent offsets retain the former u32 length even across its wrap.
+        let len = next.wrapping_sub(self.attr_start) as usize;
+        Some(start..start.checked_add(len)?)
+    }
 }
 
 /// Build-time render plan for every fragment list in a protocol.
 ///
 /// Built once when a [`Protocol`] is created and shared immutably by every
-/// render. Fragment IDs are the same `Arc<str>` values the protocol already
-/// interns, metadata lives in one flat arena, and the fragment graphs
+/// render. One sorted ID array shares its `Arc<str>` identities with the slot
+/// map, metadata lives in one flat arena, and the fragment graphs
 /// themselves are never duplicated.
 pub(crate) struct RenderFragmentIndex {
     ids: Box<[Arc<str>]>,
-    metadata: Box<[RenderFragmentMetadata]>,
-    /// Prefix offsets into `metadata`; length is `ids.len() + 1`.
-    ranges: Box<[u32]>,
-    /// Every prepared component prop name concatenated into one allocation.
-    attr_names: Box<str>,
-    /// One bit per fragment list: does it contain a route fragment?
-    route_presence: Box<[u64]>,
+    records: yoke::Yoke<PreparedRenderFragments<'static>, Arc<WebUIProtocol>>,
+    /// None proves the whole protocol has no Render; Some(empty) still tracks
+    /// inputs when Render is present without any dotted projection suffixes.
+    capture_paths: Option<HashSet<Arc<str>>>,
 }
 
-/// A [`RenderFragmentIndex`] bound to the protocol document for one render.
+#[derive(yoke::Yokeable)]
+struct PreparedRenderFragments<'a> {
+    lists: Box<[RenderFragmentList<'a>]>,
+    metadata: Box<[RenderFragmentMetadata]>,
+    attr_names: Box<str>,
+}
+
+/// One borrowed pointer to the immutable, protocol-owned record descriptors.
 ///
-/// Fragment lists are borrowed lazily and memoized in an inline slot cache, so
-/// a large protocol is never eagerly walked to serve a small render.
+/// Binding a request never initializes a slot cache, hashes a record ID, or
+/// walks a graph. Both cursor modes reuse the same prepared borrows.
 pub(crate) struct ResolvedRenderFragmentIndex<'protocol> {
-    cache: [Cell<Option<&'protocol FragmentList>>; INLINE_RENDER_FRAGMENT_LISTS],
-    /// Memo slots for protocols with more fragment lists than the inline cache
-    /// holds, allocated on first use so a small render never pays for it and a
-    /// large one never falls back to hashing the fragment ID on every descent.
-    spilled: OnceCell<Box<[Cell<Option<&'protocol FragmentList>>]>>,
     index: &'protocol RenderFragmentIndex,
-    protocol: &'protocol WebUIProtocol,
 }
 
 impl RenderFragmentIndex {
@@ -663,73 +781,103 @@ impl RenderFragmentIndex {
     /// the same numbering. Reusing the map keeps preparation to one hash lookup
     /// per reference instead of a string binary search.
     pub(crate) fn new(
-        protocol: &WebUIProtocol,
-        ids: &[Arc<str>],
+        protocol: &Arc<WebUIProtocol>,
+        ids: Box<[Arc<str>]>,
         slots: &HashMap<Arc<str>, u32>,
+        route_preparation: &render_routes::RoutePreparation,
+        component_index: &HashMap<String, u32>,
     ) -> Self {
-        let total_fragments = protocol
+        let total_fragments: usize = protocol
             .fragments
             .values()
             .map(|list| list.fragments.len())
             .sum();
-        let mut metadata = Vec::with_capacity(total_fragments);
-        let mut ranges = Vec::with_capacity(ids.len() + 1);
-        // Most attribute names are short; reserving up front keeps the shared
-        // arena from repeatedly reallocating and copying as it is filled.
-        let mut attr_names = String::with_capacity(total_fragments * 8);
-        let mut route_presence = vec![0u64; ids.len().div_ceil(64)];
-
-        for (slot, id) in ids.iter().enumerate() {
-            // Record counts are bounded by the compiled graph, well inside u32.
-            #[allow(clippy::cast_possible_truncation)]
-            ranges.push(metadata.len() as u32);
-            let Some(list) = protocol.fragments.get(id.as_ref()) else {
-                continue;
+        let mut capture_paths =
+            (route_preparation.provenance == state_view::Provenance::Track).then(HashSet::new);
+        let records = yoke::Yoke::attach_to_cart(Arc::clone(protocol), |protocol| {
+            static EMPTY_LIST: webui_protocol::FragmentList = webui_protocol::FragmentList {
+                fragments: Vec::new(),
+                contains_boundary: false,
             };
-            let mut has_routes = false;
-            for fragment in &list.fragments {
-                let inner = fragment.fragment.as_ref();
-                if matches!(inner, Some(Fragment::Route(_))) {
-                    has_routes = true;
-                }
-                let target = fragment_target_id(fragment)
-                    .and_then(|target| slots.get(target).copied())
-                    .unwrap_or(NO_RENDER_SLOT);
-                let (attr_start, attr_len) = match inner {
-                    // `attr_skip` attributes are never collected into component
-                    // props, so preparing a name for them would be pure load-time
-                    // cost for something no render ever reads.
-                    Some(Fragment::Attribute(attribute)) if !attribute.attr_skip => {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let start = attr_names.len() as u32;
-                        let before = attr_names.len();
-                        push_component_attr_name(&mut attr_names, component_attr_source(attribute));
-                        #[allow(clippy::cast_possible_truncation)]
-                        let len = (attr_names.len() - before) as u32;
-                        (start, len)
+            let mut metadata = Vec::with_capacity(total_fragments + usize::from(!ids.is_empty()));
+            // Most names are short; keep their shared arena from repeatedly growing.
+            let mut attr_names = String::with_capacity(total_fragments * 8);
+            let mut lists = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let list = protocol.fragments.get(id.as_ref()).unwrap_or(&EMPTY_LIST);
+                #[allow(clippy::cast_possible_truncation)]
+                let metadata_start = metadata.len() as u32;
+                let mut has_routes = false;
+                for fragment in &list.fragments {
+                    let inner = fragment.fragment.as_ref();
+                    if let Some(paths) = &mut capture_paths {
+                        prepare_capture_path(inner, paths);
                     }
-                    _ => (NO_ATTR_NAME, 0),
-                };
-                metadata.push(RenderFragmentMetadata {
-                    target,
-                    attr_start,
-                    attr_len,
+                    let target = if let Some(Fragment::Route(route)) = inner {
+                        has_routes = true;
+                        route_preparation
+                            .roots
+                            .get(&std::ptr::from_ref(route).addr())
+                            .copied()
+                    } else {
+                        fragment_target_id(fragment).and_then(|target| slots.get(target).copied())
+                    }
+                    .unwrap_or(NO_RENDER_SLOT);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let attr_start = attr_names.len() as u32;
+                    if let Some(Fragment::Attribute(attribute)) = inner {
+                        if !attribute.attr_skip {
+                            push_component_attr_name(
+                                &mut attr_names,
+                                component_attr_source(attribute),
+                            );
+                        }
+                    }
+                    metadata.push(RenderFragmentMetadata { target, attr_start });
+                }
+                lists.push(RenderFragmentList {
+                    list,
+                    metadata_start,
+                    flags: prepare_render_flags(protocol, id, component_index, has_routes),
                 });
             }
-            if has_routes {
-                route_presence[slot / 64] |= 1u64 << (slot % 64);
+            if !lists.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let attr_start = attr_names.len() as u32;
+                metadata.push(RenderFragmentMetadata {
+                    target: NO_RENDER_SLOT,
+                    attr_start,
+                });
             }
-        }
-        #[allow(clippy::cast_possible_truncation)]
-        ranges.push(metadata.len() as u32);
-
+            PreparedRenderFragments {
+                lists: lists.into_boxed_slice(),
+                metadata: metadata.into_boxed_slice(),
+                attr_names: attr_names.into_boxed_str(),
+            }
+        });
         Self {
-            ids: ids.to_vec().into_boxed_slice(),
-            metadata: metadata.into_boxed_slice(),
-            ranges: ranges.into_boxed_slice(),
-            attr_names: attr_names.into_boxed_str(),
-            route_presence: route_presence.into_boxed_slice(),
+            ids,
+            records,
+            capture_paths,
         }
+    }
+
+    /// Number of dense fragment records in the shared ID array.
+    pub(crate) fn record_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub(crate) fn provenance_policy(&self) -> state_view::Provenance {
+        if self.capture_paths.is_some() {
+            state_view::Provenance::Track
+        } else {
+            state_view::Provenance::Omit
+        }
+    }
+
+    /// Borrow the interned record ID for a dense slot.
+    pub(crate) fn id(&self, slot: usize) -> Option<&str> {
+        self.ids.get(slot).map(Arc::as_ref)
     }
 
     /// Resolve a fragment ID to its stable numeric render slot.
@@ -741,71 +889,69 @@ impl RenderFragmentIndex {
 
     pub(crate) fn resolve<'protocol>(
         &'protocol self,
-        protocol: &'protocol WebUIProtocol,
+        _protocol: &'protocol WebUIProtocol,
     ) -> ResolvedRenderFragmentIndex<'protocol> {
-        ResolvedRenderFragmentIndex {
-            cache: std::array::from_fn(|_| Cell::new(None)),
-            spilled: OnceCell::new(),
-            index: self,
-            protocol,
+        ResolvedRenderFragmentIndex { index: self }
+    }
+}
+
+fn prepare_capture_path(fragment: Option<&Fragment>, paths: &mut HashSet<Arc<str>>) {
+    let path = match fragment {
+        Some(Fragment::Render(render)) => Some(render.scope.as_str()),
+        Some(Fragment::ForLoop(repeat)) => Some(repeat.collection.as_str()),
+        Some(Fragment::Attribute(attribute)) if !attribute.attr_skip => {
+            Some(attribute.value.as_str())
+        }
+        _ => None,
+    };
+    if let Some((_, suffix)) = path.and_then(|path| path.split_once('.')) {
+        if !paths.contains(suffix) {
+            paths.insert(Arc::<str>::from(suffix));
         }
     }
 }
 
 impl<'protocol> ResolvedRenderFragmentIndex<'protocol> {
+    fn capture_path(&self, path: &str) -> Arc<str> {
+        self.index
+            .capture_paths
+            .as_ref()
+            .and_then(|paths| paths.get(path))
+            .cloned()
+            .unwrap_or_else(|| path.into())
+    }
+
     pub(crate) fn index(&self, id: &str) -> Option<usize> {
         self.index.index(id)
     }
 
-    /// Memo slot for `index`, spilling past the inline cache on demand.
-    fn slot(&self, index: usize) -> Option<&Cell<Option<&'protocol FragmentList>>> {
-        if index < INLINE_RENDER_FRAGMENT_LISTS {
-            return self.cache.get(index);
-        }
-        let spilled = self.spilled.get_or_init(|| {
-            let overflow = self
-                .index
-                .ids
-                .len()
-                .saturating_sub(INLINE_RENDER_FRAGMENT_LISTS);
-            (0..overflow).map(|_| Cell::new(None)).collect()
-        });
-        spilled.get(index - INLINE_RENDER_FRAGMENT_LISTS)
+    pub(crate) fn provenance_policy(&self) -> state_view::Provenance {
+        self.index.provenance_policy()
     }
 
-    pub(crate) fn list(&self, index: usize) -> Option<RenderFragmentList<'protocol>> {
-        let id = self.index.ids.get(index)?;
-        let fragment_list = match self.slot(index) {
-            Some(slot) => match slot.get() {
-                Some(cached) => cached,
-                None => {
-                    let resolved = self.protocol.fragments.get(id.as_ref())?;
-                    slot.set(Some(resolved));
-                    resolved
-                }
-            },
-            None => self.protocol.fragments.get(id.as_ref())?,
-        };
-        let start = *self.index.ranges.get(index)? as usize;
-        let end = *self.index.ranges.get(index + 1)? as usize;
-        let metadata = self.index.metadata.get(start..end)?;
-        let has_routes = self
-            .index
-            .route_presence
-            .get(index / 64)
-            .is_some_and(|word| word & (1u64 << (index % 64)) != 0);
-        Some(RenderFragmentList {
-            fragments: &fragment_list.fragments,
+    pub(crate) fn list(&self, index: usize) -> Option<&'protocol RenderFragmentList<'protocol>> {
+        self.index.records.get().lists.get(index)
+    }
+
+    pub(crate) fn view(&self, index: usize) -> Option<RenderFragmentView<'protocol>> {
+        let prepared = self.index.records.get();
+        let record = prepared.lists.get(index)?;
+        let fragments = record.list.fragments.as_slice();
+        let start = record.metadata_start as usize;
+        let end = start.checked_add(fragments.len())?;
+        let (next, metadata) = prepared.metadata.get(start..=end)?.split_last()?;
+        Some(RenderFragmentView {
+            fragments,
             metadata,
-            attr_names: &self.index.attr_names,
-            contains_boundary: fragment_list.contains_boundary,
-            has_routes,
+            attr_names: &prepared.attr_names,
+            next_attr_start: next.attr_start,
+            flags: record.flags,
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn list_by_id(&self, id: &str) -> Option<RenderFragmentList<'protocol>> {
-        self.index(id).and_then(|index| self.list(index))
+    pub(crate) fn list_by_id(&self, id: &str) -> Option<RenderFragmentView<'protocol>> {
+        self.index(id).and_then(|index| self.view(index))
     }
 }
 
@@ -833,6 +979,7 @@ fn component_attr_source(attribute: &webui_protocol::WebUIFragmentAttribute) -> 
 /// A borrowed level yields a borrowed sublevel, so descending through a route
 /// tree during a render never copies a `WebUiFragmentRoute`. A level a
 /// streaming continuation already materialized transfers its child level.
+#[cfg(test)]
 fn descend_into<'protocol>(
     children: &mut RouteChildren<'protocol>,
     index: usize,
@@ -855,6 +1002,7 @@ fn fragment_target_id(fragment: &WebUIFragment) -> Option<&str> {
         Fragment::Component(component) => Some(&component.fragment_id),
         Fragment::ForLoop(for_loop) => Some(&for_loop.fragment_id),
         Fragment::IfCond(if_cond) => Some(&if_cond.fragment_id),
+        Fragment::Render(render) => Some(&render.fragment_id),
         Fragment::Attribute(attribute) if !attribute.template.is_empty() => {
             Some(&attribute.template)
         }
@@ -874,7 +1022,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_asset_style_manifest: &'protocol str,
     /// Deduplicated document-scoped component asset styles for Light DOM.
     pub(crate) component_asset_style_links: &'protocol str,
-    pub(crate) state: &'state Value,
+    pub(crate) state: StateView<'state>,
+    pub(crate) scopes: render_scope::RenderScopes<'protocol, 'state>,
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
     /// Component-local values that still point into immutable request state.
@@ -907,13 +1056,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Per-render plugin instance created from the handler's factory.
     pub(crate) plugin: Option<Box<dyn HandlerPlugin>>,
     /// Current position in the route tree for outlet-based rendering.
-    /// Contains the children of the currently matched route fragment.
-    ///
-    /// A matched route's `children` is a recursive prost subtree, so the
-    /// borrowed variant avoids deep-cloning the whole remaining route tree on
-    /// every matched route of every request. Only a suspended streaming
-    /// continuation, which outlives the borrow, materializes the owned variant.
-    pub(crate) route_children: RouteChildren<'protocol>,
+    /// Numeric addresses of immutable protocol routes, valid across suspension.
+    pub(crate) route_children: std::ops::Range<u32>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
     /// Borrowed from `RenderOptions<'a>::entry_id` — zero-copy.
     pub(crate) entry_id: &'protocol str,
@@ -1001,8 +1145,9 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// and is dropped with the context at request end — no per-thread
     /// high-water buffer is retained between requests.
     pub(crate) json_scratch: Vec<u8>,
+    attribute_buffers: AttributeBuffers,
     /// Small request-local pool of cleared scope maps reused across sibling
-    /// component roots. `process_component` recycles each finished component's
+    /// component roots. Component exit recycles each finished component's
     /// local/attr map here instead of dropping it, so a sibling reuses the
     /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
     /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
@@ -1088,17 +1233,6 @@ fn doctype_prefix_end(raw: &str) -> Option<usize> {
 const SCOPE_POOL_CAP: usize = 8;
 /// Borrowed component scopes typically contain only a handful of attributes.
 const INLINE_SCOPE_SLOTS: usize = 4;
-/// Fragment lists memoized inline per render. Sized to cover the distinct lists
-/// a typical app touches in one render while keeping the per-render zeroing cost
-/// negligible; larger protocols fall back to the protocol map for the overflow
-/// slots instead of eagerly materializing every list.
-/// Inline memo slots for fragment lists.
-///
-/// Deliberately small: the array is zeroed on every render, so a shallow render
-/// touching two fragments should not pay to clear slots it will never read.
-/// Deeper renders spill into a lazily allocated slice, which keeps them fully
-/// memoized without charging that cost to the common shallow case.
-const INLINE_RENDER_FRAGMENT_LISTS: usize = 8;
 const COMPONENT_ASSET_MANIFEST_ID: &str = "webui-component-assets";
 
 struct ComponentAssetStyleManifest<'a>(&'a [ComponentAssetStylePreload]);
@@ -1183,7 +1317,7 @@ fn take_scope_map(pool: &mut Vec<HashMap<String, Value>>) -> HashMap<String, Val
 fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<String, Value>) {
     if pool.len() < SCOPE_POOL_CAP {
         map.clear();
-        pool.push(map);
+        render_buffer::push(pool, map);
     }
 }
 
@@ -1199,18 +1333,18 @@ fn recycle_borrowed_scope<'protocol, 'state>(
 ) {
     if pool.len() < SCOPE_POOL_CAP {
         scope.clear();
-        pool.push(scope);
+        render_buffer::push(pool, scope);
     }
 }
 
 pub(crate) enum WebUiBootstrapState<'a> {
     Complete {
-        value: &'a Value,
+        value: StateView<'a>,
         selection: StateSelection<'a>,
     },
     Reference {
         record_sequence: usize,
-        value: &'a Value,
+        value: StateView<'a>,
         delta: Option<StateSelection<'a>>,
     },
 }
@@ -1219,6 +1353,14 @@ pub(crate) struct WebUiBootstrap<'a, ComponentStyles: Serialize + ?Sized = Value
     pub(crate) declaration_id: Option<u32>,
     pub(crate) enclosing_span_instance_id: Option<u32>,
     pub(crate) state: WebUiBootstrapState<'a>,
+    /// Props of the host this record completes, written ahead of caller state.
+    ///
+    /// Empty for every record that does not complete one host, which keeps the
+    /// serializer on its plain projection path.
+    pub(crate) owner_props: &'a [(Box<str>, crate::state_view::SharedValue)],
+    pub(crate) fragment_sources: &'a [streaming::fragment_sources::SourceDefinition],
+    /// Distinct captured inputs the owning span's dormant host must retain.
+    pub(crate) fragment_source_refs: &'a [u32],
     pub(crate) chain: &'a [Value],
     pub(crate) inventory: &'a str,
     pub(crate) nonce: Option<&'a str>,
@@ -1382,34 +1524,11 @@ pub(crate) fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Resu
     }
 }
 
-pub(crate) fn write_script_safe_json<T>(
-    writer: &mut dyn ResponseWriter,
-    scratch: &mut Vec<u8>,
-    value: &T,
-) -> Result<()>
-where
-    T: Serialize + ?Sized,
-{
-    // Serialize into the caller's request-local `scratch`. The streaming path
-    // emits one bootstrap envelope per committed boundary and the ordinary
-    // body_end bootstrap serializes several fields, so reusing one buffer across
-    // the render avoids a fresh allocation per value. The buffer grows lazily on
-    // first use (no allocation until serialization needs it) and is dropped with
-    // the render context — capacity is reused within a request but never
-    // retained across requests.
-    scratch.clear();
-    serde_json::to_writer(&mut *scratch, value)
-        .map_err(|error| HandlerError::Rendering(format!("failed to serialize JSON: {error}")))?;
-    let json = std::str::from_utf8(scratch)
-        .map_err(|error| HandlerError::Rendering(format!("invalid JSON UTF-8: {error}")))?;
-    write_script_safe_json_str(writer, json)
-}
-
 fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Result<()> {
     let mut start = 0;
     while start < json.len() {
         let rest = &json[start..];
-        let Some(offset) = rest.find("</") else {
+        let Some(offset) = memchr::memmem::find(rest.as_bytes(), b"</") else {
             writer.write(rest)?;
             return Ok(());
         };
@@ -1469,7 +1588,7 @@ where
 /// entries with binary-search membership for compact states. Non-object states
 /// carry nothing hydratable and serialize as an empty object.
 struct ProjectedState<'a> {
-    value: &'a Value,
+    value: StateView<'a>,
     keys: KeyView<'a>,
 }
 
@@ -1478,12 +1597,12 @@ impl Serialize for ProjectedState<'_> {
     where
         S: serde::Serializer,
     {
-        let Value::Object(map) = self.value else {
+        if !self.value.is_object() {
             return serializer.serialize_map(Some(0))?.end();
-        };
+        }
 
         let mut out = serializer.serialize_map(None)?;
-        if self.keys.len() < map.len() {
+        if self.keys.len() < self.value.len() {
             let mut previous = None;
             for key in self.keys.iter() {
                 if key == STATE_INJECT_KEY {
@@ -1493,16 +1612,16 @@ impl Serialize for ProjectedState<'_> {
                     continue;
                 }
                 previous = Some(key);
-                if let Some(value) = map.get(key) {
+                if let Some(value) = self.value.get(key) {
                     out.serialize_entry(key, value)?;
                 }
             }
         } else {
-            for (key, value) in map {
+            for (key, value) in self.value.iter() {
                 if key == STATE_INJECT_KEY {
                     continue;
                 }
-                if self.keys.contains(key.as_str()) {
+                if self.keys.contains(key) {
                     out.serialize_entry(key, value)?;
                 }
             }
@@ -1532,7 +1651,7 @@ impl Serialize for ProjectedState<'_> {
 /// inject channel to client code. Filtering happens during serialization so
 /// the state tree is never cloned.
 struct StateWithoutReservedKey<'a> {
-    value: &'a Value,
+    value: StateView<'a>,
 }
 
 impl Serialize for StateWithoutReservedKey<'_> {
@@ -1540,11 +1659,11 @@ impl Serialize for StateWithoutReservedKey<'_> {
     where
         S: serde::Serializer,
     {
-        let Value::Object(map) = self.value else {
+        if !self.value.is_object() {
             return self.value.serialize(serializer);
-        };
-        let mut out = serializer.serialize_map(Some(map.len().saturating_sub(1)))?;
-        for (key, value) in map {
+        }
+        let mut out = serializer.serialize_map(Some(self.value.len().saturating_sub(1)))?;
+        for (key, value) in self.value.iter() {
             if key == STATE_INJECT_KEY {
                 continue;
             }
@@ -1561,20 +1680,21 @@ impl Serialize for StateWithoutReservedKey<'_> {
 fn write_full_state(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
-    state: &Value,
+    state: StateView<'_>,
 ) -> Result<()> {
-    if matches!(state, Value::Object(map) if map.contains_key(STATE_INJECT_KEY)) {
+    if state.get(STATE_INJECT_KEY).is_some() {
         return write_script_safe_json(writer, scratch, &StateWithoutReservedKey { value: state });
     }
-    write_script_safe_json(writer, scratch, state)
+    write_script_safe_json(writer, scratch, &state)
 }
 
-pub(crate) fn write_selected_state(
+pub(crate) fn write_selected_state<'a>(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
-    state: &Value,
+    state: impl Into<StateView<'a>>,
     selection: &StateSelection<'_>,
 ) -> Result<()> {
+    let state = state.into();
     let keys = match selection {
         StateSelection::Full => return write_full_state(writer, scratch, state),
         StateSelection::Keys(keys) => KeyView::Borrowed(keys.as_slice()),
@@ -1604,9 +1724,9 @@ pub(crate) fn write_selected_state(
             .all(|(left, right)| left <= right),
         "hydration keys must be sorted for binary-search projection"
     );
-    if let Value::Object(map) = state {
+    if state.is_object() {
         let selects_entire_map =
-            keys.len() == map.len() && keys.iter().eq(map.keys().map(String::as_str));
+            keys.len() == state.len() && keys.iter().eq(state.iter().map(|(key, _)| key));
         if selects_entire_map {
             return write_full_state(writer, scratch, state);
         }
@@ -1617,6 +1737,87 @@ pub(crate) fn write_selected_state(
 // Covers the common route surface without trusting protocol-derived counts for
 // an eager allocation; larger key sets grow only as actual keys are visited.
 pub(crate) const INITIAL_KEY_CAPACITY: usize = 16;
+
+/// Write one closing host's own state: its props ahead of the caller state its
+/// record would otherwise project alone.
+///
+/// The host rendered with the props resolved at its opening tag, but its span
+/// only closes once the caller resumed with the next state, so projecting that
+/// state alone drops props the caller never held (a complex prop has no state
+/// key at all) and replaces the ones it shadows. Props are already immutable
+/// handles, so this writes through to the retained values without copying a
+/// JSON subtree, and the linear membership scan stays cheaper than a map for
+/// the handful of props one element carries.
+pub(crate) fn write_owner_state<'a>(
+    writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
+    state: impl Into<StateView<'a>>,
+    selection: &StateSelection<'_>,
+    props: &[(Box<str>, crate::state_view::SharedValue)],
+) -> Result<()> {
+    let state = state.into();
+    let keys = match selection {
+        StateSelection::Full | StateSelection::FullExceptKeyIds(_) => None,
+        StateSelection::Keys(keys) => Some(KeyView::Borrowed(keys.as_slice())),
+        StateSelection::KeyIds(selection) => Some(KeyView::Ids(*selection)),
+    };
+    write_script_safe_json(writer, scratch, &OwnerState { state, keys, props })
+}
+
+/// One host's props layered over its record's caller-state projection.
+struct OwnerState<'a> {
+    state: StateView<'a>,
+    /// `None` preserves the complete caller state.
+    keys: Option<KeyView<'a>>,
+    props: &'a [(Box<str>, crate::state_view::SharedValue)],
+}
+
+impl OwnerState<'_> {
+    fn owns(&self, key: &str) -> bool {
+        self.props.iter().any(|(name, _)| name.as_ref() == key)
+    }
+}
+
+impl Serialize for OwnerState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut out = serializer.serialize_map(None)?;
+        for (name, value) in self.props {
+            if name.as_ref() == STATE_INJECT_KEY {
+                continue;
+            }
+            out.serialize_entry(name.as_ref(), value.get())?;
+        }
+        if !self.state.is_object() {
+            return out.end();
+        }
+        match self.keys {
+            Some(keys) => {
+                let mut previous = None;
+                for key in keys.iter() {
+                    if key == STATE_INJECT_KEY || previous == Some(key) || self.owns(key) {
+                        continue;
+                    }
+                    previous = Some(key);
+                    if let Some(value) = self.state.get(key) {
+                        out.serialize_entry(key, value)?;
+                    }
+                }
+            }
+            None => {
+                for (key, value) in self.state.iter() {
+                    if key == STATE_INJECT_KEY || self.owns(key) {
+                        continue;
+                    }
+                    out.serialize_entry(key, value)?;
+                }
+            }
+        }
+        out.end()
+    }
+}
 
 /// Request-scoped state selection derived from reachable component metadata.
 pub(crate) enum StateSelection<'a> {
@@ -1872,10 +2073,34 @@ pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
     if let Some(nonce) = bootstrap.nonce {
         write_json_field(writer, scratch, &mut wrote_field, "nonce", nonce)?;
     }
+    // Source definitions precede state so an activating host can resolve every
+    // `wf:ID` marker in its own range from this one record.
+    if !bootstrap.fragment_sources.is_empty() {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "fragmentSources",
+            bootstrap.fragment_sources,
+        )?;
+    }
+    if !bootstrap.fragment_source_refs.is_empty() {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "fragmentSourceRefs",
+            bootstrap.fragment_source_refs,
+        )?;
+    }
     match bootstrap.state {
         WebUiBootstrapState::Complete { value, selection } => {
             write_json_field_name(writer, &mut wrote_field, "state")?;
-            write_selected_state(writer, scratch, value, &selection)?;
+            if bootstrap.owner_props.is_empty() {
+                write_selected_state(writer, scratch, value, &selection)?;
+            } else {
+                write_owner_state(writer, scratch, value, &selection, bootstrap.owner_props)?;
+            }
         }
         WebUiBootstrapState::Reference {
             record_sequence,
@@ -1915,10 +2140,10 @@ pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
     writer.write("}")
 }
 
-fn write_webui_data_block(
+fn write_webui_data_block<T: Serialize + ?Sized>(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
-    bootstrap: WebUiBootstrap<'_>,
+    bootstrap: WebUiBootstrap<'_, T>,
 ) -> Result<()> {
     writer.write("<script type=\"application/json\" id=\"webui-data\"")?;
     if let Some(nonce) = bootstrap.nonce {
@@ -1988,146 +2213,17 @@ fn write_webui_template_json_map(
     writer.write("}")
 }
 
-fn resolve_value_from_sources<'ctx, 'state>(
-    path: &str,
-    loop_vars: &'ctx [LoopBinding<'_, 'state>],
-    visible_loop_scope: VisibleLoopScope,
-    local_values: LocalValueSources<'ctx, '_, 'state>,
-    state: &'state Value,
-) -> Option<Cow<'ctx, Value>>
-where
-    'state: 'ctx,
-{
-    if let Some(binding) = loop_vars
-        .get(visible_loop_scope.start..visible_loop_scope.end)
-        .and_then(|bindings| bindings.last())
-    {
-        let name = binding.name;
-        if path.len() == name.len() && path == name {
-            return Some(Cow::Borrowed(binding.value));
-        }
-        if path.len() > name.len()
-            && path.as_bytes().get(name.len()) == Some(&b'.')
-            && path.starts_with(name)
-        {
-            if let Some(value) =
-                find_value_by_dotted_path_ref(&path[name.len() + 1..], binding.value)
-            {
-                return Some(value);
-            }
-            return find_value_by_dotted_path_ref(path, state);
-        }
-    }
-
-    if let Some(first_part) = path.split('.').next() {
-        if let Some(local_value) = local_values.borrowed.get(first_part) {
-            if first_part.len() == path.len() {
-                return Some(Cow::Borrowed(local_value));
-            }
-            let remaining = &path[first_part.len() + 1..];
-            if let Some(value) = find_value_by_dotted_path_ref(remaining, local_value) {
-                return Some(value);
-            }
-            return find_value_by_dotted_path_ref(path, state);
-        }
-        if let Some(local_value) = local_values.owned.get(first_part) {
-            if first_part.len() == path.len() {
-                return Some(Cow::Borrowed(local_value));
-            }
-            let remaining = &path[first_part.len() + 1..];
-            if let Some(value) = find_value_by_dotted_path_ref(remaining, local_value) {
-                return Some(value);
-            }
-            return find_value_by_dotted_path_ref(path, state);
-        }
-
-        for binding in loop_vars[visible_loop_scope.start..visible_loop_scope.end]
-            .iter()
-            .rev()
-        {
-            if binding.name != first_part {
-                continue;
-            }
-            if first_part.len() == path.len() {
-                return Some(Cow::Borrowed(binding.value));
-            }
-            let remaining = &path[first_part.len() + 1..];
-            if let Some(value) = find_value_by_dotted_path_ref(remaining, binding.value) {
-                return Some(value);
-            }
-            return find_value_by_dotted_path_ref(path, state);
-        }
-    }
-
-    find_value_by_dotted_path_ref(path, state)
-}
-
+#[cfg(test)]
 fn resolve_borrowed_collection<'state>(
     path: &str,
     loop_vars: &[LoopBinding<'_, 'state>],
     visible_loop_scope: VisibleLoopScope,
     local_values: LocalValueSources<'_, '_, 'state>,
-    state: &'state Value,
+    state: impl Into<StateView<'state>>,
 ) -> Option<&'state [Value]> {
-    let first_part = path.split('.').next()?;
-    if let Some(binding) = loop_vars
-        .get(visible_loop_scope.start..visible_loop_scope.end)
-        .and_then(|bindings| bindings.last())
-        .filter(|binding| binding.name == first_part)
-    {
-        if first_part.len() == path.len() {
-            return binding.value.as_array().map(Vec::as_slice);
-        }
-        let remaining = &path[first_part.len() + 1..];
-        return match find_value_by_dotted_path_ref(remaining, binding.value) {
-            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
-            Some(Cow::Owned(_)) => None,
-            None => borrowed_state_array(path, state),
-        };
-    }
-    if let Some(local_value) = local_values.borrowed.get(first_part) {
-        let local_match = if first_part.len() == path.len() {
-            Some(Cow::Borrowed(local_value))
-        } else {
-            find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value)
-        };
-        return match local_match {
-            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
-            Some(Cow::Owned(_)) => None,
-            None => borrowed_state_array(path, state),
-        };
-    }
-    if let Some(local_value) = local_values.owned.get(first_part) {
-        let local_match = if first_part.len() == path.len() {
-            Some(Cow::Borrowed(local_value))
-        } else {
-            find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value)
-        };
-        if local_match.is_some() {
-            return None;
-        }
-        return borrowed_state_array(path, state);
-    }
-
-    for binding in loop_vars[visible_loop_scope.start..visible_loop_scope.end]
-        .iter()
-        .rev()
-    {
-        if binding.name != first_part {
-            continue;
-        }
-        if first_part.len() == path.len() {
-            return binding.value.as_array().map(Vec::as_slice);
-        }
-        let remaining = &path[first_part.len() + 1..];
-        return match find_value_by_dotted_path_ref(remaining, binding.value) {
-            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
-            Some(Cow::Owned(_)) => None,
-            None => borrowed_state_array(path, state),
-        };
-    }
-
-    borrowed_state_array(path, state)
+    resolve_state_backed_value(path, loop_vars, visible_loop_scope, local_values, state)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
 }
 
 fn resolve_state_backed_value<'state>(
@@ -2135,8 +2231,9 @@ fn resolve_state_backed_value<'state>(
     loop_vars: &[LoopBinding<'_, 'state>],
     visible_loop_scope: VisibleLoopScope,
     local_values: LocalValueSources<'_, '_, 'state>,
-    state: &'state Value,
+    state: impl Into<StateView<'state>>,
 ) -> Option<&'state Value> {
+    let state = state.into();
     let first_part = path.split('.').next()?;
     if let Some(binding) = loop_vars
         .get(visible_loop_scope.start..visible_loop_scope.end)
@@ -2194,17 +2291,10 @@ fn resolve_state_backed_value<'state>(
     borrowed_state_value(path, state)
 }
 
-fn borrowed_state_value<'state>(path: &str, state: &'state Value) -> Option<&'state Value> {
-    match find_value_by_dotted_path_ref(path, state) {
+fn borrowed_state_value<'state>(path: &str, state: StateView<'state>) -> Option<&'state Value> {
+    match state.resolve(path) {
         Some(Cow::Borrowed(value)) => Some(value),
         Some(Cow::Owned(_)) | None => None,
-    }
-}
-
-fn borrowed_state_array<'state>(path: &str, state: &'state Value) -> Option<&'state [Value]> {
-    match find_value_by_dotted_path_ref(path, state)? {
-        Cow::Borrowed(value) => value.as_array().map(Vec::as_slice),
-        Cow::Owned(_) => None,
     }
 }
 
@@ -2236,266 +2326,6 @@ impl WebUIHandler {
     ) -> Result<()> {
         let protocol = Protocol::new(document.clone());
         self.render(&protocol, state, options, writer)
-    }
-
-    /// Process a fragment by its prepared render slot, falling back to an ID
-    /// lookup when the caller has no prepared slot (handler-generated hosts).
-    ///
-    /// The `context` parameter contains scope-local variables that are accessible during rendering,
-    /// such as loop iteration variables. This is separate from the global `state`.
-    fn process_fragment_target<'data>(
-        &self,
-        target: Option<usize>,
-        fragment_id: &str,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<()> {
-        let Some(index) = target.or_else(|| context.render_fragments.index(fragment_id)) else {
-            return Err(HandlerError::MissingFragment(fragment_id.to_string()));
-        };
-        let Some(fragment_list) = context.render_fragments.list(index) else {
-            return Err(HandlerError::MissingFragment(fragment_id.to_string()));
-        };
-        self.process_fragment(fragment_list, context)
-    }
-
-    /// Process a vector of fragments.
-    ///
-    /// The `context` maintains scope-specific variables that can be accessed by fragments
-    /// during rendering, while `state` contains the global application state.
-    fn process_fragment<'data>(
-        &self,
-        fragment_list: RenderFragmentList<'data>,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<()> {
-        self.process_fragment_from(fragment_list, 0, context)
-    }
-
-    fn process_fragment_from<'data>(
-        &self,
-        fragment_list: RenderFragmentList<'data>,
-        start: usize,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<()> {
-        let fragments = fragment_list.fragments;
-        // Pre-scan: find the best matching route among sibling routes by specificity.
-        // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
-        // Resolves relative paths (`./`) using the current route_base.
-        // Lists prepared without any route fragment cannot produce a match, so
-        // the scan is skipped entirely for them.
-        let best_route = if fragment_list.has_routes {
-            route_renderer::find_best_route_match(
-                fragments,
-                context.request_path,
-                &context.route_base,
-                context.route_index,
-            )
-        } else {
-            None
-        };
-        self.process_fragment_range(fragment_list, start..fragments.len(), &best_route, context)
-    }
-
-    fn process_fragment_range<'data>(
-        &self,
-        fragment_list: RenderFragmentList<'data>,
-        range: std::ops::Range<usize>,
-        best_route: &Option<(String, route_matcher::RouteMatch)>,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<()> {
-        let fragments = fragment_list.fragments;
-        let Some(selected) = fragments.get(range.clone()) else {
-            return Err(invalid_fragment_range_error(&range, fragments.len()));
-        };
-        for (offset, item) in selected.iter().enumerate() {
-            let index = range.start + offset;
-            if context.streaming.is_some() {
-                validate_pending_streaming_root(item, context)?;
-                validate_streaming_root_opening(&fragments[..index], item)?;
-            }
-            // The prepared target is only read by fragments that descend, so it
-            // is resolved per-arm. Hoisting it here would charge every raw text
-            // fragment for a lookup it never uses.
-            match item.fragment.as_ref() {
-                Some(Fragment::Raw(raw)) => {
-                    context.writer.write(&raw.value)?;
-                }
-                Some(Fragment::Component(component)) => {
-                    self.process_component(
-                        &component.fragment_id,
-                        fragment_list.target(index),
-                        ComponentHostOrigin::ParserProduced,
-                        context,
-                    )?;
-                }
-                Some(Fragment::ForLoop(for_loop)) => {
-                    self.process_for_loop(for_loop, fragment_list.target(index), context)?;
-                }
-                Some(Fragment::Signal(signal)) => {
-                    self.process_signal(signal, context)?;
-                }
-                Some(Fragment::IfCond(if_cond)) => {
-                    self.process_if(if_cond, fragment_list.target(index), context)?;
-                }
-                Some(Fragment::Attribute(attr)) => {
-                    self.process_attribute(
-                        attr,
-                        fragment_list.target(index),
-                        fragment_list.component_attr_name(index),
-                        context,
-                    )?;
-                }
-                Some(Fragment::Plugin(plugin_frag)) => {
-                    if let Some(p) = &mut context.plugin {
-                        p.on_element_data(&plugin_frag.data, context.writer)?;
-                    }
-                }
-                Some(Fragment::Route(route_frag)) => {
-                    self.process_route(route_frag, best_route, context)?;
-                }
-                Some(Fragment::Outlet(_)) => {
-                    self.process_outlet(context)?;
-                }
-                Some(Fragment::Boundary(_)) => {}
-                None => {}
-            }
-        }
-        ensure_no_pending_streaming_root(context, "the end of the containing fragment")
-    }
-
-    /// Process an `<outlet />` directive.
-    ///
-    /// Matches children from the currently active route's `children` field
-    /// against the request path, renders the matched child `<webui-route>`
-    /// elements directly at this position (no wrapper element).
-    fn process_outlet<'protocol>(
-        &self,
-        context: &mut WebUIProcessContext<'protocol, '_, '_>,
-    ) -> Result<()> {
-        // Moved out so the matched child can render with the context pointing
-        // at its grandchildren. The level is deliberately not put back, which
-        // preserves the previous behavior exactly: a second `<outlet />` at
-        // this level renders nothing. That is a latent bug tracked by #515, not
-        // a property this function needs; fixing it belongs in its own change.
-        let mut children = std::mem::take(&mut context.route_children);
-        if children.is_empty() {
-            return Ok(());
-        }
-
-        // Find the best matching child route
-        let request_segments = route_matcher::split_request_path(context.request_path);
-        let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
-        for (idx, child) in children.iter().enumerate() {
-            if let Some(m) = route_matcher::match_route_indexed_with_segments(
-                context.route_index,
-                &child.path,
-                &context.route_base,
-                &request_segments,
-                child.exact,
-            ) {
-                let is_better = best
-                    .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
-                if is_better {
-                    best = Some((idx, m));
-                }
-            }
-        }
-
-        if let Some((idx, ref rm)) = best {
-            let descended = descend_into(&mut children, idx);
-            let Some(matched_child) = children.get(idx) else {
-                return Ok(());
-            };
-            let comp = &matched_child.fragment_id;
-
-            if !comp.is_empty() {
-                let saved_route_base = (rm.consumed_segments > 0).then(|| {
-                    let base = route_matcher::compute_route_base(
-                        context.request_path,
-                        rm.consumed_segments,
-                    );
-                    std::mem::replace(&mut context.route_base, Cow::Owned(base))
-                });
-                context.route_children = descended;
-
-                // Emit matched <webui-route>
-                context.writer.write("<webui-route")?;
-                context.writer.write(" path=\"")?;
-                context.writer.write(&matched_child.path)?;
-                context.writer.write("\"")?;
-                context.writer.write(" component=\"")?;
-                context.writer.write(comp)?;
-                context.writer.write("\"")?;
-                if matched_child.exact {
-                    context.writer.write(" exact")?;
-                }
-                route_renderer::write_route_navigation_attrs(context.writer, matched_child)?;
-                // Emit data-ri for O(1) client-side element binding
-                let ri = context.route_chain_index;
-                context.route_chain_index += 1;
-                context.writer.write(" data-ri=\"")?;
-                write_usize(context.writer, ri)?;
-                context.writer.write("\" active>")?;
-
-                if !Self::component_owns_css_tree(comp, context.protocol) {
-                    self.emit_component_style_closure(comp, StyleClosureInstall::Routed, context)?;
-                }
-                if !matched_child.content_fragment_id.is_empty() {
-                    self.process_fragment_target(
-                        None,
-                        &matched_child.content_fragment_id,
-                        context,
-                    )?;
-                }
-
-                context.writer.write("<")?;
-                context.writer.write(comp)?;
-                if let Some(p) = &context.plugin {
-                    p.write_route_component_state(context.state, context.writer)?;
-                }
-                write_interaction_marker(comp, context)?;
-                prepare_generated_streaming_root(comp, context)?;
-                context.writer.write(">")?;
-
-                self.process_component(comp, None, ComponentHostOrigin::HandlerGenerated, context)?;
-
-                context.writer.write("</")?;
-                context.writer.write(comp)?;
-                context.writer.write(">")?;
-                context.writer.write("</webui-route>")?;
-
-                if let Some(saved) = saved_route_base {
-                    context.route_base = saved;
-                }
-                // Restores the empty level the matched child was rendered
-                // against, rather than the level this outlet matched. See the
-                // note at the top of this function and #515.
-                context.route_children = Cow::Borrowed(&[]);
-            }
-        }
-
-        // Render non-matched siblings as hidden
-        for (idx, child) in children.iter().enumerate() {
-            let is_matched = best.as_ref().is_some_and(|(bi, _)| *bi == idx);
-            if !is_matched && !child.fragment_id.is_empty() {
-                context.writer.write("<webui-route")?;
-                context.writer.write(" path=\"")?;
-                context.writer.write(&child.path)?;
-                context.writer.write("\"")?;
-                context.writer.write(" component=\"")?;
-                context.writer.write(&child.fragment_id)?;
-                context.writer.write("\"")?;
-                if child.exact {
-                    context.writer.write(" exact")?;
-                }
-                route_renderer::write_route_navigation_attrs(context.writer, child)?;
-                context
-                    .writer
-                    .write(" style=\"display:none\"></webui-route>")?;
-            }
-        }
-
-        Ok(())
     }
 
     /// Emit a `<script type="importmap">` tag that registers a component's
@@ -2579,7 +2409,10 @@ impl WebUIHandler {
         // so the emitted cascade is identical either way. Bundling is a
         // build-wide decision, so the two never mix within one protocol.
         let unit_count = WebUIProtocol::style_closure_unit_count(closure);
-        let mut emitted_resources = HashSet::with_capacity(unit_count);
+        // Unbundled closure members are already unique after protocol validation.
+        // Only bundling can map distinct members to the same delivered resource.
+        let mut emitted_resources =
+            (!context.protocol.style_chunks.is_empty()).then(|| HashSet::with_capacity(unit_count));
 
         for position in 0..unit_count {
             let unit = context
@@ -2591,7 +2424,10 @@ impl WebUIHandler {
                     ))
                 })?;
             let (name, chunk) = (unit.name, unit.chunk);
-            if !emitted_resources.insert(name) {
+            if emitted_resources
+                .as_mut()
+                .is_some_and(|emitted| !emitted.insert(name))
+            {
                 continue;
             }
             let resource = unit.resource.ok_or_else(|| match chunk {
@@ -2867,177 +2703,6 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
-    fn process_route<'protocol>(
-        &self,
-        route_frag: &'protocol webui_protocol::WebUiFragmentRoute,
-        best_route: &Option<(String, route_matcher::RouteMatch)>,
-        context: &mut WebUIProcessContext<'protocol, '_, '_>,
-    ) -> Result<()> {
-        let is_matched = best_route
-            .as_ref()
-            .is_some_and(|(best_key, _)| *best_key == route_frag.fragment_id);
-
-        context.writer.write("<webui-route")?;
-        context.writer.write(" path=\"")?;
-        context.writer.write(&route_frag.path)?;
-        context.writer.write("\"")?;
-        if !route_frag.fragment_id.is_empty() {
-            context.writer.write(" component=\"")?;
-            context.writer.write(&route_frag.fragment_id)?;
-            context.writer.write("\"")?;
-        }
-        if route_frag.exact {
-            context.writer.write(" exact")?;
-        }
-        route_renderer::write_route_navigation_attrs(context.writer, route_frag)?;
-
-        if is_matched {
-            // Emit data-ri for O(1) client-side element binding
-            let ri = context.route_chain_index;
-            context.route_chain_index += 1;
-            context.writer.write(" data-ri=\"")?;
-            write_usize(context.writer, ri)?;
-            context.writer.write("\" active>")?;
-
-            let saved_route_base = best_route.as_ref().map(|(_, rm)| {
-                let base =
-                    route_matcher::compute_route_base(context.request_path, rm.consumed_segments);
-                std::mem::replace(&mut context.route_base, Cow::Owned(base))
-            });
-            let saved_route_children = std::mem::replace(
-                &mut context.route_children,
-                Cow::Borrowed(&route_frag.children),
-            );
-
-            if !route_frag.content_fragment_id.is_empty() {
-                self.process_fragment_target(None, &route_frag.content_fragment_id, context)?;
-            }
-
-            if !route_frag.fragment_id.is_empty() {
-                if !Self::component_owns_css_tree(&route_frag.fragment_id, context.protocol) {
-                    self.emit_component_style_closure(
-                        &route_frag.fragment_id,
-                        StyleClosureInstall::Routed,
-                        context,
-                    )?;
-                }
-                context.writer.write("<")?;
-                context.writer.write(&route_frag.fragment_id)?;
-                if let Some(p) = &context.plugin {
-                    p.write_route_component_state(context.state, context.writer)?;
-                }
-                write_interaction_marker(&route_frag.fragment_id, context)?;
-                prepare_generated_streaming_root(&route_frag.fragment_id, context)?;
-                context.writer.write(">")?;
-
-                self.process_component(
-                    &route_frag.fragment_id,
-                    None,
-                    ComponentHostOrigin::HandlerGenerated,
-                    context,
-                )?;
-
-                context.writer.write("</")?;
-                context.writer.write(&route_frag.fragment_id)?;
-                context.writer.write(">")?;
-            }
-            if let Some(saved) = saved_route_base {
-                context.route_base = saved;
-            }
-            context.route_children = saved_route_children;
-        } else {
-            context.writer.write(" style=\"display:none\">")?;
-        }
-
-        context.writer.write("</webui-route>")?;
-        Ok(())
-    }
-
-    /// Process a component fragment.
-    fn process_component(
-        &self,
-        fragment_id: &str,
-        target: Option<usize>,
-        origin: ComponentHostOrigin,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        if context.streaming.is_some() {
-            consume_streaming_component_root(fragment_id, origin, context)?;
-            // Capture only after root parity succeeds, so malformed protocols
-            // cannot contribute unmarked hosts to a checkpoint.
-            record_checkpoint_tag(context, fragment_id);
-        }
-
-        // Emit the component's CSS module importmap into its light DOM and track
-        // the component as rendered on first encounter only. `rendered_components`
-        // is a set, so gating the `insert` (and its `String` clone) behind the
-        // first-encounter check avoids allocating a throwaway `String` for every
-        // duplicate instance while keeping the set contents identical.
-        if !context.rendered_components.contains(fragment_id) {
-            self.emit_css_module(fragment_id, context)?;
-            context.rendered_components.insert(fragment_id.to_string());
-        }
-
-        let owns_css_tree = Self::component_owns_css_tree(fragment_id, context.protocol);
-        if owns_css_tree {
-            Self::push_shadow_style_root(fragment_id, context)?;
-        }
-
-        // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
-        let saved_local_vars = std::mem::take(&mut context.local_vars);
-        let saved_local_borrowed_vars = std::mem::take(&mut context.local_borrowed_vars);
-        // The component's accumulated attrs become its local vars; the next
-        // sibling accumulates into a recycled (capacity-preserving) map from the
-        // request-local pool instead of a freshly allocated `HashMap`.
-        let saved_component_attrs = std::mem::replace(
-            &mut context.component_attrs,
-            take_scope_map(&mut context.scope_pool),
-        );
-        let saved_component_borrowed_attrs = std::mem::replace(
-            &mut context.component_borrowed_attrs,
-            take_borrowed_scope(&mut context.borrowed_scope_pool),
-        );
-        context.local_vars = saved_component_attrs;
-        context.local_borrowed_vars = saved_component_borrowed_attrs;
-        context.collecting_component_attrs = false;
-        let saved_loop_scope = context.visible_loop_scope;
-        context.visible_loop_scope = VisibleLoopScope {
-            start: context.loop_vars.len(),
-            end: context.loop_vars.len(),
-        };
-
-        if let Some(p) = &mut context.plugin {
-            p.push_scope();
-        }
-
-        let render_result = self.process_fragment_target(target, fragment_id, context);
-        context.visible_loop_scope = saved_loop_scope;
-
-        if owns_css_tree {
-            Self::pop_shadow_style_root(fragment_id, context)?;
-        }
-        render_result?;
-
-        if let Some(p) = &mut context.plugin {
-            p.pop_scope();
-        }
-
-        // Restore parent scope, recycling this component's local map (its
-        // accumulated attrs) back into the pool so a sibling reuses its capacity.
-        let used_locals = std::mem::replace(&mut context.local_vars, saved_local_vars);
-        recycle_scope_map(&mut context.scope_pool, used_locals);
-        let used_borrowed_locals =
-            std::mem::replace(&mut context.local_borrowed_vars, saved_local_borrowed_vars);
-        recycle_borrowed_scope(&mut context.borrowed_scope_pool, used_borrowed_locals);
-        // The attr accumulator (pulled from the pool above) is cleared for the
-        // next sibling while retaining its bucket capacity.
-        context.component_attrs.clear();
-        context.component_borrowed_attrs.clear();
-
-        Ok(())
-    }
-
     #[inline]
     pub(crate) fn component_owns_css_tree(component: &str, protocol: &WebUIProtocol) -> bool {
         !protocol.style_closures.is_empty()
@@ -3065,12 +2730,21 @@ impl WebUIHandler {
                     "Shadow component `{component}` is missing its protocol index"
                 ))
             })?;
-        context.shadow_style_roots.push(ShadowStyleRoot {
+        Self::push_indexed_shadow_style_root(root_index, &mut context.shadow_style_roots);
+        Ok(())
+    }
+
+    /// Push a validated protocol-owned index without repeating metadata lookups.
+    #[inline]
+    pub(crate) fn push_indexed_shadow_style_root(
+        root_index: u32,
+        roots: &mut Vec<ShadowStyleRoot>,
+    ) {
+        roots.push(ShadowStyleRoot {
             component_index: root_index,
             static_closure_emitted: false,
             routed_resources: Vec::new(),
         });
-        Ok(())
     }
 
     pub(crate) fn pop_shadow_style_root(
@@ -3091,17 +2765,7 @@ impl WebUIHandler {
         path: &str,
         context: &WebUIProcessContext<'_, '_, '_>,
     ) -> Option<Value> {
-        resolve_value_from_sources(
-            path,
-            &context.loop_vars,
-            context.visible_loop_scope,
-            LocalValueSources {
-                owned: &context.local_vars,
-                borrowed: &context.local_borrowed_vars,
-            },
-            context.state,
-        )
-        .map(Cow::into_owned)
+        render_scope::resolve(path, value_sources!(context)).map(Cow::into_owned)
     }
 
     /// Evaluate a condition expression against the current context.
@@ -3115,174 +2779,13 @@ impl WebUIHandler {
         condition: &webui_protocol::ConditionExpr,
         context: &WebUIProcessContext,
     ) -> Result<bool> {
-        let loop_vars = &context.loop_vars;
-        let visible_loop_scope = context.visible_loop_scope;
-        let local_values = LocalValueSources {
-            owned: &context.local_vars,
-            borrowed: &context.local_borrowed_vars,
-        };
-        let state = context.state;
         match evaluate_with_resolver(condition, |path| {
-            resolve_value_from_sources(path, loop_vars, visible_loop_scope, local_values, state)
+            render_scope::resolve(path, value_sources!(context))
         }) {
             Ok(result) => Ok(result),
             Err(ExpressionError::MissingValue(_)) => Ok(false),
             Err(e) => Err(HandlerError::Evaluation(e.to_string())),
         }
-    }
-
-    /// Process a for loop fragment.
-    ///
-    /// Creates a new context for each iteration that includes the current loop item.
-    /// This allows nested templates to access both the loop variable and any parent context.
-    /// Example: `for item in items` makes "item" available in the loop body.
-    fn process_for_loop<'protocol, 'state>(
-        &self,
-        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
-        target: Option<usize>,
-        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
-    ) -> Result<()> {
-        if let Some(items) = resolve_borrowed_collection(
-            &for_loop.collection,
-            &context.loop_vars,
-            context.visible_loop_scope,
-            LocalValueSources {
-                owned: &context.local_vars,
-                borrowed: &context.local_borrowed_vars,
-            },
-            context.state,
-        ) {
-            return self.process_borrowed_for_loop(for_loop, target, items, context);
-        }
-        self.process_owned_for_loop(for_loop, target, context)
-    }
-
-    fn process_borrowed_for_loop<'protocol, 'state>(
-        &self,
-        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
-        target: Option<usize>,
-        items: &'state [Value],
-        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
-    ) -> Result<()> {
-        if let Some(plugin) = &mut context.plugin {
-            plugin.on_for_start(&for_loop.fragment_id, context.writer)?;
-        }
-
-        let item_name = for_loop.item.as_str();
-        let saved_value = context.local_vars.remove(item_name);
-        let saved_borrowed_value = context.local_borrowed_vars.remove(item_name);
-        let saved_scope = context.visible_loop_scope;
-        for (index, item) in items.iter().enumerate() {
-            if let Some(plugin) = &mut context.plugin {
-                plugin.on_repeat_item_start(index, context.writer)?;
-                plugin.push_scope();
-            }
-
-            context.loop_vars.push(LoopBinding {
-                name: item_name,
-                value: item,
-            });
-            context.visible_loop_scope.end = context.loop_vars.len();
-            self.process_fragment_target(target, &for_loop.fragment_id, context)?;
-            context.loop_vars.pop();
-            context.visible_loop_scope = saved_scope;
-
-            if let Some(plugin) = &mut context.plugin {
-                plugin.pop_scope();
-                plugin.on_repeat_item_end(index, context.writer)?;
-            }
-        }
-        if let Some(value) = saved_value {
-            context.local_vars.insert(item_name.to_string(), value);
-        }
-        if let Some(value) = saved_borrowed_value {
-            context.local_borrowed_vars.insert(item_name, value);
-        }
-
-        if let Some(plugin) = &mut context.plugin {
-            plugin.on_for_end(&for_loop.fragment_id, context.writer)?;
-        }
-        Ok(())
-    }
-
-    fn process_owned_for_loop<'protocol, 'state>(
-        &self,
-        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
-        target: Option<usize>,
-        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
-    ) -> Result<()> {
-        let collection_name = &for_loop.collection;
-
-        // If the collection is missing, treat it as empty (0 iterations) — matches NodeJS behavior.
-        // Hydration comments are always emitted regardless of collection presence.
-        let items = match self.resolve_value_owned(collection_name, context) {
-            Some(Value::Array(arr)) => arr,
-            Some(_) => {
-                return Err(HandlerError::TypeError(format!(
-                    "Collection '{}' is not an array",
-                    collection_name
-                )))
-            }
-            None => Vec::new(),
-        };
-
-        if let Some(p) = &mut context.plugin {
-            p.on_for_start(&for_loop.fragment_id, context.writer)?;
-        }
-
-        // Hot-loop optimisation: the loop variable name is `String`-keyed
-        // in `local_vars`. The naive impl re-inserts (and so re-allocates
-        // the key) on every iteration — a 1000-item loop pays 2000 String
-        // clones for the key alone. Instead, we save the outer-scope
-        // value (if any) ONCE before the loop, install the key ONCE with
-        // an empty placeholder, then overwrite the value in-place each
-        // iteration via `get_mut`. Restoration at the end happens once.
-        let item_name = for_loop.item.as_str();
-        let saved_value = context.local_vars.remove(item_name);
-        let saved_borrowed_value = context.local_borrowed_vars.remove(item_name);
-        // Pre-insert the key so per-iteration `get_mut` is infallible.
-        // Cost: at most one `String::from(item_name)` for the lifetime
-        // of the loop, regardless of iteration count.
-        if !items.is_empty() {
-            context
-                .local_vars
-                .insert(item_name.to_string(), Value::Null);
-        }
-        for (i, item) in items.into_iter().enumerate() {
-            if let Some(p) = &mut context.plugin {
-                p.on_repeat_item_start(i, context.writer)?;
-                p.push_scope();
-            }
-
-            // O(1) value swap; no key allocation.
-            if let Some(slot) = context.local_vars.get_mut(item_name) {
-                *slot = item;
-            }
-            self.process_fragment_target(target, &for_loop.fragment_id, context)?;
-
-            if let Some(p) = &mut context.plugin {
-                p.pop_scope();
-                p.on_repeat_item_end(i, context.writer)?;
-            }
-        }
-        // Restore outer scope (or remove the placeholder we installed).
-        match saved_value {
-            Some(value) => {
-                context.local_vars.insert(item_name.to_string(), value);
-            }
-            None => {
-                context.local_vars.remove(item_name);
-            }
-        }
-        if let Some(value) = saved_borrowed_value {
-            context.local_borrowed_vars.insert(item_name, value);
-        }
-
-        if let Some(p) = &mut context.plugin {
-            p.on_for_end(&for_loop.fragment_id, context.writer)?;
-        }
-
-        Ok(())
     }
 
     /// Process a signal fragment.
@@ -3549,7 +3052,13 @@ impl WebUIHandler {
                 }
                 style_roots.extend(reachable.iter().map(String::as_str));
                 let component_styles =
-                    crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
+                    crate::route_handler::collect_borrowed_component_style_delta(
+                        context.protocol,
+                        style_roots,
+                        &[],
+                        context.style_resource_index,
+                        &context.style_chunk_index,
+                    )?;
                 write_webui_data_block(
                     context.writer,
                     &mut context.json_scratch,
@@ -3560,6 +3069,9 @@ impl WebUIHandler {
                             value: context.state,
                             selection: state_selection,
                         },
+                        owner_props: &[],
+                        fragment_sources: &[],
+                        fragment_source_refs: &[],
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -3631,17 +3143,13 @@ impl WebUIHandler {
             p.on_binding_start(&signal.value, owns_html_range, context.writer)?;
         }
 
-        if let Some(value) = resolve_value_from_sources(
-            &signal.value,
-            &context.loop_vars,
-            context.visible_loop_scope,
-            LocalValueSources {
-                owned: &context.local_vars,
-                borrowed: &context.local_borrowed_vars,
-            },
-            context.state,
-        ) {
-            self.write_signal_value(value.as_ref(), signal.raw, context.writer)?;
+        if let Some(value) = render_scope::resolve(&signal.value, value_sources!(context)) {
+            self.write_signal_value(
+                value.as_ref(),
+                signal.raw,
+                context.writer,
+                &mut context.attribute_buffers.escaped,
+            )?;
         }
 
         if let Some(p) = &mut context.plugin {
@@ -3651,7 +3159,7 @@ impl WebUIHandler {
     }
 
     /// Write a signal value directly to the writer, avoiding intermediate String allocation.
-    /// For HTML-escaped output, writes the Cow from `encode_safe` directly.
+    /// Escaped strings share the request's bounded encoding scratch buffer.
     ///
     /// `raw` here is purely the authored escaping choice (`{{value}}` vs.
     /// `{{{value}}}`) and is applied uniformly regardless of surrounding HTML
@@ -3663,6 +3171,7 @@ impl WebUIHandler {
         value: &Value,
         raw: bool,
         writer: &mut dyn ResponseWriter,
+        escaped: &mut String,
     ) -> Result<()> {
         // Numbers, booleans, and null render the same escaped or not, and never
         // need a heap buffer to reach the writer.
@@ -3676,49 +3185,15 @@ impl WebUIHandler {
             }
         } else {
             match value {
-                Value::String(s) => writer.write(&crate::html_encode::encode_safe(s)),
+                Value::String(s) => {
+                    crate::html_encode::with_encoded_safe(s, escaped, |value| writer.write(value))
+                }
                 _ => {
                     let s = value.to_string();
-                    writer.write(&crate::html_encode::encode_safe(&s))
+                    crate::html_encode::with_encoded_safe(&s, escaped, |value| writer.write(value))
                 }
             }
         }
-    }
-
-    /// Process an if condition fragment.
-    fn process_if(
-        &self,
-        if_cond: &webui_protocol::WebUIFragmentIf,
-        target: Option<usize>,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        let condition = if_cond
-            .condition
-            .as_ref()
-            .ok_or_else(|| HandlerError::Rendering("If fragment missing condition".to_string()))?;
-        let condition_met = self.evaluate_condition(condition, context)?;
-
-        if let Some(p) = &mut context.plugin {
-            p.on_if_start(&if_cond.fragment_id, context.writer)?;
-        }
-
-        if condition_met {
-            if let Some(p) = &mut context.plugin {
-                p.push_scope();
-            }
-
-            self.process_fragment_target(target, &if_cond.fragment_id, context)?;
-
-            if let Some(p) = &mut context.plugin {
-                p.pop_scope();
-            }
-        }
-
-        if let Some(p) = &mut context.plugin {
-            p.on_if_end(&if_cond.fragment_id, context.writer)?;
-        }
-
-        Ok(())
     }
 
     /// Process an attribute fragment by rendering the attribute name/value pair.
@@ -3735,10 +3210,30 @@ impl WebUIHandler {
     ) -> Result<()> {
         // Initialize component attribute accumulator on attrStart. Clearing the
         // pooled map keeps its bucket capacity instead of allocating a fresh one.
+        // This must run before the capture hook: the first prop of an element
+        // carries `attr_start`, so capturing before the accumulator is armed
+        // would leave that one prop on the borrowed path even in a session that
+        // has to retain it across a boundary.
         if attr.attr_start {
             context.component_attrs.clear();
             context.component_borrowed_attrs.clear();
+            context.scopes.attrs.clear();
             context.collecting_component_attrs = true;
+        }
+        let state_backed_value = if context.collecting_component_attrs
+            && !attr.attr_skip
+            && !attr.raw_value
+            && attr.condition_tree.is_none()
+            && attr.template.is_empty()
+            && !attr.value.is_empty()
+            && !context.state.is_shared()
+        {
+            render_scope::borrowed(&attr.value, value_sources!(context))
+        } else {
+            None
+        };
+        if self.process_captured_attribute(attr, component_name, state_backed_value, context)? {
+            return Ok(());
         }
 
         // Boolean attribute with condition tree
@@ -3762,18 +3257,27 @@ impl WebUIHandler {
 
         // Template attribute (mixed static + dynamic)
         if !attr.template.is_empty() {
-            let raw_value =
-                self.render_template_attr_value(&attr.template, template_target, context)?;
-            let escaped = crate::html_encode::encode_safe(&raw_value);
-            write_attr(context.writer, &attr.name, &escaped)?;
+            let mut buffers = std::mem::take(&mut context.attribute_buffers);
+            self.render_template_attr_value(
+                &attr.template,
+                template_target,
+                context,
+                &mut buffers.raw,
+            )?;
+            let escaped =
+                crate::html_encode::encode_safe_reusing(&buffers.raw, &mut buffers.escaped);
+            write_attr(context.writer, &attr.name, escaped)?;
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                 context.component_borrowed_attrs.remove(name);
-                context
-                    .component_attrs
-                    .insert(name.to_owned(), Value::String(raw_value));
+                context.component_attrs.insert(
+                    name.to_owned(),
+                    Value::String(std::mem::take(&mut buffers.raw)),
+                );
             }
+            buffers.recycle();
+            context.attribute_buffers = buffers;
             return Ok(());
         }
 
@@ -3796,16 +3300,6 @@ impl WebUIHandler {
                     // materializes these values only when the target component
                     // can actually suspend; boundary-free components finish in
                     // this call and retain the ordinary zero-copy path.
-                    let state_backed_value = resolve_state_backed_value(
-                        &attr.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    );
                     if let Some(value) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_attrs.remove(name);
@@ -3820,63 +3314,25 @@ impl WebUIHandler {
                 // Dynamic attribute — resolve and render
                 // As above, a boundary-bearing continuation materializes a
                 // borrowed component scope before it can escape this call.
-                let state_backed_value = if context.collecting_component_attrs && !attr.attr_skip {
-                    resolve_state_backed_value(
-                        &attr.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    )
-                } else {
-                    None
-                };
                 // Reuse the immutable-state lookup for both HTML output and the
                 // child scope instead of resolving every component attribute twice.
                 let value = match state_backed_value {
                     Some(value) => Some(Cow::Borrowed(value)),
-                    None => resolve_value_from_sources(
-                        &attr.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    ),
+                    None => render_scope::resolve(&attr.value, value_sources!(context)),
                 };
                 // Always emit the attribute so FAST hydration markers
                 // (`data-fe`) match the DOM node structure.
                 match value.as_deref() {
-                    Some(Value::String(s)) => {
-                        write_attr(
+                    Some(value) => {
+                        write_dynamic_attribute_value(
                             context.writer,
                             &attr.name,
-                            &crate::html_encode::encode_safe(s),
+                            value,
+                            &mut context.attribute_buffers.escaped,
                         )?;
                     }
-                    Some(Value::Null) | None => {
+                    None => {
                         write_attr(context.writer, &attr.name, "")?;
-                    }
-                    Some(other) => {
-                        let mut scalar = ScalarBuffer::new();
-                        match format_plain_json_scalar(&mut scalar, other) {
-                            Some(rendered) => {
-                                write_attr(context.writer, &attr.name, rendered)?;
-                            }
-                            None => {
-                                let s = other.to_string();
-                                write_attr(
-                                    context.writer,
-                                    &attr.name,
-                                    &crate::html_encode::encode_safe(&s),
-                                )?;
-                            }
-                        }
                     }
                 }
 
@@ -3908,29 +3364,23 @@ impl WebUIHandler {
         template_id: &str,
         target: Option<usize>,
         context: &WebUIProcessContext,
-    ) -> Result<String> {
+        raw_value: &mut String,
+    ) -> Result<()> {
         let Some(index) = target.or_else(|| context.render_fragments.index(template_id)) else {
             return Err(HandlerError::MissingFragment(template_id.to_string()));
         };
         let fragments = context
             .render_fragments
             .list(index)
+            .map(|record| record.list)
             .ok_or_else(|| HandlerError::MissingFragment(template_id.to_string()))?;
-        let mut raw_value = String::new();
-        for frag in fragments.fragments {
+        for frag in &fragments.fragments {
             match frag.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
                 Some(Fragment::Signal(signal)) => {
-                    if let Some(value) = resolve_value_from_sources(
-                        &signal.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    ) {
+                    if let Some(value) =
+                        render_scope::resolve(&signal.value, value_sources!(context))
+                    {
                         match value.as_ref() {
                             Value::String(s) => raw_value.push_str(s),
                             other => {
@@ -3943,10 +3393,50 @@ impl WebUIHandler {
                         }
                     }
                 }
-                _ => {}
+                Some(_) => return Err(invalid_attribute_template_error(template_id)),
+                None => {}
             }
         }
-        Ok(raw_value)
+        Ok(())
+    }
+
+    fn process_captured_attribute(
+        &self,
+        attr: &webui_protocol::WebUIFragmentAttribute,
+        component_name: Option<&str>,
+        borrowed: Option<&Value>,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<bool> {
+        if !context.collecting_component_attrs || attr.attr_skip {
+            return Ok(false);
+        }
+        let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+        context.scopes.attrs.remove(name);
+        if attr.raw_value
+            || attr.condition_tree.is_some()
+            || !attr.template.is_empty()
+            || attr.value.is_empty()
+        {
+            return Ok(false);
+        }
+        if borrowed.is_some() {
+            return Ok(false);
+        }
+        let Some(value) = render_scope::capture(&attr.value, context) else {
+            return Ok(false);
+        };
+        if !attr.complex {
+            write_dynamic_attribute_value(
+                context.writer,
+                &attr.name,
+                value.get(),
+                &mut context.attribute_buffers.escaped,
+            )?;
+        }
+        context.component_attrs.remove(name);
+        context.component_borrowed_attrs.remove(name);
+        context.scopes.attrs.insert(name.to_owned(), value);
+        Ok(true)
     }
 
     /// Render the UI based on the protocol and state.
@@ -3965,6 +3455,7 @@ impl WebUIHandler {
         };
         let entry = render_fragments
             .list(entry_index)
+            .map(|record| record.list)
             .ok_or_else(|| HandlerError::MissingFragment(options.entry_id.to_string()))?;
         let entry_owns_css_tree = Self::component_owns_css_tree(options.entry_id, document);
         let has_document_head_boundary = !entry_owns_css_tree
@@ -3996,7 +3487,8 @@ impl WebUIHandler {
             render_fragments,
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
-            state,
+            state: state.into(),
+            scopes: render_scope::RenderScopes::default(),
             writer,
             local_vars: HashMap::new(),
             local_borrowed_vars: BorrowedScope::default(),
@@ -4009,7 +3501,7 @@ impl WebUIHandler {
             route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
-            route_children: Cow::Borrowed(&[]),
+            route_children: 0..0,
             entry_id: options.entry_id,
             // Same defensive normalisation as `handle()`. See the
             // doc-comment there for the CSP-outage rationale.
@@ -4033,6 +3525,7 @@ impl WebUIHandler {
             reachable_components: None,
             streaming: None,
             json_scratch: Vec::new(),
+            attribute_buffers: AttributeBuffers::default(),
             scope_pool: Vec::new(),
             document_style_resources: HashSet::new(),
             shadow_style_roots: Vec::new(),
@@ -4043,7 +3536,7 @@ impl WebUIHandler {
             Self::push_shadow_style_root(options.entry_id, &mut context)?;
         }
 
-        let render_result = if let Some((first_raw, split)) = doctype_split {
+        let start = if let Some((first_raw, split)) = doctype_split {
             context.writer.write(&first_raw[..split])?;
             self.emit_component_style_closure(
                 options.entry_id,
@@ -4052,7 +3545,7 @@ impl WebUIHandler {
             )?;
             self.emit_active_route_styles(&mut Vec::new(), &mut context)?;
             context.writer.write(&first_raw[split..])?;
-            self.process_fragment_from(entry, 1, &mut context)
+            1
         } else {
             if !entry_owns_css_tree
                 && !has_document_head_boundary
@@ -4065,13 +3558,21 @@ impl WebUIHandler {
                 )?;
                 self.emit_active_route_styles(&mut Vec::new(), &mut context)?;
             }
-            self.process_fragment(entry, &mut context)
+            0
         };
+        let entry_slot = u32::try_from(entry_index)
+            .map_err(|_| HandlerError::Invariant("entry render slot exceeds u32".into()))?;
+        let render_result = ContinuationVm::ordinary(entry_slot, start).advance(
+            StepGoal::Ordinary,
+            self,
+            protocol,
+            &mut context,
+        );
 
+        render_result?;
         if entry_owns_css_tree {
             Self::pop_shadow_style_root(options.entry_id, &mut context)?;
         }
-        render_result?;
         writer.end()?;
 
         Ok(())
@@ -4087,6 +3588,40 @@ impl Default for WebUIHandler {
 /// Write ` name="value"` to the writer without allocating a format string.
 fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Result<()> {
     writer.write_attribute(name, value)
+}
+
+#[inline]
+fn write_dynamic_attribute_value(
+    writer: &mut dyn ResponseWriter,
+    name: &str,
+    value: &Value,
+    escaped: &mut String,
+) -> Result<()> {
+    match value {
+        Value::String(value) => crate::html_encode::with_encoded_safe(value, escaped, |encoded| {
+            write_attr(writer, name, encoded)
+        }),
+        Value::Null => write_attr(writer, name, ""),
+        other => {
+            let mut scalar = ScalarBuffer::new();
+            match format_plain_json_scalar(&mut scalar, other) {
+                Some(value) => write_attr(writer, name, value),
+                None => {
+                    crate::html_encode::with_encoded_safe(&other.to_string(), escaped, |encoded| {
+                        write_attr(writer, name, encoded)
+                    })
+                }
+            }
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_attribute_template_error(template_id: &str) -> HandlerError {
+    HandlerError::Invariant(format!(
+        "attribute template `{template_id}` contains a structural fragment; help: rebuild the protocol so attribute templates contain only text and signals"
+    ))
 }
 
 #[cfg(test)]
@@ -4348,42 +3883,37 @@ mod tests {
         ];
         let local_vars = HashMap::new();
         let local_borrowed_vars = BorrowedScope::default();
-        let sources = LocalValueSources {
-            owned: &local_vars,
-            borrowed: &local_borrowed_vars,
+        let scopes = render_scope::RenderScopes::default();
+        let sources = render_scope::Sources {
+            scopes: &scopes,
+            loops: &loop_vars,
+            visible: VisibleLoopScope { start: 0, end: 2 },
+            locals: LocalValueSources {
+                owned: &local_vars,
+                borrowed: &local_borrowed_vars,
+            },
+            state: (&state).into(),
         };
 
         assert_eq!(
-            resolve_value_from_sources(
-                "item.name",
-                &loop_vars,
-                VisibleLoopScope { start: 0, end: 2 },
-                sources,
-                &state,
-            )
-            .as_deref()
-            .and_then(Value::as_str),
+            render_scope::resolve("item.name", sources)
+                .as_deref()
+                .and_then(Value::as_str),
             Some("inner")
         );
         assert_eq!(
-            resolve_value_from_sources(
-                "item.fallback",
-                &loop_vars,
-                VisibleLoopScope { start: 0, end: 2 },
-                sources,
-                &state,
-            )
-            .as_deref()
-            .and_then(Value::as_str),
+            render_scope::resolve("item.fallback", sources)
+                .as_deref()
+                .and_then(Value::as_str),
             Some("global fallback")
         );
         assert_eq!(
-            resolve_value_from_sources(
+            render_scope::resolve(
                 "item.name",
-                &loop_vars,
-                VisibleLoopScope { start: 2, end: 2 },
-                sources,
-                &state,
+                render_scope::Sources {
+                    visible: VisibleLoopScope { start: 2, end: 2 },
+                    ..sources
+                },
             )
             .as_deref()
             .and_then(Value::as_str),
@@ -4421,6 +3951,14 @@ mod tests {
             borrowed: &local_borrowed_vars,
         };
         let scope = VisibleLoopScope { start: 0, end: 2 };
+        let scopes = render_scope::RenderScopes::default();
+        let render_sources = render_scope::Sources {
+            scopes: &scopes,
+            loops: &loop_vars,
+            visible: scope,
+            locals: sources,
+            state: (&state).into(),
+        };
 
         for path in [
             "global.name",
@@ -4431,7 +3969,7 @@ mod tests {
         ] {
             let state_backed = resolve_state_backed_value(path, &loop_vars, scope, sources, &state)
                 .unwrap_or_else(|| panic!("{path} should resolve from immutable state"));
-            let resolved = resolve_value_from_sources(path, &loop_vars, scope, sources, &state)
+            let resolved = render_scope::resolve(path, render_sources)
                 .unwrap_or_else(|| panic!("{path} should resolve generally"));
             let Cow::Borrowed(resolved) = resolved else {
                 panic!("{path} should remain borrowed");
@@ -4545,6 +4083,33 @@ mod tests {
             .write_boolean_attribute("disabled")
             .unwrap_or_else(|error| panic!("boolean attribute write failed: {error}"));
         assert_eq!(writer.output, " data-id=\"42\" disabled");
+
+        let mut escaped = String::with_capacity(128);
+        let allocation = escaped.as_ptr();
+        for value in [
+            test_json!("plain"),
+            test_json!("a<&\"'/\u{e9}"),
+            test_json!(false),
+            test_json!(0),
+            test_json!(null),
+            test_json!([1, "x"]),
+            test_json!({"x": "y"}),
+        ] {
+            writer.output.clear();
+            write_dynamic_attribute_value(&mut writer, "data-value", &value, &mut escaped)
+                .unwrap_or_else(|error| panic!("dynamic attribute write failed: {error}"));
+            let raw = match value {
+                Value::String(value) => value,
+                Value::Null => String::new(),
+                value => value.to_string(),
+            };
+            assert_eq!(
+                writer.output,
+                format!(" data-value=\"{}\"", encode_safe(&raw))
+            );
+            assert!(escaped.is_empty());
+            assert_eq!(escaped.as_ptr(), allocation);
+        }
     }
 
     #[test]
@@ -4586,7 +4151,7 @@ mod tests {
             .unwrap_or_else(|| panic!("component target should be indexed"));
         assert_eq!(entry.component_attr_name(0), Some("dataTitle"));
         assert_eq!(entry.target(1), Some(child_index));
-        assert!(!entry.has_routes);
+        assert!(!entry.has_routes());
         let source_entry = protocol
             .protocol()
             .fragments
@@ -4639,8 +4204,8 @@ mod tests {
             .list_by_id("dash-page")
             .unwrap_or_else(|| panic!("page render plan should exist"));
         // Only lists that actually contain a route pay for the sibling scan.
-        assert!(entry.has_routes);
-        assert!(!page.has_routes);
+        assert!(entry.has_routes());
+        assert!(!page.has_routes());
     }
 
     #[test]
@@ -4807,8 +4372,8 @@ mod tests {
     }
 
     #[test]
-    fn prepared_graph_lazily_borrows_large_protocol_fragment_lists() {
-        let list_count = INLINE_RENDER_FRAGMENT_LISTS * 2 + 1;
+    fn prepared_graph_shares_large_protocol_fragment_lists_without_request_cache() {
+        let list_count = 17;
         let mut fragments = HashMap::with_capacity(list_count);
         for index in 0..list_count {
             fragments.insert(
@@ -4821,22 +4386,16 @@ mod tests {
         }
         let protocol = Protocol::new(WebUIProtocol::new(fragments));
         let resolved = protocol.render_fragments().resolve(protocol.protocol());
-        // Nothing is materialized until a slot is actually rendered.
-        assert!(resolved.cache[0].get().is_none());
-        assert!(resolved.spilled.get().is_none());
+        let second = protocol.render_fragments().resolve(protocol.protocol());
+        assert_eq!(
+            std::mem::size_of_val(&resolved),
+            std::mem::size_of::<&RenderFragmentIndex>()
+        );
+        assert!(std::ptr::eq(
+            resolved.index.records.get().lists.as_ptr(),
+            second.index.records.get().lists.as_ptr()
+        ));
         assert!(resolved.list(0).is_some());
-        assert!(resolved.cache[0].get().is_some());
-        // Rendering only inline slots never allocates the spill region.
-        assert!(resolved.spilled.get().is_none());
-        // Slots past the inline cache spill once, then stay memoized so a deep
-        // descent never re-hashes the fragment ID.
-        assert!(resolved.list(INLINE_RENDER_FRAGMENT_LISTS).is_some());
-        let spilled = resolved
-            .spilled
-            .get()
-            .expect("a slot past the inline cache should allocate the spill region");
-        assert_eq!(spilled.len(), list_count - INLINE_RENDER_FRAGMENT_LISTS);
-        assert!(spilled[0].get().is_some());
         assert!(resolved.list(list_count - 1).is_some());
 
         for (id, source) in &protocol.protocol().fragments {
@@ -5506,6 +5065,94 @@ mod tests {
     }
 
     // ── Template attribute rendering tests ────────────────────────────
+
+    #[test]
+    fn attribute_buffers_reuse_small_allocations_and_release_large_values() {
+        let mut buffers = AttributeBuffers {
+            raw: String::with_capacity(128),
+            escaped: String::with_capacity(128),
+        };
+        buffers.raw.push_str("user value");
+        buffers.escaped.push_str("escaped value");
+        let raw = buffers.raw.as_ptr();
+        let escaped = buffers.escaped.as_ptr();
+        buffers.recycle();
+        assert!(buffers.raw.is_empty());
+        assert!(buffers.escaped.is_empty());
+        assert_eq!(buffers.raw.as_ptr(), raw);
+        assert_eq!(buffers.escaped.as_ptr(), escaped);
+        buffers.raw.reserve(2048);
+        buffers.recycle();
+        assert_eq!(buffers.raw.capacity(), 0);
+        assert_eq!(buffers.escaped.as_ptr(), escaped);
+        buffers.escaped.reserve(2048);
+        buffers.recycle();
+        assert_eq!(buffers.escaped.capacity(), 0);
+    }
+
+    #[test]
+    fn repeated_template_attributes_keep_missing_scalar_and_json_value_semantics() {
+        let protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<a"),
+                        WebUIFragment::attribute_template("href", "url"),
+                        WebUIFragment::attribute_template("title", "label"),
+                        WebUIFragment::attribute_template("data-copy", "url"),
+                        WebUIFragment::raw("></a>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "url".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("./"),
+                        WebUIFragment::signal("value", false),
+                        WebUIFragment::raw("&"),
+                        WebUIFragment::signal("missing", false),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "label".to_owned(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("plain")],
+                    contains_boundary: false,
+                },
+            ),
+        ]));
+        for value in [
+            test_json!("a<&\"'/é"),
+            test_json!(0),
+            test_json!(false),
+            test_json!(null),
+            test_json!([1, "x"]),
+            test_json!({"x": "y"}),
+        ] {
+            let raw = match &value {
+                Value::String(value) => value.clone(),
+                _ => value.to_string(),
+            };
+            let expected = encode_safe(&format!("./{raw}&")).into_owned();
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({"value": value}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            assert_eq!(
+                writer.get_content(),
+                format!("<a href=\"{expected}\" title=\"plain\" data-copy=\"{expected}\"></a>")
+            );
+        }
+    }
 
     #[test]
     fn test_mixed_attribute_template() {
@@ -10369,6 +10016,68 @@ mod tests {
     }
 
     #[test]
+    fn unbundled_repeated_shadow_roots_keep_styles_and_reject_duplicate_metadata() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<styled-card>"),
+                        WebUIFragment::component("styled-card"),
+                        WebUIFragment::raw("</styled-card><styled-card>"),
+                        WebUIFragment::component("styled-card"),
+                        WebUIFragment::raw("</styled-card>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "styled-card".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                        structural_fragment("shadow_styles:styled-card"),
+                        WebUIFragment::raw("<p>card</p></template>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+        ]));
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        let component = protocol
+            .components
+            .entry("styled-card".to_owned())
+            .or_default();
+        component.css = "p{color:red}".to_owned();
+        component.uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+        let state = test_json!({});
+        let options = RenderOptions::new("index.html", "/").with_nonce("style-nonce");
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &options, &mut writer).unwrap();
+        let card = concat!(
+            "<styled-card><template shadowrootmode=\"open\">",
+            "<style nonce=\"style-nonce\" data-webui-resource=\"styled-card\" ",
+            "data-webui-strategy=\"style\">p{color:red}</style>",
+            "<p>card</p></template></styled-card>",
+        );
+        assert_eq!(writer.get_content(), card.repeat(2));
+
+        protocol
+            .style_closures
+            .get_mut("styled-card")
+            .unwrap()
+            .component_tags
+            .push("styled-card".to_owned());
+        let mut writer = TestWriter::new();
+        let error = handle(&protocol, &state, &options, &mut writer).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("duplicate resource `styled-card`"));
+        assert!(writer.get_content().is_empty());
+    }
+
+    #[test]
     fn routed_document_styles_are_hoisted_for_the_active_chain() {
         let route = WebUiFragmentRoute {
             path: "/".to_string(),
@@ -12553,6 +12262,60 @@ mod tests {
         let mut scratch = Vec::new();
         write_selected_state(&mut sink, &mut scratch, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
+    }
+
+    #[test]
+    fn write_owner_state_shadows_caller_keys_and_adds_stateless_props() {
+        // `model` has no caller-state key at all and `title` shadows one, which
+        // is exactly what a complex prop and a bound prop look like on the wire.
+        let state = test_json!({
+            "selected": "",
+            "source": {"name": "NEW"},
+            "title": "caller"
+        });
+        let props = [
+            (
+                Box::<str>::from("model"),
+                crate::state_view::SharedValue::new(test_json!({"name": "OLD"})),
+            ),
+            (
+                Box::<str>::from("title"),
+                crate::state_view::SharedValue::new(test_json!("owner")),
+            ),
+        ];
+        let keys = ["selected", "title"];
+        let selection = StateSelection::Keys(keys.to_vec());
+        let mut sink = TestWriter::new();
+        let mut scratch = Vec::new();
+        write_owner_state(&mut sink, &mut scratch, &state, &selection, &props).unwrap();
+        assert_eq!(
+            sink.get_content(),
+            r#"{"model":{"name":"OLD"},"title":"owner","selected":""}"#
+        );
+    }
+
+    #[test]
+    fn write_owner_state_keeps_full_caller_state_minus_shadowed_and_reserved_keys() {
+        let state = test_json!({
+            STATE_INJECT_KEY: "<b>injected</b>",
+            "title": "caller",
+            "zone": "keep"
+        });
+        let props = [(
+            Box::<str>::from("title"),
+            crate::state_view::SharedValue::new(test_json!("owner")),
+        )];
+        let mut sink = TestWriter::new();
+        let mut scratch = Vec::new();
+        write_owner_state(
+            &mut sink,
+            &mut scratch,
+            &state,
+            &StateSelection::Full,
+            &props,
+        )
+        .unwrap();
+        assert_eq!(sink.get_content(), r#"{"title":"owner","zone":"keep"}"#);
     }
 
     #[test]

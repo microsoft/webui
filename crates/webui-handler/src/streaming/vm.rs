@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Iterative continuation VM for runtime boundary discovery.
+//! Shared iterative rendering cursor with owned streaming continuations.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -31,6 +31,7 @@ use super::{
     consume_streaming_component_root, prepare_generated_streaming_root, record_checkpoint_tag,
     streaming_state,
 };
+use crate::render_scope::{RepeatFrame, RepeatSource};
 use crate::route_matcher::RouteMatch;
 use crate::{
     structural_signal_value, write_interaction_marker, HandlerError, Result, WebUIHandler,
@@ -46,53 +47,51 @@ const CAPTURE_POOL_LIMIT: usize = 8;
 /// a component host, and one conditional or loop body) so the common response
 /// never reallocates its frame stack.
 const INITIAL_FRAME_CAPACITY: usize = 16;
-/// Records kept resolved while one semantic step walks the graph.
-///
-/// A step touches the record it entered, the parent it returns to, and at most
-/// a couple of enclosing hosts, so four entries cover the common continuation
-/// without turning the probe into a search.
-const RECORD_CACHE_SIZE: usize = 4;
-
-/// Bounded slot→record cache scoped to a single [`ContinuationVm::advance`].
-///
-/// Resolving a slot costs a dense-vector read plus a hash of the compiled
-/// record ID, and a step re-resolves the same few records every time it
-/// descends into a child and unwinds back to the parked parent. Caching the
-/// borrow for the duration of one step collapses those repeats to a handful of
-/// integer comparisons while keeping the VM itself lifetime-free between calls.
-struct RecordCache<'data> {
-    entries: [Option<(u32, &'data webui_protocol::FragmentList)>; RECORD_CACHE_SIZE],
-    next: usize,
-}
-
-impl<'data> RecordCache<'data> {
-    const fn new() -> Self {
-        Self {
-            entries: [None; RECORD_CACHE_SIZE],
-            next: 0,
-        }
-    }
-
-    /// Borrow the record for `slot`, resolving and retaining it on a miss.
-    fn record(
-        &mut self,
-        protocol: &'data crate::Protocol,
-        slot: u32,
-    ) -> Result<&'data webui_protocol::FragmentList> {
-        for (cached, list) in self.entries.iter().flatten() {
-            if *cached == slot {
-                return Ok(list);
-            }
-        }
-        let list = slot_fragment(protocol, slot)?;
-        self.entries[self.next] = Some((slot, list));
-        self.next = (self.next + 1) % RECORD_CACHE_SIZE;
-        Ok(list)
-    }
-}
-
-pub(crate) struct ContinuationVm {
+pub(crate) struct ContinuationVm<M = StreamingVmState> {
+    mode: M,
     frames: Vec<Frame>,
+    route_work: Vec<RouteWork>,
+    route_matches: Vec<SelectedRoute>,
+    next_entry: Option<Entry>,
+    input_owner: Option<usize>,
+    scopes: Vec<crate::render_scope::SavedScope>,
+    active_calls: usize,
+    invocations: usize,
+    start_index: usize,
+}
+
+pub(crate) struct OrdinaryVm;
+
+pub(crate) trait VmMode {
+    const ORDINARY: bool;
+    fn streaming(&self) -> Option<&StreamingVmState>;
+    fn streaming_mut(&mut self) -> Option<&mut StreamingVmState>;
+}
+
+impl VmMode for OrdinaryVm {
+    const ORDINARY: bool = true;
+    fn streaming(&self) -> Option<&StreamingVmState> {
+        None
+    }
+    fn streaming_mut(&mut self) -> Option<&mut StreamingVmState> {
+        None
+    }
+}
+
+impl VmMode for StreamingVmState {
+    const ORDINARY: bool = false;
+    fn streaming(&self) -> Option<&StreamingVmState> {
+        Some(self)
+    }
+    fn streaming_mut(&mut self) -> Option<&mut StreamingVmState> {
+        Some(self)
+    }
+}
+
+pub(crate) struct StreamingVmState {
+    // Only boundary yields materialize a descriptor; ordinary record returns
+    // keep a small Result<bool> rather than moving a StreamStatus per item.
+    yielded: Option<StreamStatus>,
     pending: Option<PendingBoundary>,
     active: Option<ActiveBoundary>,
     open_spans: Vec<OpenSpan>,
@@ -111,13 +110,6 @@ pub(crate) struct ContinuationVm {
     updatable_count: usize,
     component_count: usize,
     pending_span_candidate: Option<Box<str>>,
-    /// Repeats currently being walked by this step.
-    ///
-    /// A boundary can never execute inside a repeat, so this is zero at every
-    /// point the VM hands control back to the host. Tracking it as a counter
-    /// makes that an O(1) checked invariant rather than an assumption about a
-    /// protocol the handler did not build.
-    open_repeats: usize,
 }
 
 /// Immutable per-entry projection surface shared by every response.
@@ -221,68 +213,89 @@ struct OpenSpan {
 }
 
 enum Frame {
-    EnterFragment(u32),
+    EnterFragment(Entry),
     Fragment(FragmentFrame),
     ComponentEnd(ComponentEndFrame),
     IfEnd {
         slot: u32,
     },
-    Repeat(RepeatFrame),
+    RenderEnd {
+        slot: u32,
+    },
+    Repeat(bool),
     GeneratedComponentStart {
         tag: Box<str>,
+        ordinary_routes: bool,
     },
     GeneratedComponentEnd {
         tag: Box<str>,
         spanning: bool,
     },
-    RouteEnd {
-        saved_route_base: Box<str>,
-        saved_route_children: Vec<WebUiFragmentRoute>,
+    RouteWork,
+}
+
+enum RouteWork {
+    End {
+        saved_route_base: Option<String>,
+        saved_route_children: std::ops::Range<u32>,
     },
     Outlet(OutletFrame),
 }
 
 struct ComponentEndFrame {
-    saved_local_vars: HashMap<String, Value>,
     component_slot: u32,
     owns_css_tree: bool,
+    saved_scope: bool,
+    previous_input_owner: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
 struct FragmentFrame {
     slot: u32,
-    /// Prepared render slot for the same fragment list, used to read the
-    /// per-fragment metadata prepared when the protocol was loaded.
-    render_slot: usize,
     index: usize,
-    best_route: Option<(String, RouteMatch)>,
+    best_route: bool,
+    // Inherited outlet ordering, independent of streaming execution mode.
+    ordinary_routes: bool,
 }
 
-/// One in-flight `<for>` repeat.
-///
-/// A repeat can never contain a boundary — the build rejects that with
-/// `boundary-in-repeat` and [`ContinuationVm::discover_boundary`] rejects a
-/// hand-built protocol that tries — so this frame is drained inside the step
-/// that created it and is never retained across a host call. Closing the
-/// previous item and opening the next share one frame, so a repeat costs two
-/// pushes per item instead of three without widening the frame: `index` is both
-/// the next item to open and, when non-zero, one past the item still open.
-struct RepeatFrame {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Entry {
     slot: u32,
-    item_name: Box<str>,
-    items: std::vec::IntoIter<Value>,
-    index: usize,
-    saved_value: Option<Value>,
+    ordinary_routes: bool,
+}
+
+impl FragmentFrame {
+    #[inline(always)]
+    fn restart<M: VmMode>(&mut self, ordinary_routes: bool) {
+        self.index = 0;
+        if !M::ORDINARY {
+            self.ordinary_routes = ordinary_routes;
+        }
+    }
 }
 
 struct OutletFrame {
-    routes: Vec<WebUiFragmentRoute>,
-    index: usize,
-    best: Option<(usize, RouteMatch)>,
+    routes: std::ops::Range<u32>,
+    selection: OutletSelection,
+}
+
+enum OutletSelection {
+    None,
+    Pending(SelectedRoute),
+    // The winner has started; its body may still be suspended.
+    Dispatched(u32),
+}
+
+struct SelectedRoute {
+    slot: u32,
+    consumed_segments: usize,
 }
 
 /// What the current [`ContinuationVm::advance`] call is walking toward.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum StepGoal {
+    /// Complete an ordinary render without streaming markers or limits.
+    Ordinary,
     /// Write ordinary parent/shell bytes until the next occurrence or terminal.
     NextBoundary,
     /// Write the pending occurrence through its checkpoint, then stop.
@@ -295,36 +308,97 @@ struct StepRuntime<'call, 'data> {
     goal: StepGoal,
     handler: &'call WebUIHandler,
     protocol: &'data crate::Protocol,
+    ordinary_routes: bool,
 }
 
 impl ContinuationVm {
     pub(crate) fn new(entry_id: &str, protocol: &crate::Protocol) -> Result<Self> {
-        protocol_fragment(protocol.protocol(), entry_id)?;
         let entry_slot = protocol
             .fragment_slot(entry_id)
             .ok_or_else(|| HandlerError::MissingFragment(entry_id.to_string()))?;
-        let mut frames = Vec::with_capacity(INITIAL_FRAME_CAPACITY);
-        frames.push(Frame::EnterFragment(entry_slot));
-        Ok(Self {
-            frames,
-            pending: None,
-            active: None,
-            open_spans: Vec::new(),
-            capture_pool: Vec::new(),
-            next_boundary_id: 0,
-            next_span_id: 0,
-            keyed_instances: HashMap::new(),
-            keyed_instance_count: 0,
-            committed_modes: Vec::new(),
-            updatable_count: 0,
-            component_count: protocol.component_index().len(),
-            pending_span_candidate: None,
-            open_repeats: 0,
-        })
+        Ok(Self::from_slot(
+            entry_slot,
+            protocol.component_index().len(),
+        ))
+    }
+
+    fn from_slot(entry_slot: u32, component_count: usize) -> Self {
+        Self::with_mode(
+            entry_slot,
+            StreamingVmState {
+                yielded: None,
+                pending: None,
+                active: None,
+                open_spans: Vec::new(),
+                capture_pool: Vec::new(),
+                next_boundary_id: 0,
+                next_span_id: 0,
+                keyed_instances: HashMap::new(),
+                keyed_instance_count: 0,
+                committed_modes: Vec::new(),
+                updatable_count: 0,
+                component_count,
+                pending_span_candidate: None,
+            },
+        )
+    }
+}
+
+impl ContinuationVm<OrdinaryVm> {
+    pub(crate) fn ordinary(entry_slot: u32, start: usize) -> Self {
+        let mut vm = Self::with_mode(entry_slot, OrdinaryVm);
+        vm.start_index = start;
+        vm
+    }
+}
+
+impl<M: VmMode> ContinuationVm<M> {
+    fn with_mode(entry_slot: u32, mode: M) -> Self {
+        Self {
+            mode,
+            frames: Vec::new(),
+            route_work: Vec::new(),
+            route_matches: Vec::new(),
+            next_entry: Some(Entry {
+                slot: entry_slot,
+                ordinary_routes: M::ORDINARY,
+            }),
+            input_owner: None,
+            scopes: Vec::new(),
+            active_calls: 0,
+            invocations: 0,
+            start_index: 0,
+        }
+    }
+
+    fn streaming(&self) -> Result<&StreamingVmState> {
+        self.mode.streaming().ok_or_else(missing_streaming_vm_error)
+    }
+
+    fn streaming_mut(&mut self) -> Result<&mut StreamingVmState> {
+        self.mode
+            .streaming_mut()
+            .ok_or_else(missing_streaming_vm_error)
+    }
+
+    pub(crate) fn release(&mut self) {
+        self.frames.clear();
+        self.route_work.clear();
+        self.route_matches.clear();
+        self.next_entry = None;
+        self.scopes.clear();
+        self.input_owner = None;
+        if let Some(streaming) = self.mode.streaming_mut() {
+            streaming.yielded = None;
+            streaming.open_spans.clear();
+            streaming.capture_pool.clear();
+            streaming.pending = None;
+            streaming.active = None;
+        }
     }
 
     pub(crate) fn validate_resume(&self, instance_id: BoundaryInstanceId) -> Result<()> {
-        let Some(pending) = self.pending.as_ref() else {
+        let Some(pending) = self.streaming()?.pending.as_ref() else {
             return Err(boundary_order_error(
                 "resume",
                 "there is no pending boundary occurrence",
@@ -346,7 +420,9 @@ impl ContinuationVm {
     /// and the host can commit the same occurrence as
     /// [`BoundaryMode::Final`] instead.
     pub(crate) fn validate_resume_mode(&self, mode: BoundaryMode) -> Result<()> {
-        if mode == BoundaryMode::Updatable && self.updatable_count >= MAX_UPDATABLE_OCCURRENCES {
+        if mode == BoundaryMode::Updatable
+            && self.streaming()?.updatable_count >= MAX_UPDATABLE_OCCURRENCES
+        {
             return Err(updatable_limit_error(MAX_UPDATABLE_OCCURRENCES));
         }
         Ok(())
@@ -354,7 +430,7 @@ impl ContinuationVm {
 
     pub(crate) fn validate_update(&self, instance_id: BoundaryInstanceId) -> Result<usize> {
         let index = instance_id.index()?;
-        let Some(mode) = self.committed_modes.get(index) else {
+        let Some(mode) = self.streaming()?.committed_modes.get(index) else {
             return Err(boundary_order_error(
                 "update",
                 "the target boundary occurrence has not committed",
@@ -373,7 +449,7 @@ impl ContinuationVm {
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
         self.validate_resume(instance_id)?;
-        let Some(pending) = self.pending.take() else {
+        let Some(pending) = self.streaming_mut()?.pending.take() else {
             return Err(boundary_order_error(
                 "resume",
                 "there is no pending boundary occurrence",
@@ -386,7 +462,7 @@ impl ContinuationVm {
         streaming.checkpoint_walk_roots.clear();
         streaming.checkpoint_seen.fill(0);
         streaming.checkpoint_needs_expansion = false;
-        self.active = Some(ActiveBoundary {
+        self.streaming_mut()?.active = Some(ActiveBoundary {
             instance_id: pending.instance_id,
             declaration_id: pending.declaration_id,
             mode,
@@ -395,6 +471,9 @@ impl ContinuationVm {
     }
 
     /// Walk the continuation until `goal` is met.
+    ///
+    /// Both entry points use this cursor; the constant mode removes streaming
+    /// validation and signal dispatch from ordinary record instructions.
     ///
     /// [`StepGoal::CommitBoundary`] stops on the active occurrence's checkpoint
     /// so its bytes are one independently writable step;
@@ -407,25 +486,35 @@ impl ContinuationVm {
         protocol: &'data crate::Protocol,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<StreamStatus> {
-        let mut records = RecordCache::new();
         let runtime = StepRuntime {
             goal,
             handler,
             protocol,
+            ordinary_routes: M::ORDINARY,
         };
-        while let Some(frame) = self.frames.pop() {
+        let mut next = self.next_frame();
+        while let Some(frame) = next {
             match frame {
-                Frame::EnterFragment(slot) => {
-                    let list = records.record(protocol, slot)?;
-                    let frame = open_fragment(slot, list, context);
-                    if let Some(status) = self.run_fragment(frame, list, runtime, context)? {
-                        return Ok(status);
+                Frame::EnterFragment(entry) => {
+                    let list = render_fragment(context, entry.slot)?;
+                    let mut frame = open_fragment(entry, &list, context, &mut self.route_matches)?;
+                    frame.index = std::mem::take(&mut self.start_index);
+                    if self.run_fragment(frame, list, runtime, context)? {
+                        return self
+                            .streaming_mut()?
+                            .yielded
+                            .take()
+                            .ok_or_else(missing_yield_error);
                     }
                 }
                 Frame::Fragment(frame) => {
-                    let list = records.record(protocol, frame.slot)?;
-                    if let Some(status) = self.run_fragment(frame, list, runtime, context)? {
-                        return Ok(status);
+                    let list = render_fragment(context, frame.slot)?;
+                    if self.run_fragment(frame, list, runtime, context)? {
+                        return self
+                            .streaming_mut()?
+                            .yielded
+                            .take()
+                            .ok_or_else(missing_yield_error);
                     }
                 }
                 Frame::ComponentEnd(frame) => self.end_component(frame, protocol, context)?,
@@ -438,9 +527,35 @@ impl ContinuationVm {
                         plugin.on_if_end(fragment_id, context.writer)?;
                     }
                 }
-                Frame::Repeat(frame) => self.step_repeat(frame, protocol, context)?,
-                Frame::GeneratedComponentStart { tag } => {
-                    self.start_generated_component(tag, handler, protocol, context)?;
+                Frame::RenderEnd { slot } => {
+                    self.scopes
+                        .pop()
+                        .ok_or_else(missing_scope_error)?
+                        .exit(context)?;
+                    self.active_calls -= 1;
+                    if let Some(plugin) = context.plugin.as_mut() {
+                        plugin.pop_scope();
+                        let id = protocol
+                            .fragment_id(slot)
+                            .ok_or_else(|| unknown_fragment_slot_error(slot))?;
+                        plugin.on_render_end(id, context.writer)?;
+                    }
+                }
+                Frame::Repeat(ordinary_routes) => {
+                    self.step_repeat(ordinary_routes, protocol, context)?;
+                }
+                Frame::GeneratedComponentStart {
+                    tag,
+                    ordinary_routes,
+                } => {
+                    self.start_generated_component(
+                        tag,
+                        StepRuntime {
+                            ordinary_routes,
+                            ..runtime
+                        },
+                        context,
+                    )?;
                 }
                 Frame::GeneratedComponentEnd { tag, spanning } => {
                     context.writer.write("</")?;
@@ -450,35 +565,48 @@ impl ContinuationVm {
                         self.finish_span(&tag, handler, context)?;
                     }
                 }
-                Frame::RouteEnd {
-                    saved_route_base,
-                    saved_route_children,
-                } => {
-                    context.writer.write("</webui-route>")?;
-                    context.route_base = Cow::Owned(saved_route_base.into_string());
-                    context.route_children = Cow::Owned(saved_route_children);
-                }
-                Frame::Outlet(frame) => self.step_outlet(frame, handler, protocol, context)?,
+                Frame::RouteWork => match self.route_work.pop().ok_or_else(missing_scope_error)? {
+                    RouteWork::End {
+                        saved_route_base,
+                        saved_route_children,
+                    } => {
+                        context.writer.write("</webui-route>")?;
+                        context.route_base =
+                            saved_route_base.map_or(Cow::Borrowed("/"), Cow::Owned);
+                        context.route_children = saved_route_children;
+                    }
+                    RouteWork::Outlet(frame) => {
+                        self.step_outlet(frame, runtime, context)?;
+                    }
+                },
             }
+            next = self.next_frame();
         }
 
-        if self.pending.is_some() || self.active.is_some() {
-            return Err(HandlerError::Invariant(
-                "pending boundary lost its continuation".to_string(),
-            ));
-        }
-        if self.open_repeats != 0 {
+        if !context.scopes.repeats.is_empty() {
             return Err(HandlerError::Invariant(
                 "traversal completed while a repeat was still open".to_string(),
             ));
         }
-        if !self.open_spans.is_empty() {
+        if M::ORDINARY {
+            return Ok(StreamStatus {
+                boundary: None,
+                done: true,
+            });
+        }
+        let streaming = self.streaming()?;
+        if streaming.pending.is_some() || streaming.active.is_some() {
+            return Err(HandlerError::Invariant(
+                "pending boundary lost its continuation".to_string(),
+            ));
+        }
+        if !streaming.open_spans.is_empty() {
             return Err(malformed_span_signal_error(
                 "component span",
                 "traversal completed before every component span closed",
             ));
         }
-        if self.pending_span_candidate.is_some() {
+        if streaming.pending_span_candidate.is_some() {
             return Err(malformed_span_signal_error(
                 "component span",
                 "traversal completed with an unfinished component host",
@@ -500,7 +628,10 @@ impl ContinuationVm {
         }
         let sequence = streaming_state(context)?.next_record_sequence;
         handler.emit_streaming_terminal(sequence, context)?;
-        increment_streaming_record_sequence("terminal", streaming_state(context)?)?;
+        increment_streaming_record_sequence(
+            "terminal",
+            &mut streaming_state(context)?.next_record_sequence,
+        )?;
         context.writer.end()?;
         Ok(StreamStatus {
             boundary: None,
@@ -508,196 +639,260 @@ impl ContinuationVm {
         })
     }
 
-    /// Walk one fragment record until it descends, suspends, commits, or ends.
-    ///
-    /// The record is resolved by the caller — once per step for the whole
-    /// descend/unwind cycle — and inert fragments never touch the frame stack,
-    /// so a boundary body costs no record lookups at all. Only a construct that
-    /// owns a child record (component, condition, loop, route, outlet), a
-    /// discovered boundary, or the checkpoint that ends a committed boundary
-    /// parks the frame and returns to the caller.
+    // Walk borrowed records without returning through the frame dispatcher
+    // for structural descents or consecutive repeat items. Scope/route
+    // unwinding and streaming yields still use the same continuation frames.
     fn run_fragment<'data>(
         &mut self,
         mut frame: FragmentFrame,
-        list: &'data webui_protocol::FragmentList,
-        runtime: StepRuntime<'_, 'data>,
+        mut list: crate::RenderFragmentView<'data>,
+        mut runtime: StepRuntime<'_, 'data>,
         context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<Option<StreamStatus>> {
+    ) -> Result<bool> {
         let StepRuntime {
             goal,
             handler,
             protocol,
+            ..
         } = runtime;
         loop {
-            let index = frame.index;
-            let Some(fragment) = list.fragments.get(index) else {
-                super::ensure_no_pending_streaming_root(
-                    context,
-                    "the end of the containing fragment",
-                )?;
-                return Ok(None);
-            };
-            super::validate_pending_streaming_root(fragment, context)?;
-            super::validate_streaming_root_opening(&list.fragments[..index], fragment)?;
-            frame.index = index + 1;
+            runtime.ordinary_routes = M::ORDINARY || frame.ordinary_routes;
+            loop {
+                let index = frame.index;
+                let Some(fragment) = list.fragments.get(index) else {
+                    if frame.best_route {
+                        self.route_matches.pop().ok_or_else(missing_scope_error)?;
+                    }
+                    if !M::ORDINARY {
+                        super::ensure_no_pending_streaming_root(
+                            context,
+                            "the end of the containing fragment",
+                        )?;
+                    }
+                    break;
+                };
+                if !M::ORDINARY {
+                    super::validate_pending_streaming_root(fragment, context)?;
+                    super::validate_streaming_root_opening(&list.fragments[..index], fragment)?;
+                }
+                frame.index = index + 1;
 
-            match fragment.fragment.as_ref() {
-                Some(Fragment::Raw(raw)) => context.writer.write(&raw.value)?,
-                Some(Fragment::Signal(signal)) => {
-                    self.process_signal(signal, handler, context)?;
-                }
-                Some(Fragment::Attribute(attribute)) => {
-                    let prepared = context.render_fragments.list(frame.render_slot);
-                    handler.process_attribute(
-                        attribute,
-                        prepared.and_then(|prepared| prepared.target(index)),
-                        prepared.and_then(|prepared| prepared.component_attr_name(index)),
-                        context,
-                    )?;
-                }
-                Some(Fragment::Plugin(plugin)) => {
-                    if let Some(active) = context.plugin.as_mut() {
-                        active.on_element_data(&plugin.data, context.writer)?;
-                    }
-                }
-                Some(Fragment::Boundary(boundary)) => {
-                    if boundary.phase() == BoundaryPhase::End {
-                        self.finish_boundary(boundary, handler, context)?;
-                        if goal == StepGoal::CommitBoundary {
-                            // The checkpoint just flushed, so the committed
-                            // occurrence ends this step: the parent bytes that
-                            // follow belong to the caller's next `advance`.
-                            self.push(Frame::Fragment(frame))?;
-                            return Ok(Some(StreamStatus {
-                                boundary: None,
-                                done: false,
-                            }));
+                match fragment.fragment.as_ref() {
+                    Some(Fragment::Raw(raw)) => context.writer.write(&raw.value)?,
+                    Some(Fragment::Signal(signal)) => {
+                        if M::ORDINARY {
+                            handler.process_signal(signal, context)?;
+                        } else {
+                            self.process_signal(signal, handler, context)?;
                         }
-                        continue;
                     }
-                    let descriptor =
-                        self.discover_boundary(boundary, handler, protocol, context)?;
-                    self.push(Frame::Fragment(frame))?;
-                    return Ok(Some(StreamStatus {
-                        boundary: Some(descriptor),
-                        done: false,
-                    }));
-                }
-                Some(Fragment::Component(component)) => {
-                    let target = context
-                        .render_fragments
-                        .list(frame.render_slot)
-                        .and_then(|prepared| prepared.target(index));
-                    if target
-                        .and_then(|target| context.render_fragments.list(target))
-                        .is_some_and(|list| !list.contains_boundary)
-                    {
-                        self.render_boundary_free(context, |context| {
-                            handler.process_component(
-                                &component.fragment_id,
-                                target,
-                                ComponentHostOrigin::ParserProduced,
-                                context,
-                            )
-                        })?;
-                        continue;
+                    Some(Fragment::Attribute(attribute)) => {
+                        handler.process_attribute(
+                            attribute,
+                            list.target(index),
+                            list.attribute_name(index, attribute.attr_skip),
+                            context,
+                        )?;
                     }
-                    self.push(Frame::Fragment(frame))?;
-                    self.begin_component(
-                        component,
-                        ComponentHostOrigin::ParserProduced,
-                        (handler, protocol),
-                        context,
-                    )?;
-                    return Ok(None);
-                }
-                Some(Fragment::IfCond(if_cond)) => {
-                    let target = context
-                        .render_fragments
-                        .list(frame.render_slot)
-                        .and_then(|prepared| prepared.target(index));
-                    if target
-                        .and_then(|target| context.render_fragments.list(target))
-                        .is_some_and(|list| !list.contains_boundary)
-                    {
-                        self.render_boundary_free(context, |context| {
-                            handler.process_if(if_cond, target, context)
-                        })?;
-                        continue;
+                    Some(Fragment::Plugin(plugin)) => {
+                        if let Some(active) = context.plugin.as_mut() {
+                            active.on_element_data(&plugin.data, context.writer)?;
+                        }
                     }
-                    self.push(Frame::Fragment(frame))?;
-                    self.begin_if(if_cond, handler, protocol, context)?;
-                    return Ok(None);
-                }
-                Some(Fragment::ForLoop(for_loop)) => {
-                    let target = context
-                        .render_fragments
-                        .list(frame.render_slot)
-                        .and_then(|prepared| prepared.target(index));
-                    if target
-                        .and_then(|target| context.render_fragments.list(target))
-                        .is_some_and(|list| !list.contains_boundary)
-                    {
-                        self.render_boundary_free(context, |context| {
-                            handler.process_for_loop(for_loop, target, context)
-                        })?;
-                        continue;
+                    Some(Fragment::Boundary(boundary)) => {
+                        if M::ORDINARY {
+                            continue;
+                        }
+                        if boundary.phase() == BoundaryPhase::End {
+                            self.finish_boundary(boundary, handler, context)?;
+                            if goal == StepGoal::CommitBoundary {
+                                // The checkpoint just flushed, so the committed
+                                // occurrence ends this step: the parent bytes that
+                                // follow belong to the caller's next `advance`.
+                                self.push(Frame::Fragment(frame))?;
+                                self.streaming_mut()?.yielded = Some(StreamStatus {
+                                    boundary: None,
+                                    done: false,
+                                });
+                                return Ok(true);
+                            }
+                            continue;
+                        }
+                        let descriptor =
+                            self.discover_boundary(boundary, handler, protocol, context)?;
+                        self.push(Frame::Fragment(frame))?;
+                        self.streaming_mut()?.yielded = Some(StreamStatus {
+                            boundary: Some(descriptor),
+                            done: false,
+                        });
+                        return Ok(true);
                     }
-                    self.push(Frame::Fragment(frame))?;
-                    self.begin_repeat(for_loop, handler, protocol, context)?;
-                    return Ok(None);
+                    Some(Fragment::Component(component)) => {
+                        let target = list.target(index);
+                        self.push(Frame::Fragment(frame))?;
+                        self.begin_component(
+                            (component, target),
+                            ComponentHostOrigin::ParserProduced,
+                            runtime,
+                            context,
+                        )?;
+                        break;
+                    }
+                    Some(Fragment::IfCond(if_cond)) => {
+                        let target = list.target(index);
+                        if self.begin_if((if_cond, target), frame, runtime, context)? {
+                            break;
+                        }
+                    }
+                    Some(Fragment::ForLoop(for_loop)) => {
+                        let target = list.target(index);
+                        self.push(Frame::Fragment(frame))?;
+                        self.begin_repeat((for_loop, target), runtime, context)?;
+                        break;
+                    }
+                    Some(Fragment::Render(render)) => {
+                        let target = list.target(index);
+                        self.push(Frame::Fragment(frame))?;
+                        self.begin_render(render, target, runtime, context)?;
+                        break;
+                    }
+                    Some(Fragment::Route(route)) => {
+                        self.begin_route((route, list.target(index)), frame, runtime, context)?;
+                        break;
+                    }
+                    Some(Fragment::Outlet(_)) => {
+                        self.push(Frame::Fragment(frame))?;
+                        self.begin_outlet(runtime, context)?;
+                        break;
+                    }
+                    None => {}
                 }
-                Some(Fragment::Route(route)) => {
-                    let route_match = frame
-                        .best_route
-                        .as_ref()
-                        .filter(|(key, _)| *key == route.fragment_id)
-                        .map(|(_, route_match)| route_match.clone());
-                    self.push(Frame::Fragment(frame))?;
-                    self.render_route(route, route_match, protocol, context)?;
-                    return Ok(None);
+            }
+            // Keep record entry and consecutive repeat items in this cursor.
+            // The outer dispatcher is needed only for scope/route unwinding.
+            if self.next_entry.is_none() {
+                if let Some(Frame::Repeat(ordinary_routes)) = self.frames.last() {
+                    self.step_repeat(*ordinary_routes, protocol, context)?;
                 }
-                Some(Fragment::Outlet(_)) => {
-                    self.push(Frame::Fragment(frame))?;
-                    self.begin_outlet(context)?;
-                    return Ok(None);
+            }
+            let Some(entry) = self.next_entry.take() else {
+                if let Some(parent) = self.resume_parent_fragment() {
+                    if parent.slot != frame.slot {
+                        list = render_fragment(context, parent.slot)?;
+                    }
+                    frame = parent;
+                    continue;
                 }
-                None => {}
+                return Ok(false);
+            };
+            if entry.slot == frame.slot && !list.has_routes() {
+                frame.restart::<M>(entry.ordinary_routes);
+            } else {
+                list = render_fragment(context, entry.slot)?;
+                frame = open_fragment(entry, &list, context, &mut self.route_matches)?;
             }
         }
     }
 
-    /// Run a proven boundary-free subgraph through the normal borrowed renderer.
-    ///
-    /// Outside an active authored boundary, rendered components belong to the
-    /// innermost generated span. Swap that span's capture into the context for
-    /// the duration of the atomic walk so its inventory and projection remain
-    /// local to the span completion record.
-    fn render_boundary_free<'data, 'state, 'output, T>(
+    fn begin_render<'data, 'state>(
         &mut self,
-        context: &mut WebUIProcessContext<'data, 'state, 'output>,
-        operation: impl FnOnce(&mut WebUIProcessContext<'data, 'state, 'output>) -> Result<T>,
-    ) -> Result<T> {
-        let captures_span = context
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| streaming.active_boundary.is_none())
-            && !self.open_spans.is_empty();
-        if !captures_span {
-            return operation(context);
+        render: &'data webui_protocol::WebUiFragmentRender,
+        target: Option<usize>,
+        runtime: StepRuntime<'_, '_>,
+        context: &mut WebUIProcessContext<'data, 'state, '_>,
+    ) -> Result<()> {
+        let protocol = runtime.protocol;
+        if self.active_calls == crate::MAX_FRAGMENT_CALL_DEPTH {
+            return Err(fragment_depth_error());
         }
-        let Some(span) = self.open_spans.last_mut() else {
-            return operation(context);
+        if self.invocations == crate::MAX_FRAGMENT_INVOCATIONS {
+            return Err(fragment_budget_error());
+        }
+        let slot = match target {
+            Some(slot) => u32::try_from(slot).map_err(|_| fragment_depth_error())?,
+            None => fragment_slot(protocol, &render.fragment_id)?,
         };
-        streaming_state(context)?.swap_capture(&mut span.capture);
-        let result = operation(context);
-        let restored = streaming_state(context).map(|streaming| {
-            streaming.swap_capture(&mut span.capture);
-        });
-        match (result, restored) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        let (borrowed, captured) = if render.scope.is_empty() && render.alias.is_empty() {
+            (None, None)
+        } else {
+            if render.scope.is_empty() || render.alias.is_empty() {
+                return Err(fragment_scope_error(render));
+            }
+            let borrowed = (!context.state.is_shared())
+                .then(|| crate::render_scope::borrowed(&render.scope, value_sources!(context)))
+                .flatten();
+            let captured = if borrowed.is_none() {
+                crate::render_scope::capture(&render.scope, context).or_else(|| {
+                    match crate::render_scope::resolve(&render.scope, value_sources!(context)) {
+                        Some(Cow::Owned(value)) => {
+                            Some(crate::state_view::SharedValue::with_provenance(
+                                value,
+                                context.render_fragments.provenance_policy(),
+                            ))
+                        }
+                        _ => None,
+                    }
+                })
+            } else {
+                None
+            };
+            if borrowed.is_none() && captured.is_none() {
+                return Err(fragment_scope_error(render));
+            }
+            (borrowed, captured)
+        };
+        let source_id = if context.plugin.is_some() {
+            self.record_fragment_input(captured.as_ref(), context)?
+        } else {
+            None
+        };
+        crate::render_buffer::push(
+            &mut self.scopes,
+            crate::render_scope::SavedScope::enter(context, false),
+        );
+        context.scopes.alias = borrowed.map(|value| (render.alias.as_str(), value));
+        context.scopes.shared_alias = captured.map(|value| (render.alias.clone().into(), value));
+        self.active_calls += 1;
+        self.invocations += 1;
+        if let Some(plugin) = context.plugin.as_mut() {
+            plugin.on_render_start(&render.fragment_id, source_id, context.writer)?;
+            plugin.push_scope();
         }
+        self.push(Frame::RenderEnd { slot })?;
+        self.enter(slot, runtime.ordinary_routes)
+    }
+
+    /// Register one host-driven call's captured input and retain the identifier its
+    /// owning span's host needs while that host is still dormant.
+    ///
+    /// Definitions are response-wide and deduplicated, so a repeated capture of
+    /// the same value costs one hash lookup and adds no wire bytes.
+    fn record_fragment_input(
+        &mut self,
+        captured: Option<&crate::state_view::SharedValue>,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<Option<u32>> {
+        let Some(captured) = captured else {
+            return Ok(None);
+        };
+        // One-shot rendering may own synthetic inputs without needing to
+        // transport their provenance across a host-driven state replacement.
+        if !context.state.is_shared() {
+            return Ok(None);
+        }
+        let Some(streaming) = context.streaming.as_mut() else {
+            return Ok(None);
+        };
+        let source_id = streaming.fragment_sources.capture(captured)?;
+        if let Some(owner) = self.input_owner {
+            let span = self
+                .streaming_mut()?
+                .open_spans
+                .get_mut(owner)
+                .ok_or_else(missing_scope_error)?;
+            span.capture.retain_source(source_id);
+        }
+        Ok(Some(source_id))
     }
 
     fn process_signal<'data>(
@@ -708,21 +903,21 @@ impl ContinuationVm {
     ) -> Result<()> {
         if let Some(value) = structural_signal_value(signal) {
             if let Some(tag) = value.strip_prefix(SPAN_START_PREFIX) {
-                if self.pending_span_candidate.is_some() {
+                if self.streaming()?.pending_span_candidate.is_some() {
                     return Err(malformed_span_signal_error(
                         tag,
                         "a component span start arrived before the previous host opening completed",
                     ));
                 }
                 context.writer.stream_begin_component()?;
-                self.pending_span_candidate = Some(tag.into());
+                self.streaming_mut()?.pending_span_candidate = Some(tag.into());
                 return Ok(());
             }
             if let Some(tag) = value.strip_prefix(SPAN_END_PREFIX) {
                 return self.finish_span(tag, handler, context);
             }
             if let Some(tag) = value.strip_prefix(super::root::STREAMING_ROOT_PREFIX) {
-                if let Some(candidate) = self.pending_span_candidate.as_ref() {
+                if let Some(candidate) = self.streaming()?.pending_span_candidate.as_ref() {
                     if candidate.as_ref() != tag {
                         return Err(malformed_span_signal_error(
                             tag,
@@ -739,13 +934,20 @@ impl ContinuationVm {
 
     fn begin_component<'data>(
         &mut self,
-        component: &WebUIFragmentComponent,
+        component: (&WebUIFragmentComponent, Option<usize>),
         origin: ComponentHostOrigin,
-        runtime: (&WebUIHandler, &'data crate::Protocol),
+        runtime: StepRuntime<'_, 'data>,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
-        let (handler, protocol) = runtime;
-        if let Some(candidate) = self.pending_span_candidate.take() {
+        let StepRuntime {
+            handler, protocol, ..
+        } = runtime;
+        let parser_produced = matches!(origin, ComponentHostOrigin::ParserProduced);
+        let (component, target) = component;
+        let mut input_owner = None;
+        if M::ORDINARY {
+            // Ordinary hosts share all structural transitions but no streaming inventory.
+        } else if let Some(candidate) = self.streaming_mut()?.pending_span_candidate.take() {
             if candidate.as_ref() != component.fragment_id {
                 return Err(malformed_span_signal_error(
                     &component.fragment_id,
@@ -761,6 +963,7 @@ impl ContinuationVm {
             let active_boundary = streaming_state(context)?.active_boundary.is_some();
             let enclosing_span = streaming_state(context)?.current_span;
             let span_id = self.open_span(&component.fragment_id, context, false)?;
+            input_owner = Some(self.streaming()?.open_spans.len() - 1);
             context.writer.stream_commit_component(
                 Some(span_id.raw()),
                 if active_boundary {
@@ -776,7 +979,7 @@ impl ContinuationVm {
             consume_streaming_component_root(&component.fragment_id, origin, context)?;
             let pending_span = streaming_state(context)?.pending_span_host.take();
             if let Some(span_id) = pending_span {
-                let Some(open) = self.open_spans.last() else {
+                let Some(open) = self.streaming()?.open_spans.last() else {
                     return Err(malformed_span_signal_error(
                         &component.fragment_id,
                         "component host references a span that is not open",
@@ -789,6 +992,7 @@ impl ContinuationVm {
                     ));
                 }
                 streaming_state(context)?.current_span = Some(span_id);
+                input_owner = Some(self.streaming()?.open_spans.len() - 1);
             }
             self.record_component(&component.fragment_id, context)?;
         }
@@ -799,32 +1003,95 @@ impl ContinuationVm {
                 .rendered_components
                 .insert(component.fragment_id.clone());
         }
-        let slot = fragment_slot(protocol, &component.fragment_id)?;
-        let owns_css_tree =
-            WebUIHandler::component_owns_css_tree(&component.fragment_id, protocol.protocol());
+        let slot = prepared_slot(target, protocol, &component.fragment_id)?;
+        let list = context
+            .render_fragments
+            .list(slot as usize)
+            .ok_or_else(missing_scope_error)?;
+        let ordinary_routes = M::ORDINARY
+            || runtime.ordinary_routes
+            || (parser_produced && !list.list.contains_boundary);
+        let owns_css_tree = list.owns_css_tree();
         if owns_css_tree {
-            WebUIHandler::push_shadow_style_root(&component.fragment_id, context)?;
+            if let Some(index) = list.shadow_style_index() {
+                WebUIHandler::push_indexed_shadow_style_root(
+                    index,
+                    &mut context.shadow_style_roots,
+                );
+            } else {
+                WebUIHandler::push_shadow_style_root(&component.fragment_id, context)?;
+            }
         }
-        let saved_local_vars = std::mem::take(&mut context.local_vars);
-        let mut saved_component_attrs = std::mem::replace(
-            &mut context.component_attrs,
-            crate::take_scope_map(&mut context.scope_pool),
-        );
-        context
-            .component_borrowed_attrs
-            .clone_into_owned(&mut saved_component_attrs);
-        context.component_borrowed_attrs.clear();
-        context.local_vars = saved_component_attrs;
-        context.collecting_component_attrs = false;
+        // Snapshot before the scope transition moves the props out of the
+        // component attribute accumulators.
+        if let Some(owner) = input_owner {
+            self.retain_owner_props(owner, context)?;
+        }
+        let scope = if M::ORDINARY {
+            crate::render_scope::SavedScope::enter_component(context)
+        } else {
+            Some(crate::render_scope::SavedScope::enter(context, true))
+        };
+        let saved_scope = scope.is_some();
+        if let Some(scope) = scope {
+            crate::render_buffer::push(&mut self.scopes, scope);
+        }
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.push_scope();
         }
+
+        let previous_input_owner = std::mem::replace(&mut self.input_owner, input_owner);
         self.push(Frame::ComponentEnd(ComponentEndFrame {
-            saved_local_vars,
             component_slot: slot,
             owns_css_tree,
+            saved_scope,
+            previous_input_owner,
         }))?;
-        self.push(Frame::EnterFragment(slot))?;
+        self.enter(slot, ordinary_routes)?;
+        Ok(())
+    }
+
+    /// Retain one host's own props on the span that will announce its
+    /// completion.
+    ///
+    /// A span record commits after the host's boundary already resumed with the
+    /// caller's next state, so priming the host from that state would hand it
+    /// values it never rendered with. Owned props move into the shared
+    /// attribute map rather than being cloned: the component resolves them from
+    /// exactly the handle the span retains, so the snapshot costs one `Arc`
+    /// clone and one name per prop.
+    fn retain_owner_props(
+        &mut self,
+        owner: usize,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<()> {
+        let span = self
+            .streaming_mut()?
+            .open_spans
+            .get_mut(owner)
+            .ok_or_else(missing_scope_error)?;
+        span.capture.owner_props.clear();
+        if context.component_attrs.is_empty() && context.scopes.attrs.is_empty() {
+            return Ok(());
+        }
+        let provenance = context.render_fragments.provenance_policy();
+        for (name, value) in context.component_attrs.drain() {
+            context.scopes.attrs.insert(
+                name,
+                crate::state_view::SharedValue::with_provenance(value, provenance),
+            );
+        }
+        span.capture.owner_props.reserve(context.scopes.attrs.len());
+        for (name, value) in context.scopes.attrs.iter() {
+            span.capture
+                .owner_props
+                .push((name.as_str().into(), value.clone()));
+        }
+        // Sorted so a record's props serialize in the same order on every
+        // response regardless of hash iteration order.
+        span.capture
+            .owner_props
+            .sort_unstable_by(|left, right| left.0.cmp(&right.0));
         Ok(())
     }
 
@@ -834,14 +1101,18 @@ impl ContinuationVm {
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
+        self.input_owner = frame.previous_input_owner;
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.pop_scope();
         }
-        let used_locals = std::mem::replace(&mut context.local_vars, frame.saved_local_vars);
-        crate::recycle_scope_map(&mut context.scope_pool, used_locals);
-        context.component_attrs.clear();
-        context.component_borrowed_attrs.clear();
-        context.collecting_component_attrs = false;
+        if frame.saved_scope {
+            self.scopes
+                .pop()
+                .ok_or_else(missing_scope_error)?
+                .exit(context)?;
+        } else {
+            crate::render_scope::SavedScope::exit_empty_component(context);
+        }
         if frame.owns_css_tree {
             let component = protocol
                 .fragment_id(frame.component_slot)
@@ -853,30 +1124,34 @@ impl ContinuationVm {
 
     fn begin_if(
         &mut self,
-        if_cond: &WebUIFragmentIf,
-        handler: &WebUIHandler,
-        protocol: &crate::Protocol,
+        if_cond: (&WebUIFragmentIf, Option<usize>),
+        parent: FragmentFrame,
+        runtime: StepRuntime<'_, '_>,
         context: &mut WebUIProcessContext<'_, '_, '_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let (if_cond, target) = if_cond;
         let condition = if_cond
             .condition
             .as_ref()
             .ok_or_else(missing_if_condition_error)?;
-        let condition_met = handler.evaluate_condition(condition, context)?;
+        let condition_met = runtime.handler.evaluate_condition(condition, context)?;
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_if_start(&if_cond.fragment_id, context.writer)?;
         }
         if condition_met {
+            self.push(Frame::Fragment(parent))?;
+            let slot = prepared_slot(target, runtime.protocol, &if_cond.fragment_id)?;
+            let ordinary_routes =
+                self.child_outlet_order(runtime.ordinary_routes, slot, context)?;
             if let Some(plugin) = context.plugin.as_mut() {
                 plugin.push_scope();
+                self.push(Frame::IfEnd { slot })?;
             }
-            let slot = fragment_slot(protocol, &if_cond.fragment_id)?;
-            self.push(Frame::IfEnd { slot })?;
-            self.push(Frame::EnterFragment(slot))?;
+            self.enter(slot, ordinary_routes)?;
         } else if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_if_end(&if_cond.fragment_id, context.writer)?;
         }
-        Ok(())
+        Ok(condition_met)
     }
 
     /// Open a `<for>` repeat.
@@ -884,79 +1159,154 @@ impl ContinuationVm {
     /// The whole repeat is atomic: it can carry no boundary, so every frame it
     /// pushes is drained before this step returns to the host and the repeat
     /// never becomes resumable continuation state.
-    fn begin_repeat(
+    fn begin_repeat<'data, 'state>(
         &mut self,
-        for_loop: &WebUIFragmentFor,
-        handler: &WebUIHandler,
-        protocol: &crate::Protocol,
-        context: &mut WebUIProcessContext<'_, '_, '_>,
+        for_loop: (&'data WebUIFragmentFor, Option<usize>),
+        runtime: StepRuntime<'_, '_>,
+        context: &mut WebUIProcessContext<'data, 'state, '_>,
     ) -> Result<()> {
-        let items = match handler.resolve_value_owned(&for_loop.collection, context) {
-            Some(Value::Array(items)) => items,
-            Some(_) => return Err(non_array_collection_error(&for_loop.collection)),
-            None => Vec::new(),
+        let StepRuntime {
+            handler, protocol, ..
+        } = runtime;
+        let (for_loop, target) = for_loop;
+        let borrowed = (!context.state.is_shared())
+            .then(|| crate::render_scope::borrowed(&for_loop.collection, value_sources!(context)))
+            .flatten();
+        let items = if let Some(value) = borrowed {
+            let items = value
+                .as_array()
+                .ok_or_else(|| non_array_collection_error(&for_loop.collection))?;
+            RepeatSource::Borrowed(items)
+        } else {
+            let source = crate::render_scope::capture(&for_loop.collection, context);
+            let source = match source {
+                Some(source) => source,
+                None => crate::state_view::SharedValue::with_provenance(
+                    handler
+                        .resolve_value_owned(&for_loop.collection, context)
+                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                    context.render_fragments.provenance_policy(),
+                ),
+            };
+            if !source.get().is_array() {
+                return Err(non_array_collection_error(&for_loop.collection));
+            }
+            RepeatSource::Shared(source)
         };
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_for_start(&for_loop.fragment_id, context.writer)?;
         }
-        let saved_value = context.local_vars.remove(&for_loop.item);
-        if !items.is_empty() {
-            context
-                .local_vars
-                .insert(for_loop.item.clone(), Value::Null);
-        }
-        self.open_repeats = self
-            .open_repeats
-            .checked_add(1)
-            .ok_or_else(|| continuation_limit_error(MAX_CONTINUATION_DEPTH))?;
-        self.push(Frame::Repeat(RepeatFrame {
-            slot: fragment_slot(protocol, &for_loop.fragment_id)?,
-            item_name: for_loop.item.clone().into(),
-            items: items.into_iter(),
-            index: 0,
-            saved_value,
-        }))
+        let saved_value = context.scopes.loops.remove(&for_loop.item);
+        let slot = prepared_slot(target, protocol, &for_loop.fragment_id)?;
+        let ordinary_routes = self.child_outlet_order(runtime.ordinary_routes, slot, context)?;
+        crate::render_buffer::push(
+            &mut context.scopes.repeats,
+            RepeatFrame {
+                slot,
+                declaration: for_loop,
+                items,
+                index: 0,
+                saved_value,
+                visible: context.visible_loop_scope,
+            },
+        );
+        self.push(Frame::Repeat(ordinary_routes))
     }
 
     /// Close the item the repeat just rendered, then open the next one.
+    #[inline(always)]
     fn step_repeat(
         &mut self,
-        mut frame: RepeatFrame,
+        ordinary_routes: bool,
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        // The frame is only re-pushed after an item opens, so a non-zero index
-        // means the previous item's body has just finished.
+        let frame = context
+            .scopes
+            .repeats
+            .last_mut()
+            .ok_or_else(missing_scope_error)?;
+        // A non-zero index means the previous item's body has just finished.
         if let Some(open) = frame.index.checked_sub(1) {
+            if matches!(frame.items, RepeatSource::Borrowed(_)) {
+                context.visible_loop_scope = frame.visible;
+            }
             if let Some(plugin) = context.plugin.as_mut() {
                 plugin.pop_scope();
                 plugin.on_repeat_item_end(open, context.writer)?;
             }
         }
-        if let Some(item) = frame.items.next() {
+        let has_next = match &frame.items {
+            RepeatSource::Borrowed(items) => {
+                if let Some(item) = items.get(frame.index) {
+                    if frame.index == 0 {
+                        context.loop_vars.push(crate::LoopBinding {
+                            name: &frame.declaration.item,
+                            value: item,
+                        });
+                    } else {
+                        context
+                            .loop_vars
+                            .last_mut()
+                            .ok_or_else(missing_scope_error)?
+                            .value = item;
+                    }
+                    context.visible_loop_scope.end = context.loop_vars.len();
+                    true
+                } else {
+                    if frame.index != 0 {
+                        context.loop_vars.pop();
+                    }
+                    false
+                }
+            }
+            RepeatSource::Shared(source) => step_shared_repeat(
+                source,
+                (&frame.declaration.item, frame.index),
+                &mut context.scopes.loops,
+            ),
+        };
+        if has_next {
             let index = frame.index;
             frame.index = index.wrapping_add(1);
             if let Some(plugin) = context.plugin.as_mut() {
                 plugin.on_repeat_item_start(index, context.writer)?;
                 plugin.push_scope();
             }
-            if let Some(entry) = context.local_vars.get_mut(frame.item_name.as_ref()) {
-                *entry = item;
-            }
             let slot = frame.slot;
-            self.push(Frame::Repeat(frame))?;
-            self.push(Frame::EnterFragment(slot))?;
+            self.enter(slot, ordinary_routes)?;
             return Ok(());
         }
+        self.finish_repeat(protocol, context)
+    }
+
+    // Exhaustion and durable-value cleanup run once per repeat, not per item.
+    #[inline(never)]
+    fn finish_repeat(
+        &mut self,
+        protocol: &crate::Protocol,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<()> {
+        match self.frames.pop() {
+            Some(Frame::Repeat(_)) => {}
+            _ => return Err(missing_scope_error()),
+        }
+        let frame = context
+            .scopes
+            .repeats
+            .pop()
+            .ok_or_else(missing_scope_error)?;
         match frame.saved_value {
             Some(value) => {
-                context.local_vars.insert(frame.item_name.into(), value);
+                context
+                    .scopes
+                    .loops
+                    .insert(frame.declaration.item.clone(), value);
             }
             None => {
-                context.local_vars.remove(frame.item_name.as_ref());
+                context.scopes.loops.remove(frame.declaration.item.as_str());
             }
         }
-        self.open_repeats = self.open_repeats.saturating_sub(1);
         if let Some(plugin) = context.plugin.as_mut() {
             let fragment_id = protocol
                 .fragment_id(frame.slot)
@@ -973,8 +1323,8 @@ impl ContinuationVm {
         protocol: &crate::Protocol,
         context: &WebUIProcessContext<'_, '_, '_>,
     ) -> Result<BoundaryDescriptor> {
-        if self.pending.is_some()
-            || self.active.is_some()
+        if self.streaming()?.pending.is_some()
+            || self.streaming()?.active.is_some()
             || context
                 .streaming
                 .as_ref()
@@ -985,17 +1335,17 @@ impl ContinuationVm {
                 "a nested boundary occurrence is not valid",
             ));
         }
-        if self.open_repeats != 0 {
+        if !context.scopes.repeats.is_empty() {
             return Err(boundary_in_repeat_error(&boundary.name));
         }
-        let index = usize::try_from(self.next_boundary_id)
+        let next_boundary_id = self.streaming()?.next_boundary_id;
+        let index = usize::try_from(next_boundary_id)
             .map_err(|_| boundary_limit_error(MAX_BOUNDARY_OCCURRENCES))?;
         if index >= MAX_BOUNDARY_OCCURRENCES {
             return Err(boundary_limit_error(MAX_BOUNDARY_OCCURRENCES));
         }
-        let instance_id = BoundaryInstanceId::from_raw(self.next_boundary_id);
-        self.next_boundary_id = self
-            .next_boundary_id
+        let instance_id = BoundaryInstanceId::from_raw(next_boundary_id);
+        self.streaming_mut()?.next_boundary_id = next_boundary_id
             .checked_add(1)
             .ok_or_else(|| boundary_limit_error(MAX_BOUNDARY_OCCURRENCES))?;
         let key = self.evaluate_boundary_key(boundary, handler, context)?;
@@ -1007,10 +1357,11 @@ impl ContinuationVm {
                     "a declaration that may repeat has no key",
                 ));
             };
-            if self.keyed_instance_count >= MAX_KEYED_INSTANCES {
+            let streaming = self.streaming_mut()?;
+            if streaming.keyed_instance_count >= MAX_KEYED_INSTANCES {
                 return Err(keyed_instance_limit_error(MAX_KEYED_INSTANCES));
             }
-            let keys = self
+            let keys = streaming
                 .keyed_instances
                 .entry(boundary.declaration_id)
                 .or_default();
@@ -1021,7 +1372,7 @@ impl ContinuationVm {
                     &key.diagnostic(),
                 ));
             }
-            self.keyed_instance_count += 1;
+            streaming.keyed_instance_count += 1;
         }
         let (owner, name) = match protocol.boundary_declaration(boundary.declaration_id) {
             Some(declaration) => (
@@ -1040,7 +1391,7 @@ impl ContinuationVm {
             name,
             key,
         };
-        self.pending = Some(PendingBoundary {
+        self.streaming_mut()?.pending = Some(PendingBoundary {
             instance_id,
             declaration_id: boundary.declaration_id,
         });
@@ -1085,7 +1436,7 @@ impl ContinuationVm {
         handler: &WebUIHandler,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        let Some(active) = self.active.take() else {
+        let Some(active) = self.streaming_mut()?.active.take() else {
             return Err(boundary_order_error(
                 "boundary",
                 "a boundary end marker has no active occurrence",
@@ -1110,9 +1461,13 @@ impl ContinuationVm {
             },
             context,
         )?;
-        increment_streaming_record_sequence("boundary", streaming_state(context)?)?;
+        increment_streaming_record_sequence(
+            "boundary",
+            &mut streaming_state(context)?.next_record_sequence,
+        )?;
         streaming_state(context)?.active_boundary = None;
-        let expected = self.committed_modes.len();
+        let streaming = self.streaming_mut()?;
+        let expected = streaming.committed_modes.len();
         if active.instance_id.index()? != expected {
             return Err(HandlerError::Invariant(
                 "committed boundary IDs are not gapless".to_string(),
@@ -1121,9 +1476,9 @@ impl ContinuationVm {
         // Counted here, not at resume: only an occurrence whose checkpoint
         // actually reached the client consumes the browser's retention budget.
         if active.mode == BoundaryMode::Updatable {
-            self.updatable_count = self.updatable_count.saturating_add(1);
+            streaming.updatable_count = streaming.updatable_count.saturating_add(1);
         }
-        self.committed_modes.push(active.mode);
+        streaming.committed_modes.push(active.mode);
         Ok(())
     }
 
@@ -1149,23 +1504,24 @@ impl ContinuationVm {
                 "component span start is missing its tag",
             ));
         }
-        if self.open_spans.len() >= MAX_SPAN_NESTING {
+        let streaming = self.streaming_mut()?;
+        if streaming.open_spans.len() >= MAX_SPAN_NESTING {
             return Err(span_nesting_error(MAX_SPAN_NESTING));
         }
-        let id = SpanInstanceId::new(self.next_span_id);
-        self.next_span_id = self
+        let id = SpanInstanceId::new(streaming.next_span_id);
+        streaming.next_span_id = streaming
             .next_span_id
             .checked_add(1)
             .ok_or_else(span_id_overflow_error)?;
         if write_marker {
             super::write_range_marker(context.writer, "<!--ws:", id.raw())?;
         }
-        let mut capture = self
+        let mut capture = streaming
             .capture_pool
             .pop()
-            .unwrap_or_else(|| RecordCapture::new(self.component_count));
+            .unwrap_or_else(|| RecordCapture::new(streaming.component_count));
         capture.clear();
-        self.open_spans.push(OpenSpan {
+        streaming.open_spans.push(OpenSpan {
             id,
             tag: tag.into(),
             capture,
@@ -1179,7 +1535,7 @@ impl ContinuationVm {
         handler: &WebUIHandler,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        let Some(mut span) = self.open_spans.pop() else {
+        let Some(mut span) = self.streaming_mut()?.open_spans.pop() else {
             return Err(malformed_span_signal_error(
                 tag,
                 "component span end has no matching start",
@@ -1202,17 +1558,23 @@ impl ContinuationVm {
         let result = handler.emit_streaming_range_record(
             RangeRecord::Span {
                 instance_id: span.id.raw(),
+                owner_props: &span.capture.owner_props,
             },
             context,
         );
         streaming_state(context)?.swap_capture(&mut span.capture);
         result?;
-        increment_streaming_record_sequence("span completion", streaming_state(context)?)?;
-        streaming_state(context)?.current_span = self.open_spans.last().map(|open| open.id.raw());
+        increment_streaming_record_sequence(
+            "span completion",
+            &mut streaming_state(context)?.next_record_sequence,
+        )?;
+        let streaming = self.streaming_mut()?;
+        streaming_state(context)?.current_span =
+            streaming.open_spans.last().map(|open| open.id.raw());
         streaming_state(context)?.pending_span_host = None;
-        if self.capture_pool.len() < CAPTURE_POOL_LIMIT {
+        if streaming.capture_pool.len() < CAPTURE_POOL_LIMIT {
             span.capture.clear();
-            self.capture_pool.push(span.capture);
+            streaming.capture_pool.push(span.capture);
         }
         Ok(())
     }
@@ -1230,7 +1592,7 @@ impl ContinuationVm {
             record_checkpoint_tag(context, tag);
             return Ok(());
         }
-        let Some(span) = self.open_spans.last_mut() else {
+        let Some(span) = self.streaming_mut()?.open_spans.last_mut() else {
             return Err(super::error::streaming_root_outside_boundary_error(tag));
         };
         streaming_state(context)?.swap_capture(&mut span.capture);
@@ -1242,15 +1604,16 @@ impl ContinuationVm {
     fn start_generated_component<'data>(
         &mut self,
         tag: Box<str>,
-        handler: &WebUIHandler,
-        protocol: &'data crate::Protocol,
+        runtime: StepRuntime<'_, 'data>,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
-        let spanning = protocol_fragment(protocol.protocol(), &tag)?.contains_boundary;
+        let protocol = runtime.protocol;
+        let spanning =
+            !M::ORDINARY && protocol_fragment(protocol.protocol(), &tag)?.contains_boundary;
         let enclosed = context.streaming.as_ref().is_some_and(|streaming| {
             streaming.active_boundary.is_some() || streaming.current_span.is_some()
         });
-        if !spanning && !enclosed {
+        if !M::ORDINARY && !spanning && !enclosed {
             return Err(super::error::streaming_root_outside_boundary_error(&tag));
         }
         let component = WebUIFragmentComponent {
@@ -1269,20 +1632,55 @@ impl ContinuationVm {
         context.writer.write(">")?;
         self.push(Frame::GeneratedComponentEnd { tag, spanning })?;
         self.begin_component(
-            &component,
+            (&component, None),
             ComponentHostOrigin::HandlerGenerated,
-            (handler, protocol),
+            runtime,
             context,
         )
     }
 
-    fn render_route(
+    #[inline(never)]
+    fn begin_route(
         &mut self,
-        route: &WebUiFragmentRoute,
-        route_match: Option<RouteMatch>,
-        protocol: &crate::Protocol,
+        route: (&WebUiFragmentRoute, Option<usize>),
+        frame: FragmentFrame,
+        runtime: StepRuntime<'_, '_>,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
+        let (route, target) = route;
+        let route_slot = prepared_slot(target, runtime.protocol, &route.fragment_id)?;
+        let consumed_segments = if frame.best_route {
+            let selected = self.route_matches.last().ok_or_else(missing_scope_error)?;
+            let selected_route = runtime
+                .protocol
+                .render_routes
+                .get(selected.slot)
+                .ok_or_else(missing_scope_error)?;
+            (selected_route.fragment_id == route.fragment_id).then_some(selected.consumed_segments)
+        } else {
+            None
+        };
+        self.push(Frame::Fragment(frame))?;
+        self.render_route(route_slot, consumed_segments, runtime, context)
+    }
+
+    fn render_route(
+        &mut self,
+        route_slot: u32,
+        consumed_segments: Option<usize>,
+        runtime: StepRuntime<'_, '_>,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<()> {
+        let StepRuntime {
+            handler,
+            protocol,
+            ordinary_routes,
+            ..
+        } = runtime;
+        let route = protocol
+            .render_routes
+            .get(route_slot)
+            .ok_or_else(missing_scope_error)?;
         context.writer.write("<webui-route path=\"")?;
         context.writer.write(&route.path)?;
         context.writer.write("\"")?;
@@ -1295,7 +1693,7 @@ impl ContinuationVm {
             context.writer.write(" exact")?;
         }
         crate::route_renderer::write_route_navigation_attrs(context.writer, route)?;
-        let Some(route_match) = route_match else {
+        let Some(consumed_segments) = consumed_segments else {
             return context
                 .writer
                 .write(" style=\"display:none\"></webui-route>");
@@ -1310,44 +1708,76 @@ impl ContinuationVm {
         crate::write_usize(context.writer, route_index)?;
         context.writer.write("\" active>")?;
 
-        let saved_route_base = std::mem::replace(
+        let saved_route_base = match std::mem::replace(
             &mut context.route_base,
             Cow::Owned(crate::route_matcher::compute_route_base(
                 context.request_path,
-                route_match.consumed_segments,
+                consumed_segments,
             )),
-        )
-        .into_owned()
-        .into_boxed_str();
+        ) {
+            Cow::Owned(base) => Some(base),
+            Cow::Borrowed(_) => None,
+        };
         let saved_route_children = std::mem::replace(
             &mut context.route_children,
-            Cow::Owned(route.children.clone()),
-        )
-        .into_owned();
-        self.push(Frame::RouteEnd {
+            protocol
+                .render_routes
+                .children(route_slot)
+                .ok_or_else(missing_scope_error)?,
+        );
+        self.route_work.push(RouteWork::End {
             saved_route_base,
             saved_route_children,
-        })?;
+        });
+        self.push(Frame::RouteWork)?;
+        // Streaming carries route CSS in the checkpoint payload instead of
+        // installing it inline, so only the ordinary render writes it here.
+        if M::ORDINARY
+            && !route.fragment_id.is_empty()
+            && !WebUIHandler::component_owns_css_tree(&route.fragment_id, context.protocol)
+        {
+            handler.emit_component_style_closure(
+                &route.fragment_id,
+                crate::StyleClosureInstall::Routed,
+                context,
+            )?;
+        }
         if !route.fragment_id.is_empty() {
             self.push(Frame::GeneratedComponentStart {
                 tag: route.fragment_id.clone().into(),
+                ordinary_routes: M::ORDINARY || ordinary_routes,
             })?;
         }
         if !route.content_fragment_id.is_empty() {
             let slot = fragment_slot(protocol, &route.content_fragment_id)?;
-            self.push(Frame::EnterFragment(slot))?;
+            self.enter(slot, ordinary_routes)?;
         }
         Ok(())
     }
 
-    fn begin_outlet(&mut self, context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
-        let routes = std::mem::take(&mut context.route_children).into_owned();
+    fn begin_outlet(
+        &mut self,
+        runtime: StepRuntime<'_, '_>,
+        context: &mut WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<()> {
+        if let Some(plugin) = context.plugin.as_mut() {
+            plugin.on_outlet_start(context.writer)?;
+        }
+        let routes = std::mem::take(&mut context.route_children);
         if routes.is_empty() {
+            if let Some(plugin) = context.plugin.as_mut() {
+                plugin.on_outlet_end(context.writer)?;
+            }
             return Ok(());
         }
         let request_segments = crate::route_matcher::split_request_path(context.request_path);
-        let mut best: Option<(usize, RouteMatch)> = None;
-        for (index, route) in routes.iter().enumerate() {
+        let mut best: Option<(u32, RouteMatch)> = None;
+        for index in routes.clone() {
+            let route = runtime
+                .protocol
+                .render_routes
+                .get(index)
+                .ok_or_else(missing_scope_error)?;
             if let Some(route_match) = crate::route_matcher::match_route_indexed_with_segments(
                 context.route_index,
                 &route.path,
@@ -1363,43 +1793,128 @@ impl ContinuationVm {
                 }
             }
         }
-        self.push(Frame::Outlet(OutletFrame {
-            routes,
-            index: 0,
-            best,
-        }))
+        let best = best.map(|(slot, matched)| SelectedRoute {
+            slot,
+            consumed_segments: matched.consumed_segments,
+        });
+        drop(request_segments);
+        let (selection, ordinary_match) = match best {
+            Some(selected) if M::ORDINARY || runtime.ordinary_routes => (
+                OutletSelection::Dispatched(selected.slot),
+                Some((selected.slot, selected.consumed_segments)),
+            ),
+            Some(selected) => (OutletSelection::Pending(selected), None),
+            None => (OutletSelection::None, None),
+        };
+        self.route_work
+            .push(RouteWork::Outlet(OutletFrame { routes, selection }));
+        self.push(Frame::RouteWork)?;
+        if let Some((slot, consumed_segments)) = ordinary_match {
+            self.render_route(slot, Some(consumed_segments), runtime, context)?;
+        }
+        Ok(())
     }
 
     fn step_outlet(
         &mut self,
         mut frame: OutletFrame,
-        handler: &WebUIHandler,
-        protocol: &crate::Protocol,
+        runtime: StepRuntime<'_, '_>,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        if frame.index >= frame.routes.len() {
+        let next = match &frame.selection {
+            OutletSelection::Dispatched(selected) => frame.routes.find(|index| index != selected),
+            _ => frame.routes.next(),
+        };
+        let Some(index) = next else {
+            if let Some(plugin) = context.plugin.as_mut() {
+                plugin.on_outlet_end(context.writer)?;
+            }
             return Ok(());
+        };
+        let route_match = match &frame.selection {
+            OutletSelection::Pending(selected) if selected.slot == index => {
+                Some(selected.consumed_segments)
+            }
+            _ => None,
+        };
+        if route_match.is_some() {
+            frame.selection = OutletSelection::Dispatched(index);
         }
-        let index = frame.index;
-        frame.index += 1;
-        let route = std::mem::take(&mut frame.routes[index]);
-        let route_match = frame
-            .best
-            .as_ref()
-            .and_then(|(selected, route_match)| (*selected == index).then(|| route_match.clone()));
-        self.push(Frame::Outlet(frame))?;
-        let _ = (handler, protocol);
-        self.render_route(&route, route_match, protocol, context)
+        self.route_work.push(RouteWork::Outlet(frame));
+        self.push(Frame::RouteWork)?;
+        // Matched-first winners were dispatched at outlet entry.
+        self.render_route(
+            index,
+            route_match,
+            StepRuntime {
+                ordinary_routes: false,
+                ..runtime
+            },
+            context,
+        )
+    }
+
+    #[inline]
+    fn resume_parent_fragment(&mut self) -> Option<FragmentFrame> {
+        let Some(Frame::Fragment(parent)) = self.frames.last() else {
+            return None;
+        };
+        let parent = *parent;
+        self.frames.pop();
+        Some(parent)
+    }
+
+    fn next_frame(&mut self) -> Option<Frame> {
+        self.next_entry
+            .take()
+            .map(Frame::EnterFragment)
+            .or_else(|| match self.frames.last() {
+                Some(Frame::Repeat(ordinary_routes)) => Some(Frame::Repeat(*ordinary_routes)),
+                _ => self.frames.pop(),
+            })
+    }
+
+    #[inline]
+    fn child_outlet_order(
+        &self,
+        inherited: bool,
+        slot: u32,
+        context: &WebUIProcessContext<'_, '_, '_>,
+    ) -> Result<bool> {
+        if M::ORDINARY || inherited {
+            return Ok(true);
+        }
+        let target = context
+            .render_fragments
+            .list(slot as usize)
+            .ok_or_else(missing_scope_error)?;
+        Ok(!target.list.contains_boundary)
+    }
+
+    fn enter(&mut self, slot: u32, ordinary_routes: bool) -> Result<()> {
+        if !M::ORDINARY && self.frames.len() >= MAX_CONTINUATION_DEPTH {
+            return Err(continuation_limit_error(MAX_CONTINUATION_DEPTH));
+        }
+        self.next_entry = Some(Entry {
+            slot,
+            ordinary_routes: M::ORDINARY || ordinary_routes,
+        });
+        Ok(())
     }
 
     fn push(&mut self, frame: Frame) -> Result<()> {
-        if self.frames.len() >= MAX_CONTINUATION_DEPTH {
+        if !M::ORDINARY && self.frames.len() >= MAX_CONTINUATION_DEPTH {
             return Err(continuation_limit_error(MAX_CONTINUATION_DEPTH));
+        }
+        if self.frames.capacity() == 0 {
+            self.frames.reserve(INITIAL_FRAME_CAPACITY);
         }
         self.frames.push(frame);
         Ok(())
     }
+}
 
+impl ContinuationVm {
     /// Build the bounded frozen continuation surface.
     ///
     /// Exact signal/condition/attribute roots and component hydration
@@ -1413,12 +1928,14 @@ impl ContinuationVm {
     ) -> Result<ContinuationStatePlan> {
         let mut keys = HashSet::new();
         keys.insert(STATE_INJECT_KEY.to_string());
-        let mut pending = vec![entry_id];
+        let mut pending = vec![(entry_id, Vec::<&str>::new())];
         let mut visited = HashSet::new();
+        let mut fragment_keys = HashSet::new();
+        let mut children = Vec::new();
         let mut requires_full_state =
             protocol.initial_state_strategy != InitialStateStrategy::Components as i32;
-        while let Some(id) = pending.pop() {
-            if !visited.insert(id) {
+        while let Some((id, excluded)) = pending.pop() {
+            if !visited.insert((id, excluded.clone())) {
                 continue;
             }
             let list = protocol
@@ -1429,10 +1946,38 @@ impl ContinuationVm {
                 Self::collect_fragment_keys(
                     fragment,
                     protocol,
-                    &mut keys,
-                    &mut pending,
+                    &mut fragment_keys,
+                    &mut children,
                     &mut requires_full_state,
                 );
+                let child_owner = matches!(
+                    fragment.fragment.as_ref(),
+                    Some(Fragment::Component(_) | Fragment::Route(_))
+                );
+                keys.extend(
+                    fragment_keys.drain().filter(|key| {
+                        child_owner || excluded.binary_search(&key.as_str()).is_err()
+                    }),
+                );
+                let mut child_excluded = match fragment.fragment.as_ref() {
+                    Some(Fragment::Component(_) | Fragment::Route(_)) => Vec::new(),
+                    Some(Fragment::Render(render)) => {
+                        if render.alias.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![render.alias.as_str()]
+                        }
+                    }
+                    _ => excluded.clone(),
+                };
+                if let Some(Fragment::ForLoop(for_loop)) = fragment.fragment.as_ref() {
+                    if let Err(index) = child_excluded.binary_search(&for_loop.item.as_str()) {
+                        child_excluded.insert(index, &for_loop.item);
+                    }
+                }
+                for child in children.drain(..) {
+                    pending.push((child, child_excluded.clone()));
+                }
                 if keys.len() > limit {
                     return Err(state_key_limit_error(limit));
                 }
@@ -1471,6 +2016,12 @@ impl ContinuationVm {
             Some(Fragment::ForLoop(for_loop)) => {
                 insert_top_level_key(keys, &for_loop.collection);
                 pending.push(&for_loop.fragment_id);
+            }
+            Some(Fragment::Render(render)) => {
+                if !render.scope.is_empty() {
+                    insert_top_level_key(keys, &render.scope);
+                }
+                pending.push(&render.fragment_id);
             }
             Some(Fragment::IfCond(if_cond)) => {
                 if let Some(condition) = if_cond.condition.as_ref() {
@@ -1608,44 +2159,97 @@ fn fragment_slot(protocol: &crate::Protocol, id: &str) -> Result<u32> {
         .ok_or_else(|| HandlerError::MissingFragment(id.to_string()))
 }
 
-/// Park a freshly entered record, pre-selecting its best route match.
-///
-/// The record is already resolved by the caller's step-local cache, so entering
-/// a child costs no additional lookup.
-fn open_fragment(
-    slot: u32,
-    list: &webui_protocol::FragmentList,
-    context: &WebUIProcessContext<'_, '_, '_>,
-) -> FragmentFrame {
-    let best_route = crate::route_renderer::find_best_route_match(
-        &list.fragments,
-        context.request_path,
-        &context.route_base,
-        context.route_index,
-    );
-    FragmentFrame {
-        slot,
-        // Render slots and continuation slots are the same numbering: both index
-        // the protocol's sorted fragment IDs. Reading prepared metadata therefore
-        // costs no ID lookup. `render_slots_match_continuation_slots` pins this.
-        render_slot: slot as usize,
-        index: 0,
-        best_route,
+#[inline(never)]
+fn step_shared_repeat(
+    source: &crate::state_view::SharedValue,
+    cursor: (&str, usize),
+    loops: &mut crate::render_scope::SharedBindings,
+) -> bool {
+    let (name, index) = cursor;
+    let Some(item) = source.item(index) else {
+        return false;
+    };
+    if let Some(slot) = loops.get_mut(name) {
+        *slot = item;
+    } else {
+        loops.insert(name.to_owned(), item);
+    }
+    true
+}
+
+fn prepared_slot(target: Option<usize>, protocol: &crate::Protocol, id: &str) -> Result<u32> {
+    match target {
+        Some(target) => u32::try_from(target).map_err(|_| missing_scope_error()),
+        None => fragment_slot(protocol, id),
     }
 }
 
-/// Borrow the record a continuation frame is walking.
-fn slot_fragment(protocol: &crate::Protocol, slot: u32) -> Result<&webui_protocol::FragmentList> {
-    let id = protocol
-        .fragment_id(slot)
-        .ok_or_else(|| unknown_fragment_slot_error(slot))?;
-    protocol_fragment(protocol.protocol(), id)
+/// Park a freshly entered record, pre-selecting its best route match.
+///
+/// The caller has already resolved this record's execution slices.
+fn open_fragment(
+    entry: Entry,
+    list: &crate::RenderFragmentView<'_>,
+    context: &WebUIProcessContext<'_, '_, '_>,
+    route_matches: &mut Vec<SelectedRoute>,
+) -> Result<FragmentFrame> {
+    let best_route = list
+        .has_routes()
+        .then(|| {
+            crate::route_renderer::find_best_route_match_ref(
+                list.fragments,
+                context.request_path,
+                &context.route_base,
+                context.route_index,
+            )
+        })
+        .flatten();
+    let has_best_route = best_route.is_some();
+    if let Some((index, _, matched)) = best_route {
+        let target = list.target(index).ok_or_else(missing_scope_error)?;
+        crate::render_buffer::push(
+            route_matches,
+            SelectedRoute {
+                slot: u32::try_from(target).map_err(|_| missing_scope_error())?,
+                consumed_segments: matched.consumed_segments,
+            },
+        );
+    }
+    Ok(FragmentFrame {
+        slot: entry.slot,
+        index: 0,
+        best_route: has_best_route,
+        ordinary_routes: entry.ordinary_routes,
+    })
+}
+
+/// Resolve execution slices on entry; consecutive repeat items reuse this view.
+fn render_fragment<'data>(
+    context: &WebUIProcessContext<'data, '_, '_>,
+    slot: u32,
+) -> Result<crate::RenderFragmentView<'data>> {
+    context
+        .render_fragments
+        .view(slot as usize)
+        .ok_or_else(|| unknown_fragment_slot_error(slot))
 }
 
 #[cold]
 #[inline(never)]
 fn unknown_fragment_slot_error(slot: u32) -> HandlerError {
     HandlerError::Invariant(format!("continuation frame references unknown slot {slot}"))
+}
+
+#[cold]
+#[inline(never)]
+fn missing_yield_error() -> HandlerError {
+    HandlerError::Invariant("continuation yielded without a stream status".to_owned())
+}
+
+#[cold]
+#[inline(never)]
+fn missing_streaming_vm_error() -> HandlerError {
+    HandlerError::Invariant("ordinary cursor reached a streaming-only operation".into())
 }
 
 #[cold]
@@ -1677,10 +2281,352 @@ fn state_key_limit_error(limit: usize) -> HandlerError {
     }))
 }
 
+#[cold]
+#[inline(never)]
+fn missing_scope_error() -> HandlerError {
+    HandlerError::Invariant("continuation scope stack was not balanced".to_owned())
+}
+
+#[cold]
+#[inline(never)]
+fn fragment_scope_error(render: &webui_protocol::WebUiFragmentRender) -> HandlerError {
+    HandlerError::FragmentScopeMissing(Box::new(crate::FragmentScopeError {
+        fragment_id: render.fragment_id.clone(),
+        scope: render.scope.clone(),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+fn fragment_depth_error() -> HandlerError {
+    HandlerError::FragmentCallDepth {
+        limit: crate::MAX_FRAGMENT_CALL_DEPTH,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn fragment_budget_error() -> HandlerError {
+    HandlerError::FragmentCallBudget {
+        limit: crate::MAX_FRAGMENT_INVOCATIONS,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use webui_protocol::{ComponentData, FragmentList};
+
+    #[test]
+    fn continuation_frames_keep_payloads_out_of_common_stack() {
+        assert!(std::mem::size_of::<Frame>() <= 32);
+        assert!(std::mem::size_of::<SelectedRoute>() <= 16);
+        assert!(std::mem::size_of::<OutletFrame>() <= 32);
+        assert!(std::mem::size_of::<RouteWork>() <= 40);
+    }
+
+    #[test]
+    fn outlet_policy_carriers_fit_existing_layouts() {
+        use std::mem::{align_of, size_of};
+
+        assert_eq!(size_of::<Entry>(), size_of::<Option<u32>>());
+        assert_eq!(size_of::<Option<Entry>>(), size_of::<Option<u32>>());
+        assert_eq!(align_of::<Option<Entry>>(), align_of::<Option<u32>>());
+        assert_eq!(
+            size_of::<OutletSelection>(),
+            size_of::<Option<SelectedRoute>>()
+        );
+        assert_eq!(
+            align_of::<OutletSelection>(),
+            align_of::<Option<SelectedRoute>>()
+        );
+        assert_eq!(size_of::<StepRuntime<'_, '_>>(), 3 * size_of::<usize>());
+        assert_eq!(
+            size_of::<ContinuationVm<OrdinaryVm>>(),
+            4 * size_of::<Vec<Frame>>()
+                + size_of::<Option<u32>>()
+                + size_of::<Option<usize>>()
+                + 3 * size_of::<usize>()
+        );
+        #[cfg(target_pointer_width = "32")]
+        {
+            assert!(size_of::<Frame>() <= 20);
+            assert!(size_of::<FragmentFrame>() <= 12);
+            assert!(size_of::<OutletFrame>() <= 20);
+            assert!(size_of::<RouteWork>() <= 24);
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert!(size_of::<Frame>() <= 32);
+            assert!(size_of::<FragmentFrame>() <= 16);
+            assert!(size_of::<OutletFrame>() <= 32);
+            assert!(size_of::<RouteWork>() <= 40);
+        }
+    }
+
+    #[test]
+    fn direct_entries_and_queued_entries_preserve_order_and_full_slot_width() -> Result<()> {
+        let mut streaming = ContinuationVm::from_slot(0, 0);
+        assert_eq!(
+            streaming.next_entry,
+            Some(Entry {
+                slot: 0,
+                ordinary_routes: false
+            })
+        );
+        assert_eq!(
+            ContinuationVm::ordinary(0, 0).next_entry,
+            Some(Entry {
+                slot: 0,
+                ordinary_routes: true
+            })
+        );
+        for slot in [0, u32::MAX] {
+            for ordinary_routes in [false, true] {
+                streaming.enter(slot, ordinary_routes)?;
+                assert!(matches!(
+                    streaming.next_frame(),
+                    Some(Frame::EnterFragment(entry))
+                        if entry.slot == slot && entry.ordinary_routes == ordinary_routes
+                ));
+                assert!(streaming.next_entry.is_none());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_cursor_has_no_streaming_payload() {
+        assert_eq!(std::mem::size_of::<OrdinaryVm>(), 0);
+        assert!(std::mem::size_of::<ContinuationVm<OrdinaryVm>>() <= 144);
+        assert!(
+            std::mem::size_of::<ContinuationVm>()
+                >= std::mem::size_of::<ContinuationVm<OrdinaryVm>>() + 256
+        );
+        let vm = ContinuationVm::ordinary(0, 0);
+        assert!(vm.mode.streaming().is_none());
+        assert!(vm.streaming().is_err());
+    }
+
+    #[test]
+    fn entry_cursor_does_not_allocate_continuation_frames() -> Result<()> {
+        let protocol = crate::Protocol::new(WebUIProtocol::new(HashMap::from([(
+            "entry".to_owned(),
+            FragmentList::default(),
+        )])));
+        let slot = protocol
+            .fragment_slot("entry")
+            .ok_or_else(missing_scope_error)?;
+        let vm = ContinuationVm::ordinary(slot, 0);
+        assert_eq!(vm.frames.capacity(), 0);
+        assert_eq!(
+            vm.next_entry.map(|entry| entry.slot),
+            protocol.fragment_slot("entry")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repeat_marker_stays_parked_between_item_records() -> Result<()> {
+        let mut vm = ContinuationVm::ordinary(0, 0);
+        vm.next_entry = None;
+        vm.push(Frame::Repeat(true))?;
+        for slot in 1..4 {
+            assert!(matches!(vm.next_frame(), Some(Frame::Repeat(true))));
+            assert_eq!(vm.frames.len(), 1);
+            vm.enter(slot, true)?;
+            assert!(
+                matches!(vm.next_frame(), Some(Frame::EnterFragment(found)) if found.slot == slot)
+            );
+            assert_eq!(vm.frames.len(), 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_repeat_marker_retains_its_body_order() -> Result<()> {
+        for ordinary_routes in [false, true] {
+            let mut vm = ContinuationVm::from_slot(0, 0);
+            vm.next_entry = None;
+            vm.push(Frame::Repeat(ordinary_routes))?;
+            for slot in 1..4 {
+                assert!(matches!(
+                    vm.next_frame(),
+                    Some(Frame::Repeat(found)) if found == ordinary_routes
+                ));
+                vm.enter(slot, ordinary_routes)?;
+                assert!(matches!(
+                    vm.next_frame(),
+                    Some(Frame::EnterFragment(found))
+                        if found.slot == slot && found.ordinary_routes == ordinary_routes
+                ));
+                assert_eq!(vm.frames.len(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn same_record_restarts_and_parent_returns_restore_entry_policy() -> Result<()> {
+        for ordinary_routes in [false, true] {
+            let mut frame = FragmentFrame {
+                slot: 7,
+                index: 4,
+                best_route: false,
+                ordinary_routes: !ordinary_routes,
+            };
+            frame.restart::<StreamingVmState>(ordinary_routes);
+            assert_eq!(frame.index, 0);
+            assert_eq!(frame.slot, 7);
+            assert_eq!(frame.ordinary_routes, ordinary_routes);
+            assert!(!frame.best_route);
+
+            let mut vm = ContinuationVm::from_slot(0, 0);
+            vm.next_entry = None;
+            frame.index = 9;
+            vm.push(Frame::Fragment(frame))?;
+            let parent = vm
+                .resume_parent_fragment()
+                .ok_or_else(missing_scope_error)?;
+            assert_eq!(parent.slot, frame.slot);
+            assert_eq!(parent.index, 9);
+            assert_eq!(parent.ordinary_routes, ordinary_routes);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parent_record_resumes_only_after_scope_and_route_unwinding() -> Result<()> {
+        for barrier in [
+            Frame::IfEnd { slot: 3 },
+            Frame::RenderEnd { slot: 3 },
+            Frame::ComponentEnd(ComponentEndFrame {
+                component_slot: 3,
+                owns_css_tree: true,
+                saved_scope: true,
+                previous_input_owner: None,
+            }),
+            Frame::RouteWork,
+            Frame::Repeat(true),
+        ] {
+            let mut vm = ContinuationVm::ordinary(0, 0);
+            vm.next_entry = None;
+            vm.push(Frame::Fragment(FragmentFrame {
+                slot: 7,
+                index: 4,
+                best_route: true,
+                ordinary_routes: true,
+            }))?;
+            vm.push(barrier)?;
+            assert!(vm.resume_parent_fragment().is_none());
+            assert_eq!(vm.frames.len(), 2);
+            vm.frames.pop();
+            assert!(matches!(
+                vm.resume_parent_fragment(),
+                Some(FragmentFrame {
+                    slot: 7,
+                    index: 4,
+                    best_route: true,
+                    ordinary_routes: true,
+                })
+            ));
+            assert!(vm.frames.is_empty());
+            assert!(vm.resume_parent_fragment().is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parked_repeat_counts_toward_physical_streaming_depth() -> Result<()> {
+        let mut vm = ContinuationVm::from_slot(0, 0);
+        for _ in 0..MAX_CONTINUATION_DEPTH {
+            vm.push(Frame::Repeat(false))?;
+        }
+        assert!(vm.push(Frame::Repeat(false)).is_err());
+        assert!(vm.enter(1, false).is_err());
+        vm.frames.pop();
+        vm.enter(1, false)?;
+        assert_eq!(
+            vm.frames.len() + usize::from(vm.next_entry.is_some()),
+            MAX_CONTINUATION_DEPTH
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recursive_projection_maps_input_roots_and_excludes_aliases() -> Result<()> {
+        let fragments = [
+            ("entry", vec![WebUIFragment::render("node", "tree", "row")]),
+            (
+                "node",
+                vec![
+                    WebUIFragment::signal("row.label", false),
+                    WebUIFragment::signal("title", false),
+                    WebUIFragment::for_loop("child", "row.children", "item"),
+                ],
+            ),
+            ("item", vec![WebUIFragment::render("node", "child", "row")]),
+        ]
+        .into_iter()
+        .map(|(id, fragments)| {
+            (
+                id.to_owned(),
+                FragmentList {
+                    fragments,
+                    contains_boundary: false,
+                },
+            )
+        })
+        .collect();
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        let plan = ContinuationVm::collect_state_keys(&protocol, "entry", 16)?;
+        assert!(!plan.requires_full_state);
+        assert_eq!(
+            plan.keys.iter().map(Box::as_ref).collect::<Vec<_>>(),
+            ["$webui", "title", "tree"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn projection_revisits_shared_body_with_distinct_alias_roots() -> Result<()> {
+        let fragments = [
+            (
+                "entry",
+                vec![
+                    WebUIFragment::render("body", "first", "a"),
+                    WebUIFragment::render("body", "second", "b"),
+                ],
+            ),
+            (
+                "body",
+                vec![
+                    WebUIFragment::signal("a.label", false),
+                    WebUIFragment::signal("b.label", false),
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|(id, fragments)| {
+            (
+                id.to_owned(),
+                FragmentList {
+                    fragments,
+                    contains_boundary: false,
+                },
+            )
+        })
+        .collect();
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        let plan = ContinuationVm::collect_state_keys(&protocol, "entry", 16)?;
+        assert_eq!(
+            plan.keys.iter().map(Box::as_ref).collect::<Vec<_>>(),
+            ["$webui", "a", "b", "first", "second"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn route_key_collection_covers_generated_hosts_content_and_children() -> Result<()> {

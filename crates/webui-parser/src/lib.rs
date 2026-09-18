@@ -14,12 +14,35 @@ mod css_link;
 mod css_parser;
 mod css_scan;
 mod diagnostic;
+mod directive_expression;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod named_fragment_graph;
+mod named_fragments;
 pub mod plugin;
 mod route_parser;
 mod suggest;
+
+#[cfg(test)]
+#[path = "tests/named_fragments.rs"]
+mod named_fragment_tests;
+
+#[cfg(test)]
+#[path = "tests/record_bookkeeping.rs"]
+mod record_bookkeeping_tests;
+
+#[cfg(test)]
+#[path = "tests/directive_expressions.rs"]
+mod directive_expression_tests;
+
+#[cfg(test)]
+#[path = "tests/named_provenance.rs"]
+mod named_provenance_tests;
+
+#[cfg(test)]
+#[path = "tests/component_context.rs"]
+mod component_context_tests;
 
 pub use asset_filename::{
     AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
@@ -441,6 +464,11 @@ struct ParseContext {
     raw_buffer: String,
 }
 
+struct ModuleEntrySite {
+    position: usize,
+    src: String,
+}
+
 struct PendingBoundary {
     declaration_id: u32,
 }
@@ -481,6 +509,7 @@ fn push_child_records<'a>(list: &'a FragmentList, targets: &mut Vec<&'a str>) {
     for fragment in &list.fragments {
         match fragment.fragment.as_ref() {
             Some(Fragment::Component(component)) => targets.push(&component.fragment_id),
+            Some(Fragment::Render(render)) => targets.push(&render.fragment_id),
             Some(Fragment::IfCond(if_cond)) => targets.push(&if_cond.fragment_id),
             Some(Fragment::ForLoop(for_loop)) => targets.push(&for_loop.fragment_id),
             Some(Fragment::Route(route)) => push_route_records(targets, route),
@@ -493,6 +522,35 @@ fn push_child_records<'a>(list: &'a FragmentList, targets: &mut Vec<&'a str>) {
 struct FragmentCssTokens {
     definitions: Vec<String>,
     fallback_chains: Vec<CssFallbackChain>,
+}
+
+// Preserve exact ordinary-owner size hints without dropping named-owner filtering.
+struct ComponentShadowDomUsage<'a> {
+    entries: std::collections::hash_map::Iter<'a, String, ComponentDomAnalysis>,
+    reachable: Option<&'a WebUIFragmentRecords>,
+}
+
+impl<'a> Iterator for ComponentShadowDomUsage<'a> {
+    type Item = (&'a str, bool);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (tag, analysis) = if let Some(reachable) = self.reachable {
+            self.entries.find(|(tag, _)| reachable.contains_key(*tag))?
+        } else {
+            self.entries.next()?
+        };
+        Some((tag.as_str(), analysis.uses_shadow_dom))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.entries.len();
+        let minimum = if self.reachable.is_some() {
+            0
+        } else {
+            remaining
+        };
+        (minimum, Some(remaining))
+    }
 }
 
 /// CSS token analysis produced from the parsed template/component graph.
@@ -527,6 +585,7 @@ enum ParseOp<'a> {
         depth: usize,
     },
     EmitClose(&'a str),
+    EmitTableOpen(&'static str),
     EndComponent(&'a str),
     EndHead(&'a str),
     EndBody(&'a str),
@@ -542,6 +601,8 @@ enum ParseOp<'a> {
     /// Restore the enclosing component/raw/inert context after its child range
     /// has been parsed.
     RestoreBoundaryParentScope(Option<&'static str>),
+    // Only tracked owners schedule this; ordinary continuation payloads stay compact.
+    RestoreRecord(String),
     CompleteFor {
         parent: ParseContext,
         item: String,
@@ -572,6 +633,12 @@ impl Default for HtmlParser {
 
 /// Parser for WebUI directives.
 pub struct HtmlParser {
+    named_fragments: Option<named_fragments::FragmentDeclarations>,
+    has_named_fragments: bool,
+    current_record_id: String,
+    track_owner_records: bool,
+    module_entry_sites: Option<HashMap<String, Vec<ModuleEntrySite>>>,
+    boundary_render_sites: Vec<(String, Diagnostic)>,
     /// CSS parser.
     css_parser: CssParser,
 
@@ -1316,6 +1383,12 @@ impl HtmlParser {
         let options = options.into();
 
         Self {
+            named_fragments: None,
+            has_named_fragments: false,
+            current_record_id: String::new(),
+            track_owner_records: false,
+            module_entry_sites: None,
+            boundary_render_sites: Vec::new(),
             component_registry: ComponentRegistry::with_legal_comments(options.legal_comments),
             css_parser: CssParser::new(),
             id_counter: FragmentIdCounter::new(),
@@ -1440,6 +1513,19 @@ impl HtmlParser {
             if let Some((owner, name)) = self.find_transitively_nested_boundary() {
                 return Err(Self::transitively_nested_boundary_error(&owner, &name));
             }
+            for (target, diagnostic) in &self.boundary_render_sites {
+                if self
+                    .fragment_records
+                    .get(target)
+                    .is_some_and(|list| list.contains_boundary)
+                {
+                    return Err(diagnostic.clone().into());
+                }
+            }
+        }
+        if self.has_named_fragments {
+            self.prune_named_fragment_graph();
+            self.finalize_named_module_entries();
         }
         self.finalize_component_span_signals();
         Ok(())
@@ -1454,9 +1540,19 @@ impl HtmlParser {
             .iter()
             .filter_map(|(id, list)| list.contains_boundary.then_some(id.clone()))
             .collect();
-        for list in self.fragment_records.values_mut() {
+        for (id, list) in &mut self.fragment_records {
             let mut normalized = Vec::with_capacity(list.fragments.len());
-            for fragment in list.fragments.drain(..) {
+            let mut sites = self
+                .module_entry_sites
+                .as_mut()
+                .and_then(|sites| sites.get_mut(id))
+                .into_iter()
+                .flat_map(|sites| sites.iter_mut())
+                .peekable();
+            for (position, fragment) in list.fragments.drain(..).enumerate() {
+                while let Some(site) = sites.next_if(|site| site.position <= position) {
+                    site.position = normalized.len();
+                }
                 let remove = match fragment.fragment.as_ref() {
                     Some(Fragment::Signal(signal)) => signal
                         .value
@@ -1483,6 +1579,9 @@ impl HtmlParser {
                 }
                 normalized.push(fragment);
             }
+            for site in sites {
+                site.position = normalized.len();
+            }
             list.fragments = normalized;
         }
     }
@@ -1498,6 +1597,9 @@ impl HtmlParser {
                 match fragment.fragment.as_ref() {
                     Some(Fragment::Component(component)) => {
                         Self::push_boundary_edge(edges, &component.fragment_id);
+                    }
+                    Some(Fragment::Render(render)) => {
+                        Self::push_boundary_edge(edges, &render.fragment_id);
                     }
                     Some(Fragment::ForLoop(for_loop)) => {
                         Self::push_boundary_edge(edges, &for_loop.fragment_id);
@@ -1891,6 +1993,7 @@ impl HtmlParser {
         };
         match fragment.fragment.as_ref() {
             Some(Fragment::Component(component)) => reaches(&component.fragment_id),
+            Some(Fragment::Render(render)) => reaches(&render.fragment_id),
             Some(Fragment::ForLoop(for_loop)) => reaches(&for_loop.fragment_id),
             Some(Fragment::IfCond(if_cond)) => reaches(&if_cond.fragment_id),
             Some(Fragment::Route(route)) => {
@@ -1972,14 +2075,17 @@ impl HtmlParser {
     /// This remains available independently of parser plugins so protocol
     /// builders can persist effective per-component ownership in plugin-free builds.
     pub fn component_shadow_dom_usage(&self) -> impl Iterator<Item = (&str, bool)> {
-        self.component_dom_analyses
-            .iter()
-            .map(|(tag_name, analysis)| (tag_name.as_str(), analysis.uses_shadow_dom))
+        ComponentShadowDomUsage {
+            entries: self.component_dom_analyses.iter(),
+            reachable: self.has_named_fragments.then_some(&self.fragment_records),
+        }
     }
 
     /// Iterate non-eager component work-policy codes.
     pub fn component_work_policies(&self) -> impl Iterator<Item = (&str, u8)> {
-        self.component_registry.work_policies()
+        self.component_registry.work_policies().filter(|(tag, _)| {
+            !self.has_named_fragments || self.fragment_records.contains_key(*tag)
+        })
     }
 
     /// Take any post-parse artifacts captured by the parser plugin.
@@ -1989,9 +2095,16 @@ impl HtmlParser {
     /// Returns [`ParserError::Template`] if a tracked component contains an
     /// invalid `@event` handler or a non-braced `w-ref` binding.
     pub fn take_plugin_artifacts(&mut self) -> Result<ParserPluginArtifacts> {
-        self.plugin
+        let mut artifacts = self
+            .plugin
             .take()
-            .map_or(Ok(ParserPluginArtifacts::None), |plugin| plugin.finish())
+            .map_or(Ok(ParserPluginArtifacts::None), |plugin| plugin.finish())?;
+        if self.has_named_fragments {
+            if let ParserPluginArtifacts::ComponentTemplates(templates) = &mut artifacts {
+                templates.retain(|template| self.fragment_records.contains_key(&template.tag_name));
+            }
+        }
+        Ok(artifacts)
     }
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
@@ -2032,6 +2145,9 @@ impl HtmlParser {
         let mut out = UnresolvedTokens::default();
         let mut available_counts: HashMap<String, usize> = HashMap::new();
         let mut ops: Vec<TokenGraphOp<'_>> = Vec::with_capacity(self.token_roots.len());
+        let mut visits = self
+            .has_named_fragments
+            .then(|| named_fragment_graph::TokenGraphVisits::new(self));
         for root in self.token_roots.iter().rev() {
             ops.push(TokenGraphOp::EnterFragment(root.as_str()));
         }
@@ -2039,6 +2155,12 @@ impl HtmlParser {
         while let Some(op) = ops.pop() {
             match op {
                 TokenGraphOp::EnterFragment(fragment_id) => {
+                    if visits
+                        .as_mut()
+                        .is_some_and(|visits| !visits.insert(fragment_id, &available_counts))
+                    {
+                        continue;
+                    }
                     self.enter_token_fragment(
                         fragment_id,
                         &mut available_counts,
@@ -2093,6 +2215,9 @@ impl HtmlParser {
                 }
                 Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
                     ops.push(TokenGraphOp::EnterFragment(for_loop.fragment_id.as_str()));
+                }
+                Some(web_ui_fragment::Fragment::Render(render)) => {
+                    ops.push(TokenGraphOp::EnterFragment(render.fragment_id.as_str()));
                 }
                 Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
                     ops.push(TokenGraphOp::EnterFragment(if_cond.fragment_id.as_str()));
@@ -2173,7 +2298,13 @@ impl HtmlParser {
     ) {
         let css = self
             .fragment_css_tokens
-            .entry(self.current_fragment_id.clone())
+            .entry(
+                if self.named_fragments.is_none() || self.current_record_id.is_empty() {
+                    self.current_fragment_id.clone()
+                } else {
+                    self.current_record_id.clone()
+                },
+            )
             .or_default();
         css.definitions.extend(definitions);
         css.definitions.sort();
@@ -2183,6 +2314,9 @@ impl HtmlParser {
 
     /// Parse HTML content to generate WebUI fragments.
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
+        if fragment_id.starts_with(named_fragments::RECORD_PREFIX) {
+            return Err(Self::reserved_fragment_id_error(fragment_id));
+        }
         let fragment_key = fragment_id.to_string();
         let is_token_root = self.in_progress_fragments.is_empty();
         if is_token_root {
@@ -2196,6 +2330,9 @@ impl HtmlParser {
         // diagnostic in the parent would be attributed to the wrong owner.
         let previous_fragment_id =
             std::mem::replace(&mut self.current_fragment_id, fragment_key.clone());
+        let previous_record_id = std::mem::take(&mut self.current_record_id);
+        let previous_track_owner_records = std::mem::replace(&mut self.track_owner_records, false);
+        let previous_named_fragments = self.named_fragments.take();
         if !self.in_progress_fragments.insert(fragment_key.clone()) {
             let err = self
                 .authoring_error(
@@ -2208,6 +2345,9 @@ impl HtmlParser {
                 )
                 .into();
             self.current_fragment_id = previous_fragment_id;
+            self.current_record_id = previous_record_id;
+            self.track_owner_records = previous_track_owner_records;
+            self.named_fragments = previous_named_fragments;
             return Err(err);
         }
         if is_token_root && !self.token_roots.contains(&fragment_key) {
@@ -2244,6 +2384,9 @@ impl HtmlParser {
         self.boundary_parent_scope = previous_parent_scope;
         self.in_progress_fragments.remove(&fragment_key);
         self.current_fragment_id = previous_fragment_id;
+        self.current_record_id = previous_record_id;
+        self.track_owner_records = previous_track_owner_records;
+        self.named_fragments = previous_named_fragments;
         result
     }
 
@@ -2255,7 +2398,39 @@ impl HtmlParser {
             )));
         }
 
+        let source_features = named_fragments::SourceFeatures::scan(html_content);
+        // Scan each parsed owner before entering its subrecords. Preserve module sites even
+        // if another owner introduces fragments later; unparsed registrations need no scan.
+        if self.module_entry_sites.is_none() && source_features.scripts {
+            self.module_entry_sites = Some(HashMap::new());
+        }
+
         // Reset sub-fragments for new parse
+        self.named_fragments = if source_features.directives {
+            Some(named_fragments::FragmentDeclarations::collect_present(
+                fragment_id,
+                html_content,
+                self.component_registry.contains(fragment_id),
+                self.component_processing.reject_fragment_directives,
+            )?)
+            .filter(|graph| !graph.declarations.is_empty())
+        } else {
+            None
+        };
+        // Conservative syntax candidates do not change ordinary record ownership.
+        self.track_owner_records = source_features.scripts || self.named_fragments.is_some();
+        if self.named_fragments.is_some() {
+            self.has_named_fragments = true;
+            self.module_entry_sites.get_or_insert_with(HashMap::new);
+        }
+        if !self.boundary_render_sites.is_empty() {
+            let prefix = named_fragments::record_id(fragment_id, "");
+            self.boundary_render_sites
+                .retain(|(target, _)| !target.starts_with(&prefix));
+        }
+        if let Some(sites) = &mut self.module_entry_sites {
+            sites.remove(fragment_id);
+        }
         self.raw_buffer.clear();
         if let Some(ref mut plugin) = self.plugin {
             plugin.begin_fragment(FragmentContext { id: fragment_id });
@@ -2274,6 +2449,7 @@ impl HtmlParser {
             },
         );
 
+        self.compile_named_fragment_bodies(html_content)?;
         Ok(())
     }
 
@@ -2470,6 +2646,10 @@ impl HtmlParser {
                             }
 
                             match element.name() {
+                                "fragment" => {}
+                                "render" => {
+                                    self.emit_named_fragment_call(&element, fragments)?;
+                                }
                                 "for" => {
                                     self.enter_for_directive(&element, fragments, depth, &mut ops)?;
                                 }
@@ -2534,6 +2714,11 @@ impl HtmlParser {
                     self.add_raw_fragment(name);
                     self.add_raw_fragment(">");
                 }
+                ParseOp::EmitTableOpen(name) => {
+                    self.add_raw_fragment("<");
+                    self.add_raw_fragment(name);
+                    self.add_raw_fragment(">");
+                }
                 ParseOp::EndComponent(name) => {
                     self.add_raw_fragment("</");
                     self.add_raw_fragment(name);
@@ -2566,6 +2751,9 @@ impl HtmlParser {
                 }
                 ParseOp::RestoreBoundaryParentScope(previous) => {
                     self.boundary_parent_scope = previous;
+                }
+                ParseOp::RestoreRecord(previous) => {
+                    self.current_record_id = previous;
                 }
                 ParseOp::CompleteFor {
                     parent,
@@ -2627,11 +2815,8 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        if !self.in_boundary
-            && self.boundary_ancestor_depth == 0
-            && element.name().eq_ignore_ascii_case("script")
-        {
-            self.record_module_entry(element);
+        if element.name().eq_ignore_ascii_case("script") {
+            self.record_module_entry(element, fragments.len());
         }
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
@@ -2679,10 +2864,12 @@ impl HtmlParser {
             }
             self.enter_foster_context(element.name(), ops);
             self.enter_boundary_parent_scope(element, ops);
-            ops.push(ParseOp::Parse {
-                range: element.inner(),
-                depth: depth + 1,
-            });
+            if !self.schedule_named_table_body(element, depth + 1, ops) {
+                ops.push(ParseOp::Parse {
+                    range: element.inner(),
+                    depth: depth + 1,
+                });
+            }
         }
         Ok(())
     }
@@ -2696,8 +2883,9 @@ impl HtmlParser {
     /// silently rather than diagnosed, because either is a perfectly valid
     /// thing to author — they just carry no preload information.
     ///
-    /// The caller has already excluded scripts inside a `<boundary>`.
-    fn record_module_entry(&mut self, element: &Element<'_>) {
+    /// Preserve record-local provenance even when its first occurrence is deferred:
+    /// a later critical call can reuse this record without parsing it again.
+    fn record_module_entry(&mut self, element: &Element<'_>, position: usize) {
         let Some(src) = element.attr("src") else {
             return;
         };
@@ -2708,6 +2896,23 @@ impl HtmlParser {
             .attr("type")
             .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("module"))
         {
+            return;
+        }
+        if let Some(sites) = &mut self.module_entry_sites {
+            let record = if self.current_record_id.is_empty() {
+                &self.current_fragment_id
+            } else {
+                &self.current_record_id
+            };
+            sites
+                .entry(record.clone())
+                .or_default()
+                .push(ModuleEntrySite {
+                    position,
+                    src: src.to_string(),
+                });
+        }
+        if self.in_boundary || self.boundary_ancestor_depth != 0 {
             return;
         }
         // Document order is meaningful and duplicates are near-impossible, so
@@ -2952,7 +3157,9 @@ impl HtmlParser {
         )
         .element("for")
         .snippet(format!("each=\"{each}\""))
-        .help("use the form each=\"item in collection\", e.g. each=\"todo in todos\"")
+        .help(
+            "use each=\"item in collection\" or each=\"{{item in collection}}\"; wrap the whole expression in exactly two braces",
+        )
         .into()
     }
 
@@ -2981,28 +3188,32 @@ impl HtmlParser {
     ) -> Result<()> {
         let each = element
             .attr("each")
-            .map(ToString::to_string)
             .ok_or_else(|| self.for_each_missing_error(element))?;
+        let expression = directive_expression::normalize(each)
+            .ok_or_else(|| self.for_each_invalid_error(element, each))?;
 
-        let mut parts = each.split_whitespace();
+        let mut parts = expression.split_whitespace();
         let (Some(item), Some(in_kw), Some(collection), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
         else {
-            return Err(self.for_each_invalid_error(element, &each));
+            return Err(self.for_each_invalid_error(element, each));
         };
         if in_kw != "in" {
-            return Err(self.for_each_invalid_error(element, &each));
+            return Err(self.for_each_invalid_error(element, each));
         }
 
-        let allowed = |s: &str| {
-            s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-        };
-        if !allowed(item) || !allowed(collection) {
-            return Err(self.for_identifier_error(element, &each));
+        if !directive_expression::valid_for_identifier(item)
+            || !directive_expression::valid_for_identifier(collection)
+        {
+            return Err(self.for_identifier_error(element, each));
         }
 
         let custom_fragment_id = element.attr("template").map(ToString::to_string);
+        if let Some(id) = custom_fragment_id.as_deref() {
+            if id.starts_with(named_fragments::RECORD_PREFIX) {
+                return Err(Self::reserved_fragment_id_error(id));
+            }
+        }
         let keep_empty = custom_fragment_id.is_some();
         let fragment_id = custom_fragment_id.unwrap_or_else(|| self.id_counter.next_id("for"));
         let parent = ParseContext {
@@ -3011,6 +3222,9 @@ impl HtmlParser {
         };
 
         let previous_for_depth = self.for_depth;
+        let previous_record_id = self
+            .track_owner_records
+            .then(|| std::mem::replace(&mut self.current_record_id, fragment_id.clone()));
         self.for_depth += 1;
         ops.push(ParseOp::CompleteFor {
             parent,
@@ -3020,6 +3234,9 @@ impl HtmlParser {
             keep_empty,
             previous_for_depth,
         });
+        if let Some(previous) = previous_record_id {
+            ops.push(ParseOp::RestoreRecord(previous));
+        }
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
@@ -3059,7 +3276,9 @@ impl HtmlParser {
         )
         .element("if")
         .snippet(format!("condition=\"{condition}\""))
-        .help("use a simple expression like \"isActive\", \"count > 0\", or \"!hidden\"")
+        .help(
+            "use a simple expression like \"isActive\", \"count > 0\", or \"!hidden\", optionally wrapped as \"{{isActive}}\"",
+        )
         .into()
     }
 
@@ -3072,13 +3291,14 @@ impl HtmlParser {
     ) -> Result<()> {
         let condition_str = element
             .attr("condition")
-            .map(ToString::to_string)
             .ok_or_else(|| self.if_condition_missing_error(element))?;
+        let expression = directive_expression::normalize(condition_str)
+            .ok_or_else(|| self.if_condition_invalid_error(element, condition_str))?;
 
         let condition = self
             .condition_parser
-            .parse(&condition_str)
-            .map_err(|_| self.if_condition_invalid_error(element, &condition_str))?;
+            .parse(expression)
+            .map_err(|_| self.if_condition_invalid_error(element, condition_str))?;
 
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
@@ -3086,12 +3306,18 @@ impl HtmlParser {
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
         let fragment_id = self.id_counter.next_id("if");
+        let previous_record_id = self
+            .track_owner_records
+            .then(|| std::mem::replace(&mut self.current_record_id, fragment_id.clone()));
 
         ops.push(ParseOp::CompleteIf {
             parent,
             condition,
             fragment_id,
         });
+        if let Some(previous) = previous_record_id {
+            ops.push(ParseOp::RestoreRecord(previous));
+        }
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
@@ -3604,17 +3830,14 @@ impl HtmlParser {
             })?;
 
             if let Some(ref mut p) = self.plugin {
-                let component_data = self
-                    .component_registry
-                    .get(element.name())
-                    .ok_or_else(|| {
+                let component_data =
+                    self.component_registry.get(element.name()).ok_or_else(|| {
                         ParserError::NotFound(format!(
                             "component <{}> disappeared during CSS compilation",
                             element.name()
                         ))
-                    })?
-                    .clone();
-                p.component_built(built.plugin_context(&component_data))?;
+                    })?;
+                p.component_built(built.plugin_context(component_data))?;
             }
 
             self.parse(element.name(), &built.ssr)?;
@@ -4091,6 +4314,12 @@ impl HtmlParser {
             return Ok(String::new());
         }
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
+        let reserved_id = self
+            .track_owner_records
+            .then(|| self.id_counter.next_id("route-content"));
+        let previous_record_id = reserved_id
+            .as_ref()
+            .map(|id| std::mem::replace(&mut self.current_record_id, id.clone()));
         let previous_route_depth = self.route_depth;
         self.route_depth += 1;
         let mut content = Vec::new();
@@ -4112,12 +4341,15 @@ impl HtmlParser {
         })();
         self.route_depth = previous_route_depth;
         self.raw_buffer = saved_buffer;
+        if let Some(previous) = previous_record_id {
+            self.current_record_id = previous;
+        }
         parse_result?;
 
         if content.is_empty() {
             return Ok(String::new());
         }
-        let fragment_id = self.id_counter.next_id("route-content");
+        let fragment_id = reserved_id.unwrap_or_else(|| self.id_counter.next_id("route-content"));
         self.fragment_records.insert(
             fragment_id.clone(),
             FragmentList {
@@ -4491,16 +4723,12 @@ impl HtmlParser {
         })?;
 
         if let Some(ref mut p) = self.plugin {
-            let component_data = self
-                .component_registry
-                .get(component)
-                .ok_or_else(|| {
-                    ParserError::NotFound(format!(
-                        "component <{component}> disappeared during CSS compilation"
-                    ))
-                })?
-                .clone();
-            p.component_built(built.plugin_context(&component_data))?;
+            let component_data = self.component_registry.get(component).ok_or_else(|| {
+                ParserError::NotFound(format!(
+                    "component <{component}> disappeared during CSS compilation"
+                ))
+            })?;
+            p.component_built(built.plugin_context(component_data))?;
         }
 
         let saved_buffer = std::mem::take(&mut self.raw_buffer);

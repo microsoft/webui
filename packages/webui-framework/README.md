@@ -768,7 +768,7 @@ is delivered to the browser as a `<script>` tag.
 ```typescript
 interface TemplateMeta {
   h: string;                           // Static HTML (no markers)
-  tx?: [slot, parts][];                // Text run locators
+  tx?: CompiledTextRunMeta[];          // Text slots and complete SSR successors
   a?: CompiledAttrMeta[];              // Attribute bindings
   ag?: [path, start, count][];         // Attribute target groups
   c?: [conditionAST, blockIndex, slot][]; // Conditional blocks
@@ -782,6 +782,15 @@ interface TemplateMeta {
 }
 ```
 
+`CompiledTextRunMeta` is `[slot, parts, successor?]`. An omitted scalar means
+the actual parent/section end; `1` identifies a raw HTML binding. For escaped
+text, `8 * index + kind` encodes a complete next sibling: kinds `2`, `3`, `4`,
+and `5` identify a conditional, repeat, local call, or raw range. Kind `6`
+uses the section element index minus one; kind `7` uses the parent-local
+authored comment ordinal. These indexes are zero-based. There is no `null`
+padding or inference for older metadata. Always build templates and deploy the
+runtime together.
+
 ### Example
 
 Template:
@@ -793,12 +802,12 @@ Template:
 Compiled metadata:
 ```javascript
 {
-  h: '<h1></h1><button>Count: </button>',
+  h: '<h1></h1><button></button>',
   tx: [
-    [[[0], 0], [["title"]]],           // slot in <h1>, dynamic "title"
-    [[[1], 1], ["Count: ", ["count"]]]  // slot in <button>, static + dynamic
+    [[1, 0], [["title"]]],           // actual end of <h1>
+    [[2, 0], ["Count: ", ["count"]]]  // actual end of <button>
   ],
-  eg: [["click", [["increment", [], [1]]]]] // click -> increment, no event args
+  eg: [["click", [["increment", [], 2]]]] // click -> increment, no event args
 }
 ```
 

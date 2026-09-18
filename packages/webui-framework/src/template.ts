@@ -6,7 +6,7 @@
  *
  * Each entry is a metadata object with:
  * - `h`  — static HTML for the component template
- * - `tx` — text runs `[slot, parts]` for text binding positions
+ * - `tx` — text runs `[slot, parts, successor?]` with complete SSR successors
  * - `a`  — attribute binding metadata
  * - `ag` — attribute target groups `[path, startIndex, count]`
  * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
@@ -30,6 +30,7 @@ export type {
   CompiledCondition,
   CompiledConditionFn,
   CompiledConditionalMeta,
+  CompiledRenderMeta,
   CompiledEventArg,
   CompiledEventArgs,
   CompiledEventBindingMeta,
@@ -59,11 +60,13 @@ import {
   prepareComponentStyleLinks,
   prepareRegisteredLinkStyles,
 } from './element/link-styles.js';
+import { registerFragmentSources, transferFragmentInputSeeds } from './fragment-inputs.js';
+import { templateHasRootOutlet } from './template-content.js';
+import type { FragmentSourceNode } from './streaming-protocol.js';
 
 import type {
   CompiledCondition,
   CompiledConditionFn,
-  TemplateBlockMeta,
   TemplateCondition,
   TemplateMeta,
 } from './template-types.js';
@@ -72,8 +75,13 @@ const WEBUI_DATA_ID = 'webui-data';
 const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
 const TEMPLATE_FN_COUNT = Symbol.for('microsoft.webui.templateFnCount');
 const normalizedTemplates = new WeakSet<TemplateMeta>();
+const FRAGMENT_RANGES = 1;
+const OUTLET_RANGES = 2;
+let templateRanges: WeakMap<TemplateMeta, number> | undefined;
 const assetNormalizedTemplates = new WeakSet<TemplateMeta>();
 let webuiDataLoaded = false;
+/** A buffered response has no terminal record to release its decoded sources. */
+let bufferedFragmentSources = false;
 
 type RuntimeTemplateFns = Record<string, CompiledConditionFn[]>
   & Record<symbol, number | undefined>;
@@ -274,6 +282,15 @@ function loadWebUIDataBlock(): void {
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
     if (templateFns) parsed.templateFns = templateFns;
     if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
+    // Captured fragment inputs are provenance, not page state: decode them
+    // before anything can hydrate and never publish them on the runtime global.
+    const captured = parsed.fragmentSources;
+    delete parsed.fragmentSources;
+    delete parsed.fragmentSourceRefs;
+    if (captured) {
+      registerFragmentSources(captured as FragmentSourceNode[]);
+      bufferedFragmentSources = true;
+    }
     // Publish before registering styles. A malformed present `componentStyles` throws,
     // and doing it the other way round loses the templates and state that
     // parsed fine — then re-parses the whole block on the next lookup, because
@@ -295,12 +312,22 @@ function loadWebUIDataBlock(): void {
  * copied the roots it owns. Template metadata remains available for future
  * client-created blocks and route navigation.
  *
+ * Captured fragment inputs decoded out of the buffered data block are released
+ * here too: this is the buffered response's terminal record, and holding them
+ * any longer would pin every captured value for the page's whole lifetime.
+ *
  * @internal
  */
 export function releaseSSRBootstrapState(): void {
   const runtime = window.__webui;
   if (runtime?.state !== undefined) {
     delete runtime.state;
+  }
+  if (bufferedFragmentSources) {
+    bufferedFragmentSources = false;
+    transferFragmentInputSeeds(
+      typeof document === 'undefined' ? null : document.body,
+    );
   }
 }
 
@@ -348,10 +375,12 @@ function normalizeTemplateConditions(
   meta: TemplateMeta,
   fns: CompiledConditionFn[],
 ): void {
-  const stack: TemplateBlockMeta[] = [meta];
-  while (stack.length > 0) {
-    const block = stack.pop();
-    if (!block) continue;
+  const blocks = meta.b;
+  let ranges = 0;
+  for (let index = -1; index < (blocks?.length ?? 0); index++) {
+    const block = index === -1 ? meta : blocks![index];
+    if (block.u?.length) ranges |= FRAGMENT_RANGES;
+    if (index >= 0 && templateHasRootOutlet(block)) ranges |= OUTLET_RANGES;
     if (block.a) {
       for (let i = 0; i < block.a.length; i++) {
         const attr = block.a[i];
@@ -363,11 +392,18 @@ function normalizeTemplateConditions(
         normalizeCondition(name, block.c[i][0], fns);
       }
     }
-    const children = (block as TemplateMeta).b;
-    if (children) {
-      for (let i = 0; i < children.length; i++) stack.push(children[i]);
-    }
   }
+  if (ranges) (templateRanges ??= new WeakMap()).set(meta, ranges);
+}
+
+/** Whether normalized metadata reaches compiled local fragment calls. */
+export function templateHasFragments(meta: TemplateMeta): boolean {
+  return ((templateRanges?.get(meta) ?? 0) & FRAGMENT_RANGES) !== 0;
+}
+
+/** Whether structural blocks need contiguous ownership through later DOM insertion. */
+export function templateNeedsRanges(meta: TemplateMeta): boolean {
+  return templateRanges?.has(meta) ?? false;
 }
 
 function normalizeCondition(

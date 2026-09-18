@@ -123,6 +123,51 @@ function findRouteElement(
   return null;
 }
 
+function isRawStartMarker(value: string): boolean {
+  if (value.length < 2 || value[0] !== 'w') return false;
+  for (let i = 1; i < value.length; i++) {
+    const digit = value.charCodeAt(i);
+    if (digit < 48 || digit > 57) return false;
+  }
+  return true;
+}
+
+function findOutletMarker(root: Element | ShadowRoot): Node | null {
+  const walker = document.createTreeWalker(root, 129 /* SHOW_ELEMENT | SHOW_COMMENT */);
+  let depth = 0;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (node.nodeType === 1) {
+      if (depth === 0 && (node as Element).localName === 'outlet') return node;
+      continue;
+    }
+    const value = node.nodeValue ?? '';
+    if (isRawStartMarker(value)) {
+      const end = '/' + value;
+      let sibling = node.nextSibling;
+      let rawDepth = 1;
+      while (sibling) {
+        if (sibling.nodeType === 8) {
+          const marker = sibling.nodeValue;
+          if (marker === value) rawDepth++;
+          else if (marker === end && --rawDepth === 0) break;
+        }
+        sibling = sibling.nextSibling;
+      }
+      if (!sibling) break;
+      walker.currentNode = sibling;
+    } else if (value === 'wo') depth++;
+    else if (value === '/wo') {
+      if (depth === 0) break;
+      if (--depth === 0) return node;
+    }
+  }
+  if (node || depth) {
+    throw new Error('[WebUI Router] Unpaired SSR range markers. Rebuild the server and client templates together.');
+  }
+  return null;
+}
+
 /**
  * Find or create a `<webui-route>` DOM element for a chain entry.
  * For top-level routes, searches direct children of `<body>`.
@@ -154,6 +199,13 @@ export function findOrCreateRouteElement(
       // Not found — create stub and place in the correct container
       const stub = createRouteStub(entry);
 
+      // Keep new routes inside the wrapperless SSR outlet, before trailing text.
+      const outletMarker = findOutletMarker(root);
+      if (outletMarker?.nodeType === 8 && outletMarker.parentNode) {
+        outletMarker.parentNode.insertBefore(stub, outletMarker);
+        return stub;
+      }
+
       // Strategy 1: use the parent container of existing sibling routes.
       if (allRoutes.length > 0) {
         const container = allRoutes[allRoutes.length - 1].parentElement;
@@ -163,10 +215,9 @@ export function findOrCreateRouteElement(
         }
       }
 
-      // Strategy 2: insert after the <outlet> marker (f-template components)
-      const outletMarker = root.querySelector('outlet');
-      if (outletMarker?.parentElement) {
-        outletMarker.parentElement.insertBefore(stub, outletMarker.nextSibling);
+      // Strategy 2: insert after a client-created <outlet> marker.
+      if (outletMarker?.parentNode) {
+        outletMarker.parentNode.insertBefore(stub, outletMarker.nextSibling);
         return stub;
       }
 

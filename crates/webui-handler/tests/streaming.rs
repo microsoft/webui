@@ -15,6 +15,9 @@ use webui_parser::{ComponentRegistration, HtmlParser};
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 use webui_test_utils::test_json;
 
+#[path = "streaming/outlets.rs"]
+mod outlets;
+
 fn parsed_protocol(entry: &str, components: &[(&str, &str)]) -> Arc<Protocol> {
     Arc::new(Protocol::new(parsed_protocol_data(entry, components)))
 }

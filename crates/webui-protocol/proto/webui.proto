@@ -194,6 +194,7 @@ message WebUIFragment {
     WebUIFragmentRoute route = 8;
     WebUIFragmentOutlet outlet = 9;
     WebUIFragmentBoundary boundary = 10;
+    WebUIFragmentRender render = 11;
   }
 }
 
@@ -290,6 +291,16 @@ message WebUIFragmentRaw {
 // Reference to a reusable component fragment.
 message WebUIFragmentComponent {
   string fragment_id = 1;
+}
+
+// Wrapperless invocation of an owner-local named fragment.
+message WebUIFragmentRender {
+  // Declaration body record, resolved once by the runtime loader.
+  string fragment_id = 1;
+  // Caller-evaluated dotted input path; empty for a parameterless invocation.
+  string scope = 2;
+  // Isolated callee binding name; empty exactly when scope is empty.
+  string alias = 3;
 }
 
 // Loop directive iterating over a collection.

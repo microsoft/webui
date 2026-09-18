@@ -86,10 +86,22 @@ pub(crate) fn find_best_route_match(
     route_base: &str,
     route_index: &CompiledRouteIndex,
 ) -> Option<(String, route_matcher::RouteMatch)> {
-    let mut best: Option<(String, route_matcher::RouteMatch)> = None;
+    let (_, route, matched) =
+        find_best_route_match_ref(fragments, request_path, route_base, route_index)?;
+    Some((route.fragment_id.clone(), matched))
+}
+
+/// Select a sibling route without allocating an owned copy of its component ID.
+pub(crate) fn find_best_route_match_ref<'a>(
+    fragments: &'a [WebUIFragment],
+    request_path: &str,
+    route_base: &str,
+    route_index: &CompiledRouteIndex,
+) -> Option<(usize, &'a WebUiFragmentRoute, route_matcher::RouteMatch)> {
+    let mut best: Option<(usize, &WebUiFragmentRoute, route_matcher::RouteMatch)> = None;
     let mut request_segments: Option<Vec<&str>> = None;
 
-    for item in fragments {
+    for (index, item) in fragments.iter().enumerate() {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
             let segments = request_segments
                 .get_or_insert_with(|| route_matcher::split_request_path(request_path));
@@ -102,15 +114,108 @@ pub(crate) fn find_best_route_match(
             ) {
                 let is_better = best
                     .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
+                    .is_none_or(|(_, _, prev)| m.specificity > prev.specificity);
 
                 if is_better {
-                    let key = route_frag.fragment_id.clone();
-                    best = Some((key, m));
+                    best = Some((index, route_frag, m));
                 }
             }
         }
     }
 
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use webui_protocol::{FragmentList, WebUIProtocol};
+    use webui_test_utils::test_json;
+
+    crate::define_string_response_writer!(RouteWriter, output);
+
+    fn route(path: &str) -> WebUIFragment {
+        WebUIFragment {
+            fragment: Some(Fragment::Route(WebUiFragmentRoute {
+                path: path.to_owned(),
+                fragment_id: "detail".to_owned(),
+                exact: true,
+                ..Default::default()
+            })),
+        }
+    }
+
+    fn protocol() -> WebUIProtocol {
+        WebUIProtocol::new(HashMap::from([
+            (
+                "entry".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("START"),
+                        route("/contacts/:id"),
+                        route("/contacts/add"),
+                        route("./notes/:note"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "detail".to_owned(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("CARD")],
+                    contains_boundary: false,
+                },
+            ),
+        ]))
+    }
+
+    #[test]
+    fn borrowed_route_selection_keeps_specificity_parameters_and_source_addresses() {
+        let protocol = protocol();
+        let index = CompiledRouteIndex::new(&protocol);
+        let fragments = &protocol.fragments["entry"].fragments;
+        for (path, base, expected_index, parameter) in [
+            ("/contacts/add", "", 2, None),
+            ("/contacts/42", "", 1, Some(("id", "42"))),
+            (
+                "/contacts/42/notes/7",
+                "/contacts/42",
+                3,
+                Some(("note", "7")),
+            ),
+        ] {
+            let (selected, route, matched) =
+                find_best_route_match_ref(fragments, path, base, &index)
+                    .unwrap_or_else(|| panic!("route should match {path}"));
+            assert_eq!(selected, expected_index);
+            let Some(Fragment::Route(source)) = fragments[selected].fragment.as_ref() else {
+                panic!("selected fragment should be a route");
+            };
+            assert!(std::ptr::eq(source, route));
+            let (key, owned) = find_best_route_match(fragments, path, base, &index)
+                .unwrap_or_else(|| panic!("owned route selection should match"));
+            assert_eq!(key, route.fragment_id);
+            assert_eq!(owned.consumed_segments, matched.consumed_segments);
+            assert_eq!(owned.params, matched.params);
+            if let Some((name, value)) = parameter {
+                assert_eq!(matched.params.get(name).map(String::as_str), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn compact_cursor_keeps_component_key_selection_for_shared_route_targets() -> Result<()> {
+        let protocol = crate::Protocol::new(protocol());
+        let mut writer = RouteWriter::with_capacity(1024);
+        crate::WebUIHandler::new().render(
+            &protocol,
+            &test_json!({}),
+            &crate::RenderOptions::new("entry", "/contacts/add"),
+            &mut writer,
+        )?;
+        assert_eq!(writer.output.matches("CARD").count(), 3);
+        assert_eq!(writer.output.matches(" active>").count(), 3);
+        Ok(())
+    }
 }

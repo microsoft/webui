@@ -3,6 +3,8 @@
 
 //! Request-local state shared by the continuation VM and wire serializer.
 
+use std::collections::HashSet;
+
 use webui_protocol::WebUIProtocol;
 
 use super::root::PendingStreamingRoot;
@@ -16,6 +18,18 @@ use crate::{route_handler, HandlerError, Result, WebUIProcessContext};
 /// checkpoint. Buffers are swapped into the serializer and recycled after the
 /// record commits.
 pub(crate) struct RecordCapture {
+    pub(super) fragment_source_refs: Vec<u32>,
+    /// Membership index for `fragment_source_refs`, so retaining an input that
+    /// a sibling call already retained costs one hash lookup instead of a scan
+    /// of every ref this span accumulated.
+    retained_sources: HashSet<u32>,
+    /// This host's own props, sorted by name and held as immutable handles.
+    ///
+    /// A span closes after its boundary resumed with the host's next state, so
+    /// the record would otherwise prime the host from caller state it never
+    /// rendered with. Handles are `Arc` clones of the values the props already
+    /// resolved to, so retaining them copies no JSON subtree.
+    pub(super) owner_props: Vec<(Box<str>, crate::state_view::SharedValue)>,
     pub(super) tags: Vec<u32>,
     pub(super) walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) seen: Vec<u8>,
@@ -25,6 +39,9 @@ pub(crate) struct RecordCapture {
 impl RecordCapture {
     pub(crate) fn new(component_count: usize) -> Self {
         Self {
+            fragment_source_refs: Vec::new(),
+            retained_sources: HashSet::new(),
+            owner_props: Vec::new(),
             tags: Vec::new(),
             walk_roots: Vec::new(),
             seen: vec![0; component_count.div_ceil(8)],
@@ -32,7 +49,18 @@ impl RecordCapture {
         }
     }
 
+    /// Retain `id` for this record's host, keeping first-use order and emitting
+    /// each identifier exactly once.
+    pub(super) fn retain_source(&mut self, id: u32) {
+        if self.retained_sources.insert(id) {
+            self.fragment_source_refs.push(id);
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
+        self.fragment_source_refs.clear();
+        self.retained_sources.clear();
+        self.owner_props.clear();
         self.tags.clear();
         self.walk_roots.clear();
         self.seen.fill(0);
@@ -41,6 +69,8 @@ impl RecordCapture {
 }
 
 pub(crate) struct StreamingRenderState<'data> {
+    pub(super) fragment_sources: super::fragment_sources::FragmentSources,
+    pub(super) checkpoint_source_refs: Vec<u32>,
     pub(super) component_reachability: &'data route_handler::ComponentReachabilityIndex,
     pub(super) head_marker_emitted: bool,
     pub(super) active_boundary: Option<u32>,
@@ -102,6 +132,8 @@ pub(super) struct StateUpdatePlan {
 
 /// Owned state retained between calls by borrowed and host-owned sessions.
 pub(crate) struct StreamingProgress {
+    pub(super) fragment_sources: super::fragment_sources::FragmentSources,
+    pub(super) checkpoint_source_refs: Vec<u32>,
     pub(super) head_marker_emitted: bool,
     pub(super) active_boundary: Option<u32>,
     pub(super) current_span: Option<u32>,
@@ -136,6 +168,8 @@ impl StreamingProgress {
         let inventory_bytes = component_count.div_ceil(8);
         let style_inventory_bytes = style_resource_count.div_ceil(8);
         Self {
+            fragment_sources: super::fragment_sources::FragmentSources::default(),
+            checkpoint_source_refs: Vec::new(),
             head_marker_emitted: false,
             active_boundary: None,
             current_span: None,
@@ -172,6 +206,8 @@ impl<'data> StreamingRenderState<'data> {
         component_reachability: &'data route_handler::ComponentReachabilityIndex,
     ) -> Self {
         Self {
+            fragment_sources: progress.fragment_sources,
+            checkpoint_source_refs: progress.checkpoint_source_refs,
             component_reachability,
             pending_root: None,
             // Borrowed template/CSS scratch starts empty: only a record that
@@ -211,6 +247,8 @@ impl<'data> StreamingRenderState<'data> {
 
     pub(crate) fn into_progress(self) -> StreamingProgress {
         StreamingProgress {
+            fragment_sources: self.fragment_sources,
+            checkpoint_source_refs: self.checkpoint_source_refs,
             head_marker_emitted: self.head_marker_emitted,
             active_boundary: self.active_boundary,
             current_span: self.current_span,
@@ -241,6 +279,10 @@ impl<'data> StreamingRenderState<'data> {
     }
 
     pub(crate) fn swap_capture(&mut self, capture: &mut RecordCapture) {
+        std::mem::swap(
+            &mut self.checkpoint_source_refs,
+            &mut capture.fragment_source_refs,
+        );
         std::mem::swap(&mut self.checkpoint_tags, &mut capture.tags);
         std::mem::swap(&mut self.checkpoint_walk_roots, &mut capture.walk_roots);
         std::mem::swap(&mut self.checkpoint_seen, &mut capture.seen);
@@ -268,206 +310,12 @@ pub(super) fn require_streaming_head_start(
 
 pub(super) fn increment_streaming_record_sequence(
     signal: &str,
-    streaming: &mut StreamingRenderState<'_>,
+    sequence: &mut usize,
 ) -> Result<()> {
-    streaming.next_record_sequence =
-        streaming
-            .next_record_sequence
-            .checked_add(1)
-            .ok_or_else(|| {
-                streaming_boundary_error(signal, "record sequence overflowed the platform limit")
-            })?;
+    *sequence = sequence.checked_add(1).ok_or_else(|| {
+        streaming_boundary_error(signal, "record sequence overflowed the platform limit")
+    })?;
     Ok(())
-}
-
-pub(crate) fn selected_state_snapshot(
-    state: &serde_json::Value,
-    keys: &[Box<str>],
-) -> serde_json::Value {
-    let serde_json::Value::Object(source) = state else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
-    let mut selected = serde_json::Map::with_capacity(keys.len());
-    for key in keys {
-        if let Some(value) = source.get(key.as_ref()) {
-            selected.insert(key.to_string(), value.clone());
-        }
-    }
-    serde_json::Value::Object(selected)
-}
-
-pub(crate) fn selected_state_snapshot_owned(
-    state: serde_json::Value,
-    keys: &[Box<str>],
-) -> serde_json::Value {
-    let serde_json::Value::Object(mut source) = state else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
-    let mut selected = serde_json::Map::with_capacity(keys.len());
-    for key in keys {
-        if let Some(value) = source.remove(key.as_ref()) {
-            selected.insert(key.to_string(), value);
-        }
-    }
-    serde_json::Value::Object(selected)
-}
-
-/// Merge the caller's state for this step into the retained continuation
-/// snapshot.
-///
-/// Merging is *patch*, not replace: a key the caller omits keeps the value the
-/// snapshot already holds, and no key is ever removed. Only the projected
-/// surface is considered, so state a continuation never reads is not retained.
-///
-/// A value that is already identical is left alone, so a host resuming with the
-/// same surface every step copies nothing — the comparison walks the shared
-/// shape and stops at the first difference, while a copy would allocate a fresh
-/// tree for data the snapshot already holds. Keys that do change reuse their
-/// existing entry, letting [`serde_json::Value::clone_from`] reuse the previous
-/// value's buffers.
-pub(crate) fn overlay_selected_state(
-    frozen: &mut serde_json::Value,
-    state: &serde_json::Value,
-    keys: &[Box<str>],
-) -> bool {
-    let mut changed = false;
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-        changed = true;
-    }
-    let serde_json::Value::Object(source) = state else {
-        return changed;
-    };
-    let serde_json::Value::Object(target) = frozen else {
-        return changed;
-    };
-    for key in keys {
-        let Some(value) = source.get(key.as_ref()) else {
-            continue;
-        };
-        match target.get_mut(key.as_ref()) {
-            Some(slot) => {
-                if slot != value {
-                    slot.clone_from(value);
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key.to_string(), value.clone());
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-/// Merge every top-level key of the caller's state into the retained snapshot.
-///
-/// Same patch semantics as [`overlay_selected_state`]: omitted keys keep their
-/// snapshot value, nothing is removed, and an unchanged subtree is neither
-/// copied nor reallocated.
-pub(crate) fn overlay_full_state(
-    frozen: &mut serde_json::Value,
-    state: &serde_json::Value,
-) -> bool {
-    let serde_json::Value::Object(source) = state else {
-        return false;
-    };
-    let mut changed = false;
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-        changed = true;
-    }
-    let serde_json::Value::Object(target) = frozen else {
-        return changed;
-    };
-    for (key, value) in source {
-        match target.get_mut(key) {
-            Some(slot) => {
-                if slot != value {
-                    slot.clone_from(value);
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key.clone(), value.clone());
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-/// Move selected caller-owned values into the continuation snapshot.
-///
-/// Exact equality checks keep the state revision stable when a binding supplies
-/// the same complete state on every resume. Changed subtrees are moved rather
-/// than cloned.
-pub(crate) fn overlay_selected_state_owned(
-    frozen: &mut serde_json::Value,
-    state: serde_json::Value,
-    keys: &[Box<str>],
-) -> bool {
-    let serde_json::Value::Object(mut source) = state else {
-        return false;
-    };
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-    }
-    let serde_json::Value::Object(target) = frozen else {
-        return false;
-    };
-    let mut changed = false;
-    for key in keys {
-        let Some(value) = source.remove(key.as_ref()) else {
-            continue;
-        };
-        match target.get_mut(key.as_ref()) {
-            Some(slot) => {
-                if slot != &value {
-                    *slot = value;
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key.to_string(), value);
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-/// Move every top-level caller-owned value into the continuation snapshot.
-pub(crate) fn overlay_full_state_owned(
-    frozen: &mut serde_json::Value,
-    state: serde_json::Value,
-) -> bool {
-    let serde_json::Value::Object(source) = state else {
-        return false;
-    };
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-    }
-    let serde_json::Value::Object(target) = frozen else {
-        return false;
-    };
-    let mut changed = false;
-    for (key, value) in source {
-        match target.get_mut(&key) {
-            Some(slot) => {
-                if slot != &value {
-                    *slot = value;
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key, value);
-                changed = true;
-            }
-        }
-    }
-    changed
 }
 
 pub(crate) fn increment_state_revision(progress: &mut StreamingProgress) -> Result<()> {

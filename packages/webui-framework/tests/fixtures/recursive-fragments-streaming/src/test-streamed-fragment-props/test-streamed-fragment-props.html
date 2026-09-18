@@ -1,0 +1,6 @@
+<fragment name="card">
+  <boundary name="prop-ready"><button class="prop-capture" @click="{select(row.name, title)}">{{row.name}}/{{title}}</button></boundary>
+  <span class="prop-tail">{{row.name}}</span>
+</fragment>
+<render fragment="card" scope="{{model}}" as="row"></render>
+<output class="prop-selected">{{selected}}</output>

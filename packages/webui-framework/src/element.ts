@@ -63,13 +63,9 @@ const INTERACTION_HYDRATION = 3;
 const LAZY_RENDER_INTERACTION = 4;
 
 // ── Development build flag ──────────────────────────────────────
-// See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
-// bundler-folded compile-time constant, declared and consumed module-locally
-// so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
-// `DEV` to `false` and dead-code-eliminate `warnMissingLazyHydrationEntry`'s
-// body, while `tsc`, unit tests, and `webui-press serve` keep it active.
+// Use the compile-time flag directly so production bundling removes the warning.
+// Undefined flags keep diagnostics active in tsc output and development builds.
 declare const __WEBUI_DEV__: boolean;
-const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 let warnedMissingLazyHydrationEntry = false;
 
@@ -81,7 +77,10 @@ let warnedMissingLazyHydrationEntry = false;
  * documented, expected behavior on older browsers, not a misconfiguration.
  */
 function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
-  if (!DEV || warnedMissingLazyHydrationEntry) return;
+  if (
+    (typeof __WEBUI_DEV__ !== 'undefined' && !__WEBUI_DEV__) ||
+    warnedMissingLazyHydrationEntry
+  ) return;
   warnedMissingLazyHydrationEntry = true;
   const directive = policy === LAZY_HYDRATION_CONTENT_VISIBILITY
     ? 'w-render="lazy"'
@@ -230,17 +229,18 @@ export class WebUIElement extends TemplateElement {
     );
   }
 
-  /** Wire events + root events + refs (shared by $wire and $hydrate). */
+  /** Finalize section events and refs for client mounts and SSR. */
   protected override $finalize(
     instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
+    elements?: Array<Node | undefined>,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
     if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
-    this.$wireRefs(root);
+    this.$wireRefs(root, elements);
   }
 
   /**
@@ -369,14 +369,17 @@ export class WebUIElement extends TemplateElement {
   }
 
   /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
-    if (root.nodeType !== 1 && root.nodeType !== 11) return;
-    const refs = (root as Element).querySelectorAll('[w-ref]');
-    for (let i = 0; i < refs.length; i++) {
-      const raw = refs[i].getAttribute('w-ref');
+  private $wireRefs(root: Node, elements?: Array<Node | undefined>): void {
+    if (!elements && root.nodeType !== 1 && root.nodeType !== 11) return;
+    const refs = elements ?? (root as Element).querySelectorAll('[w-ref]');
+    for (let i = elements ? 1 : 0; i < refs.length; i++) {
+      const node = refs[i];
+      if (node?.nodeType !== 1) continue;
+      const element = node as Element;
+      const raw = element.getAttribute('w-ref');
       if (!raw || raw.charCodeAt(0) !== 123) continue;
       const name = raw.slice(1, -1);
-      if (name) (this as Record<string, unknown>)[name] = refs[i];
+      if (name) (this as Record<string, unknown>)[name] = element;
     }
   }
 }

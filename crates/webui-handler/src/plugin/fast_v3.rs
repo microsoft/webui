@@ -16,7 +16,6 @@
 //! - **Attribute bindings**: ` data-fe="COUNT"`
 use super::HandlerPlugin;
 use crate::{HandlerError, ResponseWriter, Result};
-use serde_json::Value;
 use std::fmt::Write;
 use webui_protocol::FastElementData;
 
@@ -171,7 +170,7 @@ impl HandlerPlugin for FastV3HydrationPlugin {
     /// Components read these via `@attr` and their connection lifecycle.
     fn write_route_component_state(
         &self,
-        state: &Value,
+        state: crate::StateView<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
         super::fast::write_route_component_state(state, writer)

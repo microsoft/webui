@@ -1,0 +1,11 @@
+{
+  "prefix": "A",
+  "between": "B",
+  "rawPrefix": "C",
+  "staticPrefix": "D",
+  "tail": "",
+  "value": "V",
+  "show": false,
+  "items": [],
+  "html": "<u>raw</u>"
+}

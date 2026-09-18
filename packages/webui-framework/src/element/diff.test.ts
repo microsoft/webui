@@ -39,6 +39,32 @@ describe('dotWalk (allocation-free dotted path)', () => {
     assert.equal(dotWalk({ '0': 'first' }, '0', 0), 'first');
   });
 
+  test('resolves string and array length without exposing other string properties', () => {
+    assert.equal(dotWalk({ label: 'tree' }, 'label.length', 0), 4);
+    assert.equal(dotWalk({ items: [1, 2] }, 'items.length', 0), 2);
+    assert.equal(dotWalk('tree', 'constructor', 0), undefined);
+  });
+
+  test('array paths expose only terminal length, not indices or custom properties', () => {
+    const items = Object.assign([{ name: 'first' }], { extra: { name: 'custom' } });
+    assert.equal(dotWalk({ items }, 'items.length', 0), 1);
+    for (const path of ['items.0.name', 'items.extra.name', 'items.constructor', 'items.length.more']) {
+      assert.equal(dotWalk({ items }, path, 0), undefined);
+    }
+    assert.equal(dotWalk({ items: { '0': { name: 'object key' } } }, 'items.0.name', 0), 'object key');
+  });
+
+  test('string length counts UTF-8 bytes and rejects synthetic-length descendants', () => {
+    for (const [value, expected] of [
+      ['é', 2], ['😀', 4], ['e\u0301', 3], ['a😀é', 7], ['\ud800', 3], ['\udc00', 3],
+    ] as const) {
+      assert.equal(dotWalk({ value }, 'value.length', 0), expected);
+      assert.equal(dotWalk({ value }, 'value.length.more', 0), undefined);
+    }
+    assert.equal(dotWalk({ value: [] }, 'value.length.more', 0), undefined);
+    assert.equal(dotWalk({ value: { length: { more: 1 } } }, 'value.length.more', 0), 1);
+  });
+
   test('walks from a start offset (skips the scope-var prefix)', () => {
     // Simulates resolving `item.name` against the `item` scope variable.
     assert.equal(dotWalk({ name: 'A' }, 'item.name', 5), 'A');

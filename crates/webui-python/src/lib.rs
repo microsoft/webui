@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 mod version;
 
+#[cfg(test)]
+mod fragment_tests;
+
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};

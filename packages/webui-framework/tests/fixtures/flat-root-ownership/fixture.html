@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Flat root ownership lifecycle</title></head>
+<body>
+  <test-flat-zero><template shadowrootmode="open"></template></test-flat-zero>
+  <test-flat-one><template shadowrootmode="open"><span title="SSR">SSR</span></template></test-flat-one>
+  <test-flat-two><template shadowrootmode="open"><span title="SSR">SSR</span><!--authored--></template></test-flat-two>
+  <test-flat-many><template shadowrootmode="open"><span title="SSR">SSR</span><!--authored-->literal<b>static</b><i></i><hr></template></test-flat-many>
+  <test-flat-empty-text><template shadowrootmode="open"></template></test-flat-empty-text>
+  <test-owned-condition><template shadowrootmode="open"><!--wc--><span>SSR</span><!--/wc--></template></test-owned-condition>
+  <test-owned-repeat><template shadowrootmode="open"><!--wr--><!--wi--><span>SSR</span><!--/wr--></template></test-owned-repeat>
+  <test-owned-raw><template shadowrootmode="open"><!--w0--><em>SSR raw</em><!--/w0--></template></test-owned-raw>
+  <test-owned-fragment><template shadowrootmode="open"><!--wf--><span>SSR</span><!--/wf--></template></test-owned-fragment>
+  <test-owned-host><template shadowrootmode="open"><!--wc--><test-flat-one><template shadowrootmode="open"><span title="SSR">SSR</span></template></test-flat-one><!--/wc--></template></test-owned-host>
+  <script src="/dist/flat-root-ownership/element.js"></script>
+</body>
+</html>

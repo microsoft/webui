@@ -193,6 +193,11 @@ where
     }
 }
 
+enum PredicateValue<'a> {
+    Json(Cow<'a, Value>),
+    String(&'a str),
+}
+
 fn evaluate_predicate<'a, F>(predicate: &Predicate, resolver: &F) -> Result<bool>
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
@@ -203,10 +208,10 @@ where
     };
 
     let right_val = if is_literal(&predicate.right) {
-        Cow::Owned(parse_literal(&predicate.right)?)
+        parse_literal(&predicate.right)?
     } else {
         match resolver(&predicate.right) {
-            Some(val) => val,
+            Some(val) => PredicateValue::Json(val),
             None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
         }
     };
@@ -218,7 +223,7 @@ where
         ))
     })?;
 
-    compare_values(left_val.as_ref(), &op, right_val.as_ref())
+    compare_values(left_val.as_ref(), &op, &right_val)
 }
 
 // Check if a string is a literal value
@@ -237,31 +242,32 @@ fn is_literal(s: &str) -> bool {
         || s == "false"
 }
 
-// Parse a literal string into a JSON value
-fn parse_literal(s: &str) -> Result<Value> {
+fn parse_literal(s: &str) -> Result<PredicateValue<'_>> {
     // Handle quoted strings
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         let content = &s[1..s.len() - 1];
-        return Ok(Value::String(content.to_string()));
+        return Ok(PredicateValue::String(content));
     }
 
     // Handle booleans
     if s == "true" {
-        return Ok(Value::Bool(true));
+        return Ok(PredicateValue::Json(Cow::Owned(Value::Bool(true))));
     }
     if s == "false" {
-        return Ok(Value::Bool(false));
+        return Ok(PredicateValue::Json(Cow::Owned(Value::Bool(false))));
     }
 
     // Handle numbers
     if let Ok(num) = s.parse::<i64>() {
-        return Ok(Value::Number(num.into()));
+        return Ok(PredicateValue::Json(Cow::Owned(Value::Number(num.into()))));
     }
 
     if let Ok(num) = s.parse::<f64>() {
         // Create a JSON number from f64, handling error if it's not representable
         match serde_json::Number::from_f64(num) {
-            Some(n) => return Ok(Value::Number(n)),
+            Some(n) => return Ok(PredicateValue::Json(Cow::Owned(Value::Number(n)))),
             None => {
                 return Err(ExpressionError::TypeError(format!(
                     "Cannot convert {} to JSON number",
@@ -279,10 +285,19 @@ fn parse_literal(s: &str) -> Result<Value> {
 }
 
 // Compare two JSON values based on the comparison operator
-fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Result<bool> {
+fn compare_values(
+    left: &Value,
+    op: &ComparisonOperator,
+    right: &PredicateValue<'_>,
+) -> Result<bool> {
     match op {
-        ComparisonOperator::Equal => Ok(left == right),
-        ComparisonOperator::NotEqual => Ok(left != right),
+        ComparisonOperator::Equal | ComparisonOperator::NotEqual => {
+            let equal = match right {
+                PredicateValue::Json(right) => left == right.as_ref(),
+                PredicateValue::String(right) => left.as_str() == Some(*right),
+            };
+            Ok(equal == (*op == ComparisonOperator::Equal))
+        }
 
         // Handle numeric comparisons
         ComparisonOperator::GreaterThan => compare_ordered(left, right, |a, b| a > b),
@@ -296,13 +311,16 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
 }
 
 // Helper for ordered comparisons
-fn compare_ordered<F>(left: &Value, right: &Value, compare_fn: F) -> Result<bool>
+fn compare_ordered<F>(left: &Value, right: &PredicateValue<'_>, compare_fn: F) -> Result<bool>
 where
     F: Fn(&f64, &f64) -> bool,
 {
     // Extract numeric values
     let left_num = extract_number(left)?;
-    let right_num = extract_number(right)?;
+    let right_num = match right {
+        PredicateValue::Json(value) => extract_number(value)?,
+        PredicateValue::String(value) => extract_string_number(value)?,
+    };
 
     Ok(compare_fn(&left_num, &right_num))
 }
@@ -320,13 +338,7 @@ fn extract_number(val: &Value) -> Result<f64> {
                 )))
             }
         }
-        Value::String(s) => match s.parse::<f64>() {
-            Ok(num) => Ok(num),
-            Err(_) => Err(ExpressionError::TypeError(format!(
-                "Cannot convert string to number: {}",
-                s
-            ))),
-        },
+        Value::String(s) => extract_string_number(s),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => Err(ExpressionError::TypeError(format!(
             "Cannot convert to number: {:?}",
@@ -335,12 +347,77 @@ fn extract_number(val: &Value) -> Result<f64> {
     }
 }
 
+fn extract_string_number(value: &str) -> Result<f64> {
+    value
+        .parse::<f64>()
+        .map_err(|_| invalid_string_number(value))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_string_number(value: &str) -> ExpressionError {
+    ExpressionError::TypeError(format!("Cannot convert string to number: {}", value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::borrow::Cow;
     use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
     use webui_test_utils::test_json;
+
+    #[test]
+    fn quoted_literals_borrow_their_contents() -> Result<()> {
+        for source in ["'blue'", "\"blue\"", "''", "\"\"", "'a\\'b'", "'caf\u{e9}'"] {
+            let PredicateValue::String(value) = parse_literal(source)? else {
+                panic!("quoted literal should borrow its source");
+            };
+            assert_eq!(value, &source[1..source.len() - 1]);
+            assert_eq!(value.as_ptr(), source[1..].as_ptr());
+        }
+        for source in ["'", "\"", "'unfinished", "\"unfinished"] {
+            assert!(matches!(
+                parse_literal(source),
+                Err(ExpressionError::TypeError(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_string_comparisons_preserve_json_and_numeric_semantics() -> Result<()> {
+        for left in [
+            test_json!("12"),
+            test_json!(12),
+            test_json!(true),
+            test_json!(null),
+            test_json!([]),
+            test_json!({}),
+        ] {
+            for operator in [
+                ComparisonOperator::Equal,
+                ComparisonOperator::NotEqual,
+                ComparisonOperator::GreaterThan,
+                ComparisonOperator::LessThan,
+                ComparisonOperator::GreaterThanOrEqual,
+                ComparisonOperator::LessThanOrEqual,
+                ComparisonOperator::Unspecified,
+            ] {
+                for content in ["12", "13", "not-a-number", ""] {
+                    let owned = PredicateValue::Json(Cow::Owned(Value::String(content.to_owned())));
+                    let borrowed = PredicateValue::String(content);
+                    let normalize =
+                        |result: Result<bool>| result.map_err(|error| error.to_string());
+                    assert_eq!(
+                        normalize(compare_values(&left, &operator, &borrowed)),
+                        normalize(compare_values(&left, &operator, &owned)),
+                        "{left:?} {operator:?} {content:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_simple_identifier() {

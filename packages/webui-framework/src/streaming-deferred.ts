@@ -29,6 +29,7 @@ import {
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import { applyStateUpdate } from './streaming-state.js';
+import { createFragmentSourceCapture } from './fragment-inputs.js';
 
 // Coordinator-internal walk results, deliberately in a decade disjoint from the
 // shared `ACTIVATION_*` outcomes (1..4) declared in `streaming-mode.ts`. Both
@@ -471,6 +472,7 @@ export function activateDeferredTree(
   // loop runs over every node of every boundary.
   const updates = options?.updates;
   const bypass = options?.bypass;
+  const sourceCapture = createFragmentSourceCapture();
   const countRetention =
     options?.countRetention === true && updates !== undefined;
   let node = first;
@@ -483,6 +485,7 @@ export function activateDeferredTree(
       return `streaming boundary walk exceeds ${MAX_MARKER_SCAN_NODES} nodes`;
     }
     visited++;
+    if (sourceCapture && node.nodeType === 8) sourceCapture.visit(node as Comment);
     const isElement = node.nodeType === 1 /* ELEMENT_NODE */;
     // One attribute read per element, shared by the retention count below and
     // the activation call further down.

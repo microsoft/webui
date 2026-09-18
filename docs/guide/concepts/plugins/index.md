@@ -194,7 +194,9 @@ unsupported FAST declarative syntax reports `invalid-fast-template`, while
 unclosed markup uses the shared `unclosed-html-tag` diagnostic.
 
 Both plugins produce hydration output compatible with their pinned FAST major
-version.
+version. They do not support WebUI's
+[`<fragment>` and `<render>` directives](/guide/concepts/directives/fragment);
+those directives fail the FAST build rather than passing through as elements.
 
 ## Writing Custom Plugins
 
@@ -237,6 +239,7 @@ pub struct ComponentProcessing {
     pub source_transform: Option<ComponentSourceTransform>,
     pub process_root_template_attributes: bool,
     pub inline_styles_after_content: bool,
+    pub reject_fragment_directives: bool,
 }
 
 pub struct ComponentBuildContext<'a> {
@@ -263,6 +266,10 @@ entirely, and a transform returns `Ok(None)` to preserve source without
 allocation. The remaining callbacks follow parser lifecycle order and have
 no-op defaults, so a plugin implements only the phases it owns.
 
+Set `reject_fragment_directives` when the plugin cannot support local fragment
+calls. Its default is `false`; FAST plugins set it to `true` to reject those
+directives in authored source.
+
 When producing a `ComponentTemplateArtifact`, pass
 `context.uses_shadow_dom` to its constructor. This parser-derived boolean is
 required metadata and is not inferred after the plugin returns its artifacts.
@@ -270,6 +277,8 @@ required metadata and is not inferred after the plugin returns its artifacts.
 ### HandlerPlugin Trait
 
 ```rust
+use webui_handler::StateView;
+
 pub trait HandlerPlugin: Send {
     /// Enter a new scope (component or loop item).
     fn push_scope(&mut self);
@@ -297,6 +306,19 @@ pub trait HandlerPlugin: Send {
     fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
 
+    /// Called before/after a local fragment invocation; defaults to no-op.
+    fn on_render_start(
+        &mut self,
+        name: &str,
+        source_id: Option<u32>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+    fn on_render_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called before/after an outlet's route content; both default to no-op.
+    fn on_outlet_start(&mut self, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_outlet_end(&mut self, writer: &mut dyn ResponseWriter) -> Result<()>;
+
     /// Called before/after each item in a for-loop.
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -307,11 +329,43 @@ pub trait HandlerPlugin: Send {
     /// Write framework-specific route component state attributes.
     fn write_route_component_state(
         &self,
-        state: &serde_json::Value,
+        state: StateView<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
 }
 ```
+
+Outlet expansion invokes `on_outlet_start` / `on_outlet_end`, including when
+there are no child routes. A streamed outlet closes only after its child route
+content finishes. The default hooks emit nothing.
+
+Local fragment calls invoke `on_render_start` / `on_render_end` around an
+isolated `push_scope` / `pop_scope` pair. Their `name` argument identifies the
+compiled fragment record. The start hook's `source_id` identifies the captured
+input for a scoped host-driven streamed call; ordinary rendering, single-call
+streaming, and parameterless calls receive `None`. Override the hooks if your client integration needs to
+distinguish invocation ranges; both hooks default to no output.
+
+### Reading State in a Handler Plugin
+
+The route-state hook receives a `webui_handler::StateView<'_>`, not
+`&serde_json::Value`. The view is read-only, implements `Copy` and `Clone`,
+and keeps access borrowed for the duration of the hook:
+
+| Operation | Behavior |
+|---|---|
+| `StateView::from(&value)` | Create a view of an existing JSON value |
+| `view.get(key)` | Borrow a top-level property by literal key; missing properties and non-object state return `None` |
+| `view.iter()` | Iterate borrowed top-level `(key, value)` entries; non-object state yields no entries |
+| `view.is_object()` | Check whether the state is a JSON object |
+| `serde_json::to_string(&view)` | Serialize the represented JSON value, including non-object values |
+
+An existing null property is `Some(&Value::Null)`, not `None`. `get` does not
+interpret dotted paths. Plugins can inspect and serialize the view directly;
+they do not need to reconstruct an owned state object.
+
+Custom implementations of `write_route_component_state` must accept the view
+by value. There is no legacy hook with the old `&Value` signature.
 
 ### Threading Contract
 

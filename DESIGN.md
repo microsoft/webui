@@ -179,6 +179,7 @@ pub struct WebUIFragmentBoundary {
 pub enum Fragment {
     Raw(WebUIFragmentRaw),
     Component(WebUIFragmentComponent),
+    Render(WebUIFragmentRender),
     ForLoop(WebUIFragmentFor),
     Signal(WebUIFragmentSignal),
     IfCond(WebUIFragmentIf),
@@ -204,6 +205,75 @@ pub struct WebUIFragmentComponent {
     pub fragment_id: String,
 }
 ```
+#### Local Render Fragment
+
+```rust
+pub struct WebUIFragmentRender {
+    /// Compiled record for the owner-local fragment body.
+    pub fragment_id: String,
+    /// Caller-side dotted input path; empty for a parameterless call.
+    pub scope: String,
+    /// Callee-local alias; empty exactly when `scope` is empty.
+    pub alias: String,
+}
+```
+
+`WebUIFragment::render(fragment_id, scope, alias) -> WebUIFragment` is the
+`#[must_use]` constructor; each argument accepts `impl Into<String>`.
+Parameterless calls pass empty strings for both `scope` and `alias`.
+
+`Render` invokes an ordinary fragment record once without a DOM wrapper or a
+component instance. It is distinct from `Component`: it keeps the owning
+component's state and props, but creates an isolated local scope for the call.
+It occupies `WebUIFragment` oneof tag 11. Its fields `fragment_id`, `scope`,
+and `alias` use protobuf field numbers 1, 2, and 3, respectively.
+The two strings `scope` and `alias` are either both non-empty or both empty.
+They are paths and identifiers, not expressions or runtime-selected names.
+
+The compiler resolves a static owner-local declaration name to `fragment_id`.
+Forward calls, direct self-calls, and mutual calls are valid. Each declaration
+body is stored once in the existing fragment-record map; a call never expands
+that body into its caller. There is no public fragment registry, cross-component
+import mechanism, or dynamic target selection.
+
+Compiled local body IDs occupy the reserved domain
+`}}}webui:fragment:{ownerByteLength}:{owner}:{name}`. Length-framing the UTF-8
+owner makes this encoding injective even when owner IDs contain delimiters.
+Explicit root and custom loop-template IDs cannot start with
+`}}}webui:fragment:`. Consumers follow `Render.fragment_id` rather than deriving
+IDs from an owner and local name themselves.
+
+Input selection happens in the caller's current scope. The callee resolves its
+own loop variables first, then its input alias, then owning component
+state/props or entry state. Caller loop variables and caller aliases are hidden,
+including for parameterless calls. An alias owns its root even when a child
+path is missing, so lookup must not fall through to an owner value with the same
+root name. A missing selected input is an actionable execution error; `null`,
+`false`, zero, an empty string, an empty object, and an empty array are valid
+values and invoke the body once.
+
+Every response or browser update is limited to 256 active local calls and
+100,000 invocations. Streaming `resume` and `advance` share the response's
+budget rather than resetting it. Exceeding a limit fails with an error, never
+truncated successful output. Recursive fragment authoring does not permit
+recursive host-language execution in core algorithms.
+
+The existing streaming cap of 256 physical continuation frames applies
+independently. Conditions, components, repeats, and other structural frames
+can cause streaming to reach that cap before 256 active local calls. Ordinary
+SSR and browser execution do not inherit that physical streaming-frame cap;
+their 256-call limit counts local calls, not surrounding structural nesting.
+
+Every graph consumer must follow `Render` edges with cycle-safe traversal:
+validation, reachable components, boundary analysis, CSS/style closures, tokens,
+module resources, component assets, route selection, and state projection.
+Validate unused declarations before pruning records and resources unreachable
+from the actual entry/component-asset roots.
+
+The protocol, compiled client metadata, and runtime form one coordinated
+artifact set and must be rebuilt together. No compatibility translation for an
+older local-fragment representation is provided.
+
 #### Boundary Fragment
 
 `Boundary` is a typed declaration in the normal fragment graph, written as an
@@ -212,14 +282,14 @@ carrying the same `declaration_id`, all in the owner's own record. Ordinary
 rendering therefore walks the body without an extra record lookup and simply
 skips both markers. Streaming suspends at `Start`; public `resume` renders only
 the body and its checkpoint, then public `advance` continues the owning record.
-The declaration may be reached through entries, reusable components,
-conditions, outlets, and the selected route. Runtime traversal, not declaration
-order, creates response-local occurrences.
+The declaration may be reached through entries, reusable components, local
+fragment calls, conditions, outlets, and the selected route. Runtime traversal,
+not declaration order, creates response-local occurrences.
 
 Markers always pair within one record, because a `<boundary>`'s children are
 lexically inside it; constructs that own their own record (`<if>`, `<for>`,
-components, route content) still nest as separate records. Nesting a boundary
-inside another — lexically or transitively through those records — is rejected
+components, local fragments, route content) still nest as separate records.
+Nesting a boundary inside another, lexically or transitively through those records, is rejected
 at build time, so a response has at most one active occurrence and matching is
 stack-free.
 
@@ -439,7 +509,9 @@ state through the partial-response `setState(...)` path.
 When the handler encounters `Fragment::Outlet`:
 1. Take children from the currently active route.
 2. Match children against the request path (relative to route base).
-3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
+3. Emit the matched child `<webui-route>` with its component, and hidden sibling
+   stubs, without an outlet wrapper. The WebUI plugin surrounds that sibling
+   range with `<!--wo-->` / `<!--/wo-->`, including an empty outlet.
 
 For plugins that participate in client routing, the handler also emits a
 `<meta name="webui-nonce">` tag in `<head>` for CSP nonce discovery, an inert
@@ -503,7 +575,7 @@ emit WebUI `templates` or `templateFns`.
 
 **Key elements:**
 - `<webui-route>` — light DOM custom element, structural routing wrapper with no shadow DOM
-- `<webui-outlet>` — light DOM custom element, marks insertion point for child route content
+- `<!--wo-->` / `<!--/wo-->` - WebUI hydration anchors around child route content
 
 **Client-side navigation:**
 1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking. While active, it installs a nonce-bearing `@view-transition { navigation: none; }` override and removes it on `destroy()`. This disables automatic cross-document transitions without affecting explicit same-document `document.startViewTransition()` commits.
@@ -751,11 +823,12 @@ route state and the protocol's startup-built component index. All host
 normal render fragment graph starting at the persistent entry fragment. The traversal is
 route-aware but state-agnostic:
 
-- follow `component`, `if`, `for`, and attribute-template edges conservatively without evaluating
-  request-time state
+- follow `component`, `render`, `if`, `for`, and attribute-template edges
+  conservatively without evaluating request-time state; local-call cycles do
+  not revisit the same graph state indefinitely
 - when a fragment list contains sibling `<route>` fragments, follow only the single best match for
   the current request path using the same specificity rules as SSR
-- recurse through nested matched route groups so the active route chain is included
+- visit nested matched route groups so the active route chain is included
 - skip unvisited sibling route branches entirely; later navigations will request those templates if
   needed
 - filter the discovered component set against the client's inventory bitmask before returning
@@ -847,15 +920,32 @@ pub fn find_value_by_dotted_path_ref<'a>(path: &str, state: &'a Value) -> Option
 ```
 Existing JSON values are returned as `Cow::Borrowed` so handler and expression hot paths do not clone the state tree. Synthetic values, currently string and array `.length`, are returned as `Cow::Owned`. The owned `find_value_by_dotted_path(path, state) -> Option<Value>` wrapper is retained for API boundaries that must materialize an owned `serde_json::Value`.
 
+Traversal keeps a borrowed remaining path, splits one object segment at a time,
+and returns a terminal object property directly. Array and string lengths
+require the entire remaining path to equal `length`; ordinary property lookups
+do not advance an iterator solely to establish synthetic-length termination.
+
 ### Requirements
 - Dot notation support (e.g., user.profile.name)
 - Special length property support for arrays and strings (e.g., users.length)
+- Array `.length` counts elements. String `.length` counts UTF-8 bytes, preserving
+  native `str::len()` semantics: `é` is 2 and `😀` is 4. Browser template
+  resolution must produce the same byte count rather than JavaScript's UTF-16
+  code-unit count. A valid surrogate pair contributes 4 bytes; a lone surrogate
+  contributes the 3-byte UTF-8 replacement character. Counting must not allocate
+  an encoded string or byte buffer.
+- Synthetic array/string `.length` is terminal. A remaining path segment returns
+  missing rather than ignoring the suffix. An object's own `length` property
+  remains an ordinary JSON value and can have child properties.
 - Numeric array indexes are not resolved by dotted path lookup; loops bind array items by moniker instead
 - Nullable path handling via `Option`
 - Missing paths return `None`; handler text and attribute bindings render empty.
   A missing identifier in a condition is a falsy operand, so `path` evaluates
   false and `!path` evaluates true. A missing comparison operand still makes
   the complete handler condition false.
+- A `Render.scope` path must resolve to a value. Missing input is an execution
+  error, distinct from a present null or other falsy value. Its alias owns the
+  complete root name, including missing descendants.
 
 ## Expression Evaluation (webui-expressions)
 ### Core Function
@@ -867,6 +957,9 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, Expres
 - **No parentheses:** Expression grouping is handled by the ConditionExpr structure
 - **Logical operators:** Support for && (AND) and || (OR) only
 - **Comparison operators:** Support for >, <, ==, !=, >=, <= only
+- **Borrowed literals:** Quoted comparison operands borrow the compiled predicate's
+  contents rather than allocating a JSON string per evaluation. Equality keeps
+  JSON type distinctions; ordered comparisons keep existing numeric coercion.
 - **Negation:** Support for ! operator
 - **Missing identifiers:** Treat a missing identifier as a falsy operand before
   applying negation or logical operators
@@ -1022,6 +1115,113 @@ route's consumed request segments, so parameter values never become cache
 keys. Parsed template metadata uses a read-write lock limited to individual
 cache lookups. `Protocol` is `Send + Sync`.
 
+Numeric render slots address compact immutable descriptors prepared at protocol
+load. Each descriptor borrows an original fragment record and retains its
+metadata offset plus packed flags. One sorted fragment-ID array serves both
+rendering and continuations. Metadata and attribute-name arenas are owned
+alongside the descriptors, without self-borrowing backing storage. Adjacent
+name offsets and a terminal sentinel replace stored name lengths.
+Execution slices resolve once on record entry and remain reused across
+consecutive same-record repeat items. Requests neither rebuild descriptors nor
+allocate record-lookup caches.
+The descriptor's route-presence word also packs the prepared ShadowRoot
+ownership and component style index, without increasing descriptor storage on
+32-bit or 64-bit hosts. Repeated component entry reuses that index rather than
+hashing the same immutable metadata. Missing metadata and indices that cannot
+fit the packed representation retain the fallible lookup; protocol index ranges
+and metadata error behavior are unchanged.
+Route continuations retain numeric route and child-range addresses into the
+same immutable protocol, including across owned streaming suspension, rather
+than copying recursive route subtrees.
+Route selections retain only an immutable route slot and its consumed-segment
+count. Parameter maps and owned component IDs are not kept on the cursor's
+route stacks; route-chain APIs still retain their complete parameter data.
+Ordinary outlets emit the matched child first. Streaming entry uses declaration
+order; a parser-produced component, taken condition, or repeat-body edge to a
+boundary-free target enables inherited matched-first outlet ordering. Route
+content, route-generated components, and local render calls inherit without
+promoting. Descendants retain that policy across suspension, and returning
+restores the caller's policy. Direct route siblings remain declaration ordered.
+This policy changes only outlet ordering, not streaming execution, checkpoints,
+capture lifetimes, matching, ties, or outlet-child consumption.
+Route preparation visits protocol records directly and identifies roots by
+their immutable addresses in a temporary index. These identities never escape
+preparation or become wire IDs. Pattern compilation reuses the prepared flat
+route list, including nested children, instead of scanning the protocol and
+allocating another traversal stack.
+
+Ordinary and streaming renders instantiate the same iterative cursor with
+different state payloads. The ordinary mode is zero-sized and never constructs
+or drops boundary, span, capture-pool, or keyed-instance bookkeeping. Record
+descent and consecutive repeat items stay within that shared cursor; only
+scope or route unwinding and streaming yields return to its frame dispatcher.
+Completed child records resume plain parent records within the cursor, preserving
+the parent's instruction offset and active route selection rather than reopening
+the record.
+Repeated route-free records reuse their borrowed descriptor. Ordinary
+components with entirely empty caller and prop scopes need no saved scope.
+Saved scopes keep shared loop, alias, and prop payloads in a separate stack
+only when the caller has such bindings; ordinary borrowed scopes do not
+allocate that stack or carry empty shared maps per frame. Streaming suspension
+retains both stacks, and completion or failure releases their captured values.
+Typically shallow repeat, scope, route-selection, route-chain, and reuse-pool
+vectors allocate one element on first use and double capacity when needed,
+rather than reserving four large payloads for a single live value. Unused
+collections remain unallocated; capacity is reused across sibling iterations.
+Repeats drain atomically within a render step. Their cursor, borrowed array,
+and protocol-owned declaration share one request-local frame vector instead
+of a lifetime-free cursor plus a second collection table. Neither the array
+nor the item name is copied. A streaming step may not return with an active
+repeat. Streaming sessions recycle only empty repeat capacity across host steps
+using safe in-place collection; no protocol or state borrow crosses a host call.
+Completion and failure release that capacity. Ordinary renders do not carry
+the session-only scratch owner.
+
+Input provenance is prepared only when at least one record in the immutable
+protocol contains `Render`, including records unreachable from the selected
+entry. Protocols without any calls omit the capture-path dictionary and origin
+lineage; shared values still pin their original immutable JSON roots. Every
+snapshot constructor, overlay, projection, item, and promoted value preserves
+that policy. An untracked input reaching provenance serialization is an
+invariant error, not an invitation to synthesize a different origin.
+Completed shared component scopes clear spent prop values immediately and may
+recycle the empty map into existing empty attribute scratch. Caller bindings
+and partially collected attributes are never discarded to reuse capacity.
+
+State-only streaming updates borrow their committed projection plan and write
+through the shared record serializer directly. They do not reconstruct a
+render context, move continuation scopes, or walk fragment descriptors. JSON
+scratch remains session-owned, and transport failure still poisons the response
+and releases captured inputs.
+JSON serialization grows that scratch lazily up to 4,096 bytes, drains it
+without flushing the response, and writes larger serializer string fragments
+directly. A trailing `<` is retained across drains so a closing HTML tag split
+across writes is escaped identically to the complete JSON string. Serialization
+and transport failures propagate, preserving the original transport error.
+In-capacity writes append directly. A transport failure records the original
+error and releases scratch capacity, so later writes cannot enter that fast
+path. Empty writes and flushes also reject a poisoned writer; serialization
+code catching an intermediate error cannot turn the final result into success.
+General byte writers retain checked UTF-8 conversion. The compact serializer
+uses a zero-sized conversion policy confined to the serialization entry point:
+`serde_json::to_writer` guarantees complete UTF-8 writes, scratch starts empty,
+and the writer consumes whole fragments with only ASCII boundary cuts. The
+policy and its writer never escape that call. Another byte producer, custom
+formatter, short-write path, or non-ASCII cut cannot reuse that guarantee.
+
+Mixed attribute rendering reuses request-local raw and escaped string buffers
+without changing the writer's complete-attribute dispatch. A component prop
+takes ownership of its unescaped value; native attributes return their scratch
+storage for the next attribute. Dynamic attributes and escaped state text share
+the same encoding buffer, while safe strings are written directly. Each reusable
+buffer retains at most 1,024 bytes of capacity, including across streaming
+suspension. Larger values still render in full, but their temporary storage is
+released after the write, including when the writer returns an error.
+Unbundled CSS closures use their protocol-validated unique component order
+without allocating a deduplication set for every ShadowRoot. Bundled closures
+still deduplicate resources because distinct components can share a chunk;
+document-wide and routed ShadowRoot delivery retain their existing ownership.
+
 There are no public raw-`WebUIProtocol` rendering alternatives and no
 `ProtocolIndex` lifecycle API. This prevents callers from accidentally
 decoding or rebuilding the deterministic index per request. Request-specific
@@ -1064,7 +1264,18 @@ template against `options.request_path`:
 
 When processing `Fragment::Outlet`, the handler takes children from the active route,
 matches them against the request path relative to the current route base, and emits
-`<webui-outlet>` containing the matched child and hidden stubs for siblings.
+the matched child and hidden sibling stubs without a wrapper. WebUI hydration
+uses an explicit `<!--wo-->` / `<!--/wo-->` pair around this range.
+The client router reuses existing route stubs without scanning these comments.
+When a new stub is needed, it inserts before the first outlet's matching closing
+anchor, including when that range is empty, rather than after unrelated trailing
+content. Raw HTML ranges are opaque to this lookup; their content cannot supply
+routing markers. Nested outlet pairs do not terminate the containing range. A
+client-recreated outlet encountered before a later SSR range remains the
+active placement target. WebUI client creation lowers the compiled `<outlet>`
+element to the same labeled comment pair. Unpaired markers are rejected;
+literal `<outlet>` elements from other runtimes and marker-free plugins retain
+their existing placement rules.
 
 This eliminates the need for post-render HTML pruning — the handler produces
 correct route output in a single pass.
@@ -1374,15 +1585,43 @@ pub trait HandlerPlugin: Send {
     ) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
+    /// Defaults to a no-op.
+    fn on_render_start(
+        &mut self,
+        name: &str,
+        source_id: Option<u32>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+    /// Defaults to a no-op.
+    fn on_render_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    /// Both outlet hooks default to no-ops.
+    fn on_outlet_start(&mut self, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_outlet_end(&mut self, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
     /// Write framework-specific route component opening-tag attributes.
     fn write_route_component_state(
         &self,
-        state: &serde_json::Value,
+        state: StateView<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
 }
 ```
+
+`webui_handler::StateView<'a>` is the public read-only view passed by value to
+the route-state hook. It implements `Copy`, `Clone`, `Debug`,
+`From<&'a serde_json::Value>`, and `serde::Serialize`.
+
+| Method | Contract |
+|---|---|
+| `get(self, key: &str) -> Option<&'a Value>` | Borrow a literal top-level object property; return `None` for absent keys or non-object state |
+| `iter(self) -> impl Iterator<Item = (&'a str, &'a Value)>` | Borrow top-level entries; non-object state yields an empty iterator |
+| `is_object(self) -> bool` | Report whether the represented value is an object |
+
+Serialization preserves the represented JSON value, including non-object state,
+without reconstructing a `Value` tree. A present null is a found value. The view
+does not expose mutation or retained-backing implementation details. The
+`StateView` route hook replaces the prior `&Value` signature with no legacy
+hook or compatibility shim.
 
 `HandlerPlugin` deliberately requires `Send`, but not `Sync`. The same erased
 factory type backs buffered rendering and owned host-driven streaming. An owned
@@ -1406,7 +1645,14 @@ sendable handle instead.
 - **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
 - **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body
+- **Local render**: `on_render_start/end` around the isolated body scope's
+  `push_scope/pop_scope`; `name` is the compiled fragment record ID.
+  `on_render_start` receives an optional captured streaming input ID from
+  `fragmentSources`; ordinary and parameterless calls receive `None`
 - **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
+- **Outlet**: `on_outlet_start/end` around the full child-route expansion, also
+  paired for an empty outlet. Streaming suspension keeps the same open range;
+  completion closes it through the existing outlet continuation.
 - **Matched route component**: `write_route_component_state` before the opening tag closes
 
 **Selecting handler plugins**
@@ -1430,6 +1676,15 @@ let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
 handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
+
+Ordinary SSR and progressive streaming share the iterative continuation cursor.
+Explicit frames enter records and return from components, conditions, local
+renders, repeats, routes, and outlets; boundary-free subgraphs do not switch to
+a recursive renderer. The immutable runtime protocol resolves record references
+to numeric slots at load time. A local call borrows or retains its selected
+input and saves only its scope frame, not a cloned owner state tree or expanded
+copy of the declaration body.
+
 - **Raw fragments:** Write value directly to output
 - **Signal fragments:**
   - Resolve value from state using `find_value_by_dotted_path`
@@ -1451,26 +1706,57 @@ handler.render(&protocol, &state, &options, &mut writer)?;
   - Iterate over collection from state
   - Process referenced fragment for each item with current item's state accessible thorugh a moniker and the global state
     as a fallback.
-- **Component fragments:** Process referenced fragment directly. `Component` fragments enclosed in a For fragment has access to
-    the fields of the current item being looped over and the global state. The `Component` fragment doesn't need to use
-    the `For` fragment item moniker and can access the fields without the qualification. If the `Component` fragment is
-    nested in multiple `For` fragments only the closest enclosing `For` fragment item's state is accessible to it.
+- **Component fragments:** Enter the component with its explicitly supplied
+  attributes as local state. Caller loop variables are hidden; components do
+  not implicitly inherit loop-item fields.
+- **Render fragments:** Select the input in the caller, then enter the referenced
+  body once with an isolated alias and the same owning component state/props.
+  Parameterless calls also hide caller loop variables and aliases. Returning
+  restores the caller's exact local scope.
 - **Plugin fragments:** Pass opaque `data` bytes to the handler plugin's `on_element_data` hook. Skipped silently when no plugin is configured.
 
 ### State Management
-- Global state refers to the global application state that is available to all fragments at all times.
-- Local state refers to the state corresponding to the current item being looped over in a `For` fragment.
-- When nested `For` fragments are present local state of the current item being looped over for any of the `For` fragment in the
-  hierarchy can be accessed through the corresponding item moniker with an exception for `Component` fragments.
-- For `Component` fragments only the closest enclosing `For` fragment's current item state is available and can be accessed
-  directly without the item moniker qualification. `Component` fragments also have access to the global application state.
+- Owner state is the entry state or the current component's state and explicitly
+  supplied props.
+- Nested `For` bodies can read their active loop monikers, with the innermost
+  matching moniker taking precedence.
+- `Component` entry hides caller loop monikers. Pass loop data using attributes.
+- `Render` entry hides caller loops and caller aliases, retaining only the input
+  explicitly selected at that callsite and the owning state/props. Loops opened
+  inside the called body take precedence over its alias. The alias takes
+  precedence over owner state and owns missing descendants.
+- An active render call's selected input must remain valid across streaming
+  suspension and owner-state overlay replacement. Replacing an owner root must
+  not retarget a previously selected input.
 
 ### Error Handling
 - Report missing fragment references
 - Handle state resolution failures
 - Propagate writer errors
 - Validate protocol before processing
-- Maximum recursion depth protection
+- Enforce local-call depth and invocation limits without host-language recursion
+
+Local-call failures use typed variants:
+
+```rust
+pub struct FragmentScopeError {
+    pub fragment_id: String,
+    pub scope: String,
+}
+
+pub enum HandlerError {
+    FragmentScopeMissing(Box<FragmentScopeError>),
+    FragmentCallDepth { limit: usize },
+    FragmentCallBudget { limit: usize },
+    // Other handler errors omitted.
+}
+```
+
+Scope details are boxed to keep the cold error payload out of the inline result
+representation. Their display text includes actionable help. Public constants
+`MAX_FRAGMENT_CALL_DEPTH = 256` and `MAX_FRAGMENT_INVOCATIONS = 100_000` define
+the local-call limits; streaming's independent `MAX_CONTINUATION_DEPTH` remains
+separate.
 
 ## Parser Modules (webui-parser)
 ### Component Registry
@@ -1732,7 +2018,7 @@ contribute their CSS once and their fragment graph is traversed in the same CSS
 tree. Shadow children are cut points: neither their CSS nor
 their descendants enter the caller's closure, but scanning resumes after the
 host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
-and attribute-template dependencies are followed conservatively. Routes are
+local `render`, and attribute-template dependencies are followed conservatively. Routes are
 activation edges, not static closure edges: route bodies, pending/error
 components, and outlet children do not enter the declaring fragment's closure.
 Each matched Light route root whose inherited CSS tree is the Document has its
@@ -2068,6 +2354,7 @@ pub struct ComponentProcessing {
     pub source_transform: Option<ComponentSourceTransform>,
     pub process_root_template_attributes: bool,
     pub inline_styles_after_content: bool,
+    pub reject_fragment_directives: bool,
 }
 
 pub struct ComponentBuildContext<'a> {
@@ -2097,7 +2384,12 @@ pub enum ComponentStyleDelivery<'a> {
 
 **Hook invocation points:**
 - **Parser setup**: `configure_parser` receives immutable parser options once before any component registration or parsing.
-- **Component policy**: `component_processing` is read once after configuration. Its optional function pointer transforms source before registry insertion; `Ok(None)` preserves one source without allocation. The two cached booleans control root-attribute processing and inline-style placement without per-component virtual calls.
+- **Component policy**: `component_processing` is read once after configuration.
+  Its optional function pointer transforms source before registry insertion;
+  `Ok(None)` preserves one source without allocation. Cached booleans control
+  root-attribute processing, inline-style placement, and whether local fragment
+  directives are rejected. `reject_fragment_directives` defaults to `false`;
+  FAST sets it to `true`.
 - **Fragment start**: `begin_fragment` receives a `FragmentContext` before each `HtmlParser::parse(...)` call so plugins can reset fragment-local state while retaining build-wide state.
 - **Attribute processing**: `process_attribute` receives an `AttributeContext` and decides whether each attribute is kept, skipped, or skipped-and-counted as a binding.
 - **Opening-tag completion**: `finish_opening_tag` receives an `ElementStartContext` after attributes are processed; returned bytes become a `Plugin` fragment.
@@ -2343,12 +2635,49 @@ surfaced on every rebuild attempt.
 ##### Directive Processing
 - **<for>:** Extract item/collection pair and process children into separate fragment. Empty `<for>` bodies (no children) are silently skipped.
 - **<if>:** Extract and parse condition, process children into separate fragment
+- **<fragment>:** Declare one reusable body directly at the owning component
+  root or directly inside the entry body. When an entry omits `<body>`, its
+  top-level content (inside `<html>`, if present) is the implicit body root;
+  declarations inside `<head>` or ordinary descendants remain invalid.
+  A sole root component `<template>`,
+  including policy and open-Shadow wrappers, contains its declarations; they
+  cannot be siblings outside that wrapper. The declaration itself emits no DOM
+  and is not a callsite.
+- **<render>:** Resolve the static owner-local declaration and emit one typed
+  `Render` edge, with paired `scope` / `as` or neither. Calls are wrapperless,
+  may precede their declaration, and permit only whitespace/comments between
+  their tags. Self-closing calls are also valid.
 - **<body>:** Injects `body_start` and `body_end` raw signals around the body content
 - **Components:** Check component registry, process as component if found
 
+The `each` and `condition` attributes accept their bare values or one complete
+double-braced wrapper, with surrounding whitespace ignored. Normalize that
+wrapper at the directive boundary before SSR parsing, WebUI metadata
+compilation, and dependency analysis. The underlying loop and condition
+grammars are unchanged; malformed or triple-braced wrappers remain authoring
+errors. Normalization borrows the existing attribute text.
+
+Local declarations are validated even when unused. Duplicate names, unresolved
+targets, invalid placement, malformed calls, and invalid input paths are build
+errors with source locations and actionable help. Scope inputs use a single
+dotted path, not the condition expression language. Numeric array indexing is
+unsupported; array/string `.length` remains available. Native SSR and WebUI
+support these directives; FAST rejects them explicitly.
+
+Declaration names match ASCII `[A-Za-z_][A-Za-z0-9_-]*`. Aliases and each dotted
+input path segment match `[A-Za-z_][A-Za-z0-9_]*`. A scope input may be a bare
+path or exactly one double-braced binding with surrounding whitespace; both
+normalize to the same protocol path string. Triple braces, expressions, numeric
+segments, missing paired attributes, and render child content other than
+whitespace/comments are invalid.
+Declarations cannot occur inside another fragment, an ordinary descendant
+element, a condition, repeat, route, or raw/inert context. Calls may occur in
+active normal template content, including fragment, condition, and repeat
+bodies, but not raw/inert or ignored route markup.
+
 ##### Element Processing
 - Maintain proper tag structure
-- Process children recursively (iterative implementation)
+- Process children with an explicit iterative work stack
 - Handle attributes and special elements
 - Omit closing tags when the HTML parser produces no end tag (void elements, etc.)
 - Handle self-closing tags (`/>` syntax) for SVG and other elements
@@ -2442,13 +2771,15 @@ child range pushes an explicit parse operation, and directive bodies (`<for>`,
   at build time with `ParserError::Html`.
 - Recursive component template references are rejected at build time with an
   actionable directive error instead of recursing through parser calls.
+  Owner-local `Render` cycles are valid and use bounded runtime calls instead.
 - The scanner is quote-aware for opening tags, so `>` inside `'...'` or `"..."`
   attribute values never terminates a tag.
 - HTML tag names are matched ASCII-case-insensitively where the HTML
   specification requires it: void elements (`<BR>`), closing-tag matching, and
   `<style>`/`<STYLE>` are recognized regardless of case. WebUI directives
-  (`<for>`, `<if>`, `<route>`, `<outlet>`) and component names remain
-  case-sensitive.
+  (`<for>`, `<if>`, `<fragment>`, `<render>`, `<route>`, `<outlet>`) and component
+  names remain case-sensitive. FAST's unsupported-fragment precheck also rejects
+  ASCII-case-insensitive spellings, following its existing HTML dialect.
 - This is not a browser HTML parser. It supports the WebUI template subset used
   at build time and should not be used for arbitrary browser DOM conformance.
 
@@ -2603,8 +2934,32 @@ pub enum ParserError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Structured template-authoring diagnostic.
+    #[error("{0}")]
+    Template(Box<Diagnostic>),
 }
 ```
+
+#### Local fragment diagnostics
+
+Local fragment authoring errors use `ParserError::Template(Box<Diagnostic>)`
+with an owner/source location, snippet, stable code, and actionable help.
+
+| Code | Meaning | Author action |
+|---|---|---|
+| `invalid-fragment` | Missing or invalid static declaration name | Use the local-name grammar |
+| `duplicate-fragment` | More than one declaration has the same owner-local name | Rename one declaration and its callers |
+| `unknown-fragment` | Call target is not declared by this owner | Declare the target locally or correct its name |
+| `invalid-fragment-attribute` | Unsupported or repeated directive attribute | Use `name` on declarations and `fragment` plus optional `scope` / `as` on calls |
+| `invalid-fragment-placement` | Directive occurs outside a supported active context | Move the declaration to its owning root or the call to active content |
+| `invalid-render` | Missing/invalid target or nonempty call body | Use a static target and an empty call |
+| `invalid-render-scope` | Invalid or incomplete scope/alias pair | Supply both a single dotted path and a valid alias, or neither |
+| `unsupported-fragment-directive` | FAST does not support the directive | Use native/WebUI rendering or ordinary FAST content |
+| `reserved-fragment-id` | Explicit root or loop-template ID uses the compiler's local-body namespace | Choose an ID outside `}}}webui:fragment:` |
+
+Unclosed directives retain the shared `unclosed-html-tag` code.
+
 ## WebUI Framework Plugin
 
 This section specifies only the cross-crate wire contract for `--plugin=webui`: the metadata emitted by `webui-parser`, the SSR markers emitted by `webui-handler`, and the hydration/runtime expectations consumed by `@microsoft/webui-framework`.
@@ -2624,21 +2979,61 @@ update hot paths still call the function directly.
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
 | `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
-| `tx`  | `[slot, parts, raw?][]`           | Client text runs inserted at precompiled slots; `raw = 1` identifies unescaped HTML ranges |
+| `tx`  | `[slot, parts, successor?][]`     | Client insertion slots plus complete SSR text successors; `1` identifies the raw binding itself |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementIndex, start, count][]`  | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
 | `r`   | `[collection, itemVar, blockIndex, slot, keyPath?][]` | Repeat blocks; `keyPath` is relative to the item variable |
+| `u`   | `([blockIndex, slot] \| [blockIndex, slot, scopePath, alias])[]` | Local fragment calls; two fields for parameterless calls |
 | `eg`  | `[event, [[handler, argSpecs, targetIndex, usesEvent?]]][]` | Body events grouped by event name |
-| `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
+| `b`   | `TemplateBlockMeta[]`             | Flat component-local block table referenced by `c` / `r` / `u` |
 | `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe host-targeted events plus anything bubbling to the host (`composed` is required only to cross a shadow boundary) |
-| `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
+| `tr`  | `string[]`                        | Component-level state roots referenced by reachable bodies and call inputs, excluding locally bound loop/alias roots |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
 | `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
 | `wp`  | `1 \| 2 \| 3 \| 4`                | Component work policy: `1` = lazy hydration, `2` = lazy rendering + hydration, `3` = interaction, `4` = lazy rendering + interaction |
 
 All arrays are optional and omitted from the output when empty to minimize payload.
+
+The optional third scalar in each `tx[]` tuple is current-version-only metadata:
+
+| Scalar | Meaning |
+|--------|---------|
+| omitted | Actual parent end; at section root, the section's closing boundary |
+| `1` | This binding owns a raw HTML range, rather than an escaped text node |
+| `8 * i + 2` | Next sibling is the start of local `c[i]` |
+| `8 * i + 3` | Next sibling is the start of local `r[i]` |
+| `8 * i + 4` | Next sibling is the start of local `u[i]` |
+| `8 * i + 5` | Next sibling is raw range `i`, counting only raw `tx[]` entries in section order |
+| `8 * (elementIndex - 1) + 6` | Next sibling is a static element at the section-wide pre-order index |
+| `8 * i + 7` | Next sibling is authored static comment `i` among the slot parent's own comments |
+
+All indexes in this encoding except `elementIndex` are zero-based. Zero is
+omitted, not serialized, and means a real end, never a request to search static
+children. Null padding, a separate raw flag, and older metadata decoding are
+not supported. The compiler resolves each pending escaped text run during the
+existing finalizer traversal, as its following sibling is encountered. Raw
+bindings keep scalar `1` and need no separate successor because their paired
+anchors bound the range. Text-run merging guarantees that a successor is never
+another static text node. Local slot-array indexes are unchanged by block
+pruning; only referenced block targets remap. Slot orders reset only when the
+monotonically increasing local static child offset advances.
+
+Authored comment ordinals exclude structural and raw range markers and any
+descendants owned by those ranges or a child component. Empty authored comments
+are real separators, not erased framework text markers. The source scanner's
+ordinary-comment stripping policy is unchanged; retained static comments in
+metadata still use this encoding.
+
+Each reachable local fragment body occupies one block in the shared flat `b[]`
+table. `u[]` references that block by index, including forward references and
+cycles, rather than nesting or expanding a body per callsite. `slot` has the
+same `TemplateSlot` encoding as conditionals and repeats. Scoped calls carry
+exactly four fields; parameterless calls carry exactly two. The scoped path
+belongs to the caller, while the alias only binds inside the callee. Template
+root projection must retain the caller input roots and the callee's owner-state
+reads without leaking caller-local bindings into callee analysis.
 
 ### Interaction hydration boundary
 
@@ -2761,7 +3156,7 @@ At initial render, `InitialStateStrategy::Full` bypasses component-key
 collection. `Components` finds components reachable from the active entry and
 request route, then combines their hydration surfaces: any `All` selects full
 state, `Keys` contributes keys, and `None` contributes nothing. Inactive sibling
-routes are excluded. Components behind active-route conditionals, loops, and
+routes are excluded. Components behind active-route conditionals, loops, local fragment calls, and
 attribute-template edges remain conservatively reachable because reachability
 is state-agnostic. Unknown protocol enum values are treated as `All`.
 
@@ -2802,7 +3197,8 @@ routes receive complete state.
 `argSpecs` for event handlers are resolved at dispatch time against the captured scope chain for the rendered template block:
 
 - `["e"]` passes the DOM event object
-- `["p", path]` resolves a component or active `<for>` scope path, e.g. `item.id`
+- `["p", path]` resolves a component, active `<for>` scope, or current fragment
+  alias path, e.g. `item.id`; caller-local scopes remain hidden at a render call
 - `["s", value]`, `["n", value]`, `["b", 0|1]`, and `["z"]` pass string, number, boolean, and `null` literals
 
 For example, `@click="{selectItem(item.id)}"` calls `selectItem` with the current repeat item id, while `@click="{selectItem(item.id, e)}"` passes the item id followed by the event object. `@click="{selectItem(e)}"` keeps the existing event-passing behavior, and `@click="{selectItem()}"` calls the handler with no arguments.
@@ -2820,6 +3216,9 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `<fragment name="items">body</fragment>` | `b[]` when reachable | declaration removed |
+| `<render fragment="items"></render>` | `u[]` | call removed; anchor slot stored |
+| <code v-pre>&lt;render fragment="items" scope="{{values}}" as="items"&gt;&lt;/render&gt;</code> | `u[]` | call removed; input path and alias stored |
 | `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
@@ -2831,7 +3230,10 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 
 Both outlet spellings compile as one empty directive element. The compiler
 consumes the paired closing tag before assigning later binding slots, preserving
-the authored parent hierarchy for siblings after the outlet.
+the authored parent hierarchy for siblings after the outlet. The template DOM
+cache records actual outlet element indexes once. Client wiring captures all
+compiled insertion references before replacing those elements with paired
+`wo` / `/wo` comments, so the anchors own route nodes inserted later.
 
 `<if>` and `<for>` recognition, attribute extraction, and closing-tag matching
 use the same quote-aware HTML scanner as SSR compilation. HTML whitespace
@@ -2954,30 +3356,30 @@ regions while the document is still loading.
 ### Normative invariants
 
 1. **Runtime discovery.** `<boundary name>` is valid in entries and reusable
-   components, including runtime `<if>`, outlet, and selected-route paths. A
+   components, including local fragment calls, runtime `<if>`, outlet, and selected-route paths. A
    false branch or unselected route produces no occurrence. Authored boundaries
    must not directly or transitively contain another authored boundary in this
    version.
 2. **Repeats are boundary-free.** A boundary must never execute inside a `<for>`
-   repeat body, directly or transitively behind `<if>`, a route, an outlet, or
-   a reusable component reached from the body. A repeat iteration cannot
-   suspend, so the build rejects the whole reachable set with
+   repeat body, directly or transitively behind a local fragment call, `<if>`,
+   a route, an outlet, or a reusable component reached from the body. The build
+   rejects the whole reachable set with
    `boundary-in-repeat` and names the repeat, the declaration, and its owner.
    The inverse is allowed and is the intended pattern: a `<for>` **inside** one
    boundary makes the whole finite list one atomic independently paced region,
-   and a boundary may appear before or after a repeat. The continuation VM
-   therefore keeps no resumable repeat state: a repeat is walked to completion
-   inside the step that opens it, and a boundary discovered while a repeat is
-   open is rejected as a malformed protocol.
+   and a boundary may appear before or after a repeat. This is a semantic
+   authoring restriction, not permission to use recursive execution for
+   boundary-free repeat or fragment subgraphs. A boundary discovered while a
+   repeat is open is rejected as a malformed protocol.
 3. **Local declaration identity.** `name` is static, non-empty, and unique only
    within its owning entry or component template. `declarationId` is a stable
    build-local integer. Each runtime occurrence receives a gapless
    response-local `instanceId` and the host receives
    `{ instanceId, declarationId, owner, name, key }`.
-4. **Multiple static occurrences.** A declaration in a reusable component
-   reached from more than one static callsite in one entry traversal must author
+4. **Multiple static occurrences.** A declaration reached through reusable
+   components or local fragments from more than one static callsite in one entry traversal must author
    `key`; the build rejects an unkeyed declaration with `missing-boundary-key`.
-   Independent entries that each reach the component once do not make the
+   Independent entries that each reach the declaration once do not make the
    declaration repeatable. A `<for>` never creates keyed boundary occurrences
    because every boundary its body reaches is rejected. The expression must
    resolve in that occurrence's lexical scope to a finite JSON number or string.
@@ -2999,12 +3401,15 @@ regions while the document is still loading.
 6. **Frozen continuation state.** At `start`, the handler projects and freezes
    only top-level state keys reachable by the continuation. It also preserves
    lexical locals, component attributes, route state, inventories, and
-   continuation frames. Resume state overlays the frozen parent projection for
+   continuation frames. Active local fragment calls retain the input selected
+   at their original callsite, including across subsequent overlay replacements.
+   Resume state overlays the frozen parent projection for
    selected keys. Expression resolution remains lexical first, then the
    boundary resume overlay, then frozen parent state. The one-shot
    `WebUIHandler::render_streaming` helper drives `start → resume → advance → …`
    directly against its original start snapshot, avoiding redundant overlays
-   when one state value drives the complete response.
+   when one state value drives the complete response. Active-call and total
+   invocation budgets belong to the whole response, not an individual step.
 7. **Generated component spans.** When traversal suspends inside a reusable
    component, the handler opens a generated component span around its unfinished
    host. An early child checkpoint may bypass exactly its nearest unfinished
@@ -3062,7 +3467,8 @@ contract rather than introduce a parallel one.
 2. **Typed records and exactly one empty terminal.** The four-element envelope
    is `[record_sequence, kind, target, payload]`. `kind` is `0` for a
    final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
-   for a state update, and `4` for the terminal. Every response ends with
+   for a state update, `3` for a generated span completion, and `4` for the
+   terminal. Every response ends with
    exactly one markerless `[sequence, 4, 0, {}]` after all scriptless tail
    bytes. A record arriving after it is corruption: it is rejected, its
    scaffolding released, and the stream is halted without disturbing the
@@ -3092,11 +3498,14 @@ contract rather than introduce a parallel one.
    already-committed updatable boundary; repeated writes to the same key are
    last-writer-wins and never mutate the range-state reference base.
 5. **Identity is not placement.** A record never contains a selector, node
-   path, or DOM position. Checkpoints carry the compiler-assigned integer
-   boundary ID in `target`; state updates carry the same ID. The integer
+   path, or placement instruction. Checkpoints carry the response-local integer
+   boundary occurrence ID in `target`; state updates carry the same ID. The integer
    resolves through coordinator-owned references captured during the original
    range walk and never requires a document scan. Placement remains expressed
    only through the marker pair the browser's HTML parser materializes.
+   Fragment source IDs identify immutable selected values, not placement.
+   Span-local source references use the existing span target; they do not
+   introduce another DOM lookup or boundary identity.
 6. **Boundary-local payload.** A record carries only the templates and state
    reachable from its own roots. Boundary 0 must not contain template metadata
    or state reachable only from a later boundary. Component-style closures
@@ -3193,9 +3602,10 @@ contract rather than introduce a parallel one.
 **Compile time**
 
 16. **`<boundary>` is a directive, not an element.** It emits no wrapper
-    node, never nests or overlaps another boundary, and may not cut through a
-    component template or host content, native raw/inert HTML content, `<if>`,
-    `<for>`, route, or hydration-marker scope.
+    node and its start/end pair encloses complete content in one record. It may
+    be reached through local fragments, components, conditions, and selected
+    routes, but cannot nest another boundary or occur in a repeat-reachable
+    subtree. Component host children and native raw/inert contexts are invalid.
 17. **Boundaries are rejected in HTML foster-parenting contexts.** Inside
     `table`, `thead`, `tbody`, `tfoot`, `tr`, `colgroup`, `select`, or
     `optgroup` the browser relocates the unknown `<webui-hydrate>` sentinel out
@@ -3203,17 +3613,17 @@ contract rather than introduce a parallel one.
     breaking their adjacency. This is a build error
     (`boundary-in-foster-context`), never a runtime failure. `td`, `th`, and
     `caption` return to "in body" insertion rules and are allowed.
-18. **Boundary names are free-form and resolve once.** Names are author-chosen
+18. **Boundary names belong to their authoring owner.** Names are author-chosen
     strings validated at build time for non-emptiness, staticness, and
-    per-entry uniqueness. The protocol stores their declaration order so a
-    response session can resolve `boundary("weather-shell")` once to a
-    `BoundaryId`. Only that integer reaches the HTML response; no generated
-    language symbols or name strings reach the wire.
+    per-owner uniqueness. Local fragment calls retain that same owner identity.
+    The compiler assigns declaration IDs; execution assigns response-local
+    occurrence IDs and returns the next descriptor to the host. There is no
+    name-based runtime boundary lookup.
 
 **Host**
 
 19. **The compiler decides where a flush is legal; the host decides when to
-    write.** A `StreamingResponse` writes the shell, each compile-time boundary,
+    write.** A `StreamingResponse` writes the shell, each discovered occurrence,
     state updates, and the tail only when the host calls it. Each synchronous
     call borrows its state only for that call, so the host may await backend
     work between calls without retaining a state borrow. Rendering requires a
@@ -3243,18 +3653,15 @@ contract rather than introduce a parallel one.
 
 ### Directive spelling and the structural signal namespace
 
-`<boundary>` is one arm of the parser's existing bare-element dispatch
-(`HtmlParser::parse`, `match element.name()`: `"for"`, `"if"`, `"body"`,
-`"head"`, `"route"`, `"outlet"`, then the component-registry fallback). Its
-handler `enter_boundary_directive` follows the shape `enter_body_element`
-established: it pushes compiler-owned structure before children and after them
-via a raw signal fragment, reusing `WebUIFragmentSignal` for
-`boundary_start:<seq>` / `boundary_end:<seq>` rather than adding `oneof`
-variants to `webui.proto`.
+`<boundary>`, `<fragment>`, and `<render>` belong to the parser's bare-element
+directive dispatch alongside `<for>`, `<if>`, `<body>`, `<head>`, `<route>`, and
+`<outlet>`. Boundaries emit typed `WebUIFragmentBoundary` start/end entries.
+Local declarations emit no entry at their source position; calls emit typed
+`WebUIFragmentRender` references. Neither uses raw structural signals as a
+substitute for its protocol variant.
 
 All compiler-owned structural signal values use the internal wire namespace
-`}}}webui:<token>` (for example `}}}webui:body_end` and
-`}}}webui:boundary_start:0`). The parser's authored double/triple bindings
+`}}}webui:<token>` (for example `}}}webui:body_end`). The parser's authored double/triple bindings
 cannot produce a value beginning with `}}}` because those bytes close the
 binding; CSS comment bindings also reject braces in paths. The handler strips
 this prefix only from raw signals before interpreting structure. Unprefixed
@@ -3262,25 +3669,20 @@ values such as authored `{{{head_start}}}`, `{{{head_end}}}`,
 `{{{body_start}}}`, `{{{body_end}}}`, and `{{{streaming_root}}}` always remain
 ordinary public state keys. Protocols built before this namespace therefore no
 longer receive structural hooks and must be rebuilt. Such a protocol also
-cannot enter streaming mode because it lacks namespaced `head_start`, boundary,
-and streamed-root signals. This namespace is an internal parser/handler
+cannot enter streaming mode because it lacks namespaced `head_start` and
+streamed-root signals. This namespace is an internal parser/handler
 contract, not author syntax.
 
-Boundary validation — unique static `name`, no nesting, outermost entry
-template only, and "must not cut through a component, native raw/inert content,
-`<if>`, `<for>`, route, or hydration-marker scope" — is parse-time structural
-analysis of the same order as the existing `key`-on-`<for>` validation
-(`invalid-for-key`). Marking a statically-provable, independently-hydratable
-fragment subtree is inherently a parse-time question, so no surface spelling
-avoids that cost. An attribute spelling (`<div boundary="name">`) would carry
-identical validation cost while losing "emits no wrapper element" and a clean
-reserved-tag diagnostic.
+Boundary placement validation is structural and graph-aware: unique static
+names, no direct or transitive nesting, and no repeat-reachable boundaries.
+Local `Render` edges participate even when cycles are present. The bare-tag
+spelling preserves wrapperless output and a dedicated directive diagnostic.
 
 The bare, unhyphenated spelling follows the rule the rest of the compiler uses:
 
 | Spelling | Meaning | Examples |
 | --- | --- | --- |
-| Bare tag | Compile-time directive, erased at build, never in the DOM | `<if>`, `<for>`, `<route>`, `<outlet>`, `<boundary>` |
+| Bare tag | Compile-time directive, erased at build, never in the DOM | `<if>`, `<for>`, `<fragment>`, `<render>`, `<route>`, `<outlet>`, `<boundary>` |
 | `webui-` tag | Real custom element defined at runtime | `<webui-hydrate>` |
 | `data-webui-*` | Runtime marker attribute on emitted output | `data-webui-boundary`, `data-webui-ssr-preload` |
 
@@ -3295,7 +3697,7 @@ no component can ever be named `boundary`.
 `<boundary>` is a bare compile-time directive. The parser erases its tags and
 brackets its body with a `WebUIFragmentBoundary` start/end pair emitted inline
 in the owner's record. It is valid in an entry or reusable component and may be
-reached through conditions, outlets, and route content. A boundary may enclose
+reached through local fragment calls, conditions, outlets, and route content. A boundary may enclose
 a boundary-free `<for>`. Component templates strip directive tags from their
 browser template HTML, while the server fragment graph retains the typed
 declaration.
@@ -3334,13 +3736,15 @@ The compiler enforces:
 - `name` is required, static, non-empty, and unique within the current owner.
 - Direct and transitive authored boundary nesting is rejected.
 - A boundary reachable from a `<for>` repeat body, directly or transitively
-  through `<if>`, a component, a route, or an outlet mount, is rejected with
+  through `<render>`, `<if>`, a component, a route, or an outlet mount, is rejected with
   `boundary-in-repeat`. Wrapping the whole `<for>` in one boundary is the
   supported alternative.
-- A declaration in a reusable component reached from more than one static
-  callsite in one entry traversal requires `key`; graph analysis marks those
+- A declaration reached through reusable components or local fragments from more
+  than one static callsite in one entry traversal requires `key`; graph analysis marks those
   declarations conservatively. Independent entries that each call it once do
-  not.
+  not. Boundary-bearing local-call cycles conservatively count as multiple
+  occurrences. The owner remains the authoring entry/component even when the
+  boundary's inline tape is stored in a local fragment body record.
 - `key` is a non-empty expression whose runtime value must be a string or finite
   JSON number.
 - Entry boundaries must be inside `<body>`. Component-local boundaries use the
@@ -3394,7 +3798,7 @@ produce:
   SSR hydration markers" above — same removal-after-hydration contract.
 - The stream envelope is the script-safe tuple
   `[record_sequence, kind, target, payload]`. A boundary checkpoint
-  uses kind `0` (final) or `1` (updatable), its compiler-assigned boundary ID as
+  uses kind `0` (final) or `1` (updatable), its response-local boundary occurrence ID as
   `target`, and a bootstrap object as `payload`. The first reusable projection
   carries `state`; a later proven superset under the same revision may instead
   carry `stateRef` and an optional `stateDelta`. Every checkpoint resolves to
@@ -3415,8 +3819,9 @@ produce:
   instance receives its inventory delta and checkpoint-local state without
   resending metadata. State references are backward-only and identify the exact
   preceding range-record sequence; state updates never become reference bases.
-  Per-instance positional state tuples are not part of the wire contract; state
-  is carried as named keys.
+  Owner state is carried as named keys, not copied per-instance state tuples.
+  Streaming local-fragment input provenance additionally carries shared source
+  definitions and host-local references, as specified below.
 - `data-ws` is a compiler-owned, streaming-only identity inserted into every
   streamed SSR component opening tag before browser upgrade. It is the sole
   parser-time deferral signal when the document also has the streaming mode
@@ -3482,6 +3887,71 @@ produce:
 - `<meta name="webui-streaming" content="1">` is emitted at `head_start`.
   Streaming mode does not emit a page-wide `#webui-data` block.
 
+### Streaming fragment input provenance
+
+An unfinished component may render against an input selected before a
+suspension while its eventual owner-state payload contains a newer overlay.
+Hydration must not substitute the newer owner value for the already selected
+input. A generated span payload can therefore include optional
+`fragmentSources`, also carried by boundary bootstrap payloads as needed before
+activation. This transport exists only for host-driven streaming local-render
+paths and is absent from ordinary responses. The compiled `u[]` tuples do not
+change.
+
+Single-call `render_streaming` borrows one immutable state for the entire
+response. It cannot replace owner state between calls, so it retains bare
+`wf` markers and does not serialize redundant captured-input provenance.
+
+`fragmentSources` is an additive source/projection DAG with these tuples:
+
+| Tuple | Meaning |
+|---|---|
+| `[id, 0, value]` | Define an immutable JSON backing root |
+| `[id, 1, parentId, relativeDottedPath]` | Select a dotted path relative to an earlier source |
+| `[id, 2, parentId, arrayIndex]` | Select a loop item from an earlier array source |
+
+IDs are immutable, response-wide unsigned 32-bit integers starting at zero.
+Parents precede children, and each backing root is serialized once. Each record
+adds only new definitions. Relative projections do not serialize descendant
+subtrees or expand ancestor paths; the array-item tuple is transport metadata,
+not an extension to authored scope-path syntax.
+
+A scoped host-driven streamed call opens with `<!--wf:ID-->`, selecting the
+exact resolved source value, and closes with `<!--/wf-->`. Ordinary and
+parameterless calls retain `<!--wf-->`. There are no invocation ordinals or
+call arrays. When an owning host needs its inputs after response completion,
+its span payload can include `fragmentSourceRefs: number[]` containing only
+the required source IDs. The existing span target associates these references
+with the host, including already completed calls in an unfinished host.
+
+The browser resolves the DAG once. Pending, lazy, and dormant hosts retain only
+their required resolved inputs through host references or anchor seeds. The
+global source table clears at terminal; those host-local values survive only
+as needed for activation and reconnect. Source definitions and reference
+arrays are compact transport data, not pending VM work.
+Retained-DOM teardown transfers each adopted capture to weak anchor storage
+and releases its host reservation immediately. Reconnect therefore needs no
+source identifier or response table; rebinding or removing the invocation
+discards its retained alias. Other adopters and never-adopted reservations
+remain independent.
+
+The VM retains active-depth cursor work without scheduling future loop items.
+Compiled paths and indices describe projections; no call clones a state
+subtree or rebases a whole root path. Vectors are reused, and strong source
+backing is released after emission when no active frame needs it; weak
+deduplication alone must not keep that backing alive.
+
+The browser uses provenance only to seed invocation aliases during hydration.
+Unrelated owner-state updates and event arguments continue to observe the
+selected input. An explicit later write to the input dependency rebinds it
+through normal reactivity. Source/projection metadata never replaces DOM or
+introduces another hydration pass.
+Loop-member inputs depend on both the collection and the owner fallback root,
+including through nested aliases. Single-root provenance stays a string;
+only these multi-root inputs need a shared dependency list. Capture revisions
+sum their monotonically increasing root revisions, so either input write
+invalidates the capture without adding per-invocation revision maps.
+
 ### Initialization ordering
 
 1. Streaming mode marker at `head_start`, before authored head children and
@@ -3525,6 +3995,9 @@ defines and its barrier releases.
 open, its nested spans have completed, the marker pair is root-local, and the
 host lies inside the range. It then activates the parent range, removes span
 attributes and scaffolding, and decrements the parent span's open-child count.
+A span with component props emits those immutable owner props over its caller
+state projection. Caller loop bindings and fragment aliases are not published.
+Such a primed record neither uses `stateRef` nor becomes a later delta base.
 
 This algorithm works for light DOM and open declarative shadow DOM. Bounded
 walks cross a `ShadowRoot` through its host and follow assigned slots without a
@@ -3714,6 +4187,10 @@ wire correctness.
 - Exceeding any limit is a stream error, never silent truncation. A malformed
   tuple, bad version or sequence, stale target, duplicate live key, missing
   marker, impossible span ancestry, or truncated response also fails closed.
+- Local fragment calls additionally enforce the response-wide 256-active-call
+  and 100,000-invocation limits across `start`, `resume`, and `advance`.
+  The independent physical continuation-frame limit may fail first when a
+  streamed template has additional structural nesting.
 - Client disconnect during a boundary flush surfaces through the existing
   `HandlerError::ClientDisconnected` path (`streaming.rs`); no new error type
   is needed on the Rust side.
@@ -3755,15 +4232,15 @@ poisoned.
 
 ### Performance invariants
 
-The continuation VM is iterative and retains bounded frames, lexical scopes,
-projected parent keys, occurrence-key sets, open-span captures, and reusable
-scratch buffers. It does not clone the complete parent state. Because a repeat
-can carry no boundary, it holds no resumable repeat iterator across host calls:
-a `<for>` is walked to completion inside the step that opens it, and closing one
-item and opening the next share a single frame. Runtime discovery follows only
-the selected fragment path and uses `FragmentList::contains_boundary` to avoid
-probing boundary-free subgraphs. Capture buffers are swapped and recycled rather
-than rebuilt for nested spans.
+Structural execution must use bounded iterative frames for components,
+conditions, repeats, local fragment calls, and selected route/outlet content,
+including boundary-free subgraphs. Frames retain only the scopes and cursor
+state needed to continue; they must not expand fragment bodies or clone complete
+state trees per call. Active fragment inputs survive suspension without being
+retargeted by later owner-state overlays. Runtime discovery follows only the
+selected fragment path. `FragmentList::contains_boundary` summarizes boundary
+reachability through local calls as well as other structural edges. Capture
+buffers are swapped and recycled rather than rebuilt for nested spans.
 
 Range records keep one bounded prior-projection descriptor. Under an unchanged
 state revision, an equal projection emits only `stateRef`; a proven superset
@@ -5091,13 +5568,40 @@ strict missing-fragment failure.
 
 **Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
-`tx[]` stores text runs as `[slot, parts, raw?]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Escaped text omits `raw` and client-created DOM inserts one runtime `Text` node per run. Triple-brace bindings set `raw` to `1` and own the sibling-safe DOM range between paired `<!--wN-->` and `<!--/wN-->` markers.
+`tx[]` stores text runs as `[slot, parts, successor?]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Escaped text carries its complete successor as specified in the metadata object format, omitting the scalar only at the actual parent or section end; client-created DOM inserts one runtime `Text` node per run. Triple-brace bindings set the scalar to `1` and own the sibling-safe DOM range between paired `<!--wN-->` and `<!--/wN-->` markers.
 
-**Element addressing.** Every locator - the `slot` in `tx` / `c` / `r`, the target in `ag`, and the event target in `eg` - names an element by its **pre-order index** within its own compiled section: `0` is the section root and elements are numbered `1..N` in the order a depth-first walk of `h` meets them. The root template and each `<if>` / `<for>` block number independently, matching the `b[]` split. A `slot` is `[parentIndex, beforeIndex, order?]`, where `beforeIndex` remains a child offset within that parent and `order` is the zero-based source order of dynamic text, conditional, and repeat bindings that share that static offset. Both runtime paths rebuild the same numbering in one walk - client-created DOM by walking the cloned `h`, SSR by walking the server output while skipping structural block ranges - so a binding resolves by array index rather than by descending a chain of child offsets.
+**Element addressing.** Every locator - the `slot` in `tx` / `c` / `r` / `u`,
+the target in `ag`, and the event target in `eg` - names an element by its
+**pre-order index** within its own compiled section. Index `0` is the section
+root and elements are numbered `1..N` in the order a depth-first walk of `h`
+meets them. The root template and each block, including a reusable fragment
+body, number independently, matching the flat `b[]` table.
+
+A `TemplateSlot` is `[parentIndex, beforeIndex, order?]`, where `beforeIndex`
+is a child offset within that parent and `order` is the zero-based source order
+of dynamic text, conditional, repeat, and render bindings that share that
+static offset. Both runtime paths rebuild the same numbering in one walk:
+client-created DOM walks cloned `h`; SSR walks server output while skipping
+structural block ranges. Bindings resolve by array index rather than by
+descending a chain of child offsets. Multiple invocations share body metadata,
+not their runtime elements or scope.
 
 Attribute bindings are recorded in `a[]`, while `ag[]` points at the owning element and the contiguous `[start, count)` range inside `a[]`. The compiled client HTML never embeds `data-w-*` markers; those remain SSR-only handler markers.
 
-Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` block table. The client runtime instantiates compiled child blocks directly and evaluates precompiled condition AST tuples — it does not parse raw template syntax or condition strings from repeat or conditional body content.
+Nested `<if>` / `<for>` blocks and local fragment bodies use the shared flat
+`b[]` block table. Compilation follows an explicit worklist rather than
+recursing through local call edges. The client instantiates compiled child
+blocks and uses precompiled conditions; it does not parse template syntax or
+condition strings from a body.
+
+The section compiler borrows owner source ranges and keeps the active section
+local. Suspended cursors retain only traversal state; their metadata temporarily
+occupies the freshly reserved child slot. Child completion replaces that slot
+with finalized child metadata and restores its parent. No projection, pruning,
+or emission reads these temporary slots before compilation completes, and
+named declaration slots are never used as scratch. Completed root sections
+release suspended capacity before finalization. Finalization consumes text
+bindings and releases source buffers once its parsed nodes own their contents.
 
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 
@@ -5125,10 +5629,83 @@ WebUI SSR marker formats are:
 | Repeat item | `<!--wi-->` | Marks each iteration boundary inside a repeat |
 | Conditional start | `<!--wc-->` | Opens an `<if>` block |
 | Conditional end | `<!--/wc-->` | Closes the `<if>` block |
+| Local render start | `<!--wf-->` | Opens an uncaptured invocation: ordinary rendering, single-call streaming, or a parameterless call |
+| Captured local render start | `<!--wf:ID-->` | Opens a scoped host-driven streamed call using the resolved `fragmentSources` input `ID` |
+| Local render end | `<!--/wf-->` | Closes that invocation, including empty or multi-root bodies |
+| Outlet start | `<!--wo-->` | Opens an opaque child-route sibling range |
+| Outlet end | `<!--/wo-->` | Closes the outlet, including an empty expansion |
 | Raw HTML start | `<!--wN-->` | Opens raw range `N` owned by a triple-brace binding |
 | Raw HTML end | `<!--/wN-->` | Closes the same raw range `N` |
 
-The WebUI handler plugin emits these seven comment marker roles. Escaped text bindings, attribute bindings, and event handlers are resolved from compiled pre-order element indices at hydration time - no DOM attribute markers are needed. The handler only emits structural markers in active child scopes; the root page scope remains marker-free. Raw HTML is the exception because its rendered value can contain any number of top-level nodes and therefore needs explicit ownership boundaries. Raw markers carry a decimal pair identifier so adjacent bindings cannot claim each other's ranges. Exact `<!--wN-->` / `<!--/wN-->` comments are framework-reserved and trusted raw HTML must not emit a marker matching its surrounding range. During hydration the framework keeps `<!--wr-->` as the repeat anchor, keeps `<!--wc-->` only for an absent conditional body, retains `<!--wN-->` / `<!--/wN-->` for sibling-safe reactive replacement, and removes visible-condition starts, `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->`. A visible conditional creates an empty anchor only if it later becomes absent, and removes that anchor when content is restored.
+The WebUI handler plugin emits these comment marker roles. Escaped text,
+attributes, and events resolve from compiled pre-order element indices.
+Conditional and repeat markers belong to active component scopes. Local render
+and raw HTML ranges also have markers in the root page scope because their
+content can contain any number of top-level nodes and needs explicit ownership
+boundaries.
+An outlet occupies one compiled `<outlet>` index even when SSR emits zero or
+many route siblings. Hydration maps that virtual element to the opening
+comment and reuses the opaque range cursor without indexing route descendants.
+Outlet ranges do not consume raw-binding indexes or fragment invocation
+budgets. Their labeled anchors remain in the DOM, separating independently
+bound text before and after empty outlets. A top-level outlet in a structural
+block requires stable range ownership: inserted route siblings must move or
+disappear with that block. An outlet at the component root or inside a retained
+element does not require a range controller by itself. Generated server and
+client artifacts must be rebuilt
+together; an unmarked outlet expansion is invalid SSR.
+Raw markers carry a decimal pair identifier so adjacent bindings cannot claim
+each other's ranges. Exact `<!--wN-->` / `<!--/wN-->` comments are
+framework-reserved and trusted raw HTML must not emit a marker matching its
+surrounding range.
+
+Templates without local calls or top-level structural-block outlets keep the
+existing cleanup: retain `<!--wr-->` as
+the repeat anchor, retain `<!--wc-->` only for an absent conditional body, and
+remove visible-condition starts, `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->`.
+A visible conditional creates an empty anchor only if it later becomes absent,
+and removes that anchor when content is restored.
+Ordinary conditional closing markers belong to the transient hydration section,
+not to the persistent condition binding. Only retained-range bindings acquire
+an `end` property. Hydration never adds and then deletes that property from
+ordinary bindings: deletion can normalize their property storage into a
+dictionary and retain substantially more memory than the removed field.
+
+Fragment-bearing templates and templates with top-level structural-block outlets
+use stable sibling ranges for structural instances. One weak range-kind cache
+is allocated only when normalization encounters a local call or such an outlet,
+including in nested blocks. Ordinary metadata creates no range cache; later
+template registration can still enable range work. Outlet-only templates share
+the structural work queue but do not enable named-call state guards or allocate
+capture-state sets and version maps. Their ordinary state-update and repeat
+mismatch diagnostic semantics remain unchanged.
+An outlet-only operation also preserves ordinary unknown-item-scope gating.
+Known-state protection requested for reconnect or deferred-write replay travels
+through the drain call to every queued task, including tasks appended during
+that drain; it is not retained as another controller field or capture-state flag.
+Ordinary and fragment-bearing templates share one iterative SSR hydrator and
+one section-binding implementation. The shared cursor and its helper functions
+initialize synchronously on first SSR use, before any host callback, rather
+than allocating every helper when the module loads. Their shared closure retains
+only those functions and the metadata-keyed weak shape cache, never a host or
+operation. An operation uses local cursor state and section records, without a
+separate executor object or per-root constructor. Cold structural work stays
+outside the frequently executed cursor function. Cache initialization preserves
+shapes populated by reentrant host lookups and permits retry after a failed
+first hydration.
+Fragment work separately defines its implementation constructor and shared sort
+helpers once on first use. These caches retain no owner or operation: traversal
+state, work stacks, generations, and budget counters remain instance-local.
+Later metadata registration reuses this shared implementation with independently
+keyed shapes. The shared hydrator passes the host directly rather than constructing
+per-hydration callback adapters.
+For retained-range templates, after all ranges validate and bindings are
+wired, `wc`, `/wc`, `wr`, `/wr`, `wi`, `wf`, `wf:ID`, and `/wf` comments remain as
+blank anchors. Empty, text-only, and
+multi-root instances therefore retain their own boundaries without copying
+descendant node lists into every ancestor. Raw `wN` / `/wN` pairs retain their
+labels and replacement behavior in both paths. Hydration does not relocate the
+trusted SSR nodes.
 
 WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled metadata were generated by the same trusted WebUI compiler/handler version. Hand-authored or partially modified marker streams are unsupported; missing structural closing markers are invalid input, not a recoverable runtime condition.
 
@@ -5136,11 +5713,105 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 `@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup or explicitly opt into visibility-driven activation, and compiler-owned scriptless hosts remain dormant until browser code actually writes state. An empty compiler-owned template still registers its tag for soft navigation but uses a minimal `HTMLElement` host rather than allocating dormant `TemplateElement` state.
 
-- SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects structural markers and raw HTML ranges in document order. Because compiler metadata and server output share source order, each block and raw range is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips complete conditional, repeat, and raw HTML ranges - their rendered elements are not static children owned by the enclosing section - and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->`, structural closing markers, and starts for visible conditions are removed afterwards; raw HTML boundaries remain for targeted updates.
+- SSR hydration performs a pre-order walk that pairs compiled section elements
+  with server elements and collects structural and raw ranges in document
+  order. Conditional, repeat, local-render, and raw ranges do not contribute
+  their descendants to the enclosing section's static element numbering.
+  Child components own their own template descendants. Bindings resolve through
+  the collected section indexes, and structural markers follow the ordinary
+  or fragment-bearing cleanup contract above.
+  Text successors resolve directly through the collected section elements,
+  structural starts, raw ranges, or sparse authored-comment arrays. Only parents
+  referenced by a compiled comment successor collect comments. There are no
+  text/element ordinal buckets, per-parent ordinal maps, marker successor
+  reconstruction maps, or derived per-template text boundary arrays. The
+  metadata-keyed hydration Shape owns the sole parsed-template element table;
+  leaf wiring neither parses the template nor builds a second element cache.
+  Existing eager template preparation, including false-condition bodies, is
+  unchanged; first interaction never finishes deferred template parsing.
+  Absent compiled binding groups share immutable empty arrays across
+  instances and transient indexes. Present groups receive invocation-local
+  mutable arrays; teardown clears only populated groups.
+- SSR uses one explicit traversal stack and metadata-keyed shape cache for
+  ordinary sections, conditions, repeats, and local calls. Cached descent
+  information distinguishes opaque component contents, native leaves needing
+  fragment-range validation, and compiled children or structural slots.
+  Ordinary text-only leaves need no child traversal frames. All encountered
+  section ranges validate before text/property/event/ref wiring and before
+  structural labels are erased. The temporary section indexes are released
+  after wiring. Hydration neither stages nor reparents SSR nodes, including
+  text-only and multi-root ordinary blocks, and does not rescan nested ranges.
+- The root section, current cursor, and invocation counter are operation-local
+  variables. Stateless helpers never capture or pool an active traversal.
+  Continuation and
+  additional-section arrays are allocated only when traversal needs them; a
+  section owns its index fields directly rather than a separate index wrapper.
+  A flat ordinary component root with no conditional, repeat, local call, or
+  raw-HTML topology uses the existing immutable empty-array sentinel instead
+  of collecting redundant managed-node membership. The SSR decision reuses
+  the eager shape's raw-slot count; CSR checks compiled text metadata before
+  its first snapshot. This creates no new cache or instance field and never
+  reconstructs ownership on demand. Validation and element/binding indexes
+  are unchanged. Every block instance, graph root, and topology-changing root
+  retains its existing private `Node[]` operations. Tracked ordinary root-node
+  storage is sized from `childNodes.length`, and the root element table from
+  its cached template shape. Both are filled during traversal;
+  a separate visited-element count prevents reserved capacity from hiding
+  missing SSR elements.
+- Each present section wires its bindings and finalizes host integration once
+  using its collected element index. Events and references therefore remain
+  section-local without querying descendants owned by nested sections. Ordinary
+  structural instances retain the same-container node lists required by their
+  existing reconciliation; fragment-bearing instances retain bounded sibling
+  ownership. Flat component roots instead rely on their host DOM for lifetime:
+  initial/CSS-deferred mounts append from staging DOM, updates target direct
+  binding references, and root teardown releases bindings without deleting host
+  DOM. Empty SSR text insertion wires the inserted node without adding root
+  membership. Reconnect, native host moves, styles and template registration
+  preserve their existing behavior. Only actual component roots can omit the
+  list; identical flat metadata used for a child block still owns its nodes.
+  Shared hydration does not add fragment-only instance or binding fields to
+  ordinary templates. Only local-call edges consume invocation depth and visit
+  budgets, not ordinary DOM depth, conditional nesting, or repeat item counts.
+- Text groups remain shared and empty during indexing. Wiring allocates a
+  private array sized to the compiled text count, fills a dense prefix, and
+  publishes only the complete group before property/event/ref callbacks can
+  reenter. Empty groups retain shared storage; resolver failures never publish
+  a partial group. Client-created binding allocation is unchanged. Empty
+  comment indexes and missing observed-attribute lists reuse the same
+  immutable empty array. No marker-boundary tables are reconstructed.
 - Reactive triple-brace updates delete only the nodes between the binding's retained
   `<!--wN-->` / `<!--/wN-->` anchors, parse the new trusted HTML in the parent
   element's context, and insert the resulting fragment before the end anchor.
   Static, conditional, and repeated siblings outside that range are preserved.
+- Local render hydration claims the existing `wf` range and never recreates its
+  SSR contents or applies a first rendering pass. A scope input whose root was
+  omitted from bootstrap is unavailable, not known missing. Its trusted contents
+  remain unchanged until the dependency is supplied. Once the root is known, a
+  missing requested child is an input error. Alias-root ownership prevents
+  missing children from falling through to same-named owner state. The same
+  distinction applies to ordinary, dormant, lazy, interaction, and streamed
+  hydration.
+- Fragment-bearing client mounts and updates use one operation-owned worklist.
+  Nested structure enqueues tasks instead of recursively updating child
+  instances. Tasks belong to their current owner; generation and liveness checks
+  discard obsolete work. A call refreshes its isolated alias before enqueueing
+  descendant work. The 256-call and 100,000-visit limits are shared across the
+  operation, not reset by a nested condition or repeat.
+- Reactive path-index buckets share immutable empty text, attribute, condition,
+  and repeat arrays in both ordinary and fragment-bearing hosts. The first
+  binding replaces only that shared sentinel with a one-element array; later
+  appends reuse the bucket's mutable array. Instances and dependency buckets
+  use the same binding-group representation; calls occupy an optional render
+  group. Buckets never duplicate these references in a parallel task array.
+  Insertion order, duplicate entries, wildcard extraction, and independently
+  lazy fragment work are preserved. Rebuilding or destroying an index never
+  mutates the shared empty arrays.
+- Ordinary and fragment-bearing hosts share one dirty-path flush loop,
+  including wildcard processing, reentrant passes, and pending-flush cleanup.
+  Ordinary groups execute directly without allocating a worklist. Calls use
+  the operation-owned stack to order owners before descendants and discard
+  stale tasks; the stack is populated from the same binding groups.
 - Authored browser entries execute only after every SSR instance they may
   upgrade has complete markup. Parser-inserted, non-async ES module scripts and
   classic `defer` scripts satisfy this automatically; blocking classic scripts
@@ -5226,10 +5897,15 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   mount latch survives delayed disconnect teardown. Reconnect therefore skips
   fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM in
   place, and reconciles available current client state while retaining unknown
-  trusted values. Templates containing conditionals or repeats remount from the
-  instance's current state instead of attempting to reclaim SSR ranges whose
-  closing markers were already removed. Client-created policy-bearing instances
-  follow the same eager reconnect path.
+  trusted values. Templates without local calls that contain conditionals or
+  repeats remount from the instance's current state instead of attempting to
+  reclaim SSR ranges whose closing markers were already removed.
+  Fragment-bearing templates retain their range endpoints: delayed-disconnect
+  teardown restores the original structural labels, releases bindings/scopes/
+  listeners, and reconnect hydrates the existing ranges in place. Client-created
+  graph blocks retain an item-capable leading anchor so they use the same
+  reconnect path. Unknown trusted subtree content and node identity are not
+  discarded merely because a graph component disconnected.
 - Lazy intersection batches enqueue each composed ancestor as an individual
   parent-first work item and run synchronously until they consume an 8ms budget.
   Remaining targets continue through
@@ -5318,8 +5994,8 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   keep native direct-property assignment semantics.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
-  embedded in `c` / `r`, and event target indices directly, then applies the first binding pass before
-  appending nodes to the connected DOM. Child components therefore observe
+  embedded in `c` / `r` / `u`, and event target indices directly, then applies
+  the first binding pass before appending nodes to the connected DOM. Child components therefore observe
   initial parent `:` property bindings in `connectedCallback`, while later parent
   updates remain live.
 - **Hydration-mismatch diagnostic (#379).** SSR hydration is single-pass: the
@@ -5341,22 +6017,26 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   from the comparison. The lifecycle rule for authors: a value that must appear
   in the initial render belongs in the SSR state; assign anything else after
   `super.connectedCallback()`. Components that follow this rule allocate nothing
-  on the hot path — the tracking `Set` stays `null` and the check early-returns.
+  on the hot path — the tracking `Set` stays unallocated and the check early-returns.
   The diagnostic is **development-only**. Its comparators and message string live
   in `hydration-mismatch.ts` behind the `reportHydrationMismatch` entry point,
-  reached solely through a dynamic `import()` gated by the module-local `DEV`
-  constant — derived from the compile-time flag `__WEBUI_DEV__` as
-  `typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__`, so an **undefined** flag
-  defaults the diagnostic **on** (raw ESM, the framework's own `tsc` output, and
-  unit tests keep the warning without any bundler cooperation). When a bundler
-  folds `__WEBUI_DEV__` to `false`, `DEV` folds with it: `$checkHydrationMismatch`
-  empties and its lone `import()` is dead-code-eliminated, dropping the whole
-  diagnostic module — comparison code *and* strings — from the output. The dynamic
-  import is load-bearing: esbuild fixes static-import reachability before
-  constant-folding and never re-runs tree-shaking, so a static import would ship
-  even when its only caller folds away. `webui-press build` injects
+  reached solely through a dynamic `import()` guarded directly by the compile-time
+  flag `__WEBUI_DEV__`. A `typeof` check defaults an **undefined** flag **on**:
+  raw ESM, the framework's own `tsc` output, and unit tests keep diagnostics
+  without bundler cooperation. A direct positive flag check encloses the
+  diagnostic method body, so the bundler can discard its dynamic import before
+  resolving the module dependency. Alias folding or an early-return guard alone
+  does not provide this guarantee. Defining the flag as `false` empties
+  `$checkHydrationMismatch` and removes the diagnostic module's comparison code
+  and strings, including in split ESM output. `webui-press build` injects
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
+  The shared example client builder supplies that production default for
+  non-watch builds, preserves undefined diagnostics in watch mode, and lets
+  explicit application defines override the default.
+  The tracking field has no emitted initializer, and every read and reset is
+  guarded by the same direct flag check. Production instances therefore retain
+  neither diagnostic tracking storage nor diagnostic-only lifecycle writes.
 - Scriptless components receive compiled `template_json` with `th: 1` but no
   `hydration_keys` or initial bootstrap state. A template with static DOM,
   bindings, blocks, events, state roots, Shadow DOM, or component styles receives

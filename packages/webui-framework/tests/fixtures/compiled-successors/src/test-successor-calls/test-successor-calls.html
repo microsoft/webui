@@ -1,0 +1,5 @@
+<fragment name="unused"><b>unreachable</b></fragment>
+<fragment name="empty"></fragment>
+<fragment name="piece">{{value}}<b>piece</b>{{tail}}</fragment>
+<p class="mixed">{{prefix}}<render fragment="empty"></render>{{between}}<render fragment="piece"></render>{{rawPrefix}}{{{html}}}{{staticPrefix}}<strong>static</strong>{{tail}}</p>
+<if condition="show"><section>{{prefix}}<render fragment="piece"></render>{{tail}}</section></if>

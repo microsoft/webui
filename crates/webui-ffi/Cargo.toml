@@ -31,6 +31,7 @@ cbindgen = { workspace = true, optional = true }
 [dev-dependencies]
 criterion = { workspace = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.28" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.28", default-features = false }
 
 [[bench]]
 name = "protocol_bench"

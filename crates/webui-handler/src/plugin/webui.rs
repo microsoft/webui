@@ -131,6 +131,32 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         writer.write(COND_END)
     }
 
+    fn on_render_start(
+        &mut self,
+        _name: &str,
+        source_id: Option<u32>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        // The marker carries the identifier that selects the captured input, so
+        // the browser adopts the exact value without a copy in the DOM.
+        match source_id {
+            Some(source_id) => crate::streaming::write_range_marker(writer, "<!--wf:", source_id),
+            None => writer.write("<!--wf-->"),
+        }
+    }
+
+    fn on_render_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write("<!--/wf-->")
+    }
+
+    fn on_outlet_start(&mut self, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write("<!--wo-->")
+    }
+
+    fn on_outlet_end(&mut self, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write("<!--/wo-->")
+    }
+
     fn on_repeat_item_start(
         &mut self,
         _index: usize,
@@ -382,6 +408,28 @@ mod tests {
     }
 
     #[test]
+    fn outlet_start_emits_literal_without_raw_marker_state() -> Result<()> {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_outlet_start(&mut writer)?;
+        assert_eq!(writer.output, "<!--wo-->");
+        assert_eq!(plugin.raw_index, 0);
+        assert_eq!(plugin.raw_marker.capacity(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn outlet_end_emits_literal_without_raw_marker_state() -> Result<()> {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_outlet_end(&mut writer)?;
+        assert_eq!(writer.output, "<!--/wo-->");
+        assert_eq!(plugin.raw_index, 0);
+        assert_eq!(plugin.raw_marker.capacity(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn test_for_loop_emits_repeat_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
@@ -484,7 +532,7 @@ mod tests {
             "items": [{"name": "A&B"}],
         });
         plugin
-            .write_route_component_state(&state, &mut writer)
+            .write_route_component_state((&state).into(), &mut writer)
             .unwrap();
         assert_eq!(
             writer.output, "",

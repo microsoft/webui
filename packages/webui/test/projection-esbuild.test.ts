@@ -30,6 +30,65 @@ const FRAMEWORK_ENTRY = path.resolve(
   "index.ts"
 );
 
+describe("framework diagnostic reachability", () => {
+  for (const format of ["iife", "esm"] as const) {
+    for (const flag of [false, true, undefined]) {
+      test(`${format} with __WEBUI_DEV__=${String(flag)}`, async (t) => {
+        const result = await esbuild.build({
+          stdin: {
+            contents: `
+import { WebUIElement } from '@microsoft/webui-framework';
+class DiagnosticProbe extends WebUIElement {}
+DiagnosticProbe.define('diagnostic-probe');
+`,
+            loader: "ts",
+            resolveDir: process.cwd(),
+            sourcefile: "diagnostic-entry.ts",
+          },
+          alias: { "@microsoft/webui-framework": FRAMEWORK_ENTRY },
+          bundle: true,
+          minify: true,
+          format,
+          splitting: format === "esm",
+          outdir: path.resolve(".diagnostic-bundle-test"),
+          write: false,
+          metafile: true,
+          platform: "browser",
+          target: "es2022",
+          supported: { "import-attributes": true },
+          define: flag === undefined ? {} : { __WEBUI_DEV__: String(flag) },
+          logLevel: "silent",
+        });
+        assert.ok(result.metafile);
+        assert.ok(result.outputFiles);
+        let diagnosticBytes = 0;
+        for (const output of Object.values(result.metafile.outputs)) {
+          for (const [name, input] of Object.entries(output.inputs)) {
+            if (name.endsWith("/hydration-mismatch.ts")) {
+              diagnosticBytes += input.bytesInOutput;
+            }
+          }
+        }
+        const warningEmitted = result.outputFiles.some((output) =>
+          output.text.includes("Hydration mismatch on")
+        );
+        const trackingFieldEmitted = result.outputFiles.some((output) =>
+          output.text.includes("$preReadyWrites")
+        );
+        t.diagnostic(JSON.stringify({
+          format,
+          flag: String(flag),
+          diagnosticBytes,
+          trackingFieldEmitted,
+        }));
+        assert.equal(diagnosticBytes > 0, flag !== false);
+        assert.equal(warningEmitted, flag !== false);
+        assert.equal(trackingFieldEmitted, flag !== false);
+      });
+    }
+  }
+});
+
 interface ConcurrencyModule {
   mapConcurrent<T, U>(
     values: ReadonlyArray<T>,

@@ -1,0 +1,14 @@
+<template>
+  <fragment name="piece">{{suffix}}<em class="piece">{{title}}</em></fragment>
+  <fragment name="empty"></fragment>
+  <fragment name="rich">{{{html}}}</fragment>
+  <fragment name="scalar"><span class="scalar">{{value}}</span></fragment>
+  <fragment name="measure"><output class="byte-length">{{size}}</output></fragment>
+  <fragment name="fallback"><span class="loop-fallback">{{cell}}|{{item.fallback}}</span></fragment>
+  <p class="adjacent">{{prefix}}<if condition="show"><b>{{title}}</b></if><render fragment="empty"></render><render fragment="piece"></render><for each="value in tail"><i>{{value}}</i></for>{{suffix}}</p>
+  <section class="rich"><render fragment="rich"></render><span class="after-rich">{{title}}</span></section>
+  <render fragment="scalar" scope="{{scalar}}" as="value"></render>
+  <render fragment="measure" scope="{{lengthText.length}}" as="size"></render>
+  <if condition="invalidLength"><render fragment="measure" scope="{{lengthText.length.more}}" as="size"></render></if>
+  <for each="item in fallbackItems"><render fragment="fallback" scope="{{item.fallback}}" as="cell"></render></for>
+</template>

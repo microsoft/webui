@@ -36,6 +36,7 @@ macro_rules! test_json {
 /// - `attr_raw("name", "v", attr_start)` — Static rawValue with attrStart
 /// - `attr_skip("name", "v")` — Skipped attribute
 /// - `component("id")` — Component fragment
+/// - `render("id", "scope", "alias")` — Named-fragment call
 /// - `for_loop("item", "collection", "template")` — For loop
 /// - `if_cond("template")` — If condition
 /// - `boundary("name", "template")` — Streaming boundary declaration
@@ -71,6 +72,11 @@ pub enum FragmentMatcher {
     },
     Attribute(AttrMatcher),
     Component(String),
+    Render {
+        template: String,
+        scope: String,
+        alias: String,
+    },
     ForLoop {
         item: String,
         collection: String,
@@ -282,6 +288,16 @@ pub fn component(id: &str) -> FragmentMatcher {
     FragmentMatcher::Component(id.to_string())
 }
 
+/// Match an isolated named-fragment invocation.
+#[must_use]
+pub fn render(template: &str, scope: &str, alias: &str) -> FragmentMatcher {
+    FragmentMatcher::Render {
+        template: template.to_string(),
+        scope: scope.to_string(),
+        alias: alias.to_string(),
+    }
+}
+
 /// Match a for-loop fragment.
 pub fn for_loop(item: &str, collection: &str, template: &str) -> FragmentMatcher {
     FragmentMatcher::ForLoop {
@@ -477,6 +493,21 @@ pub fn assert_fragment_list(
                     i
                 );
             }
+            (
+                Some(Fragment::Render(call)),
+                FragmentMatcher::Render {
+                    template,
+                    scope,
+                    alias,
+                },
+            ) => {
+                assert_eq!(
+                    call.fragment_id, *template,
+                    "Fragment[{i}]: render target mismatch"
+                );
+                assert_eq!(call.scope, *scope, "Fragment[{i}]: render scope mismatch");
+                assert_eq!(call.alias, *alias, "Fragment[{i}]: render alias mismatch");
+            }
             (Some(Fragment::IfCond(ic)), FragmentMatcher::IfCond { template }) => {
                 assert_eq!(
                     ic.fragment_id, *template,
@@ -543,6 +574,10 @@ fn format_fragment(frag: &webui_protocol::WebUIFragment) -> String {
             a.name, a.value, a.template, a.complex, a.attr_start, a.attr_skip, a.raw_value
         ),
         Some(Fragment::Component(c)) => format!("component({:?})", c.fragment_id),
+        Some(Fragment::Render(call)) => format!(
+            "render({:?}, scope={:?}, alias={:?})",
+            call.fragment_id, call.scope, call.alias
+        ),
         Some(Fragment::ForLoop(f)) => format!(
             "for({:?} in {:?}, template={:?})",
             f.item, f.collection, f.fragment_id
@@ -611,5 +646,30 @@ impl TestFileSystem {
 
         // Return the path by value (clone it)
         file_path
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::{assert_fragment_list, format_fragment, render};
+    use webui_protocol::WebUIFragment;
+
+    #[test]
+    fn named_render_matcher_checks_scoped_and_parameterless_calls() {
+        let fragments = [
+            WebUIFragment::render("tree", "child.children", "items"),
+            WebUIFragment::render("heading", "", ""),
+        ];
+        assert_fragment_list(
+            &fragments,
+            &[
+                render("tree", "child.children", "items"),
+                render("heading", "", ""),
+            ],
+        );
+        assert_eq!(
+            format_fragment(&fragments[0]),
+            r#"render("tree", scope="child.children", alias="items")"#
+        );
     }
 }

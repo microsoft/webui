@@ -22,23 +22,61 @@ use crate::{ResponseWriter, Result};
 /// Returns [`Cow::Borrowed`] when the input contains no characters that need
 /// escaping (zero-allocation fast path).
 pub fn encode_safe(input: &str) -> Cow<'_, str> {
-    let bytes = input.as_bytes();
-
-    // Fast path: find the first byte that needs escaping.
-    let first = bytes
-        .iter()
-        .position(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\'' | b'/'));
-
-    let Some(pos) = first else {
+    let Some(pos) = first_escape(input) else {
         return Cow::Borrowed(input);
     };
 
-    // Slow path: allocate and build the escaped string.
     let mut out = String::with_capacity(input.len() + 6);
-    out.push_str(&input[..pos]);
+    append_escaped(input, pos, &mut out);
+    Cow::Owned(out)
+}
 
+pub(crate) fn encode_safe_reusing<'a>(input: &'a str, buffer: &'a mut String) -> &'a str {
+    let Some(pos) = first_escape(input) else {
+        return input;
+    };
+    buffer.clear();
+    append_escaped(input, pos, buffer);
+    buffer
+}
+
+#[inline]
+pub(crate) fn with_encoded_safe(
+    input: &str,
+    buffer: &mut String,
+    write: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    let Some(pos) = first_escape(input) else {
+        return write(input);
+    };
+    buffer.clear();
+    append_escaped(input, pos, buffer);
+    let result = write(buffer);
+    recycle_buffer(buffer);
+    result
+}
+
+#[inline]
+pub(crate) fn recycle_buffer(buffer: &mut String) {
+    if buffer.capacity() > 1024 {
+        *buffer = String::new();
+    } else {
+        buffer.clear();
+    }
+}
+
+#[inline]
+fn first_escape(input: &str) -> Option<usize> {
+    input
+        .as_bytes()
+        .iter()
+        .position(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\'' | b'/'))
+}
+
+fn append_escaped(input: &str, pos: usize, out: &mut String) {
+    out.push_str(&input[..pos]);
     let mut start = pos;
-    for (i, &b) in bytes[pos..].iter().enumerate() {
+    for (i, &b) in input.as_bytes()[pos..].iter().enumerate() {
         let replacement = match b {
             b'&' => "&amp;",
             b'<' => "&lt;",
@@ -55,8 +93,6 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     }
     // Flush any remaining unescaped tail.
     out.push_str(&input[start..]);
-
-    Cow::Owned(out)
 }
 
 #[inline]
@@ -186,6 +222,62 @@ mod tests {
     #[test]
     fn mixed_unicode_and_special() {
         assert_eq!(encode_safe("日本語&テスト"), "日本語&amp;テスト");
+    }
+
+    #[test]
+    fn reusable_encoding_preserves_all_entities_and_discards_previous_content() {
+        let mut buffer = String::with_capacity(128);
+        let allocation = buffer.as_ptr();
+        for input in ["<&日本語/\"'>", "plain", "", "next&", "/last"] {
+            assert_eq!(encode_safe_reusing(input, &mut buffer), encode_safe(input));
+            assert_eq!(buffer.as_ptr(), allocation);
+        }
+        assert_eq!(buffer, "&#x2F;last");
+    }
+
+    #[test]
+    fn encoded_writes_keep_complete_values_and_reuse_small_storage() -> Result<()> {
+        let mut buffer = String::with_capacity(128);
+        let allocation = buffer.as_ptr();
+        for input in ["plain", "", "<&日本語/\"'>", "next&"] {
+            let mut calls = 0;
+            with_encoded_safe(input, &mut buffer, |encoded| {
+                calls += 1;
+                assert_eq!(encoded, encode_safe(input));
+                Ok(())
+            })?;
+            assert_eq!(calls, 1);
+            assert!(buffer.is_empty());
+            assert_eq!(buffer.as_ptr(), allocation);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn encoded_writes_release_oversized_storage_even_when_the_writer_fails() {
+        let mut buffer = String::new();
+        let input = "&".repeat(1025);
+        for fail in [false, true] {
+            let mut calls = 0;
+            let result = with_encoded_safe(&input, &mut buffer, |encoded| {
+                calls += 1;
+                assert_eq!(encoded, "&amp;".repeat(1025));
+                if fail {
+                    Err(crate::HandlerError::Invariant("writer failed".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(calls, 1);
+            assert_eq!(buffer.capacity(), 0);
+            if fail {
+                assert!(
+                    matches!(result, Err(crate::HandlerError::Invariant(message)) if message == "writer failed")
+                );
+            } else {
+                assert!(result.is_ok());
+            }
+        }
     }
 
     #[test]

@@ -12,6 +12,11 @@ The `<if>` directive allows you to conditionally render content based on a boole
 
 In this example, the welcome message will only be rendered if `isLoggedIn` evaluates to `true` in the current state.
 
+The entire condition may also use one double-braced wrapper:
+<code v-pre>condition="{{isLoggedIn}}"</code>. Surrounding whitespace is
+ignored, and the same condition grammar applies inside the wrapper.
+Triple-braced wrappers are not supported.
+
 ## Condition Expressions
 
 The `condition` attribute supports various types of expressions:

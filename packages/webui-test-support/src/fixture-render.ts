@@ -30,6 +30,8 @@ export interface RenderedFixture {
   name: string;
   /** Full rendered HTML including template metadata, condition closures, and hydration markers. */
   html: string;
+  /** Real progressive-session segments, when the fixture opts into streaming. */
+  chunks?: string[];
 }
 
 export interface RenderFixturesOptions {
@@ -41,6 +43,10 @@ export interface RenderFixturesOptions {
   watchMode?: boolean;
   /** Bundler projection manifest shared by authored fixture entries. */
   projectionManifest?: string;
+  /** Limit rendering to selected fixture directory names. */
+  fixtureNames?: ReadonlySet<string>;
+  /** Per-fixture JSON state for scalable SSR scenarios without editing state files. */
+  stateOverrides?: Readonly<Record<string, string>>;
 }
 
 /** Build and render a single fixture from its src/ directory. */
@@ -48,6 +54,7 @@ function renderOne(
   fixturePath: string,
   name: string,
   projectionManifest?: string,
+  stateOverride?: string,
 ): RenderedFixture | null {
   const srcDir = resolve(fixturePath, 'src');
   if (!existsSync(resolve(srcDir, 'index.html'))) {
@@ -55,9 +62,9 @@ function renderOne(
   }
 
   const stateFile = resolve(fixturePath, 'state.json');
-  const state = existsSync(stateFile)
+  const state = stateOverride ?? (existsSync(stateFile)
     ? readFileSync(stateFile, 'utf-8')
-    : '{}';
+    : '{}');
 
   const configFile = resolve(fixturePath, 'webui.config.json');
   const fixtureConfig: Record<string, string> = existsSync(configFile)
@@ -107,6 +114,32 @@ function renderOne(
 
   const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
   const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+  if (fixtureConfig.streaming === 'true') {
+    const resumeFile = resolve(fixturePath, 'stream-state.json');
+    const resumeStates: Record<string, object> = existsSync(resumeFile)
+      ? JSON.parse(readFileSync(resumeFile, 'utf-8'))
+      : {};
+    const scriptPath = hasAuthoredEntry
+      ? `/dist/${name}/element.js`
+      : '/dist/static-host.js';
+    const session = protocol.streamResponse({
+      entry: renderEntry,
+      headInject: `<script type="module" async src="${scriptPath}"></script>`,
+    });
+    const chunks: string[] = [];
+    let step = session.start(state);
+    chunks.push(step.bytes.toString('utf8'));
+    while (!step.done) {
+      step = step.boundary
+        ? session.resume(
+          step.boundary.instanceId,
+          resumeStates[step.boundary.name] ?? state,
+        )
+        : session.advance();
+      chunks.push(step.bytes.toString('utf8'));
+    }
+    return { name, html: chunks.join(''), chunks };
+  }
   let html = protocol.render(state, { entry: renderEntry }).toString('utf8');
 
   {
@@ -230,15 +263,17 @@ export function renderFixtures({
   writeFiles = false,
   watchMode = false,
   projectionManifest,
+  fixtureNames,
+  stateOverrides,
 }: RenderFixturesOptions): Map<string, RenderedFixture> {
   const results = new Map<string, RenderedFixture>();
 
   const dirs = readdirSync(fixturesRoot, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && e.name !== 'dist');
+    .filter((e) => e.isDirectory() && e.name !== 'dist' && (!fixtureNames || fixtureNames.has(e.name)));
 
   for (const dir of dirs) {
     const fixturePath = resolve(fixturesRoot, dir.name);
-    const fixture = renderOne(fixturePath, dir.name, projectionManifest);
+    const fixture = renderOne(fixturePath, dir.name, projectionManifest, stateOverrides?.[dir.name]);
     if (!fixture) continue;
 
     results.set(dir.name, fixture);
@@ -260,6 +295,7 @@ export function renderFixtures({
             fixturePath,
             dir.name,
             projectionManifest,
+            stateOverrides?.[dir.name],
           );
           if (fixture) {
             results.set(dir.name, fixture);

@@ -5,12 +5,13 @@
 
 mod checkpoint;
 mod error;
+pub(crate) mod fragment_sources;
 mod inventory;
 mod owned;
 mod root;
 mod session;
 mod state;
-mod vm;
+pub(crate) mod vm;
 
 use serde_json::Value;
 
@@ -26,7 +27,7 @@ pub use owned::{BufferSink, SessionOptions, StreamStep, StreamingSession};
 pub(crate) use root::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
     prepare_generated_streaming_root, validate_pending_streaming_root,
-    validate_streaming_root_opening, ComponentHostOrigin,
+    validate_streaming_root_opening,
 };
 pub use session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, SpanInstanceId,

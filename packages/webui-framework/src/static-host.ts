@@ -106,6 +106,7 @@ function templateIsNoopHost(meta: TemplateMeta): boolean {
     && meta.a === undefined
     && meta.c === undefined
     && meta.r === undefined
+    && meta.u === undefined
     && meta.eg === undefined
     && meta.b === undefined
     && meta.re === undefined

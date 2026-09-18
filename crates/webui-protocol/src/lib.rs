@@ -24,6 +24,9 @@ pub mod projection_manifest;
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
 
+#[cfg(test)]
+mod render_tests;
+
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
     include!("gen_webui.rs");
@@ -40,6 +43,8 @@ pub type WebUIProtocol = WebUiProtocol;
 pub type WebUIFragment = WebUiFragment;
 pub type WebUIFragmentRaw = WebUiFragmentRaw;
 pub type WebUIFragmentComponent = WebUiFragmentComponent;
+/// Wrapperless invocation of a named fragment with an optional isolated alias.
+pub type WebUIFragmentRender = WebUiFragmentRender;
 pub type WebUIFragmentFor = WebUiFragmentFor;
 pub type WebUIFragmentSignal = WebUiFragmentSignal;
 pub type WebUIFragmentIf = WebUiFragmentIf;
@@ -65,6 +70,14 @@ pub enum ProtocolError {
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;
+
+fn render_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
 
 // ── Display implementations ─────────────────────────────────────────────
 
@@ -145,6 +158,22 @@ impl WebUiFragment {
                     fragment_id: fragment_id.into(),
                 },
             )),
+        }
+    }
+
+    /// Invoke a named fragment, optionally binding one caller path to a callee alias.
+    #[must_use]
+    pub fn render(
+        fragment_id: impl Into<String>,
+        scope: impl Into<String>,
+        alias: impl Into<String>,
+    ) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Render(WebUiFragmentRender {
+                fragment_id: fragment_id.into(),
+                scope: scope.into(),
+                alias: alias.into(),
+            })),
         }
     }
 
@@ -536,6 +565,9 @@ impl WebUiProtocol {
                             Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
                                 work.push(StyleClosureOp::Fragment(&for_loop.fragment_id));
                             }
+                            Some(web_ui_fragment::Fragment::Render(render)) => {
+                                work.push(StyleClosureOp::Fragment(&render.fragment_id));
+                            }
                             Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
                                 work.push(StyleClosureOp::Fragment(&if_cond.fragment_id));
                             }
@@ -769,6 +801,9 @@ impl WebUiProtocol {
                             fl.fragment_id
                         )))
                     }
+                    Some(web_ui_fragment::Fragment::Render(render)) => {
+                        Self::validate_render_reference(render, fragments)
+                    }
                     Some(web_ui_fragment::Fragment::IfCond(ic))
                         if !fragments.contains_key(&ic.fragment_id) =>
                     {
@@ -846,6 +881,37 @@ impl WebUiProtocol {
         }
 
         Ok(protocol)
+    }
+
+    fn validate_render_reference(
+        render: &WebUiFragmentRender,
+        fragments: &WebUIFragmentRecords,
+    ) -> Option<ProtocolError> {
+        if !fragments.contains_key(&render.fragment_id) {
+            return Some(Self::invalid_render_error(
+                render,
+                "target record does not exist; rebuild the template",
+            ));
+        }
+        if render.scope.is_empty() && render.alias.is_empty() {
+            return None;
+        }
+        if !render_identifier(&render.alias) || !render.scope.split('.').all(render_identifier) {
+            return Some(Self::invalid_render_error(
+                render,
+                "provide both a dotted scope path and an identifier alias, or leave both empty",
+            ));
+        }
+        None
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn invalid_render_error(render: &WebUiFragmentRender, reason: &str) -> ProtocolError {
+        ProtocolError::Validation(format!(
+            "Invalid render of fragment '{}': {reason}",
+            render.fragment_id
+        ))
     }
 
     fn validate_route_references(

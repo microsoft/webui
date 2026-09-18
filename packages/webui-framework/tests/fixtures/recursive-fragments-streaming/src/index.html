@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Streamed recursive fragments</title></head>
+<body>
+  <test-streamed-fragment-props :model="{{source}}" :title="{{title}}"></test-streamed-fragment-props>
+  <boundary name="tree-ready"><test-streamed-recursive-tree></test-streamed-recursive-tree></boundary>
+  <test-streamed-fragment-capture></test-streamed-fragment-capture>
+  <footer>Stream tail</footer>
+</body>
+</html>

@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use webui_protocol::{web_ui_fragment::Fragment, WebUIProtocol};
+use webui_protocol::{web_ui_fragment::Fragment, WebUIProtocol, WebUiFragmentRoute};
 
 /// Result of matching a request path against a route path template.
 #[derive(Debug, Clone)]
@@ -46,10 +46,19 @@ pub(crate) struct CompiledRouteIndex {
 }
 
 impl CompiledRouteIndex {
+    pub(crate) fn from_routes<'a>(routes: impl Iterator<Item = &'a WebUiFragmentRoute>) -> Self {
+        let mut patterns = HashMap::new();
+        for route in routes {
+            patterns
+                .entry(route.path.clone())
+                .or_insert_with(|| parse_template(&route.path));
+        }
+        Self { patterns }
+    }
+
     /// Compile every authored route path in the protocol.
     #[must_use]
     pub(crate) fn new(protocol: &WebUIProtocol) -> Self {
-        let mut patterns = HashMap::new();
         let mut pending = Vec::new();
 
         for fragment_list in protocol.fragments.values() {
@@ -60,14 +69,11 @@ impl CompiledRouteIndex {
             }
         }
 
-        while let Some(route) = pending.pop() {
-            patterns
-                .entry(route.path.clone())
-                .or_insert_with(|| parse_template(&route.path));
+        Self::from_routes(std::iter::from_fn(|| {
+            let route = pending.pop()?;
             pending.extend(route.children.iter());
-        }
-
-        Self { patterns }
+            Some(route)
+        }))
     }
 
     fn get(&self, template: &str) -> Option<&[SegmentPattern]> {

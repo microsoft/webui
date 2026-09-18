@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Outlet hydration</title></head>
+<body>
+  <route path="/" component="test-outlet-shell">
+    <route path="/" component="test-outlet-leaf" exact></route>
+    <route path="/other" component="test-outlet-leaf" exact></route>
+  </route>
+  <test-outlet-plain></test-outlet-plain>
+  <test-outlet-unknown></test-outlet-unknown>
+</body>
+</html>

@@ -10,6 +10,7 @@ WebUI Framework provides the following core directives:
 
 - [**`<if>` Conditional Rendering**](./if) - Conditionally render content based on expressions
 - [**`<for>` Loop Iteration**](./for) - Iterate over collections to generate repeated content
+- [**`<fragment>` and `<render>` Local Reuse**](./fragment) - Reuse wrapperless markup, including recursive trees
 - [**`<route>` Routing**](./route) - Define client-side routes that map URL paths to components
 - [**`<boundary>` Streaming Boundary**](./boundary) - Discover and hydrate complete regions inside entries and reusable components
 - [**Lazy Component Policy**](./lazy) - Defer offscreen rendering and hydration with root-template attributes

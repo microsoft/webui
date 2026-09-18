@@ -59,12 +59,13 @@ are allowed in:
 
 - entry templates
 - reusable component templates
+- [local fragments](./fragment), when their callsites satisfy these rules
 - true `<if>` branches
 - selected route content and outlets
 
 False conditions and unselected routes produce no occurrence. A boundary is
-not allowed in a `<for>` body, directly or through a component, condition,
-route, or outlet reached from that body. The build fails with
+not allowed in a `<for>` body, directly or through a fragment call, component,
+condition, route, or outlet reached from that body. The build fails with
 `boundary-in-repeat`. A `<for>` may be wholly inside one boundary, and
 boundaries before or after a `<for>` are valid.
 
@@ -78,8 +79,8 @@ The host receives the next occurrence as:
 - `declarationId` identifies the compiled declaration.
 - `owner` is the entry or component template that authored it.
 - `name` is unique only within that owner.
-- `key` distinguishes multiple static occurrences of one component-owned
-  declaration when required.
+- `key` distinguishes multiple static occurrences of one declaration when
+  required.
 
 Use `owner`, `name`, and `key` to decide what state to load. Pass `instanceId`
 back to the session.
@@ -97,9 +98,11 @@ back to the session.
 <result-card result-id="second"></result-card>
 ```
 
-When one entry traversal reaches a boundary-bearing component from more than one
-static callsite, that component's declaration must have a key. Independent
-entries that each call the component once do not trigger this rule. At runtime
+When one entry traversal reaches a boundary declaration from more than one
+static callsite, that declaration must have a key. This includes component
+calls and local fragment calls, even when the fragment belongs to the entry.
+Independent entries that each reach the declaration once do not trigger this
+rule. At runtime
 the key must resolve to a string or finite JSON number, and simultaneously live
 occurrences of that declaration must have unique keys. `<for>` is not a source
 of multiple boundary occurrences because boundary-bearing subtrees under its
@@ -180,16 +183,26 @@ overlays that frozen parent state. Resolution order remains:
 2. state supplied to `resume`
 3. frozen parent state
 
+An active local fragment retains the input selected when its `<render>` call
+began. Resume state can update the owner's state, but cannot replace that
+already selected input. The fragment's own loops and alias still take
+precedence, and caller locals remain hidden.
+
+Streaming's 256 continuation-frame limit applies independently of the local
+fragment limits. Deep structural nesting can exhaust those frames before
+reaching 256 active fragment calls. Suspension does not reset the response's
+100,000-invocation budget.
+
 ## Authoring rules
 
 - `name` is required, static, non-empty, and unique within its owner.
 - Authored boundaries cannot contain another boundary, directly or through a
-  component or runtime branch.
+  fragment call, component, or runtime branch.
 - A boundary-bearing subtree reached from a `<for>` body is rejected with
   `boundary-in-repeat`. A boundary may wrap a complete `<for>` or sit before or
   after one.
-- A component-owned declaration reached from multiple static callsites in one
-  entry traversal requires `key`.
+- A declaration reached from multiple static component or fragment callsites in
+  one entry traversal requires `key`.
 - Do not place a boundary in component host children, raw or inert elements,
   authored `<template>`, or table/select foster-parenting contexts.
 - Never author `<webui-hydrate>` or the `data-ws*` attributes. WebUI owns them.

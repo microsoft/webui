@@ -12,8 +12,9 @@ This keeps first-page work small without requiring empty TypeScript classes.
 
 ## HTML-Only Components
 
-HTML-only components can use bindings, attributes, `<if>`, and `<for>`. Their
-initial server-rendered DOM needs no hydration work or browser state.
+HTML-only components can use bindings, attributes, `<if>`, `<for>`, and
+[local fragments](/guide/concepts/directives/fragment). Their initial
+server-rendered DOM needs no hydration work or browser state.
 
 When the framework is loaded, it can later activate the compiled template for
 soft navigation or a browser-applied state update. Client-created instances
@@ -59,9 +60,45 @@ remove, or reorder nodes in its SSR subtree. Hydration numbers the trusted
 server DOM to match the compiled template and cannot recover once that
 numbering shifts.
 
+Deploy compiled template metadata, server rendering, and the browser framework
+from the same build. Text metadata includes complete successor locators; older
+payloads that omit a locator for a non-final text run are not compatible. Rebuild
+templates when upgrading the framework rather than retaining a previous
+deployment's compiled metadata.
+
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
+
+## Local Fragment Hydration
+
+[`<fragment>` and `<render>`](/guide/concepts/directives/fragment) reuse markup
+within the owning component. They do not add custom-element hosts or separate
+lifecycle callbacks. The owner's hydration policy also applies to its rendered
+fragment content, including HTML-only, deferred, and streamed components.
+
+Hydration connects to the existing server DOM without recreating fragment
+content or running an initial render over it. State projection may leave a
+fragment input unavailable in the browser; that does not mean the input was
+missing on the server. WebUI keeps the trusted content until the dependency
+becomes available.
+
+An explicitly known value is different from unavailable bootstrap state. Once
+the input root is known, a requested path that does not exist is an execution
+error. Existing `null`, `false`, `0`, empty strings, objects, and arrays remain
+valid inputs. Fragment aliases do not fall back to owner state for missing
+children.
+
+After hydration, changes to available input state update fragment content
+through the owner's usual reactive state APIs. Reconnecting the component uses
+its existing fragment DOM rather than rebuilding it solely because it
+disconnected, including content whose state remains unavailable.
+
+For a streamed component, a fragment input selected before suspension stays
+associated with that invocation even if the owner's state changes before
+hydration. This also applies when lazy or HTML-only content activates after the
+response finishes. Unrelated owner-state updates and events keep using the
+selected input; an explicit later update to the input dependency rebinds it.
 
 ## Deferred Hydration Lifecycle
 
@@ -217,9 +254,10 @@ span completion, and later shell bytes. This boundary-only resume means a
 sibling boundary is not needed to separate the early child from the parent
 tail.
 
-Boundaries can also occur in true conditions and selected route content. A
-boundary-bearing subtree reached from a `<for>` body fails the build with
-`boundary-in-repeat`. A complete `<for>` may instead sit inside one boundary,
+Boundaries can also occur in true conditions, local fragments, and selected
+route content. A boundary-bearing subtree reached from a `<for>` body fails
+the build with `boundary-in-repeat`, including through fragment calls. A
+complete `<for>` may instead sit inside one boundary,
 and boundaries before or after a `<for>` are valid.
 
 ### Timing and lifecycle

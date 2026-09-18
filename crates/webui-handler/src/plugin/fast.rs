@@ -25,15 +25,10 @@ pub use super::fast_v2::FastV2HydrationPlugin;
 pub type FastHydrationPlugin = super::fast_v2::FastV2HydrationPlugin;
 
 pub(crate) fn write_route_component_state(
-    state: &Value,
+    state: crate::StateView<'_>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
-    let map = match state.as_object() {
-        Some(map) => map,
-        None => return Ok(()),
-    };
-
-    for (key, value) in map {
+    for (key, value) in state.iter() {
         let value = match value {
             Value::String(value) => Cow::Borrowed(value.as_str()),
             Value::Number(value) => Cow::Owned(value.to_string()),
@@ -98,7 +93,7 @@ mod tests {
     fn render_route_state(plugin: &dyn HandlerPlugin, state: &Value) -> String {
         let mut writer = TestWriter::new();
         plugin
-            .write_route_component_state(state, &mut writer)
+            .write_route_component_state(state.into(), &mut writer)
             .unwrap();
         writer.output
     }

@@ -111,6 +111,39 @@ before(() => {
 <body><p>boundary-free</p></body>
 </html>
 `);
+  writeFileSync(join(appDir, 'index-fragments.html'), `
+<!DOCTYPE html>
+<html><head></head><body>
+  <fragment name="heading"><h2>{{title}}</h2></fragment>
+  <fragment name="tree-items">
+    <ul><for each="child in items">
+      <li><span>{{child.name}}</span><if condition="child.children.length">
+        <render fragment="tree-items" scope="{{child.children}}" as="items"></render>
+      </if></li>
+    </for></ul>
+  </fragment>
+  <render fragment="heading"></render>
+  <render fragment="tree-items" scope="{{items}}" as="items"></render>
+</body></html>
+`);
+  writeFileSync(join(appDir, 'index-fragment-values.html'), `
+<!DOCTYPE html>
+<html><head></head><body>
+  <fragment name="value"><span>{{item}}</span></fragment>
+  <render fragment="value" scope="{{value}}" as="item"></render>
+</body></html>
+`);
+  writeFileSync(join(appDir, 'index-fragment-stream.html'), `
+<!DOCTYPE html>
+<html><head><script type="module" async src="./index.js"></script></head><body>
+  <fragment name="captured">
+    <boundary name="ready"><p>{{item.label}}/{{owner}}</p></boundary>
+    <footer>{{item.label}}/{{owner}}</footer>
+  </fragment>
+  <render fragment="captured" scope="{{source}}" as="item"></render>
+  <aside>{{source.label}}</aside>
+</body></html>
+`);
 });
 
 after(() => {
@@ -316,6 +349,95 @@ describe('renderStream', () => {
         }),
       /chunk callback failed/,
     );
+  });
+});
+
+describe('fragment rendering through the Node host', () => {
+  const entry = 'index-fragments.html';
+  const options = { entry, requestPath: '/' };
+
+  test('reuses recursive protocol bodies across object, JSON, prepared and callback renders', () => {
+    const compiled = build({ appDir, entry, plugin: 'webui' });
+    const protocol = new Protocol(compiled.protocol, { plugin: 'webui' });
+    const state = {
+      title: 'Tree',
+      items: [
+        { name: 'parent', children: [{ name: 'leaf', children: [] }] },
+        { name: 'sibling', children: [] },
+      ],
+    };
+    const serializedState = JSON.stringify(state);
+    const expected = protocol.render(state, options);
+    const html = expected.toString('utf8');
+    assert.match(html, /<h2>Tree<\/h2>/);
+    assert.match(html, /<span>parent<\/span>/);
+    assert.match(html, /<span>leaf<\/span>/);
+    assert.match(html, /<span>sibling<\/span>/);
+    assert.doesNotMatch(html, /<(?:fragment|render)\b/);
+    assert.equal(html.match(/<li>/g)?.length, 3);
+    assert.deepEqual(protocol.render(serializedState, options), expected);
+    const prepared = protocol.prepareState(state);
+    state.items[0].name = 'changed';
+    assert.deepEqual(protocol.renderPrepared(prepared, options), expected);
+    const chunks: string[] = [];
+    protocol.renderStream(serializedState, chunk => chunks.push(chunk), options);
+    assert.equal(chunks.join(''), html);
+  });
+
+  test('rejects a known missing input through the native error channel', () => {
+    const protocol = new Protocol(build({ appDir, entry }).protocol);
+    assert.throws(() => protocol.render({ title: 'Missing' }, options), /items/);
+    assert.match(
+      protocol.render({ title: 'Recovered', items: [] }, options).toString('utf8'),
+      /<h2>Recovered<\/h2>/,
+    );
+  });
+
+  test('does not treat primitive inputs as truthiness guards', () => {
+    const valueEntry = 'index-fragment-values.html';
+    const protocol = new Protocol(build({ appDir, entry: valueEntry }).protocol);
+    for (const value of [null, false, 0, '', 'text', {}, []]) {
+      const html = protocol.render({ value }, { entry: valueEntry }).toString('utf8');
+      assert.equal(html.match(/<span>/g)?.length, 1);
+      assert.doesNotMatch(html, /<(?:fragment|render)\b/);
+    }
+  });
+
+  test('surfaces bounded recursive execution as a host error', () => {
+    const limitEntry = 'index-fragment-limit.html';
+    writeFileSync(join(appDir, limitEntry), `
+<!DOCTYPE html><html><body>
+  <fragment name="again"><render fragment="again"></render></fragment>
+  <render fragment="again"></render>
+</body></html>
+`);
+    const protocol = new Protocol(build({ appDir, entry: limitEntry }).protocol);
+    assert.throws(() => protocol.render({}, { entry: limitEntry }), /256/);
+  });
+
+  test('retains captured inputs across a serialized streaming state replacement', () => {
+    const streamEntry = 'index-fragment-stream.html';
+    const protocol = new Protocol(
+      build({ appDir, entry: streamEntry, plugin: 'webui' }).protocol,
+      { plugin: 'webui' },
+    );
+    const session = protocol.streamResponse({ entry: streamEntry, requestPath: '/' });
+    const start = session.start({ source: { label: 'captured' }, owner: 'before' });
+    assert.ok(start.boundary);
+    assert.equal(start.boundary.name, 'ready');
+    const commit = session.resume(
+      start.boundary.instanceId,
+      '{"source":{"label":"replacement"},"owner":"after"}',
+    );
+    assert.equal(commit.done, false);
+    assert.equal(commit.boundary, undefined);
+    assert.match(commit.bytes.toString('utf8'), /<p>captured\/after<\/p>/);
+    assert.doesNotMatch(commit.bytes.toString('utf8'), /<footer>|<aside>/);
+    const done = session.advance();
+    assert.equal(done.done, true);
+    const tail = done.bytes.toString('utf8');
+    assert.match(tail, /<footer>captured\/after<\/footer>/);
+    assert.match(tail, /<aside>replacement<\/aside>/);
   });
 });
 

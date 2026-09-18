@@ -268,6 +268,8 @@ pub struct ComponentProcessing {
     pub process_root_template_attributes: bool,
     /// Place inline component styles after template content.
     pub inline_styles_after_content: bool,
+    /// Reject named fragment directives in all authored source contexts.
+    pub reject_fragment_directives: bool,
 }
 
 /// A parser plugin that can customize template parsing behavior.

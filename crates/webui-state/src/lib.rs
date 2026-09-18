@@ -11,29 +11,32 @@ use serde_json::Value;
 ///
 /// Most lookups borrow directly from `state`. Synthetic values such as array
 /// and string `.length` are returned as owned values because they do not exist
-/// in the source JSON tree.
+/// in the source JSON tree. Synthetic `.length` must be the final path segment;
+/// string lengths count UTF-8 bytes, and numeric array indices are not resolved.
 #[must_use]
 pub fn find_value_by_dotted_path_ref<'a>(path: &str, state: &'a Value) -> Option<Cow<'a, Value>> {
-    let mut current_value: &Value = state;
-
-    for part in path.split('.') {
+    let mut current_value = state;
+    let mut remaining = path;
+    loop {
         match current_value {
             Value::Object(map) => {
+                let Some((part, rest)) = remaining.split_once('.') else {
+                    return map.get(remaining).map(Cow::Borrowed);
+                };
                 current_value = map.get(part)?;
+                remaining = rest;
             }
-            Value::Array(arr) if part == "length" => {
+            Value::Array(arr) if remaining == "length" => {
                 return Some(Cow::Owned(Value::Number(serde_json::Number::from(
                     arr.len(),
                 ))));
             }
-            Value::String(s) if part == "length" => {
+            Value::String(s) if remaining == "length" => {
                 return Some(Cow::Owned(Value::Number(serde_json::Number::from(s.len()))));
             }
             _ => return None,
         }
     }
-
-    Some(Cow::Borrowed(current_value))
 }
 
 /// Finds a value in a JSON object by dotted path and returns an owned value.
@@ -215,6 +218,18 @@ mod tests {
     }
 
     #[test]
+    fn string_length_counts_utf8_bytes() {
+        for (text, length) in [("é", 2), ("😀", 4), ("é😀", 6), ("a\u{301}", 3)] {
+            let data = test_json!({"text": text});
+            assert_eq!(
+                find_value_by_dotted_path("text.length", &data),
+                Some(Value::from(length))
+            );
+            assert_eq!(find_value_by_dotted_path("text.length.more", &data), None);
+        }
+    }
+
+    #[test]
     fn test_array_index_not_resolved() {
         let data = test_json!({
             "foo": {
@@ -383,5 +398,94 @@ mod tests {
 
         assert!(matches!(value, std::borrow::Cow::Owned(_)));
         assert_eq!(value.as_ref(), &Value::Number(serde_json::Number::from(3)));
+    }
+
+    #[test]
+    fn test_synthetic_length_must_be_terminal() {
+        let data = test_json!({"items": [1, 2], "text": "é"});
+        for path in [
+            "items.length.trailing",
+            "items.length.",
+            "text.length.trailing",
+            "text.length.",
+        ] {
+            assert_eq!(find_value_by_dotted_path_ref(path, &data), None);
+            assert_eq!(find_value_by_dotted_path(path, &data), None);
+        }
+        assert_eq!(
+            find_value_by_dotted_path("text.length", &data),
+            Some(Value::from(2))
+        );
+    }
+
+    #[test]
+    fn test_object_length_property_can_have_descendants() {
+        let data = test_json!({"object": {"length": {"trailing": false}}});
+        assert_eq!(
+            find_value_by_dotted_path("object.length.trailing", &data),
+            Some(Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn terminal_object_leaves_borrow_every_json_type() {
+        for value in [
+            Value::Null,
+            test_json!(false),
+            test_json!(42),
+            test_json!("text"),
+            test_json!([1, 2]),
+            test_json!({"child": "value"}),
+        ] {
+            let data = test_json!({"leaf": value, "nested": {"leaf": value}});
+            for path in ["leaf", "nested.leaf"] {
+                let Some(Cow::Borrowed(selected)) = find_value_by_dotted_path_ref(path, &data)
+                else {
+                    panic!("existing leaf must borrow: {path}");
+                };
+                let expected = if path == "leaf" {
+                    &data["leaf"]
+                } else {
+                    &data["nested"]["leaf"]
+                };
+                assert!(std::ptr::eq(selected, expected));
+                assert_eq!(find_value_by_dotted_path(path, &data), Some(value.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn suffix_walk_preserves_empty_keys_unicode_and_synthetic_length() {
+        let data = test_json!({
+            "": {"": false, "leaf": "root-empty"},
+            "nested": {"": {"leaf": 3}, "0": "numeric-key"},
+            "é": {"😀": "borrowed"},
+            "length": {"length": {"leaf": true}},
+            "array": [1, 2],
+            "text": "é😀"
+        });
+        for (path, expected) in [
+            (".", Some(test_json!(false))),
+            (".leaf", Some(test_json!("root-empty"))),
+            ("nested..leaf", Some(test_json!(3))),
+            ("nested.0", Some(test_json!("numeric-key"))),
+            ("é.😀", Some(test_json!("borrowed"))),
+            ("length.length.leaf", Some(test_json!(true))),
+            ("array.length", Some(test_json!(2))),
+            ("text.length", Some(test_json!(6))),
+            ("array.length.", None),
+            ("text.length.more", None),
+            ("array.0", None),
+            ("nested...", None),
+            ("é.😀.", None),
+        ] {
+            assert_eq!(find_value_by_dotted_path(path, &data), expected, "{path}");
+        }
+        assert_eq!(find_value_by_dotted_path("", &data), Some(data[""].clone()));
+        for scalar in [Value::Null, test_json!(true), test_json!(42)] {
+            for path in ["", ".", "length", "missing"] {
+                assert_eq!(find_value_by_dotted_path_ref(path, &scalar), None);
+            }
+        }
     }
 }

@@ -32,6 +32,7 @@ create UI.
 - Never `document.createElement()`, `innerHTML`, `insertAdjacentHTML`,
   `appendChild`, `cloneNode`, or `new DOMParser()` to build UI.
 - Show and hide with `<if>`. Repeat with `<for>`. Swap regions with `<outlet>`.
+- Reuse local markup and render recursive trees with `<fragment>` and `<render>`.
 - If the markup you need does not exist yet, add it to the template and gate it
   with `<if>` - do not build it from JavaScript.
 - **The single exception** is mounting a lazily loaded component, which has no
@@ -81,6 +82,7 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 |---|---|---|
 | Show / hide a region | `<if condition="...">` | `el.hidden`, `style.display` |
 | Render a list | `<for each="x in xs">` | `createElement` in a loop |
+| Reuse local markup or render a tree | `<fragment>` + `<render>` | Duplicated templates or JavaScript DOM construction |
 | Style from state | `?data-x="{{expr}}"` + CSS attribute selector | `classList.toggle` |
 | Toggle a class-like variant | `?data-variant="{{mode == 'compact'}}"` | `className = ...` |
 | Modal | `<dialog>` + `showModal()` | div overlay + z-index juggling |
@@ -115,7 +117,8 @@ client, interactive components hydrate as islands.
 1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
    Missing text and attribute paths render empty. A missing condition identifier
-   is falsy, so `path` is false and `!path` is true. No error is raised.
+   is falsy, so `path` is false and `!path` is true. Missing `<render>` inputs
+   are different: their `scope` paths must resolve or execution fails.
 2. **Derived state belongs in the template or the server.** Use expressions like
    `items.length` or `status == 'active'`. Compute complex values server-side.
 3. **The server is the source of truth for the initial render.** The client
@@ -195,6 +198,10 @@ Text bindings do path lookups only. They cannot do arithmetic or call functions.
 
 Operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 
+The whole `condition` value may optionally be double-braced, such as
+<code v-pre>condition="{{isLoggedIn}}"</code>, with the same expression rules.
+Do not use triple-braced wrappers.
+
 **Constraints:** max 5 logical operators per expression; cannot mix `&&` and
 `||` in one expression; no parentheses for grouping; no ternary; **no
 arithmetic**.
@@ -219,6 +226,9 @@ array or string does work: `<if condition="items.length > 3">`.
 ```
 
 - The collection must be a JSON array.
+- The whole `each` value may optionally be double-braced, such as
+  <code v-pre>each="{{item in items}}"</code>; its grammar is unchanged.
+  Do not use triple-braced wrappers.
 - Nested loops are supported; outer loop variables remain accessible.
 - Repeats reconcile by array position by default; item attributes never act as
   keys, and `data-key` is an ordinary application attribute.
@@ -237,6 +247,63 @@ array or string does work: `<if condition="items.length > 3">`.
     <contact-card name="{{contact.name}}" email="{{contact.email}}"></contact-card>
   </for>
   ```
+
+### Reusable local fragments
+
+Declare reusable markup directly at the component root (inside its sole root
+`<template>`, when present) or directly inside the entry's `<body>`:
+
+```html
+<template>
+  <ul>
+    <render fragment="tree-items" scope="{{items}}" as="items"></render>
+  </ul>
+
+  <fragment name="tree-items">
+    <for each="item in items">
+      <li>
+        {{item.label}}
+        <if condition="item.children.length">
+          <ul>
+            <render fragment="tree-items" scope="{{item.children}}" as="items"></render>
+          </ul>
+        </if>
+      </li>
+    </for>
+  </fragment>
+</template>
+```
+
+- Declarations emit no DOM. `<render>` allows only whitespace/comments between
+  its tags and inserts the body once without a wrapper; use `<for>` when the
+  input is an array to iterate.
+- Names are static and owner-local. Forward, direct recursive, and mutual calls
+  are valid. No dynamic names or cross-component fragment imports.
+- Pair `scope` with `as`, or omit both for a parameterless call such as
+  `<render fragment="heading"></render>`.
+- `scope` is one bare or double-braced dotted state path, not an expression. Numeric array indexes,
+  brackets, calls, arithmetic, and ternaries are unsupported. Array/string
+  `.length` works.
+- Evaluate the input in the caller. The body sees its own loops, then its
+  alias, then owner state/props. Caller loops and aliases are hidden, even for
+  parameterless calls. Missing alias children never fall back to owner state.
+- Missing inputs are execution errors. Existing `null`, `false`, `0`, `""`,
+  `{}`, and `[]` are valid and still invoke the body once.
+- Terminate recursion using the data. Limits are 256 active calls and 100,000
+  invocations per server response or browser update; streaming suspension does
+  not reset the response budget. Exceeding a limit errors rather than truncates.
+  Streaming independently caps continuation frames at 256, so surrounding
+  structural nesting can make a streamed response fail sooner.
+- Boundaries may occur in fragments, but no call chain may nest boundaries or
+  make a boundary reachable from a repeat body.
+- A streamed invocation keeps its selected input across suspension and delayed
+  hydration. Unrelated owner updates and events retain that input; an explicit
+  later write to its input dependency rebinds it.
+- Native SSR and the WebUI plugin support fragments; FAST plugins reject them.
+  Rebuild protocol and browser assets together when upgrading.
+
+Full syntax, scope, and hydration rules:
+[Local fragments](/guide/concepts/directives/fragment).
 
 ### Attributes
 
@@ -839,6 +906,12 @@ or a classic `defer` script. Descendants must not structurally mutate a
 containing WebUI component's SSR subtree before it hydrates - insertion,
 removal, or reordering shifts compiled element indices.
 
+Local fragment hydration also preserves the trusted SSR content. A scope input
+omitted from browser bootstrap is unavailable, not a known missing value.
+Preserve the content until that state is supplied. Once the root is known, a
+missing requested child is an execution error. See
+[Local Fragment Hydration](/guide/concepts/hydration#local-fragment-hydration).
+
 ### Progressive streaming hydration
 
 `<boundary>` is a compile-time checkpoint directive for progressive sessions.
@@ -1074,10 +1147,15 @@ Full detail: [Routing](/guide/concepts/routing).
 }
 ```
 
-**Path resolution:** `title`, `user.name`, `items.0.label`, `items.length`
+**Path resolution:** `title`, `user.name`, `items.length`, `title.length`.
+Numeric array indexes such as `items.0.label` are unsupported; use a loop.
+Array `.length` counts elements; string `.length` counts UTF-8 bytes on both
+server and client (`"é"` is `2`, `"😀"` is `4`), not characters.
 
 **Missing paths:** text bindings render empty. In conditions, a missing
-identifier is falsy, so `path` is false and `!path` is true. No error.
+identifier is falsy, so `path` is false and `!path` is true. A missing
+`<render scope>` input instead fails execution; an existing falsy or empty
+value is valid.
 
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
@@ -1274,7 +1352,10 @@ Before emitting WebUI code, confirm:
 - [ ] Every `@observable` / `@attr` is read or written by TypeScript, or is
       public API. Otherwise it moved to the state JSON.
 - [ ] No observable mirrors an expression the template can evaluate.
-- [ ] Every `{{binding}}`, `<if>`, and `<for>` path exists in the state JSON.
+- [ ] Every <code v-pre>{{binding}}</code>, `<if>`, `<for>`, and `<render scope>`
+      path exists in the applicable state or local scope.
+- [ ] Fragment names are owner-local and static; recursive calls terminate, and
+      caller-local values are passed explicitly through paired `scope` / `as`.
 - [ ] Every `w-ref` uses braces.
 - [ ] A built-in element was considered before a hand-built one
       (`<dialog>`, `popover`, `<details>`).
@@ -1471,7 +1552,8 @@ Full detail: [Integrations](/guide/integrations/).
 
 | Topic | Page |
 |---|---|
-| Directives (`if`, `for`, attributes, `route`) | [/guide/concepts/directives/](/guide/concepts/directives/) |
+| Directives (`if`, `for`, `fragment`, `render`, attributes, `route`) | [/guide/concepts/directives/](/guide/concepts/directives/) |
+| Local fragments and recursive trees | [/guide/concepts/directives/fragment](/guide/concepts/directives/fragment) |
 | Component authoring and interactivity | [/guide/concepts/interactivity](/guide/concepts/interactivity) |
 | Lazy/interaction policy syntax and combinations | [/guide/concepts/directives/lazy](/guide/concepts/directives/lazy) |
 | Hydration lifecycle, projection, and streaming | [/guide/concepts/hydration](/guide/concepts/hydration) |

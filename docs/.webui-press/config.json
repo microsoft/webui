@@ -107,6 +107,10 @@
                 "link": "/guide/concepts/directives/for"
               },
               {
+                "text": "Local fragments",
+                "link": "/guide/concepts/directives/fragment"
+              },
+              {
                 "text": "Attributes",
                 "link": "/guide/concepts/directives/attributes"
               },

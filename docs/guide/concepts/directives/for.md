@@ -42,6 +42,14 @@ You can nest `<for>` directives to iterate over nested collections:
 </for>
 ```
 
+## Recursive Trees
+
+For trees whose nesting depth comes from data, use a
+[`<fragment>` with recursive `<render>` calls](./fragment#recursive-trees).
+Each render call inserts the fragment once; its `<for>` chooses which children
+to repeat. Pass the loop item or its child collection through `scope` and `as`,
+because a called fragment does not inherit the caller's loop variables.
+
 ## Condition Format
 
 The `each` attribute must follow this format:
@@ -53,6 +61,11 @@ itemName in collectionName
 Where:
 - `itemName` is the name for the current item variable
 - `collectionName` is the path to the array in the state object
+
+The entire value may also use one double-braced wrapper:
+<code v-pre>each="{{itemName in collectionName}}"</code>. Surrounding whitespace
+is ignored. This has the same meaning as the bare form above; it does not add
+an expression language to `each`. Triple-braced wrappers are not supported.
 
 ## Notes and Limitations
 

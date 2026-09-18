@@ -18,6 +18,7 @@ import {
   activateRootsBetween,
 } from './streaming-activation.js';
 import { applyBoundaryBootstrap } from './streaming-bootstrap.js';
+import { clearFragmentInputSources, registerFragmentSources, registerFragmentSourceRefs } from './fragment-inputs.js';
 import {
   abandonDeferredDocumentRoots,
   abandonDeferredRange,
@@ -223,6 +224,7 @@ function fail(reason: string): void {
   abandonOpenSpans();
   clearUpdatableBoundaries();
   clearRangeState();
+  clearFragmentInputSources(true);
   settlePendingTerminal(false);
   for (let i = queueHead; i < queue.length; i++) {
     discardRejectedBoundary(queue[i]);
@@ -409,6 +411,7 @@ function commitRecord(
   markBoundaryPending();
   let committed = false;
   try {
+    if (payload.fragmentSources) registerFragmentSources(payload.fragmentSources);
     const state = resolveRangeState(payload, sequence);
     if (span) {
       hydrateSpanCompletion(payload as SpanCompletionPayload, state, range, target);
@@ -495,6 +498,11 @@ function hydrateSpanCompletion(
 ): void {
   const invalid = prepareSpanCompletion(target, range);
   if (invalid) throw new Error(invalid);
+  if (payload.fragmentSourceRefs) {
+    const host = spanHostFor(target);
+    if (!host) throw new Error(`missing captured-input host for span ${target}`);
+    registerFragmentSourceRefs(host, payload.fragmentSourceRefs);
+  }
   applyBoundaryBootstrap(payload);
   // `prepareSpanCompletion` already rejected a markerless range.
   activateRootsBetween(range.start!, range.end!, state);
@@ -599,6 +607,7 @@ function commitTerminal(
   terminalCommitted = true;
   pendingTerminalSequence = sequence;
   clearRangeState();
+  clearFragmentInputSources();
   clearUpdatableBoundaries(true);
   scheduleTerminalValidation();
 }
@@ -714,6 +723,7 @@ export function resetStreamingCoordinatorStateForTests(): void {
   settlePendingTerminal(false);
   clearUpdatableBoundaries();
   clearRangeState();
+  clearFragmentInputSources(true);
   coordinatorGeneration++;
   queue.length = 0;
   queueHead = 0;

@@ -1,0 +1,20 @@
+{
+  "title": "Stream forest",
+  "items": [
+    { "id": "root", "name": "Root", "children": [
+      { "id": "leaf", "name": "Stream leaf", "children": [] }
+    ] }
+  ],
+  "selected": "",
+  "source": {
+    "name": "Captured OLD",
+    "branches": [
+      { "id": "grove", "name": "Captured grove OLD", "children": [
+        { "id": "branch", "name": "Captured branch OLD", "children": [
+          { "id": "leaf", "name": "Captured leaf OLD" }
+        ] }
+      ] }
+    ]
+  },
+  "showCapturedTree": true
+}

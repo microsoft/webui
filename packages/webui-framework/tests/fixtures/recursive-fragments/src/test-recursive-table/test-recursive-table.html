@@ -1,0 +1,8 @@
+<fragment name="rows"><for each="row in rows"><tr key="{{row.id}}" data-id="{{row.id}}"><td>{{row.name}}</td></tr></for></fragment>
+<fragment name="row"><style>.implicit-row{vertical-align:top}</style><tr class="implicit-row"><td>{{title}}</td></tr></fragment>
+<fragment name="cell">{{title}}<em>{{title}}</em></fragment>
+<fragment name="item-row"><tr class="item-row"><td>{{entry.name}}<if condition="show"><b>{{title}}</b></if><render fragment="cell"></render></td></tr></fragment>
+<fragment name="columns"><col span="{{columns}}"></fragment>
+<table class="explicit"><tbody><render fragment="rows" scope="{{items}}" as="rows"></render></tbody></table>
+<table class="implicit"><render fragment="row"></render><if condition="show"><render fragment="row"></render></if><for each="row in items"><render fragment="item-row" scope="{{row}}" as="entry"></render></for></table>
+<table class="column-table"><render fragment="columns"></render><tbody><tr><td>Columns</td></tr></tbody></table>

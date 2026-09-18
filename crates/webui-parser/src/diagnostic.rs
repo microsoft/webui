@@ -61,6 +61,24 @@ impl Severity {
 /// human-readable wording. Treat these as a stable API surface — rename only
 /// with a deliberate, documented migration.
 pub mod codes {
+    /// A local fragment declaration has an invalid static name.
+    pub const INVALID_FRAGMENT: &str = "invalid-fragment";
+    /// Two declarations in one owner have the same name.
+    pub const DUPLICATE_FRAGMENT: &str = "duplicate-fragment";
+    /// A render target does not exist in its owning template.
+    pub const UNKNOWN_FRAGMENT: &str = "unknown-fragment";
+    /// A fragment directive has an unsupported or duplicate attribute.
+    pub const INVALID_FRAGMENT_ATTRIBUTE: &str = "invalid-fragment-attribute";
+    /// A fragment declaration or render call occupies an unsupported context.
+    pub const INVALID_FRAGMENT_PLACEMENT: &str = "invalid-fragment-placement";
+    /// A render call has an invalid target or nonempty body.
+    pub const INVALID_RENDER: &str = "invalid-render";
+    /// A render scope/alias pair is absent, malformed, or unsupported.
+    pub const INVALID_RENDER_SCOPE: &str = "invalid-render-scope";
+    /// The selected plugin does not support named fragment directives.
+    pub const UNSUPPORTED_FRAGMENT_DIRECTIVE: &str = "unsupported-fragment-directive";
+    /// An authored record identifier uses the compiler's disjoint namespace.
+    pub const RESERVED_FRAGMENT_ID: &str = "reserved-fragment-id";
     /// `<for>` element is missing its required `each` attribute.
     pub const MISSING_FOR_EACH: &str = "missing-for-each";
     /// `<for each>` value is not of the form `item in collection`.

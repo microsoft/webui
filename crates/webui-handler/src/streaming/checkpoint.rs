@@ -3,14 +3,18 @@
 
 //! Checkpoint, update, span-completion, and terminal serialization.
 
+use serde_json::Value;
+
 use super::inventory::{
     commit_checkpoint_inventory, expand_static_checkpoint_reachability,
     mark_streaming_style_resource_sent, mark_streaming_template_sent,
     replace_checkpoint_reachability,
 };
-use super::state::StateUpdatePlan;
+use super::session::SessionCall;
+use super::state::{increment_streaming_record_sequence, StateUpdatePlan, StreamingProgress};
 use super::{flush_streaming_transport, streaming_state, MarkerBuffer};
 use crate::plugin::WebUiTemplatePayload;
+use crate::state_view::SharedValue;
 use crate::{
     collect_hydration_key_ids_into, write_selected_state, write_webui_bootstrap, HandlerError,
     HydrationKeySelection, Result, StateSelection, WebUIHandler, WebUIProcessContext,
@@ -24,7 +28,7 @@ pub(super) const RECORD_KIND_SPAN_COMPLETION: usize = 3;
 pub(super) const RECORD_KIND_TERMINAL: usize = 4;
 
 /// The range-bearing record currently being committed.
-pub(super) enum RangeRecord {
+pub(super) enum RangeRecord<'a> {
     Boundary {
         instance_id: u32,
         declaration_id: u32,
@@ -33,13 +37,15 @@ pub(super) enum RangeRecord {
     },
     Span {
         instance_id: u32,
+        /// The closing host's own props, primed ahead of caller state.
+        owner_props: &'a [(Box<str>, SharedValue)],
     },
 }
 
-impl RangeRecord {
+impl RangeRecord<'_> {
     fn target(&self) -> u32 {
         match self {
-            Self::Boundary { instance_id, .. } | Self::Span { instance_id } => *instance_id,
+            Self::Boundary { instance_id, .. } | Self::Span { instance_id, .. } => *instance_id,
         }
     }
 
@@ -52,6 +58,14 @@ impl RangeRecord {
                 updatable: false, ..
             } => RECORD_KIND_FINAL_CHECKPOINT,
             Self::Span { .. } => RECORD_KIND_SPAN_COMPLETION,
+        }
+    }
+
+    /// Props this record must prime on its host, empty for every other record.
+    fn owner_props(&self) -> &[(Box<str>, SharedValue)] {
+        match self {
+            Self::Boundary { .. } => &[],
+            Self::Span { owner_props, .. } => owner_props,
         }
     }
 }
@@ -98,7 +112,7 @@ fn collect_state_key_delta(base: &[u32], current: &[u32], delta: &mut Vec<u32>) 
 impl WebUIHandler {
     pub(super) fn emit_streaming_range_record(
         &self,
-        record: RangeRecord,
+        record: RangeRecord<'_>,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         let first_checkpoint = context
@@ -213,10 +227,13 @@ impl WebUIHandler {
             )
         };
         state_delta_key_ids.clear();
-        let can_reference = context
-            .state
-            .as_object()
-            .is_some_and(|state| !state.is_empty())
+        // A record that primes its host's props does not serialize the caller
+        // state alone, so it can neither reference an earlier base nor become
+        // one: the browser keeps exactly the resolved state it applied.
+        let owner_props = record.owner_props();
+        let can_reference = owner_props.is_empty()
+            && context.state.is_object()
+            && context.state.len() > 0
             && last_state_record_sequence.is_some()
             && last_state_revision == state_revision;
         let can_reference = can_reference && (last_state_full || !last_state_key_ids.is_empty());
@@ -372,6 +389,21 @@ impl WebUIHandler {
                 },
             },
         };
+        // Every record flushes the definitions captured since the last one, so
+        // an activating range always resolves the `wf:ID` markers it contains.
+        // Only a span completion carries the refs its dormant host retains.
+        let (fragment_sources, fragment_source_refs) = match context.streaming.as_ref() {
+            Some(streaming) => (
+                streaming.fragment_sources.pending(),
+                if matches!(record, RangeRecord::Span { .. }) {
+                    streaming.checkpoint_source_refs.as_slice()
+                } else {
+                    &[][..]
+                },
+            ),
+            None => (&[][..], &[][..]),
+        };
+        let emitted_fragment_sources = !fragment_sources.is_empty();
         write_webui_bootstrap(
             context.writer,
             &mut context.json_scratch,
@@ -379,6 +411,9 @@ impl WebUIHandler {
                 declaration_id,
                 enclosing_span_instance_id,
                 state: bootstrap_state,
+                owner_props,
+                fragment_sources,
+                fragment_source_refs,
                 chain: &chain,
                 inventory,
                 nonce: context.nonce,
@@ -389,6 +424,9 @@ impl WebUIHandler {
             },
         )?;
         context.writer.write("]</script>")?;
+        if emitted_fragment_sources {
+            streaming_state(context)?.fragment_sources.emitted();
+        }
 
         if let Some(importmap) =
             crate::css_module::build_importmap_tag_batch(&deferred_css_modules, context.nonce)
@@ -445,7 +483,8 @@ impl WebUIHandler {
         state_delta_key_ids.clear();
         {
             let streaming = streaming_state(context)?;
-            streaming.last_state_record_sequence = Some(record_sequence);
+            streaming.last_state_record_sequence =
+                owner_props.is_empty().then_some(record_sequence);
             streaming.last_state_revision = state_revision;
             streaming.last_state_full = requires_full_state;
             streaming.last_state_key_ids = last_state_key_ids;
@@ -470,74 +509,50 @@ impl WebUIHandler {
         record_sequence: usize,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        write_script_open(context)?;
+        write_script_open(context.writer, context.nonce)?;
         write_record_header(context.writer, record_sequence, RECORD_KIND_TERMINAL, 0)?;
         context
             .writer
             .write("{}]</script><webui-hydrate></webui-hydrate>")?;
         flush_streaming_transport(context)
     }
+}
 
-    pub(super) fn emit_streaming_state_update(
-        &self,
-        record_sequence: usize,
-        boundary_id: usize,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        if !context.state.is_object() {
-            return Err(super::error::state_update_type_error());
-        }
-        // The plan is moved out for the duration of the write so the record can
-        // borrow the writer mutably, then handed straight back: an update never
-        // rebuilds or reallocates the projection it committed with.
-        let Some(plan) = context
-            .streaming
-            .as_mut()
-            .and_then(|streaming| streaming.update_plans.get_mut(boundary_id))
-            .and_then(Option::take)
-        else {
-            return Err(super::error::boundary_not_updatable_error(boundary_id));
-        };
-
-        write_script_open(context)?;
-        write_record_header(
-            context.writer,
-            record_sequence,
-            RECORD_KIND_STATE_UPDATE,
-            boundary_id,
-        )?;
-        let result = match context.streaming.as_ref() {
-            Some(streaming) if !plan.requires_full_state => write_selected_state(
-                context.writer,
-                &mut context.json_scratch,
-                context.state,
-                &StateSelection::KeyIds(HydrationKeySelection {
-                    ids: &plan.key_ids,
-                    index: streaming.component_reachability,
-                }),
-            ),
-            _ => write_selected_state(
-                context.writer,
-                &mut context.json_scratch,
-                context.state,
-                &StateSelection::Full,
-            ),
-        };
-        // Restore the plan before propagating a write failure so a poisoned
-        // response still owns its buffers instead of leaking their capacity.
-        if let Some(slot) = context
-            .streaming
-            .as_mut()
-            .and_then(|streaming| streaming.update_plans.get_mut(boundary_id))
-        {
-            *slot = Some(plan);
-        }
-        result?;
-        context
-            .writer
-            .write("]</script><webui-hydrate></webui-hydrate>")?;
-        flush_streaming_transport(context)
-    }
+pub(super) fn emit_streaming_state_update(
+    call: SessionCall<'_, '_>,
+    progress: &mut StreamingProgress,
+    json_scratch: &mut Vec<u8>,
+    boundary_id: usize,
+    patch: &Value,
+) -> Result<()> {
+    let plan = progress
+        .update_plans
+        .get(boundary_id)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| super::error::boundary_not_updatable_error(boundary_id))?;
+    let selection = if plan.requires_full_state {
+        StateSelection::Full
+    } else {
+        StateSelection::KeyIds(HydrationKeySelection {
+            ids: &plan.key_ids,
+            index: call.protocol.component_reachability(),
+        })
+    };
+    write_script_open(
+        call.writer,
+        call.options.nonce.filter(|nonce| !nonce.is_empty()),
+    )?;
+    write_record_header(
+        call.writer,
+        progress.next_record_sequence,
+        RECORD_KIND_STATE_UPDATE,
+        boundary_id,
+    )?;
+    write_selected_state(call.writer, json_scratch, patch, &selection)?;
+    call.writer
+        .write("]</script><webui-hydrate></webui-hydrate>")?;
+    call.writer.stream_flush()?;
+    increment_streaming_record_sequence("update", &mut progress.next_record_sequence)
 }
 
 fn write_record_open(
@@ -547,7 +562,7 @@ fn write_record_open(
 ) -> Result<()> {
     let record_sequence = streaming_state(context)?.next_record_sequence;
     let target = usize::try_from(target).map_err(|_| invalid_record_target_error(target))?;
-    write_script_open(context)?;
+    write_script_open(context.writer, context.nonce)?;
     write_record_header(context.writer, record_sequence, kind, target)
 }
 
@@ -569,16 +584,12 @@ fn write_record_header(
     buffer.flush_to(writer)
 }
 
-fn write_script_open(context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
-    context
-        .writer
-        .write("<script type=\"application/json\" data-webui-boundary")?;
-    if let Some(nonce) = context.nonce {
-        context.writer.write(" nonce=\"")?;
-        context
-            .writer
-            .write(&crate::html_encode::encode_safe(nonce))?;
-        context.writer.write("\"")?;
+fn write_script_open(writer: &mut dyn crate::ResponseWriter, nonce: Option<&str>) -> Result<()> {
+    writer.write("<script type=\"application/json\" data-webui-boundary")?;
+    if let Some(nonce) = nonce {
+        writer.write(" nonce=\"")?;
+        writer.write(&crate::html_encode::encode_safe(nonce))?;
+        writer.write("\"")?;
     }
     Ok(())
 }

@@ -1,0 +1,10 @@
+<main><if condition="showPrimary"><outlet /></if></main>
+<p class="root-snapshot">{{serverLabel}}/{{suffix}}</p>
+<section>
+  <for each="entry in serverItems">
+    <p class="item" title="{{entry.name}}/{{suffix}}">{{entry.name}}/{{suffix}}</p>
+    <if condition="showPrimary"><b class="detail">{{entry.name}}</b></if>
+  </for>
+</section>
+<button @click="{onUpdate()}">Update</button>
+<button @click="{onTogglePrimary()}">Toggle primary</button>

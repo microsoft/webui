@@ -11,6 +11,7 @@ import { describe, test } from 'node:test';
  */
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class HTMLElement {
+    nodeType = 1;
     tagName = '';
     isConnected = false;
     childNodes: unknown[] = [];
@@ -64,6 +65,60 @@ const {
 type LazyHydrationTarget = import('./lazy-hydration-contract.js').LazyHydrationTarget;
 type LazyHydrationMode = import('./lazy-hydration-contract.js').LazyHydrationMode;
 type TemplateMeta = import('./template.js').TemplateMeta;
+type TemplateInstance = import('./element/types.js').TemplateInstance;
+
+class RefHost extends WebUIElement {
+  bindRefs(root: Node, elements?: Array<Node | undefined>): void {
+    const instance: TemplateInstance = {
+      container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [],
+    };
+    this.$finalize(instance, root, { h: '' }, () => null, undefined, elements);
+  }
+}
+
+describe('WebUIElement section refs', () => {
+  test('uses the supplied section index without scanning descendants or binding its root', () => {
+    const host = new RefHost();
+    const root = new HTMLElement();
+    root.setAttribute('w-ref', '{rootRef}');
+    Object.defineProperty(root, 'querySelectorAll', {
+      value: () => assert.fail('indexed refs must not rescan the DOM'),
+    });
+    const first = new HTMLElement();
+    first.setAttribute('w-ref', '{firstRef}');
+    const last = new HTMLElement();
+    last.setAttribute('w-ref', '{lastRef}');
+    const literal = new HTMLElement();
+    literal.setAttribute('w-ref', 'not-a-binding');
+
+    host.bindRefs(root, [root, first, undefined, literal, last]);
+
+    assert.equal(Reflect.get(host, 'firstRef'), first);
+    assert.equal(Reflect.get(host, 'lastRef'), last);
+    assert.equal(Reflect.get(host, 'rootRef'), undefined);
+    assert.equal(Reflect.get(host, 'not-a-binding'), undefined);
+  });
+
+  test('queries once when a section index is not supplied', () => {
+    const host = new RefHost();
+    const root = new HTMLElement();
+    const reference = new HTMLElement();
+    reference.setAttribute('w-ref', '{reference}');
+    let queries = 0;
+    Object.defineProperty(root, 'querySelectorAll', {
+      value: (selector: string) => {
+        assert.equal(selector, '[w-ref]');
+        queries++;
+        return [reference];
+      },
+    });
+
+    host.bindRefs(root);
+
+    assert.equal(queries, 1);
+    assert.equal(Reflect.get(host, 'reference'), reference);
+  });
+});
 
 /** A no-op coordinator implementation, overridable per test. */
 function fakeCoordinator(

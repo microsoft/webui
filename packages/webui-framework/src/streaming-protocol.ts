@@ -27,6 +27,8 @@ export interface BoundaryBootstrap {
   css?: string[];
   styles?: string[];
   componentStyles: ComponentStyles;
+  /** Response-wide additive definitions for immutable streamed fragment inputs. */
+  fragmentSources?: FragmentSourceNode[];
   [key: string]: unknown;
 }
 
@@ -67,8 +69,18 @@ export interface SpanCompletionPayload {
   chain?: unknown[];
   css?: string[];
   styles?: string[];
+  /** Captured invocation inputs, independent of the owner's current state. */
+  fragmentSources?: FragmentSourceNode[];
+  /** Distinct inputs retained by this span's host until it actually hydrates. */
+  fragmentSourceRefs?: number[];
   [key: string]: unknown;
 }
+
+/** Additive immutable source nodes; projections always reference earlier nodes. */
+export type FragmentSourceNode =
+  | [id: number, kind: 0, value: unknown]
+  | [id: number, kind: 1, parent: number, path: string]
+  | [id: number, kind: 2, parent: number, index: number];
 
 export type BoundaryRecordPayload =
   | BoundaryBootstrap

@@ -4,6 +4,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import type { TemplateMeta } from './template.js';
+import type { CompiledRenderMeta } from './template-types.js';
+import type { RenderBinding, TemplateInstance, ScopeFrame, TextBinding } from './element/types.js';
+import { EMPTY_BINDINGS } from './element/types.js';
+import { createFragmentWork, type FragmentWork } from './element/fragment-work.js';
+import { clearFragmentInputSources, forgetFragmentInput, fragmentInput, retainedFragmentInput, registerFragmentSources, registerFragmentSourceRefs } from './fragment-inputs.js';
 
 /**
  * `TemplateElement extends HTMLElement` at module scope, so `HTMLElement`
@@ -87,6 +92,626 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
+
+type IndexedBindings = Pick<TemplateInstance, 'texts' | 'attrs' | 'conds' | 'repeats' | 'renders'>;
+
+interface FragmentCore {
+  $meta: TemplateMeta;
+  $root: TemplateInstance | null;
+  $ready: boolean;
+  $templateState: Record<string, unknown>;
+  $fragmentWork: FragmentWork;
+  $guardUnknownState?: boolean;
+  $fragmentHydrating?: boolean;
+  $fragmentKnownRoots?: Set<string>;
+  $hasUnknownScopes?: boolean;
+  $pathIndex?: Map<string, IndexedBindings>;
+  $wildcardBindings?: IndexedBindings | null;
+  $pendingFlush?: boolean;
+  $makeRender(owner: TemplateInstance, meta: CompiledRenderMeta, start: Comment, end: Comment, hydrate: boolean, sourceId?: number): RenderBinding;
+  $refreshRenderScope(binding: RenderBinding, unknown: boolean): void;
+  $resolveValue(path: string, scope?: ScopeFrame): unknown;
+  $buildPathIndex(): void;
+  $updateInstance(instance: TemplateInstance): void;
+  $update(path: string): void;
+  $flushUpdates(): void;
+  $removeInstance(instance: TemplateInstance): void;
+  $destroy(): void;
+}
+
+function fragmentInstance(scope?: ScopeFrame, parent?: TemplateInstance): TemplateInstance {
+  return {
+    scope, parent, container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [],
+    renders: [], alive: true, range: true, callDepth: parent?.callDepth ?? 0,
+  };
+}
+
+function fragmentCore(state: Record<string, unknown>): FragmentCore {
+  const core = new TemplateElement() as unknown as FragmentCore;
+  core.$templateState = state;
+  core.$meta = { h: '', tr: Object.keys(state) };
+  core.$fragmentWork = createFragmentWork();
+  core.$root = fragmentInstance();
+  core.$ready = true;
+  return core;
+}
+
+type PathCore = Omit<FragmentCore, '$fragmentWork'> & { $fragmentWork?: FragmentWork };
+
+function ordinaryCore(state: Record<string, unknown>): PathCore {
+  const core: PathCore = fragmentCore(state);
+  core.$fragmentWork = undefined;
+  core.$root = {
+    container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [],
+  };
+  return core;
+}
+
+function fragmentCall(core: FragmentCore, owner: TemplateInstance, path?: string, sourceId?: number): RenderBinding {
+  const metadata: CompiledRenderMeta = path ? [0, [0, 0], path, 'node'] : [0, [0, 0]];
+  const binding = core.$makeRender(owner, metadata, {} as Comment, {} as Comment, true, sourceId);
+  binding.instance = fragmentInstance(binding.alias, owner);
+  binding.instance.callDepth = (owner.callDepth ?? 0) + 1;
+  owner.renders!.push(binding);
+  return binding;
+}
+
+describe('path-index binding storage', () => {
+  test('shares only empty groups while preserving duplicates, wildcard buckets and host isolation', () => {
+    const populated: TextBinding[][] = [];
+    for (const fragment of [false, true]) {
+      const core = fragment ? fragmentCore({ value: 'before' }) : ordinaryCore({ value: 'before' });
+      const root = core.$root!;
+      const direct: TextBinding = { node: {} as CharacterData, path: 'value', owner: root };
+      const repeated: TextBinding = {
+        node: {} as CharacterData, parts: [['value'], '/', ['value']], owner: root,
+      };
+      const wildcard: TextBinding = { node: {} as CharacterData, path: 'outside', owner: root };
+      root.texts.push(direct, repeated, wildcard);
+      core.$buildPathIndex();
+      const entry = core.$pathIndex?.get('value');
+      assert.ok(entry);
+      assert.deepEqual(entry.texts, [direct, repeated, repeated]);
+      assert.notEqual(entry.texts, EMPTY_BINDINGS);
+      assert.equal(entry.attrs, EMPTY_BINDINGS);
+      assert.equal(entry.conds, EMPTY_BINDINGS);
+      assert.equal(entry.repeats, EMPTY_BINDINGS);
+      assert.deepEqual(Object.keys(entry), ['texts', 'attrs', 'conds', 'repeats']);
+      assert.deepEqual(core.$wildcardBindings?.texts, [wildcard]);
+      assert.equal(core.$wildcardBindings?.attrs, EMPTY_BINDINGS);
+      assert.equal(core.$pathIndex?.has('*'), false);
+      populated.push(entry.texts);
+    }
+    assert.notEqual(populated[0], populated[1]);
+    assert.deepEqual(EMPTY_BINDINGS, []);
+  });
+
+  test('populates each binding category independently in ordinary and fragment indexes', () => {
+    for (const fragment of [false, true]) {
+      const core = fragment ? fragmentCore({ value: [] }) : ordinaryCore({ value: [] });
+      const root = core.$root!;
+      root.texts.push({ node: {} as CharacterData, path: 'value', owner: root });
+      root.attrs.push({ element: {} as Element, name: 'data-value', kind: 0, path: 'value' });
+      root.conds.push({
+        condition: [() => true, ['value']], blockIndex: 0,
+        anchor: null, owner: root, instance: null,
+      });
+      root.repeats.push({
+        markerId: 0, collection: 'value', itemVar: 'item', blockIndex: 0,
+        container: null, start: null, end: null, owner: root, instances: [],
+      });
+      core.$buildPathIndex();
+      const entry = core.$pathIndex?.get('value');
+      assert.ok(entry);
+      for (const key of ['texts', 'attrs', 'conds', 'repeats'] as const) {
+        assert.deepEqual(entry[key], root[key]);
+        assert.notEqual(entry[key], root[key]);
+        assert.notEqual(entry[key], EMPTY_BINDINGS);
+      }
+      assert.equal(new Set([entry.texts, entry.attrs, entry.conds, entry.repeats]).size, 4);
+      assert.deepEqual(Object.keys(entry), ['texts', 'attrs', 'conds', 'repeats']);
+    }
+  });
+
+  test('stores call dependencies only in their own group, without duplicating leaf bindings', () => {
+    const core = fragmentCore({ tree: { label: 'old' }, title: 'before' });
+    const call = fragmentCall(core, core.$root!, 'tree');
+    const text: TextBinding = {
+      node: {} as CharacterData, path: 'title', owner: call.instance!,
+    };
+    call.instance!.texts.push(text);
+    core.$buildPathIndex();
+    assert.deepEqual(core.$pathIndex?.get('tree')?.renders, [call]);
+    assert.equal(core.$pathIndex?.get('tree')?.texts, EMPTY_BINDINGS);
+    assert.deepEqual(core.$pathIndex?.get('title')?.texts, [text]);
+    assert.equal(core.$pathIndex?.get('title')?.renders, undefined);
+    for (const entry of core.$pathIndex!.values()) {
+      assert.equal(Object.hasOwn(entry, 'work'), false);
+    }
+  });
+
+  test('drains reentrant writes and wildcard bindings through the same flush for both host types', () => {
+    for (const fragment of [false, true]) {
+      const core = fragment ? fragmentCore({ value: 'first', other: 'before' }) :
+        ordinaryCore({ value: 'first', other: 'before' });
+      const root = core.$root!;
+      const writes: string[] = [];
+      const first = {
+        get data() { return ''; },
+        set data(value: string) {
+          writes.push(value);
+          core.$templateState.other = 'second';
+          core.$update('other');
+        },
+      } as CharacterData;
+      const other = {
+        get data() { return ''; },
+        set data(value: string) { writes.push(value); },
+      } as CharacterData;
+      const wildcard = {
+        get data() { return ''; },
+        set data(value: string) { writes.push(value); },
+      } as CharacterData;
+      Object.defineProperty(core, 'outside', { value: 'wildcard' });
+      root.texts.push(
+        { node: first, path: 'value', owner: root },
+        { node: other, path: 'other', owner: root },
+        { node: wildcard, path: 'outside', owner: root },
+      );
+      core.$update('value');
+      core.$flushUpdates();
+      assert.deepEqual(writes, fragment ?
+        ['wildcard', 'first', 'wildcard', 'second'] :
+        ['first', 'wildcard', 'second', 'wildcard']);
+    }
+  });
+
+  test('propagates a failed binding and releases flush ownership before a later write', async () => {
+    for (const fragment of [false, true]) {
+      const core = fragment ? fragmentCore({ value: 'rejected' }) : ordinaryCore({ value: 'rejected' });
+      const root = core.$root!;
+      let data = 'before';
+      let reject = true;
+      const text = {
+        get data() { return data; },
+        set data(value: string) {
+          if (reject) throw new Error('rejected binding value');
+          data = value;
+        },
+      } as CharacterData;
+      root.texts.push({ node: text, path: 'value', owner: root });
+      core.$update('value');
+      assert.throws(() => core.$flushUpdates(), /rejected binding value/);
+      assert.equal(core.$pendingFlush, false);
+      if (core.$fragmentWork) {
+        assert.equal(core.$fragmentWork.active, false);
+        assert.equal(core.$fragmentWork.stack.length, 0);
+      }
+      reject = false;
+      core.$templateState.value = 'accepted';
+      core.$update('value');
+      assert.equal(core.$pendingFlush, true);
+      await Promise.resolve();
+      assert.equal(data, 'accepted');
+      assert.equal(core.$pendingFlush, false);
+    }
+  });
+
+  test('keeps targeted and wildcard updates while preserving unavailable SSR scopes', () => {
+    const core = ordinaryCore({ value: 'before' });
+    const root = core.$root!;
+    const known = { data: 'before' } as CharacterData;
+    const unknown = { data: 'trusted SSR' } as CharacterData;
+    const wildcard = { data: 'wild before' } as CharacterData;
+    const scope: ScopeFrame = { name: 'item', value: undefined, known: false };
+    core.$hasUnknownScopes = true;
+    Object.defineProperty(core, 'outside', { value: 'wild after' });
+    root.texts.push(
+      { node: known, path: 'value' },
+      { node: unknown, path: 'value', scope },
+      { node: wildcard, path: 'outside' },
+    );
+    core.$buildPathIndex();
+    core.$templateState.value = 'after';
+    core.$update('value');
+    core.$flushUpdates();
+    assert.equal(known.data, 'after');
+    assert.equal(wildcard.data, 'wild after');
+    assert.equal(unknown.data, 'trusted SSR');
+    scope.known = true;
+    core.$update('value');
+    core.$flushUpdates();
+    assert.equal(unknown.data, 'after');
+  });
+});
+
+describe('fragment instance runtime', () => {
+  test('streamed captures survive owner-only and broad reconciliation but rebind on explicit input writes', () => {
+    clearFragmentInputSources(true);
+    const old = { label: 'OLD' };
+    const current = { label: 'NEW' };
+    const core = fragmentCore({ tree: current, title: 'resumed owner' });
+    registerFragmentSources([[0, 0, old]]);
+    const call = fragmentCall(core, core.$root!, 'tree', 0);
+    const text = { data: 'OLD/resumed owner' } as CharacterData;
+    call.instance!.texts.push({
+      node: text, scope: call.alias, owner: call.instance!,
+      parts: [['node.label'], '/', ['title']],
+    });
+    assert.equal(call.alias?.value, old);
+    assert.equal(core.$templateState.tree, current);
+    core.$templateState.title = 'client owner';
+    core.$update('title');
+    core.$flushUpdates();
+    core.$updateInstance(core.$root!);
+    assert.equal(text.data, 'OLD/client owner');
+    assert.equal(core.$resolveValue('node.label', call.alias), 'OLD');
+    core.$update('tree');
+    core.$flushUpdates();
+    assert.equal(text.data, 'NEW/client owner');
+    assert.equal(call.alias?.value, current);
+  });
+
+  test('a pathless lifecycle refresh preserves captured inputs that an explicit write rebinds', () => {
+    clearFragmentInputSources(true);
+    const old = { label: 'OLD' };
+    const current = { label: 'NEW' };
+    const core = fragmentCore({ tree: current });
+    registerFragmentSources([[0, 0, old]]);
+    const call = fragmentCall(core, core.$root!, 'tree', 0);
+    assert.equal(call.alias?.value, old);
+    // A synchronous reparent (remove and re-append in one task) never reaches
+    // delayed teardown, so it reconnects straight into a pathless refresh.
+    // Nothing was written, so nothing may rebind to the owner's newer state.
+    (core as unknown as { $update(path?: string): void }).$update();
+    core.$flushUpdates();
+    core.$updateInstance(core.$root!);
+    assert.equal(call.alias?.value, old, 'a reconnect is not an input write');
+    assert.equal(call.captureVersion, 0, 'and it does not consume an input revision');
+    core.$update('tree');
+    core.$flushUpdates();
+    core.$updateInstance(core.$root!);
+    assert.equal(call.alias?.value, current, 'an explicit write still rebinds');
+  });
+
+  test('owner-loop captured calls rebind when the ultimate collection input is written', () => {
+    clearFragmentInputSources(true);
+    const current = { child: { label: 'NEW' } };
+    const old = { label: 'OLD' };
+    const core = fragmentCore({ tree: [current] });
+    core.$root!.scope = { name: 'item', value: current, sourceRoot: 'tree' };
+    registerFragmentSources([[0, 0, old]]);
+    const call = fragmentCall(core, core.$root!, 'item.child', 0);
+    core.$updateInstance(core.$root!);
+    assert.equal(call.alias?.value, old);
+    core.$update('tree');
+    core.$updateInstance(core.$root!);
+    assert.equal(call.alias?.value, current.child);
+  });
+
+  test('captured loop-member inputs and nested aliases rebind on either fallback dependency', () => {
+    for (const root of ['items', 'item']) {
+      clearFragmentInputSources(true);
+      const current = { child: 'NEW' };
+      const core = fragmentCore({ items: [{}], item: { fallback: current } });
+      core.$root!.scope = { name: 'item', value: {}, known: true, sourceRoot: 'items' };
+      registerFragmentSources([[0, 0, { child: 'OLD' }], [1, 0, 'OLD']]);
+      const call = fragmentCall(core, core.$root!, 'item.fallback', 0);
+      const nested = fragmentCall(core, call.instance!, 'node.child', 1);
+      core.$updateInstance(core.$root!);
+      assert.equal(nested.alias?.value, 'OLD');
+      core.$update(root);
+      core.$flushUpdates();
+      core.$updateInstance(core.$root!);
+      assert.equal(call.alias?.value, current);
+      assert.equal(nested.alias?.value, 'NEW');
+    }
+  });
+
+  test('captured aliases survive teardown and reconnect without the response registry', () => {
+    clearFragmentInputSources(true);
+    const old = { label: 'OLD' };
+    const current = { label: 'NEW' };
+    const core = fragmentCore({ tree: current });
+    registerFragmentSources([[0, 0, old]]);
+    registerFragmentSourceRefs(core as unknown as Element, [0]);
+    clearFragmentInputSources();
+    const call = fragmentCall(core, core.$root!, 'tree', 0);
+    const start = call.anchor, end = call.end;
+    clearFragmentInputSources();
+    core.$destroy();
+    const owner = fragmentInstance();
+    const restored = core.$makeRender(owner, [0, [0, 0], 'tree', 'node'], start, end, true);
+    assert.equal(restored.alias?.value, old);
+    core.$update('tree');
+    const rebound = core.$makeRender(owner, [0, [0, 0], 'tree', 'node'], start, end, true);
+    assert.equal(rebound.alias?.value, current);
+  });
+
+  test('teardown transfers reservations to retained aliases before reconnect rebind or removal', () => {
+    for (const action of ['rebind', 'remove']) {
+      clearFragmentInputSources(true);
+      const old = { label: 'OLD' };
+      const current = { label: 'NEW' };
+      const core = fragmentCore({ tree: current });
+      const host = core as unknown as Element;
+      registerFragmentSources([[0, 0, old], [1, 0, 'dormant']]);
+      registerFragmentSourceRefs(host, [0, 1]);
+      clearFragmentInputSources();
+      const first = fragmentCall(core, core.$root!, 'tree', 0);
+      const second = fragmentCall(core, core.$root!, 'tree', 0);
+      core.$destroy();
+      assert.throws(() => fragmentInput(host, 0), /unknown source 0 after the response closed/);
+      assert.equal(fragmentInput(host, 1), 'dormant');
+      const owner = fragmentInstance();
+      core.$root = owner;
+      core.$ready = true;
+      for (const previous of [first, second]) {
+        assert.equal(retainedFragmentInput(previous.anchor)?.scope.value, old);
+        const restored = core.$makeRender(
+          owner, [0, [0, 0], 'tree', 'node'], previous.anchor, previous.end, true,
+          previous === first ? 0 : undefined,
+        );
+        restored.instance = fragmentInstance(restored.alias, owner);
+        owner.renders!.push(restored);
+        assert.equal(restored.alias?.value, old);
+        assert.equal(restored.sourceId, undefined);
+      }
+      if (action === 'rebind') {
+        core.$update('tree');
+        core.$flushUpdates();
+        for (const restored of owner.renders!) assert.equal(restored.alias?.value, current);
+      } else {
+        core.$removeInstance(owner);
+      }
+      for (const previous of [first, second]) {
+        assert.equal(retainedFragmentInput(previous.anchor), undefined);
+      }
+      assert.throws(() => fragmentInput(host, 0), /unknown source 0 after the response closed/);
+      assert.equal(fragmentInput(host, 1), 'dormant');
+    }
+  });
+
+  test('rejects skewed identifiers whether or not the response table is still open', () => {
+    clearFragmentInputSources(true);
+    const core = fragmentCore({ tree: { label: 'NEW' } });
+    registerFragmentSources([[0, 0, { label: 'OLD' }]]);
+    // An open response owns the whole identifier space, so a miss is real skew
+    // between the delivered markers and the delivered table.
+    assert.throws(() => fragmentCall(core, core.$root!, 'tree', 7), /unknown source 7/);
+    clearFragmentInputSources();
+    // Closing the table is not permission to answer a captured marker out of
+    // the owner's current state: that would render NEW under an invocation that
+    // still claims OLD and hide exactly the skew rejected above.
+    assert.throws(
+      () => fragmentCall(core, core.$root!, 'tree', 7),
+      /unknown source 7 after the response closed/,
+    );
+    // An invocation that surrendered its capture identity — an explicit input
+    // write, or removal — is the one case that legitimately falls back.
+    const anchor = {} as Comment;
+    forgetFragmentInput(anchor);
+    const late = core.$makeRender(
+      core.$root!, [0, [0, 0], 'tree', 'node'], anchor, {} as Comment, true, 7,
+    );
+    assert.equal(late.alias?.known, true);
+    assert.deepEqual(late.alias?.value, { label: 'NEW' });
+  });
+
+  test('host-scoped inputs outlive the response table for every later frame', () => {
+    clearFragmentInputSources(true);
+    const old = { child: { label: 'OLD' } };
+    const core = fragmentCore({ tree: { child: { label: 'NEW' } } });
+    registerFragmentSources([[0, 0, old], [1, 1, 0, 'child']]);
+    registerFragmentSourceRefs(core as unknown as Element, [0]);
+    // A second span completion adds to the same host rather than replacing it.
+    registerFragmentSourceRefs(core as unknown as Element, [1]);
+    clearFragmentInputSources();
+    // Nested and dormant frames hydrate on their own schedule; retention is
+    // bounded by the host element, never by an end-of-walk release step.
+    assert.equal(fragmentCall(core, core.$root!, 'tree', 0).alias?.value, old);
+    assert.equal(fragmentCall(core, core.$root!, 'tree', 1).alias?.value, old.child);
+    assert.equal(fragmentCall(core, core.$root!, 'tree', 0).alias?.value, old);
+    // An unrelated host shares none of it, and hears about it rather than
+    // silently rendering its own newer state under a captured marker.
+    const other = fragmentCore({ tree: { label: 'NEW' } });
+    assert.throws(
+      () => fragmentCall(other, other.$root!, 'tree', 0),
+      /unknown source 0 after the response closed/,
+    );
+  });
+
+  test('resolves caller input while isolating explicit and parameterless callees', () => {
+    const core = fragmentCore({ item: 'owner item', node: { absent: 'owner fallback' } });
+    const caller = fragmentInstance({ name: 'item', value: { value: { label: 'local' } }, known: true });
+    const call = fragmentCall(core, caller, 'item.value');
+    assert.equal(call.scope, caller.scope);
+    assert.equal(call.alias?.parent, undefined);
+    assert.equal(core.$resolveValue('node.label', call.alias), 'local');
+    assert.equal(core.$resolveValue('node.absent', call.alias), undefined);
+    assert.equal(core.$resolveValue('item', call.alias), 'owner item');
+    const parameterless = fragmentCall(core, caller);
+    assert.equal(parameterless.alias, undefined);
+    assert.equal(core.$resolveValue('item', parameterless.alias), 'owner item');
+  });
+
+  test('missing loop members resolve against owner state without exposing shadowed scopes', () => {
+    const core = fragmentCore({ items: [{}], item: { fallback: 'GLOBAL' } });
+    const caller = fragmentInstance({
+      name: 'item', value: {}, known: true, sourceRoot: 'items',
+      parent: { name: 'item', value: { fallback: 'OUTER' }, known: true },
+    });
+    const call = fragmentCall(core, caller, 'item.fallback');
+    assert.equal(call.alias?.value, 'GLOBAL');
+    for (const value of [null, false, 0, '']) {
+      caller.scope!.value = { fallback: value };
+      assert.equal(core.$resolveValue('item.fallback', caller.scope), value);
+    }
+  });
+
+  test('a missing loop member keeps its input unknown when owner fallback state was not sent', () => {
+    const core = fragmentCore({ items: [{}] });
+    const caller = fragmentInstance({ name: 'item', value: {}, known: true, sourceRoot: 'items' });
+    const call = fragmentCall(core, caller, 'item.fallback');
+    assert.equal(call.alias?.known, false);
+    core.$templateState.item = { fallback: 'arrived' };
+    core.$refreshRenderScope(call, true);
+    assert.equal(call.alias?.value, 'arrived');
+    core.$templateState.item = {};
+    assert.throws(() => core.$refreshRenderScope(call, true), /every path segment/);
+  });
+
+  test('accepts all supported scalar and container scope values', () => {
+    for (const value of [null, false, 0, '', 'leaf', [], {}, [1]]) {
+      const core = fragmentCore({ value });
+      const binding = fragmentCall(core, core.$root!, 'value');
+      assert.equal(binding.alias?.known, true);
+      assert.equal(binding.alias?.value, value);
+    }
+    const core = fragmentCore({ value: 'leaf' });
+    assert.equal(fragmentCall(core, core.$root!, 'value.length').alias?.value, 4);
+    for (const [value, expected] of [['é', 2], ['😀', 4]] as const) {
+      core.$templateState.value = value;
+      assert.equal(fragmentCall(core, core.$root!, 'value.length').alias?.value, expected);
+      assert.throws(() => fragmentCall(core, core.$root!, 'value.length.more'), /every path segment/);
+    }
+  });
+
+  test('unknown bootstrap input preserves its frame but known missing input throws', () => {
+    const core = fragmentCore({});
+    const binding = fragmentCall(core, core.$root!, 'missing.child');
+    assert.equal(binding.alias?.known, false);
+    assert.throws(() => core.$refreshRenderScope(binding, false), /Missing fragment scope/);
+    core.$templateState.missing = {};
+    assert.throws(() => core.$refreshRenderScope(binding, true), /every path segment/);
+    core.$templateState.missing = { child: null };
+    core.$refreshRenderScope(binding, true);
+    assert.equal(binding.alias?.known, true);
+    assert.equal(binding.alias?.value, null);
+  });
+
+  test('callee loops shadow the alias without exposing caller loops', () => {
+    const core = fragmentCore({ tree: { label: 'alias' } });
+    const call = fragmentCall(core, core.$root!, 'tree');
+    const loop: ScopeFrame = { name: 'node', value: { label: 'own loop' }, parent: call.alias };
+    assert.equal(core.$resolveValue('node.label', loop), 'own loop');
+    assert.equal(core.$resolveValue('node.label', call.alias), 'alias');
+  });
+
+  test('class defaults do not invent a captured alias absent from SSR bootstrap', () => {
+    const core = fragmentCore({});
+    Object.defineProperty(core, 'source', { value: { label: 'default' }, configurable: true });
+    core.$fragmentHydrating = true;
+    const unknown = fragmentCall(core, core.$root!, 'source');
+    assert.equal(unknown.alias?.known, false);
+    core.$fragmentKnownRoots = new Set(['source']);
+    const known = fragmentCall(core, core.$root!, 'source');
+    assert.equal(known.alias?.known, true);
+    assert.deepEqual(known.alias?.value, { label: 'default' });
+    core.$fragmentHydrating = false;
+  });
+
+  test('updates aliases before descendants and deduplicates targeted owner work', () => {
+    const core = fragmentCore({ tree: { child: { label: 'old' } }, title: 'before' });
+    const call = fragmentCall(core, core.$root!, 'tree');
+    const nested = fragmentCall(core, call.instance!, 'node.child');
+    let writes = 0;
+    let data = 'old/before';
+    const text = {
+      get data() { return data; },
+      set data(value: string) { data = value; writes++; },
+    } as CharacterData;
+    nested.instance!.texts.push({
+      node: text, scope: nested.alias, owner: nested.instance!,
+      parts: [['node.label'], '/', ['title']],
+    });
+    core.$buildPathIndex();
+    assert.equal(core.$pathIndex?.has('node'), false);
+    assert.equal(core.$wildcardBindings, null);
+    core.$templateState.title = 'after';
+    core.$templateState.tree = { child: { label: 'new' } };
+    core.$update('title');
+    core.$update('tree');
+    core.$flushUpdates();
+    assert.equal(data, 'new/after');
+    assert.equal(writes, 1);
+    assert.equal(core.$fragmentWork.visits, 2);
+    core.$update('unrelated');
+    core.$flushUpdates();
+    assert.equal(writes, 1);
+    assert.equal(core.$fragmentWork.visits, 2);
+    core.$templateState.title = 'owner only';
+    core.$update('title');
+    core.$flushUpdates();
+    assert.equal(data, 'new/owner only');
+    assert.equal(core.$fragmentWork.visits, 0);
+  });
+
+  test('owner-only bindings update even when an SSR alias remains unknown', () => {
+    const core = fragmentCore({ title: 'before' });
+    core.$guardUnknownState = true;
+    const call = fragmentCall(core, core.$root!, 'tree');
+    const known = { data: 'before' } as CharacterData;
+    const unknown = { data: 'trusted SSR' } as CharacterData;
+    call.instance!.texts.push(
+      { node: known, path: 'title', scope: call.alias, owner: call.instance! },
+      { node: unknown, path: 'node.label', scope: call.alias, owner: call.instance! },
+    );
+    core.$templateState.title = 'after';
+    core.$updateInstance(core.$root!);
+    assert.equal(known.data, 'after');
+    assert.equal(unknown.data, 'trusted SSR');
+  });
+
+  test('shared sibling data remains valid and invocation scopes remain distinct', () => {
+    const shared = { label: 'shared' };
+    const core = fragmentCore({ shared });
+    const first = fragmentCall(core, core.$root!, 'shared');
+    const second = fragmentCall(core, core.$root!, 'shared');
+    core.$updateInstance(core.$root!);
+    assert.notEqual(first.alias, second.alias);
+    assert.equal(first.alias?.value, second.alias?.value);
+    assert.equal(core.$fragmentWork.visits, 2);
+  });
+
+  test('deep call chains update and dispose iteratively with the exact depth limit', () => {
+    const core = fragmentCore({ tree: {} });
+    let owner = core.$root!;
+    for (let depth = 1; depth <= 256; depth++) {
+      const binding = fragmentCall(core, owner);
+      owner = binding.instance!;
+    }
+    core.$updateInstance(core.$root!);
+    assert.equal(core.$fragmentWork.visits, 256);
+    fragmentCall(core, owner);
+    assert.throws(() => core.$updateInstance(core.$root!), /depth exceeds 256/);
+    assert.equal(core.$fragmentWork.active, false);
+    assert.equal(core.$fragmentWork.stack.length, 0);
+    const root = core.$root!;
+    core.$removeInstance(root);
+    assert.equal(root.alive, false);
+    assert.equal(owner.alive, false);
+    assert.equal(root.renders?.length, 0);
+  });
+
+  test('teardown restores retained invocation markers for in-place reconnect', () => {
+    const core = fragmentCore({ tree: { label: 'retained' } });
+    const call = fragmentCall(core, core.$root!, 'tree');
+    const start = call.anchor;
+    const end = call.end;
+    const child = call.instance!;
+    let cleaned = 0;
+    child.cleanups = [() => { cleaned++; }];
+    core.$destroy();
+    assert.equal(start.data, 'wf');
+    assert.equal(end.data, '/wf');
+    assert.equal(child.alive, false);
+    assert.equal(child.scope, undefined);
+    assert.equal(call.alias, undefined);
+    assert.equal(cleaned, 1);
+    assert.equal(core.$root, null);
+  });
+});
 const {
   ACTIVATION_ACTIVATED,
   ACTIVATION_ANCESTOR_BARRIER,

@@ -27,6 +27,8 @@ export function applyBoundaryBootstrap(
       key === 'state' ||
       key === 'stateRef' ||
       key === 'stateDelta' ||
+      key === 'fragmentSources' ||
+      key === 'fragmentSourceRefs' ||
       key === 'componentStyles' ||
       key === 'declarationId' ||
       key === 'enclosingSpanInstanceId'

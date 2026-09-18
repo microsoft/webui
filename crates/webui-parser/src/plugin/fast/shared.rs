@@ -133,6 +133,12 @@ pub(crate) fn transform_component_source(
     source: ComponentSource<'_>,
 ) -> Result<Option<TransformedComponentSource>> {
     let html_content = source.html_content;
+    crate::named_fragments::FragmentDeclarations::collect(
+        source.tag_name,
+        html_content,
+        true,
+        true,
+    )?;
     if !contains_f_template_name(html_content.as_bytes()) {
         return Ok(None);
     }
@@ -170,6 +176,18 @@ mod tests {
         INVALID_FAST_TEMPLATE, UNSUPPORTED_MULTIPLE_F_TEMPLATES,
     };
     use crate::ParserError;
+
+    struct SourcePrecheck {
+        has_f_template: bool,
+        has_fragment_directive: bool,
+    }
+
+    fn precheck_source(source: &str) -> SourcePrecheck {
+        SourcePrecheck {
+            has_f_template: contains_f_template_name(source.as_bytes()),
+            has_fragment_directive: crate::named_fragments::contains_directives(source),
+        }
+    }
 
     // --- is_hoisted_shadow_attr / hoisted_shadow_options / strip_hoisted_shadow_options ---
     //
@@ -810,6 +828,169 @@ mod tests {
             // so the authoritative conversion scan still finds nothing.
             assert!(contains_f_template_name(html.as_bytes()));
             assert_eq!(transform("plain-card", html).expect("transform"), None);
+        }
+    }
+
+    #[test]
+    fn source_prechecks_cover_flag_orders_and_end_of_input() {
+        for (source, has_f_template, has_fragment_directive) in [
+            ("", false, false),
+            ("<", false, false),
+            ("f-templat", false, false),
+            ("<fragmen", false, false),
+            ("<rende", false, false),
+            ("f-template", true, false),
+            ("<fragment", false, true),
+            ("<RENDER", false, true),
+            ("f-template<render", true, true),
+            ("<FRAGMENT/>F-Template", true, true),
+            ("☃f-templateé<ReNdEr/>", true, true),
+            ("<render/>☃F-TEMPLATE", true, true),
+            ("f-template<fragmentation/><renderer/>", true, false),
+            ("f-template</render>", true, false),
+        ] {
+            let features = precheck_source(source);
+            assert_eq!(features.has_f_template, has_f_template, "{source:?}");
+            assert_eq!(
+                features.has_fragment_directive, has_fragment_directive,
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_prechecks_require_named_directive_tag_delimiters() {
+        for name in ["fragment", "FRAGMENT", "render", "ReNdEr"] {
+            for delimiter in (0u8..=127).map(char::from).chain(['é', '☃']) {
+                let source = format!("f-template<{name}{delimiter}");
+                let features = precheck_source(&source);
+                assert!(features.has_f_template, "{source:?}");
+                assert_eq!(
+                    features.has_fragment_directive,
+                    delimiter.is_ascii_whitespace() || matches!(delimiter, '/' | '>'),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fast_name_detection_keeps_trailing_directives_after_large_utf8_text() {
+        let text = "plain text \u{2603} ".repeat(4096);
+        for (suffix, expected) in [
+            ("", false),
+            ("</fragment>", false),
+            ("<fragmentation/><renderer/>", false),
+            ("<ReNdEr/>", true),
+            ("<FRAGMENT", true),
+        ] {
+            let source = format!("F-TEMPLATE{text}{suffix}");
+            let features = precheck_source(&source);
+            assert!(features.has_f_template);
+            assert_eq!(features.has_fragment_directive, expected, "{suffix}");
+        }
+    }
+
+    #[test]
+    fn large_fast_body_preserves_trailing_fragment_diagnostic() {
+        let source = format!(
+            "<f-template name=\"card\"><template><p>{}</p><render fragment=\"missing\"/></template></f-template>",
+            "ordinary text ".repeat(4096),
+        );
+        let ParserError::Template(diagnostic) =
+            transform("file-card", &source).expect_err("unsupported named directive")
+        else {
+            panic!("expected authoring diagnostic");
+        };
+        assert_eq!(
+            diagnostic.error_code(),
+            Some(codes::UNSUPPORTED_FRAGMENT_DIRECTIVE)
+        );
+        assert_eq!(diagnostic.component_name(), Some("file-card"));
+    }
+
+    #[test]
+    fn source_prechecks_preserve_utf8_boundaries() {
+        for source in [
+            "< \tF-TEMPLATE><template></template></f-template><render/>",
+            "<render/><f-template><template></template></f-template>",
+            "<fragment/><FRAGMENTATION/><renderer/>f-templatex",
+            "<!-- f-template <render fragment='ignored'/> -->",
+            r#"<div title="f-template <fragment name='quoted'/>">é☃</div>"#,
+            r#"<script>const t = "<render/>f-template";</script>"#,
+            r#"<style>/* f-template <fragment/> */</style>"#,
+            "é☃ƒ-templateéF-TEMPLATE☃<fragment☃<render/>",
+            "f-templat<fragmen<rende<<",
+        ] {
+            for end in source
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(source.len()))
+            {
+                let prefix = &source[..end];
+                let features = precheck_source(prefix);
+                let has_f_template = prefix
+                    .as_bytes()
+                    .windows(F_TEMPLATE_NAME.len())
+                    .any(|window| window.eq_ignore_ascii_case(F_TEMPLATE_NAME.as_bytes()));
+                assert_eq!(features.has_f_template, has_f_template, "{prefix:?}");
+                assert_eq!(
+                    features.has_fragment_directive,
+                    crate::named_fragments::contains_directives(prefix),
+                    "{prefix:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_checks_preserve_fragment_diagnostics_before_and_after_fast_wrappers() {
+        for source in [
+            r#"<render fragment="missing"/>"#,
+            r#"<FRAGMENT name="unused"/>"#,
+            "<!-- owner -->\n<render/><f-template><template></template></f-template>",
+            "<f-template><template></template></f-template>\n<RENDER/>",
+            "<f-template><template><render/></template></f-template>",
+            "<f-template><template><script><render/></script></template></f-template>",
+            "<F-TEMPLATE><TEMPLATE><STYLE><FRAGMENT/></STYLE></TEMPLATE></F-TEMPLATE>",
+        ] {
+            let ParserError::Template(expected) =
+                crate::named_fragments::FragmentDeclarations::collect(
+                    "file-card",
+                    source,
+                    true,
+                    true,
+                )
+                .err()
+                .expect("independent fragment check")
+            else {
+                panic!("expected fragment diagnostic");
+            };
+            let ParserError::Template(actual) =
+                transform("file-card", source).expect_err("unsupported fragment")
+            else {
+                panic!("expected fragment diagnostic");
+            };
+            assert_eq!(
+                actual.error_code(),
+                Some(codes::UNSUPPORTED_FRAGMENT_DIRECTIVE)
+            );
+            assert_eq!(actual.component_name(), Some("file-card"));
+            assert!(actual.position_line_column().is_some());
+            assert_eq!(actual, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn source_precheck_false_positives_still_use_authoritative_context() {
+        for source in [
+            "<!-- f-template <fragment name='ignored'/> -->",
+            r#"<template data-note="f-template <render fragment='ignored'/>">ordinary</template>"#,
+            r#"<template><!-- f-template <render/> --><span>ordinary</span></template>"#,
+        ] {
+            let features = precheck_source(source);
+            assert!(features.has_f_template && features.has_fragment_directive);
+            assert_eq!(transform("plain-card", source).expect("transform"), None);
         }
     }
 

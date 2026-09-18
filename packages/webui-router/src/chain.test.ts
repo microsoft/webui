@@ -41,7 +41,100 @@ function routeElement(
   } as unknown as HTMLElement;
 }
 
+function outletRoot(values: Array<string | { localName: string }>, routes: HTMLElement[] = []) {
+  const inserted: { node: Node; before: Node }[] = [];
+  const root = Object.assign(document.createElement('section'), {
+    querySelectorAll: () => routes,
+    querySelector: () => null,
+    appendChild: () => { throw new Error('Route escaped the SSR outlet'); },
+    insertBefore(node: Node, before: Node) {
+      inserted.push({ node, before });
+      return node;
+    },
+  });
+  interface Marker {
+    nodeValue: string | null;
+    nodeType: number;
+    localName?: string;
+    parentNode: HTMLElement;
+    nextSibling: Marker | null;
+  }
+  const nodes: Marker[] = values.map(value => ({
+    ...(typeof value === 'string' ? { nodeValue: value, nodeType: 8 } : { ...value, nodeValue: null, nodeType: 1 }),
+    parentNode: root, nextSibling: null,
+  }));
+  for (let i = 0; i < nodes.length; i++) nodes[i].nextSibling = nodes[i + 1] ?? null;
+  const walker: { currentNode: object; nextNode(): Marker | null } = {
+    currentNode: root,
+    nextNode() {
+      const next = nodes[nodes.findIndex(node => node === this.currentNode) + 1] ?? null;
+      if (next) this.currentNode = next;
+      return next;
+    },
+  };
+  const parent = { ...routeEntry('/'), el: root, compEl: root };
+  return { root, nodes, walker, parent, inserted };
+}
+
 describe('route chain identity', () => {
+  test('ordinary digit-prefixed comments are not raw range openers', t => {
+    for (const label of ['w1-note', 'w12x', 'w0 ', 'w2.3', 'w']) {
+      const fixture = outletRoot([label, 'wo', '/wo']);
+      const method = t.mock.method(document, 'createTreeWalker', () => fixture.walker);
+      findOrCreateRouteElement(fixture.parent, routeEntry('added'));
+      assert.equal(fixture.inserted[0].before, fixture.nodes[2]);
+      method.mock.restore();
+    }
+  });
+
+  test('new routes stay in empty and populated SSR ranges, outside nested ranges', t => {
+    for (const routes of [[], [routeElement({ component: 'other-page', path: 'other' })]]) {
+      const fixture = outletRoot(['wo', 'wo', '/wo', '/wo', 'wo', '/wo'], routes);
+      const method = t.mock.method(document, 'createTreeWalker', () => fixture.walker);
+      const result = findOrCreateRouteElement(fixture.parent, routeEntry('added'));
+      assert.equal(fixture.inserted.length, 1);
+      assert.equal(fixture.inserted[0].node, result);
+      assert.equal(fixture.inserted[0].before, fixture.nodes[3]);
+      method.mock.restore();
+    }
+  });
+
+  test('an existing route does not scan SSR outlet comments', t => {
+    const existing = routeElement({ component: 'shared-page', path: 'same' });
+    const fixture = outletRoot([], [existing]);
+    t.mock.method(document, 'createTreeWalker', () => {
+      throw new Error('Existing routes must not scan comments');
+    });
+    assert.equal(findOrCreateRouteElement(fixture.parent, routeEntry('same')), existing);
+  });
+
+  test('raw HTML cannot supply the routing outlet markers', t => {
+    const fixture = outletRoot(['w12', 'w12', 'wo', '/wo', '/w12', 'wo', '/wo', '/w12', 'wo', '/wo']);
+    t.mock.method(document, 'createTreeWalker', () => fixture.walker);
+    findOrCreateRouteElement(fixture.parent, routeEntry('added'));
+    assert.equal(fixture.inserted[0].before, fixture.nodes[9]);
+  });
+
+  test('a recreated client outlet takes precedence over a later SSR outlet', t => {
+    const fixture = outletRoot([{ localName: 'outlet' }, 'wo', '/wo']);
+    t.mock.method(document, 'createTreeWalker', () => fixture.walker);
+    findOrCreateRouteElement(fixture.parent, routeEntry('added'));
+    assert.equal(fixture.inserted[0].before, fixture.nodes[1]);
+  });
+
+  test('unpaired SSR outlets fail before inserting a route', t => {
+    for (const values of [['wo'], ['/wo'], ['wo', 'wo', '/wo'], ['w0', 'wo', '/wo']]) {
+      const fixture = outletRoot(values);
+      const method = t.mock.method(document, 'createTreeWalker', () => fixture.walker);
+      assert.throws(
+        () => findOrCreateRouteElement(fixture.parent, routeEntry('added')),
+        /Unpaired SSR range markers.*Rebuild/,
+      );
+      assert.equal(fixture.inserted.length, 0);
+      method.mock.restore();
+    }
+  });
+
   test('declared path changes the chain level', () => {
     assert.equal(
       findChangeLevel([routeEntry('projects')], [routeEntry('')]),

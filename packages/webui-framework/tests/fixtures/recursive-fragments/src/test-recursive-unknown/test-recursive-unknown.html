@@ -1,0 +1,5 @@
+<fragment name="tree-items"><ul><for each="child in items"><li><span class="unknown-name">{{child.name}}</span><if condition="child.children.length"><render fragment="tree-items" scope="{{child.children}}" as="items"></render></if></li></for></ul></fragment>
+<fragment name="heading"><h3>{{serverTitle}}</h3></fragment>
+<render fragment="heading"></render>
+<render fragment="tree-items" scope="{{serverItems}}" as="items"></render>
+<button @click="{increment()}">{{pulse}}</button>

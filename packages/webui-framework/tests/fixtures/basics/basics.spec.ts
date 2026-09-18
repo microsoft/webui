@@ -27,6 +27,14 @@ test.describe('basics: SSR hydration', () => {
     await expect(page.locator('test-basics .doubled')).toHaveText('0');
   });
 
+  test('shared SSR hydration does not allocate fragment-only host state', async ({ page }) => {
+    const fragmentFields = await page.locator('test-basics').evaluate(host =>
+      ['$fragmentWork', '$fragmentKnownRoots', '$fragmentHydrating', '$fragmentInputVersions']
+        .filter(name => Object.hasOwn(host, name)),
+    );
+    expect(fragmentFields).toEqual([]);
+  });
+
   test('fires the hydration completion event', async ({ page }) => {
     const fired = await page.evaluate(() =>
       performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0,

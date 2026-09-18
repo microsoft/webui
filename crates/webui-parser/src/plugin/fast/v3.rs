@@ -150,6 +150,7 @@ impl ParserPlugin for FastV3ParserPlugin {
             source_transform: Some(super::shared::transform_component_source),
             process_root_template_attributes: true,
             inline_styles_after_content: true,
+            reject_fragment_directives: true,
         }
     }
 

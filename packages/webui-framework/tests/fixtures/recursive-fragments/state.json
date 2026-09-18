@@ -1,0 +1,36 @@
+{
+  "title": "Forest",
+  "items": [
+    {
+      "id": "oak",
+      "name": "Oak",
+      "children": [
+        { "id": "leaf", "name": "Leaf", "children": [] },
+        { "id": "bud", "name": "Bud", "children": [] }
+      ]
+    },
+    { "id": "pine", "name": "Pine", "children": [] }
+  ],
+  "selected": "",
+  "focused": "",
+  "prefix": "Before",
+  "suffix": "After",
+  "show": true,
+  "tail": ["one", "two"],
+  "html": "<strong class=\"trusted\">Trusted</strong>",
+  "scalar": null,
+  "lengthText": "é😀",
+  "invalidLength": false,
+  "fallbackItems": [{}],
+  "item": { "fallback": "GLOBAL" },
+  "columns": 2,
+  "pulse": 0,
+  "serverTitle": "Server-only forest",
+  "serverItems": [
+    {
+      "id": "server",
+      "name": "Server oak",
+      "children": [{ "id": "server-leaf", "name": "Server leaf", "children": [] }]
+    }
+  ]
+}

@@ -198,7 +198,10 @@ pub struct FragmentList {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WebUiFragment {
-    #[prost(oneof = "web_ui_fragment::Fragment", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(
+        oneof = "web_ui_fragment::Fragment",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+    )]
     pub fragment: ::core::option::Option<web_ui_fragment::Fragment>,
 }
 /// Nested message and enum types in `WebUIFragment`.
@@ -226,6 +229,8 @@ pub mod web_ui_fragment {
         Outlet(super::WebUiFragmentOutlet),
         #[prost(message, tag = "10")]
         Boundary(super::WebUiFragmentBoundary),
+        #[prost(message, tag = "11")]
+        Render(super::WebUiFragmentRender),
     }
 }
 /// Compile-time streaming boundary declaration, written as an inline tape.
@@ -335,6 +340,20 @@ pub struct WebUiFragmentRaw {
 pub struct WebUiFragmentComponent {
     #[prost(string, tag = "1")]
     pub fragment_id: ::prost::alloc::string::String,
+}
+/// Wrapperless invocation of an owner-local named fragment.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WebUiFragmentRender {
+    /// Declaration body record, resolved once by the runtime loader.
+    #[prost(string, tag = "1")]
+    pub fragment_id: ::prost::alloc::string::String,
+    /// Caller-evaluated dotted input path; empty for a parameterless invocation.
+    #[prost(string, tag = "2")]
+    pub scope: ::prost::alloc::string::String,
+    /// Isolated callee binding name; empty exactly when scope is empty.
+    #[prost(string, tag = "3")]
+    pub alias: ::prost::alloc::string::String,
 }
 /// Loop directive iterating over a collection.
 #[derive(serde::Serialize, serde::Deserialize)]

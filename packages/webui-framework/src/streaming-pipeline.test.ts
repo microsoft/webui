@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { beforeEach, describe, test } from 'node:test';
+import { fragmentInput } from './fragment-inputs.js';
 
 /**
  * Coordinator pipeline tests.
@@ -772,6 +773,71 @@ function assertScaffoldCleaned(b: BuiltBoundary): void {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('streaming coordinator pipeline', () => {
+  test('terminal preserves captured inputs behind undefined component barriers without global state leakage', async () => {
+    const marker = comment('wf:0');
+    const values: unknown[] = [];
+    const inner = element('captured-late-inner', {
+      attrs: { 'data-ws': '' },
+      shadowChildren: [marker, comment('/wf')],
+      hook(state) {
+        values.push(fragmentInput(inner as unknown as Element, 0, marker as unknown as Comment));
+        values.push(state?.title);
+        marker.data = '';
+      },
+    });
+    const outer = element('captured-late-outer', { children: [inner], hook() {} });
+    enqueue(buildBoundary(0, 0, [outer], {
+      state: { title: 'NEW' },
+      fragmentSources: [[0, 0, { label: 'OLD' }]],
+    }).sentinel);
+    await flush();
+    enqueue(buildMarkerless(1, 1, {}).sentinel);
+    await flush();
+    assert.deepEqual(values, []);
+    assert.throws(
+      () => fragmentInput({} as Element, 0),
+      /unknown source 0 after the response closed/,
+      'the terminal record released the response-wide table',
+    );
+    defineTag('captured-late-inner');
+    defineTag('captured-late-outer');
+    await flush();
+    assert.deepEqual(values, [{ label: 'OLD' }, 'NEW']);
+    assert.equal('fragmentSources' in webuiGlobal(), false);
+    assert.equal('fragmentSourceRefs' in webuiGlobal(), false);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
+  test('span refs retain additive projected inputs until lazy activation after terminal', async () => {
+    const values: unknown[] = [];
+    enqueue(buildBoundary(0, 0, [], {
+      fragmentSources: [[0, 0, { child: { label: 'OLD' } }]],
+    }).sentinel);
+    await flush();
+    const host = element('captured-span-host', {
+      hook() {
+        values.push(fragmentInput(host as unknown as Element, 1));
+      },
+    });
+    enqueue(buildSpanCompletion(1, 0, host, {
+      fragmentSources: [[1, 1, 0, 'child']],
+      fragmentSourceRefs: [1],
+    }).sentinel);
+    await flush();
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+    assert.throws(() => fragmentInput({} as Element, 1), /unknown source 1 after the response closed/);
+    defineTag('captured-span-host');
+    await flush();
+    assert.deepEqual(values, [{ label: 'OLD' }]);
+    // Retention follows the host element itself, so nested component frames and
+    // a later reconnect resolve the same identifier instead of racing the walk.
+    assert.deepEqual(fragmentInput(host as unknown as Element, 1), { label: 'OLD' });
+    assert.equal('fragmentSources' in webuiGlobal(), false);
+    assert.equal('fragmentSourceRefs' in webuiGlobal(), false);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
   beforeEach(() => {
     installGlobals();
     elementRegistry = [];

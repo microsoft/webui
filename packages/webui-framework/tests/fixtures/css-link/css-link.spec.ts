@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import { expect, test, type Page } from '@playwright/test';
+import type { TemplateInstance } from '../../../src/element/types.js';
 
 test.describe('css link fixture', () => {
   async function openFixture(page: Page): Promise<void> {
@@ -33,7 +34,8 @@ test.describe('css link fixture', () => {
       return label instanceof HTMLElement ? getComputedStyle(label).color : null;
     })).toBe('rgb(128, 0, 128)');
 
-    await expect(page.locator('test-link-host').evaluate((host) => {
+    // A matching color can precede the other native link's load and promotion.
+    await expect.poll(async () => page.locator('test-link-host').evaluate((host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child');
       return {
         adopted: child?.shadowRoot?.adoptedStyleSheets.length ?? 0,
@@ -43,7 +45,7 @@ test.describe('css link fixture', () => {
           ).filter(link => (link as HTMLLinkElement).disabled).length,
         links: child?.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
       };
-    })).resolves.toEqual({ adopted: 2, disabled: 2, links: 2 });
+    })).toEqual({ adopted: 2, disabled: 2, links: 2 });
 
     await page.locator('test-link-host').evaluate(async (host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child') as
@@ -912,17 +914,21 @@ test.describe('css link fixture', () => {
     await expect.poll(async () => page.evaluate(() => {
       const child = document.querySelector('#reconnected-link-child') as
         | (HTMLElement & {
-          $root?: { nodes: Node[] };
+          $root?: Pick<TemplateInstance, 'nodes' | 'texts' | 'container'>;
           hydratedCount?: number;
         })
         | null;
       const label = child?.shadowRoot?.querySelector('.child-label');
+      const instance = child?.$root;
       return {
         content: child?.shadowRoot?.querySelectorAll('.child-label').length ?? 0,
         hydratedCount: child?.hydratedCount ?? 0,
         style: child?.getAttribute('style') ?? null,
         text: label?.textContent ?? null,
-        tracked: !!label && child?.$root?.nodes.includes(label),
+        // Migration: prove the live label is wired, not retained in a redundant flat-root list.
+        tracked: !!label && !!instance && instance.container === child?.shadowRoot
+          && instance.texts.some(binding => binding.node.parentNode === label),
+        omittedOwnership: !!instance && instance.nodes.length === 0 && Object.isFrozen(instance.nodes),
       };
     })).toEqual({
       content: 1,
@@ -930,6 +936,7 @@ test.describe('css link fixture', () => {
       style: null,
       text: 'Child reconnected',
       tracked: true,
+      omittedOwnership: true,
     });
   });
 

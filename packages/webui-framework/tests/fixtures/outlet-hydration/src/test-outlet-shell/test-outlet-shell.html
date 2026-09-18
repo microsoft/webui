@@ -1,0 +1,7 @@
+<div class="raw-before">{{{rawHtml}}}</div>
+<main class="populated">{{prefix}}<if condition="showPrimary"><outlet /></if>{{suffix}}<button @click="{onUpdate()}">Update</button></main>
+<section class="empty">{{emptyPrefix}}<outlet></outlet>{{emptySuffix}}</section>
+<render fragment="empty-range"></render>
+<fragment name="empty-range"><aside class="fragment">{{fragmentPrefix}}<outlet />{{fragmentSuffix}}</aside></fragment>
+<button @click="{onAddRoute()}">Add route</button>
+<button @click="{onTogglePrimary()}">Toggle primary</button>

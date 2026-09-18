@@ -48,6 +48,9 @@ fn partition_component_asset_style_preloads(
 }
 use crate::streaming::PreparedContinuationStatePlan;
 
+#[cfg(test)]
+mod style_payload_tests;
+
 // ── Protocol Index ──────────────────────────────────────────────────────
 
 /// A decoded protocol with reusable deterministic indices.
@@ -60,19 +63,19 @@ use crate::streaming::PreparedContinuationStatePlan;
 /// populated lazily behind a read-write lock whose scope is limited to
 /// individual metadata lookups.
 pub struct Protocol {
-    protocol: WebUIProtocol,
+    protocol: Arc<WebUIProtocol>,
     style_metadata_error: Option<String>,
     css_strategy: webui_protocol::CssStrategy,
     /// Render plan prepared once at load: numeric fragment slots, per-fragment
     /// render targets, canonical component prop names, and route presence bits.
     render_fragments: crate::RenderFragmentIndex,
+    pub(crate) render_routes: crate::render_routes::RenderRoutes,
     component_asset_style_manifest: std::result::Result<String, String>,
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
     style_resources_requiring_escape: HashSet<String>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
-    fragment_ids: Vec<Arc<str>>,
     fragment_slots: HashMap<Arc<str>, u32>,
     route_index: CompiledRouteIndex,
     boundary_declarations: OnceLock<HashMap<u32, BoundaryDeclaration>>,
@@ -134,7 +137,6 @@ impl Protocol {
         let component_index = build_component_index(&protocol);
         let style_resource_index = build_style_resource_index(&protocol);
         let style_resources_requiring_escape = build_style_escape_resources(&protocol);
-        let route_index = CompiledRouteIndex::new(&protocol);
         let mut fragment_ids: Vec<Arc<str>> = protocol
             .fragments
             .keys()
@@ -147,23 +149,32 @@ impl Protocol {
             #[allow(clippy::cast_possible_truncation)]
             fragment_slots.insert(Arc::clone(id), slot as u32);
         }
+        let fragment_ids = fragment_ids.into_boxed_slice();
         // Render slots reuse the continuation slot numbering, so the prepared
         // index shares the interned IDs instead of duplicating every string, and
         // resolves targets through the slot map instead of re-searching by name.
-        let render_fragments =
-            crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
+        let protocol = Arc::new(protocol);
+        let (render_routes, route_preparation) = crate::render_routes::RenderRoutes::new(&protocol);
+        let route_index = CompiledRouteIndex::from_routes(render_routes.iter());
+        let render_fragments = crate::RenderFragmentIndex::new(
+            &protocol,
+            fragment_ids,
+            &fragment_slots,
+            &route_preparation,
+            &component_index,
+        );
         Self {
             protocol,
             style_metadata_error,
             css_strategy,
             render_fragments,
+            render_routes,
             component_asset_style_manifest,
             component_asset_style_links,
             component_index,
             style_resource_index,
             style_resources_requiring_escape,
             component_reachability: OnceLock::new(),
-            fragment_ids,
             fragment_slots,
             route_index,
             boundary_declarations: OnceLock::new(),
@@ -239,8 +250,7 @@ impl Protocol {
     pub(crate) fn fragment_id(&self, slot: u32) -> Option<&str> {
         usize::try_from(slot)
             .ok()
-            .and_then(|slot| self.fragment_ids.get(slot))
-            .map(Arc::as_ref)
+            .and_then(|slot| self.render_fragments.id(slot))
     }
 
     /// Borrow the interned identity of one build-time boundary declaration.
@@ -276,7 +286,7 @@ impl Protocol {
             HandlerError::Invariant("continuation plan slot does not fit usize".to_string())
         })?;
         let plans = self.continuation_state_plans.get_or_init(|| {
-            (0..self.fragment_ids.len())
+            (0..self.render_fragments.record_count())
                 .map(|_| OnceLock::new())
                 .collect()
         });
@@ -496,6 +506,7 @@ struct ComponentAssets {
 
 /// Build the versioned, tree-local component style metadata for the requested
 /// roots.
+#[cfg(test)]
 pub(crate) fn collect_component_styles<'a>(
     protocol: &WebUIProtocol,
     roots: impl IntoIterator<Item = &'a str>,
@@ -1314,6 +1325,9 @@ fn collect_direct_component_dependencies(
                                 work.push(ComponentDependencyWork::Component(index));
                             }
                         }
+                        Some(Fragment::Render(render)) => work.push(
+                            ComponentDependencyWork::Fragment(render.fragment_id.as_str()),
+                        ),
                         Some(Fragment::ForLoop(for_loop)) => work.push(
                             ComponentDependencyWork::Fragment(for_loop.fragment_id.as_str()),
                         ),
@@ -2156,7 +2170,9 @@ struct QueuedFragment<'protocol> {
 /// Key identifying an already-walked fragment.
 ///
 /// Route-insensitive walks collapse every base into `None` so a fragment is
-/// visited once regardless of the path that reached it.
+/// visited once regardless of the path that reached it. Request-aware bases
+/// are consumed request prefixes, so recursive local calls have finitely many
+/// fragment/base pairs even when routes lead back to the same body.
 type VisitedKey<'protocol> = (&'protocol str, Option<u32>);
 
 #[inline]
@@ -2299,6 +2315,13 @@ fn collect_inventoryable_components_from_stack<'protocol>(
                         route_base: queued.route_base,
                     });
                 }
+                Some(Fragment::Render(render)) => {
+                    stack.push(QueuedFragment {
+                        id: &render.fragment_id,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(QueuedFragment {
                         id: &for_loop.fragment_id,
@@ -2322,6 +2345,10 @@ fn collect_inventoryable_components_from_stack<'protocol>(
                     });
                 }
                 Some(Fragment::Route(route_frag)) => {
+                    if !route_sensitive {
+                        queue_all_route_fragments(route_frag, protocol, &mut stack);
+                        continue;
+                    }
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
@@ -2392,6 +2419,42 @@ fn collect_inventoryable_components_from_stack<'protocol>(
     component_ids
 }
 
+fn queue_all_route_fragments<'protocol>(
+    route: &'protocol WebUIFragmentRoute,
+    protocol: &WebUIProtocol,
+    stack: &mut Vec<QueuedFragment<'protocol>>,
+) {
+    let mut routes = vec![route];
+    let start = stack.len();
+    while let Some(route) = routes.pop() {
+        // An unrestricted walk needs no authored base. Keeping the root base
+        // avoids unbounded path growth when a local call cycles through routes.
+        for id in [
+            &route.fragment_id,
+            &route.pending_component,
+            &route.error_component,
+        ] {
+            if !id.is_empty() {
+                stack.push(QueuedFragment {
+                    id,
+                    inventoryable: protocol
+                        .components
+                        .get(id)
+                        .is_some_and(has_template_payload),
+                    route_base: RouteBaseArena::ROOT,
+                });
+            }
+        }
+        stack.push(QueuedFragment {
+            id: &route.content_fragment_id,
+            inventoryable: false,
+            route_base: RouteBaseArena::ROOT,
+        });
+        routes.extend(route.children.iter().rev());
+    }
+    stack[start..].reverse();
+}
+
 /// Select the best-matching child route among siblings by specificity.
 ///
 /// Returns the index and match result of the highest-specificity match,
@@ -2455,6 +2518,11 @@ fn walk_route_children<'protocol>(
             rm.consumed_segments,
         ));
 
+        stack.push(QueuedFragment {
+            id: &matched.content_fragment_id,
+            inventoryable: false,
+            route_base: base,
+        });
         stack.push(QueuedFragment {
             id: &matched.fragment_id,
             inventoryable: ctx
@@ -2574,6 +2642,13 @@ pub fn collect_nested_route_params(
                         route_base: queued.route_base,
                     });
                 }
+                Some(Fragment::Render(render)) => {
+                    stack.push(QueuedFragment {
+                        id: &render.fragment_id,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(QueuedFragment {
                         id: &for_loop.fragment_id,
@@ -2589,10 +2664,24 @@ pub fn collect_nested_route_params(
                     });
                 }
 
+                Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
+                    stack.push(QueuedFragment {
+                        id: &attr.template,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(QueuedFragment {
+                            id: &route_frag.content_fragment_id,
+                            inventoryable: false,
+                            route_base: queued.route_base,
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             // Collect params from this route level. Cloning
@@ -2617,10 +2706,17 @@ pub fn collect_nested_route_params(
                             // Walk nested children to collect params from deeper levels
                             collect_params_from_children(
                                 &route_frag.children,
-                                request_path,
-                                arena.get(child_route_base),
-                                &mut all_params,
-                                route_index,
+                                child_route_base,
+                                ParamWalkSinks {
+                                    stack: &mut stack,
+                                    params: &mut all_params,
+                                    arena: &mut arena,
+                                },
+                                &ChildWalkCtx {
+                                    request_path,
+                                    protocol,
+                                    route_index,
+                                },
                             );
                         }
                     }
@@ -2633,24 +2729,47 @@ pub fn collect_nested_route_params(
     all_params
 }
 
-/// Iteratively collect route params from nested route children.
-fn collect_params_from_children(
-    children: &[WebUIFragmentRoute],
-    request_path: &str,
-    route_base: &str,
-    all_params: &mut HashMap<String, String>,
-    route_index: &CompiledRouteIndex,
+struct ParamWalkSinks<'walk, 'protocol> {
+    stack: &'walk mut Vec<QueuedFragment<'protocol>>,
+    params: &'walk mut HashMap<String, String>,
+    arena: &'walk mut RouteBaseArena,
+}
+
+/// Iteratively collect route params and follow each matched child's body.
+fn collect_params_from_children<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
+    sinks: ParamWalkSinks<'_, 'protocol>,
+    ctx: &ChildWalkCtx<'_>,
 ) {
     let mut current = children;
-    let mut base = route_base.to_string();
+    let mut base = route_base;
 
-    while let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index) {
-        all_params.extend(rm.params);
+    while let Some((idx, rm)) = select_best_child_route(
+        current,
+        ctx.request_path,
+        sinks.arena.get(base),
+        ctx.route_index,
+    ) {
+        sinks.params.extend(rm.params);
         let matched = &current[idx];
+        let child_base = sinks.arena.intern_owned(route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
+        sinks.stack.push(QueuedFragment {
+            id: &matched.content_fragment_id,
+            inventoryable: false,
+            route_base: base,
+        });
+        sinks.stack.push(QueuedFragment {
+            id: &matched.fragment_id,
+            inventoryable: false,
+            route_base: child_base,
+        });
         if matched.children.is_empty() {
             break;
         }
-        let child_base = route_matcher::compute_route_base(request_path, rm.consumed_segments);
         current = &matched.children;
         base = child_base;
     }
@@ -2753,6 +2872,13 @@ fn collect_inventory_and_chain<'protocol>(
                         route_base: queued.route_base,
                     });
                 }
+                Some(Fragment::Render(render)) => {
+                    stack.push(QueuedFragment {
+                        id: &render.fragment_id,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
                 Some(Fragment::ForLoop(for_loop)) => {
                     // Inventory: follow control-flow edges conservatively
                     stack.push(QueuedFragment {
@@ -2790,18 +2916,21 @@ fn collect_inventory_and_chain<'protocol>(
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             // Chain: record matched route entry
-                            chain.push(RouteChainEntry {
-                                component: route_frag.fragment_id.clone(),
-                                path: route_frag.path.clone(),
-                                params: rm.params.clone(),
-                                exact: route_frag.exact,
-                                allowed_query: route_frag.allowed_query.clone(),
-                                keep_alive: route_frag.keep_alive,
-                                cache_tags: route_frag.cache_tags.clone(),
-                                invalidates: route_frag.invalidates.clone(),
-                                pending_component: route_frag.pending_component.clone(),
-                                error_component: route_frag.error_component.clone(),
-                            });
+                            crate::render_buffer::push(
+                                &mut chain,
+                                RouteChainEntry {
+                                    component: route_frag.fragment_id.clone(),
+                                    path: route_frag.path.clone(),
+                                    params: rm.params.clone(),
+                                    exact: route_frag.exact,
+                                    allowed_query: route_frag.allowed_query.clone(),
+                                    keep_alive: route_frag.keep_alive,
+                                    cache_tags: route_frag.cache_tags.clone(),
+                                    invalidates: route_frag.invalidates.clone(),
+                                    pending_component: route_frag.pending_component.clone(),
+                                    error_component: route_frag.error_component.clone(),
+                                },
+                            );
 
                             let child_route_base =
                                 arena.intern_owned(route_matcher::compute_route_base(
@@ -2899,19 +3028,27 @@ fn walk_children_for_inventory_and_chain<'protocol>(
             rm.consumed_segments,
         ));
 
-        chain.push(RouteChainEntry {
-            component: matched.fragment_id.clone(),
-            path: matched.path.clone(),
-            params: rm.params,
-            exact: matched.exact,
-            allowed_query: matched.allowed_query.clone(),
-            keep_alive: matched.keep_alive,
-            cache_tags: matched.cache_tags.clone(),
-            invalidates: matched.invalidates.clone(),
-            pending_component: matched.pending_component.clone(),
-            error_component: matched.error_component.clone(),
-        });
+        crate::render_buffer::push(
+            chain,
+            RouteChainEntry {
+                component: matched.fragment_id.clone(),
+                path: matched.path.clone(),
+                params: rm.params,
+                exact: matched.exact,
+                allowed_query: matched.allowed_query.clone(),
+                keep_alive: matched.keep_alive,
+                cache_tags: matched.cache_tags.clone(),
+                invalidates: matched.invalidates.clone(),
+                pending_component: matched.pending_component.clone(),
+                error_component: matched.error_component.clone(),
+            },
+        );
 
+        stack.push(QueuedFragment {
+            id: &matched.content_fragment_id,
+            inventoryable: false,
+            route_base: base,
+        });
         stack.push(QueuedFragment {
             id: &matched.fragment_id,
             inventoryable: ctx
@@ -3410,9 +3547,9 @@ pub(crate) fn collect_route_chain(
     collect_route_chain_plan(protocol, entry_id, request_path, route_index).entries
 }
 
-struct RouteChainWork {
-    id: String,
-    route_base: String,
+struct RouteChainWork<'protocol> {
+    id: &'protocol str,
+    route_base: u32,
     targets_document: bool,
 }
 
@@ -3424,28 +3561,30 @@ pub(crate) fn collect_route_chain_plan(
 ) -> RouteChainPlan {
     let mut chain = Vec::new();
     let mut document_style_targets = Vec::new();
+    // A shared body may be reached in both CSS trees at the same route base.
     let mut visited_fragments = HashSet::new();
+    let mut arena = RouteBaseArena::new();
     let mut stack = vec![RouteChainWork {
-        id: entry_id.to_string(),
-        route_base: "/".to_string(),
+        id: entry_id,
+        route_base: RouteBaseArena::ROOT,
         targets_document: !protocol.component_uses_shadow_dom(entry_id),
     }];
 
     while let Some(queued) = stack.pop() {
         if queued.id.is_empty()
-            || !visited_fragments.insert((queued.id.clone(), queued.route_base.clone()))
+            || !visited_fragments.insert((queued.id, queued.route_base, queued.targets_document))
         {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
         let matched_route = route_renderer::find_best_route_match(
             &frag_list.fragments,
             request_path,
-            &queued.route_base,
+            arena.get(queued.route_base),
             route_index,
         );
 
@@ -3453,57 +3592,81 @@ pub(crate) fn collect_route_chain_plan(
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(RouteChainWork {
-                        id: component.fragment_id.clone(),
-                        route_base: queued.route_base.clone(),
+                        id: &component.fragment_id,
+                        route_base: queued.route_base,
                         targets_document: queued.targets_document
                             && !protocol.component_uses_shadow_dom(&component.fragment_id),
                     });
                 }
+                Some(Fragment::Render(render)) => {
+                    stack.push(RouteChainWork {
+                        id: &render.fragment_id,
+                        route_base: queued.route_base,
+                        targets_document: queued.targets_document,
+                    });
+                }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(RouteChainWork {
-                        id: for_loop.fragment_id.clone(),
-                        route_base: queued.route_base.clone(),
+                        id: &for_loop.fragment_id,
+                        route_base: queued.route_base,
                         targets_document: queued.targets_document,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(RouteChainWork {
-                        id: if_cond.fragment_id.clone(),
-                        route_base: queued.route_base.clone(),
+                        id: &if_cond.fragment_id,
+                        route_base: queued.route_base,
                         targets_document: queued.targets_document,
                     });
                 }
-
+                Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
+                    stack.push(RouteChainWork {
+                        id: &attr.template,
+                        route_base: queued.route_base,
+                        targets_document: queued.targets_document,
+                    });
+                }
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(RouteChainWork {
+                            id: &route_frag.content_fragment_id,
+                            route_base: queued.route_base,
+                            targets_document: queued.targets_document,
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             let targets_document = queued.targets_document
                                 && !protocol.component_uses_shadow_dom(&route_frag.fragment_id);
-                            chain.push(RouteChainEntry {
-                                component: route_frag.fragment_id.clone(),
-                                path: route_frag.path.clone(),
-                                params: rm.params.clone(),
-                                exact: route_frag.exact,
-                                allowed_query: route_frag.allowed_query.clone(),
-                                keep_alive: route_frag.keep_alive,
-                                cache_tags: route_frag.cache_tags.clone(),
-                                invalidates: route_frag.invalidates.clone(),
-                                pending_component: route_frag.pending_component.clone(),
-                                error_component: route_frag.error_component.clone(),
-                            });
+                            crate::render_buffer::push(
+                                &mut chain,
+                                RouteChainEntry {
+                                    component: route_frag.fragment_id.clone(),
+                                    path: route_frag.path.clone(),
+                                    params: rm.params.clone(),
+                                    exact: route_frag.exact,
+                                    allowed_query: route_frag.allowed_query.clone(),
+                                    keep_alive: route_frag.keep_alive,
+                                    cache_tags: route_frag.cache_tags.clone(),
+                                    invalidates: route_frag.invalidates.clone(),
+                                    pending_component: route_frag.pending_component.clone(),
+                                    error_component: route_frag.error_component.clone(),
+                                },
+                            );
                             document_style_targets.push(targets_document);
 
-                            let child_route_base = route_matcher::compute_route_base(
-                                request_path,
-                                rm.consumed_segments,
-                            );
+                            let child_route_base =
+                                arena.intern_owned(route_matcher::compute_route_base(
+                                    request_path,
+                                    rm.consumed_segments,
+                                ));
 
                             stack.push(RouteChainWork {
-                                id: route_frag.fragment_id.clone(),
-                                route_base: child_route_base.clone(),
+                                id: &route_frag.fragment_id,
+                                route_base: child_route_base,
                                 targets_document,
                             });
 
@@ -3511,13 +3674,15 @@ pub(crate) fn collect_route_chain_plan(
                             let mut output = RouteChainOutput {
                                 entries: &mut chain,
                                 document_style_targets: &mut document_style_targets,
+                                stack: &mut stack,
+                                arena: &mut arena,
                             };
                             collect_chain_from_children(
                                 &route_frag.children,
-                                &child_route_base,
+                                child_route_base,
                                 targets_document,
                                 &mut output,
-                                &mut ChildWalkCtx {
+                                &ChildWalkCtx {
                                     request_path,
                                     protocol,
                                     route_index,
@@ -3537,30 +3702,40 @@ pub(crate) fn collect_route_chain_plan(
     }
 }
 
-struct RouteChainOutput<'a> {
-    entries: &'a mut Vec<RouteChainEntry>,
-    document_style_targets: &'a mut Vec<bool>,
+struct RouteChainOutput<'walk, 'protocol> {
+    entries: &'walk mut Vec<RouteChainEntry>,
+    document_style_targets: &'walk mut Vec<bool>,
+    stack: &'walk mut Vec<RouteChainWork<'protocol>>,
+    arena: &'walk mut RouteBaseArena,
 }
 
 /// Iteratively collect chain entries from nested route children.
-fn collect_chain_from_children(
-    children: &[WebUIFragmentRoute],
-    route_base: &str,
+fn collect_chain_from_children<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
     targets_document: bool,
-    output: &mut RouteChainOutput<'_>,
-    ctx: &mut ChildWalkCtx<'_>,
+    output: &mut RouteChainOutput<'_, 'protocol>,
+    ctx: &ChildWalkCtx<'_>,
 ) {
-    let mut pending: Vec<(&[WebUIFragmentRoute], String, bool)> =
-        vec![(children, route_base.to_string(), targets_document)];
+    let mut current = children;
+    let mut base = route_base;
+    let mut current_targets_document = targets_document;
 
-    while let Some((current, base, current_targets_document)) = pending.pop() {
-        if let Some((idx, rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-        {
-            let matched = &current[idx];
-            let matched_targets_document = current_targets_document
-                && !ctx.protocol.component_uses_shadow_dom(&matched.fragment_id);
-            output.entries.push(RouteChainEntry {
+    while let Some((idx, rm)) = select_best_child_route(
+        current,
+        ctx.request_path,
+        output.arena.get(base),
+        ctx.route_index,
+    ) {
+        let matched = &current[idx];
+        if matched.fragment_id.is_empty() {
+            break;
+        }
+        let matched_targets_document = current_targets_document
+            && !ctx.protocol.component_uses_shadow_dom(&matched.fragment_id);
+        crate::render_buffer::push(
+            output.entries,
+            RouteChainEntry {
                 component: matched.fragment_id.clone(),
                 path: matched.path.clone(),
                 params: rm.params,
@@ -3571,14 +3746,29 @@ fn collect_chain_from_children(
                 invalidates: matched.invalidates.clone(),
                 pending_component: matched.pending_component.clone(),
                 error_component: matched.error_component.clone(),
-            });
-            output.document_style_targets.push(matched_targets_document);
-            if !matched.children.is_empty() {
-                let child_base =
-                    route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
-                pending.push((&matched.children, child_base, matched_targets_document));
-            }
+            },
+        );
+        output.document_style_targets.push(matched_targets_document);
+        let child_base = output.arena.intern_owned(route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
+        output.stack.push(RouteChainWork {
+            id: &matched.content_fragment_id,
+            route_base: base,
+            targets_document: current_targets_document,
+        });
+        output.stack.push(RouteChainWork {
+            id: &matched.fragment_id,
+            route_base: child_base,
+            targets_document: matched_targets_document,
+        });
+        if matched.children.is_empty() {
+            break;
         }
+        current = &matched.children;
+        base = child_base;
+        current_targets_document = matched_targets_document;
     }
 }
 
@@ -3589,6 +3779,593 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
+
+    fn local_render_protocol(
+        records: impl IntoIterator<Item = (&'static str, Vec<WebUIFragment>)>,
+        components: &[&str],
+    ) -> WebUIProtocol {
+        let fragments = records
+            .into_iter()
+            .map(|(id, fragments)| {
+                (
+                    id.to_string(),
+                    FragmentList {
+                        fragments,
+                        contains_boundary: false,
+                    },
+                )
+            })
+            .collect();
+        let mut protocol = WebUIProtocol::new(fragments);
+        for &tag in components {
+            protocol.fragments.entry(tag.to_string()).or_default();
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    template_json: r#"{"h":""}"#.to_string(),
+                    navigation_mode: Some(StateProjectionMode::None as i32),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol
+    }
+
+    #[test]
+    fn local_render_dependencies_terminate_and_preserve_shared_discovery_order() {
+        let protocol = local_render_protocol(
+            [
+                (
+                    "app-shell",
+                    vec![
+                        WebUIFragment::render("local-first", "", ""),
+                        WebUIFragment::render("local-second", "", ""),
+                        WebUIFragment::component("last-card"),
+                    ],
+                ),
+                (
+                    "local-first",
+                    vec![
+                        WebUIFragment::render("local-first", "", ""),
+                        WebUIFragment::if_cond(
+                            webui_protocol::ConditionExpr::identifier("showCard"),
+                            "local-if",
+                        ),
+                        WebUIFragment::render("local-second", "", ""),
+                    ],
+                ),
+                (
+                    "local-if",
+                    vec![
+                        WebUIFragment::component("first-card"),
+                        WebUIFragment::render("local-first", "", ""),
+                    ],
+                ),
+                (
+                    "local-second",
+                    vec![
+                        WebUIFragment::render("local-first", "", ""),
+                        WebUIFragment::for_loop("item", "items", "local-loop"),
+                        WebUIFragment::attribute_template("title", "local-attribute"),
+                    ],
+                ),
+                (
+                    "local-loop",
+                    vec![
+                        WebUIFragment::component("loop-card"),
+                        WebUIFragment::render("local-second", "", ""),
+                    ],
+                ),
+                (
+                    "local-attribute",
+                    vec![
+                        WebUIFragment::component("attribute-card"),
+                        WebUIFragment::route("/inactive", "inactive-page"),
+                    ],
+                ),
+            ],
+            &[
+                "app-shell",
+                "first-card",
+                "loop-card",
+                "attribute-card",
+                "last-card",
+                "inactive-page",
+            ],
+        );
+        let component_index = build_component_index(&protocol);
+        let (dependencies, has_route) =
+            collect_direct_component_dependencies(&protocol, "app-shell", &component_index);
+        let expected = ["first-card", "loop-card", "attribute-card", "last-card"];
+        assert_eq!(
+            dependencies,
+            expected.map(|tag| component_index[tag]).to_vec()
+        );
+        assert!(has_route);
+        let reachability = ComponentReachabilityIndex::new(&protocol, &component_index);
+        assert_eq!(
+            reachability.is_route_dependent(component_index["app-shell"]),
+            Some(true)
+        );
+
+        let reachable = collect_inventoryable_components(
+            &protocol,
+            "app-shell",
+            Some("/"),
+            false,
+            &CompiledRouteIndex::new(&protocol),
+        );
+        assert_eq!(reachable, expected);
+    }
+
+    #[test]
+    fn local_render_unrestricted_inventory_follows_route_cycles_without_growing_bases() {
+        let protocol = local_render_protocol(
+            [
+                (
+                    "index.html",
+                    vec![WebUIFragment::render("local-routes", "", "")],
+                ),
+                (
+                    "local-routes",
+                    vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "again".into(),
+                        fragment_id: "recursive-page".into(),
+                        content_fragment_id: "local-content".into(),
+                        pending_component: "pending-view".into(),
+                        error_component: "error-view".into(),
+                        children: vec![WebUiFragmentRoute {
+                            path: "child".into(),
+                            fragment_id: "child-page".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })],
+                ),
+                (
+                    "recursive-page",
+                    vec![WebUIFragment::render("local-routes", "", "")],
+                ),
+                (
+                    "local-content",
+                    vec![
+                        WebUIFragment::render("local-content", "", ""),
+                        WebUIFragment::component("content-card"),
+                    ],
+                ),
+            ],
+            &[
+                "recursive-page",
+                "pending-view",
+                "error-view",
+                "child-page",
+                "content-card",
+            ],
+        );
+        let component_index = build_component_index(&protocol);
+        let (mut needed, inventory) =
+            get_needed_components(&protocol, "recursive-page", "", &component_index).unwrap();
+        assert_eq!(
+            needed,
+            [
+                "recursive-page",
+                "pending-view",
+                "error-view",
+                "content-card",
+                "child-page",
+            ]
+        );
+        needed.sort_unstable();
+        assert_eq!(
+            needed,
+            [
+                "child-page",
+                "content-card",
+                "error-view",
+                "pending-view",
+                "recursive-page",
+            ]
+        );
+        let (remaining, repeated_inventory) =
+            get_needed_components(&protocol, "recursive-page", &inventory, &component_index)
+                .unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(inventory, repeated_inventory);
+    }
+
+    #[test]
+    fn local_render_route_cycles_visit_each_request_base_and_exclude_inactive_routes() {
+        let protocol = local_render_protocol(
+            [
+                (
+                    "index.html",
+                    vec![
+                        WebUIFragment::render("local-routes", "", ""),
+                        WebUIFragment::render("local-routes", "", ""),
+                    ],
+                ),
+                (
+                    "local-routes",
+                    vec![
+                        WebUIFragment::render("local-routes", "", ""),
+                        WebUIFragment::route("node/:node", "branch-view"),
+                        WebUIFragment::route("/inactive", "inactive-view"),
+                    ],
+                ),
+                (
+                    "branch-view",
+                    vec![
+                        WebUIFragment::render("local-routes", "", ""),
+                        WebUIFragment::component("branch-card"),
+                    ],
+                ),
+            ],
+            &["branch-view", "branch-card", "inactive-view"],
+        );
+        let prepared = Protocol::new(protocol);
+        let protocol = prepared.protocol();
+        let path = "/node/a/node/b";
+        let reachable = collect_inventoryable_components(
+            protocol,
+            "index.html",
+            Some(path),
+            false,
+            prepared.route_index(),
+        );
+        assert_eq!(reachable, ["branch-view", "branch-card"]);
+        let (components, chain) = collect_inventory_and_chain(
+            protocol,
+            "index.html",
+            path,
+            &mut prepared.request_index(),
+        );
+        assert_eq!(components, ["branch-view", "branch-card"]);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].params["node"], "a");
+        assert_eq!(chain[1].params["node"], "b");
+        let plan = collect_route_chain_plan(protocol, "index.html", path, prepared.route_index());
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[1].params["node"], "b");
+        assert_eq!(
+            collect_nested_route_params(&prepared, "index.html", path),
+            HashMap::from([("node".to_string(), "b".to_string())])
+        );
+        assert!(collect_inventoryable_components(
+            protocol,
+            "index.html",
+            Some("/"),
+            false,
+            prepared.route_index(),
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn local_render_zero_progress_route_cycles_terminate() {
+        for path in ["", "/", "*rest"] {
+            let protocol = local_render_protocol(
+                [
+                    (
+                        "index.html",
+                        vec![WebUIFragment::render("local-route", "", "")],
+                    ),
+                    (
+                        "local-route",
+                        vec![WebUIFragment::route(path, "recursive-page")],
+                    ),
+                    (
+                        "recursive-page",
+                        vec![WebUIFragment::render("local-route", "", "")],
+                    ),
+                ],
+                &["recursive-page"],
+            );
+            let prepared = Protocol::new(protocol);
+            let protocol = prepared.protocol();
+            let (components, chain) = collect_inventory_and_chain(
+                protocol,
+                "index.html",
+                "/",
+                &mut prepared.request_index(),
+            );
+            assert_eq!(components, ["recursive-page"]);
+            assert_eq!(chain.len(), 1);
+            let plan =
+                collect_route_chain_plan(protocol, "index.html", "/", prepared.route_index());
+            assert_eq!(plan.entries.len(), 1);
+            assert_eq!(
+                collect_nested_route_params(&prepared, "index.html", "/"),
+                chain[0].params
+            );
+        }
+    }
+
+    #[test]
+    fn local_render_routes_inside_child_bodies_preserve_nested_params() {
+        let protocol = local_render_protocol(
+            [
+                (
+                    "index.html",
+                    vec![WebUIFragment::render("local-root", "", "")],
+                ),
+                (
+                    "local-root",
+                    vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/accounts/:account".into(),
+                        fragment_id: "account-shell".into(),
+                        children: vec![WebUiFragmentRoute {
+                            path: "items/:item".into(),
+                            fragment_id: "item-page".into(),
+                            content_fragment_id: "local-content".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })],
+                ),
+                (
+                    "item-page",
+                    vec![WebUIFragment::attribute_template(
+                        "title",
+                        "local-attribute",
+                    )],
+                ),
+                (
+                    "local-attribute",
+                    vec![WebUIFragment::render("local-detail", "", "")],
+                ),
+                (
+                    "local-detail",
+                    vec![
+                        WebUIFragment::render("local-detail", "", ""),
+                        WebUIFragment::route("details/:detail", "detail-page"),
+                    ],
+                ),
+                (
+                    "local-content",
+                    vec![WebUIFragment::render("local-card", "", "")],
+                ),
+                ("local-card", vec![WebUIFragment::component("content-card")]),
+            ],
+            &["account-shell", "item-page", "detail-page", "content-card"],
+        );
+        let prepared = Protocol::new(protocol);
+        let path = "/accounts/a/items/i/details/d";
+        let params = collect_nested_route_params(&prepared, "index.html", path);
+        assert_eq!(
+            params,
+            HashMap::from([
+                ("account".into(), "a".into()),
+                ("item".into(), "i".into()),
+                ("detail".into(), "d".into()),
+            ])
+        );
+        let plan = collect_route_chain_plan(
+            prepared.protocol(),
+            "index.html",
+            path,
+            prepared.route_index(),
+        );
+        let names: Vec<_> = plan
+            .entries
+            .iter()
+            .map(|entry| entry.component.as_str())
+            .collect();
+        assert_eq!(names, ["account-shell", "item-page", "detail-page"]);
+        assert_eq!(plan.document_style_targets, [true, true, true]);
+        let (components, chain) = collect_inventory_and_chain(
+            prepared.protocol(),
+            "index.html",
+            path,
+            &mut prepared.request_index(),
+        );
+        assert!(components.iter().any(|name| name == "content-card"));
+        assert!(components.iter().any(|name| name == "detail-page"));
+        assert_eq!(chain.len(), 3);
+        let reachable = collect_inventoryable_components(
+            prepared.protocol(),
+            "index.html",
+            Some(path),
+            false,
+            prepared.route_index(),
+        );
+        assert!(reachable.iter().any(|name| name == "content-card"));
+        assert!(reachable.iter().any(|name| name == "detail-page"));
+    }
+
+    #[test]
+    fn local_render_shared_routes_preserve_document_and_shadow_style_targets() {
+        let mut protocol = local_render_protocol(
+            [
+                (
+                    "index.html",
+                    vec![
+                        WebUIFragment::component("light-shell"),
+                        WebUIFragment::component("shadow-shell"),
+                    ],
+                ),
+                (
+                    "light-shell",
+                    vec![WebUIFragment::render("local-routes", "", "")],
+                ),
+                (
+                    "shadow-shell",
+                    vec![WebUIFragment::render("local-routes", "", "")],
+                ),
+                (
+                    "local-routes",
+                    vec![
+                        WebUIFragment::render("local-routes", "", ""),
+                        WebUIFragment::route("/", "route-page"),
+                    ],
+                ),
+            ],
+            &["light-shell", "shadow-shell", "route-page"],
+        );
+        protocol
+            .components
+            .get_mut("shadow-shell")
+            .unwrap()
+            .uses_shadow_dom = true;
+        let route_index = CompiledRouteIndex::new(&protocol);
+        let plan = collect_route_chain_plan(&protocol, "index.html", "/", &route_index);
+        assert_eq!(plan.entries.len(), 2);
+        assert!(plan
+            .entries
+            .iter()
+            .all(|entry| entry.component == "route-page"));
+        assert_eq!(plan.document_style_targets, [false, true]);
+
+        protocol
+            .components
+            .get_mut("route-page")
+            .unwrap()
+            .uses_shadow_dom = true;
+        let plan = collect_route_chain_plan(&protocol, "index.html", "/", &route_index);
+        assert_eq!(plan.document_style_targets, [false, false]);
+    }
+
+    #[test]
+    fn local_render_partial_styles_and_resources_are_deduplicated() {
+        for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
+            let mut protocol = local_render_protocol(
+                [
+                    (
+                        "index.html",
+                        vec![WebUIFragment::render("local-routes", "", "")],
+                    ),
+                    (
+                        "local-routes",
+                        vec![
+                            WebUIFragment::route("/active", "active-page"),
+                            WebUIFragment::route("/inactive", "inactive-page"),
+                        ],
+                    ),
+                    (
+                        "active-page",
+                        vec![
+                            WebUIFragment::render("local-card", "", ""),
+                            WebUIFragment::render("local-card", "", ""),
+                        ],
+                    ),
+                    (
+                        "local-card",
+                        vec![
+                            WebUIFragment::render("local-card", "", ""),
+                            WebUIFragment::component("shared-card"),
+                            WebUIFragment::component("shared-card"),
+                        ],
+                    ),
+                ],
+                &["active-page", "inactive-page", "shared-card"],
+            );
+            protocol.set_css_strategy(strategy);
+            for (tag, component) in &mut protocol.components {
+                component.css = ".card{color:red}".into();
+                if strategy == CssStrategy::Link {
+                    component.css_href = format!("/{tag}.css");
+                }
+            }
+            protocol.populate_style_closures(&["index.html"]);
+            let prepared = Protocol::new(protocol);
+            let response = prepared
+                .render_partial_metadata("index.html", "/active", "")
+                .unwrap();
+            assert_eq!(response["templates"].as_object().unwrap().len(), 2);
+            let styles = &response["componentStyles"];
+            assert_eq!(styles["resources"].as_object().unwrap().len(), 2);
+            assert!(styles["resources"].get("inactive-page").is_none());
+            assert_eq!(
+                styles["closures"]["active-page"],
+                serde_json::json!(["active-page", "shared-card"])
+            );
+            assert!(styles["closures"].get("local-card").is_none());
+            let repeated = prepared
+                .render_partial_metadata(
+                    "index.html",
+                    "/active",
+                    response["inventory"].as_str().unwrap(),
+                )
+                .unwrap();
+            assert!(repeated["templates"].as_object().unwrap().is_empty());
+            assert!(repeated["componentStyles"]["resources"]
+                .as_object()
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn local_render_projection_uses_compiled_owner_keys_not_alias_roots() {
+        let mut protocol = local_render_protocol(
+            [
+                (
+                    "index.html",
+                    vec![WebUIFragment::render("local-entry", "", "")],
+                ),
+                ("local-entry", vec![WebUIFragment::component("app-shell")]),
+                (
+                    "app-shell",
+                    vec![WebUIFragment::render("local-tree", "tree", "node")],
+                ),
+                (
+                    "local-tree",
+                    vec![
+                        WebUIFragment::signal("node.label", false),
+                        WebUIFragment::render("local-tree", "node.children", "node"),
+                        WebUIFragment::component("child-card"),
+                    ],
+                ),
+            ],
+            &["app-shell", "child-card"],
+        );
+        protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
+        let owner = protocol.components.get_mut("app-shell").unwrap();
+        owner.hydration_mode = StateProjectionMode::Keys as i32;
+        owner.hydration_keys = vec!["title".into()];
+        owner.navigation_mode = Some(StateProjectionMode::Keys as i32);
+        owner.navigation_keys = vec!["title".into(), "tree".into()];
+        let child = protocol.components.get_mut("child-card").unwrap();
+        child.hydration_mode = StateProjectionMode::Keys as i32;
+        child.hydration_keys = vec!["childValue".into()];
+        child.navigation_mode = Some(StateProjectionMode::Keys as i32);
+        child.navigation_keys = vec!["childValue".into()];
+        let prepared = Protocol::new(protocol);
+        let reachable = collect_inventoryable_components(
+            prepared.protocol(),
+            "index.html",
+            Some("/"),
+            false,
+            prepared.route_index(),
+        );
+        assert_eq!(reachable, ["app-shell", "child-card"]);
+        let state = serde_json::json!({
+            "title": "Tree",
+            "tree": {"label": "root", "children": []},
+            "childValue": 7,
+            "node": "not an owner dependency",
+            "serverOnly": "private"
+        });
+        let hydration = crate::collect_hydration_state(
+            prepared.protocol(),
+            reachable.iter().map(String::as_str),
+        );
+        assert_eq!(
+            select_owned_state(state.clone(), &hydration),
+            serde_json::json!({"title": "Tree", "childValue": 7})
+        );
+        let response = prepared
+            .render_partial(state, "index.html", "/", "")
+            .unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            response["state"],
+            serde_json::json!({
+                "title": "Tree",
+                "tree": {"label": "root", "children": []},
+                "childValue": 7
+            })
+        );
+    }
 
     #[test]
     fn protocol_caches_inline_style_resources_requiring_escape() {
@@ -3967,13 +4744,13 @@ mod tests {
     }
 
     fn prepared_full_state_partial_protocol() -> Protocol {
-        let mut prepared = prepared_partial_protocol(&[]);
-        let protocol = &mut prepared.protocol;
+        let prepared = prepared_partial_protocol(&[]);
+        let mut protocol = prepared.protocol().clone();
         if let Some(component) = protocol.components.get_mut("home-page") {
             component.navigation_mode = Some(webui_protocol::StateProjectionMode::All as i32);
             component.navigation_keys.clear();
         }
-        prepared
+        Protocol::new(protocol)
     }
 
     #[test]

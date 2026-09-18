@@ -1,0 +1,26 @@
+<fragment name="before"><button class="before-capture" @click="{select(row.name, title)}">{{row.name}}/{{title}}</button><test-streamed-capture-child></test-streamed-capture-child></fragment>
+<fragment name="card">
+  <boundary name="captured"><button class="capture" @click="{select(row.name, title)}">{{row.name}}/{{title}}</button></boundary>
+  <span class="captured-tail">{{row.name}}</span>
+  <if condition="showCapturedTree">
+    <for each="branch in row.branches">
+      <section class="captured-grove" key="{{branch.id}}"><h3 class="grove-name">{{branch.name}}</h3><render fragment="tree-items" scope="{{branch.children}}" as="items"></render></section>
+    </for>
+  </if>
+</fragment>
+<fragment name="tree-items">
+  <ul>
+    <for each="child in items">
+      <li key="{{child.id}}" data-id="{{child.id}}">
+        <button class="tree-capture" @click="{select(child.name, title)}">{{child.name}}/{{title}}</button>
+        <if condition="child.children.length">
+          <render fragment="tree-items" scope="{{child.children}}" as="items"></render>
+        </if>
+      </li>
+    </for>
+  </ul>
+</fragment>
+<render fragment="before" scope="{{source}}" as="row"></render>
+<render fragment="card" scope="{{source}}" as="row"></render>
+<span class="owner-title">{{title}}</span>
+<output class="capture-selected">{{selected}}</output>

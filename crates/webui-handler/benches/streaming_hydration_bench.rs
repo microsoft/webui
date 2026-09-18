@@ -28,6 +28,11 @@ use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
+#[path = "support/fragment_streaming.rs"]
+mod fragment_streaming;
+#[path = "support/fragment_support.rs"]
+mod fragment_support;
+
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
 const LARGE_STATE_BOUNDARIES: &[usize] = &[1, 8];
 const LARGE_STATE_ROWS: usize = 128;
@@ -837,5 +842,9 @@ fn large_state(rows: usize) -> Value {
     })
 }
 
-criterion_group!(benches, bench_streaming_hydration);
+criterion_group!(
+    benches,
+    bench_streaming_hydration,
+    fragment_streaming::bench_replaced_roots
+);
 criterion_main!(benches);

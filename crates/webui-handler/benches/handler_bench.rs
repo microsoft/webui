@@ -12,6 +12,11 @@ use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
 
+#[path = "support/fragment_support.rs"]
+mod fragment_support;
+#[path = "support/fragments.rs"]
+mod fragments;
+
 struct BenchWriter {
     output: String,
 }
@@ -611,6 +616,7 @@ criterion_group!(
     handler_condition_variety_bench,
     handler_nested_components_bench,
     handler_state_depth_bench,
-    handler_protocol_construction_bench
+    handler_protocol_construction_bench,
+    fragments::bench_fragments
 );
 criterion_main!(benches);

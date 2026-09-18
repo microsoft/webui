@@ -1,0 +1,20 @@
+{
+  "prop-ready": {
+    "source": { "name": "Prop replacement" },
+    "title": "Prop owner"
+  },
+  "captured": {
+    "source": {
+      "name": "Replacement NEW",
+      "branches": [
+        { "id": "grove", "name": "Replacement grove NEW", "children": [
+          { "id": "branch", "name": "Replacement branch NEW", "children": [
+            { "id": "leaf", "name": "Replacement leaf NEW" }
+          ] }
+        ] }
+      ]
+    },
+    "title": "Resumed owner",
+    "showCapturedTree": true
+  }
+}

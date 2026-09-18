@@ -11,15 +11,47 @@ import type {
   ScopeFrame,
   TemplateInstance,
 } from './types.js';
+import { scopeSourceRoot } from './types.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Match Rust string lengths without allocating a UTF-8 encoding buffer. */
+function stringByteLength(value: string): number {
+  let length = 0;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x80) length++;
+    else if (code < 0x800) length += 2;
+    else if (
+      code >= 0xd800 && code <= 0xdbff &&
+      value.charCodeAt(i + 1) >= 0xdc00 && value.charCodeAt(i + 1) <= 0xdfff
+    ) {
+      length += 4;
+      i++;
+    } else {
+      length += 3;
+    }
+  }
+  return length;
+}
 
 /** Resolve a dotted path from a start offset without allocating. */
 export function dotWalk(cursor: unknown, path: string, from: number): unknown {
   let start = from;
   for (let i = from; i <= path.length; i++) {
     if (i === path.length || path.charCodeAt(i) === 46 /* . */) {
+      if (typeof cursor === 'string') {
+        if (path.slice(start, i) !== 'length') return undefined;
+        cursor = stringByteLength(cursor);
+        start = i + 1;
+        continue;
+      }
       if (cursor == null || typeof cursor !== 'object') return undefined;
+      if (Array.isArray(cursor)) {
+        return i === path.length && path.slice(start, i) === 'length'
+          ? cursor.length
+          : undefined;
+      }
       cursor = (cursor as Record<string, unknown>)[path.slice(start, i)];
       start = i + 1;
     }
@@ -29,7 +61,9 @@ export function dotWalk(cursor: unknown, path: string, from: number): unknown {
 
 /** Build a scope frame for a repeat item. */
 function itemScope(rep: RepeatBinding, item: unknown): ScopeFrame {
-  return { name: rep.itemVar, value: item, parent: rep.scope, known: true };
+  const scope: ScopeFrame = { name: rep.itemVar, value: item, parent: rep.scope, known: true };
+  if (rep.owner.range) scope.sourceRoot = scopeSourceRoot(rep.collection, rep.scope);
+  return scope;
 }
 
 /** Allocate keyed scratch state only for explicitly keyed repeats. */

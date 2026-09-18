@@ -118,6 +118,41 @@ pub trait HandlerPlugin: Send {
         self.on_binding_end(name, false, writer)
     }
 
+    /// Called before entering an isolated named fragment invocation.
+    ///
+    /// `source_id` is the response-wide identifier of the captured input a
+    /// streamed scoped call resolved, so the browser can adopt the exact value
+    /// the server used. Ordinary renders and calls without a captured input
+    /// pass `None`.
+    fn on_render_start(
+        &mut self,
+        _name: &str,
+        _source_id: Option<u32>,
+        _writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after leaving a named fragment invocation.
+    fn on_render_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called before consuming an outlet's child routes, including an empty outlet.
+    ///
+    /// Defaults to a no-op. Streaming suspension leaves this range open until
+    /// all of the outlet's route work completes.
+    fn on_outlet_start(&mut self, _writer: &mut dyn ResponseWriter) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after all outlet child routes finish, or immediately for an empty outlet.
+    ///
+    /// Defaults to a no-op. This hook is not called after a rendering error.
+    fn on_outlet_end(&mut self, _writer: &mut dyn ResponseWriter) -> Result<()> {
+        Ok(())
+    }
+
     /// Called before rendering a repeat item in a for loop.
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter)
         -> Result<()>;
@@ -133,7 +168,7 @@ pub trait HandlerPlugin: Send {
     /// The default is a no-op.
     fn write_route_component_state(
         &self,
-        _state: &serde_json::Value,
+        _state: crate::StateView<'_>,
         _writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
         Ok(())
@@ -283,14 +318,20 @@ mod tests {
         raw_binding_calls: Cell<usize>,
     }
 
-    struct TestWriter;
+    #[derive(Default)]
+    struct TestWriter {
+        writes: usize,
+        ends: usize,
+    }
 
     impl ResponseWriter for TestWriter {
         fn write(&mut self, _content: &str) -> Result<()> {
+            self.writes += 1;
             Ok(())
         }
 
         fn end(&mut self) -> Result<()> {
+            self.ends += 1;
             Ok(())
         }
     }
@@ -373,7 +414,7 @@ mod tests {
     #[test]
     fn binding_hooks_receive_raw_range_flag() {
         let mut plugin = SendOnlyPlugin::default();
-        let mut writer = TestWriter;
+        let mut writer = TestWriter::default();
 
         plugin
             .on_binding_start("trusted_html", true, &mut writer)
@@ -384,5 +425,27 @@ mod tests {
 
         assert_eq!(plugin.binding_calls.get(), 2);
         assert_eq!(plugin.raw_binding_calls.get(), 2);
+    }
+
+    #[test]
+    fn outlet_start_defaults_to_noop() -> Result<()> {
+        let mut plugin = SendOnlyPlugin::default();
+        let mut writer = TestWriter::default();
+        plugin.on_outlet_start(&mut writer)?;
+        assert_eq!(writer.writes, 0);
+        assert_eq!(writer.ends, 0);
+        assert_eq!(plugin.binding_calls.get(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn outlet_end_defaults_to_noop() -> Result<()> {
+        let mut plugin = SendOnlyPlugin::default();
+        let mut writer = TestWriter::default();
+        plugin.on_outlet_end(&mut writer)?;
+        assert_eq!(writer.writes, 0);
+        assert_eq!(writer.ends, 0);
+        assert_eq!(plugin.binding_calls.get(), 0);
+        Ok(())
     }
 }

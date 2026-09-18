@@ -22,6 +22,7 @@ memchr = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+yoke = { workspace = true }
 
 [dev-dependencies]
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.28" }

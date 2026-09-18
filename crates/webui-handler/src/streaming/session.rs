@@ -10,16 +10,15 @@ use std::sync::Arc;
 use serde_json::{Number, Value};
 
 use super::error::{boundary_order_error, state_update_type_error};
-use super::state::{
-    increment_state_revision, increment_streaming_record_sequence, overlay_full_state,
-    overlay_full_state_owned, overlay_selected_state, overlay_selected_state_owned,
-    selected_state_snapshot, selected_state_snapshot_owned, StreamingProgress,
-    StreamingRenderState,
-};
+use super::state::{increment_state_revision, StreamingProgress, StreamingRenderState};
 use super::vm::{ContinuationVm, StepGoal};
 use super::StreamingSink;
 use crate::plugin::HandlerPlugin;
+use crate::render_scope::{
+    RenderScopes, RepeatScratch, SavedSharedScope, SharedAlias, SharedBindings,
+};
 use crate::route_handler::Protocol;
+use crate::state_view::{SharedState, StateView};
 use crate::{
     FlushWriter, HandlerError, RenderOptions, ResponseWriter, Result, WebUIHandler,
     WebUIProcessContext,
@@ -351,7 +350,7 @@ pub(crate) struct SessionCore {
     pub(crate) vm: ContinuationVm,
     frozen_keys: Arc<[Box<str>]>,
     requires_full_state: bool,
-    frozen_state: Value,
+    frozen_state: SharedState,
     started: bool,
     pub(crate) done: bool,
     failed: bool,
@@ -360,12 +359,16 @@ pub(crate) struct SessionCore {
     awaiting_advance: bool,
     local_vars: HashMap<String, Value>,
     component_attrs: HashMap<String, Value>,
+    shared_alias: SharedAlias,
+    shared_local_vars: SharedBindings,
+    shared_component_attrs: SharedBindings,
+    shared_scope_saves: Vec<SavedSharedScope>,
     route_base: Option<String>,
     rendered_components: HashSet<String>,
     document_style_resources: HashSet<String>,
     shadow_style_roots: Vec<crate::ShadowStyleRoot>,
     plugin: Option<Box<dyn HandlerPlugin>>,
-    route_children: crate::RouteChildren<'static>,
+    route_children: std::ops::Range<u32>,
     head_end_emitted: bool,
     body_start_emitted: bool,
     component_asset_styles_emitted: bool,
@@ -376,7 +379,9 @@ pub(crate) struct SessionCore {
     reachable_components: Option<Vec<String>>,
     streaming: Option<StreamingProgress>,
     json_scratch: Vec<u8>,
+    attribute_buffers: crate::AttributeBuffers,
     scope_pool: Vec<HashMap<String, Value>>,
+    repeat_scratch: RepeatScratch,
 }
 
 pub(crate) struct SessionCall<'call, 'data> {
@@ -396,19 +401,23 @@ impl SessionCore {
             vm: ContinuationVm::new(entry_id, protocol)?,
             frozen_keys: Arc::clone(&state_plan.keys),
             requires_full_state: state_plan.requires_full_state,
-            frozen_state: Value::Object(serde_json::Map::new()),
+            frozen_state: SharedState::default(),
             started: false,
             done: false,
             failed: false,
             awaiting_advance: false,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
+            shared_alias: None,
+            shared_local_vars: HashMap::new(),
+            shared_component_attrs: HashMap::new(),
+            shared_scope_saves: Vec::new(),
             route_base: None,
             rendered_components: HashSet::new(),
             document_style_resources: HashSet::new(),
             shadow_style_roots: Vec::new(),
             plugin: handler.plugin_factory.map(|factory| factory()),
-            route_children: Cow::Owned(Vec::new()),
+            route_children: 0..0,
             head_end_emitted: false,
             body_start_emitted: false,
             component_asset_styles_emitted: false,
@@ -422,7 +431,9 @@ impl SessionCore {
                 protocol.style_resource_index().len(),
             )),
             json_scratch: Vec::new(),
+            attribute_buffers: crate::AttributeBuffers::default(),
             scope_pool: Vec::new(),
+            repeat_scratch: RepeatScratch::default(),
         })
     }
 
@@ -438,12 +449,13 @@ impl SessionCore {
                 "the streaming response has already started",
             ));
         }
-        // The value is moved into each render context and back, so protocols
-        // requiring full projection pay for exactly one response-local clone.
+        // Captures share immutable roots, so nested calls never copy the
+        // response-local snapshot again.
+        let provenance = call.protocol.render_fragments().provenance_policy();
         self.frozen_state = if self.requires_full_state {
-            state.clone()
+            SharedState::from_borrowed_with_provenance(state, provenance)
         } else {
-            selected_state_snapshot(state, &self.frozen_keys)
+            SharedState::from_selected_with_provenance(state, &self.frozen_keys, provenance)
         };
         self.started = true;
         self.run_step(call, StepGoal::NextBoundary, None)
@@ -461,10 +473,11 @@ impl SessionCore {
                 "the streaming response has already started",
             ));
         }
+        let provenance = call.protocol.render_fragments().provenance_policy();
         self.frozen_state = if self.requires_full_state {
-            state
+            SharedState::from_owned_with_provenance(state, provenance)
         } else {
-            selected_state_snapshot_owned(state, &self.frozen_keys)
+            SharedState::from_selected_owned_with_provenance(state, &self.frozen_keys, provenance)
         };
         self.started = true;
         self.run_step(call, StepGoal::NextBoundary, None)
@@ -480,11 +493,12 @@ impl SessionCore {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         self.vm.validate_resume_mode(mode)?;
-        let changed = if self.requires_full_state {
-            overlay_full_state(&mut self.frozen_state, state)
-        } else {
-            overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys)
-        };
+        let keys = (!self.requires_full_state).then_some(self.frozen_keys.as_ref());
+        let changed = self.frozen_state.overlay_with_provenance(
+            state,
+            keys,
+            call.protocol.render_fragments().provenance_policy(),
+        );
         self.record_state_change(changed)?;
         self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
     }
@@ -499,11 +513,12 @@ impl SessionCore {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         self.vm.validate_resume_mode(mode)?;
-        let changed = if self.requires_full_state {
-            overlay_full_state_owned(&mut self.frozen_state, state)
-        } else {
-            overlay_selected_state_owned(&mut self.frozen_state, state, &self.frozen_keys)
-        };
+        let keys = (!self.requires_full_state).then_some(self.frozen_keys.as_ref());
+        let changed = self.frozen_state.overlay_owned_with_provenance(
+            state,
+            keys,
+            call.protocol.render_fragments().provenance_policy(),
+        );
         self.record_state_change(changed)?;
         self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
     }
@@ -541,7 +556,7 @@ impl SessionCore {
         self.started = true;
         let handler = call.handler;
         let protocol = call.protocol;
-        let result = self.with_context(call, state, |vm, context| {
+        let result = self.with_context(call, state.into(), |vm, context| {
             let mut status = vm.advance(StepGoal::NextBoundary, handler, protocol, context)?;
             while !status.done {
                 context.writer.stream_flush()?;
@@ -557,6 +572,7 @@ impl SessionCore {
             }
             Ok(())
         });
+        self.release();
         match result {
             Ok(()) if !self.shadow_style_roots.is_empty() => {
                 self.failed = true;
@@ -593,14 +609,22 @@ impl SessionCore {
             return Err(state_update_type_error());
         }
         let target = self.vm.validate_update(instance_id)?;
-        let handler = call.handler;
-        let result = self.with_context(call, patch, |_, context| {
-            let sequence = super::streaming_state(context)?.next_record_sequence;
-            handler.emit_streaming_state_update(sequence, target, context)?;
-            increment_streaming_record_sequence("update", super::streaming_state(context)?)
-        });
+        let result = self
+            .streaming
+            .as_mut()
+            .ok_or_else(missing_progress_error)
+            .and_then(|progress| {
+                super::checkpoint::emit_streaming_state_update(
+                    call,
+                    progress,
+                    &mut self.json_scratch,
+                    target,
+                    patch,
+                )
+            });
         if result.is_err() {
             self.failed = true;
+            self.release();
         }
         result
     }
@@ -611,13 +635,10 @@ impl SessionCore {
         goal: StepGoal,
         resume: Option<(BoundaryInstanceId, BoundaryMode)>,
     ) -> Result<StreamStatus> {
-        let state = std::mem::replace(
-            &mut self.frozen_state,
-            Value::Object(serde_json::Map::new()),
-        );
+        let state = std::mem::take(&mut self.frozen_state);
         let handler = call.handler;
         let protocol = call.protocol;
-        let result = self.with_context(call, &state, |vm, context| {
+        let result = self.with_context(call, StateView::shared(&state), |vm, context| {
             if let Some((instance_id, mode)) = resume {
                 vm.begin_resume(instance_id, mode, context)?;
             }
@@ -627,21 +648,27 @@ impl SessionCore {
             }
             Ok(status)
         });
-        self.frozen_state = state;
         match result {
             Ok(status) => {
                 if status.done && !self.shadow_style_roots.is_empty() {
                     self.failed = true;
+                    self.release();
                     return Err(HandlerError::Invariant(
                         "a Shadow CSS tree escaped its component instance".to_string(),
                     ));
                 }
                 self.done = status.done;
                 self.awaiting_advance = goal == StepGoal::CommitBoundary && !status.done;
+                if status.done {
+                    self.release();
+                } else {
+                    self.frozen_state = state;
+                }
                 Ok(status)
             }
             Err(error) => {
                 self.failed = true;
+                self.release();
                 Err(error)
             }
         }
@@ -649,15 +676,40 @@ impl SessionCore {
 
     fn record_state_change(&mut self, changed: bool) -> Result<()> {
         if changed {
-            increment_state_revision(self.streaming.as_mut().ok_or_else(missing_progress_error)?)?;
+            let result = self
+                .streaming
+                .as_mut()
+                .ok_or_else(missing_progress_error)
+                .and_then(increment_state_revision);
+            if let Err(error) = result {
+                self.failed = true;
+                self.release();
+                return Err(error);
+            }
         }
         Ok(())
+    }
+
+    fn release(&mut self) {
+        self.vm.release();
+        self.repeat_scratch = RepeatScratch::default();
+        if let Some(progress) = &mut self.streaming {
+            progress.fragment_sources.clear();
+        }
+        self.frozen_state.clear();
+        self.shared_alias = None;
+        self.shared_local_vars.clear();
+        self.shared_component_attrs.clear();
+        self.shared_scope_saves.clear();
+        self.local_vars.clear();
+        self.component_attrs.clear();
+        self.scope_pool.clear();
     }
 
     fn with_context<'data, 'state, T>(
         &mut self,
         call: SessionCall<'_, 'data>,
-        state: &'state Value,
+        state: StateView<'state>,
         operation: impl for<'output> FnOnce(
             &mut ContinuationVm,
             &mut WebUIProcessContext<'data, 'state, 'output>,
@@ -680,6 +732,14 @@ impl SessionCore {
             component_asset_style_links: protocol.component_asset_style_links(),
             state,
             writer,
+            scopes: RenderScopes {
+                shared_alias: self.shared_alias.take(),
+                locals: std::mem::take(&mut self.shared_local_vars),
+                attrs: std::mem::take(&mut self.shared_component_attrs),
+                shared_saves: std::mem::take(&mut self.shared_scope_saves),
+                repeats: self.repeat_scratch.take(),
+                ..RenderScopes::default()
+            },
             local_vars: std::mem::take(&mut self.local_vars),
             local_borrowed_vars: super::super::BorrowedScope::default(),
             loop_vars: Vec::new(),
@@ -716,12 +776,27 @@ impl SessionCore {
             reachable_components: std::mem::take(&mut self.reachable_components),
             streaming: Some(&mut streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
+            attribute_buffers: std::mem::take(&mut self.attribute_buffers),
             scope_pool: std::mem::take(&mut self.scope_pool),
             document_style_resources: std::mem::take(&mut self.document_style_resources),
             shadow_style_roots: std::mem::take(&mut self.shadow_style_roots),
             borrowed_scope_pool: Vec::new(),
         };
-        let result = operation(&mut self.vm, &mut context);
+        let result = operation(&mut self.vm, &mut context).and_then(|value| {
+            if context.scopes.loops.is_empty() && context.scopes.repeats.is_empty() {
+                Ok(value)
+            } else {
+                Err(suspended_loop_scope_error())
+            }
+        });
+        if result.is_ok() {
+            self.repeat_scratch
+                .recycle(std::mem::take(&mut context.scopes.repeats));
+        }
+        self.shared_alias = context.scopes.shared_alias.take();
+        self.shared_local_vars = std::mem::take(&mut context.scopes.locals);
+        self.shared_component_attrs = std::mem::take(&mut context.scopes.attrs);
+        self.shared_scope_saves = std::mem::take(&mut context.scopes.shared_saves);
         self.local_vars = std::mem::take(&mut context.local_vars);
         self.component_attrs = std::mem::take(&mut context.component_attrs);
         self.route_base = match std::mem::replace(&mut context.route_base, Cow::Borrowed("/")) {
@@ -730,7 +805,7 @@ impl SessionCore {
         };
         self.rendered_components = std::mem::take(&mut context.rendered_components);
         self.plugin = context.plugin.take();
-        self.route_children = Cow::Owned(std::mem::take(&mut context.route_children).into_owned());
+        self.route_children = std::mem::take(&mut context.route_children);
         self.head_end_emitted = context.head_end_emitted;
         self.body_start_emitted = context.body_start_emitted;
         self.component_asset_styles_emitted = context.component_asset_styles_emitted;
@@ -741,6 +816,7 @@ impl SessionCore {
             std::mem::take(&mut context.route_document_style_targets);
         self.reachable_components = std::mem::take(&mut context.reachable_components);
         self.json_scratch = std::mem::take(&mut context.json_scratch);
+        self.attribute_buffers = std::mem::take(&mut context.attribute_buffers);
         self.scope_pool = std::mem::take(&mut context.scope_pool);
         self.shadow_style_roots = std::mem::take(&mut context.shadow_style_roots);
         self.document_style_resources = std::mem::take(&mut context.document_style_resources);
@@ -819,12 +895,21 @@ fn missing_progress_error() -> HandlerError {
     HandlerError::Invariant("streaming progress is unavailable".to_string())
 }
 
+#[cold]
+#[inline(never)]
+fn suspended_loop_scope_error() -> HandlerError {
+    HandlerError::Invariant("a loop scope escaped its streaming step".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{FlushWriter, ResponseWriter};
     use webui_parser::{ComponentRegistration, HtmlParser};
-    use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
+    use webui_protocol::{
+        ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
+        WebUIProtocol,
+    };
     use webui_test_utils::test_json;
 
     const ISLAND_TAG: &str = "state-island";
@@ -922,6 +1007,74 @@ mod tests {
         Protocol::new(document)
     }
 
+    fn render_boundary_protocol() -> Protocol {
+        let mut parser = HtmlParser::new();
+        if let Err(error) = parser.parse(
+            "body.html",
+            concat!(
+                "<!doctype html><html><head></head><body>",
+                "<boundary name=\"first\"><p>{{selected.title}}</p></boundary>",
+                "<boundary name=\"second\"><p>{{selected.title}}</p></boundary>",
+                "<footer>{{selected.title}}</footer></body></html>",
+            ),
+        ) {
+            panic!("parsing the streaming fragment failed: {error}");
+        }
+        let mut records = parser.into_fragment_records();
+        for (id, target, scope, alias) in [
+            ("index.html", "outer", "payload", "outer"),
+            ("outer", "body.html", "outer", "selected"),
+        ] {
+            records.insert(
+                id.to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::render(target, scope, alias)],
+                    contains_boundary: true,
+                },
+            );
+        }
+        let mut document = WebUIProtocol::new(records);
+        document.populate_style_closures(&["index.html"]);
+        Protocol::new(document)
+    }
+
+    fn owner_prop_boundary_protocol() -> Protocol {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                ISLAND_TAG,
+                concat!(
+                    "<boundary name=\"first\"><p>{{model.title}}/{{label}}</p></boundary>",
+                    "<boundary name=\"second\"><p>{{model.title}}/{{label}}</p></boundary>",
+                ),
+                None,
+                true,
+            ))
+            .unwrap_or_else(|error| panic!("registering the owner failed: {error}"));
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    "<!doctype html><html><head></head><body>",
+                    "<state-island :model=\"{{payload}}\" label=\"prefix-{{title}}\">",
+                    "</state-island></body></html>",
+                ),
+            )
+            .unwrap_or_else(|error| panic!("parsing the owner entry failed: {error}"));
+        let mut document = WebUIProtocol::new(parser.into_fragment_records());
+        document.components.insert(
+            ISLAND_TAG.to_owned(),
+            ComponentData {
+                uses_shadow_dom: true,
+                hydration_mode: StateProjectionMode::All as i32,
+                ..Default::default()
+            },
+        );
+        document.populate_style_closures(&["index.html"]);
+        Protocol::new(document)
+    }
+
     /// A state whose payload is large enough that a per-boundary copy would be
     /// unmistakable in both time and allocation.
     fn large_state(rows: usize) -> Value {
@@ -942,7 +1095,7 @@ mod tests {
 
     /// Heap address of the retained snapshot's `rows` buffer, or `None` when
     /// the snapshot does not hold it.
-    fn rows_address(state: &Value) -> Option<usize> {
+    fn rows_address(state: StateView<'_>) -> Option<usize> {
         state
             .get("rows")
             .and_then(Value::as_array)
@@ -954,7 +1107,384 @@ mod tests {
     }
 
     #[test]
-    fn session_parks_owned_routes_and_retains_scope_pool() -> Result<()> {
+    fn active_repeat_cannot_escape_a_step_and_releases_shared_input_on_error() -> Result<()> {
+        use crate::render_scope::{RepeatFrame, RepeatSource};
+        use crate::state_view::SharedValue;
+
+        let protocol = boundary_protocol(1, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        let declaration = webui_protocol::WebUIFragmentFor {
+            item: "item".to_owned(),
+            collection: "items".to_owned(),
+            fragment_id: "body".to_owned(),
+        };
+        let values = [test_json!({"value": "borrowed"})];
+        let state = test_json!({});
+        for shared in [false, true] {
+            for fail in [false, true] {
+                let mut core = SessionCore::new(&handler, &protocol, "index.html")?;
+                let mut sink = TestSink {
+                    output: String::new(),
+                };
+                let items = if shared {
+                    RepeatSource::Shared(SharedValue::new(test_json!([{"value": "shared"}])))
+                } else {
+                    RepeatSource::Borrowed(&values)
+                };
+                let origin = match &items {
+                    RepeatSource::Shared(value) => Some(Arc::downgrade(value.origin())),
+                    RepeatSource::Borrowed(_) => None,
+                };
+                let result = core.with_context(
+                    SessionCall {
+                        handler: &handler,
+                        protocol: &protocol,
+                        options: &render_options,
+                        writer: &mut sink,
+                    },
+                    (&state).into(),
+                    |_, context| {
+                        context.scopes.repeats.push(RepeatFrame {
+                            slot: 0,
+                            declaration: &declaration,
+                            items,
+                            index: 0,
+                            saved_value: None,
+                            visible: crate::VisibleLoopScope::EMPTY,
+                        });
+                        if fail {
+                            Err(HandlerError::Invariant("test failure".to_owned()))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+                let Err(error) = result else {
+                    panic!("a live repeat must not escape a successful host step");
+                };
+                let expected = if fail {
+                    HandlerError::Invariant("test failure".to_owned())
+                } else {
+                    suspended_loop_scope_error()
+                };
+                assert_eq!(error.to_string(), expected.to_string());
+                if let Some(origin) = origin {
+                    assert!(origin.upgrade().is_none(), "repeat input must be released");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_render_aliases_share_snapshot_and_survive_root_replacement() -> Result<()> {
+        let protocol = render_boundary_protocol();
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        for owned in [false, true] {
+            let state = test_json!({ "payload": large_state(64) });
+            let input_address = state
+                .get("payload")
+                .and_then(|payload| rows_address(payload.into()));
+            let mut sink = TestSink {
+                output: String::new(),
+            };
+            let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+            let status = if owned {
+                response.start(state)?
+            } else {
+                response.start(&state)?
+            };
+            let snapshot_address = response
+                .core
+                .frozen_state
+                .get("payload")
+                .and_then(|payload| rows_address(payload.into()));
+            assert!(snapshot_address.is_some());
+            if owned {
+                assert_eq!(snapshot_address, input_address, "owned roots must move");
+            } else {
+                assert_ne!(snapshot_address, input_address, "borrowed roots clone once");
+            }
+            let Some((alias, selected)) = response.core.shared_alias.as_ref() else {
+                panic!("the nested render must retain its selected input");
+            };
+            assert_eq!(alias.as_ref(), "selected");
+            assert_eq!(
+                rows_address(selected.get().into()),
+                snapshot_address,
+                "nested captures must share the retained root"
+            );
+            let Some(boundary) = status.boundary else {
+                panic!("the first boundary must suspend");
+            };
+            let replacement = test_json!({ "payload": { "title": "replacement", "rows": [] } });
+            response.resume(boundary.instance_id, replacement, BoundaryMode::Final)?;
+            assert_ne!(
+                response
+                    .core
+                    .frozen_state
+                    .get("payload")
+                    .and_then(|payload| rows_address(payload.into())),
+                snapshot_address,
+                "the owner root must be replaced"
+            );
+            assert_eq!(
+                response
+                    .core
+                    .shared_alias
+                    .as_ref()
+                    .and_then(|(_, selected)| rows_address(selected.get().into())),
+                snapshot_address,
+                "an active selection must keep its original root"
+            );
+            let Some(boundary) = response.advance()?.boundary else {
+                panic!("the second boundary must suspend");
+            };
+            response.resume_current(boundary.instance_id, BoundaryMode::Final)?;
+            assert!(response.advance()?.done);
+            assert!(response.core.frozen_state.get("payload").is_none());
+            assert!(response.core.shared_alias.is_none());
+            assert!(response.core.shared_local_vars.is_empty());
+            assert!(response.core.shared_component_attrs.is_empty());
+            assert!(response.core.shared_scope_saves.is_empty());
+            assert_eq!(sink.output.matches("<p>large state</p>").count(), 2);
+            assert!(sink.output.contains("<footer>large state</footer>"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn no_render_owner_props_keep_original_structured_snapshots_across_resumes() -> Result<()> {
+        let protocol = owner_prop_boundary_protocol();
+        assert_eq!(
+            protocol.render_fragments().provenance_policy(),
+            crate::state_view::Provenance::Omit
+        );
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let render_options = options();
+        for owned in [false, true] {
+            let state = test_json!({"payload": large_state(4), "title": "before"});
+            let input = rows_address((&state["payload"]).into());
+            let mut sink = TestSink {
+                output: String::new(),
+            };
+            let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+            let start = if owned {
+                response.start(state)?
+            } else {
+                response.start(&state)?
+            };
+            let model = &response.core.shared_local_vars["model"];
+            let captured = rows_address(model.get().into());
+            assert!(captured.is_some());
+            assert_eq!(captured == input, owned);
+            assert!(model.provenance().is_none());
+            assert!(response.core.shared_local_vars["label"]
+                .provenance()
+                .is_none());
+            let Some(first) = start.boundary else {
+                panic!("the owner must suspend at its first boundary");
+            };
+            let replacement = test_json!({
+                "payload": {"title": "replacement", "rows": []},
+                "title": "after"
+            });
+            if owned {
+                response.resume(first.instance_id, replacement, BoundaryMode::Final)?;
+            } else {
+                response.resume(first.instance_id, &replacement, BoundaryMode::Final)?;
+            }
+            assert_eq!(
+                rows_address(response.core.shared_local_vars["model"].get().into()),
+                captured
+            );
+            assert_ne!(
+                response
+                    .core
+                    .frozen_state
+                    .get("payload")
+                    .and_then(|value| rows_address(value.into())),
+                captured
+            );
+            let Some(second) = response.advance()?.boundary else {
+                panic!("the owner must suspend at its second boundary");
+            };
+            response.resume_current(second.instance_id, BoundaryMode::Final)?;
+            assert!(response.advance()?.done);
+            assert!(response.core.shared_local_vars.is_empty());
+            assert_eq!(sink.output.matches("large state/prefix-before").count(), 2);
+            assert!(!sink.output.contains("fragmentSources"));
+            let span = sink
+                .output
+                .split("<script type=\"application/json\" data-webui-boundary>")
+                .skip(1)
+                .filter_map(|script| script.split("</script>").next())
+                .map(|record| {
+                    serde_json::from_str::<Value>(record)
+                        .unwrap_or_else(|error| panic!("invalid stream record: {error}"))
+                })
+                .find(|record| record[1] == 3)
+                .unwrap_or_else(|| panic!("the owner must emit its completion record"));
+            assert_eq!(span[3]["state"]["model"], large_state(4));
+            assert_eq!(span[3]["state"]["label"], "prefix-before");
+            assert_eq!(span[3]["state"]["payload"]["title"], "replacement");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn capture_promotions_synthetic_lengths_and_owner_fallbacks_follow_protocol_policy(
+    ) -> Result<()> {
+        use crate::state_view::{Provenance, SharedValue};
+
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        for policy in [Provenance::Omit, Provenance::Track] {
+            let protocol = if policy == Provenance::Track {
+                render_boundary_protocol()
+            } else {
+                boundary_protocol(1, StateProjectionMode::Keys)
+            };
+            let mut core = SessionCore::new(&handler, &protocol, "index.html")?;
+            let state = test_json!({"rows": [1, 2, 3]});
+            let mut sink = TestSink {
+                output: String::new(),
+            };
+            core.with_context(
+                SessionCall {
+                    handler: &handler,
+                    protocol: &protocol,
+                    options: &render_options,
+                    writer: &mut sink,
+                },
+                (&state).into(),
+                |_, context| {
+                    let owned = test_json!({"child": [1, 2]});
+                    let child = &owned["child"] as *const Value;
+                    context.local_vars.insert("prop".to_owned(), owned);
+                    let captured = crate::render_scope::capture("prop.child", context)
+                        .unwrap_or_else(|| panic!("owned props must be promoted"));
+                    assert!(std::ptr::eq(captured.get(), child));
+                    let length = crate::render_scope::capture("rows.length", context)
+                        .unwrap_or_else(|| panic!("synthetic lengths must be captured"));
+                    assert_eq!(length.get(), 3);
+                    for value in [&captured, &length, &context.scopes.locals["prop"]] {
+                        assert_eq!(value.provenance().is_some(), policy == Provenance::Track);
+                    }
+                    assert!(!context.local_vars.contains_key("prop"));
+                    Ok(())
+                },
+            )?;
+            let shared = SharedState::from_owned_with_provenance(
+                test_json!({"item": {"name": "owner"}}),
+                policy,
+            );
+            core.with_context(
+                SessionCall {
+                    handler: &handler,
+                    protocol: &protocol,
+                    options: &render_options,
+                    writer: &mut sink,
+                },
+                StateView::shared(&shared),
+                |_, context| {
+                    context.scopes.loops.insert(
+                        "item".to_owned(),
+                        SharedValue::with_provenance(test_json!({"missing": 1}), policy),
+                    );
+                    let fallback = crate::render_scope::capture("item.name", context)
+                        .unwrap_or_else(|| panic!("missing loop fields fall back to owner state"));
+                    assert_eq!(fallback.get(), "owner");
+                    assert_eq!(fallback.provenance().is_some(), policy == Provenance::Track);
+                    context.scopes.loops.clear();
+                    Ok(())
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_resume_preserves_roots_but_transport_failure_releases_them() -> Result<()> {
+        #[derive(Default)]
+        struct DisconnectSink(std::rc::Rc<std::cell::Cell<bool>>);
+
+        impl ResponseWriter for DisconnectSink {
+            fn write(&mut self, _: &str) -> Result<()> {
+                if self.0.get() {
+                    Err(HandlerError::ClientDisconnected)
+                } else {
+                    Ok(())
+                }
+            }
+
+            fn end(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        impl FlushWriter for DisconnectSink {
+            fn flush(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let protocol = render_boundary_protocol();
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        let mut sink = DisconnectSink::default();
+        let disconnected = std::rc::Rc::clone(&sink.0);
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+        let status = response.start(test_json!({ "payload": large_state(64) }))?;
+        let snapshot = response
+            .core
+            .shared_alias
+            .as_ref()
+            .and_then(|(_, selected)| rows_address(selected.get().into()));
+        assert!(snapshot.is_some());
+        let Some(boundary) = status.boundary else {
+            panic!("the first boundary must suspend");
+        };
+        assert!(response
+            .resume(
+                BoundaryInstanceId::from_raw(u32::MAX),
+                test_json!({ "payload": null }),
+                BoundaryMode::Final,
+            )
+            .is_err());
+        assert!(!response.core.failed);
+        assert_eq!(
+            response
+                .core
+                .frozen_state
+                .get("payload")
+                .and_then(|payload| rows_address(payload.into())),
+            snapshot
+        );
+        disconnected.set(true);
+        assert!(matches!(
+            response.resume_current(boundary.instance_id, BoundaryMode::Final),
+            Err(HandlerError::ClientDisconnected)
+        ));
+        assert!(response.core.failed);
+        assert!(!response.is_done());
+        assert!(response.core.frozen_state.get("payload").is_none());
+        assert!(response.core.shared_alias.is_none());
+        assert!(response.core.shared_local_vars.is_empty());
+        assert!(response.core.shared_component_attrs.is_empty());
+        assert!(response.core.shared_scope_saves.is_empty());
+        assert!(response
+            .resume_current(boundary.instance_id, BoundaryMode::Final)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn session_parks_route_addresses_and_retains_scope_pool() -> Result<()> {
         let protocol = boundary_protocol(2, StateProjectionMode::Keys);
         let handler = WebUIHandler::new();
         let state = test_json!({ "count": 3, "title": "pooled" });
@@ -965,13 +1495,13 @@ mod tests {
         let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
 
         let first = response.start(&state)?;
-        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        assert!(response.core.route_children.is_empty());
         let Some(boundary) = first.boundary else {
             panic!("the first boundary should suspend");
         };
 
         response.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
-        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        assert!(response.core.route_children.is_empty());
         let pooled_capacity = response
             .core
             .scope_pool
@@ -980,12 +1510,92 @@ mod tests {
             .unwrap_or_else(|| panic!("the completed component should recycle its scope map"));
 
         response.advance()?;
-        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        assert!(response.core.route_children.is_empty());
         assert_eq!(
             response.core.scope_pool.first().map(HashMap::capacity),
             Some(pooled_capacity),
             "a suspension step must preserve the scope-map pool"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn session_reuses_only_empty_repeat_capacity_and_releases_it_on_completion() -> Result<()> {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    "<!doctype html><html><head></head><body>",
+                    "<boundary name=\"first\"><for each=\"item in rows\"><p>{{item}}</p></for></boundary>",
+                    "<boundary name=\"second\"><for each=\"item in rows\"><p>{{item}}</p></for></boundary>",
+                    "</body></html>",
+                ),
+            )
+            .unwrap_or_else(|error| panic!("parsing repeats failed: {error}"));
+        let mut document = WebUIProtocol::new(parser.into_fragment_records());
+        document.populate_style_closures(&["index.html"]);
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+        let mut status = response.start(test_json!({"rows": ["one", "two"]}))?;
+        let mut allocation = None;
+        for _ in 0..2 {
+            let Some(boundary) = status.boundary else {
+                panic!("the next boundary must suspend");
+            };
+            response.resume_current(boundary.instance_id, BoundaryMode::Final)?;
+            let frames = response.core.repeat_scratch.take();
+            assert!(frames.is_empty());
+            assert!(frames.capacity() > 0);
+            let current = (frames.as_ptr().addr(), frames.capacity());
+            if let Some(previous) = allocation {
+                assert_eq!(current, previous, "repeat storage must survive host steps");
+            }
+            allocation = Some(current);
+            response.core.repeat_scratch.recycle(frames);
+            status = response.advance()?;
+        }
+        assert!(status.done);
+        assert_eq!(response.core.repeat_scratch.take().capacity(), 0);
+        assert_eq!(sink.output.matches("<p>one</p><p>two</p>").count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn session_failure_releases_previously_retained_repeat_capacity() -> Result<()> {
+        let protocol = boundary_protocol(1, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        let mut core = SessionCore::new(&handler, &protocol, "index.html")?;
+        let frames = Vec::with_capacity(2);
+        core.repeat_scratch.recycle(frames);
+        let retained = core.repeat_scratch.take();
+        assert_eq!(retained.capacity(), 2);
+        core.repeat_scratch.recycle(retained);
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let state = test_json!({});
+        let result: Result<()> = core.with_context(
+            SessionCall {
+                handler: &handler,
+                protocol: &protocol,
+                options: &render_options,
+                writer: &mut sink,
+            },
+            (&state).into(),
+            |_, context| {
+                assert_eq!(context.scopes.repeats.capacity(), 2);
+                Err(HandlerError::ClientDisconnected)
+            },
+        );
+        assert!(matches!(result, Err(HandlerError::ClientDisconnected)));
+        assert_eq!(core.repeat_scratch.take().capacity(), 0);
         Ok(())
     }
 
@@ -1005,14 +1615,14 @@ mod tests {
         let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
 
         let mut status = response.start(&state)?;
-        let snapshot = rows_address(&response.core.frozen_state);
+        let snapshot = rows_address(StateView::shared(&response.core.frozen_state));
         assert!(
             snapshot.is_some(),
             "a full-state protocol must retain the caller's payload"
         );
         assert_ne!(
             snapshot,
-            rows_address(&state),
+            rows_address((&state).into()),
             "the response owns its snapshot rather than borrowing the caller's tree"
         );
 
@@ -1028,7 +1638,7 @@ mod tests {
                         "a commit step stops at its checkpoint and waits for advance"
                     );
                     assert_eq!(
-                        rows_address(&response.core.frozen_state),
+                        rows_address(StateView::shared(&response.core.frozen_state)),
                         snapshot,
                         "committing occurrence {committed} must not re-copy the retained snapshot"
                     );
@@ -1124,7 +1734,7 @@ mod tests {
         let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
 
         let status = response.start(&state)?;
-        let snapshot = rows_address(&response.core.frozen_state);
+        let snapshot = rows_address(StateView::shared(&response.core.frozen_state));
         let Some(boundary) = status.boundary.as_ref() else {
             panic!("the first occurrence must suspend");
         };
@@ -1147,7 +1757,7 @@ mod tests {
             "an omitted key keeps the value the snapshot already holds"
         );
         assert_eq!(
-            rows_address(&response.core.frozen_state),
+            rows_address(StateView::shared(&response.core.frozen_state)),
             snapshot,
             "an unchanged subtree must not be copied again"
         );
@@ -1252,6 +1862,127 @@ mod tests {
             4,
             "each update emits exactly one typed state-update record"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn state_only_updates_preserve_nonce_projection_and_the_render_snapshot() -> Result<()> {
+        for mode in [StateProjectionMode::Keys, StateProjectionMode::All] {
+            let protocol = boundary_protocol(2, mode);
+            let handler = WebUIHandler::new();
+            let render_options = options().with_nonce("a\"&b");
+            let state = test_json!({"count": 1, "title": "original"});
+            let patch = test_json!({"count": 2, "title": "updated", "extra": true});
+            let mut sink = SharedSink::default();
+            let output = std::rc::Rc::clone(&sink.0);
+            let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+            let Some(boundary) = response.start(&state)?.boundary else {
+                panic!("the first boundary must suspend");
+            };
+            response.resume_current(boundary.instance_id, BoundaryMode::Updatable)?;
+            let start = output.borrow().len();
+            response.update(boundary.instance_id, &patch)?;
+            {
+                let output = output.borrow();
+                let update = &output[start..];
+                assert!(update.contains(" nonce=\"a&quot;&amp;b\">[1,2,0,"));
+                assert!(update.contains("\"count\":2"));
+                assert!(update.contains("\"title\":\"updated\""));
+                assert_eq!(
+                    update.contains("\"extra\":true"),
+                    mode == StateProjectionMode::All,
+                );
+            }
+            assert_eq!(response.core.frozen_state.get("count"), state.get("count"));
+            assert_eq!(response.core.frozen_state.get("title"), state.get("title"));
+            let Some(second) = response.advance()?.boundary else {
+                panic!("the second boundary must suspend");
+            };
+            response.resume_current(second.instance_id, BoundaryMode::Final)?;
+            assert!(response.advance()?.done);
+            assert!(output.borrow().contains("<button>original</button>"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn state_only_update_write_and_flush_errors_poison_and_release_the_session() -> Result<()> {
+        #[derive(Default)]
+        struct UpdateSink(std::rc::Rc<std::cell::Cell<Option<bool>>>);
+
+        impl ResponseWriter for UpdateSink {
+            fn write(&mut self, _: &str) -> Result<()> {
+                if self.0.get() == Some(true) {
+                    Err(HandlerError::ClientDisconnected)
+                } else {
+                    Ok(())
+                }
+            }
+
+            fn end(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        impl FlushWriter for UpdateSink {
+            fn flush(&mut self) -> Result<()> {
+                if self.0.get() == Some(false) {
+                    Err(HandlerError::ClientDisconnected)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let protocol = boundary_protocol(2, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        for fail_on_write in [true, false] {
+            let mut sink = UpdateSink::default();
+            let failure = std::rc::Rc::clone(&sink.0);
+            let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+            let state = test_json!({"count": 1, "title": "retained"});
+            let Some(boundary) = response.start(&state)?.boundary else {
+                panic!("the first boundary must suspend");
+            };
+            response.resume_current(boundary.instance_id, BoundaryMode::Updatable)?;
+            response.core.repeat_scratch.recycle(Vec::with_capacity(2));
+            failure.set(Some(fail_on_write));
+            assert!(matches!(
+                response.update(boundary.instance_id, &state),
+                Err(HandlerError::ClientDisconnected)
+            ));
+            assert!(response.core.failed);
+            assert!(response.core.frozen_state.get("title").is_none());
+            assert_eq!(response.core.repeat_scratch.take().capacity(), 0);
+            failure.set(None);
+            assert!(response.update(boundary.instance_id, &state).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn state_only_update_sequence_overflow_is_recoverable_and_releases_inputs() -> Result<()> {
+        let protocol = boundary_protocol(2, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let render_options = options();
+        let mut sink = SharedSink::default();
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+        let state = test_json!({"count": 1, "title": "retained"});
+        let Some(boundary) = response.start(&state)?.boundary else {
+            panic!("the first boundary must suspend");
+        };
+        response.resume_current(boundary.instance_id, BoundaryMode::Updatable)?;
+        let Some(progress) = response.core.streaming.as_mut() else {
+            panic!("the suspended response must retain streaming progress");
+        };
+        progress.next_record_sequence = usize::MAX;
+        assert!(matches!(
+            response.update(boundary.instance_id, &state),
+            Err(HandlerError::StreamingBoundary(error)) if error.signal == "update"
+        ));
+        assert!(response.core.failed);
+        assert!(response.core.frozen_state.get("title").is_none());
         Ok(())
     }
 

@@ -970,6 +970,56 @@ mod tests {
     }
 
     #[test]
+    fn named_fragment_protocol_renders_recursive_calls_and_prepared_state() {
+        let source = include_str!("../../webui-test-utils/fixtures/recursive-fragments.html");
+        let state = include_str!("../../webui-test-utils/fixtures/recursive-fragments.json");
+        let protocol = Protocol::new(Buffer::from(build_protocol(source)), None)
+            .expect("recursive protocol should load");
+        let bytes = protocol
+            .render(state.to_string(), "index.html".to_string(), "/".to_string())
+            .expect("recursive render should succeed");
+        let html = std::str::from_utf8(&bytes).expect("HTML should be UTF-8");
+        assert!(html.contains("<h2>Tree</h2>"));
+        assert!(
+            html.contains("<li><span>Oak</span><ul><li><span>Leaf &amp; bud</span></li></ul></li>")
+        );
+        assert_eq!(html.matches("<li>").count(), 3);
+        assert!(!html.contains("<fragment"));
+        let prepared = protocol
+            .prepare_state(state.to_string())
+            .expect("prepare state");
+        let again = protocol
+            .render_prepared(&prepared, "index.html".to_string(), "/".to_string())
+            .expect("prepared recursive render");
+        assert_eq!(bytes.as_ref(), again.as_ref());
+    }
+
+    #[test]
+    fn named_fragment_scalar_scope_accepts_null_and_errors_on_missing() {
+        let source = concat!(
+            r#"<fragment name="value"><p>{{value}}</p></fragment>"#,
+            r#"<render fragment="value" scope="{{input}}" as="value"></render>"#,
+        );
+        let protocol = Protocol::new(Buffer::from(build_protocol(source)), None)
+            .expect("scalar protocol should load");
+        for state in [
+            r#"{"input":null}"#,
+            r#"{"input":false}"#,
+            r#"{"input":0}"#,
+            r#"{"input":""}"#,
+            r#"{"input":[]}"#,
+            r#"{"input":{}}"#,
+        ] {
+            assert!(protocol
+                .render(state.to_string(), "index.html".to_string(), "/".to_string())
+                .is_ok());
+        }
+        assert!(protocol
+            .render("{}".to_string(), "index.html".to_string(), "/".to_string())
+            .is_err());
+    }
+
+    #[test]
     fn protocol_reuses_decoded_protocol_for_json_state() {
         let proto = build_protocol("Hello, {{name}}!");
         let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");

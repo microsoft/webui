@@ -4,6 +4,9 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use std::hint::black_box;
 use webui_parser::{CssStrategy, HtmlParser, ParserOptions};
 
+#[path = "support/fragments.rs"]
+mod fragments;
+
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
     html.push_str("<body>");
@@ -663,6 +666,7 @@ criterion_group!(
     parser_text_vs_directive_bench,
     parser_adversarial_bench,
     client_template_directives_bench,
-    parser_isolated_bench
+    parser_isolated_bench,
+    fragments::bench_fragments
 );
 criterion_main!(benches);

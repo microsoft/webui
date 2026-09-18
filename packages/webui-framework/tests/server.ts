@@ -42,7 +42,7 @@ startFixtureServer({
   name: 'webui-framework',
   fixturesRoot,
   port,
-  handleRequest({ url, send, serveStatic }) {
+  handleRequest({ url, res, send, serveStatic }) {
     if (url.pathname === '/') {
       send(200, 'webui-framework fixture server');
       return true;
@@ -54,6 +54,26 @@ startFixtureServer({
     if (match) {
       const fixture = rendered.get(match[1]);
       if (fixture) {
+        if (fixture.chunks) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          const delay = url.searchParams.has('slow-stream') ? 500 : 100;
+          let index = 0;
+          const writeNext = (): void => {
+            if (res.destroyed) return;
+            if (index === fixture.chunks!.length) {
+              res.end();
+              return;
+            }
+            const ready = res.write(fixture.chunks![index++]);
+            if (ready) {
+              setTimeout(writeNext, delay);
+            } else {
+              res.once('drain', () => setTimeout(writeNext, delay));
+            }
+          };
+          writeNext();
+          return true;
+        }
         send(200, fixture.html, 'text/html; charset=utf-8');
         return true;
       }

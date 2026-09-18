@@ -23,10 +23,41 @@
 import type {
   CompiledAttrPart,
   CompiledCondition,
+  TemplateBlockMeta,
 } from '../template.js';
+
+export const EMPTY_BINDINGS: never[] = [];
+Object.freeze(EMPTY_BINDINGS);
+
+/** Empty compiled binding groups share storage; only present groups may be mutated. */
+export function bindingArray<T>(count: number): T[] {
+  return count > 0 ? [] : EMPTY_BINDINGS;
+}
+
+/** Append without mutating shared empty storage or replacing a mutable group. */
+export function appendBinding<T>(bindings: T[], binding: T): T[] {
+  if (bindings === EMPTY_BINDINGS) return [binding];
+  bindings.push(binding);
+  return bindings;
+}
+
+/** SSR supplies its eager raw-slot count; CSR checks compiled metadata before snapshotting. */
+export function templateHasTopology(meta: TemplateBlockMeta, rawCount?: number): boolean {
+  if (meta.c?.length || meta.r?.length || meta.u?.length) return true;
+  if (rawCount !== undefined) return rawCount !== 0;
+  const texts = meta.tx;
+  if (texts) {
+    for (let i = 0; i < texts.length; i++) {
+      if (texts[i][2] === 1) return true;
+    }
+  }
+  return false;
+}
 
 /** Direct reference to character data bound to a property path. */
 export interface TextBinding {
+  owner?: TemplateInstance;
+  generation?: number;
   node: CharacterData;
   path?: string;
   parts?: CompiledAttrPart[];
@@ -60,6 +91,8 @@ export function hasNativeLiveProperty(element: Element, name: string): boolean {
 
 /** Direct reference to an attribute binding. */
 export interface AttrBinding {
+  owner?: TemplateInstance;
+  generation?: number;
   element: Element;
   name: string;
   kind: number;
@@ -75,17 +108,47 @@ export interface ScopeFrame {
   parent?: ScopeFrame;
   /** False while an SSR repeat item is preserved without its collection state. */
   known?: boolean;
+  /** Fragment aliases own their whole name; only loops allow owner fallback. */
+  isAlias?: true;
+  /** Owner input dependencies, without exposing caller values to the callee. */
+  sourceRoot?: string | readonly string[];
 }
 
-export interface TemplateInstance {
-  scope?: ScopeFrame;
-  parent?: TemplateInstance;
-  container: (ParentNode & Node) | null;
-  nodes: Node[];
+/** Resolve input provenance through loop/alias frames without traversing their values. */
+export function scopeSourceRoot(path: string, scope?: ScopeFrame): string | readonly string[] {
+  const dot = path.indexOf('.');
+  const root = dot < 0 ? path : path.slice(0, dot);
+  for (let frame = scope; frame; frame = frame.parent) {
+    if (frame.name !== root) continue;
+    const source = frame.sourceRoot ?? root;
+    if (dot < 0 || frame.isAlias
+      || (typeof source === 'string' ? source === root : source.includes(root))) return source;
+    return typeof source === 'string' ? [source, root] : [...source, root];
+  }
+  return root;
+}
+
+/** One binding representation shared by instances and reactive dependency groups. */
+export interface TemplateBindings {
   texts: TextBinding[];
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
+  renders?: RenderBinding[];
+}
+
+export interface TemplateInstance extends TemplateBindings {
+  /** Graph instances own bounded sibling ranges, not flattened descendants. */
+  range?: boolean;
+  callDepth?: number;
+  alive?: boolean;
+  generation?: number;
+  order?: number;
+  scope?: ScopeFrame;
+  parent?: TemplateInstance;
+  container: (ParentNode & Node) | null;
+  /** Flat component roots use EMPTY_BINDINGS: the host DOM owns their lifetime. */
+  nodes: Node[];
   /**
    * Per-instance listener cleanup. Event listeners attach to the elements a
    * block owns, so nested conditional/repeat instances must explicitly
@@ -96,6 +159,9 @@ export interface TemplateInstance {
 
 /** Conditional block state. Visible blocks need no live DOM anchor. */
 export interface CondBinding {
+  generation?: number;
+  /** Stable closing boundary for graph-owned conditional ranges. */
+  end?: Comment;
   condition: CompiledCondition;
   blockIndex: number;
   anchor: Comment | null;
@@ -116,6 +182,7 @@ export interface RepeatKeyState {
 
 /** Repeat block tracking. */
 export interface RepeatBinding {
+  generation?: number;
   markerId: number;
   collection: string;
   itemVar: string;
@@ -129,6 +196,23 @@ export interface RepeatBinding {
   keyState?: RepeatKeyState;
   /** Set to true once the collection has been explicitly set by client code. */
   synced?: boolean;
+}
+
+/** One invocation retains caller dependencies and an isolated mutable callee alias. */
+export interface RenderBinding {
+  blockIndex: number;
+  anchor: Comment;
+  end: Comment;
+  path?: string;
+  scope?: ScopeFrame;
+  alias?: ScopeFrame;
+  owner: TemplateInstance;
+  instance: TemplateInstance | null;
+  generation?: number;
+  /** Owner input revision at which a streamed alias was adopted. */
+  captureVersion?: number;
+  /** Reserved input identifier this invocation currently resolves through. */
+  sourceId?: number;
 }
 
 /**

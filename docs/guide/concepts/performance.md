@@ -179,6 +179,17 @@ Server and browser measurements answer different questions:
 - **Request to hydrated** includes the dynamic server response, HTML transfer,
   external assets, JavaScript execution, and startup hydration.
 
+Compare the same plugin, CSS strategy, state projection, and application
+output. Plugin-free SSR does not measure the cost of WebUI hydration.
+For browser memory, record whole-page retained heap after garbage collection,
+not only growth after injecting JavaScript: code and metadata already consume
+memory before the first component hydrates. Bundle bytes and renderer private
+memory remain separate measurements.
+
+Use repeated, interleaved runs and unchanged-build controls. A consistent small
+difference can be real; an uncertainty interval spanning zero is inconclusive,
+not proof that performance is unchanged.
+
 Use the built-in hydration marks for local investigation:
 
 ```javascript

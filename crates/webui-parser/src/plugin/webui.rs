@@ -12,7 +12,7 @@
 //! router registers the JSON data directly and evaluates only the closures.
 //! Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
-//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `eg`,
+//! (`tx`, `ag`, `c`/`r`/`u` slots) and semantic arrays (`a`, `c`, `r`, `u`, `eg`,
 //! `re`, `b`). The client runtime resolves those locators once and then
 //! patches direct node references — **no template string parsing, no regex,
 //! no DOM scanning** on the client-created path.
@@ -22,7 +22,7 @@
 //! ```js
 //! {
 //!   "h": "<button class=\"item\"><span></span></button>",
-//!   "tx": [[[[0, 0], 0], [["title"]]]],
+//!   "tx": [[[2, 0], [["title"]]]],
 //!   "a": [["title", 0, "title"]],
 //!   "ag": [[[0], 0, 1]],
 //!   "c": [[[0, ["state"]], 0, [[0], 1]]],
@@ -67,6 +67,7 @@ use crate::comment_policy;
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
+use crate::directive_expression;
 use crate::html_parser::{
     find_comment_close, find_declaration_close, find_element_end, find_matching_end,
     find_tag_close, is_void_element, leading_content, parse_tag, style_element_bounds,
@@ -77,6 +78,17 @@ use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
+
+#[cfg(test)]
+mod directive_tests;
+mod fragment_graph;
+#[cfg(test)]
+mod named_tests;
+mod sections;
+#[cfg(test)]
+mod successor_tests;
+
+use sections::compile_to_metadata;
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
@@ -167,7 +179,8 @@ impl WebUIParserPlugin {
     /// # Errors
     ///
     /// Returns [`crate::ParserError::Template`] if any tracked component
-    /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
+    /// contains an invalid `@event` handler, a non-braced `w-ref` binding,
+    /// or a malformed `<if>` / `<for>` expression.
     fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
@@ -219,10 +232,9 @@ impl WebUIParserPlugin {
         root_event_source: &str,
         client: TrackedClientContext,
     ) {
-        let template_html = Self::strip_boundary_directive_tags(template_html);
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
-            component.template_html.push_str(&template_html);
+            component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
             component.client_module = client.client_module;
@@ -232,7 +244,7 @@ impl WebUIParserPlugin {
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
-            template_html: template_html.into_owned(),
+            template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
             client_module: client.client_module,
             uses_shadow_dom: client.uses_shadow_dom,
@@ -477,7 +489,7 @@ const TEXT_MARKER_INDEX_RADIX: usize = 10;
 /// A compiled template section.
 ///
 /// Used for the root template and for nested block-table entries.
-/// `conditionals` and `repeats` point at block-table indices instead of
+/// `conditionals`, `repeats`, and `renders` point at block-table indices instead of
 /// inlining raw body HTML so the client never reparses nested template syntax.
 /// The final `html` payload is marker-free; client-created DOM uses the
 /// locator tables to connect bindings without scanning comments or attrs.
@@ -492,9 +504,9 @@ struct TemplateSectionMeta {
     /// Byte offsets in `html` where compiler-generated text markers start.
     /// Authored CSS may contain marker-like text; only these offsets are metadata.
     text_marker_offsets: Vec<usize>,
-    /// Client text-run metadata: `(slot, parts, raw)`.
-    /// `raw` is true when the binding uses triple-brace `{{{...}}}` syntax.
-    text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
+    /// Client text-run metadata: `(slot, parts, successor)`.
+    /// Zero means parent end; one identifies the raw binding itself.
+    text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, usize)>,
     /// Attribute bindings in source order, shared by SSR markers and client `ag[]` locators.
     attr_bindings: Vec<CompiledAttrBinding>,
     /// Client attribute groups: `(element_index, start, count)`.
@@ -507,6 +519,10 @@ struct TemplateSectionMeta {
     repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
     repeat_slots: Vec<SlotLocator>,
+    /// Local fragment calls reference the same flat block table as if/for.
+    renders: Vec<CompiledRender>,
+    /// Client invocation anchor slots aligned to `renders`.
+    render_slots: Vec<SlotLocator>,
     /// Body-level events: `(event_name, handler_method, argument_specs)`.
     events: Vec<EventBinding>,
     /// Client event target element indices aligned to `events`.
@@ -529,11 +545,18 @@ struct CompiledRepeat {
     key_path: Option<String>,
 }
 
+struct CompiledRender {
+    block_index: usize,
+    scope: String,
+    alias: String,
+}
+
 struct ParsedForBlock {
     collection: String,
     item_var: String,
     key_path: Option<String>,
-    body: String,
+    body: Range<usize>,
+    key_skip: Option<usize>,
     consumed: usize,
 }
 
@@ -545,13 +568,15 @@ struct ParsedRepeatKey {
 /// Collected metadata produced by [`compile_to_metadata`].
 ///
 /// The root template emits directly into the top-level metadata object.
-/// Nested blocks live in `blocks` and are referenced by index from `c` / `r`.
+/// Nested blocks live in `blocks` and are referenced by index from `c` / `r` / `u`.
 struct TemplateMeta {
     root: TemplateSectionMeta,
     blocks: Vec<TemplateSectionMeta>,
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
     root_events: Vec<EventBinding>,
+    /// Declaration bodies occupy the first entries, before nested if/for blocks.
+    declaration_count: usize,
 }
 
 type EventBinding = (String, String, Vec<EventArg>);
@@ -700,6 +725,8 @@ impl ConditionFunctionEmitter {
 /// | `:config="{{settings}}"`              | `a[]` + `ag[]`             | element kept marker-free          |
 /// | `<if condition="…">body</if>`         | `c[]` + `cl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
+/// | `<fragment name="part">body</fragment>` | shared `b[]` entry      | declaration removed              |
+/// | `<render fragment="part" />`         | `u[]`                     | call removed; anchor slot stored  |
 /// | first concrete `key="{{v.id}}"`       | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
@@ -709,7 +736,8 @@ impl ConditionFunctionEmitter {
 /// # Errors
 ///
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
-/// `@event` handler, non-braced `w-ref`, or invalid concrete-child repeat key.
+/// `@event` handler, non-braced `w-ref`, invalid concrete-child repeat key,
+/// or malformed `<if>` / `<for>` expression.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     Ok(generate_compiled_template_with_root_source(
         tag_name,
@@ -740,11 +768,17 @@ fn generate_compiled_template_with_root_source(
     if root_events.is_empty() && raw_root != trimmed && shadow_template_body(raw_root).is_some() {
         root_events = extract_root_events(tag_name, raw_root)?;
     }
-    let body = shadow_body.unwrap_or(trimmed);
-    let meta = compile_to_metadata(tag_name, body, root_events)?;
-    let build_meta = collect_template_build_metadata(&meta);
+    let mut meta = compile_to_metadata(tag_name, html_content, root_events)?;
+    let build_meta = if meta.declaration_count == 0 {
+        collect_template_build_metadata(&meta)
+    } else {
+        fragment_graph::collect_build_metadata(&meta)
+    };
     if scriptless && build_meta.has_events {
         return Err(scriptless_component_events(tag_name).into());
+    }
+    if meta.declaration_count != 0 {
+        fragment_graph::prune_unreachable(&mut meta);
     }
     Ok(emit_compiled_template_payload(
         html_content,
@@ -1372,7 +1406,7 @@ fn emit_json_template_section(
 
     if !meta.text_runs.is_empty() {
         out.push_str(",\"tx\":[");
-        for (i, (slot, parts, raw)) in meta.text_runs.iter().enumerate() {
+        for (i, (slot, parts, successor)) in meta.text_runs.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -1380,8 +1414,9 @@ fn emit_json_template_section(
             emit_js_slot(slot, out);
             out.push(',');
             emit_js_text_parts(parts, out);
-            if *raw {
-                out.push_str(",1");
+            if *successor != 0 {
+                out.push(',');
+                let _ = write!(out, "{successor}");
             }
             out.push(']');
         }
@@ -1469,179 +1504,24 @@ fn emit_json_template_section(
     if !meta.events.is_empty() {
         emit_js_event_groups(&meta.events, &meta.event_targets, out);
     }
-}
-
-/// Compile a template body into a [`TemplateMeta`] struct.
-///
-/// Performs a single forward pass over the input bytes to build an intermediate
-/// section, then finalizes that section into marker-free client HTML plus
-/// locator metadata. During the forward pass:
-///
-/// - **Multi-byte char boundary check** — ensures we don't split UTF-8 (e.g. emoji).
-/// - **`{{{expr}}}`** — triple-brace raw binding → text run metadata.
-/// - **`{{expr}}`** — double-brace escaped binding → text run metadata.
-/// - **regular start tags** — attrs are compiled into explicit `a[]` metadata plus
-///   SSR binding markers that are later stripped from client `h`.
-/// - **`<if condition="…">`** — parsed via [`parse_if_block`] → conditional slot.
-/// - **`<for each="v in coll">`** — parsed via [`parse_for_block`] → repeat slot.
-/// - **`<outlet …>`** — normalized to `<outlet></outlet>`.
-/// - **`@event="…"`** (inside a tag) — parsed into grouped `eg[]` entries plus
-///   SSR `data-ev="COUNT"` markers that are later replaced by client locators.
-/// - **Everything else** — copied verbatim to the intermediate static HTML.
-///
-fn compile_to_metadata(
-    component: &str,
-    input: &str,
-    root_events: Vec<EventBinding>,
-) -> Result<TemplateMeta> {
-    let mut blocks = Vec::new();
-    let mut root = compile_section(component, input, &mut blocks)?;
-    finalize_template_section(&mut root);
-    for block in &mut blocks {
-        finalize_template_section(block);
+    if !meta.renders.is_empty() {
+        out.push_str(",\"u\":[");
+        for (index, (render, slot)) in meta.renders.iter().zip(&meta.render_slots).enumerate() {
+            if index != 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "[{},", render.block_index);
+            emit_js_slot(slot, out);
+            if !render.scope.is_empty() {
+                out.push(',');
+                emit_js_string(&render.scope, out);
+                out.push(',');
+                emit_js_string(&render.alias, out);
+            }
+            out.push(']');
+        }
+        out.push(']');
     }
-    Ok(TemplateMeta {
-        root,
-        blocks,
-        root_events,
-    })
-}
-
-fn compile_section(
-    component: &str,
-    input: &str,
-    blocks: &mut Vec<TemplateSectionMeta>,
-) -> Result<TemplateSectionMeta> {
-    let mut meta = TemplateSectionMeta {
-        html: String::with_capacity(input.len()),
-        text_bindings: Vec::new(),
-        text_marker_offsets: Vec::new(),
-        text_runs: Vec::new(),
-        attr_bindings: Vec::new(),
-        attr_groups: Vec::new(),
-        conditionals: Vec::new(),
-        condition_slots: Vec::new(),
-        repeats: Vec::new(),
-        repeat_slots: Vec::new(),
-        events: Vec::new(),
-        event_targets: Vec::new(),
-    };
-
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        if !input.is_char_boundary(i) {
-            meta.html.push(bytes[i] as char);
-            i += 1;
-            continue;
-        }
-
-        if let Some(next) = compile_text_binding_at(input, i, &mut meta) {
-            i = next;
-            continue;
-        }
-
-        // <if condition="...">...</if> → marker + conditional
-        if bytes[i] == b'<' {
-            let remaining = &input[i..];
-            if remaining.starts_with("<!--") {
-                if let Some(close) = remaining.find("-->") {
-                    i += close + 3;
-                    continue;
-                }
-            }
-
-            let opening_name = parse_tag(remaining)
-                .filter(|tag| !tag.closing)
-                .map(|tag| tag.name);
-            if opening_name == Some("if") {
-                if let Some((cond, body, consumed)) = parse_if_block(remaining) {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, body, blocks)?;
-                    blocks[block_index] = block;
-                    let idx = meta.conditionals.len();
-                    meta.conditionals.push((cond, block_index));
-                    meta.html.push_str(&format!("<!--c:{idx}-->"));
-                    i += consumed;
-                    continue;
-                }
-            }
-
-            // <for each="item in collection">...</for> → marker + repeat
-            if opening_name == Some("for") {
-                if let Some(repeat) = parse_for_block(component, remaining)? {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &repeat.body, blocks)?;
-                    blocks[block_index] = block;
-                    let idx = meta.repeats.len();
-                    meta.repeats.push(CompiledRepeat {
-                        collection: repeat.collection,
-                        item_var: repeat.item_var,
-                        block_index,
-                        key_path: repeat.key_path,
-                    });
-                    meta.html.push_str(&format!("<!--r:{idx}-->"));
-                    i += repeat.consumed;
-                    continue;
-                }
-            }
-
-            if let Some((open_end, close_start, close_end)) = find_style_element_bounds(input, i) {
-                meta.html.push_str(&input[i..open_end]);
-                compile_style_content(&input[open_end..close_start], &mut meta);
-                meta.html.push_str(&input[close_start..close_end]);
-                i = close_end;
-                continue;
-            }
-
-            // Normalize the complete outlet element so a paired closing tag
-            // cannot be mistaken for an ancestor close during finalization.
-            if remaining.starts_with("<outlet") {
-                if let Some(consumed) = find_element_end(remaining, "outlet") {
-                    meta.html.push_str("<outlet></outlet>");
-                    i += consumed;
-                    continue;
-                }
-            }
-
-            if let Some((tag_html, consumed)) = parse_regular_tag(component, remaining, &mut meta)?
-            {
-                meta.html.push_str(&tag_html);
-                i += consumed;
-                continue;
-            }
-        }
-
-        // @event attributes → replace with a per-element event-count marker
-        if bytes[i] == b'@' && is_inside_tag(input, i) {
-            if let Some((event_name, handler, args, consumed)) =
-                parse_event_attr(component, input, i)?
-            {
-                meta.events.push((event_name, handler, args));
-                meta.html.push_str("data-ev=\"1\"");
-                i += consumed;
-                continue;
-            }
-        }
-
-        // w-ref stays in static HTML as-is — the runtime binds from the DOM directly.
-        // No metadata entry needed; the attribute value IS the property name.
-
-        // Copy character
-        let ch = &input[i..];
-        if let Some(c) = ch.chars().next() {
-            meta.html.push(c);
-            i += c.len_utf8();
-        } else {
-            i += 1;
-        }
-    }
-
-    Ok(meta)
 }
 
 fn compile_text_binding_at(
@@ -1774,19 +1654,24 @@ struct FragmentAttr {
 
 fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
+    let raw_html_len = raw_html.len();
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
     let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    drop(raw_html);
+    drop(text_marker_offsets);
     insert_implied_table_containers(&mut nodes);
-    let text_bindings = meta.text_bindings.clone();
-    let mut finalized_html = String::with_capacity(raw_html.len());
+    let text_bindings = std::mem::take(&mut meta.text_bindings);
+    let mut finalized_html = String::with_capacity(raw_html_len);
     let mut text_runs = Vec::new();
     let mut attr_groups = Vec::new();
     let mut condition_slots = vec![None; meta.conditionals.len()];
     let mut repeat_slots = vec![None; meta.repeats.len()];
+    let mut render_slots = vec![None; meta.renders.len()];
     let mut event_targets = vec![None; meta.events.len()];
     let mut event_cursor = 0usize;
 
     let mut element_cursor = 0usize;
+    let mut raw_cursor = 0usize;
     process_fragment_children(
         &nodes,
         0,
@@ -1796,9 +1681,11 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
         &mut attr_groups,
         &mut condition_slots,
         &mut repeat_slots,
+        &mut render_slots,
         &mut event_targets,
         &mut event_cursor,
         &mut element_cursor,
+        &mut raw_cursor,
     );
     debug_assert_eq!(event_cursor, meta.events.len());
 
@@ -1807,6 +1694,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     meta.attr_groups = attr_groups;
     meta.condition_slots = condition_slots.into_iter().flatten().collect();
     meta.repeat_slots = repeat_slots.into_iter().flatten().collect();
+    meta.render_slots = render_slots.into_iter().flatten().collect();
     meta.event_targets = event_targets.into_iter().flatten().collect();
 }
 
@@ -1816,30 +1704,35 @@ fn process_fragment_children(
     parent_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
-    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
+    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, usize)>,
     attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
+    render_slots: &mut [Option<SlotLocator>],
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    raw_cursor: &mut usize,
 ) {
     let mut child_index = 0usize;
     let mut index = 0usize;
     // Browser HTML parsing merges adjacent emitted text into a single Text node.
     // Track that here so marker-free locator paths match the real client DOM.
     let mut previous_emitted_text = false;
-    let mut slot_orders = std::collections::BTreeMap::<usize, usize>::new();
+    // child_index only advances: orders reset when a static child is emitted.
+    let mut slot_order = 0usize;
+    let mut pending_text = None;
+    let mut comment_ordinal = 0usize;
 
     while index < nodes.len() {
         if let Some((parts, consumed, has_dynamic, is_raw)) =
             collect_text_run(&nodes[index..], text_bindings)
         {
-            let adjacent_to_raw = !has_dynamic
-                && ((index > 0 && is_raw_text_marker(&nodes[index - 1], text_bindings))
+            let adjacent_to_range = !has_dynamic
+                && ((index > 0 && is_text_range_boundary(&nodes[index - 1], text_bindings))
                     || (index + consumed < nodes.len()
-                        && is_raw_text_marker(&nodes[index + consumed], text_bindings)));
-            if has_dynamic || adjacent_to_raw {
+                        && is_text_range_boundary(&nodes[index + consumed], text_bindings)));
+            if has_dynamic || adjacent_to_range {
                 // Decode HTML entities in static parts so that runtime
                 // textContent assignment renders decoded characters
                 // (e.g. `&gt;` → `>`).  Static-only text runs are
@@ -1855,23 +1748,29 @@ fn process_fragment_children(
                         other => other,
                     })
                     .collect();
-                let order = slot_orders.get(&child_index).copied().unwrap_or(0);
-                slot_orders.insert(child_index, order + 1);
+                if is_raw {
+                    resolve_text_successor(text_runs, &mut pending_text, *raw_cursor * 8 + 5);
+                    *raw_cursor += 1;
+                } else {
+                    pending_text = Some(text_runs.len());
+                }
                 text_runs.push((
                     SlotLocator {
                         parent_index,
                         before_index: child_index,
-                        order,
+                        order: slot_order,
                     },
                     decoded_parts,
-                    is_raw,
+                    usize::from(is_raw),
                 ));
+                slot_order += 1;
             } else {
                 let static_text = collect_static_text(&parts);
                 if !static_text.is_empty() {
                     out.push_str(&static_text);
                     if !previous_emitted_text {
                         child_index += 1;
+                        slot_order = 0;
                     }
                     previous_emitted_text = true;
                 }
@@ -1885,29 +1784,42 @@ fn process_fragment_children(
             FragmentNode::Comment(data) => {
                 if let Some(idx) = parse_marker_index(data, "c:") {
                     if let Some(slot) = condition_slots.get_mut(idx) {
-                        let order = slot_orders.get(&child_index).copied().unwrap_or(0);
-                        slot_orders.insert(child_index, order + 1);
+                        resolve_text_successor(text_runs, &mut pending_text, idx * 8 + 2);
                         *slot = Some(SlotLocator {
                             parent_index,
                             before_index: child_index,
-                            order,
+                            order: slot_order,
                         });
+                        slot_order += 1;
                     }
                 } else if let Some(idx) = parse_marker_index(data, "r:") {
                     if let Some(slot) = repeat_slots.get_mut(idx) {
-                        let order = slot_orders.get(&child_index).copied().unwrap_or(0);
-                        slot_orders.insert(child_index, order + 1);
+                        resolve_text_successor(text_runs, &mut pending_text, idx * 8 + 3);
                         *slot = Some(SlotLocator {
                             parent_index,
                             before_index: child_index,
-                            order,
+                            order: slot_order,
                         });
+                        slot_order += 1;
+                    }
+                } else if let Some(idx) = parse_marker_index(data, "u:") {
+                    if let Some(slot) = render_slots.get_mut(idx) {
+                        resolve_text_successor(text_runs, &mut pending_text, idx * 8 + 4);
+                        *slot = Some(SlotLocator {
+                            parent_index,
+                            before_index: child_index,
+                            order: slot_order,
+                        });
+                        slot_order += 1;
                     }
                 } else {
+                    resolve_text_successor(text_runs, &mut pending_text, comment_ordinal * 8 + 7);
+                    comment_ordinal += 1;
                     out.push_str("<!--");
                     out.push_str(data);
                     out.push_str("-->");
                     child_index += 1;
+                    slot_order = 0;
                     previous_emitted_text = false;
                 }
             }
@@ -1916,6 +1828,7 @@ fn process_fragment_children(
                 if !text.is_empty() {
                     if !previous_emitted_text {
                         child_index += 1;
+                        slot_order = 0;
                     }
                     previous_emitted_text = true;
                 }
@@ -1923,6 +1836,7 @@ fn process_fragment_children(
             FragmentNode::Element(element) => {
                 *element_cursor += 1;
                 let element_index = *element_cursor;
+                resolve_text_successor(text_runs, &mut pending_text, (element_index - 1) * 8 + 6);
                 serialize_fragment_element(
                     element,
                     element_index,
@@ -1932,16 +1846,29 @@ fn process_fragment_children(
                     attr_groups,
                     condition_slots,
                     repeat_slots,
+                    render_slots,
                     event_targets,
                     event_cursor,
                     element_cursor,
+                    raw_cursor,
                 );
                 child_index += 1;
+                slot_order = 0;
                 previous_emitted_text = false;
             }
         }
 
         index += 1;
+    }
+}
+
+fn resolve_text_successor(
+    text_runs: &mut [(SlotLocator, Vec<CompiledAttrPart>, usize)],
+    pending: &mut Option<usize>,
+    successor: usize,
+) {
+    if let Some(index) = pending.take() {
+        text_runs[index].2 = successor;
     }
 }
 
@@ -1951,13 +1878,15 @@ fn serialize_fragment_element(
     element_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
-    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
+    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, usize)>,
     attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
+    render_slots: &mut [Option<SlotLocator>],
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    raw_cursor: &mut usize,
 ) {
     out.push('<');
     out.push_str(&element.tag_name);
@@ -2013,9 +1942,11 @@ fn serialize_fragment_element(
         attr_groups,
         condition_slots,
         repeat_slots,
+        render_slots,
         event_targets,
         event_cursor,
         counter,
+        raw_cursor,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);
@@ -2068,7 +1999,11 @@ fn collect_text_run(
     Some((parts, consumed, has_dynamic, is_raw))
 }
 
-fn is_raw_text_marker(node: &FragmentNode, text_bindings: &[(String, bool)]) -> bool {
+fn is_text_range_boundary(node: &FragmentNode, text_bindings: &[(String, bool)]) -> bool {
+    if let FragmentNode::Comment(data) = node {
+        // Static text on both sides must not merge across a wrapperless call.
+        return parse_marker_index(data, "u:").is_some();
+    }
     let FragmentNode::TextMarker(index) = node else {
         return false;
     };
@@ -2229,7 +2164,9 @@ fn is_direct_element_named(node: &FragmentNode, tag_name: &str) -> bool {
 
 fn is_table_run_trivia(node: &FragmentNode, include_structural_markers: bool) -> bool {
     matches!(node, FragmentNode::Comment(data) if include_structural_markers
-        || (parse_marker_index(data, "c:").is_none() && parse_marker_index(data, "r:").is_none()))
+        || (parse_marker_index(data, "c:").is_none()
+            && parse_marker_index(data, "r:").is_none()
+            && parse_marker_index(data, "u:").is_none()))
         || matches!(node, FragmentNode::Text(text) if text.bytes().all(
             |byte| matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
         ))
@@ -2563,13 +2500,66 @@ fn shadow_template_body(html: &str) -> Option<&str> {
 
 /// Parse `<if condition="EXPR">BODY</if>` → `(condition, body, bytes_consumed)`.
 ///
-/// Nested blocks are compiled separately into their owning metadata sections.
-fn parse_if_block(input: &str) -> Option<(ConditionExpr, &str, usize)> {
-    let tag = parse_tag(input)?;
-    let condition = compile_condition_expr(tag.attr("condition")?);
-    let body_start = tag.close + 1;
-    let (body_end, close_end) = find_matching_end(input, tag.name, body_start)?;
-    Some((condition, input[body_start..body_end].trim(), close_end))
+/// Only handles the outermost `<if>`; its body is compiled by a suspended frame.
+fn parse_if_block(
+    component: &str,
+    source: &str,
+    offset: usize,
+) -> Result<Option<(ConditionExpr, Range<usize>, usize)>> {
+    let input = &source[offset..];
+    let Some(tag) = parse_tag(input) else {
+        return Ok(None);
+    };
+    let Some((body_end, close_end)) = find_matching_end(input, tag.name, tag.close + 1) else {
+        return Ok(None);
+    };
+    let Some(raw) = tag.attr("condition") else {
+        return Ok(None);
+    };
+    let expression = directive_expression::normalize(raw).ok_or_else(|| {
+        invalid_control_expression(component, source, offset, codes::INVALID_IF_CONDITION)
+    })?;
+    let condition = ConditionParser::new().parse(expression).map_err(|_| {
+        invalid_control_expression(component, source, offset, codes::INVALID_IF_CONDITION)
+    })?;
+    let body = sections::trimmed_range(input, tag.close + 1..body_end);
+    Ok(Some((condition, body, close_end)))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_control_expression(
+    component: &str,
+    source: &str,
+    offset: usize,
+    code: &'static str,
+) -> Diagnostic {
+    let (element, title, help) = match code {
+        codes::INVALID_IF_CONDITION => (
+            "if",
+            "invalid <if> condition expression",
+            "use condition=\"ready\" or condition=\"{{ready}}\"; wrap the whole expression in exactly two braces",
+        ),
+        codes::INVALID_FOR_IDENTIFIER => (
+            "for",
+            "invalid identifier in <for> each expression",
+            "item and collection names may use only letters, digits, '_', '-', and '.'",
+        ),
+        _ => (
+            "for",
+            "invalid <for> each expression",
+            "use each=\"item in collection\" or each=\"{{item in collection}}\"; wrap the whole expression in exactly two braces",
+        ),
+    };
+    let input = &source[offset..];
+    let opening = parse_tag(input).map_or(input, |tag| &input[..tag.close + 1]);
+    Diagnostic::error(title)
+        .code(code)
+        .component(component)
+        .element(element)
+        .at_offset(source, offset)
+        .snippet(opening)
+        .help(help)
 }
 
 fn compile_condition_expr(input: &str) -> ConditionExpr {
@@ -2585,10 +2575,11 @@ fn compile_condition_expr(input: &str) -> ConditionExpr {
 
 /// Parse a `<for>` block and the optional key on its first child.
 ///
-/// The `each` attribute must follow the `"item in collection"` pattern.
+/// The `each` attribute follows `"item in collection"`, optionally double-braced.
 /// The body template retains `{{expr}}` mustaches — they are resolved by the
 /// client runtime during reconciliation.
-fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock>> {
+fn parse_for_block(component: &str, source: &str, offset: usize) -> Result<Option<ParsedForBlock>> {
+    let input = &source[offset..];
     let Some(tag) = parse_tag(input) else {
         return Ok(None);
     };
@@ -2601,26 +2592,39 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
     let Some(each_val) = tag.attr("each") else {
         return Ok(None);
     };
+    let expression = directive_expression::normalize(each_val).ok_or_else(|| {
+        invalid_control_expression(component, source, offset, codes::INVALID_FOR_EACH)
+    })?;
 
-    let mut parts = each_val.split_whitespace();
+    let mut parts = expression.split_whitespace();
     let (Some(item_var), Some("in"), Some(collection), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return Ok(None);
-    };
-    let body_source = input[tag.close + 1..body_end].trim();
-    let repeat_key = first_child_repeat_key(component, item_var, body_source)?;
-    let (key_path, body) = if let Some(repeat_key) = repeat_key {
-        let mut body = String::with_capacity(
-            body_source
-                .len()
-                .saturating_sub(repeat_key.attr_range.len()),
+        return Err(
+            invalid_control_expression(component, source, offset, codes::INVALID_FOR_EACH).into(),
         );
-        body.push_str(&body_source[..repeat_key.attr_range.start]);
-        body.push_str(&body_source[repeat_key.attr_range.end..]);
-        (Some(repeat_key.path), body)
+    };
+    if !directive_expression::valid_for_identifier(item_var)
+        || !directive_expression::valid_for_identifier(collection)
+    {
+        return Err(invalid_control_expression(
+            component,
+            source,
+            offset,
+            codes::INVALID_FOR_IDENTIFIER,
+        )
+        .into());
+    }
+    let body = sections::trimmed_range(input, tag.close + 1..body_end);
+    let body_source = &input[body.clone()];
+    let repeat_key = first_child_repeat_key(component, item_var, body_source)?;
+    let (key_path, key_skip) = if let Some(repeat_key) = repeat_key {
+        (
+            Some(repeat_key.path),
+            Some(body.start + repeat_key.attr_range.start),
+        )
     } else {
-        (None, body_source.to_string())
+        (None, None)
     };
 
     Ok(Some(ParsedForBlock {
@@ -2628,6 +2632,7 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
         item_var: item_var.to_string(),
         key_path,
         body,
+        key_skip,
         consumed: close_end,
     }))
 }
@@ -2857,6 +2862,7 @@ fn parse_regular_tag(
     component: &str,
     input: &str,
     meta: &mut TemplateSectionMeta,
+    key_skip: Option<usize>,
 ) -> Result<Option<(String, usize)>> {
     if !input.starts_with('<') || input.starts_with("</") || input.starts_with("<!") {
         return Ok(None);
@@ -2959,6 +2965,9 @@ fn parse_regular_tag(
         }
 
         if name == "key" {
+            if key_skip == Some(attr_start + 1) {
+                continue;
+            }
             return Err(invalid_repeat_key_placement(component, tag_name).into());
         }
 
@@ -3486,7 +3495,7 @@ mod tests {
     }
 
     #[allow(clippy::disallowed_methods)]
-    fn generate_compiled_template_payload(
+    pub(super) fn generate_compiled_template_payload(
         tag_name: &str,
         html_content: &str,
     ) -> CompiledTemplatePayload {
@@ -3587,7 +3596,7 @@ mod tests {
         assert!(!templates[0].template_json.contains("w-hydrate"));
     }
 
-    fn assert_no_client_markers(result: &str) {
+    pub(super) fn assert_no_client_markers(result: &str) {
         assert!(!result.contains("<!--t:"), "text markers should be removed");
         assert!(
             !result.contains("<!--c:"),
@@ -3596,6 +3605,10 @@ mod tests {
         assert!(
             !result.contains("<!--r:"),
             "repeat markers should be removed"
+        );
+        assert!(
+            !result.contains("<!--u:"),
+            "render markers should be removed"
         );
         assert!(
             !result.contains("data-w-b-"),
@@ -3786,9 +3799,11 @@ mod tests {
     #[test]
     fn test_parse_if_block_ignores_close_marker_inside_attr_value() {
         let input = r#"<if condition="count > 0"><div data-note="</if>">yes</div></if>"#;
-        let (_, body, consumed) = parse_if_block(input).expect("if block should parse");
+        let (_, body, consumed) = parse_if_block("test-component", input, 0)
+            .expect("valid if block")
+            .expect("if block should parse");
 
-        assert_eq!(body, r#"<div data-note="</if>">yes</div>"#);
+        assert_eq!(&input[body], r#"<div data-note="</if>">yes</div>"#);
         assert_eq!(consumed, input.len());
     }
 
@@ -3977,14 +3992,14 @@ mod tests {
     fn test_parse_for_block_ignores_open_marker_inside_attr_value() {
         let input =
             r#"<for each="item in items"><div data-note="<for fake>">{{item.name}}</div></for>"#;
-        let parsed = parse_for_block("my-comp", input)
+        let parsed = parse_for_block("my-comp", input, 0)
             .expect("for block should be valid")
             .expect("for block should parse");
 
         assert_eq!(parsed.collection, "items");
         assert_eq!(parsed.item_var, "item");
         assert_eq!(
-            parsed.body,
+            &input[parsed.body],
             r#"<div data-note="<for fake>">{{item.name}}</div>"#
         );
         assert_eq!(parsed.consumed, input.len());
@@ -4550,6 +4565,7 @@ mod tests {
             "test-input",
             r#"<input @keydown="{onKey(e)}" @focus="{onFocus()}" />"#,
             &mut meta,
+            None,
         )
         .expect("regular tag parse should succeed")
         .expect("regular tag should produce output");
@@ -4862,7 +4878,7 @@ mod tests {
 
         assert!(
             result.contains(
-                r#","tx":[[[1,0],["Before "]],[[1,0,1],[["html"]],1],[[1,0,2],[" After ",["name"]]]]"#,
+                r#","tx":[[[1,0],["Before "],5],[[1,0,1],[["html"]],1],[[1,0,2],[" After ",["name"]]]]"#,
             ),
             "raw HTML must own only its signal while adjacent text remains separate: {result}"
         );

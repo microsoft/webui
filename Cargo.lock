@@ -1902,6 +1902,7 @@ dependencies = [
  "cbindgen",
  "criterion",
  "microsoft-webui-handler",
+ "microsoft-webui-parser",
  "microsoft-webui-protocol",
  "serde_json",
 ]
@@ -1920,6 +1921,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "yoke",
 ]
 
 [[package]]
@@ -1996,6 +1998,8 @@ name = "microsoft-webui-python"
 version = "0.0.28"
 dependencies = [
  "microsoft-webui-handler",
+ "microsoft-webui-parser",
+ "microsoft-webui-protocol",
  "pyo3",
  "serde_json",
 ]

@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import type { TemplateBlockMeta } from './template-types.js';
+import { collectTemplateElements } from './element/markers.js';
 
 /** Immutable attributes needed to prepare one external component stylesheet. */
 export interface TemplateStylesheetDescriptor {
@@ -21,6 +22,8 @@ export interface TemplateStylesheetDescriptor {
 interface TemplateContent {
   readonly fragment: DocumentFragment;
   readonly stylesheets: readonly TemplateStylesheetDescriptor[];
+  outlets?: readonly number[];
+  rootOutlet?: boolean;
 }
 
 const EMPTY_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
@@ -37,6 +40,19 @@ export function getTemplateFragment(meta: TemplateBlockMeta): DocumentFragment {
   return getTemplateContent(meta).fragment;
 }
 
+/** Cached compiler element indices for client-created outlet ranges. */
+export function getTemplateOutlets(meta: TemplateBlockMeta): readonly number[] | undefined {
+  return getTemplateContent(meta).outlets;
+}
+
+/** Whether a block needs range ownership for a top-level outlet. */
+export function templateHasRootOutlet(meta: TemplateBlockMeta): boolean {
+  const cached = templateContentCache.get(meta);
+  if (cached) return cached.rootOutlet === true;
+  return templateHtmlMayContainTag(meta.h, 'outlet')
+    && getTemplateContent(meta, undefined, true).rootOutlet === true;
+}
+
 /** Return external stylesheet descriptors discovered during the template's single parse. */
 export function getTemplateStylesheets(
   meta: TemplateBlockMeta,
@@ -47,19 +63,18 @@ export function getTemplateStylesheets(
 
 /** Return whether template HTML may contain a `<link>` start tag. */
 export function templateHtmlMayContainLink(html: string): boolean {
-  for (let i = 0; i <= html.length - 5; i++) {
-    if (html.charCodeAt(i) !== 60) continue;
+  return templateHtmlMayContainTag(html, 'link');
+}
+
+function templateHtmlMayContainTag(html: string, tag: string): boolean {
+  for (let i = html.indexOf('<'); i !== -1; i = html.indexOf('<', i + 1)) {
+    let length = 0;
+    while (length < tag.length && asciiLower(html.charCodeAt(i + length + 1)) === tag.charCodeAt(length)) length++;
+    if (length !== tag.length) continue;
+    const end = i + tag.length + 1;
+    const next = html.charCodeAt(end);
     if (
-      asciiLower(html.charCodeAt(i + 1)) !== 108 ||
-      asciiLower(html.charCodeAt(i + 2)) !== 105 ||
-      asciiLower(html.charCodeAt(i + 3)) !== 110 ||
-      asciiLower(html.charCodeAt(i + 4)) !== 107
-    ) {
-      continue;
-    }
-    const next = html.charCodeAt(i + 5);
-    if (
-      i + 5 === html.length ||
+      end === html.length ||
       next === 9 ||
       next === 10 ||
       next === 12 ||
@@ -77,6 +92,7 @@ export function templateHtmlMayContainLink(html: string): boolean {
 function getTemplateContent(
   meta: TemplateBlockMeta,
   mayContainLink?: boolean,
+  mayContainOutlet?: boolean,
 ): TemplateContent {
   let cached = templateContentCache.get(meta);
   if (cached) return cached;
@@ -88,6 +104,17 @@ function getTemplateContent(
     ? collectStylesheetDescriptors(fragment)
     : NO_LINK_STYLESHEETS;
   cached = { fragment, stylesheets };
+  if (mayContainOutlet ?? templateHtmlMayContainTag(meta.h, 'outlet')) {
+    const elements = collectTemplateElements(fragment);
+    let outlets: number[] | undefined;
+    for (let i = 1; i < elements.length; i++) {
+      const element = elements[i] as Element;
+      if (element.localName !== 'outlet') continue;
+      (outlets ??= []).push(i);
+      if (element.parentNode === fragment) cached.rootOutlet = true;
+    }
+    if (outlets) cached.outlets = outlets;
+  }
   templateContentCache.set(meta, cached);
   return cached;
 }

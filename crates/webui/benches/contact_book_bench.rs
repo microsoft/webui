@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+
 //! End-to-end benchmark for the contact-book-manager example application.
 //!
 //! Compiles the real contact-book-manager templates into a protocol binary at
@@ -7,6 +8,15 @@
 //! different data scales (10 / 100 / 1,000 contacts).
 //!
 //! Run with: `cargo bench -p microsoft-webui --bench contact_book_bench`
+//!
+//! For genuine WebUI compilation and hydration, append
+//! `-- contact_book_contacts_render_webui_plugin`. This specific filter skips
+//! the legacy no-plugin/FAST setup and custom summary. Add `--test` after `--`
+//! to validate the WebUI fixture without collecting timing samples.
+//!
+//! For end-to-end WebUI app compilation against a warmed filesystem, use
+//! `-- contact_book_compile_webui_plugin`. Each iteration constructs and
+//! consumes fresh build options; result teardown is outside the timed region.
 
 use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
@@ -17,6 +27,9 @@ use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::{Protocol, RenderOptions};
 use webui_protocol::WebUIProtocol;
+
+#[path = "contact_book_bench/webui.rs"]
+mod webui_bench;
 
 /// Contact counts to benchmark.
 const CONTACT_COUNTS: &[usize] = &[10, 100, 1000];
@@ -431,7 +444,12 @@ criterion_group!(
     protocol_deserialization_bench,
     handler_rendering_bench,
     handler_rendering_with_plugin_bench,
+    webui_bench::handler_rendering_bench,
+    webui_bench::compile_bench,
 );
+
+criterion_group!(webui_benches, webui_bench::handler_rendering_bench);
+criterion_group!(webui_compile_benches, webui_bench::compile_bench);
 
 // ---------------------------------------------------------------------------
 // Summary table — performance report printed after criterion finishes
@@ -686,6 +704,21 @@ fn validate_output_scales_with_contacts(fixture: &BenchFixture) {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--test") {
+        webui_bench::self_check_selection();
+    }
+    match webui_bench::selected_webui_group(std::env::args().skip(1)) {
+        Some(webui_bench::WebUIGroup::Render) => {
+            webui_benches();
+            return;
+        }
+        Some(webui_bench::WebUIGroup::Compile) => {
+            webui_compile_benches();
+            return;
+        }
+        None => {}
+    }
+
     let fixture = setup();
     validate_output_scales_with_contacts(&fixture);
 

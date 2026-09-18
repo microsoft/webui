@@ -53,6 +53,60 @@ mod tests {
     }
 
     #[test]
+    fn named_fragment_virtual_build_roundtrips_through_wasm_protocol() {
+        let source = include_str!("../../webui-test-utils/fixtures/recursive-fragments.html");
+        let state = include_str!("../../webui-test-utils/fixtures/recursive-fragments.json");
+        let files = HashMap::from([("index.html".to_string(), source.to_string())]);
+        let bytes = parser::build_protocol_inner(&files, "index.html", &[])
+            .expect("virtual fragment build");
+        let protocol = Protocol::new(&bytes, None).expect("WASM protocol decode");
+        let html = protocol.render(state, None).expect("WASM recursive render");
+        assert!(html.contains("<h2>Tree</h2>"));
+        assert!(
+            html.contains("<li><span>Oak</span><ul><li><span>Leaf &amp; bud</span></li></ul></li>")
+        );
+        assert_eq!(html.matches("<li>").count(), 3);
+        assert!(!html.contains("<fragment"));
+        assert_eq!(protocol.render(state, None).expect("second render"), html);
+    }
+
+    #[test]
+    fn named_fragment_routes_preserve_graph_metadata_in_wasm_partials() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                r#"<html><head></head><body><route path="/tree" component="tree-view" exact></route></body></html>"#.to_string(),
+            ),
+            (
+                "tree-view.html".to_string(),
+                include_str!("../../webui-test-utils/fixtures/recursive-fragments.html").to_string(),
+            ),
+            ("tree-view.ts".to_string(), "export {};".to_string()),
+        ]);
+        let bytes =
+            parser::build_protocol_inner(&files, "index.html", &[]).expect("virtual route build");
+        let protocol =
+            Protocol::new(&bytes, Some("webui".to_string())).expect("WASM protocol decode");
+        let state = include_str!("../../webui-test-utils/fixtures/recursive-fragments.json");
+        let partial = protocol
+            .render_partial(state, "index.html", "/tree", "")
+            .expect("recursive route partial");
+        let partial: serde_json::Value = serde_json::from_str(&partial).expect("partial JSON");
+        assert!(partial["templates"]["tree-view"]["b"].is_array());
+        assert!(partial["templates"]["tree-view"]["u"].is_array());
+        assert_eq!(partial["state"]["title"], "Tree");
+        let inventory = partial["inventory"].as_str().expect("inventory");
+        let known = protocol
+            .render_partial(state, "index.html", "/tree", inventory)
+            .expect("known route partial");
+        let known: serde_json::Value = serde_json::from_str(&known).expect("known JSON");
+        assert!(known["templates"]
+            .as_object()
+            .expect("templates")
+            .is_empty());
+    }
+
+    #[test]
     fn test_missing_entry_file() {
         let files = HashMap::new();
         let result = render_files_for_test(&files, "{}", "index.html", "/");

@@ -421,6 +421,11 @@ selectItem(id: string, e: MouseEvent): void {
 </for>
 ```
 
+Inside a [local fragment](/guide/concepts/directives/fragment), event arguments
+can read that invocation's input alias and its own loop variables. Caller-local
+variables remain hidden. The handler method belongs to the owning component;
+the fragment does not need a separate class.
+
 ### How Event Bindings Are Wired
 
 Every `@event` gets its own listener on the element it is written on. Bindings

@@ -1,0 +1,7 @@
+<template w-hydrate="lazy">
+  <fragment name="heading"><h2>{{title}}</h2></fragment>
+  <fragment name="tree-items"><ul><for each="child in items"><li key="{{child.id}}"><span class="name">{{child.name}}</span><button @click="{select(child.id, child.name)}">Select</button><if condition="child.children.length"><render fragment="tree-items" scope="{{child.children}}" as="items"></render></if></li></for></ul></fragment>
+  <render fragment="heading"></render>
+  <render fragment="tree-items" scope="{{items}}" as="items"></render>
+  <output class="selected">{{selected}}</output>
+</template>

@@ -48,7 +48,7 @@ export async function runWebUIClientBuild(options = {}) {
   const { esbuild, esbuildProjection } = await loadBuildTools();
   const watch = process.argv.includes("--watch");
   const color = process.argv.includes("--color=true");
-  const { projectionManifest, plugins = [], ...esbuildOptions } = options;
+  const { projectionManifest, plugins = [], define, ...esbuildOptions } = options;
   const buildOptions = {
     entryPoints: ["src/index.ts"],
     outdir: "dist",
@@ -58,6 +58,7 @@ export async function runWebUIClientBuild(options = {}) {
     minify: !watch,
     sourcemap: watch,
     ...esbuildOptions,
+    define: watch ? define : { __WEBUI_DEV__: "false", ...define },
     color,
     metafile: true,
     plugins: [
