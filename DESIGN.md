@@ -2365,8 +2365,38 @@ surfaced on every rebuild attempt.
 - Flush buffer when transitioning to non-raw content
 
 ##### Directive Processing
-- **<for>:** Extract item/collection pair and process children into separate fragment. Empty `<for>` bodies (no children) are silently skipped.
+- **<for>:** Extract the unbraced `each="item in collection"` item/collection
+  pair and process children into a separate fragment. Braced `each` expressions
+  are invalid authoring input on both SSR and native client compilation paths.
+  Unnamed empty bodies are silently skipped. A static `id` names a reusable body within its owning
+  entry/component file: `id="tree-item"` uses `tree-item-N`, where `N` is the
+  parser's stable, one-based owner index. Parsing a nested component saves and
+  restores the caller's named-loop scope. A paired tag defines the body once
+  (including an empty body); a self-closing tag only emits a `ForLoop` reference
+  with its own collection. Forward references and finite data-driven direct
+  or mutual recursion share the existing protocol record, without copying or
+  expanding bodies. References must use the defining item variable.
+  The callsite collection (e.g. `foo.children`) is evaluated in the parent
+  scope before each child shadows `foo` in the shared body. Normal lexical
+  shadowing restores the parent item after each nested repeat. The defining
+  loop's original collection expression is not re-executed by references.
+  `id` is the only supported naming attribute. The removed `template` spelling
+  is rejected with `invalid-for-id` and migration guidance, never treated as an
+  alias or silently ignored. Named IDs are non-empty ASCII
+  alphanumeric/underscore/hyphen strings. Duplicate definitions (including
+  nested definitions using a different iterator), missing definitions,
+  conflicting fragment names, and inconsistent item variables return
+  `duplicate-for-id`, `unknown-for-id`, `invalid-for-id`, and
+  `incompatible-for-item` diagnostics. Duplicate definitions take precedence
+  over item-variable mismatch diagnostics. Generated IDs skip reserved named
+  records; a named claim cannot overwrite an already generated record.
+  Native WebUI supports cyclic client block references. FAST v2/v3 reject
+  named self-closing references in component artifacts with the actionable
+  `fast-named-for-unsupported` diagnostic; server-only entry loops remain
+  supported without requiring FAST client template reuse. This rejection uses
+  the FAST converters' ASCII-case-insensitive tag matching.
 - **<if>:** Extract and parse condition, process children into separate fragment
+  (optional surrounding `{{...}}` is accepted).
 - **<body>:** Injects `body_start` and `body_end` raw signals around the body content
 - **Components:** Check component registry, process as component if found
 
@@ -2542,6 +2572,15 @@ requirements directly instead of allocating an unused token-name set; only the
 public extraction API and final graph analysis materialize that set. The
 additional scope data is build-time-only and is not serialized or retained at
 runtime.
+
+When shared loop records exist, the CSS token walk tracks only active fragment
+ancestors and skips back-edges, rather than globally marking records visited:
+sibling visits must still be analyzed under their different inherited CSS
+definitions. It also memoizes each fragment with its canonical set of inherited
+definition names, avoiding redundant visits through equivalent acyclic paths.
+Definition counts still control lexical restoration; only membership enters
+the memoization key. Ordinary templates without shared loops retain the original
+traversal without allocating cycle-tracking or memoization state.
 
 #### Comment Handling
 
@@ -2904,6 +2943,8 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `<for id="name" each="v in coll">body</for>` | `r[]` + `b[]` | one file-local named body |
+| `<for id="name" each="v in v.children" />` | `r[]` | existing named block index reused |
 | `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
@@ -5278,6 +5319,24 @@ strict missing-fragment failure.
 Attribute bindings are recorded in `a[]`, while `ag[]` points at the owning element and the contiguous `[start, count)` range inside `a[]`. The compiled client HTML never embeds `data-w-*` markers; those remain SSR-only handler markers.
 
 Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` block table. The client runtime instantiates compiled child blocks directly and evaluates precompiled condition AST tuples — it does not parse raw template syntax or condition strings from repeat or conditional body content.
+
+Named repeats can form cycles through `b[]` indices. The table remains flat,
+serializable, and proportional to authored bodies, not runtime tree depth.
+State-root collection must terminate on those cycles while retaining roots
+visible in every lexical callsite scope. Shared-block analysis memoizes each
+block with the sorted, deduplicated set of bound item names, not frame identity,
+ordering, or shadow counts. Equivalent paths are processed once, while distinct
+scope sets remain separate. Visits are memoized in traversal order so root
+discovery order is unchanged; ordinary templates allocate no memoization state.
+Recursive references reuse the
+definition's optional repeat key. No new wire fields, runtime identifier
+resolution, or per-item metadata copies are required.
+
+Native compilation carries original source spans through trimmed content,
+Shadow DOM wrappers, and nested blocks. Repeat keys are skipped during
+attribute emission without rewriting or copying the body source. Named-repeat
+errors therefore point to the actual offending tag; unresolved names are
+reported in source order, independently of hash-map iteration order.
 
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 

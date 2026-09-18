@@ -19,6 +19,7 @@ mod handlebars_parser;
 mod html_parser;
 pub mod plugin;
 mod route_parser;
+mod scoped_visits;
 mod suggest;
 
 pub use asset_filename::{
@@ -434,6 +435,202 @@ impl FragmentIdCounter {
         *count += 1;
         format!("{}-{}", prefix, count)
     }
+
+    fn has_generated(&self, id: &str) -> bool {
+        let Some((prefix, number)) = id.rsplit_once('-') else {
+            return false;
+        };
+        self.counters.get(prefix).is_some_and(|count| {
+            number
+                .parse::<usize>()
+                .is_ok_and(|number| number > 0 && number <= *count)
+        })
+    }
+}
+
+#[derive(Default)]
+struct NamedForLoops {
+    entries: HashMap<String, NamedFor>,
+}
+
+struct NamedFor {
+    item: String,
+    offset: usize,
+    defined: bool,
+}
+
+impl NamedForLoops {
+    fn register(&mut self, owner: &str, id: &str, item: &str, site: (bool, usize)) -> Result<()> {
+        let (definition, offset) = site;
+        if let Some(entry) = self.entries.get_mut(id) {
+            if definition && entry.defined {
+                return Err(named_for_error(
+                    owner,
+                    codes::DUPLICATE_FOR_ID,
+                    "duplicate named <for> definition",
+                    id,
+                    "define the body once per file and use a self-closing <for id=\"...\" each=\"...\" /> to reuse it",
+                )
+                .into());
+            }
+            if entry.item != item {
+                return Err(named_for_error(
+                    owner,
+                    codes::INCOMPATIBLE_FOR_ITEM,
+                    "inconsistent item variable for named <for>",
+                    id,
+                    &format!(
+                        "use each=\"{} in collection\" at every reference to this id",
+                        entry.item
+                    ),
+                )
+                .into());
+            }
+            entry.defined |= definition;
+        } else {
+            self.entries.insert(
+                id.to_string(),
+                NamedFor {
+                    item: item.to_string(),
+                    offset,
+                    defined: definition,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn validate(&self, owner: &str, source: &str) -> Result<()> {
+        let missing = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| !entry.defined)
+            .min_by_key(|(_, entry)| entry.offset);
+        if let Some((id, entry)) = missing {
+            return Err(named_for_error(
+                owner,
+                codes::UNKNOWN_FOR_ID,
+                "unknown named <for> definition",
+                id,
+                "add a <for> with this id and a body in the same file; definitions in other files are not visible",
+            )
+            .at_offset(source, entry.offset)
+            .into());
+        }
+        Ok(())
+    }
+}
+
+fn parse_for_each<'a>(owner: &str, each: &'a str) -> Result<(&'a str, &'a str)> {
+    let mut parts = each.split_whitespace();
+    let (Some(item), Some("in"), Some(collection), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid_for_each(owner, each, codes::INVALID_FOR_EACH));
+    };
+    let allowed = |value: &str| {
+        value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
+        })
+    };
+    if !allowed(item) || !allowed(collection) {
+        return Err(invalid_for_each(owner, each, codes::INVALID_FOR_IDENTIFIER));
+    }
+    Ok((item, collection))
+}
+
+fn validate_for_id<'a>(owner: &str, tag: &html::Tag<'a>) -> Result<Option<&'a str>> {
+    let mut id = None;
+    let mut id_count = 0;
+    for attr in tag.attrs() {
+        match attr.name {
+            "template" => return Err(unsupported_for_template(owner)),
+            "id" => {
+                id = Some(attr.value.unwrap_or_default());
+                id_count += 1;
+            }
+            _ => {}
+        }
+    }
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        || id_count != 1
+    {
+        return Err(named_for_error(
+            owner,
+            codes::INVALID_FOR_ID,
+            "invalid <for> id",
+            id,
+            "use one non-empty static id containing letters, digits, '_' or '-'",
+        )
+        .into());
+    }
+    Ok(Some(id))
+}
+
+fn strip_condition_braces(value: &str) -> &str {
+    let value = value.trim();
+    value
+        .strip_prefix("{{")
+        .and_then(|value| value.strip_suffix("}}"))
+        .map_or(value, str::trim)
+}
+
+#[cold]
+#[inline(never)]
+fn locate_for_error(error: ParserError, element: &Element<'_>) -> ParserError {
+    match error {
+        ParserError::Template(diagnostic) => (*diagnostic)
+            .at_offset(element.source(), element.start)
+            .into(),
+        other => other,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_for_each(owner: &str, each: &str, code: &'static str) -> ParserError {
+    Diagnostic::error("invalid <for> each expression")
+        .code(code)
+        .component(owner)
+        .element("for")
+        .snippet(format!("each=\"{each}\""))
+        .help("use each=\"item in collection\" without braces; item and collection names may use only letters, digits, '_', '-', and '.'")
+        .into()
+}
+
+#[cold]
+#[inline(never)]
+fn unsupported_for_template(owner: &str) -> ParserError {
+    Diagnostic::error("unsupported <for> template attribute")
+        .code(codes::INVALID_FOR_ID)
+        .component(owner)
+        .element("for")
+        .snippet("template")
+        .help("replace template with id on the loop definition and every reference; named loops are local to their file")
+        .into()
+}
+
+#[cold]
+#[inline(never)]
+fn named_for_error(
+    owner: &str,
+    code: &'static str,
+    title: &str,
+    id: &str,
+    help: &str,
+) -> Diagnostic {
+    Diagnostic::error(title)
+        .code(code)
+        .component(owner)
+        .element("for")
+        .snippet(format!("id=\"{id}\""))
+        .help(help)
 }
 
 struct ParseContext {
@@ -547,7 +744,7 @@ enum ParseOp<'a> {
         item: String,
         collection: String,
         fragment_id: String,
-        keep_empty: bool,
+        named_definition: bool,
         previous_for_depth: usize,
     },
     CompleteIf {
@@ -559,6 +756,7 @@ enum ParseOp<'a> {
 
 enum TokenGraphOp<'a> {
     EnterFragment(&'a str),
+    ExitFragment(&'a str),
     EnterComponent(&'a str),
     EnterRoute(&'a WebUiFragmentRoute),
     ExitDefinitions(&'a [String]),
@@ -620,6 +818,10 @@ pub struct HtmlParser {
     /// The fragment ID (entry file or component tag) currently being parsed.
     /// Used to name the owning template in authoring [`Diagnostic`]s.
     current_fragment_id: String,
+
+    loop_owner_indices: HashMap<String, usize>,
+    named_for_loops: NamedForLoops,
+    named_for_fragment_ids: HashSet<String>,
 
     /// Next protocol-wide compile-time boundary declaration identity.
     next_boundary_declaration_id: u32,
@@ -1037,18 +1239,21 @@ struct ComponentTemplateInput<'a> {
     artifact_needed: bool,
 }
 
-fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+fn add_token_definitions<'a>(
+    definitions: &'a [String],
+    available_counts: &mut HashMap<&'a str, usize>,
+) {
     for definition in definitions {
-        let count = available_counts.entry(definition.clone()).or_insert(0);
+        let count = available_counts.entry(definition.as_str()).or_insert(0);
         *count += 1;
     }
 }
 
-fn remove_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+fn remove_token_definitions(definitions: &[String], available_counts: &mut HashMap<&str, usize>) {
     for definition in definitions {
-        if let Some(count) = available_counts.get_mut(definition) {
+        if let Some(count) = available_counts.get_mut(definition.as_str()) {
             if *count == 1 {
-                available_counts.remove(definition);
+                available_counts.remove(definition.as_str());
             } else {
                 *count -= 1;
             }
@@ -1067,7 +1272,7 @@ struct UnresolvedTokens {
 
 fn record_unresolved_requirements(
     source: &[CssFallbackChain],
-    available_counts: &HashMap<String, usize>,
+    available_counts: &HashMap<&str, usize>,
     owner: &str,
     css_source: Option<&str>,
     out: &mut UnresolvedTokens,
@@ -1076,7 +1281,7 @@ fn record_unresolved_requirements(
         let tokens: Vec<String> = requirement
             .tokens
             .iter()
-            .filter(|token| !available_counts.contains_key(*token))
+            .filter(|token| !available_counts.contains_key(token.as_str()))
             .cloned()
             .collect();
         if tokens.is_empty() {
@@ -1332,6 +1537,9 @@ impl HtmlParser {
             fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
             current_fragment_id: String::new(),
+            loop_owner_indices: HashMap::new(),
+            named_for_loops: NamedForLoops::default(),
+            named_for_fragment_ids: HashSet::new(),
             next_boundary_declaration_id: 0,
             boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
@@ -2032,8 +2240,11 @@ impl HtmlParser {
         &self,
     ) -> (Vec<CssFallbackChain>, HashMap<String, TokenSite>) {
         let mut out = UnresolvedTokens::default();
-        let mut available_counts: HashMap<String, usize> = HashMap::new();
+        let mut available_counts: HashMap<&str, usize> = HashMap::new();
         let mut ops: Vec<TokenGraphOp<'_>> = Vec::with_capacity(self.token_roots.len());
+        let mut active_fragments = HashSet::new();
+        let mut visits =
+            (!self.named_for_fragment_ids.is_empty()).then(scoped_visits::ScopedVisits::default);
         for root in self.token_roots.iter().rev() {
             ops.push(TokenGraphOp::EnterFragment(root.as_str()));
         }
@@ -2041,12 +2252,24 @@ impl HtmlParser {
         while let Some(op) = ops.pop() {
             match op {
                 TokenGraphOp::EnterFragment(fragment_id) => {
+                    if let Some(visits) = &mut visits {
+                        if active_fragments.contains(fragment_id)
+                            || !visits.insert(fragment_id, available_counts.keys().copied())
+                        {
+                            continue;
+                        }
+                        active_fragments.insert(fragment_id);
+                        ops.push(TokenGraphOp::ExitFragment(fragment_id));
+                    }
                     self.enter_token_fragment(
                         fragment_id,
                         &mut available_counts,
                         &mut out,
                         &mut ops,
                     );
+                }
+                TokenGraphOp::ExitFragment(fragment_id) => {
+                    active_fragments.remove(fragment_id);
                 }
                 TokenGraphOp::EnterComponent(tag_name) => {
                     self.enter_token_component(tag_name, &mut available_counts, &mut out, &mut ops);
@@ -2066,7 +2289,7 @@ impl HtmlParser {
     fn enter_token_fragment<'a>(
         &'a self,
         fragment_id: &'a str,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -2110,7 +2333,7 @@ impl HtmlParser {
     fn enter_token_component<'a>(
         &'a self,
         tag_name: &'a str,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -2132,7 +2355,7 @@ impl HtmlParser {
     fn enter_token_route<'a>(
         &'a self,
         route: &'a WebUiFragmentRoute,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -2231,6 +2454,11 @@ impl HtmlParser {
         let previous_route_depth = std::mem::replace(&mut self.route_depth, 0);
         let previous_foster_depth = std::mem::replace(&mut self.foster_context_depth, 0);
         let previous_parent_scope = self.boundary_parent_scope.take();
+        let previous_named_for_loops = std::mem::take(&mut self.named_for_loops);
+        let owner_index = self.loop_owner_indices.len() + 1;
+        self.loop_owner_indices
+            .entry(fragment_key.clone())
+            .or_insert(owner_index);
 
         let mut result = self.parse_inner(fragment_id, html_content);
         if is_token_root && result.is_ok() {
@@ -2244,6 +2472,7 @@ impl HtmlParser {
         self.route_depth = previous_route_depth;
         self.foster_context_depth = previous_foster_depth;
         self.boundary_parent_scope = previous_parent_scope;
+        self.named_for_loops = previous_named_for_loops;
         self.in_progress_fragments.remove(&fragment_key);
         self.current_fragment_id = previous_fragment_id;
         result
@@ -2265,6 +2494,7 @@ impl HtmlParser {
 
         let mut entry_fragment: Vec<WebUIFragment> = Vec::new();
         self.parse_range(html_content, 0..html_content.len(), &mut entry_fragment, 0)?;
+        self.named_for_loops.validate(fragment_id, html_content)?;
 
         self.flush_raw_buffer(&mut entry_fragment);
 
@@ -2574,7 +2804,7 @@ impl HtmlParser {
                     item,
                     collection,
                     fragment_id,
-                    keep_empty,
+                    named_definition,
                     previous_for_depth,
                 } => {
                     self.for_depth = previous_for_depth;
@@ -2583,7 +2813,7 @@ impl HtmlParser {
                     *fragments = parent.fragments;
                     self.raw_buffer = parent.raw_buffer;
 
-                    if !for_fragment.is_empty() {
+                    if !for_fragment.is_empty() || named_definition {
                         self.fragment_records.insert(
                             fragment_id.clone(),
                             FragmentList {
@@ -2591,7 +2821,7 @@ impl HtmlParser {
                                 contains_boundary: false,
                             },
                         );
-                    } else if !keep_empty {
+                    } else {
                         continue;
                     }
 
@@ -2951,37 +3181,6 @@ impl HtmlParser {
         .into()
     }
 
-    /// Build the error for a malformed `<for each>` expression (cold path).
-    #[cold]
-    #[inline(never)]
-    fn for_each_invalid_error(&self, element: &Element<'_>, each: &str) -> ParserError {
-        self.authoring_error_at(
-            codes::INVALID_FOR_EACH,
-            "invalid <for> each expression",
-            element,
-        )
-        .element("for")
-        .snippet(format!("each=\"{each}\""))
-        .help("use the form each=\"item in collection\", e.g. each=\"todo in todos\"")
-        .into()
-    }
-
-    /// Build the error for a `<for each>` with disallowed identifier characters
-    /// (cold path).
-    #[cold]
-    #[inline(never)]
-    fn for_identifier_error(&self, element: &Element<'_>, each: &str) -> ParserError {
-        self.authoring_error_at(
-            codes::INVALID_FOR_IDENTIFIER,
-            "invalid identifier in <for> each expression",
-            element,
-        )
-        .element("for")
-        .snippet(format!("each=\"{each}\""))
-        .help("item and collection names may use only letters, digits, '_', '-', and '.'")
-        .into()
-    }
-
     fn enter_for_directive<'a>(
         &mut self,
         element: &Element<'a>,
@@ -2991,30 +3190,47 @@ impl HtmlParser {
     ) -> Result<()> {
         let each = element
             .attr("each")
-            .map(ToString::to_string)
             .ok_or_else(|| self.for_each_missing_error(element))?;
+        let (item, collection) = parse_for_each(&self.current_fragment_id, each)
+            .map_err(|error| locate_for_error(error, element))?;
 
-        let mut parts = each.split_whitespace();
-        let (Some(item), Some(in_kw), Some(collection), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(self.for_each_invalid_error(element, &each));
+        let named_id = validate_for_id(&self.current_fragment_id, &element.tag)
+            .map_err(|error| locate_for_error(error, element))?;
+        let fragment_id = if let Some(id) = named_id {
+            self.named_for_loops
+                .register(
+                    &self.current_fragment_id,
+                    id,
+                    item,
+                    (!element.self_closing(), element.start),
+                )
+                .map_err(|error| locate_for_error(error, element))?;
+            let scoped_id = format!(
+                "{id}-{}",
+                self.loop_owner_indices[&self.current_fragment_id]
+            );
+            if !self.named_for_fragment_ids.contains(&scoped_id)
+                && (self.id_counter.has_generated(&scoped_id)
+                    || self.fragment_records.contains_key(&scoped_id)
+                    || self.component_registry.contains(&scoped_id)
+                    || self.in_progress_fragments.contains(&scoped_id))
+            {
+                return Err(self.for_id_collision_error(element, &scoped_id));
+            }
+            self.named_for_fragment_ids.insert(scoped_id.clone());
+            scoped_id
+        } else {
+            self.next_fragment_id("for")
         };
-        if in_kw != "in" {
-            return Err(self.for_each_invalid_error(element, &each));
+        if named_id.is_some() && element.self_closing() {
+            self.add_for_fragment(
+                item.to_string(),
+                collection.to_string(),
+                fragment_id,
+                fragments,
+            );
+            return Ok(());
         }
-
-        let allowed = |s: &str| {
-            s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-        };
-        if !allowed(item) || !allowed(collection) {
-            return Err(self.for_identifier_error(element, &each));
-        }
-
-        let custom_fragment_id = element.attr("template").map(ToString::to_string);
-        let keep_empty = custom_fragment_id.is_some();
-        let fragment_id = custom_fragment_id.unwrap_or_else(|| self.id_counter.next_id("for"));
         let parent = ParseContext {
             fragments: std::mem::take(fragments),
             raw_buffer: std::mem::take(&mut self.raw_buffer),
@@ -3027,7 +3243,7 @@ impl HtmlParser {
             item: item.to_string(),
             collection: collection.to_string(),
             fragment_id,
-            keep_empty,
+            named_definition: named_id.is_some(),
             previous_for_depth,
         });
         ops.push(ParseOp::Parse {
@@ -3035,6 +3251,30 @@ impl HtmlParser {
             depth: depth + 1,
         });
         Ok(())
+    }
+
+    fn next_fragment_id(&mut self, prefix: &str) -> String {
+        loop {
+            let id = self.id_counter.next_id(prefix);
+            if !self.named_for_fragment_ids.contains(&id) {
+                return id;
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn for_id_collision_error(&self, element: &Element<'_>, id: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_FOR_ID,
+            "named <for> id conflicts with an existing fragment",
+            element,
+        )
+        .element("for")
+        .help(format!(
+            "choose a different id; the fragment name '{id}' is already in use"
+        ))
+        .into()
     }
 
     /// Build the error for an `<if>` missing its `condition` attribute (cold
@@ -3082,20 +3322,19 @@ impl HtmlParser {
     ) -> Result<()> {
         let condition_str = element
             .attr("condition")
-            .map(ToString::to_string)
             .ok_or_else(|| self.if_condition_missing_error(element))?;
 
         let condition = self
             .condition_parser
-            .parse(&condition_str)
-            .map_err(|_| self.if_condition_invalid_error(element, &condition_str))?;
+            .parse(strip_condition_braces(condition_str))
+            .map_err(|_| self.if_condition_invalid_error(element, condition_str))?;
 
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
             fragments: std::mem::take(fragments),
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
-        let fragment_id = self.id_counter.next_id("if");
+        let fragment_id = self.next_fragment_id("if");
 
         ops.push(ParseOp::CompleteIf {
             parent,
@@ -3834,7 +4073,7 @@ impl HtmlParser {
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     } else if Self::contains_handlebars(val) {
-                        let template_id = self.id_counter.next_id("attr");
+                        let template_id = self.next_fragment_id("attr");
                         let parsed = self.parse_attribute_template(val)?;
                         self.fragment_records.insert(
                             template_id.clone(),
@@ -3884,7 +4123,7 @@ impl HtmlParser {
                             self.add_fragment(frag, fragments);
                             binding_count += 1;
                         } else {
-                            let template_id = self.id_counter.next_id("attr");
+                            let template_id = self.next_fragment_id("attr");
                             let parsed = self.parse_attribute_template(val)?;
                             self.fragment_records.insert(
                                 template_id.clone(),
@@ -4008,7 +4247,7 @@ impl HtmlParser {
             self.add_fragment(WebUIFragment::attribute(name, signal_name), fragments);
         } else {
             // Mixed static + dynamic — create a template sub-stream
-            let template_id = self.id_counter.next_id("attr");
+            let template_id = self.next_fragment_id("attr");
             let parsed = self.handlebars_parser.parse(value)?;
 
             self.fragment_records.insert(
@@ -4150,7 +4389,7 @@ impl HtmlParser {
         if content.is_empty() {
             return Ok(String::new());
         }
-        let fragment_id = self.id_counter.next_id("route-content");
+        let fragment_id = self.next_fragment_id("route-content");
         self.fragment_records.insert(
             fragment_id.clone(),
             FragmentList {
@@ -7073,43 +7312,430 @@ mod tests {
         );
     }
 
-    // ── Feature 1: Custom template attribute on <for> ────────────────────
+    // ── Feature 1: Named <for> bodies ─────────────────────────────────
 
     #[test]
-    fn test_for_custom_template_attribute() {
-        // Port of: 'should process transient node for with template'
+    fn test_for_custom_id_attribute() {
         let (fragments, records) = parse_and_get_fragments(
-            r#"<for each="item in items" template="static"><span>Item</span></for>"#,
+            r#"<for each="item in items" id="static"><span>Item</span></for>"#,
         );
-        assert_fragments!(fragments, [for_loop("item", "items", "static"),]);
-        assert_stream!(records, "static", [raw("<span>Item</span>"),]);
+        assert_fragments!(fragments, [for_loop("item", "items", "static-1"),]);
+        assert_stream!(records, "static-1", [raw("<span>Item</span>"),]);
     }
 
     #[test]
     fn test_for_recursive_template() {
-        // Port of: 'should process recursive transient nodes'
         let mut parser = HtmlParser::new();
-        let html = r#"<for template="static" each="outerItem in outerItems"><div><span>{{outerItem.name}}</span><for template="static" each="innerItem in innerItems" /></div></for>"#;
+        let html = r#"<for id="static" each="item in items"><div><span>{{item.name}}</span><for id="static" each="item in item.children" /></div></for>"#;
         let result = parser.parse("index.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let records = parser.into_fragment_records();
 
         assert_fragments!(
             records["index.html"].fragments,
-            [for_loop("outerItem", "outerItems", "static"),]
+            [for_loop("item", "items", "static-1"),]
         );
 
         assert_stream!(
             records,
-            "static",
+            "static-1",
             [
                 raw("<div><span>"),
-                signal("outerItem.name"),
+                signal("item.name"),
                 raw("</span>"),
-                for_loop("innerItem", "innerItems", "static"),
+                for_loop("item", "item.children", "static-1"),
                 raw("</div>"),
             ]
         );
+    }
+
+    #[test]
+    fn each_accepts_only_direct_item_in_collection_syntax() {
+        assert_eq!(
+            parse_for_each("test-tree", "child in items").unwrap(),
+            ("child", "items")
+        );
+        assert_eq!(
+            parse_for_each("test-tree", " \tchild \n in \r child.children ").unwrap(),
+            ("child", "child.children")
+        );
+    }
+
+    #[test]
+    fn braced_each_is_rejected_by_server_and_client_compilation() {
+        use crate::plugin::webui::generate_compiled_template;
+
+        for source in [
+            r#"<for each="{{child in items}}"><span>{{child.name}}</span></for>"#,
+            r#"<for id="tree" each="{{child in items}}"><span>{{child.name}}</span></for>"#,
+            r#"<for id="tree" each="child in items"><for id="tree" each="{{child in child.children}}" /></for>"#,
+            r#"<for id="tree" each="{{ child in items }}"><span>{{child.name}}</span></for>"#,
+            r#"<for id="tree" each="{child in items}"><span>{{child.name}}</span></for>"#,
+        ] {
+            let server = HtmlParser::new().parse("test-tree", source).unwrap_err();
+            let client = generate_compiled_template("test-tree", source).unwrap_err();
+            let ParserError::Template(server) = server else {
+                panic!("expected a server authoring diagnostic");
+            };
+            let ParserError::Template(client) = client else {
+                panic!("expected a client authoring diagnostic");
+            };
+            assert_eq!(server.error_code(), client.error_code(), "{source}");
+            assert!(matches!(
+                server.error_code(),
+                Some(codes::INVALID_FOR_EACH | codes::INVALID_FOR_IDENTIFIER)
+            ));
+            assert!(server.position_line_column().is_some());
+            assert!(server.help_text().unwrap().contains("without braces"));
+            assert!(client.help_text().unwrap().contains("without braces"));
+        }
+    }
+
+    #[test]
+    fn named_for_recursion_reuses_one_scoped_record() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "file-a.html",
+                r#"<for id="tree-item" each="child in items"><li>{{child.name}}</li><for id="tree-item" each="child in child.children" /></for>"#,
+            )
+            .unwrap();
+        let records = parser.into_fragment_records();
+        assert_eq!(records.len(), 2);
+        assert_stream!(
+            records,
+            "file-a.html",
+            [for_loop("child", "items", "tree-item-1")]
+        );
+        assert_stream!(
+            records,
+            "tree-item-1",
+            [
+                raw("<li>"),
+                signal("child.name"),
+                raw("</li>"),
+                for_loop("child", "child.children", "tree-item-1"),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_for_forward_references_and_empty_definitions() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "file-a.html",
+                r#"<for id="loop" each="item in earlier" /><for id="loop" each="item in later"></for>"#,
+            )
+            .unwrap();
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "file-a.html",
+            [
+                for_loop("item", "earlier", "loop-1"),
+                for_loop("item", "later", "loop-1")
+            ]
+        );
+        assert!(records["loop-1"].fragments.is_empty());
+    }
+
+    #[test]
+    fn named_for_scope_survives_component_parsing_and_reparsing() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "other-tree",
+                r#"<for id="loop" each="item in other"><b>{{item.label}}</b></for>"#,
+                None,
+                false,
+            ))
+            .unwrap();
+        let source = r#"<for id="loop" each="item in items"><other-tree></other-tree><i>{{item.name}}</i><for id="loop" each="item in item.children" /></for>"#;
+        parser.parse("file-a.html", source).unwrap();
+        parser
+            .parse(
+                "file-b.html",
+                r#"<for id="loop" each="item in items">B</for>"#,
+            )
+            .unwrap();
+        parser.parse("file-a.html", source).unwrap();
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "file-a.html",
+            [for_loop("item", "items", "loop-1")]
+        );
+        assert_stream!(records, "other-tree", [for_loop("item", "other", "loop-2")]);
+        assert_stream!(
+            records,
+            "file-b.html",
+            [for_loop("item", "items", "loop-3")]
+        );
+        assert_stream!(records, "loop-3", [raw("B")]);
+        assert!(records["loop-1"].fragments.iter().any(|fragment| {
+            matches!(fragment.fragment.as_ref(), Some(Fragment::ForLoop(repeat)) if repeat.fragment_id == "loop-1")
+        }));
+    }
+
+    #[test]
+    fn named_for_reports_authoring_errors() {
+        for (source, code) in [
+            (r#"<for id each="x in xs" />"#, codes::INVALID_FOR_ID),
+            (r#"<for id="" each="x in xs" />"#, codes::INVALID_FOR_ID),
+            (
+                r#"<for id="{{name}}" each="x in xs" />"#,
+                codes::INVALID_FOR_ID,
+            ),
+            (
+                r#"<for id="tree" template="tree" each="x in xs" />"#,
+                codes::INVALID_FOR_ID,
+            ),
+            (
+                r#"<for id="tree" id="tree" each="x in xs" />"#,
+                codes::INVALID_FOR_ID,
+            ),
+            (r#"<for id="tree" each="x in xs" />"#, codes::UNKNOWN_FOR_ID),
+            (
+                r#"<for id="tree" each="x in xs">a</for><for id="tree" each="x in ys">b</for>"#,
+                codes::DUPLICATE_FOR_ID,
+            ),
+            (
+                r#"<for id="tree" each="x in xs"><for id="tree" each="y in x.children"><b>{{y.name}}</b></for></for>"#,
+                codes::DUPLICATE_FOR_ID,
+            ),
+            (
+                r#"<for id="tree" each="x in xs"><for id="tree" each="y in x.children" /></for>"#,
+                codes::INCOMPATIBLE_FOR_ITEM,
+            ),
+        ] {
+            let error = HtmlParser::new().parse("file-a.html", source).unwrap_err();
+            let ParserError::Template(diagnostic) = error else {
+                panic!("expected structured diagnostic for {source}");
+            };
+            assert_eq!(diagnostic.error_code(), Some(code), "{source}");
+            assert!(!diagnostic.to_string().contains('\u{1b}'));
+            assert!(diagnostic.to_string().contains("help:"));
+            assert!(diagnostic.to_string().contains("file-a.html"));
+            assert!(diagnostic.position_line_column().is_some(), "{source}");
+        }
+    }
+
+    #[test]
+    fn named_for_cannot_reference_a_definition_from_another_file() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse("a.html", r#"<for id="tree" each="x in xs">a</for>"#)
+            .unwrap();
+        let error = parser
+            .parse("b.html", r#"<for id="tree" each="x in xs" />"#)
+            .unwrap_err();
+        assert!(
+            matches!(error, ParserError::Template(diag) if diag.error_code() == Some(codes::UNKNOWN_FOR_ID))
+        );
+    }
+
+    #[test]
+    fn named_for_does_not_overwrite_generated_fragments() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "a.html",
+                r#"<for id="for" each="x in xs">named</for><for each="x in xs">ordinary</for>"#,
+            )
+            .unwrap();
+        let records = parser.into_fragment_records();
+        assert_stream!(records, "for-1", [raw("named")]);
+        assert_stream!(records, "for-2", [raw("ordinary")]);
+        let error = HtmlParser::new()
+            .parse(
+                "a.html",
+                r#"<for each="x in xs">ordinary</for><for id="for" each="x in xs">named</for>"#,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, ParserError::Template(diag) if diag.error_code() == Some(codes::INVALID_FOR_ID))
+        );
+    }
+
+    #[test]
+    fn named_for_css_analysis_terminates_without_losing_sibling_scopes() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        for (name, source, css) in [
+            ("token-leaf", "<b>leaf</b>", "b { color: var(--accent); }"),
+            (
+                "defined-tree",
+                r#"<for id="tree" each="x in xs"><token-leaf></token-leaf><for id="tree" each="x in x.children" /></for>"#,
+                ":root { --accent: red; }",
+            ),
+            (
+                "undefined-tree",
+                r#"<for id="tree" each="x in xs"><token-leaf></token-leaf><for id="tree" each="x in x.children" /></for>"#,
+                "",
+            ),
+        ] {
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(name, source, Some(css), false))
+                .unwrap();
+        }
+        parser
+            .parse(
+                "index.html",
+                "<defined-tree></defined-tree><undefined-tree></undefined-tree>",
+            )
+            .unwrap();
+        let analysis = parser.token_analysis();
+        assert_eq!(analysis.protocol_tokens, ["accent"]);
+        assert_eq!(analysis.fallback_chains.len(), 1);
+    }
+
+    #[test]
+    fn named_for_css_analysis_deduplicates_equivalent_diamond_paths() {
+        use std::fmt::Write;
+
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "token-leaf",
+                "<b>leaf</b>",
+                Some("b { color: var(--accent); }"),
+                false,
+            ))
+            .unwrap();
+        let mut source = String::with_capacity(12 * 150);
+        for index in 0..12 {
+            write!(source, r#"<for id="b{index}" each="item in items">"#).unwrap();
+            if index < 11 {
+                let next = index + 1;
+                write!(source, r#"<for id="b{next}" each="item in item.children"/><for id="b{next}" each="item in item.children"/>"#).unwrap();
+            } else {
+                source.push_str("<token-leaf></token-leaf>");
+            }
+            source.push_str("</for>");
+        }
+        parser.parse("index.html", &source).unwrap();
+        let analysis = parser.token_analysis();
+        assert_eq!(analysis.protocol_tokens, ["accent"]);
+        assert_eq!(analysis.fallback_chains.len(), 1);
+    }
+
+    #[test]
+    fn named_for_css_analysis_preserves_distinct_same_size_definition_sets() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        for (name, source, css) in [
+            (
+                "token-leaf",
+                "<b>leaf</b>",
+                "b { color: var(--accent); background: var(--shade); }",
+            ),
+            (
+                "shared-tree",
+                r#"<for id="tree" each="x in xs"><token-leaf></token-leaf><for id="tree" each="x in x.children"/></for>"#,
+                "",
+            ),
+            (
+                "accent-tree",
+                "<shared-tree></shared-tree>",
+                ":root { --accent: red; }",
+            ),
+            (
+                "shade-tree",
+                "<shared-tree></shared-tree>",
+                ":root { --shade: blue; }",
+            ),
+        ] {
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(name, source, Some(css), false))
+                .unwrap();
+        }
+        parser
+            .parse(
+                "index.html",
+                "<accent-tree></accent-tree><shade-tree></shade-tree>",
+            )
+            .unwrap();
+        assert_eq!(parser.token_analysis().protocol_tokens, ["accent", "shade"]);
+    }
+
+    #[test]
+    fn legacy_for_template_attribute_is_rejected() {
+        for source in [
+            r#"<for template="legacy" each="x in xs"><span>{{x.name}}</span></for>"#,
+            r#"<for template="legacy" each="x in xs" />"#,
+            r#"<for template each="x in xs"></for>"#,
+            r#"<for template="" each="x in xs"></for>"#,
+        ] {
+            let error = HtmlParser::new().parse("index.html", source).unwrap_err();
+            let ParserError::Template(diagnostic) = error else {
+                panic!("expected an authoring diagnostic for {source}");
+            };
+            assert_eq!(diagnostic.error_code(), Some(codes::INVALID_FOR_ID));
+            assert!(diagnostic
+                .help_text()
+                .unwrap()
+                .contains("replace template with id"));
+            assert!(diagnostic.position_line_column().is_some());
+        }
+    }
+
+    #[test]
+    fn named_for_recursion_still_rejects_reachable_boundaries() {
+        let error = HtmlParser::new().parse("index.html", r#"<for id="tree" each="x in xs"><for id="tree" each="x in x.children" /><if condition="{{x.name}}"><boundary name="invalid"><b>body</b></boundary></if></for>"#).unwrap_err();
+        assert!(
+            matches!(error, ParserError::Template(diag) if diag.error_code() == Some(codes::BOUNDARY_IN_REPEAT))
+        );
+    }
+
+    #[test]
+    fn named_for_fast_components_reject_references_but_keep_plain_loops() {
+        use crate::plugin::{
+            fast_v2::FastV2ParserPlugin, fast_v3::FastV3ParserPlugin, ParserPlugin,
+            ParserPluginArtifacts,
+        };
+
+        for fast_v2 in [true, false] {
+            for references in [true, false] {
+                let plugin: Box<dyn ParserPlugin> = if fast_v2 {
+                    Box::new(FastV2ParserPlugin::new())
+                } else {
+                    Box::new(FastV3ParserPlugin::new())
+                };
+                let mut parser = HtmlParser::with_plugin(plugin);
+                let body = if references {
+                    r#"<for id="tree" each="item in items"><for id="tree" each="item in item.children" /></for>"#
+                } else {
+                    r#"<for id="tree" each="item in items"><if condition="{{item.name}}"><b>{{item.name}}</b></if></for>"#
+                };
+                parser
+                    .component_registry_mut()
+                    .register_component(ComponentRegistration::new("my-tree", body, None, true))
+                    .unwrap();
+                let result = parser.parse("index.html", "<my-tree></my-tree>");
+                if references {
+                    let error = result.unwrap_err();
+                    assert!(
+                        matches!(error, ParserError::Template(diag) if diag.error_code() == Some("fast-named-for-unsupported") && diag.position_line_column().is_some() && diag.help_text().is_some())
+                    );
+                } else {
+                    result.unwrap();
+                    let ParserPluginArtifacts::ComponentTemplates(templates) =
+                        parser.take_plugin_artifacts().unwrap()
+                    else {
+                        panic!("FAST produces component templates");
+                    };
+                    assert!(templates[0]
+                        .template
+                        .contains(r#"<f-repeat value="{{item in items}}">"#));
+                    assert!(templates[0]
+                        .template
+                        .contains(r#"<f-when value="{{item.name}}">"#));
+                }
+            }
+        }
     }
 
     // ── Feature 2: <if> / <for> with multiple children ──────────────────

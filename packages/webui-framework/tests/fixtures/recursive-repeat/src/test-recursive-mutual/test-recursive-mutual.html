@@ -1,0 +1,10 @@
+<section>
+  <for id="left" each="node in mutualItems">
+    <span class="mutual-name" data-side="left">{{node.name}}</span>
+    <for id="right" each="node in node.children" />
+  </for>
+  <for id="right" each="node in none">
+    <span class="mutual-name" data-side="right">{{node.name}}</span>
+    <for id="left" each="node in node.children" />
+  </for>
+</section>

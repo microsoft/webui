@@ -1,0 +1,38 @@
+{
+  "items": [
+    {
+      "id": "root",
+      "name": "Root",
+      "children": [
+        { "id": "branch", "name": "Branch", "children": [
+          { "id": "leaf", "name": "Leaf" }
+        ] },
+        { "id": "empty", "name": "Empty", "children": [] }
+      ]
+    },
+    { "id": "sibling", "name": "Sibling" }
+  ],
+  "prefix": "Node: ",
+  "child": { "name": "Component scope" },
+  "selected": "none",
+  "clicks": 0,
+  "forwardItems": [
+    { "id": "forward-root", "name": "Forward root", "children": [
+      { "id": "forward-leaf", "name": "Forward leaf" }
+    ] }
+  ],
+  "forwardSelected": "none",
+  "independentItems": [
+    { "id": "independent-root", "name": "Independent root", "children": [
+      { "id": "independent-leaf", "name": "Independent leaf", "children": [] }
+    ] }
+  ],
+  "mutualItems": [
+    { "id": "left-root", "name": "Left root", "children": [
+      { "id": "right-child", "name": "Right child", "children": [
+        { "id": "left-leaf", "name": "Left leaf" }
+      ] }
+    ] }
+  ],
+  "none": []
+}

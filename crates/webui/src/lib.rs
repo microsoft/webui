@@ -1607,6 +1607,49 @@ mod tests {
     }
 
     #[test]
+    fn named_for_builds_recursive_component_assets_and_styles() {
+        for (css, expected_tokens) in [
+            (":root { --accent: red; }", &[][..]),
+            ("tree-view { --accent: red; }", &["accent"][..]),
+        ] {
+            let app = create_app_dir(&[
+                ("index.html", "<tree-view></tree-view>"),
+                (
+                    "tree-view.html",
+                    r#"<for id="tree-item" each="child in items"><span>{{child.name}}</span><token-leaf></token-leaf><for id="tree-item" each="child in child.children" /></for>"#,
+                ),
+                ("tree-view.css", css),
+                ("token-leaf.html", "<b>leaf</b>"),
+                ("token-leaf.css", "b { color: var(--accent); }"),
+            ]);
+            let result = build(BuildOptions {
+                plugin: Some(Plugin::WebUI),
+                css_bundle: true,
+                component_asset_roots: vec!["tree-view".to_string()],
+                ..light_options(app.path())
+            })
+            .unwrap();
+            assert_eq!(result.protocol.tokens, expected_tokens, "{css}");
+            assert!(!result.component_asset_files.is_empty());
+            assert_eq!(
+                result.protocol.style_closures["tree-view"].component_tags,
+                ["tree-view", "token-leaf"]
+            );
+            let meta: serde_json::Value =
+                serde_json::from_str(&result.protocol.components["tree-view"].template_json)
+                    .unwrap();
+            let blocks = meta["b"].as_array().unwrap();
+            assert_eq!(
+                blocks.len(),
+                1,
+                "recursive depth does not expand compiled metadata"
+            );
+            assert_eq!(meta["r"][0][2], blocks[0]["r"][0][2]);
+            assert!(result.protocol_bytes.len() < 16_384);
+        }
+    }
+
+    #[test]
     fn test_build_with_component_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
