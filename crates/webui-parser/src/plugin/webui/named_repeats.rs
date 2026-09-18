@@ -2,7 +2,27 @@
 // Licensed under the MIT license.
 
 use super::{CompiledRepeat, ParsedForBlock, RootScope, TemplateSectionMeta};
+use crate::scoped_visits::ScopedVisits;
 use crate::{NamedForLoops, Result};
+
+pub(super) fn visit_scope<'a>(
+    visits: &mut ScopedVisits<'a, *const TemplateSectionMeta>,
+    block: &TemplateSectionMeta,
+    scopes: &[RootScope<'a>],
+    scope: Option<usize>,
+) -> bool {
+    let mut current = scope;
+    visits.insert(
+        // Metadata stays immutably borrowed throughout analysis, so its address
+        // identifies the block without enlarging ordinary traversal frames.
+        std::ptr::from_ref(block),
+        std::iter::from_fn(|| {
+            let frame = &scopes[current?];
+            current = frame.parent;
+            Some(frame.name)
+        }),
+    )
+}
 
 #[derive(Default)]
 pub(super) struct CompileBlocks {
@@ -118,7 +138,7 @@ pub(super) fn is_ancestor_block(
         };
         if frame.block_index == block_index {
             // A cycle adds only item scopes, so it cannot reveal a new free root.
-            // Do not deduplicate across other callsites: their scopes may differ.
+            // Other callsites are deduplicated separately by their scope sets.
             return true;
         }
         current = frame.parent;
@@ -132,10 +152,95 @@ mod tests {
 
     use super::super::{
         collect_template_build_metadata, compile_to_metadata, emit_js_condition_function,
-        generate_compiled_template,
+        generate_compiled_template, RootScope,
     };
+    use super::{visit_scope, ScopedVisits};
     use crate::diagnostic::codes;
     use crate::ParserError;
+
+    #[test]
+    fn equivalent_scope_sets_ignore_order_shadowing_and_callsite_identity() {
+        let first = super::TemplateSectionMeta::default();
+        let second = super::TemplateSectionMeta::default();
+        let scopes = [
+            RootScope {
+                name: "a",
+                block_index: 0,
+                parent: None,
+            },
+            RootScope {
+                name: "b",
+                block_index: 1,
+                parent: Some(0),
+            },
+            RootScope {
+                name: "b",
+                block_index: 2,
+                parent: None,
+            },
+            RootScope {
+                name: "a",
+                block_index: 3,
+                parent: Some(2),
+            },
+            RootScope {
+                name: "a",
+                block_index: 4,
+                parent: Some(3),
+            },
+        ];
+        let mut visits = ScopedVisits::default();
+        assert!(visit_scope(&mut visits, &first, &scopes, Some(1)));
+        assert!(!visit_scope(&mut visits, &first, &scopes, Some(3)));
+        assert!(!visit_scope(&mut visits, &first, &scopes, Some(4)));
+        assert!(visit_scope(&mut visits, &first, &scopes, Some(0)));
+        assert!(visit_scope(&mut visits, &second, &scopes, Some(1)));
+        assert!(visit_scope(&mut visits, &first, &scopes, None));
+    }
+
+    #[test]
+    fn shared_diamond_paths_retain_only_linear_scope_frames() {
+        use std::fmt::Write;
+
+        const COUNT: usize = 12;
+        let mut source = String::with_capacity(COUNT * 150);
+        for index in 0..COUNT {
+            write!(source, r#"<for id="b{index}" each="item in items">"#).unwrap();
+            if index + 1 < COUNT {
+                let next = index + 1;
+                write!(source, r#"<for id="b{next}" each="item in item.children"/><for id="b{next}" each="item in item.children"/>"#).unwrap();
+            } else {
+                source.push_str("<b>{{item.name}} {{title}}</b>");
+            }
+            source.push_str("</for>");
+        }
+        let meta = compile_to_metadata("test-tree", source.as_str().into(), Vec::new()).unwrap();
+        assert_eq!(meta.blocks.len(), COUNT);
+        let metadata = collect_template_build_metadata(&meta);
+        assert_eq!(metadata.roots, ["items", "title"]);
+        assert_eq!(metadata.scope_count, COUNT + 2 * (COUNT - 1));
+    }
+
+    #[test]
+    fn equivalent_visits_preserve_first_processed_root_order() {
+        let source = r#"<for id="a" each="item in first"><if condition="item.visible"><b>{{alpha}}</b></if></for><for each="item in middle"><b>{{middleRoot}}</b></for><for id="a" each="item in last"/>"#;
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
+        assert_eq!(
+            collect_template_build_metadata(&meta).roots,
+            ["first", "middle", "last", "alpha", "middleRoot"]
+        );
+    }
+
+    #[test]
+    fn shared_body_keeps_roots_visible_in_different_scope_sets() {
+        // Both scopes have the same size and bind the same immediate item.
+        // Neither scope is a subset of the other.
+        let source = r#"<for each="left in lefts"><for id="shared" each="item in left.items"><if condition="item.visible"><p title="{{left.label}}">{{right.label}} {{item.name}}</p></if></for></for><for each="right in rights"><for id="shared" each="item in right.items"/></for>"#;
+        let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();
+        let mut roots = collect_template_build_metadata(&meta).roots;
+        roots.sort();
+        assert_eq!(roots, ["left", "lefts", "right", "rights"]);
+    }
 
     #[test]
     fn self_reference_reuses_one_body_and_normalizes_condition_braces() {

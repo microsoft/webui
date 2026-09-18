@@ -685,6 +685,8 @@ fn union_state_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
 struct TemplateBuildMetadata {
     roots: Vec<String>,
     has_events: bool,
+    #[cfg(test)]
+    scope_count: usize,
 }
 
 struct TemplatePayloadOptions {
@@ -1082,17 +1084,34 @@ fn emit_json_attr_binding(
     out.push(']');
 }
 
+#[inline]
 fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
+    if meta.has_named_repeats {
+        collect_template_roots::<true>(meta)
+    } else {
+        collect_template_roots::<false>(meta)
+    }
+}
+
+#[inline(never)]
+fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBuildMetadata {
     let mut roots = Vec::new();
     let mut scopes = Vec::<RootScope<'_>>::new();
     let mut stack = Vec::with_capacity(1 + meta.blocks.len());
     let mut has_events = !meta.root_events.is_empty();
+    let mut visits = SHARED.then(crate::scoped_visits::ScopedVisits::default);
     stack.push(RootVisit {
         block: &meta.root,
         scope: None,
     });
 
     while let Some(visit) = stack.pop() {
+        // Deduplicate when popped, not when queued, to retain discovery order.
+        if let Some(visits) = &mut visits {
+            if !named_repeats::visit_scope(visits, visit.block, &scopes, visit.scope) {
+                continue;
+            }
+        }
         let block = visit.block;
         if !block.events.is_empty() {
             has_events = true;
@@ -1129,8 +1148,7 @@ fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata
 
         for repeat in &block.repeats {
             add_root(&mut roots, &repeat.collection, &scopes, visit.scope);
-            if meta.has_named_repeats
-                && named_repeats::is_ancestor_block(repeat.block_index, &scopes, visit.scope)
+            if SHARED && named_repeats::is_ancestor_block(repeat.block_index, &scopes, visit.scope)
             {
                 continue;
             }
@@ -1149,7 +1167,12 @@ fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata
         }
     }
 
-    TemplateBuildMetadata { roots, has_events }
+    TemplateBuildMetadata {
+        roots,
+        has_events,
+        #[cfg(test)]
+        scope_count: scopes.len(),
+    }
 }
 
 fn path_root(path: &str) -> &str {

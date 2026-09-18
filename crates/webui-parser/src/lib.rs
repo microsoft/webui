@@ -19,6 +19,7 @@ mod handlebars_parser;
 mod html_parser;
 pub mod plugin;
 mod route_parser;
+mod scoped_visits;
 mod suggest;
 
 pub use asset_filename::{
@@ -1238,18 +1239,21 @@ struct ComponentTemplateInput<'a> {
     artifact_needed: bool,
 }
 
-fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+fn add_token_definitions<'a>(
+    definitions: &'a [String],
+    available_counts: &mut HashMap<&'a str, usize>,
+) {
     for definition in definitions {
-        let count = available_counts.entry(definition.clone()).or_insert(0);
+        let count = available_counts.entry(definition.as_str()).or_insert(0);
         *count += 1;
     }
 }
 
-fn remove_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+fn remove_token_definitions(definitions: &[String], available_counts: &mut HashMap<&str, usize>) {
     for definition in definitions {
-        if let Some(count) = available_counts.get_mut(definition) {
+        if let Some(count) = available_counts.get_mut(definition.as_str()) {
             if *count == 1 {
-                available_counts.remove(definition);
+                available_counts.remove(definition.as_str());
             } else {
                 *count -= 1;
             }
@@ -1268,7 +1272,7 @@ struct UnresolvedTokens {
 
 fn record_unresolved_requirements(
     source: &[CssFallbackChain],
-    available_counts: &HashMap<String, usize>,
+    available_counts: &HashMap<&str, usize>,
     owner: &str,
     css_source: Option<&str>,
     out: &mut UnresolvedTokens,
@@ -1277,7 +1281,7 @@ fn record_unresolved_requirements(
         let tokens: Vec<String> = requirement
             .tokens
             .iter()
-            .filter(|token| !available_counts.contains_key(*token))
+            .filter(|token| !available_counts.contains_key(token.as_str()))
             .cloned()
             .collect();
         if tokens.is_empty() {
@@ -2235,9 +2239,11 @@ impl HtmlParser {
         &self,
     ) -> (Vec<CssFallbackChain>, HashMap<String, TokenSite>) {
         let mut out = UnresolvedTokens::default();
-        let mut available_counts: HashMap<String, usize> = HashMap::new();
+        let mut available_counts: HashMap<&str, usize> = HashMap::new();
         let mut ops: Vec<TokenGraphOp<'_>> = Vec::with_capacity(self.token_roots.len());
         let mut active_fragments = HashSet::new();
+        let mut visits =
+            (!self.named_for_fragment_ids.is_empty()).then(scoped_visits::ScopedVisits::default);
         for root in self.token_roots.iter().rev() {
             ops.push(TokenGraphOp::EnterFragment(root.as_str()));
         }
@@ -2245,10 +2251,13 @@ impl HtmlParser {
         while let Some(op) = ops.pop() {
             match op {
                 TokenGraphOp::EnterFragment(fragment_id) => {
-                    if !self.named_for_fragment_ids.is_empty() {
-                        if !active_fragments.insert(fragment_id) {
+                    if let Some(visits) = &mut visits {
+                        if active_fragments.contains(fragment_id)
+                            || !visits.insert(fragment_id, available_counts.keys().copied())
+                        {
                             continue;
                         }
+                        active_fragments.insert(fragment_id);
                         ops.push(TokenGraphOp::ExitFragment(fragment_id));
                     }
                     self.enter_token_fragment(
@@ -2279,7 +2288,7 @@ impl HtmlParser {
     fn enter_token_fragment<'a>(
         &'a self,
         fragment_id: &'a str,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -2323,7 +2332,7 @@ impl HtmlParser {
     fn enter_token_component<'a>(
         &'a self,
         tag_name: &'a str,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -2345,7 +2354,7 @@ impl HtmlParser {
     fn enter_token_route<'a>(
         &'a self,
         route: &'a WebUiFragmentRoute,
-        available_counts: &mut HashMap<String, usize>,
+        available_counts: &mut HashMap<&'a str, usize>,
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
@@ -7580,6 +7589,76 @@ mod tests {
             )
             .unwrap();
         assert_eq!(parser.token_analysis().protocol_tokens, ["accent"]);
+    }
+
+    #[test]
+    fn named_for_css_analysis_deduplicates_equivalent_diamond_paths() {
+        use std::fmt::Write;
+
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "token-leaf",
+                "<b>leaf</b>",
+                Some("b { color: var(--accent); }"),
+                false,
+            ))
+            .unwrap();
+        let mut source = String::with_capacity(12 * 150);
+        for index in 0..12 {
+            write!(source, r#"<for id="b{index}" each="item in items">"#).unwrap();
+            if index < 11 {
+                let next = index + 1;
+                write!(source, r#"<for id="b{next}" each="item in item.children"/><for id="b{next}" each="item in item.children"/>"#).unwrap();
+            } else {
+                source.push_str("<token-leaf></token-leaf>");
+            }
+            source.push_str("</for>");
+        }
+        parser.parse("index.html", &source).unwrap();
+        let analysis = parser.token_analysis();
+        assert_eq!(analysis.protocol_tokens, ["accent"]);
+        assert_eq!(analysis.fallback_chains.len(), 1);
+    }
+
+    #[test]
+    fn named_for_css_analysis_preserves_distinct_same_size_definition_sets() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        for (name, source, css) in [
+            (
+                "token-leaf",
+                "<b>leaf</b>",
+                "b { color: var(--accent); background: var(--shade); }",
+            ),
+            (
+                "shared-tree",
+                r#"<for id="tree" each="x in xs"><token-leaf></token-leaf><for id="tree" each="x in x.children"/></for>"#,
+                "",
+            ),
+            (
+                "accent-tree",
+                "<shared-tree></shared-tree>",
+                "accent-tree { --accent: red; }",
+            ),
+            (
+                "shade-tree",
+                "<shared-tree></shared-tree>",
+                "shade-tree { --shade: blue; }",
+            ),
+        ] {
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(name, source, Some(css), false))
+                .unwrap();
+        }
+        parser
+            .parse(
+                "index.html",
+                "<accent-tree></accent-tree><shade-tree></shade-tree>",
+            )
+            .unwrap();
+        assert_eq!(parser.token_analysis().protocol_tokens, ["accent", "shade"]);
     }
 
     #[test]

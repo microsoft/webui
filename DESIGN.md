@@ -2555,8 +2555,11 @@ contribute to the sorted protocol token list.
 When shared loop records exist, the CSS token walk tracks only active fragment
 ancestors and skips back-edges, rather than globally marking records visited:
 sibling visits must still be analyzed under their different inherited CSS
-definitions. Ordinary templates without shared loops retain the original
-traversal without allocating cycle-tracking state.
+definitions. It also memoizes each fragment with its canonical set of inherited
+definition names, avoiding redundant visits through equivalent acyclic paths.
+Definition counts still control lexical restoration; only membership enters
+the memoization key. Ordinary templates without shared loops retain the original
+traversal without allocating cycle-tracking or memoization state.
 
 #### Comment Handling
 
@@ -5289,7 +5292,12 @@ Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` bl
 Named repeats can form cycles through `b[]` indices. The table remains flat,
 serializable, and proportional to authored bodies, not runtime tree depth.
 State-root collection must terminate on those cycles while retaining roots
-visible in every lexical callsite scope. Recursive references reuse the
+visible in every lexical callsite scope. Shared-block analysis memoizes each
+block with the sorted, deduplicated set of bound item names, not frame identity,
+ordering, or shadow counts. Equivalent paths are processed once, while distinct
+scope sets remain separate. Visits are memoized in traversal order so root
+discovery order is unchanged; ordinary templates allocate no memoization state.
+Recursive references reuse the
 definition's optional repeat key. No new wire fields, runtime identifier
 resolution, or per-item metadata copies are required.
 
