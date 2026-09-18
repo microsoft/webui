@@ -174,7 +174,23 @@ array or string does work: <code>&lt;if condition="items.length &gt; 3"&gt;</cod
 &lt;<span class="hl-tag">for</span> <span class="hl-attr">each</span>=<span class="hl-string">"</span><span class="hl-string">item in reorderableItems</span><span class="hl-string">"</span>&gt;
   &lt;<span class="hl-tag">todo-row</span> <span class="hl-attr">key</span>=<span class="hl-string">"</span><span class="hl-string">&#123;&#123;item.id&#125;&#125;</span><span class="hl-string">"</span> <span class="hl-attr">title</span>=<span class="hl-string">"</span><span class="hl-string">&#123;&#123;item.title&#125;&#125;</span><span class="hl-string">"</span>&gt;&lt;/<span class="hl-tag">todo-row</span>&gt;
 &lt;/<span class="hl-tag">for</span>&gt;
-</code></pre></code-block><ul><li><p>The collection must be a JSON array.</p></li><li><p>Nested loops are supported; outer loop variables remain accessible.</p></li><li><p>Repeats reconcile by array position by default; item attributes never act as
+</code></pre></code-block><ul><li><p>The collection must be a JSON array.</p></li><li><p>Nested loops are supported; outer loop variables remain accessible.</p></li><li><p>Recursive trees use a file-local <code>id</code> on a defining loop and self-closing
+references with the same item variable. Write <code>each="item in items"</code> without
+binding braces:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">for</span> <span class="hl-attr">id</span>=<span class="hl-string">"</span><span class="hl-string">tree-item</span><span class="hl-string">"</span> <span class="hl-attr">each</span>=<span class="hl-string">"</span><span class="hl-string">item in items</span><span class="hl-string">"</span>&gt;
+  &lt;<span class="hl-tag">div</span>&gt;&#123;&#123;item.name&#125;&#125;&lt;/<span class="hl-tag">div</span>&gt;
+  &lt;<span class="hl-tag">for</span> <span class="hl-attr">id</span>=<span class="hl-string">"</span><span class="hl-string">tree-item</span><span class="hl-string">"</span> <span class="hl-attr">each</span>=<span class="hl-string">"</span><span class="hl-string">item in item.children</span><span class="hl-string">"</span> /&gt;
+&lt;/<span class="hl-tag">for</span>&gt;
+</code></pre></code-block><p>Define each ID once per file. The definition renders normally, references
+can precede it, and other files may reuse the ID independently. Missing or
+empty child arrays end the recursion; pass finite trees, not cyclic data.
+The recursive <code>item in item.children</code> resolves the parent's children first,
+then shadows <code>item</code> for the shared body and restores it on return. A second
+body for the same ID is a <code>duplicate-for-id</code> build error.
+Use <code>id</code>, not <code>template</code>; the removed <code>template</code> attribute is a build error.
+Native WebUI supports recursive client updates; FAST components reject named
+references with an actionable build error.
+<a href="/webui/guide/concepts/directives/for.md#recursive-loops">Recursive loops</a> covers
+validation and keys.</p></li><li><p>Repeats reconcile by array position by default; item attributes never act as
 keys, and <code>data-key</code> is an ordinary application attribute.</p></li><li><p>Add compiler-only <code>key="&#123;&#123;item.id&#125;&#125;"</code> to the first concrete child to preserve
 identity across reorder. Leading <code>&lt;if&gt;</code> wrappers are transparent; <code>key</code>
 directly on <code>&lt;if&gt;</code>, <code>&lt;for&gt;</code>, or <code>&lt;outlet&gt;</code> is invalid.</p></li><li><p><code>key="&#123;&#123;item&#125;&#125;"</code> supports arrays of unique string or finite-number primitives.

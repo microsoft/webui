@@ -97,7 +97,44 @@
   &lt;/<span class="hl-tag">ul</span>&gt;
 &lt;/<span class="hl-tag">for</span>&gt;
 </code></pre></code-block><h2 id="condition-format">Condition Format <a class="header-anchor" href="/webui/guide/concepts/directives/for/#condition-format" aria-label="Link to Condition Format">#</a></h2><p>The <code>each</code> attribute must follow this format:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>itemName in collectionName
-</code></pre></code-block><p>Where:</p><ul><li><code>itemName</code> is the name for the current item variable</li><li><code>collectionName</code> is the path to the array in the state object</li></ul><h2 id="notes-and-limitations">Notes and Limitations <a class="header-anchor" href="/webui/guide/concepts/directives/for/#notes-and-limitations" aria-label="Link to Notes and Limitations">#</a></h2><ul><li>The collection must be an array</li><li>The item variable is only available within the loop body</li><li>You can access nested properties of the item using dot notation</li><li>If the collection doesn't exist or isn't an array, an error will be raised during rendering</li><li><strong>Empty <code>&lt;for&gt;</code> bodies</strong> (with no children) are silently skipped - no output is generated</li></ul><h2 id="repeat-reconciliation">Repeat Reconciliation <a class="header-anchor" href="/webui/guide/concepts/directives/for/#repeat-reconciliation" aria-label="Link to Repeat Reconciliation">#</a></h2><p>When an <code>@observable</code> array changes on the client, the <code>&lt;for&gt;</code> block reconciles
+</code></pre></code-block><p>Where:</p><ul><li><code>itemName</code> is the name for the current item variable</li><li><code>collectionName</code> is the path to the array in the state object</li></ul><p>Write the <code>each</code> expression directly, without binding braces.</p><h2 id="recursive-loops">Recursive Loops <a class="header-anchor" href="/webui/guide/concepts/directives/for/#recursive-loops" aria-label="Link to Recursive Loops">#</a></h2><p>Give a loop an <code>id</code> to reuse its body. A self-closing <code>&lt;for&gt;</code> with the same <code>id</code>
+renders that body for a different collection, including an item's children:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">ul</span>&gt;
+  &lt;<span class="hl-tag">for</span> <span class="hl-attr">id</span>=<span class="hl-string">"</span><span class="hl-string">tree-item</span><span class="hl-string">"</span> <span class="hl-attr">each</span>=<span class="hl-string">"</span><span class="hl-string">child in items</span><span class="hl-string">"</span>&gt;
+    &lt;<span class="hl-tag">li</span>&gt;
+      &lt;<span class="hl-tag">span</span>&gt;&#123;&#123;child.name&#125;&#125;&lt;/<span class="hl-tag">span</span>&gt;
+      &lt;<span class="hl-tag">if</span> <span class="hl-attr">condition</span>=<span class="hl-string">"</span><span class="hl-string">child.children.length</span><span class="hl-string">"</span>&gt;
+        &lt;<span class="hl-tag">ul</span>&gt;
+          &lt;<span class="hl-tag">for</span> <span class="hl-attr">id</span>=<span class="hl-string">"</span><span class="hl-string">tree-item</span><span class="hl-string">"</span> <span class="hl-attr">each</span>=<span class="hl-string">"</span><span class="hl-string">child in child.children</span><span class="hl-string">"</span> /&gt;
+        &lt;/<span class="hl-tag">ul</span>&gt;
+      &lt;/<span class="hl-tag">if</span>&gt;
+    &lt;/<span class="hl-tag">li</span>&gt;
+  &lt;/<span class="hl-tag">for</span>&gt;
+&lt;/<span class="hl-tag">ul</span>&gt;
+</code></pre></code-block><p>Each level binds <code>child</code> to its own item. Returning from the nested loop restores
+the parent's <code>child</code>. Missing or empty child arrays stop the nested repeat.
+Use finite tree data and iterate over a smaller child collection at each level;
+repeating the original collection indefinitely does not terminate.</p><p>An <code>id</code> is local to its entry or component file, so different files can both
+define <code>tree-item</code>. Define its body once with a paired <code>&lt;for&gt;...&lt;/for&gt;</code> and use
+self-closing references elsewhere in that file. References may appear before
+the definition. The defining loop also renders normally; it is not a hidden
+template declaration. A second definition with children fails with
+<code>duplicate-for-id</code>; use a self-closing reference instead.</p><p>A reference must use the definition's item name. For a definition using
+<code>each="foo in bar"</code>, recurse with <code>each="foo in foo.children"</code>. The collection
+<code>foo.children</code> is evaluated using the parent's <code>foo</code> first; each child then
+becomes the new <code>foo</code> inside the shared body. Returning from the nested loop
+restores the parent's binding. A reference reuses only the body, not the
+definition's original collection expression.</p><p>IDs are static, non-empty names containing ASCII letters, digits, <code>_</code>, or <code>-</code>.
+<code>id</code> is the only supported naming attribute; replace <code>template</code> with <code>id</code> on
+definitions and references. The removed <code>template</code> spelling is a build error.
+An unknown reference, duplicate definition, incompatible item variable, or
+conflicting identifier fails the build with an actionable diagnostic.</p><p>Recursive repeats use the same positional or explicit-key reconciliation as
+ordinary repeats. Put an optional <code>key</code> on the definition's first concrete
+child; references reuse that key, with uniqueness checked within each sibling
+collection.</p><p>Named recursion is supported in server-rendered templates and the native WebUI
+client. FAST component builds reject named references with
+<code>fast-named-for-unsupported</code>; use the WebUI plugin for interactive recursive
+trees or ordinary nested loops in FAST components.</p><h2 id="notes-and-limitations">Notes and Limitations <a class="header-anchor" href="/webui/guide/concepts/directives/for/#notes-and-limitations" aria-label="Link to Notes and Limitations">#</a></h2><ul><li>The collection must be an array</li><li>The item variable is only available within the loop body</li><li>You can access nested properties of the item using dot notation</li><li>A missing collection renders zero items; a present non-array collection is a rendering error</li><li><strong>Unnamed empty <code>&lt;for&gt;</code> bodies</strong> (with no children) are silently skipped.
+A paired named loop can define an empty body; a self-closing named loop is a reference.</li></ul><h2 id="repeat-reconciliation">Repeat Reconciliation <a class="header-anchor" href="/webui/guide/concepts/directives/for/#repeat-reconciliation" aria-label="Link to Repeat Reconciliation">#</a></h2><p>When an <code>@observable</code> array changes on the client, the <code>&lt;for&gt;</code> block reconciles
 by array position by default. The existing block at index <code>i</code> receives the
 current item at index <code>i</code>; new tail items are appended and excess tail blocks
 are removed.</p><table><thead><tr><th>Collection change</th><th>Runtime behavior</th></tr></thead><tbody><tr><td>Append</td><td>Reuse existing blocks and create the new tail</td></tr><tr><td>Truncate</td><td>Reuse the shared prefix and remove the excess tail</td></tr><tr><td>Replace or reorder</td><td>Rebind existing blocks at each position</td></tr></tbody></table><p>Duplicate values and duplicate attributes are safe. Dynamic attributes never
