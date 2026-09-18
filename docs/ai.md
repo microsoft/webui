@@ -1326,6 +1326,13 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
+On `webui serve` (with or without `--watch`) and `webui-press serve`, optionally
+add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
+retain the default wait for an active rebuild with no deadline. Forced shutdown
+returns nonzero and may leave incomplete outputs; supervised mode reserves
+stdin. See [bounded shutdown](/guide/cli/#bounded-dev-server-shutdown) for
+confirmation behavior and platform limits.
+
 Unwrapped components default to Shadow. Under `--dom light`, they use
 authored/global Light DOM while a sole top-level
 `<template shadowrootmode="open">` remains a Shadow island. A sole bare

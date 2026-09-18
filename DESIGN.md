@@ -5197,6 +5197,58 @@ This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
 inside the server lifetime, so normal shutdown cannot leave output writers
 behind. Forced process termination is outside this graceful-shutdown contract.
 
+Both native serve commands additionally accept an opt-in positive integer
+`--shutdown-timeout <SECONDS>`, including `webui serve` without `--watch`.
+Omitting it preserves the in-process server and unbounded join above; no
+supervisor process, control thread, or signal handler is added. Enabled mode
+uses one long-lived same-executable child for the entire server lifetime,
+including initial extraction/build and every rebuild. The existing build cache
+and worker stay in that child; builds do not spawn a fresh server.
+
+The internal `webui-dev-server::shutdown` module gates the child on a private
+stdin pipe before config extraction, output writes, watchers, or build
+subprocesses. The parent releases startup only after checked Windows Job
+assignment or Unix process-group creation. Windows uses a non-inherited
+kill-on-close Job without breakaway permission. Unix retains the unreaped group
+leader until the final group signal, preventing a stale PID from targeting a
+reused process group. Containment failure never falls back to unsupervised
+execution. The private child environment marker is removed before application
+threads/subprocesses start.
+
+The parent owns Ctrl-C and, on Unix, SIGINT/SIGTERM/SIGQUIT/SIGHUP. The first
+request sends a control byte and starts
+the grace deadline; the child disables Actix's signal handlers, stops HTTP with
+`ServerHandle::stop(false)` (the ordinary Ctrl-C connection policy), and returns
+through the existing watcher-drop/worker-join path. The stop future and server
+future must be polled concurrently because the server drives stop
+acknowledgement. Opt-in mode deliberately uses that non-draining connection
+policy for every stop signal, unlike default Actix SIGTERM. HTTP/control errors
+must not bypass worker joining. Control-pipe
+loss requests shutdown and returns an error. Expiry or a second request
+terminates the owned process scope rather than abandoning an in-process thread.
+The parent monitor does not synchronously print progress, so a blocked terminal
+cannot delay its deadline decisions.
+
+The child reserves exit status 125 solely for successful return after normal
+server teardown and joining. After confirming the owned scope is empty, the
+parent translates that private status to success. This is a controlled-child
+teardown attestation, not a protocol for arbitrary programs. An unexpected zero
+exit is not such an attestation. Normal nonzero child failures retain their
+status and are not printed twice. Forced shutdown is non-success even if the
+root races to successful exit. Every root exit also triggers a final owned-scope
+cleanup; Windows can detect residual active Job members, while Unix
+conservatively sweeps the group before reaping its leader.
+
+Confirmation waits up to two additional seconds: Windows requires zero active
+Job processes and a reaped root; Unix requires a reaped root and group
+nonexistence (`ESRCH`). Only confirmed outcomes permit assuming that contained
+writers have stopped. Supervision/confirmation errors must not imply cleanup is
+safe. Output may be incomplete after forced termination. OS scheduling and
+uninterruptible kernel work preclude a hard real-time guarantee. Escaped or
+daemonized descendants, and force-killing the external Unix supervisor, are
+outside the contract. Supervised mode reserves stdin for control and does not
+forward interactive input to build tools.
+
 The WebUI Press template may declare compile-time extension regions with
 `<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
 Child markup is the default; matching site configuration may replace it with

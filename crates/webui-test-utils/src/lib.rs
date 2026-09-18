@@ -5,6 +5,8 @@
 //!
 //! This crate provides testing helpers and should only be used in test code.
 
+pub mod dev_server;
+
 use std::fs;
 use std::{collections::HashMap, path::PathBuf};
 use tempfile::TempDir;

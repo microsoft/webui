@@ -134,6 +134,15 @@ Options:
   -h, --help               Print help
 ```
 
+For `serve` only, `--shutdown-timeout <SECONDS>` opts in to a positive integer
+shutdown grace period. Without it, stopping waits for the active rebuild with
+no deadline. For example, `webui-press serve --shutdown-timeout 10` allows ten
+seconds after a stop request before terminating the owned server process tree;
+a second stop request escalates sooner. Forced shutdown returns nonzero and can
+leave incomplete outputs. Supervised mode reserves stdin and cannot forward
+interactive build input. See the [bounded shutdown reference](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
+for confirmation behavior and platform limits.
+
 Use `webui-press build --show=content` or `webui-press serve --show=content`
 for a shell-free gallery or documentation view. Omit the flag for the complete
 site, or set `"show": "content"` in config to make content mode the default.
