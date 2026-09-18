@@ -5187,6 +5187,16 @@ Generated esbuild entries live in a targeted temporary directory beneath the
 site output, keeping projection inputs and outputs on the project volume. The
 directory is removed after that bundle completes.
 
+The shared dev-server rebuild worker is owned by a `RebuildWorker` handle;
+watchers receive cloned `TickSender`s via `sender()`. Both `webui-press serve`
+and `webui serve --watch` retain that handle until HTTP serving stops, drop the
+watcher, and call `shutdown()` before returning. Shutdown wakes an idle worker,
+discards queued rebuilds, and joins any active rebuild even if sender clones
+remain alive. Dropping the handle also stops and joins it on setup/error paths.
+This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
+inside the server lifetime, so normal shutdown cannot leave output writers
+behind. Forced process termination is outside this graceful-shutdown contract.
+
 The WebUI Press template may declare compile-time extension regions with
 `<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
 Child markup is the default; matching site configuration may replace it with
