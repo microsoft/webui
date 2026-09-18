@@ -1507,7 +1507,7 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    /// CSS custom property definitions from this component's CSS.
+    /// Unconditional `:host`/`:root` custom property defaults from this component's CSS.
     pub css_definitions: Vec<String>,
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
@@ -2471,9 +2471,11 @@ impl CssParser {
 - Reject malformed CSS at build time with `ParserError::Css`, including
   unterminated `var()` calls, block comments, strings, and unmatched braces,
   parentheses, or brackets.
-- Exclude any token that is defined by local CSS before validating theme
+- Exclude tokens defined in the same declaration block or by unconditional
+  `:host`/`:root` defaults before validating theme
   coverage. For example, `--foo: var(--token-a, var(--token-b))` reports
-  `token-b` only when `--token-a` is defined in the same CSS input.
+  `token-b` only when `--token-a` is defined in the same block or as an
+  unconditional root/host default.
 
 ### HTML Scanner
 
@@ -2529,8 +2531,8 @@ The `extract_tokens` method uses a deterministic CSS scanner to extract custom p
 
 **Excluded (not hoisted):**
 - `--bar: 12px` — local custom property definitions
-- `var(--bar)` when `--bar` is defined in the same CSS file or by an ancestor
-  component/root CSS scope
+- `var(--bar)` when `--bar` is defined in the same declaration block or by an
+  unconditional `:host`/`:root` default in the current or ancestor CSS scope
 
 The scanner tracks nested `var()` fallback expressions, so nested fallbacks are naturally handled.
 
@@ -2540,7 +2542,7 @@ The `HtmlParser` records CSS fallback-chain requirements and custom-property
 definitions from two sources:
 
 1. **Component CSS** — component registration stores each component's
-   pre-extracted `css_fallback_chains` and `css_definitions`.
+   pre-extracted `css_fallback_chains` and unconditional `css_definitions`.
 2. **Inline `<style>` tags** — when the parser processes a `<style>` tag, it extracts token usages and definitions while stripping removable CSS comments in the same scanner pass.
 
 After parsing completes, `HtmlParser::token_analysis()` walks the parsed fragment
@@ -2549,8 +2551,27 @@ protocol_tokens, fallback_chains }`. The walk carries a counted set of CSS
 custom-property definitions from the entry/root through component boundaries,
 because CSS custom properties inherit through Shadow DOM. Each token candidate
 in a fallback chain such as `var(--a, var(--b, var(--c)))` is removed when that
-token is defined by the current or ancestor CSS scope; any remaining candidates
-contribute to the sorted protocol token list.
+token has an unconditional default in the current or ancestor CSS scope; any
+remaining candidates contribute to the sorted protocol token list.
+
+The existing CSS scanner assigns declaration-block IDs with an iterative stack.
+Definitions and usages in the same block can resolve locally, including forward
+references. Only bare, unconditional `:host` and `:root` rules export defaults to
+other rules or descendant components. Cascade-layer grouping remains
+unconditional, but selector qualifiers, CSS nesting, and conditional at-rules
+do not export defaults. A parent `.green { --brand: ... }` must therefore not
+remove a child's `var(--brand)` from the inventory: another instance can lie
+outside `.green`. Unknown selector coverage is kept conservative rather than
+attempting selector matching.
+
+Definition names are borrowed during the scan. Active rule-local definitions
+are removed and empty requirements compacted when each block closes; reusable
+buffers avoid retaining a declaration table for every rule. A standalone
+top-level rule needs no scope-stack allocation. Internal callers consume
+requirements directly instead of allocating an unused token-name set; only the
+public extraction API and final graph analysis materialize that set. The
+additional scope data is build-time-only and is not serialized or retained at
+runtime.
 
 When shared loop records exist, the CSS token walk tracks only active fragment
 ancestors and skips back-edges, rather than globally marking records visited:
@@ -5227,6 +5248,16 @@ remain active when the site has no local JavaScript bundle, and
 Generated esbuild entries live in a targeted temporary directory beneath the
 site output, keeping projection inputs and outputs on the project volume. The
 directory is removed after that bundle completes.
+
+The shared dev-server rebuild worker is owned by a `RebuildWorker` handle;
+watchers receive cloned `TickSender`s via `sender()`. Both `webui-press serve`
+and `webui serve --watch` retain that handle until HTTP serving stops, drop the
+watcher, and call `shutdown()` before returning. Shutdown wakes an idle worker,
+discards queued rebuilds, and joins any active rebuild even if sender clones
+remain alive. Dropping the handle also stops and joins it on setup/error paths.
+This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
+inside the server lifetime, so normal shutdown cannot leave output writers
+behind. Forced process termination is outside this graceful-shutdown contract.
 
 The WebUI Press template may declare compile-time extension regions with
 `<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.

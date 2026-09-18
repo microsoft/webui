@@ -2213,20 +2213,21 @@ impl HtmlParser {
 
     /// Analyze CSS token requirements from the parsed fragment/component graph.
     ///
-    /// Each token candidate in a `var()` fallback chain is removed when that
-    /// token is defined by CSS in the current fragment or an ancestor
-    /// component/root. The returned protocol token list is sorted and
-    /// deduplicated from the remaining unresolved fallback-chain candidates.
+    /// Each token candidate in a `var()` fallback chain is removed when covered
+    /// by a same-block definition or an unconditional root/host default in the
+    /// current fragment or an ancestor component/root. The returned list is
+    /// sorted and deduplicated from the remaining unresolved candidates.
     #[must_use]
     pub fn token_analysis(&self) -> CssTokenAnalysis {
         let (fallback_chains, token_sites) = self.collect_unresolved_fallback_chains();
         let mut protocol_token_set = HashSet::new();
         for chain in &fallback_chains {
             for token in &chain.tokens {
-                protocol_token_set.insert(token.clone());
+                protocol_token_set.insert(token.as_str());
             }
         }
-        let mut protocol_tokens: Vec<String> = protocol_token_set.into_iter().collect();
+        let mut protocol_tokens: Vec<String> =
+            protocol_token_set.into_iter().map(str::to_owned).collect();
         protocol_tokens.sort();
         CssTokenAnalysis {
             protocol_tokens,
@@ -4273,9 +4274,9 @@ impl HtmlParser {
         self.add_raw_fragment(element.opening());
         let inner = element.inner();
         let style_content = &element.source()[inner.start..inner.end];
-        let (_tokens, defs, requirements, comments) = self
+        let (defs, requirements, comments) = self
             .css_parser
-            .extract_tokens_definitions_requirements_and_comments(
+            .extract_definitions_requirements_and_comments(
                 style_content,
                 self.options.legal_comments,
             )
@@ -4605,7 +4606,7 @@ impl HtmlParser {
         let inner = element.inner();
         let style_content = &element.source()[inner.start..inner.end];
         self.css_parser
-            .extract_tokens_definitions_requirements_and_comments(
+            .extract_definitions_requirements_and_comments(
                 style_content,
                 self.options.legal_comments,
             )
@@ -5213,12 +5214,9 @@ impl HtmlParser {
 
         for (style_start, style_end) in style_ranges {
             let css = &html[style_start..style_end];
-            let (_tokens, _defs, _requirements, comments) = self
+            let (_defs, _requirements, comments) = self
                 .css_parser
-                .extract_tokens_definitions_requirements_and_comments(
-                    css,
-                    self.options.legal_comments,
-                )
+                .extract_definitions_requirements_and_comments(css, self.options.legal_comments)
                 .map_err(|e| self.css_diagnostic(e))?;
             for comment in comments {
                 let comment_text = &css[comment.start_byte..comment.end_byte];
@@ -7569,7 +7567,7 @@ mod tests {
             (
                 "defined-tree",
                 r#"<for id="tree" each="x in xs"><token-leaf></token-leaf><for id="tree" each="x in x.children" /></for>"#,
-                "defined-tree { --accent: red; }",
+                ":root { --accent: red; }",
             ),
             (
                 "undefined-tree",
@@ -7588,7 +7586,9 @@ mod tests {
                 "<defined-tree></defined-tree><undefined-tree></undefined-tree>",
             )
             .unwrap();
-        assert_eq!(parser.token_analysis().protocol_tokens, ["accent"]);
+        let analysis = parser.token_analysis();
+        assert_eq!(analysis.protocol_tokens, ["accent"]);
+        assert_eq!(analysis.fallback_chains.len(), 1);
     }
 
     #[test]
@@ -7639,12 +7639,12 @@ mod tests {
             (
                 "accent-tree",
                 "<shared-tree></shared-tree>",
-                "accent-tree { --accent: red; }",
+                ":root { --accent: red; }",
             ),
             (
                 "shade-tree",
                 "<shared-tree></shared-tree>",
-                "shade-tree { --shade: blue; }",
+                ":root { --shade: blue; }",
             ),
         ] {
             parser
