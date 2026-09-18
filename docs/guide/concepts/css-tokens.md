@@ -44,9 +44,9 @@ Malformed `var()` calls fail the build instead of hoisting partial token names.
 
 ### Local Definition Exclusion
 
-If a custom property is defined in the same CSS file, or by an ancestor
-component/root CSS scope, matching token candidates are **excluded** from the
-token set. This prevents locally-scoped variables from being hoisted:
+A custom property defined in the same declaration block is **excluded** from
+that block's token requirements. Unconditional `:host` or `:root` defaults also
+satisfy references in the current or descendant components:
 
 ```css
 :host {
@@ -56,6 +56,14 @@ token set. This prevents locally-scoped variables from being hoisted:
 }
 /* Result: only "designSystemColor" is hoisted */
 ```
+
+Selector-scoped overrides do not replace theme defaults outside their matching
+elements. For example, `.green { --brand: var(--green-brand); }` still requires
+the theme's `brand` token when another rule or child component uses
+`var(--brand)`. Conditional defaults inside `@media`, `@supports`, or
+`@container` likewise do not replace unconditional defaults. Put shared
+component defaults in a bare `:host` rule and document defaults in `:root`;
+these can also live inside cascade layers.
 
 Definitions are excluded even when the variable appears in a nested fallback:
 
@@ -72,7 +80,8 @@ Definitions are excluded even when the variable appears in a nested fallback:
 When a build is given a theme (`webui build --theme`, `webui serve --theme`, or
 API build options with a theme), every **required** token must exist in every
 theme. For `var(--a, var(--b, var(--c)))`, the theme must provide `a`, `b`, and
-`c` unless any of those tokens are defined by local or ancestor CSS. Missing
+`c` unless those references are covered by same-block definitions or
+unconditional local/ancestor defaults. Missing
 tokens fail with `missing-theme-token`; theme token values that reference an
 undefined or cyclic `var(--token)` are trusted and left to browser CSS
 semantics.

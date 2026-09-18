@@ -21,8 +21,12 @@
 //! browsers.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::Arc;
 use std::thread;
+
+use anyhow::{anyhow, Result};
 
 use crate::livereload::LiveReload;
 use crate::reporter::RebuildReporter;
@@ -39,6 +43,56 @@ const TICK_CHANNEL_CAPACITY: usize = 8;
 /// can name the file(s) that triggered the rebuild. Send an empty `Vec` to
 /// force a rebuild with no attributed trigger.
 pub type TickSender = SyncSender<Vec<PathBuf>>;
+
+/// Owns a rebuild thread. Keep this handle alive for the server's lifetime.
+///
+/// Shutdown discards pending ticks and waits for the active rebuild, including
+/// any subprocesses it waits on. Dropping the handle also shuts down the worker.
+#[must_use]
+pub struct RebuildWorker {
+    sender: TickSender,
+    stopping: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl RebuildWorker {
+    /// Clone the sender used by a watcher to enqueue changed paths.
+    #[must_use]
+    pub fn sender(&self) -> TickSender {
+        self.sender.clone()
+    }
+
+    /// Stop accepting rebuild work and wait for the active rebuild to finish.
+    ///
+    /// Existing sender clones do not prevent shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rebuild thread panicked.
+    pub fn shutdown(mut self) -> Result<()> {
+        self.stop_and_join()
+    }
+
+    fn stop_and_join(&mut self) -> Result<()> {
+        self.stopping.store(true, Ordering::Release);
+        // Wake an idle worker. A full queue already provides a wakeup.
+        let _ = self.sender.try_send(Vec::new());
+        if let Some(thread) = self.thread.take() {
+            thread.join().map_err(|_| {
+                anyhow!("Rebuild worker panicked; check the preceding build output")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RebuildWorker {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop_and_join() {
+            eprintln!("{error}");
+        }
+    }
+}
 
 /// Failure returned by a rebuild closure.
 ///
@@ -92,9 +146,10 @@ impl From<&str> for RebuildError {
 }
 
 /// Spawn the rebuild worker on a dedicated OS thread and return the
-/// sender used to enqueue rebuild ticks. The watcher closure should
+/// owned handle used to shut it down. The watcher closure should
 /// call `tx.try_send(paths)` with the changed paths for every filesystem
 /// event burst — failed sends (channel full) are intentional coalescing.
+/// Obtain `tx` via [`RebuildWorker::sender`].
 ///
 /// The closure runs synchronously on the worker thread, so it may use
 /// blocking I/O freely. It returns `Ok(warnings)` on success (a possibly-empty
@@ -102,21 +157,22 @@ impl From<&str> for RebuildError {
 /// `Err(RebuildError)` on failure; the worker prints the error's terminal
 /// rendering and broadcasts its plain message to connected browsers.
 ///
-/// The returned [`TickSender`] does not need to be held to keep the
-/// worker alive — the worker stops only when every clone of the
-/// sender is dropped.
-pub fn spawn_rebuild_worker<F>(livereload: LiveReload, mut rebuild: F) -> TickSender
+/// Keep the returned [`RebuildWorker`] alive until the server stops, then drop
+/// the watcher and call [`RebuildWorker::shutdown`] to wait for active writes.
+pub fn spawn_rebuild_worker<F>(livereload: LiveReload, mut rebuild: F) -> RebuildWorker
 where
     F: FnMut() -> Result<Vec<String>, RebuildError> + Send + 'static,
 {
     let (tx, rx) = sync_channel::<Vec<PathBuf>>(TICK_CHANNEL_CAPACITY);
-    thread::spawn(move || {
+    let stopping = Arc::new(AtomicBool::new(false));
+    let worker_stopping = Arc::clone(&stopping);
+    let handle = thread::spawn(move || {
         let mut reporter = RebuildReporter::new();
         let mut dirty = false;
         // Paths from ticks that arrived during the previous build belong to the
         // rebuild we are about to run, so carry them across iterations.
         let mut carryover: Vec<PathBuf> = Vec::new();
-        loop {
+        while !worker_stopping.load(Ordering::Acquire) {
             let mut triggers = std::mem::take(&mut carryover);
             if dirty {
                 // A rebuild we just finished was racing with new events.
@@ -127,9 +183,7 @@ where
                     triggers.extend(paths);
                 }
             } else {
-                // Block for the first tick. Channel closed (every
-                // external sender dropped) → exit cleanly so the
-                // process can shut down without a zombie thread.
+                // Block until a watcher tick or the shutdown wakeup.
                 match rx.recv() {
                     Ok(paths) => triggers.extend(paths),
                     Err(_) => break,
@@ -139,6 +193,10 @@ where
                 while let Ok(paths) = rx.try_recv() {
                     triggers.extend(paths);
                 }
+            }
+
+            if worker_stopping.load(Ordering::Acquire) {
+                break;
             }
 
             let start = std::time::Instant::now();
@@ -167,5 +225,60 @@ where
             }
         }
     });
-    tx
+    RebuildWorker {
+        sender: tx,
+        stopping,
+        thread: Some(handle),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::{channel, TryRecvError};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn shutdown_drains_active_work_but_discards_queued_ticks_with_live_senders() -> Result<()> {
+        let (started_tx, started_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let worker_completed = Arc::clone(&completed);
+        let worker = spawn_rebuild_worker(LiveReload::new("/reload"), move || {
+            started_tx.send(()).map_err(|e| e.to_string())?;
+            release_rx.recv().map_err(|e| e.to_string())?;
+            worker_completed.fetch_add(1, Ordering::Release);
+            Ok(Vec::new())
+        });
+        let sender = worker.sender();
+        sender.try_send(Vec::new())?;
+        started_rx.recv_timeout(Duration::from_secs(5))?;
+        for _ in 0..TICK_CHANNEL_CAPACITY {
+            sender.try_send(Vec::new())?;
+        }
+
+        let stopping = Arc::clone(&worker.stopping);
+        let (joined_tx, joined_rx) = channel();
+        let shutdown = thread::spawn(move || {
+            let result = worker.shutdown();
+            let _ = joined_tx.send(());
+            result
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !stopping.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "shutdown did not start");
+            thread::yield_now();
+        }
+        assert_eq!(joined_rx.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(completed.load(Ordering::Acquire), 0);
+        release_tx.send(())?;
+        joined_rx.recv_timeout(Duration::from_secs(5))?;
+        shutdown
+            .join()
+            .map_err(|_| anyhow!("shutdown panicked"))??;
+        assert_eq!(completed.load(Ordering::Acquire), 1);
+        assert!(sender.try_send(Vec::new()).is_err());
+        Ok(())
+    }
 }

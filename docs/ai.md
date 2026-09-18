@@ -229,6 +229,28 @@ array or string does work: `<if condition="items.length > 3">`.
 
 - The collection must be a JSON array.
 - Nested loops are supported; outer loop variables remain accessible.
+- Recursive trees use a file-local `id` on a defining loop and self-closing
+  references with the same item variable. Write `each="item in items"` without
+  binding braces:
+
+  ```html
+  <for id="tree-item" each="item in items">
+    <div>{{item.name}}</div>
+    <for id="tree-item" each="item in item.children" />
+  </for>
+  ```
+
+  Define each ID once per file. The definition renders normally, references
+  can precede it, and other files may reuse the ID independently. Missing or
+  empty child arrays end the recursion; pass finite trees, not cyclic data.
+  The recursive `item in item.children` resolves the parent's children first,
+  then shadows `item` for the shared body and restores it on return. A second
+  body for the same ID is a `duplicate-for-id` build error.
+  Use `id`, not `template`; the removed `template` attribute is a build error.
+  Native WebUI supports recursive client updates; FAST components reject named
+  references with an actionable build error.
+  [Recursive loops](guide/concepts/directives/for.md#recursive-loops) covers
+  validation and keys.
 - Repeats reconcile by array position by default; item attributes never act as
   keys, and `data-key` is an ordinary application attribute.
 - Add compiler-only `key="{{item.id}}"` to the first concrete child to preserve
@@ -437,6 +459,9 @@ my-component[variant="primary"] {
   generates or reserves them for Light CSS.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
+- Scoped token overrides do not replace theme defaults for other elements.
+  Use bare `:host` rules for shared Shadow component defaults or `:root` for
+  document defaults. See [design tokens](/guide/concepts/css-tokens).
 - Malformed CSS fails the build, including unterminated `var()` calls,
   comments, strings, and unmatched delimiters.
 
@@ -567,7 +592,9 @@ While the router is active it installs a nonce-bearing
 cross-document transitions conflict with intercepted routes that fall back to
 SSR document requests. `Router.destroy()` removes the override. The router
 awaits `updateCallbackDone` (not `.finished`) so rapid navigations supersede
-each other without queuing.
+each other without queuing. Resizing or superseding the animation does not fail
+a committed route; route commit errors still follow normal navigation error handling
+without duplicate unhandled transition rejections.
 
 ## Interactivity
 

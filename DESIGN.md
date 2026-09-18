@@ -529,6 +529,17 @@ emit WebUI `templates` or `templateFns`.
 8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 9. Parent components and their state are preserved.
 
+For non-query-only commits, the router owns the explicit view transition's
+`ready` and `finished` rejections immediately after `startViewTransition()`.
+Animation skips, including supersession and invalid snapshot state, do not fail
+a committed route.
+`updateCallbackDone` remains the only awaited transition promise and propagates
+the original commit callback failure. Explicitly observing `finished` avoids
+relying on browsers to automatically handle its duplicate callback failure.
+Neither `ready` nor `finished` delays route notification or queues subsequent
+navigations. Both observers share one rejection handler, without per-navigation
+closures or retained transition state.
+
 **Partial response:** `Protocol::render_partial()` accepts owned
 `serde_json::Value` state and returns the complete response with projected
 top-level `state`, moving selected values without a serialize/reparse cycle.
@@ -1496,7 +1507,7 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    /// CSS custom property definitions from this component's CSS.
+    /// Unconditional `:host`/`:root` custom property defaults from this component's CSS.
     pub css_definitions: Vec<String>,
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
@@ -2354,8 +2365,38 @@ surfaced on every rebuild attempt.
 - Flush buffer when transitioning to non-raw content
 
 ##### Directive Processing
-- **<for>:** Extract item/collection pair and process children into separate fragment. Empty `<for>` bodies (no children) are silently skipped.
+- **<for>:** Extract the unbraced `each="item in collection"` item/collection
+  pair and process children into a separate fragment. Braced `each` expressions
+  are invalid authoring input on both SSR and native client compilation paths.
+  Unnamed empty bodies are silently skipped. A static `id` names a reusable body within its owning
+  entry/component file: `id="tree-item"` uses `tree-item-N`, where `N` is the
+  parser's stable, one-based owner index. Parsing a nested component saves and
+  restores the caller's named-loop scope. A paired tag defines the body once
+  (including an empty body); a self-closing tag only emits a `ForLoop` reference
+  with its own collection. Forward references and finite data-driven direct
+  or mutual recursion share the existing protocol record, without copying or
+  expanding bodies. References must use the defining item variable.
+  The callsite collection (e.g. `foo.children`) is evaluated in the parent
+  scope before each child shadows `foo` in the shared body. Normal lexical
+  shadowing restores the parent item after each nested repeat. The defining
+  loop's original collection expression is not re-executed by references.
+  `id` is the only supported naming attribute. The removed `template` spelling
+  is rejected with `invalid-for-id` and migration guidance, never treated as an
+  alias or silently ignored. Named IDs are non-empty ASCII
+  alphanumeric/underscore/hyphen strings. Duplicate definitions (including
+  nested definitions using a different iterator), missing definitions,
+  conflicting fragment names, and inconsistent item variables return
+  `duplicate-for-id`, `unknown-for-id`, `invalid-for-id`, and
+  `incompatible-for-item` diagnostics. Duplicate definitions take precedence
+  over item-variable mismatch diagnostics. Generated IDs skip reserved named
+  records; a named claim cannot overwrite an already generated record.
+  Native WebUI supports cyclic client block references. FAST v2/v3 reject
+  named self-closing references in component artifacts with the actionable
+  `fast-named-for-unsupported` diagnostic; server-only entry loops remain
+  supported without requiring FAST client template reuse. This rejection uses
+  the FAST converters' ASCII-case-insensitive tag matching.
 - **<if>:** Extract and parse condition, process children into separate fragment
+  (optional surrounding `{{...}}` is accepted).
 - **<body>:** Injects `body_start` and `body_end` raw signals around the body content
 - **Components:** Check component registry, process as component if found
 
@@ -2430,9 +2471,11 @@ impl CssParser {
 - Reject malformed CSS at build time with `ParserError::Css`, including
   unterminated `var()` calls, block comments, strings, and unmatched braces,
   parentheses, or brackets.
-- Exclude any token that is defined by local CSS before validating theme
+- Exclude tokens defined in the same declaration block or by unconditional
+  `:host`/`:root` defaults before validating theme
   coverage. For example, `--foo: var(--token-a, var(--token-b))` reports
-  `token-b` only when `--token-a` is defined in the same CSS input.
+  `token-b` only when `--token-a` is defined in the same block or as an
+  unconditional root/host default.
 
 ### HTML Scanner
 
@@ -2488,8 +2531,8 @@ The `extract_tokens` method uses a deterministic CSS scanner to extract custom p
 
 **Excluded (not hoisted):**
 - `--bar: 12px` — local custom property definitions
-- `var(--bar)` when `--bar` is defined in the same CSS file or by an ancestor
-  component/root CSS scope
+- `var(--bar)` when `--bar` is defined in the same declaration block or by an
+  unconditional `:host`/`:root` default in the current or ancestor CSS scope
 
 The scanner tracks nested `var()` fallback expressions, so nested fallbacks are naturally handled.
 
@@ -2499,7 +2542,7 @@ The `HtmlParser` records CSS fallback-chain requirements and custom-property
 definitions from two sources:
 
 1. **Component CSS** — component registration stores each component's
-   pre-extracted `css_fallback_chains` and `css_definitions`.
+   pre-extracted `css_fallback_chains` and unconditional `css_definitions`.
 2. **Inline `<style>` tags** — when the parser processes a `<style>` tag, it extracts token usages and definitions while stripping removable CSS comments in the same scanner pass.
 
 After parsing completes, `HtmlParser::token_analysis()` walks the parsed fragment
@@ -2508,8 +2551,36 @@ protocol_tokens, fallback_chains }`. The walk carries a counted set of CSS
 custom-property definitions from the entry/root through component boundaries,
 because CSS custom properties inherit through Shadow DOM. Each token candidate
 in a fallback chain such as `var(--a, var(--b, var(--c)))` is removed when that
-token is defined by the current or ancestor CSS scope; any remaining candidates
-contribute to the sorted protocol token list.
+token has an unconditional default in the current or ancestor CSS scope; any
+remaining candidates contribute to the sorted protocol token list.
+
+The existing CSS scanner assigns declaration-block IDs with an iterative stack.
+Definitions and usages in the same block can resolve locally, including forward
+references. Only bare, unconditional `:host` and `:root` rules export defaults to
+other rules or descendant components. Cascade-layer grouping remains
+unconditional, but selector qualifiers, CSS nesting, and conditional at-rules
+do not export defaults. A parent `.green { --brand: ... }` must therefore not
+remove a child's `var(--brand)` from the inventory: another instance can lie
+outside `.green`. Unknown selector coverage is kept conservative rather than
+attempting selector matching.
+
+Definition names are borrowed during the scan. Active rule-local definitions
+are removed and empty requirements compacted when each block closes; reusable
+buffers avoid retaining a declaration table for every rule. A standalone
+top-level rule needs no scope-stack allocation. Internal callers consume
+requirements directly instead of allocating an unused token-name set; only the
+public extraction API and final graph analysis materialize that set. The
+additional scope data is build-time-only and is not serialized or retained at
+runtime.
+
+When shared loop records exist, the CSS token walk tracks only active fragment
+ancestors and skips back-edges, rather than globally marking records visited:
+sibling visits must still be analyzed under their different inherited CSS
+definitions. It also memoizes each fragment with its canonical set of inherited
+definition names, avoiding redundant visits through equivalent acyclic paths.
+Definition counts still control lexical restoration; only membership enters
+the memoization key. Ordinary templates without shared loops retain the original
+traversal without allocating cycle-tracking or memoization state.
 
 #### Comment Handling
 
@@ -2872,6 +2943,8 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `<for id="name" each="v in coll">body</for>` | `r[]` + `b[]` | one file-local named body |
+| `<for id="name" each="v in v.children" />` | `r[]` | existing named block index reused |
 | `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
@@ -5176,6 +5249,16 @@ Generated esbuild entries live in a targeted temporary directory beneath the
 site output, keeping projection inputs and outputs on the project volume. The
 directory is removed after that bundle completes.
 
+The shared dev-server rebuild worker is owned by a `RebuildWorker` handle;
+watchers receive cloned `TickSender`s via `sender()`. Both `webui-press serve`
+and `webui serve --watch` retain that handle until HTTP serving stops, drop the
+watcher, and call `shutdown()` before returning. Shutdown wakes an idle worker,
+discards queued rebuilds, and joins any active rebuild even if sender clones
+remain alive. Dropping the handle also stops and joins it on setup/error paths.
+This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
+inside the server lifetime, so normal shutdown cannot leave output writers
+behind. Forced process termination is outside this graceful-shutdown contract.
+
 The WebUI Press template may declare compile-time extension regions with
 `<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
 Child markup is the default; matching site configuration may replace it with
@@ -5236,6 +5319,24 @@ strict missing-fragment failure.
 Attribute bindings are recorded in `a[]`, while `ag[]` points at the owning element and the contiguous `[start, count)` range inside `a[]`. The compiled client HTML never embeds `data-w-*` markers; those remain SSR-only handler markers.
 
 Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` block table. The client runtime instantiates compiled child blocks directly and evaluates precompiled condition AST tuples — it does not parse raw template syntax or condition strings from repeat or conditional body content.
+
+Named repeats can form cycles through `b[]` indices. The table remains flat,
+serializable, and proportional to authored bodies, not runtime tree depth.
+State-root collection must terminate on those cycles while retaining roots
+visible in every lexical callsite scope. Shared-block analysis memoizes each
+block with the sorted, deduplicated set of bound item names, not frame identity,
+ordering, or shadow counts. Equivalent paths are processed once, while distinct
+scope sets remain separate. Visits are memoized in traversal order so root
+discovery order is unchanged; ordinary templates allocate no memoization state.
+Recursive references reuse the
+definition's optional repeat key. No new wire fields, runtime identifier
+resolution, or per-item metadata copies are required.
+
+Native compilation carries original source spans through trimmed content,
+Shadow DOM wrappers, and nested blocks. Repeat keys are skipped during
+attribute emission without rewriting or copying the body source. Named-repeat
+errors therefore point to the actual offending tag; unresolved names are
+reported in source order, independently of hash-map iteration order.
 
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 

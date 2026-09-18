@@ -1,0 +1,6 @@
+<section>
+  <for id="tree-item" each="child in independentItems">
+    <strong class="independent-name">{{child.name}}</strong>
+    <for id="tree-item" each="child in child.children" />
+  </for>
+</section>
