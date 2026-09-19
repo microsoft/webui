@@ -406,6 +406,11 @@ Components use `<outlet />` in their templates to declare insertion points:
 <h1>Title</h1>
 <main><outlet /></main>
 ```
+Only one outlet is supported at a given route level. If a parsed template emits
+more than one `<outlet>` fragment for the same level, the build adds a
+non-fatal `multiple-outlets` warning to `BuildResult::warnings`; authors should
+remove the extra outlet or move duplicated layout into the matched route
+component.
 
 **Route declaration:** Routes are declared as nested `<route>` elements in the entry HTML.
 Child paths are relative to their parent (no leading `/`). The HTML nesting IS the route tree:

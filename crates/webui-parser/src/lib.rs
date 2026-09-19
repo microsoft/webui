@@ -788,6 +788,9 @@ pub struct HtmlParser {
     /// Map of fragment IDs to their fragments
     fragment_records: WebUIFragmentRecords,
 
+    /// Non-fatal parser advisories collected while parsing templates.
+    warnings: Vec<Diagnostic>,
+
     /// Buffer for accumulating raw content
     raw_buffer: String,
 
@@ -1529,6 +1532,7 @@ impl HtmlParser {
             handlebars_parser: HandlebarsParser::new(),
             raw_buffer: String::new(),
             fragment_records: WebUIFragmentRecords::new(),
+            warnings: Vec::new(),
             options,
             plugin: None,
             component_processing: ComponentProcessing::default(),
@@ -1588,6 +1592,12 @@ impl HtmlParser {
 
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
         std::mem::take(&mut self.fragment_records)
+    }
+
+    /// Take non-fatal parser warnings collected so far.
+    #[must_use]
+    pub fn take_warnings(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.warnings)
     }
 
     /// Check if a fragment ID has been parsed (exists in the fragment records).
@@ -2713,6 +2723,14 @@ impl HtmlParser {
                                 }
                                 "outlet" => {
                                     self.flush_raw_buffer(fragments);
+                                    if fragments.iter().any(|fragment| {
+                                        matches!(
+                                            fragment.fragment.as_ref(),
+                                            Some(Fragment::Outlet(_))
+                                        )
+                                    }) {
+                                        self.warnings.push(self.multiple_outlets_warning(&element));
+                                    }
                                     fragments.push(WebUIFragment::outlet());
                                 }
                                 "boundary" => {
@@ -3077,6 +3095,20 @@ impl HtmlParser {
         offset: usize,
     ) -> Diagnostic {
         self.authoring_error(code, title).at_offset(source, offset)
+    }
+
+    /// Build the warning for a second `<outlet>` at one parsed route level.
+    #[cold]
+    #[inline(never)]
+    fn multiple_outlets_warning(&self, element: &Element<'_>) -> Diagnostic {
+        Diagnostic::warning("multiple <outlet> elements at one route level")
+            .code(codes::MULTIPLE_OUTLETS)
+            .component(self.current_fragment_id.clone())
+            .element("outlet")
+            .at_offset(element.source(), element.start)
+            .help(
+                "only the first <outlet> at a route level currently renders matched child routes; remove the extra <outlet> or move duplicated layout into the matched route component",
+            )
     }
 
     /// Build the `help:` line for an unknown component `<name>`.
@@ -11544,6 +11576,20 @@ mod tests {
                 "outlet should NOT be inside for-loop body: {for_frags:?}"
             );
         }
+    }
+
+    #[test]
+    fn multiple_outlets_in_one_fragment_warn() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<main><outlet /></main><aside><outlet /></aside>"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let warnings = parser.take_warnings();
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert_eq!(warnings[0].severity(), Severity::Warning);
+        assert_eq!(warnings[0].error_code(), Some(codes::MULTIPLE_OUTLETS));
+        assert_eq!(warnings[0].component_name(), Some("test.html"));
+        assert!(warnings[0].help_text().is_some());
     }
 
     #[test]
