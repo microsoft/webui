@@ -3,10 +3,7 @@
 
 import * as path from "node:path";
 
-import {
-  ProjectionError,
-  createDiagnostic,
-} from "./diagnostics.js";
+import { ProjectionError, createDiagnostic } from "./diagnostics.js";
 
 /**
  * Computes the build root that contains every physical projection artifact.
@@ -27,9 +24,7 @@ import {
  * @returns The absolute directory containing all of them.
  * @throws {ProjectionError} `PROJ-C015` when the paths span filesystem roots.
  */
-export function resolveBuildRoot(
-  paths: ReadonlyArray<string>
-): string {
+export function resolveBuildRoot(paths: ReadonlyArray<string>): string {
   const first = paths[0];
   if (first === undefined) {
     throw new ProjectionError([
@@ -55,7 +50,7 @@ export function resolveBuildRoot(
 /**
  * Reports whether `candidate` is `root` or lives below it.
  */
-export function isWithin(root: string, candidate: string): boolean {
+function isWithin(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return (
     relative.length === 0 ||
@@ -71,10 +66,7 @@ export function isWithin(root: string, candidate: string): boolean {
  * Error construction is a cold path, so the message is assembled here rather
  * than inlined into the scanning loop above.
  */
-function crossRootError(
-  first: string,
-  second: string
-): ProjectionError {
+function crossRootError(first: string, second: string): ProjectionError {
   const left = path.resolve(first);
   const right = path.resolve(second);
   return new ProjectionError([

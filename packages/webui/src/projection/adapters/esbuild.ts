@@ -170,7 +170,7 @@ async function emitProjectionManifest(
     result,
     outputIds
   );
-  const rootDir = commonAncestor([
+  const rootDir = resolveBuildRoot([
     manifestPath,
     ...records
       .filter((record) => record.kind === "file")
@@ -589,16 +589,6 @@ function packageNameFromSpecifier(
 
 function virtualModuleId(metafileId: string): string {
   return `\0esbuild:${metafileId}`;
-}
-
-function commonAncestor(paths: ReadonlyArray<string>): string {
-  if (paths.length === 0) {
-    throw adapterError(
-      "esbuild produced no physical projection artifacts",
-      "Provide at least one physical output file."
-    );
-  }
-  return resolveBuildRoot(paths);
 }
 
 function comparePaths(left: string, right: string): number {

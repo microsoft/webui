@@ -21,27 +21,19 @@
 
 use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
-use std::sync::OnceLock;
 use std::{fs, path};
 
 /// Project-local scratch directory used when the system temp directory lives
 /// on another volume. Self-ignoring, so consuming repositories need no change.
 const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
 
-static RESOLVED_BASE: OnceLock<PathBuf> = OnceLock::new();
-
 /// Returns the base directory for Press scratch and cache directories built
 /// from `project_dir`, creating it when it is project-local.
 ///
-/// The result is resolved once per process: a Press process builds a single
-/// project, and page builds call this on a hot parallel path.
+/// Callers hoist the result for the whole build, so this stays uncached: a
+/// process-wide cache would hand a second project the first project's base.
 pub(crate) fn scratch_base(project_dir: &Path) -> io::Result<PathBuf> {
-    if let Some(cached) = RESOLVED_BASE.get() {
-        return Ok(cached.clone());
-    }
-    let resolved = resolve_scratch_base(project_dir, &std::env::temp_dir())?;
-    let _ = RESOLVED_BASE.set(resolved.clone());
-    Ok(resolved)
+    resolve_scratch_base(project_dir, &std::env::temp_dir())
 }
 
 /// Resolves the scratch base for `project_dir` against `system_temp`.
@@ -87,7 +79,11 @@ fn volume_key(path: &Path) -> Option<String> {
         return None;
     };
     Some(match prefix.kind() {
-        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive.to_ascii_lowercase().to_string(),
+        // `drive` is the ASCII byte, so widen before formatting: `u8` would
+        // render as a number.
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+            char::from(drive).to_ascii_lowercase().to_string()
+        }
         Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
             r"\\{}\{}",
             server.to_string_lossy().to_ascii_lowercase(),

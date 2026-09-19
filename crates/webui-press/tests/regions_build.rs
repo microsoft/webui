@@ -166,33 +166,15 @@ fn ensure_projection_package(workspace: &Path) -> TestResult {
     if entry.exists() {
         return Ok(());
     }
-    // A Windows pnpm install may ship `pnpm.cmd`, `pnpm.exe`, or both.
-    let programs: &[&str] = if cfg!(windows) {
-        &["pnpm.cmd", "pnpm.exe", "pnpm"]
-    } else {
-        &["pnpm"]
-    };
-    let mut last_error = None;
-    for program in programs {
-        match Command::new(program)
-            .args(["--filter", "@microsoft/webui", "build"])
-            .current_dir(workspace)
-            .status()
-        {
-            Ok(status) if status.success() => return Ok(()),
-            // A Windows pnpm shim can exist but be unusable (a stale launcher
-            // pointing at a removed binary), so a failure here must fall
-            // through to the next candidate rather than end the search.
-            Ok(status) => last_error = Some(format!("{program} exited with {status}")),
-            Err(error) => last_error = Some(format!("cannot run {program}: {error}")),
-        }
+    let program = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+    let status = Command::new(program)
+        .args(["--filter", "@microsoft/webui", "build"])
+        .current_dir(workspace)
+        .status()?;
+    if !status.success() {
+        return Err("failed to build @microsoft/webui projection package".into());
     }
-    Err(match last_error {
-        Some(error) => {
-            format!("failed to build @microsoft/webui projection package ({error})").into()
-        }
-        None => "failed to build @microsoft/webui projection package".into(),
-    })
+    Ok(())
 }
 
 #[test]
