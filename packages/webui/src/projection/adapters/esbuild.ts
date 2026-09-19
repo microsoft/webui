@@ -30,6 +30,7 @@ import type {
   ResolvedImport,
 } from "../graph.js";
 import { mapConcurrent } from "../concurrency.js";
+import { resolveBuildRoot } from "../build-root.js";
 import {
   ProjectionError,
   createDiagnostic,
@@ -597,31 +598,7 @@ function commonAncestor(paths: ReadonlyArray<string>): string {
       "Provide at least one physical output file."
     );
   }
-  let ancestor = path.dirname(path.resolve(paths[0]!));
-  for (let index = 1; index < paths.length; index++) {
-    const directory = path.dirname(path.resolve(paths[index]!));
-    while (!isWithin(ancestor, directory)) {
-      const parent = path.dirname(ancestor);
-      if (parent === ancestor) {
-        throw adapterError(
-          "projection inputs and outputs do not share a filesystem root",
-          "Keep one bundler invocation on a single filesystem volume."
-        );
-      }
-      ancestor = parent;
-    }
-  }
-  return ancestor;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative.length === 0 ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  );
+  return resolveBuildRoot(paths);
 }
 
 function comparePaths(left: string, right: string): number {

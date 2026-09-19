@@ -30,6 +30,9 @@ export type {
   AdapterContext,
 } from "./graph.js";
 
+// Build-root derivation shared by every adapter
+export { resolveBuildRoot } from "./build-root.js";
+
 // Manifest schema types and validation
 export type {
   ProjectionManifest,

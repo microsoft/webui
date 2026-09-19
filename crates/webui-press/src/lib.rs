@@ -12,6 +12,7 @@ pub mod content;
 pub mod error;
 pub mod markdown;
 mod regions;
+mod scratch;
 pub mod serve;
 mod state;
 pub mod types;
