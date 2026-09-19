@@ -402,7 +402,8 @@ find the element that was hit.
 ```
 
 `<outlet></outlet>` is also valid, but outlets are empty directives and the
-self-closing form is preferred.
+self-closing form is preferred. Use one outlet at each route level; extra outlets
+produce a `multiple-outlets` build warning.
 
 ### Entry template
 
