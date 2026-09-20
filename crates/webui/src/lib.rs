@@ -3967,6 +3967,33 @@ mod tests {
     }
 
     #[test]
+    fn test_build_warns_for_outlets_across_component_templates() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                r#"<route path="/" component="app-shell"><route path="child" component="child-page" exact /></route>"#,
+            ),
+            (
+                "app-shell.html",
+                r#"<nested-layout></nested-layout><aside><outlet /></aside>"#,
+            ),
+            ("nested-layout.html", "<main><outlet /></main>"),
+            ("child-page.html", "<p>Matched child</p>"),
+        ]);
+
+        let result = build(default_options(app.path())).unwrap();
+        let html = render_html(&result.protocol, "/child");
+        assert_eq!(html.matches("<p>Matched child</p>").count(), 1, "{html}");
+        assert!(html.contains("<aside></aside>"), "{html}");
+        assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+        assert_eq!(
+            result.warnings[0].error_code(),
+            Some(webui_parser::codes::MULTIPLE_OUTLETS)
+        );
+        assert_eq!(result.warnings[0].component_name(), Some("app-shell"));
+    }
+
+    #[test]
     fn test_build_excludes_tokens_defined_by_ancestor_component_css() {
         let app = create_app_dir(&[
             ("index.html", "<component-a></component-a>"),

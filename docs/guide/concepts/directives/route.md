@@ -33,8 +33,10 @@ Components that have child routes use `<outlet />` to mark where the matched chi
 ```
 
 The shell (header, footer) persists across all routes. Only the content at `<outlet />` changes.
-Use one outlet at each route level. Extra outlets produce a `multiple-outlets`
-build warning; put duplicated regions in the matched child component instead.
+Use one outlet at each route level, including outlets inside nested layout
+components and directives. Child routes have their own outlet level. Extra
+outlets produce a `multiple-outlets` build warning; put duplicated regions in
+the matched child component instead.
 
 ## Nested Routes
 

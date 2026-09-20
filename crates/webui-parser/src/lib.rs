@@ -17,6 +17,7 @@ mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod outlet_warnings;
 pub mod plugin;
 mod route_parser;
 mod scoped_visits;
@@ -2473,6 +2474,9 @@ impl HtmlParser {
         let mut result = self.parse_inner(fragment_id, html_content);
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
+            if result.is_ok() {
+                self.finalize_outlet_warnings();
+            }
         }
 
         self.in_boundary = previous_in_boundary;
@@ -3098,14 +3102,8 @@ impl HtmlParser {
     #[cold]
     #[inline(never)]
     fn multiple_outlets_warning(&self, element: &Element<'_>) -> Diagnostic {
-        Diagnostic::warning("multiple <outlet> elements at one route level")
-            .code(codes::MULTIPLE_OUTLETS)
-            .component(self.current_fragment_id.clone())
-            .element("outlet")
+        outlet_warnings::multiple_outlets_warning(&self.current_fragment_id)
             .at_offset(element.source(), element.start)
-            .help(
-                "only the first <outlet> at a route level currently renders matched child routes; remove the extra <outlet> or move duplicated layout into the matched route component",
-            )
     }
 
     /// Build the `help:` line for an unknown component `<name>`.

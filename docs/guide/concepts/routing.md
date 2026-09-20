@@ -55,7 +55,9 @@ All WebUI apps with routes **must** include `<base href="/">`. Without it, relat
 
 The paired form `<outlet></outlet>` is also supported. Outlet directives are
 empty; prefer the shorter self-closing form. Author only one outlet at a route
-level. Additional outlets produce a `multiple-outlets` build warning; move
+level, including outlets inside nested layout components and directives.
+Child routes have their own outlet level. Additional outlets produce a
+`multiple-outlets` build warning; move
 duplicated layout into the matched child component instead.
 
 **3. Start the router:**
