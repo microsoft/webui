@@ -1,5 +1,5 @@
 name: Build WebUI
-description: Shared build steps for WebUI — installs protoc, Rust, Node.js, pnpm, and optionally .NET.
+description: Shared build steps for WebUI — installs protoc, GTK/WebKitGTK on Linux, Rust, Node.js, pnpm, and optionally .NET.
 
 inputs:
   shared-cache-key:
@@ -41,10 +41,19 @@ runs:
         Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
         Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
 
-    - name: Install protoc (Linux)
+    - name: Install Linux build dependencies
       if: runner.os == 'Linux'
       shell: bash
-      run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      # GTK4 and WebKitGTK 6.0 back the Linux desktop backend in
+      # microsoft-webui-desktop-cli, which is a workspace member, so every
+      # `cargo clippy/test/build --workspace` on Linux needs their dev
+      # packages. Folded into the protoc step to avoid a second apt update.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          protobuf-compiler \
+          libgtk-4-dev \
+          libwebkitgtk-6.0-dev
 
     - name: Install protoc (macOS)
       if: runner.os == 'macOS'
