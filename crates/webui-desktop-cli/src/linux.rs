@@ -3,6 +3,7 @@
 
 mod backend;
 mod protocol;
+mod state;
 
 /// Scheme and authority the Linux backend serves app content from, with no
 /// trailing slash. WebKitGTK registers `webui` as a custom scheme, so the app

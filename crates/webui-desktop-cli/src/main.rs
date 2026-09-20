@@ -1245,8 +1245,8 @@ fn window_options(window: &WindowArgs) -> WindowOptions {
         title: window.title.clone(),
         width: window.width,
         height: window.height,
-        maximized: false,
         devtools: window.devtools,
+        ..WindowOptions::default()
     }
 }
 

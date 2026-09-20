@@ -74,7 +74,12 @@ fn read_body(request: &URISchemeRequest) -> std::result::Result<Vec<u8>, Desktop
                 }
                 out.extend_from_slice(bytes.as_ref());
             }
-            Err(_) => break,
+            Err(_) => {
+                return Err(DesktopProtocolResponse::text(
+                    400,
+                    "desktop request body could not be read",
+                ))
+            }
         }
     }
     Ok(out)

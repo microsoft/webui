@@ -16,6 +16,7 @@
 mod bridge;
 mod command;
 mod create;
+mod event;
 mod message;
 mod nonclient;
 mod protocol;
@@ -26,7 +27,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use webui_desktop::{DesktopRuntime, WindowId, WindowOptions, WindowStateStore};
+use webui_desktop::{DesktopEvent, DesktopRuntime, WindowId, WindowOptions, WindowStateStore};
 use windows::core::w;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
@@ -49,7 +50,7 @@ pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("*");
 /// Private message used to wake the UI thread for queued commands.
 pub(super) const WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 1;
 /// Identity of the single window owned by this backend.
-pub(super) const WINDOW_ID: WindowId = WindowId(1);
+pub(super) const WINDOW_ID: WindowId = WindowId::PRIMARY;
 /// Discriminator for fetch-bridge requests.
 pub(super) const FETCH_BRIDGE_KIND: &str = "webui-desktop-fetch";
 /// Discriminator for fetch-bridge responses.
@@ -124,6 +125,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
             .remember_state
             .then(|| WindowStateStore::for_app_id(STATE_APP_ID)),
         fullscreen: Cell::new(None),
+        window_state: Cell::new(state::initial_window_size_state(window_frame.hwnd)),
     });
     state::set_window_state(window_frame.hwnd, Some(state));
 
@@ -139,8 +141,11 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         let _ = Gdi::UpdateWindow(window_frame.hwnd);
         let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
+    message::publish(window_frame.hwnd, &DesktopEvent::Ready);
     webview::navigate_to_startup_url(&webview, has_virtual_host_assets)?;
-    message::message_loop()
+    let message_loop_result = message::message_loop();
+    let _ = frame.events.dispatch(&DesktopEvent::Exiting);
+    message_loop_result
 }
 
 /// Wake the message pump whenever another thread queues a window command.

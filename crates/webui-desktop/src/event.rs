@@ -11,6 +11,16 @@ use thiserror::Error;
 #[serde(transparent)]
 pub struct WindowId(pub u64);
 
+impl WindowId {
+    /// Identity of the single window every backend opens at startup.
+    ///
+    /// Multi-window support is not implemented yet, so all three backends must
+    /// report this exact value. Handlers can therefore compare against it
+    /// portably, and a future multi-window backend can allocate subsequent ids
+    /// without renumbering the primary window.
+    pub const PRIMARY: Self = Self(1);
+}
+
 /// A native lifecycle event delivered on the backend UI thread.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]

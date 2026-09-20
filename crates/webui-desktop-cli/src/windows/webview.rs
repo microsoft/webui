@@ -214,12 +214,16 @@ pub(super) fn register_navigation_guard(
 }
 
 /// Apply the requested backdrop effect, degrading silently on older Windows.
+///
+/// `Vibrancy` resolves to acrylic, the closest Windows equivalent, matching the
+/// [`WindowEffect`] contract's "or closest equivalent" wording. `Tabbed` never
+/// reaches here: it is not in the Windows `supported_effects` list, so
+/// `validate_frame_capabilities` rejects it at startup.
 pub(super) fn configure_window_effect(hwnd: HWND, effect: WindowEffect) {
-    // `Vibrancy` and `Tabbed` have no Windows equivalent and degrade to no effect.
     let backdrop = match effect {
-        WindowEffect::Acrylic => DWMSBT_TRANSIENTWINDOW.0,
+        WindowEffect::Acrylic | WindowEffect::Vibrancy => DWMSBT_TRANSIENTWINDOW.0,
         WindowEffect::Mica => DWMSBT_MAINWINDOW.0,
-        WindowEffect::None | WindowEffect::Vibrancy | WindowEffect::Tabbed => return,
+        WindowEffect::None | WindowEffect::Tabbed => return,
     };
     // SAFETY: `hwnd` is a live top-level window and the pointer refers to an
     // initialized `i32` whose length matches `DWM_ATTRIBUTE_SIZE`. DWM reports
@@ -358,7 +362,7 @@ pub(super) fn register_navigation_completed(
             window_id: WINDOW_ID,
             url,
         };
-        events.dispatch(&event);
+        let _ = events.dispatch(&event);
         mirror_event(&webview_for_uri, &event);
         Ok(())
     }));

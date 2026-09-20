@@ -10,7 +10,7 @@ use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
-    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
+    WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
 };
 use webui_desktop::{DesktopEvent, EventRegistry, EventResponse, WindowId};
 
@@ -46,7 +46,7 @@ define_class!(
                 .as_deref()
                 .map_or(WKNavigationActionPolicy::Cancel, |url| {
                     let event = DesktopEvent::NavigationRequested {
-                        window_id: WindowId(0),
+                        window_id: WindowId::PRIMARY,
                         url: url
                             .absoluteString()
                             .map_or_else(String::new, |value| value.to_string()),
@@ -61,6 +61,26 @@ define_class!(
                     }
                 });
             decision_handler.call((policy,));
+        }
+
+        #[unsafe(method(webView:didFinishNavigation:))]
+        unsafe fn webView_didFinishNavigation(
+            &self,
+            web_view: &WKWebView,
+            _navigation: Option<&WKNavigation>,
+        ) {
+            let url = web_view
+                .URL()
+                .and_then(|url| url.absoluteString())
+                .map_or_else(String::new, |value| value.to_string());
+            dispatch_event(
+                &self.ivars().events,
+                web_view,
+                DesktopEvent::NavigationCompleted {
+                    window_id: WindowId::PRIMARY,
+                    url,
+                },
+            );
         }
     }
 );

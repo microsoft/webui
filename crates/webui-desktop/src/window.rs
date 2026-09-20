@@ -306,19 +306,36 @@ impl WindowInsets {
     }
 }
 
+/// Baseline styling every `[webui-drag]` region needs to behave like native
+/// window chrome.
+///
+/// Without `user-select: none`, double-clicking a drag region selects the
+/// title text before the drag script turns the gesture into a maximize toggle,
+/// which no native or Electron titlebar does. `cursor: default` suppresses the
+/// text I-beam over what is really window chrome. `[webui-no-drag]` opts
+/// subtrees back in so inputs and selectable text embedded in a custom
+/// titlebar keep working.
+const DRAG_REGION_CSS: &str =
+    "[webui-drag]{-webkit-user-select:none;user-select:none;cursor:default}\
+[webui-no-drag]{-webkit-user-select:auto;user-select:auto;cursor:auto}";
+
 /// Build the constant `<style>` block carrying window CSS custom properties.
 ///
 /// The block depends only on window configuration and the target platform, so
 /// hosts compute it once at startup and reuse it for every rendered document.
-/// Returns an empty string when the window needs no injected CSS.
+/// Always contains the drag-region rules, because backends inject
+/// [`crate::DRAG_REGION_SCRIPT`] regardless of titlebar style.
 #[must_use]
 pub fn window_css_block(window: &WindowOptions, platform: DesktopPlatform) -> String {
-    if matches!(window.titlebar, TitlebarStyle::Native) && window.background.is_none() {
-        return String::new();
-    }
     let insets = WindowInsets::for_style(&window.titlebar, platform);
-    let mut style = String::with_capacity(196);
-    style.push_str("<style>:root{--webui-titlebar-inset-start:");
+    let mut style = String::with_capacity(320);
+    style.push_str("<style>");
+    style.push_str(DRAG_REGION_CSS);
+    if matches!(window.titlebar, TitlebarStyle::Native) && window.background.is_none() {
+        style.push_str("</style>");
+        return style;
+    }
+    style.push_str(":root{--webui-titlebar-inset-start:");
     let _ = write!(
         style,
         "{}px;--webui-titlebar-inset-end:{}px;--webui-titlebar-height:{}px",
@@ -421,11 +438,27 @@ mod tests {
     }
 
     #[test]
-    fn native_titlebar_without_background_injects_nothing() {
+    fn native_titlebar_without_background_injects_only_drag_region_rules() {
         let block = window_css_block(&WindowOptions::default(), DesktopPlatform::Macos);
-        assert!(block.is_empty());
-        let html = apply_window_css("<html></html>".to_string(), &block);
-        assert_eq!(html, "<html></html>");
+        // Backends inject `DRAG_REGION_SCRIPT` for every titlebar style, so the
+        // matching CSS must ship too; only the inset variables are omitted.
+        assert!(block.contains("[webui-drag]"));
+        assert!(!block.contains("--webui-titlebar-inset-start"));
+        assert!(!block.contains("--webui-window-background"));
+    }
+
+    #[test]
+    fn drag_regions_suppress_selection_and_no_drag_restores_it() {
+        let options = WindowOptions {
+            titlebar: TitlebarStyle::HiddenInset,
+            ..WindowOptions::default()
+        };
+        let block = window_css_block(&options, DesktopPlatform::Macos);
+        // A double-click on a drag region must toggle maximize, not select the
+        // title text, so selection is suppressed on the region itself and
+        // restored on opted-out subtrees such as inputs.
+        assert!(block.contains("[webui-drag]{-webkit-user-select:none;user-select:none"));
+        assert!(block.contains("[webui-no-drag]{-webkit-user-select:auto;user-select:auto"));
     }
 
     #[test]

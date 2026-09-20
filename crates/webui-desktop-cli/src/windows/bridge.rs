@@ -281,15 +281,14 @@ fn post_web_message_json(webview: &ICoreWebView2, value: &Value) -> WindowsResul
 /// Encode bytes as standard base64 with padding.
 fn encode_base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         let n = (u32::from(chunk[0]) << 16) | (u32::from(chunk[1]) << 8) | u32::from(chunk[2]);
         out.push(base64_char((n >> 18) & 0x3f));
         out.push(base64_char((n >> 12) & 0x3f));
         out.push(base64_char((n >> 6) & 0x3f));
         out.push(base64_char(n & 0x3f));
     }
-    let rem = chunks.remainder();
     if rem.len() == 1 {
         let n = u32::from(rem[0]) << 16;
         out.push(base64_char((n >> 18) & 0x3f));
@@ -321,14 +320,14 @@ fn decode_base64(input: &str) -> std::result::Result<Vec<u8>, String> {
         return Err("desktop fetch bridge body is not valid base64".to_string());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for chunk in bytes.chunks_exact(4) {
+    for chunk in bytes.as_chunks::<4>().0 {
         decode_base64_group(chunk, &mut out)?;
     }
     Ok(out)
 }
 
 /// Decode one four-character base64 group into up to three bytes.
-fn decode_base64_group(group: &[u8], out: &mut Vec<u8>) -> std::result::Result<(), String> {
+fn decode_base64_group(group: &[u8; 4], out: &mut Vec<u8>) -> std::result::Result<(), String> {
     let a = base64_value(group[0])?;
     let b = base64_value(group[1])?;
     let c = base64_value_or_padding(group[2])?;

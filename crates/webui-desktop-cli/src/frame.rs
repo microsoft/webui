@@ -71,14 +71,29 @@ pub struct DesktopFrameCapabilities {
     pub downloads: bool,
     /// Backend supports non-native titlebar styles.
     pub titlebar_styles: bool,
-    /// Backend supports platform window effects.
-    pub window_effects: bool,
+    /// Platform window effects this backend actually applies.
+    ///
+    /// A single boolean would claim support for every [`WindowEffect`] variant,
+    /// which is never true: no backend implements all of them. Listing the
+    /// implemented variants lets `validate_frame_capabilities` reject an
+    /// unsupported effect loudly instead of letting it silently no-op.
+    pub supported_effects: &'static [WindowEffect],
     /// Backend supports tray icons.
     pub tray: bool,
     /// Backend supports queued native window controls.
     pub window_controls: bool,
     /// Backend emits lifecycle events.
     pub events: bool,
+}
+
+impl DesktopFrameCapabilities {
+    /// Return whether the backend applies `effect` natively.
+    ///
+    /// [`WindowEffect::None`] is always supported because it requests nothing.
+    #[must_use]
+    pub fn supports_effect(&self, effect: WindowEffect) -> bool {
+        matches!(effect, WindowEffect::None) || self.supported_effects.contains(&effect)
+    }
 }
 
 /// Native desktop frame backend contract.
@@ -160,8 +175,8 @@ pub fn validate_frame_capabilities(
         && !capabilities.titlebar_styles
     {
         Some("titlebar style; use the native titlebar or select a backend that advertises titlebar_styles")
-    } else if !matches!(window.effect, WindowEffect::None) && !capabilities.window_effects {
-        Some("window effect; use WindowEffect::None or select a backend that advertises window_effects")
+    } else if !capabilities.supports_effect(window.effect) {
+        Some("window effect; use WindowEffect::None or an effect this backend advertises in supported_effects")
     } else if shell.tray.is_some() && !capabilities.tray {
         Some("tray icon; remove shell.tray or select a backend that advertises tray")
     } else if !shell.menus.is_empty() && !capabilities.app_menu {
@@ -239,6 +254,10 @@ fn platform_run_frame(_frame: DesktopFrame) -> Result<()> {
 /// Jump lists, popovers, and downloads have no macOS backend implementation, so
 /// they stay false and `validate_frame_capabilities` rejects them up front
 /// rather than letting them silently no-op.
+///
+/// All four effects are implemented: `macos::effects::resolve_effect` maps the
+/// three blur variants onto `NSVisualEffectView` vibrancy and `Tabbed` onto the
+/// native tabbed titlebar treatment.
 #[cfg(target_os = "macos")]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
@@ -247,7 +266,12 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
         popovers: false,
         downloads: false,
         titlebar_styles: true,
-        window_effects: true,
+        supported_effects: &[
+            WindowEffect::Vibrancy,
+            WindowEffect::Acrylic,
+            WindowEffect::Mica,
+            WindowEffect::Tabbed,
+        ],
         tray: true,
         window_controls: true,
         events: true,
@@ -256,9 +280,10 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 
 /// Capabilities the Windows Win32/WebView2 backend implements.
 ///
-/// Tray support is deferred, and `WindowEffect::Vibrancy`/`Tabbed` have no
-/// Windows equivalent, but `window_effects` stays true because Mica and Acrylic
-/// are implemented through DWM.
+/// Tray support is deferred. `Acrylic` and `Mica` map onto the DWM system
+/// backdrop types, and `Vibrancy` resolves to acrylic as its closest Windows
+/// equivalent. `Tabbed` is a macOS titlebar treatment with no Windows analogue,
+/// so it is rejected rather than silently ignored.
 #[cfg(target_os = "windows")]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
@@ -267,7 +292,11 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
         popovers: false,
         downloads: false,
         titlebar_styles: true,
-        window_effects: true,
+        supported_effects: &[
+            WindowEffect::Vibrancy,
+            WindowEffect::Acrylic,
+            WindowEffect::Mica,
+        ],
         tray: false,
         window_controls: true,
         events: true,
@@ -276,8 +305,8 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 
 /// Capabilities the Linux GTK4/WebKitGTK backend implements.
 ///
-/// `window_effects` is false because GTK4 exposes no portable blur or vibrancy,
-/// and tray is false because GTK4 removed `GtkStatusIcon`.
+/// `supported_effects` is empty because GTK4 exposes no portable blur or
+/// vibrancy, and tray is false because GTK4 removed `GtkStatusIcon`.
 #[cfg(target_os = "linux")]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
@@ -286,7 +315,7 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
         popovers: false,
         downloads: false,
         titlebar_styles: true,
-        window_effects: false,
+        supported_effects: &[],
         tray: false,
         window_controls: true,
         events: true,
@@ -397,10 +426,14 @@ mod tests {
             assert!(!capabilities.popovers);
             assert!(!capabilities.downloads);
         }
+        // `None` requests nothing, so every backend must accept it.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        assert!(capabilities.supports_effect(WindowEffect::None));
         // GTK4 exposes no portable blur or vibrancy and removed GtkStatusIcon.
         #[cfg(target_os = "linux")]
         {
-            assert!(!capabilities.window_effects);
+            assert!(capabilities.supported_effects.is_empty());
+            assert!(!capabilities.supports_effect(WindowEffect::Mica));
             assert!(!capabilities.tray);
         }
         // Only macOS implements a native application menu and a tray item.
@@ -408,13 +441,21 @@ mod tests {
         {
             assert!(capabilities.app_menu);
             assert!(capabilities.tray);
-            assert!(capabilities.window_effects);
+            // `resolve_effect` covers every non-`None` variant.
+            assert!(capabilities.supports_effect(WindowEffect::Vibrancy));
+            assert!(capabilities.supports_effect(WindowEffect::Acrylic));
+            assert!(capabilities.supports_effect(WindowEffect::Mica));
+            assert!(capabilities.supports_effect(WindowEffect::Tabbed));
         }
         #[cfg(target_os = "windows")]
         {
             assert!(!capabilities.app_menu);
             assert!(!capabilities.tray);
-            assert!(capabilities.window_effects);
+            // DWM backdrops cover the blur variants; `Tabbed` has no analogue.
+            assert!(capabilities.supports_effect(WindowEffect::Vibrancy));
+            assert!(capabilities.supports_effect(WindowEffect::Acrylic));
+            assert!(capabilities.supports_effect(WindowEffect::Mica));
+            assert!(!capabilities.supports_effect(WindowEffect::Tabbed));
         }
         // An unsupported platform must advertise nothing.
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]

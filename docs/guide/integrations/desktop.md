@@ -84,18 +84,32 @@ actionable message rather than an option that quietly does nothing:
 | Lifecycle events | Yes | Yes | Yes |
 | Titlebar styles (`hidden-inset`, `overlay`, `none`) | Yes | Yes | Yes |
 | Window controls (`WindowHandle` commands) | Yes | Yes | Yes |
-| Window effects | Yes (vibrancy) | Yes (mica, acrylic) | No |
+| Window effects | Yes (all four) | Yes (except `tabbed`) | No |
 | Application menu | Yes | No | No |
 | Tray icon | Yes | No | No |
 | Jump list | No | No | No |
 | Popovers | No | No | No |
 | Downloads | No | No | No |
 
-Effects that a backend cannot reproduce degrade to the closest supported
-effect rather than failing, so `vibrancy` on Windows renders as acrylic. Linux
-advertises no effects at all, because GTK4 exposes no portable blur, and no
-tray, because GTK4 removed `GtkStatusIcon`. On Windows, `overlay` removes the
-native caption buttons, so web content must draw its own.
+Each backend advertises the specific effects it implements, and requesting one
+it does not advertise is a startup error:
+
+| `effect` | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| `none` | Yes | Yes | Yes |
+| `vibrancy` | Yes | Yes, as acrylic | No |
+| `acrylic` | Yes | Yes | No |
+| `mica` | Yes | Yes | No |
+| `tabbed` | Yes | No | No |
+
+Where a platform has no exact analogue but a close one, it maps rather than
+fails: `vibrancy` on Windows renders through the acrylic system backdrop.
+Where it has no analogue at all, it does not advertise the effect, so the
+mismatch surfaces as a validation error instead of a silent no-op - `tabbed`
+is a macOS titlebar treatment with no Windows equivalent. Linux advertises no
+effects, because GTK4 exposes no portable blur, and no tray, because GTK4
+removed `GtkStatusIcon`. On Windows, `overlay` removes the native caption
+buttons, so web content must draw its own.
 
 `platform_capabilities()` in `webui-desktop-cli` is the source of truth; the
 table above mirrors it. Availability also depends on the desktop environment:
@@ -140,6 +154,12 @@ on `window`: `webui:ready`, `webui:window-resized`,
 The cancelable Rust events are the close and navigation requests; web listeners
 can observe those events, while the Rust handler is the authority for native
 cancellation.
+
+Linux never emits `WindowMoved`/`webui:window-moved`. GTK4 removed the GTK3
+window-position query APIs, and Wayland deliberately does not let a client
+read its own toplevel position, so there is no API to source this event from;
+handlers that depend on it should treat its absence on Linux as expected
+rather than a bug.
 
 `DesktopFrame::window_handle` exposes a `Send + Sync` `WindowHandle` that queues
 UI-thread commands: `set_title`, `set_size`, `minimize`, `maximize`,

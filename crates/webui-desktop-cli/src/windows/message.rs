@@ -9,9 +9,11 @@ use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller;
 use windows::core::Error as WindowsError;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi;
+use windows::Win32::UI::HiDpi;
 use windows::Win32::UI::WindowsAndMessaging::{self, MSG};
 
 use super::command::execute_window_command;
+use super::event::{logical_dimension, physical_to_logical, size_event_transition};
 use super::nonclient::{non_client_calc_size, non_client_hit_test, redraw_frame};
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
@@ -194,18 +196,17 @@ fn dispatch_size_changed(hwnd: HWND, w_param: WPARAM) {
     with_window_state(hwnd, |state| {
         let _ = set_controller_bounds(&state.controller, hwnd);
         let size = get_window_size(hwnd);
-        let event = match u32::try_from(w_param.0).unwrap_or(WindowsAndMessaging::SIZE_RESTORED) {
-            WindowsAndMessaging::SIZE_MAXIMIZED => DesktopEvent::WindowMaximized {
-                window_id: WINDOW_ID,
-            },
-            WindowsAndMessaging::SIZE_MINIMIZED => DesktopEvent::WindowMinimized {
-                window_id: WINDOW_ID,
-            },
-            _ => DesktopEvent::WindowResized {
-                window_id: WINDOW_ID,
-                width: u32::try_from(size.cx).unwrap_or_default(),
-                height: u32::try_from(size.cy).unwrap_or_default(),
-            },
+        let size_code = u32::try_from(w_param.0).unwrap_or(WindowsAndMessaging::SIZE_RESTORED);
+        let (current, transition) = size_event_transition(state.window_state.get(), size_code);
+        state.window_state.set(current);
+        if let Some(event) = transition {
+            emit(state, &event);
+        }
+        let dpi = window_dpi(hwnd);
+        let event = DesktopEvent::WindowResized {
+            window_id: WINDOW_ID,
+            width: logical_dimension(size.cx, dpi),
+            height: logical_dimension(size.cy, dpi),
         };
         emit(state, &event);
         save_window_state(hwnd, state);
@@ -220,12 +221,13 @@ fn dispatch_moved(hwnd: HWND) {
         if unsafe { WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) }.is_err() {
             return;
         }
+        let dpi = window_dpi(hwnd);
         emit(
             state,
             &DesktopEvent::WindowMoved {
                 window_id: WINDOW_ID,
-                x: rect.left,
-                y: rect.top,
+                x: physical_to_logical(rect.left, dpi),
+                y: physical_to_logical(rect.top, dpi),
             },
         );
         save_window_state(hwnd, state);
@@ -292,13 +294,13 @@ fn destroy_window(hwnd: HWND) {
 }
 
 /// Dispatch an event to handlers and mirror it into web content.
-fn emit(state: &FrameState, event: &DesktopEvent) {
+pub(super) fn emit(state: &FrameState, event: &DesktopEvent) {
     let _ = state.events.dispatch(event);
     mirror_event(&state.webview, event);
 }
 
 /// Dispatch an event when the frame state is installed.
-fn publish(hwnd: HWND, event: &DesktopEvent) {
+pub(super) fn publish(hwnd: HWND, event: &DesktopEvent) {
     with_window_state(hwnd, |state| emit(state, event));
 }
 
@@ -318,6 +320,16 @@ pub(super) fn set_controller_bounds(
         })?;
     }
     Ok(())
+}
+
+/// Return the window's current DPI for physical-to-logical conversion.
+///
+/// `GetDpiForWindow` returns 0 for an invalid window; callers treat 0 as the
+/// 96-DPI baseline rather than dividing by zero.
+fn window_dpi(hwnd: HWND) -> u32 {
+    // SAFETY: `hwnd` is a live window and `GetDpiForWindow` only reads its
+    // DPI awareness context.
+    unsafe { HiDpi::GetDpiForWindow(hwnd) }
 }
 
 /// Return the window's client size in physical pixels.

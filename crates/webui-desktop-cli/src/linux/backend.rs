@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use gtk4::{gdk, gio, glib, prelude::*, Application, ApplicationWindow, GestureDrag, HeaderBar};
+use gtk4::{gdk, gio, glib, prelude::*, Application, ApplicationWindow, HeaderBar};
 use webkit6::{
     prelude::*, LoadEvent, PolicyDecisionType, URISchemeRequest, URISchemeResponse,
     UserContentInjectedFrames, UserContentManager, UserScript, UserScriptInjectionTime, WebContext,
@@ -20,8 +20,18 @@ use webui_desktop::{
 use super::protocol::{finish_scheme_request, handle_scheme_request, startup_url};
 use crate::DesktopFrame;
 
-const WINDOW_ID: WindowId = WindowId(1);
-const SCRIPT_HANDLER: &str = "webuiHostPostMessage";
+const WINDOW_ID: WindowId = WindowId::PRIMARY;
+const SCRIPT_HANDLER: &str = "webuiHost";
+
+/// Host bridge exposed to web content.
+///
+/// WebKitGTK exposes a registered handler as
+/// `window.webkit.messageHandlers.<name>`, so [`DRAG_REGION_SCRIPT`] cannot
+/// reach it until this alias is defined. Without the alias every drag,
+/// minimize, maximize, and close message from page JavaScript is silently
+/// dropped.
+const HOST_BRIDGE_SCRIPT: &str = "(()=>{if(!window.webkit?.messageHandlers?.webuiHost)return;\
+window.webuiHostPostMessage=m=>window.webkit.messageHandlers.webuiHost.postMessage(String(m));})();";
 
 /// Run a packaged WebUI desktop app on Linux using GTK4 and WebKitGTK 6.
 ///
@@ -48,8 +58,13 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let app = Application::builder()
         .application_id("com.microsoft.webui.desktop")
         .build();
+    let events = frame.events.clone();
     app.connect_activate(move |app| build_window(app, frame.clone()));
     app.run();
+    // The window and its `WebView` are already destroyed once `app.run()`
+    // returns, so there is no page left to mirror this event into; only the
+    // native handler registry can still observe it.
+    let _ = events.dispatch(&DesktopEvent::Exiting);
     Ok(())
 }
 
@@ -61,8 +76,11 @@ fn build_window(app: &Application, frame: DesktopFrame) {
     });
 
     let manager = UserContentManager::new();
+    let mut source = String::with_capacity(HOST_BRIDGE_SCRIPT.len() + DRAG_REGION_SCRIPT.len());
+    source.push_str(HOST_BRIDGE_SCRIPT);
+    source.push_str(DRAG_REGION_SCRIPT);
     let script = UserScript::new(
-        DRAG_REGION_SCRIPT,
+        &source,
         UserContentInjectedFrames::AllFrames,
         UserScriptInjectionTime::Start,
         &[],
@@ -106,7 +124,6 @@ fn build_window(app: &Application, frame: DesktopFrame) {
     restore_state(&window, state_store.as_ref());
     install_events(&window, &webview, &manager, &frame, state_store.clone());
     install_wakeup(&window, &webview, &frame);
-    install_drag_gesture(&window, &webview);
 
     if frame.window.maximized {
         window.maximize();
@@ -256,6 +273,7 @@ fn install_events(
     });
 
     connect_window_state_events(window, webview, &frame.events, state_store);
+    super::state::connect_toplevel_state_events(window, webview, &frame.events);
     connect_webview_events(webview, &frame.events);
     connect_theme_events(webview, &frame.events);
     connect_message_handler(manager, window, webview, &frame.events);
@@ -267,34 +285,14 @@ fn connect_window_state_events(
     events: &webui_desktop::EventRegistry,
     state_store: Option<WindowStateStore>,
 ) {
-    let events_max = events.clone();
-    let webview_max = webview.clone();
+    // `DesktopEvent::WindowMaximized`/`WindowUnmaximized` and the fullscreen
+    // pair are emitted from a single consolidated path in
+    // `state::connect_toplevel_state_events`, driven by `gdk::Toplevel`'s
+    // `state` property; this handler only persists window state, which the
+    // GTK-level `maximized` property notification tracks independently of
+    // the GDK toplevel state bits.
     window.connect_maximized_notify(move |window| {
-        let event = if window.is_maximized() {
-            DesktopEvent::WindowMaximized {
-                window_id: WINDOW_ID,
-            }
-        } else {
-            DesktopEvent::WindowUnmaximized {
-                window_id: WINDOW_ID,
-            }
-        };
-        dispatch_event(&events_max, &webview_max, &event);
         persist_state(window, state_store.as_ref());
-    });
-    let events_full = events.clone();
-    let webview_full = webview.clone();
-    window.connect_fullscreened_notify(move |window| {
-        let event = if window.is_fullscreen() {
-            DesktopEvent::WindowEnteredFullscreen {
-                window_id: WINDOW_ID,
-            }
-        } else {
-            DesktopEvent::WindowLeftFullscreen {
-                window_id: WINDOW_ID,
-            }
-        };
-        dispatch_event(&events_full, &webview_full, &event);
     });
     let events_focus = events.clone();
     let webview_focus = webview.clone();
@@ -418,25 +416,6 @@ fn connect_message_handler(
     });
 }
 
-fn install_drag_gesture(window: &ApplicationWindow, webview: &WebView) {
-    let gesture = GestureDrag::new();
-    let window = window.clone();
-    gesture.connect_drag_begin(move |gesture, _, _| {
-        let Some(device) = gesture.current_event_device() else {
-            return;
-        };
-        let timestamp = gesture.current_event_time();
-        let Some(surface) = window.surface() else {
-            return;
-        };
-        let Some(toplevel) = surface.downcast_ref::<gdk::Toplevel>() else {
-            return;
-        };
-        toplevel.begin_move(&device, 1, 0.0, 0.0, timestamp);
-    });
-    webview.add_controller(gesture);
-}
-
 fn begin_native_drag(window: &ApplicationWindow) {
     let Some(surface) = window.surface() else {
         return;
@@ -480,7 +459,7 @@ fn dispatch_size_event(
     persist_state(window, state_store);
 }
 
-fn dispatch_event(
+pub(super) fn dispatch_event(
     events: &webui_desktop::EventRegistry,
     webview: &WebView,
     event: &DesktopEvent,

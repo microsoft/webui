@@ -3,7 +3,7 @@
 
 //! UI-thread execution of queued [`WindowCommand`]s and host script messages.
 
-use webui_desktop::{DesktopHostMessage, WindowCommand};
+use webui_desktop::{DesktopEvent, DesktopHostMessage, WindowCommand};
 use webview2_com::CoTaskMemPWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi;
@@ -11,6 +11,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows::Win32::UI::WindowsAndMessaging::{self, WINDOW_EX_STYLE, WINDOW_STYLE};
 
 use super::state::{with_window_state, FrameState, SavedFrame};
+use super::{message, WINDOW_ID};
 
 /// Execute one queued command on the UI thread.
 pub(super) fn execute_window_command(hwnd: HWND, command: WindowCommand) {
@@ -69,16 +70,28 @@ pub(super) fn toggle_maximize(hwnd: HWND) {
 /// Enter or leave fullscreen, saving and restoring the previous frame.
 pub(super) fn set_fullscreen(hwnd: HWND, state: &FrameState, enable: bool) {
     if enable {
-        enter_fullscreen(hwnd, state);
-    } else {
-        leave_fullscreen(hwnd, state);
+        if enter_fullscreen(hwnd, state) {
+            message::emit(
+                state,
+                &DesktopEvent::WindowEnteredFullscreen {
+                    window_id: WINDOW_ID,
+                },
+            );
+        }
+    } else if leave_fullscreen(hwnd, state) {
+        message::emit(
+            state,
+            &DesktopEvent::WindowLeftFullscreen {
+                window_id: WINDOW_ID,
+            },
+        );
     }
 }
 
 /// Save the current frame, strip the border styles, and fill the monitor.
-fn enter_fullscreen(hwnd: HWND, state: &FrameState) {
+fn enter_fullscreen(hwnd: HWND, state: &FrameState) -> bool {
     if state.fullscreen.get().is_some() {
-        return;
+        return false;
     }
     let style = WINDOW_STYLE(super::state::window_style_bits(
         hwnd,
@@ -91,12 +104,12 @@ fn enter_fullscreen(hwnd: HWND, state: &FrameState) {
     let mut rect = RECT::default();
     // SAFETY: `hwnd` is a live window and `rect` is valid writable storage.
     if unsafe { WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) }.is_err() {
-        return;
+        return false;
     }
     // SAFETY: `hwnd` is a live window and `IsZoomed` only reads window state.
     let maximized = unsafe { WindowsAndMessaging::IsZoomed(hwnd) }.as_bool();
     let Some(monitor) = monitor_rect(hwnd, false) else {
-        return;
+        return false;
     };
     state.fullscreen.set(Some(SavedFrame {
         style,
@@ -110,12 +123,13 @@ fn enter_fullscreen(hwnd: HWND, state: &FrameState) {
         & !WindowsAndMessaging::WS_THICKFRAME;
     set_style(hwnd, fullscreen_style);
     apply_rect(hwnd, monitor);
+    true
 }
 
 /// Restore the styles and rectangle captured before fullscreen.
-fn leave_fullscreen(hwnd: HWND, state: &FrameState) {
+fn leave_fullscreen(hwnd: HWND, state: &FrameState) -> bool {
     let Some(saved) = state.fullscreen.take() else {
-        return;
+        return false;
     };
     set_style(hwnd, saved.style);
     set_ex_style(hwnd, saved.ex_style);
@@ -124,6 +138,7 @@ fn leave_fullscreen(hwnd: HWND, state: &FrameState) {
     } else {
         apply_rect(hwnd, saved.rect);
     }
+    true
 }
 
 /// Replace the window style and request a non-client frame recalculation.
@@ -302,10 +317,14 @@ fn start_drag(hwnd: HWND) {
 }
 
 /// Pack a screen point into the `LPARAM` layout Windows expects.
+///
+/// Mirrors `MAKELPARAM`: the low word carries x and the high word carries y.
+/// `isize` has no `From<u16>` impl, so the truncated halves are combined as a
+/// `u32` and converted once.
 fn pack_point(point: POINT) -> isize {
-    let x = isize::from(u16::try_from(point.x.cast_unsigned() & 0xffff).unwrap_or_default());
-    let y = isize::from(u16::try_from(point.y.cast_unsigned() & 0xffff).unwrap_or_default());
-    (y << 16) | x
+    let x = point.x.cast_unsigned() & 0xffff;
+    let y = point.y.cast_unsigned() & 0xffff;
+    isize::try_from((y << 16) | x).unwrap_or_default()
 }
 
 /// Raise or lower the window relative to ordinary windows.

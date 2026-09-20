@@ -24,6 +24,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// Application identifier used for the persisted window-state file.
 pub(super) const STATE_APP_ID: &str = "webui-desktop";
 
+/// The native state reported by `WM_SIZE`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WindowSizeState {
+    /// The window has its ordinary restored frame.
+    Normal,
+    /// The window fills its work area.
+    Maximized,
+    /// The window is minimized to the taskbar.
+    Minimized,
+}
+
 /// Window geometry and styles saved before entering fullscreen.
 #[derive(Clone, Copy)]
 pub(super) struct SavedFrame {
@@ -61,12 +72,27 @@ pub(super) struct FrameState {
     pub(super) store: Option<WindowStateStore>,
     /// Saved frame captured while the window is fullscreen.
     pub(super) fullscreen: Cell<Option<SavedFrame>>,
+    /// Most recent state reported by `WM_SIZE`.
+    pub(super) window_state: Cell<WindowSizeState>,
 }
 
 impl FrameState {
     /// Return the requested titlebar style.
     pub(super) fn titlebar(&self) -> &TitlebarStyle {
         &self.options.titlebar
+    }
+}
+
+/// Read the current native size state while constructing a frame record.
+pub(super) fn initial_window_size_state(hwnd: HWND) -> WindowSizeState {
+    // SAFETY: `hwnd` is a live window; `IsIconic` and `IsZoomed` only read its state.
+    if unsafe { WindowsAndMessaging::IsIconic(hwnd) }.as_bool() {
+        WindowSizeState::Minimized
+    // SAFETY: `hwnd` is a live window; `IsZoomed` only reads its state.
+    } else if unsafe { WindowsAndMessaging::IsZoomed(hwnd) }.as_bool() {
+        WindowSizeState::Maximized
+    } else {
+        WindowSizeState::Normal
     }
 }
 

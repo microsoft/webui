@@ -10,7 +10,7 @@
 //! `NSObject`/`NSApplicationDelegate`/`NSWindowDelegate` trait implementation
 //! that AppKit calls into directly.
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
@@ -46,6 +46,13 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) shell: DesktopShellConfig,
     pub(in crate::macos) events: EventRegistry,
     pub(in crate::macos) window_handle: webui_desktop::WindowHandle,
+    /// Last observed `NSWindow::isZoomed` value.
+    ///
+    /// AppKit has no `windowDidZoom:` notification, so maximize transitions are
+    /// derived by diffing this against `isZoomed` on each resize. Without it
+    /// macOS would be the only backend that never emits
+    /// `WindowMaximized`/`WindowUnmaximized`.
+    pub(in crate::macos) zoomed: Cell<bool>,
 }
 
 define_class!(
@@ -86,7 +93,7 @@ define_class!(
                 dispatch_for_delegate(
                     self,
                     DesktopEvent::WindowCloseRequested {
-                        window_id: WindowId(0)
+                        window_id: WindowId::PRIMARY
                     }
                 ),
                 EventResponse::PreventDefault
@@ -96,11 +103,29 @@ define_class!(
         #[unsafe(method(windowDidResize:))]
         fn windowDidResize(&self, _notification: &NSNotification) {
             if let Some(window) = self.ivars().window.get() {
+                // Emit the state transition before the geometry so handlers see
+                // the window become maximized before its new size, matching the
+                // ordering the Windows and Linux backends use.
+                let zoomed = window.isZoomed();
+                if self.ivars().zoomed.replace(zoomed) != zoomed {
+                    dispatch_for_delegate(
+                        self,
+                        if zoomed {
+                            DesktopEvent::WindowMaximized {
+                                window_id: WindowId::PRIMARY,
+                            }
+                        } else {
+                            DesktopEvent::WindowUnmaximized {
+                                window_id: WindowId::PRIMARY,
+                            }
+                        },
+                    );
+                }
                 let size = window.frame().size;
                 dispatch_for_delegate(
                     self,
                     DesktopEvent::WindowResized {
-                        window_id: WindowId(0),
+                        window_id: WindowId::PRIMARY,
                         width: clamp_dimension(size.width),
                         height: clamp_dimension(size.height),
                     },
@@ -115,7 +140,7 @@ define_class!(
                 dispatch_for_delegate(
                     self,
                     DesktopEvent::WindowMoved {
-                        window_id: WindowId(0),
+                        window_id: WindowId::PRIMARY,
                         x: clamp_coordinate(origin.x),
                         y: clamp_coordinate(origin.y),
                     },
@@ -140,7 +165,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowMinimized {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -149,7 +174,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowRestored {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -158,7 +183,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowFocused {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -167,7 +192,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowBlurred {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -176,7 +201,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowEnteredFullscreen {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -185,7 +210,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowLeftFullscreen {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
         }
@@ -195,7 +220,7 @@ define_class!(
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowClosed {
-                    window_id: WindowId(0),
+                    window_id: WindowId::PRIMARY,
                 },
             );
             dispatch_for_delegate(self, DesktopEvent::Exiting);
@@ -218,6 +243,7 @@ pub(super) fn dispatch_for_delegate(
 
 impl DesktopAppDelegate {
     pub(super) fn new(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Retained<Self> {
+        let maximized = options.options.maximized;
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
             window: OnceCell::new(),
             webview: OnceCell::new(),
@@ -231,6 +257,7 @@ impl DesktopAppDelegate {
             shell: options.shell,
             events: options.events,
             window_handle: options.window_handle,
+            zoomed: Cell::new(maximized),
         });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
