@@ -1333,6 +1333,17 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
+For a desktop app, start with zero Rust:
+
+```bash
+webui desktop run ./src
+```
+
+Write a host crate only when you need dynamic route state or IPC. To generate a
+working progressive scaffold, use `webui desktop init ./my-app`; it creates the
+entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+files are protected unless `--force` is passed.
+
 ```bash
 # Dev server with live reload
 webui serve ./src --state ./data/state.json --plugin=webui --watch

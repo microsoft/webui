@@ -21,6 +21,7 @@ use crate::protocol::{
     read_asset_response, read_known_asset_response, DesktopHttpMethod, DesktopProtocolRequest,
     DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
 };
+use crate::{apply_window_css, window_css_block, DesktopPlatform};
 
 /// Source-backed desktop runtime configuration.
 pub struct DesktopSourceConfig {
@@ -44,6 +45,12 @@ pub struct DesktopSourceConfig {
     pub token_css: Option<HashMap<String, String>>,
     /// Optional theme value and search root to resolve after protocol build.
     pub theme: Option<(String, PathBuf)>,
+    /// Window configuration used to derive injected window CSS.
+    ///
+    /// Source-mode hosts must supply the same [`crate::WindowOptions`] they pass
+    /// to the native runner, otherwise development renders omit the titlebar
+    /// custom properties that packaged renders inject.
+    pub window: crate::WindowOptions,
 }
 
 impl DesktopSourceConfig {
@@ -61,6 +68,7 @@ impl DesktopSourceConfig {
             api_routes: ApiRouteRegistry::new(),
             token_css: None,
             theme: None,
+            window: crate::WindowOptions::default(),
         }
     }
 }
@@ -113,6 +121,7 @@ pub struct DesktopRuntime {
     asset_index: HashMap<String, DesktopAssetEntry>,
     max_asset_bytes: u64,
     startup_html: String,
+    window_css: String,
     ipc_registry: IpcRegistry,
     plugin: Option<webui::Plugin>,
     route_state: RouteStateRegistry,
@@ -387,13 +396,17 @@ impl DesktopRuntime {
             token_css: token_css.as_ref(),
             request_path: "/",
         })?;
-        let startup_html = render_html(
-            &protocol,
-            config.build_options.plugin,
-            &config.build_options.entry,
-            "/",
-            &startup_state,
-        )?;
+        let window_css = window_css_block(&config.window, DesktopPlatform::current());
+        let startup_html = apply_window_css(
+            render_html(
+                &protocol,
+                config.build_options.plugin,
+                &config.build_options.entry,
+                "/",
+                &startup_state,
+            )?,
+            &window_css,
+        );
 
         Ok(Self {
             protocol,
@@ -404,6 +417,7 @@ impl DesktopRuntime {
             asset_index: HashMap::new(),
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
+            window_css,
             ipc_registry: config.ipc_registry,
             plugin: config.build_options.plugin,
             route_state: config.route_state,
@@ -489,7 +503,11 @@ impl DesktopRuntime {
             token_css: config.token_css.as_ref(),
             request_path: "/",
         })?;
-        let startup_html = render_html(&protocol, plugin, &manifest.entry, "/", &startup_state)?;
+        let window_css = window_css_block(&manifest.window, DesktopPlatform::current());
+        let startup_html = apply_window_css(
+            render_html(&protocol, plugin, &manifest.entry, "/", &startup_state)?,
+            &window_css,
+        );
 
         Ok(Self {
             protocol,
@@ -500,6 +518,7 @@ impl DesktopRuntime {
             asset_index,
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
+            window_css,
             ipc_registry: config.ipc_registry,
             plugin,
             route_state: config.route_state,
@@ -552,13 +571,16 @@ impl DesktopRuntime {
             }
 
             if self.has_route_match(request_path)? {
-                let html = render_html(
-                    &self.protocol,
-                    self.plugin,
-                    &self.entry,
-                    request_path,
-                    &self.state_for_request(request_path)?,
-                )?;
+                let html = apply_window_css(
+                    render_html(
+                        &self.protocol,
+                        self.plugin,
+                        &self.entry,
+                        request_path,
+                        &self.state_for_request(request_path)?,
+                    )?,
+                    &self.window_css,
+                );
                 return Ok(DesktopProtocolResponse::html(html.into_bytes()));
             }
         }
@@ -1019,6 +1041,65 @@ mod tests {
         let runtime = DesktopRuntime::from_source(config).unwrap();
 
         assert!(runtime.startup_html().contains("Hello Desktop"));
+    }
+
+    #[test]
+    fn source_mode_injects_window_css_like_packaged_mode() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "index.html", "<main>Hello {{name}}</main>");
+        write_file(dir.path(), "state.json", r#"{"name":"Desktop"}"#);
+
+        let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
+        config.state_file = Some(dir.path().join("state.json"));
+        config.window = crate::WindowOptions {
+            titlebar: crate::TitlebarStyle::HiddenInset,
+            background: Some("#101014".parse().unwrap()),
+            ..crate::WindowOptions::default()
+        };
+
+        let runtime = DesktopRuntime::from_source(config).unwrap();
+
+        // Development renders must carry the same titlebar custom properties as
+        // packaged renders, otherwise a custom titlebar only works once shipped.
+        assert!(runtime
+            .startup_html()
+            .contains("--webui-titlebar-inset-start"));
+        assert!(runtime.startup_html().contains("--webui-window-background"));
+    }
+
+    #[test]
+    fn non_root_route_renders_carry_window_css() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "index.html",
+            "<route path=\"/\" component=\"my-page\"><route path=\"favorites\" component=\"my-page\" exact /></route>",
+        );
+        write_file(dir.path(), "my-page.html", "<p>{{page}}</p>");
+
+        let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
+        config.window = crate::WindowOptions {
+            titlebar: crate::TitlebarStyle::HiddenInset,
+            ..crate::WindowOptions::default()
+        };
+        config
+            .route_state
+            .route("/favorites", |_| {
+                Ok(serde_json::json!({ "page": "favorites" }))
+            })
+            .unwrap();
+
+        let runtime = DesktopRuntime::from_source(config).unwrap();
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest::get("/favorites"))
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        let html = String::from_utf8(response.body).unwrap();
+        // A full page load on a non-root route must carry the same titlebar
+        // custom properties as the startup document, or a custom titlebar
+        // collapses as soon as the user navigates.
+        assert!(html.contains("--webui-titlebar-inset-start"));
     }
 
     #[test]

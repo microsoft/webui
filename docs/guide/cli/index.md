@@ -573,9 +573,15 @@ support package, next to the `webui` binary, or from the workspace during local
 development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 
 ```bash
+webui desktop init [APP_ROOT] [--force]
+webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>]
 webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
 webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--release] [--bundle-out <DIR>] [--no-web-build]
 ```
+
+`webui desktop init` creates a minimal `src/index.html`, `package.json`, and
+`desktop/` Rust runner. It refuses to replace existing generated files; pass
+`--force` when regenerating a scaffold.
 
 **Arguments:**
 

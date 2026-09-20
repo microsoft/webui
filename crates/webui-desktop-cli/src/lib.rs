@@ -5,8 +5,9 @@
 
 mod frame;
 pub use frame::{
-    find_packaged_resources_dir, run_frame, run_packaged_app, run_runtime, DesktopFrame,
-    DesktopFrameBackend, DesktopFrameCapabilities, PlatformFrameBackend,
+    find_packaged_resources_dir, run_frame, run_packaged_app, run_runtime,
+    validate_frame_capabilities, DesktopFrame, DesktopFrameBackend, DesktopFrameCapabilities,
+    PlatformFrameBackend,
 };
 
 #[cfg(target_os = "macos")]

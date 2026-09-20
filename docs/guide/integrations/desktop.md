@@ -42,6 +42,112 @@ webui desktop build ./src \
   --devtools
 ```
 
+
+## Minimum desktop app
+
+Start with no Rust at all:
+
+```bash
+webui desktop run ./src
+```
+
+This builds the entry template and opens it in the native system webview. Add a
+Rust host only when the app needs dynamic route state, native IPC, or direct
+window control. To create the progressive starting point, run:
+
+```bash
+webui desktop init ./my-app
+cd ./my-app
+webui desktop run ./src
+```
+
+The command creates `src/index.html`, `package.json`, and a `desktop/` runner
+crate. It never overwrites those generated files unless `--force` is passed.
+
+## Window options
+
+`webuiDesktop` and `WindowOptions` support `title`, `width`, `height`,
+`min_width`, `min_height`, `max_width`, `max_height`, `resizable`, `maximized`,
+`fullscreen`, `always_on_top`, `center`, `background`, `titlebar`, `effect`,
+`remember_state`, and `devtools`. `background` is `#rrggbb` or `#rrggbbaa` and
+is painted before the first web content paint.
+
+`titlebar` is one of `native`, `hidden-inset`, `overlay` with a `height`, or
+`none`. `effect` is one of `none`, `vibrancy`, `acrylic`, `mica`, or `tabbed`.
+Unsupported requested options fail validation before the native shell starts;
+they do not silently degrade. Each backend advertises exactly what it
+implements, so asking for something unsupported is a startup error with an
+actionable message rather than an option that quietly does nothing:
+
+| Capability | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Lifecycle events | Yes | Yes | Yes |
+| Titlebar styles (`hidden-inset`, `overlay`, `none`) | Yes | Yes | Yes |
+| Window controls (`WindowHandle` commands) | Yes | Yes | Yes |
+| Window effects | Yes (vibrancy) | Yes (mica, acrylic) | No |
+| Application menu | Yes | No | No |
+| Tray icon | Yes | No | No |
+| Jump list | No | No | No |
+| Popovers | No | No | No |
+| Downloads | No | No | No |
+
+Effects that a backend cannot reproduce degrade to the closest supported
+effect rather than failing, so `vibrancy` on Windows renders as acrylic. Linux
+advertises no effects at all, because GTK4 exposes no portable blur, and no
+tray, because GTK4 removed `GtkStatusIcon`. On Windows, `overlay` removes the
+native caption buttons, so web content must draw its own.
+
+`platform_capabilities()` in `webui-desktop-cli` is the source of truth; the
+table above mirrors it. Availability also depends on the desktop environment:
+a Linux compositor may ignore `always_on_top`, and Wayland controls window
+placement, so `center` is advisory there.
+
+For non-native titlebars, the runtime injects these CSS custom properties:
+`--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`,
+`--webui-titlebar-height`, and, when `background` is set,
+`--webui-window-background`. Use them in layout rather than hardcoding
+platform offsets. For example, macOS controls reserve a leading inset of about
+78px and Windows caption buttons reserve a trailing inset of about 138px.
+
+Mark an application-drawn drag area with `webui-drag`; add `webui-no-drag` to a
+nested interactive element. Double-clicking a drag area toggles maximize. Do
+not use Chromium's `-webkit-app-region: drag`: WKWebView and WebKitGTK do not
+implement that Chromium-specific property, and WebView2 apps should use the
+WebUI drag contract for cross-platform behavior.
+
+## Lifecycle and native window control
+
+Rust handlers are registered with `DesktopFrame::on_event` and return
+`EventResponse::Continue` or `EventResponse::PreventDefault`. The latter can
+cancel `WindowCloseRequested` and `NavigationRequested`; handlers must not block
+the backend UI thread. The complete event set is `Ready`, `WindowResized`,
+`WindowMoved`, `WindowMaximized`, `WindowUnmaximized`, `WindowMinimized`,
+`WindowRestored`, `WindowEnteredFullscreen`, `WindowLeftFullscreen`,
+`WindowFocused`, `WindowBlurred`, `WindowCloseRequested`, `WindowClosed`,
+`ThemeChanged`, `ScaleFactorChanged`, `NavigationRequested`,
+`NavigationCompleted`, and `Exiting`.
+
+The same events are mirrored into web content as cancelable-aware `CustomEvent`s
+on `window`: `webui:ready`, `webui:window-resized`,
+`webui:window-moved`, `webui:window-maximized`,
+`webui:window-unmaximized`, `webui:window-minimized`,
+`webui:window-restored`, `webui:window-entered-fullscreen`,
+`webui:window-left-fullscreen`, `webui:window-focused`,
+`webui:window-blurred`, `webui:window-close-requested`,
+`webui:window-closed`, `webui:theme-changed`,
+`webui:scale-factor-changed`, `webui:navigation-requested`,
+`webui:navigation-completed`, and `webui:exiting`. Event data is in `detail`.
+The cancelable Rust events are the close and navigation requests; web listeners
+can observe those events, while the Rust handler is the authority for native
+cancellation.
+
+`DesktopFrame::window_handle` exposes a `Send + Sync` `WindowHandle` that queues
+UI-thread commands: `set_title`, `set_size`, `minimize`, `maximize`,
+`unmaximize`, `fullscreen`, `center`, `focus`, `close`, `start_drag`, and
+`set_always_on_top`. Queue errors are returned to the caller. Set
+`remember_state: true` to persist validated position, size, and maximized state;
+stale or off-screen state is rejected on the next launch.
+
 ## Bundle contents
 
 `webui desktop build` writes an immutable bundle:
@@ -65,6 +171,14 @@ Package a Rust-first desktop app root in one command:
 webui desktop package ./my-app --target macos-app --out ./packages
 webui desktop package ./my-app --target macos-app --out ./packages \
   --theme @microsoft/webui-examples-theme
+```
+
+Add `--release` to `desktop package` when measuring or distributing an optimized
+Rust runner. If invoking the CLI through Cargo, the flag belongs after `--`:
+
+```bash
+cargo run -p microsoft-webui-cli -- desktop package ./my-app \
+  --target macos-app --out ./packages --release
 ```
 
 For app roots, the sidecar reads `webuiDesktop` from `package.json`, runs the
@@ -178,6 +292,11 @@ The runtime uses these providers for full HTML renders and WebUI router partial
 requests. Provider errors are surfaced instead of falling back silently. The CLI
 `--state` path remains a simple seed-state fallback.
 
+For route-backed apps, keep mutable collections in shared Rust storage and
+borrow them while preparing a route's view model. Use the render seed for
+global settings and theme tokens rather than copying the complete application
+store into every route. Return only the collections the current page needs.
+
 Desktop hosts can also register custom-protocol API handlers, for example
 `/api/contacts/:id`, so existing browser code can keep using `fetch("./api")`
 while packaged apps mutate Rust-owned state in memory.
@@ -190,6 +309,12 @@ while packaged apps mutate Rust-owned state in memory.
 - Build/package output paths are rejected when they overlap input directories.
 - Protocol data, CSS maps, and asset metadata are shared by reference.
 - Development-only features are excluded from production bundles.
+
+Measure the packaged release app with representative data. Time page readiness,
+not just process creation, and distinguish warm-cache launches from cold-cache
+launches. On macOS, physical footprint is more useful than raw RSS; include the
+WebKit content, networking, and GPU processes instead of reporting only the
+Rust host.
 
 ## Shell extension points
 

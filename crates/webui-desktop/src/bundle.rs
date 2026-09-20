@@ -18,32 +18,7 @@ use webui_handler::ResponseWriter;
 
 use crate::error::{DesktopError, Result};
 
-/// Desktop window defaults stored in a bundle manifest.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WindowOptions {
-    /// Window title.
-    pub title: String,
-    /// Initial window width in physical-independent pixels.
-    pub width: u32,
-    /// Initial window height in physical-independent pixels.
-    pub height: u32,
-    /// Whether to start maximized.
-    pub maximized: bool,
-    /// Whether to enable web inspector/devtools for development builds.
-    pub devtools: bool,
-}
-
-impl Default for WindowOptions {
-    fn default() -> Self {
-        Self {
-            title: "WebUI".to_string(),
-            width: 1200,
-            height: 800,
-            maximized: false,
-            devtools: false,
-        }
-    }
-}
+pub use crate::window::WindowOptions;
 
 /// Runtime-neutral shell extension points for native desktop hosts.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -51,6 +26,9 @@ pub struct DesktopShellConfig {
     /// Optional app icon path relative to the bundle root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_path: Option<PathBuf>,
+    /// Optional tray icon configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray: Option<TrayConfig>,
     /// Native menu declarations. Empty means platform default menu.
     #[serde(default)]
     pub menus: Vec<DesktopMenu>,
@@ -63,6 +41,16 @@ pub struct DesktopShellConfig {
     /// File download policy for webview downloads.
     #[serde(default)]
     pub downloads: DesktopDownloadPolicy,
+}
+
+/// Tray icon configuration.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TrayConfig {
+    /// Icon path relative to the bundle root.
+    pub icon_path: PathBuf,
+    /// Optional tooltip text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<String>,
 }
 
 /// Native menu descriptor.

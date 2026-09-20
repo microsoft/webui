@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use webui_desktop::{
-    DesktopBundleConfig, DesktopBundleManifest, DesktopRuntime, DesktopShellConfig, WindowOptions,
+    DesktopBundleConfig, DesktopBundleManifest, DesktopEvent, DesktopRuntime, DesktopShellConfig,
+    EventRegistry, EventResponse, TitlebarStyle, WindowEffect, WindowHandle, WindowOptions,
 };
 
 /// Cross-platform desktop frame owned by a native shell backend.
@@ -22,6 +23,10 @@ pub struct DesktopFrame {
     pub window: WindowOptions,
     /// Cross-platform native shell options from the desktop manifest.
     pub shell: DesktopShellConfig,
+    /// UI-thread lifecycle event registry.
+    pub events: EventRegistry,
+    /// Sendable command queue for native window control.
+    pub window_handle: WindowHandle,
 }
 
 impl DesktopFrame {
@@ -32,7 +37,17 @@ impl DesktopFrame {
             runtime,
             window,
             shell: DesktopShellConfig::default(),
+            events: EventRegistry::default(),
+            window_handle: WindowHandle::default(),
         }
+    }
+
+    /// Register a non-blocking lifecycle callback invoked on the backend UI thread.
+    pub fn on_event<F>(&self, handler: F)
+    where
+        F: Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static,
+    {
+        self.events.on_event(handler);
     }
 
     /// Attach shell options to the frame.
@@ -54,6 +69,16 @@ pub struct DesktopFrameCapabilities {
     pub popovers: bool,
     /// Backend can broker app-controlled downloads.
     pub downloads: bool,
+    /// Backend supports non-native titlebar styles.
+    pub titlebar_styles: bool,
+    /// Backend supports platform window effects.
+    pub window_effects: bool,
+    /// Backend supports tray icons.
+    pub tray: bool,
+    /// Backend supports queued native window controls.
+    pub window_controls: bool,
+    /// Backend emits lifecycle events.
+    pub events: bool,
 }
 
 /// Native desktop frame backend contract.
@@ -113,7 +138,46 @@ pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Resul
 ///
 /// Returns an error if the current platform shell cannot initialize.
 pub fn run_frame(frame: DesktopFrame) -> Result<()> {
+    validate_frame_capabilities(
+        &frame.window,
+        &frame.shell,
+        PlatformFrameBackend::new().capabilities(),
+    )?;
     PlatformFrameBackend::new().run_frame(frame)
+}
+
+/// Validate requested window and shell features before the native shell starts.
+///
+/// # Errors
+///
+/// Returns actionable diagnostics when a requested feature is not supported.
+pub fn validate_frame_capabilities(
+    window: &WindowOptions,
+    shell: &DesktopShellConfig,
+    capabilities: DesktopFrameCapabilities,
+) -> Result<()> {
+    let unsupported = if !matches!(window.titlebar, TitlebarStyle::Native)
+        && !capabilities.titlebar_styles
+    {
+        Some("titlebar style; use the native titlebar or select a backend that advertises titlebar_styles")
+    } else if !matches!(window.effect, WindowEffect::None) && !capabilities.window_effects {
+        Some("window effect; use WindowEffect::None or select a backend that advertises window_effects")
+    } else if shell.tray.is_some() && !capabilities.tray {
+        Some("tray icon; remove shell.tray or select a backend that advertises tray")
+    } else if !shell.menus.is_empty() && !capabilities.app_menu {
+        Some("application menu; remove shell.menus or select a backend that advertises app_menu")
+    } else if !shell.jump_list.is_empty() && !capabilities.jump_list {
+        Some("jump list; remove shell.jump_list or select a backend that advertises jump_list")
+    } else if shell.popovers.enabled && !capabilities.popovers {
+        Some("popovers; disable shell.popovers or select a backend that advertises popovers")
+    } else if shell.downloads.enabled && !capabilities.downloads {
+        Some("downloads; disable shell.downloads or select a backend that advertises downloads")
+    } else {
+        None
+    };
+    unsupported.map_or(Ok(()), |message| {
+        Err(anyhow::anyhow!("unsupported desktop runtime: {message}"))
+    })
 }
 
 /// Run an app-specific packaged desktop executable.
@@ -170,9 +234,63 @@ fn platform_run_frame(_frame: DesktopFrame) -> Result<()> {
     ))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+/// Capabilities the macOS AppKit/WKWebView backend implements.
+///
+/// Jump lists, popovers, and downloads have no macOS backend implementation, so
+/// they stay false and `validate_frame_capabilities` rejects them up front
+/// rather than letting them silently no-op.
+#[cfg(target_os = "macos")]
 fn platform_capabilities() -> DesktopFrameCapabilities {
-    DesktopFrameCapabilities::default()
+    DesktopFrameCapabilities {
+        app_menu: true,
+        jump_list: false,
+        popovers: false,
+        downloads: false,
+        titlebar_styles: true,
+        window_effects: true,
+        tray: true,
+        window_controls: true,
+        events: true,
+    }
+}
+
+/// Capabilities the Windows Win32/WebView2 backend implements.
+///
+/// Tray support is deferred, and `WindowEffect::Vibrancy`/`Tabbed` have no
+/// Windows equivalent, but `window_effects` stays true because Mica and Acrylic
+/// are implemented through DWM.
+#[cfg(target_os = "windows")]
+fn platform_capabilities() -> DesktopFrameCapabilities {
+    DesktopFrameCapabilities {
+        app_menu: false,
+        jump_list: false,
+        popovers: false,
+        downloads: false,
+        titlebar_styles: true,
+        window_effects: true,
+        tray: false,
+        window_controls: true,
+        events: true,
+    }
+}
+
+/// Capabilities the Linux GTK4/WebKitGTK backend implements.
+///
+/// `window_effects` is false because GTK4 exposes no portable blur or vibrancy,
+/// and tray is false because GTK4 removed `GtkStatusIcon`.
+#[cfg(target_os = "linux")]
+fn platform_capabilities() -> DesktopFrameCapabilities {
+    DesktopFrameCapabilities {
+        app_menu: false,
+        jump_list: false,
+        popovers: false,
+        downloads: false,
+        titlebar_styles: true,
+        window_effects: false,
+        tray: false,
+        window_controls: true,
+        events: true,
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -262,9 +380,44 @@ mod tests {
     }
 
     #[test]
-    fn platform_backend_default_capabilities_are_explicit() {
-        let backend = PlatformFrameBackend::new();
+    fn platform_backend_advertises_only_implemented_capabilities() {
+        let capabilities = PlatformFrameBackend::new().capabilities();
 
-        assert_eq!(backend.capabilities(), DesktopFrameCapabilities::default());
+        // Every supported backend implements lifecycle events, non-native
+        // titlebars, and host-driven window controls; a backend that cannot
+        // must report false so `validate_frame_capabilities` rejects the
+        // request instead of letting the feature silently no-op.
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            assert!(capabilities.events);
+            assert!(capabilities.titlebar_styles);
+            assert!(capabilities.window_controls);
+            // No backend implements these yet.
+            assert!(!capabilities.jump_list);
+            assert!(!capabilities.popovers);
+            assert!(!capabilities.downloads);
+        }
+        // GTK4 exposes no portable blur or vibrancy and removed GtkStatusIcon.
+        #[cfg(target_os = "linux")]
+        {
+            assert!(!capabilities.window_effects);
+            assert!(!capabilities.tray);
+        }
+        // Only macOS implements a native application menu and a tray item.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(capabilities.app_menu);
+            assert!(capabilities.tray);
+            assert!(capabilities.window_effects);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert!(!capabilities.app_menu);
+            assert!(!capabilities.tray);
+            assert!(capabilities.window_effects);
+        }
+        // An unsupported platform must advertise nothing.
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        assert_eq!(capabilities, DesktopFrameCapabilities::default());
     }
 }

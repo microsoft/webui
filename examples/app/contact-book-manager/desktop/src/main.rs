@@ -4,18 +4,20 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{Map, Value};
 use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 use webui_desktop::{
-    ApiContext, DesktopBundleConfig, DesktopBundleManifest, DesktopHttpMethod,
-    DesktopProtocolResponse, DesktopRuntime, DesktopSourceConfig, RouteContext, RouteStateRegistry,
-    WindowOptions,
+    ApiContext, DesktopBundleConfig, DesktopBundleManifest, DesktopEvent, DesktopHttpMethod,
+    DesktopProtocolResponse, DesktopRuntime, DesktopSourceConfig, EventResponse, RouteContext,
+    RouteStateRegistry, TitlebarStyle, WindowOptions,
 };
 
-type SharedState = Arc<RwLock<Value>>;
+mod state;
+use state::{load_state, read_state, SharedState};
+use webui_desktop_runner::DesktopFrame;
 
 #[derive(Debug)]
 struct ContactApiError {
@@ -29,7 +31,15 @@ fn main() -> Result<()> {
         None => source_runtime()?,
     };
 
-    webui_desktop_runner::run_runtime(Arc::new(runtime), window)
+    let frame = DesktopFrame::new(Arc::new(runtime), window);
+    frame.on_event(|event| match event {
+        DesktopEvent::WindowCloseRequested { .. } => {
+            eprintln!("Contact Book close requested; unsaved-change checks belong here");
+            EventResponse::Continue
+        }
+        _ => EventResponse::Continue,
+    });
+    webui_desktop_runner::run_frame(frame)
 }
 
 fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
@@ -39,9 +49,9 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
     let state_path = root.join("examples/app/contact-book-manager/data/state.json");
     let assets = root.join("examples/app/contact-book-manager/dist");
 
-    let state = Arc::new(RwLock::new(load_state(&state_path)?));
+    let (seed, state) = load_state(&state_path)?;
     let mut config = DesktopSourceConfig::new(contact_book_build_options(app_dir));
-    config.state = Some(snapshot_state(&state)?);
+    config.state = Some(seed);
     config.asset_root = Some(assets);
     config.theme = Some(("@microsoft/webui-examples-theme".to_string(), app_root));
     register_routes(&mut config.route_state, Arc::clone(&state))?;
@@ -53,6 +63,9 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
         width: 1200,
         height: 800,
         devtools: true,
+        titlebar: TitlebarStyle::HiddenInset,
+        background: Some("#f8fafc".parse()?),
+        remember_state: true,
         ..WindowOptions::default()
     };
     Ok((runtime, window))
@@ -62,9 +75,9 @@ fn packaged_runtime(resources: &std::path::Path) -> Result<(DesktopRuntime, Wind
     let manifest = DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))?;
     let window = manifest.window.clone();
     let state_path = resources.join("state.json");
-    let state = Arc::new(RwLock::new(load_state(&state_path)?));
+    let (seed, state) = load_state(&state_path)?;
     let mut config = DesktopBundleConfig::new(resources.to_path_buf());
-    config.state = Some(snapshot_state(&state)?);
+    config.state = Some(seed);
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
     let runtime = DesktopRuntime::from_bundle_config_and_manifest(config, manifest)?;
@@ -89,16 +102,9 @@ fn contact_book_build_options(app_dir: PathBuf) -> webui::BuildOptions {
         entry: "index.html".to_string(),
         css: webui::CssStrategy::Link,
         dom: webui::DomStrategy::Shadow,
-        css_bundle: false,
         plugin: Some(webui::Plugin::WebUI),
-        components: Vec::new(),
-        component_asset_roots: Vec::new(),
-        metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-        css_public_base: None,
-        legal_comments: webui::LegalComments::Inline,
-        theme: None,
-        projection_manifests: Vec::new(),
+        ..webui::BuildOptions::default()
     }
 }
 
@@ -108,41 +114,32 @@ fn register_routes(
 ) -> webui_desktop::Result<()> {
     routes.route("/", {
         let state = Arc::clone(&state);
-        move |_| Ok(dashboard_state(&snapshot_state(&state)?))
+        move |_| Ok(dashboard_state(&*read_state(&state)?))
     })?;
     routes.route("/contacts", {
         let state = Arc::clone(&state);
-        move |_| Ok(contacts_state(&snapshot_state(&state)?))
+        move |_| Ok(contacts_state(&*read_state(&state)?))
     })?;
     routes.route("/contacts/add", {
         let state = Arc::clone(&state);
-        move |_| Ok(add_contact_state(&snapshot_state(&state)?))
+        move |_| Ok(add_contact_state(&*read_state(&state)?))
     })?;
     routes.route("/contacts/:id/edit", {
         let state = Arc::clone(&state);
-        move |ctx| edit_contact_state(&snapshot_state(&state)?, &ctx)
+        move |ctx| edit_contact_state(&*read_state(&state)?, &ctx)
     })?;
     routes.route("/contacts/:id", {
         let state = Arc::clone(&state);
-        move |ctx| contact_detail_state(&snapshot_state(&state)?, &ctx)
+        move |ctx| contact_detail_state(&*read_state(&state)?, &ctx)
     })?;
     routes.route("/favorites", {
         let state = Arc::clone(&state);
-        move |_| Ok(favorites_state(&snapshot_state(&state)?))
+        move |_| Ok(favorites_state(&*read_state(&state)?))
     })?;
     routes.route("/groups/:group", move |ctx| {
-        group_state(&snapshot_state(&state)?, &ctx)
+        group_state(&*read_state(&state)?, &ctx)
     })?;
     Ok(())
-}
-
-fn snapshot_state(state: &SharedState) -> webui_desktop::Result<Value> {
-    state.read().map(|guard| guard.clone()).map_err(|_| {
-        webui_desktop::DesktopError::UnsupportedRuntime {
-            message: "contact book state lock is poisoned".to_string(),
-            help: "restart the desktop app to reinitialize the in-memory state".to_string(),
-        }
-    })
 }
 
 fn register_api_routes(
@@ -161,19 +158,13 @@ fn register_api_routes(
     Ok(())
 }
 
-fn load_state(path: &std::path::Path) -> Result<Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
-}
-
 fn contacts_collection_api(
     state: &SharedState,
     ctx: &ApiContext<'_>,
 ) -> webui_desktop::Result<DesktopProtocolResponse> {
     match ctx.method {
         DesktopHttpMethod::Get => {
-            let state = snapshot_state(state)?;
+            let state = read_state(state)?;
             json_response(200, Value::Array(contacts(&state).to_vec()))
         }
         DesktopHttpMethod::Post => mutate_api(state, |store| create_contact(store, ctx.body)),
@@ -187,7 +178,7 @@ fn contact_item_api(
 ) -> webui_desktop::Result<DesktopProtocolResponse> {
     match ctx.method {
         DesktopHttpMethod::Get => {
-            let state = snapshot_state(state)?;
+            let state = read_state(state)?;
             let Some(contact) = find_contact(contacts(&state), ctx.param("id").unwrap_or_default())
             else {
                 return json_error(404, "Contact not found");
@@ -210,7 +201,7 @@ fn stats_api(
 ) -> webui_desktop::Result<DesktopProtocolResponse> {
     match ctx.method {
         DesktopHttpMethod::Get => {
-            let state = snapshot_state(state)?;
+            let state = read_state(state)?;
             json_response(
                 200,
                 Value::Object(sidebar_state(contacts(&state), groups(&state))),
@@ -662,6 +653,127 @@ mod tests {
 
     fn payload(value: &str) -> Vec<u8> {
         value.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn route_state_is_unchanged_when_the_store_is_borrowed() {
+        let original = test_state();
+        let (_, store) = state::parse_state(&serde_json::to_vec(&original).unwrap()).unwrap();
+        {
+            let first = read_state(&store).unwrap();
+            let second = read_state(&store).unwrap();
+            assert!(std::ptr::eq(&*first, &*second));
+            assert_eq!(dashboard_state(&first), dashboard_state(&original));
+            assert_eq!(contacts_state(&first), contacts_state(&original));
+            assert_eq!(favorites_state(&first), favorites_state(&original));
+            assert_eq!(add_contact_state(&first), add_contact_state(&original));
+        }
+
+        update_contact(
+            &mut store.write().unwrap(),
+            Some("1"),
+            br#"{"favorite":true}"#,
+        )
+        .unwrap();
+        let state = read_state(&store).unwrap();
+        assert_eq!(dashboard_state(&state)["totalFavorites"], 2);
+        assert_eq!(
+            favorites_state(&state)["contacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn registered_api_mutations_reach_parameterized_routes_and_preserve_tokens() {
+        use webui_desktop::DesktopProtocolRequest;
+
+        let mut initial = test_state();
+        initial["tokens"] = serde_json::json!({
+            "light": "--desktop-test-light:1;",
+            "dark": "--desktop-test-dark:1;"
+        });
+        let (seed, store) = state::parse_state(&serde_json::to_vec(&initial).unwrap()).unwrap();
+        let app = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src");
+        let mut config = DesktopSourceConfig::new(contact_book_build_options(app));
+        config.state = Some(seed);
+        register_routes(&mut config.route_state, Arc::clone(&store)).unwrap();
+        register_api_routes(&mut config.api_routes, store).unwrap();
+        let runtime = DesktopRuntime::from_source(config).unwrap();
+        let request_json = |method, path: &str, body: &[u8], status| {
+            let response = runtime
+                .handle_request(&DesktopProtocolRequest {
+                    method,
+                    path,
+                    body,
+                    wants_json: true,
+                })
+                .unwrap();
+            assert_eq!(response.status, status, "{path}");
+            if status == 204 {
+                assert!(response.body.is_empty());
+                Value::Null
+            } else {
+                serde_json::from_slice::<Value>(&response.body).unwrap()
+            }
+        };
+
+        let created = request_json(
+            DesktopHttpMethod::Post,
+            "/api/contacts",
+            br#"{"firstName":"Regression","lastName":"Contact","group":"Space"}"#,
+            200,
+        );
+        let id = created["id"].as_str().unwrap();
+        let api_path = format!("/api/contacts/{id}");
+        request_json(
+            DesktopHttpMethod::Other("PUT".to_string()),
+            &api_path,
+            br#"{"firstName":"Updated","favorite":true,"group":"Systems"}"#,
+            200,
+        );
+        let edit_path = format!("/contacts/{id}/edit");
+        let edit = request_json(DesktopHttpMethod::Get, &edit_path, &[], 200);
+        assert_eq!(edit["state"]["firstName"], "Updated");
+        assert_eq!(edit["state"]["selectedGroup"], "Systems");
+        assert_eq!(edit["state"]["tokens"], initial["tokens"]);
+
+        let group = request_json(DesktopHttpMethod::Get, "/groups/Systems", &[], 200);
+        assert_eq!(group["state"]["contacts"].as_array().unwrap().len(), 1);
+        assert_eq!(group["state"]["contacts"][0]["id"], id);
+        let favorites = request_json(DesktopHttpMethod::Get, "/favorites", &[], 200);
+        assert_eq!(favorites["state"]["contacts"].as_array().unwrap().len(), 2);
+        let stats = request_json(DesktopHttpMethod::Get, "/api/stats", &[], 200);
+        assert_eq!(stats["totalContacts"], 3);
+        assert_eq!(stats["totalFavorites"], 2);
+
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest {
+                method: DesktopHttpMethod::Get,
+                path: &edit_path,
+                body: &[],
+                wants_json: false,
+            })
+            .unwrap();
+        let html = std::str::from_utf8(&response.body).unwrap();
+        let head = html.split("</head>").next().unwrap();
+        assert!(head.contains("--desktop-test-light:1;"));
+        assert!(head.contains("--desktop-test-dark:1;"));
+        assert!(html.contains("Updated"));
+
+        request_json(
+            DesktopHttpMethod::Other("DELETE".to_string()),
+            &api_path,
+            &[],
+            204,
+        );
+        let favorites = request_json(DesktopHttpMethod::Get, "/favorites", &[], 200);
+        assert_eq!(favorites["state"]["contacts"].as_array().unwrap().len(), 1);
+        let stats = request_json(DesktopHttpMethod::Get, "/api/stats", &[], 200);
+        assert_eq!(stats["totalContacts"], 2);
+        assert_eq!(stats["totalFavorites"], 1);
     }
 
     #[test]

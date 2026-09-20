@@ -6080,12 +6080,27 @@ Rust-owned in-memory state.
 - No per-navigation template rebuild.
 - Share protocol, route indexes, CSS maps, and immutable asset metadata by
   reference.
+- Route-backed hosts should retain canonical application collections once,
+  borrow them for read-only route preparation, and keep global render seeds
+  separate from route-owned data. Browser-only derived collections should not
+  be materialized when a desktop host recomputes them from canonical data.
+- The macOS response bridge transfers owned response buffers to `NSData`
+  without another body-sized allocation. Buffer ownership must remain valid
+  if WebKit retains the data after the scheme callback returns, including the
+  original Rust allocation's capacity and deallocator.
+- macOS initialization and scheme callbacks use bounded autorelease scopes;
+  windows, delegates, and webviews retain explicit ownership across those
+  scopes and the application event loop.
 - Serve packaged assets from the bundle/resource root only; cap or stream large
   static reads.
 - Packaged builds must not include watchers, HMR scripts, devtools, or debug IPC
   methods unless explicitly built as a development bundle.
 - Measure cold startup phases, first paint where automatable, packaged app
   startup, steady-state RSS after first paint, binary size, and bundle size.
+  Distinguish cold filesystem caches from fresh-process launches with warm
+  caches. On macOS, report physical footprint for the host and WebKit helper
+  processes separately; host-only RSS or its stabilization is not a measure of
+  total application memory or page readiness.
 
 ### .NET / NuGet Distribution
 
@@ -6346,3 +6361,25 @@ The CLI specification and usage details are maintained in [crates/webui-cli/READ
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
+
+## Desktop CLI Scaffolding
+
+The public `webui desktop init [APP_ROOT] [--force]` command is a progressive
+scaffold. It creates `src/index.html`, `package.json` with a `webuiDesktop`
+block, and `desktop/Cargo.toml` plus `desktop/src/main.rs`. The generated runner
+uses `find_packaged_resources_dir()` to choose the immutable packaged bundle
+path or the source `DesktopSourceConfig` path and uses `BuildOptions::default()`
+for fields it does not customize. Init checks all generated paths before writing
+and returns an actionable error unless `--force` is supplied.
+
+## Desktop Window Contract
+
+`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
+
+For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` once into startup HTML. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
+
+Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`.
+
+`WindowHandle` is `Send + Sync`; it queues bounded `WindowCommand`s and invokes a backend-installed wakeup callback. Backends drain it only on their UI thread. They install `DRAG_REGION_SCRIPT`, expose `window.webuiHostPostMessage`, and parse payloads through `DesktopHostMessage::from_json`. The only valid JSON string payloads are `"start-drag"`, `"minimize"`, `"toggle-maximize"`, and `"close"`; payloads over 256 bytes are rejected.
+
+When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, effect, jump-list, popover, and download features before native startup rather than silently ignoring them.

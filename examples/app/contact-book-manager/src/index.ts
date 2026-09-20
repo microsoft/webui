@@ -13,6 +13,9 @@ import './cb-app/cb-app.js';
 
 // Listen for the framework's global hydration-complete event.
 window.addEventListener('webui:hydration-complete', onHydrationComplete);
+window.addEventListener('webui:window-resized', (event) => {
+  console.debug('Desktop window resized', (event as CustomEvent).detail);
+});
 
 function onHydrationComplete(): void {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];

@@ -20,6 +20,8 @@ use webui_desktop::{
 #[cfg(not(target_os = "macos"))]
 use webui_desktop::{DesktopRuntime, DesktopSourceConfig};
 
+mod init;
+
 #[derive(Parser)]
 #[command(name = "webui-desktop", about = "WebUI desktop runner and packager")]
 struct Cli {
@@ -53,6 +55,8 @@ fn is_json() -> bool {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create a minimal desktop app and optional Rust runner
+    Init(init::InitArgs),
     /// Run a WebUI app in a native desktop window
     Run(RunArgs),
     /// Build an immutable desktop bundle
@@ -268,6 +272,7 @@ struct DesktopAppPackageConfig {
     app_version: Option<String>,
     publisher: Option<String>,
     title: Option<String>,
+    window_options: Option<WindowOptions>,
     width: Option<u32>,
     height: Option<u32>,
     devtools: Option<bool>,
@@ -336,6 +341,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Some(Commands::Init(args)) => init::execute(&args),
         Some(Commands::Run(args)) => run_desktop(args),
         Some(Commands::Build(args)) => build_bundle(args),
         Some(Commands::Package(args)) => package_bundle(args),
@@ -428,6 +434,7 @@ fn run_macos_from_source(
             height: args.window.height,
             maximized: false,
             devtools: args.window.devtools,
+            ..WindowOptions::default()
         },
         icon_file: None,
         shell: DesktopShellConfig::default(),
@@ -483,6 +490,7 @@ fn build_bundle(args: BuildArgs) -> Result<()> {
             height: args.window.height,
             maximized: false,
             devtools: args.window.devtools,
+            ..WindowOptions::default()
         },
         icon_file: optional_existing_file(args.icon.as_ref(), "icon")?,
         shell: DesktopShellConfig::default(),
@@ -583,16 +591,9 @@ fn package_app_root(args: PackageArgs, app_root: PathBuf) -> Result<()> {
             entry: plan.entry,
             css: webui::CssStrategy::Link,
             dom: webui::DomStrategy::Shadow,
-            css_bundle: false,
             plugin: plan.plugin,
-            components: Vec::new(),
-            component_asset_roots: Vec::new(),
-            metafile: false,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-            css_public_base: None,
-            legal_comments: webui::LegalComments::Inline,
-            theme: None,
-            projection_manifests: Vec::new(),
+            ..webui::BuildOptions::default()
         },
         out_dir: plan.bundle_dir.clone(),
         state_file: plan.state_file,
@@ -674,6 +675,17 @@ fn create_app_package_plan(
         .app_id
         .clone()
         .unwrap_or_else(|| default_app_id(&app_name));
+    let mut window = config.window_options.clone().unwrap_or_default();
+    window.title = config.title.clone().unwrap_or(app_name.clone());
+    if let Some(width) = config.width {
+        window.width = width;
+    }
+    if let Some(height) = config.height {
+        window.height = height;
+    }
+    if let Some(devtools) = config.devtools {
+        window.devtools = devtools;
+    }
 
     Ok(AppPackagePlan {
         app_root,
@@ -686,16 +698,10 @@ fn create_app_package_plan(
         runner_exe,
         token_css,
         app_id,
-        app_name: app_name.clone(),
+        app_name,
         app_version: config.app_version.unwrap_or_else(|| "0.0.0".to_string()),
         publisher: config.publisher.unwrap_or_else(|| "Microsoft".to_string()),
-        window: WindowOptions {
-            title: config.title.unwrap_or(app_name),
-            width: config.width.unwrap_or(1200),
-            height: config.height.unwrap_or(800),
-            maximized: false,
-            devtools: config.devtools.unwrap_or(false),
-        },
+        window,
         plugin,
     })
 }
@@ -738,6 +744,10 @@ fn read_desktop_app_config(app_root: &Path) -> Result<DesktopAppPackageConfig> {
     config.app_version = string_field_in(desktop, "appVersion").or(config.app_version);
     config.publisher = string_field_in(desktop, "publisher");
     config.title = string_field_in(desktop, "title");
+    config.window_options = Some(
+        serde_json::from_value(serde_json::Value::Object(desktop.clone()))
+            .with_context(|| "Invalid webuiDesktop window configuration")?,
+    );
     config.width = u32_field(desktop, "width")?;
     config.height = u32_field(desktop, "height")?;
     config.devtools = desktop.get("devtools").and_then(serde_json::Value::as_bool);
@@ -1285,7 +1295,7 @@ fn optional_existing_file(path: Option<&PathBuf>, label: &str) -> Result<Option<
     Ok(Some(canonical))
 }
 
-fn print_header(title: &str) {
+pub(crate) fn print_header(title: &str) {
     if is_json() {
         return;
     }
@@ -1296,7 +1306,7 @@ fn print_header(title: &str) {
     );
 }
 
-fn print_field(label: &str, value: &dyn std::fmt::Display) {
+pub(crate) fn print_field(label: &str, value: &dyn std::fmt::Display) {
     if is_json() {
         return;
     }
@@ -1307,7 +1317,7 @@ fn print_field(label: &str, value: &dyn std::fmt::Display) {
     );
 }
 
-fn print_finish(message: &str) {
+pub(crate) fn print_finish(message: &str) {
     if is_json() {
         return;
     }
