@@ -2589,6 +2589,7 @@ impl HtmlParser {
         depth: usize,
     ) -> Result<()> {
         let mut ops = vec![ParseOp::Parse { range, depth }];
+        let mut outlet_seen = false;
 
         while let Some(op) = ops.pop() {
             match op {
@@ -2723,14 +2724,10 @@ impl HtmlParser {
                                 }
                                 "outlet" => {
                                     self.flush_raw_buffer(fragments);
-                                    if fragments.iter().any(|fragment| {
-                                        matches!(
-                                            fragment.fragment.as_ref(),
-                                            Some(Fragment::Outlet(_))
-                                        )
-                                    }) {
+                                    if outlet_seen {
                                         self.warnings.push(self.multiple_outlets_warning(&element));
                                     }
+                                    outlet_seen = true;
                                     fragments.push(WebUIFragment::outlet());
                                 }
                                 "boundary" => {
@@ -11590,6 +11587,21 @@ mod tests {
         assert_eq!(warnings[0].error_code(), Some(codes::MULTIPLE_OUTLETS));
         assert_eq!(warnings[0].component_name(), Some("test.html"));
         assert!(warnings[0].help_text().is_some());
+    }
+
+    #[test]
+    fn multiple_outlets_across_nested_directives_warn() {
+        for html in [
+            r#"<if condition="show"><outlet /></if><outlet />"#,
+            r#"<for each="item in items"><outlet /></for><outlet />"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            parser.parse("test.html", html).expect("parse failed");
+
+            let warnings = parser.take_warnings();
+            assert_eq!(warnings.len(), 1, "warnings for {html}: {warnings:?}");
+            assert_eq!(warnings[0].error_code(), Some(codes::MULTIPLE_OUTLETS));
+        }
     }
 
     #[test]

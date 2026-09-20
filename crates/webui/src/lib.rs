@@ -377,10 +377,9 @@ pub struct BuildResult {
     pub component_templates: Vec<ComponentTemplateArtifact>,
     /// Non-fatal build advisories as warning-severity [`Diagnostic`]s.
     ///
-    /// Currently surfaces CSS tokens that are referenced only with a literal
-    /// `var()` fallback and defined in no theme — often typos. Empty when no
-    /// theme is supplied. Carries the same structured location/snippet/`help:`
-    /// data as errors; the entry point decides how to present (and color) them.
+    /// Includes parser advisories and CSS token warnings. Carries the same
+    /// structured location/snippet/`help:` data as errors; the entry point
+    /// decides how to present (and color) them.
     pub warnings: Vec<Diagnostic>,
     /// Build statistics.
     pub stats: BuildStats,
