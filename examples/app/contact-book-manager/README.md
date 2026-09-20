@@ -39,6 +39,15 @@ pnpm --dir examples/app/contact-book-manager run build:client
 cargo run -p contact-book-desktop
 ```
 
+The desktop example uses a hidden-inset titlebar with a declarative `webui-drag`
+region, a themed pre-paint background, persisted window geometry, and a close
+request lifecycle handler. Its browser entry point also listens for the
+`webui:window-resized` event. The desktop seed requires `contacts` and `groups` arrays. The host keeps these
+canonical collections in shared Rust storage and derives dashboard, favorites,
+and group lists for each route. Browser seed fields `filteredContacts`,
+`favoriteContacts`, and `recentContacts` are ignored on desktop; global settings
+and theme tokens remain available to the renderer.
+
 ## Desktop package smoke test
 
 Build and launch a Contact Book desktop app in one command:
@@ -49,7 +58,8 @@ PACKAGES=/tmp/contact-book-packages
 cd examples/app/contact-book-manager
 cargo run -p microsoft-webui-cli -- desktop package . \
   --target macos-app \
-  --out "$PACKAGES"
+  --out "$PACKAGES" \
+  --release
 
 open "$PACKAGES/Contact-Book-Manager.app"
 ```
@@ -62,3 +72,17 @@ runner-backed `.app`.
 To inspect the packaged macOS app, enable Safari > Settings > Advanced > Show
 features for web developers, then open Safari's Develop menu while the app is
 running.
+
+## Desktop performance
+
+The package command's `--release` flag optimizes the app runner, not just the
+packaging CLI. Measure the packaged app through page hydration and include
+WebKit's helper processes when reporting memory.
+
+The focused release microbenchmarks cover seed preparation and macOS response
+buffer handoff, not complete window startup:
+
+```bash
+cargo bench -p contact-book-desktop --bench desktop_state
+cargo bench -p microsoft-webui-desktop-cli --bench macos_response
+```

@@ -29,6 +29,9 @@
     "title": "Contact Book Manager",
     "width": 1200,
     "height": 800,
+    "titlebar": { "style": "hidden-inset" },
+    "background": "#f8fafc",
+    "rememberState": true,
     "devtools": true
   },
   "imports": {
