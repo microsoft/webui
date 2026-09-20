@@ -68,7 +68,12 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 
 `<outlet />` marks where child route content renders. The nav and footer persist across navigations.
 The paired form `<outlet></outlet>` is also supported, but outlets are empty and
-the self-closing form is preferred.
+the self-closing form is preferred. Use one outlet at each route level,
+including outlets inside nested layout components and directives. Child routes
+have their own outlet level.
+Additional outlets produce a `multiple-outlets` build warning because only the
+first outlet renders matched child routes. Move duplicated layout around the
+single outlet instead.
 
 On initial SSR, styles for the matched route chain that target the Document are
 applied before `</head>`, including Link-mode bundled chunks. Styles targeting a
