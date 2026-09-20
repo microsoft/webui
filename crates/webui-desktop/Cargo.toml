@@ -15,10 +15,10 @@ categories = ["gui", "web-programming"]
 name = "webui_desktop"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "0.0.17", features = ["cli"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.17" }
+microsoft-webui = { path = "../webui", version = "0.0.29", features = ["cli"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.29" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.29" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.29" }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }
 prost = { workspace = true }

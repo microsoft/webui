@@ -214,12 +214,16 @@ mod tests {
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
             dom: DomStrategy::Shadow,
+            css_bundle: false,
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
+            metafile: false,
             css_file_name_template: webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::Inline,
+            theme: None,
+            projection_manifests: Vec::new(),
         }))
         .unwrap();
         Arc::new(runtime)

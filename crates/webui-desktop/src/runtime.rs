@@ -8,13 +8,11 @@ use std::sync::Arc;
 
 use percent_encoding::percent_decode_str;
 use serde_json::Value;
-use webui::RenderOptions;
+use webui::{Protocol, RenderOptions};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::route_matcher::CompiledRouteCache;
 use webui_handler::ResponseWriter;
-use webui_protocol::WebUIProtocol;
 
 use crate::error::{DesktopError, Result};
 use crate::ipc::IpcRegistry;
@@ -107,7 +105,7 @@ impl DesktopBundleConfig {
 
 /// Runtime state shared by a desktop webview custom-protocol handler.
 pub struct DesktopRuntime {
-    protocol: WebUIProtocol,
+    protocol: Protocol,
     entry: String,
     state: Value,
     css_files: HashMap<String, String>,
@@ -380,8 +378,9 @@ impl DesktopRuntime {
         )?;
         let asset_root = canonical_asset_root(config.asset_root.as_ref())?;
         let css_files = build_result.css_files.into_iter().collect();
+        let protocol = Protocol::new(build_result.protocol);
         let startup_state = state_for_request(StateRequestContext {
-            protocol: &build_result.protocol,
+            protocol: &protocol,
             entry: &config.build_options.entry,
             base_state: &state,
             registry: &config.route_state,
@@ -389,7 +388,7 @@ impl DesktopRuntime {
             request_path: "/",
         })?;
         let startup_html = render_html(
-            &build_result.protocol,
+            &protocol,
             config.build_options.plugin,
             &config.build_options.entry,
             "/",
@@ -397,7 +396,7 @@ impl DesktopRuntime {
         )?;
 
         Ok(Self {
-            protocol: build_result.protocol,
+            protocol,
             entry: config.build_options.entry,
             state,
             css_files,
@@ -465,7 +464,7 @@ impl DesktopRuntime {
             context: format!("reading desktop protocol {}", protocol_path.display()),
             source,
         })?;
-        let protocol = WebUIProtocol::from_protobuf(&protocol_bytes)?;
+        let protocol = Protocol::from_protobuf(&protocol_bytes)?;
         let state_path = manifest
             .state_path
             .as_ref()
@@ -552,7 +551,7 @@ impl DesktopRuntime {
                 ));
             }
 
-            if self.has_route_match(request_path) {
+            if self.has_route_match(request_path)? {
                 let html = render_html(
                     &self.protocol,
                     self.plugin,
@@ -628,15 +627,15 @@ impl DesktopRuntime {
 
     fn partial_response(&self, request_path: &str) -> Result<DesktopProtocolResponse> {
         let route_path = route_path(request_path);
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(&self.protocol);
-        let partial = webui_handler::route_handler::render_partial(
-            &self.protocol,
-            &self.entry,
-            route_path,
-            "",
-            &mut index,
-        )?;
-        let mut partial = partial;
+        let state = self.state_for_request(route_path)?;
+        let partial_json =
+            self.protocol
+                .render_partial(state.clone(), &self.entry, route_path, "")?;
+        let mut partial: Value =
+            serde_json::from_str(&partial_json).map_err(|source| DesktopError::Serialization {
+                context: "deserializing desktop router partial".to_string(),
+                source,
+            })?;
         if !partial
             .get("chain")
             .and_then(Value::as_array)
@@ -644,14 +643,20 @@ impl DesktopRuntime {
         {
             return Ok(DesktopProtocolResponse::text(404, "Not Found"));
         }
-        if let Some(obj) = partial.as_object_mut() {
-            obj.insert("state".to_string(), self.state_for_request(route_path)?);
-        }
-        let bytes = serde_json::to_vec(&partial).map_err(|source| DesktopError::Serialization {
+        // `render_partial` projects `state` down to the keys the matched
+        // components statically declare as needed for navigation (the
+        // bundler-neutral state projection compiler). Desktop route
+        // providers and seed state (route params, `basePath`, design
+        // tokens, computed data) are a superset of what any single
+        // component's template references, so the desktop runtime always
+        // ships the full per-request state it computed rather than trusting
+        // the generic projection to preserve fields components never bind.
+        partial["state"] = state;
+        let body = serde_json::to_vec(&partial).map_err(|source| DesktopError::Serialization {
             context: "serializing desktop router partial".to_string(),
             source,
         })?;
-        Ok(DesktopProtocolResponse::new(200, "application/json", bytes))
+        Ok(DesktopProtocolResponse::new(200, "application/json", body))
     }
 
     fn state_for_request(&self, request_path: &str) -> Result<Value> {
@@ -665,16 +670,25 @@ impl DesktopRuntime {
         })
     }
 
-    fn has_route_match(&self, request_path: &str) -> bool {
+    /// Whether `request_path` matches a declared application route.
+    ///
+    /// This asks the handler's route chain (via a no-op partial render) rather
+    /// than re-implementing route matching here, so the desktop runtime never
+    /// drifts from the handler's own route-matching behavior.
+    fn has_route_match(&self, request_path: &str) -> Result<bool> {
         let route_path = route_path(request_path);
-        let mut cache = CompiledRouteCache::new();
-        let chain = webui_handler::route_handler::collect_route_chain(
-            &self.protocol,
-            &self.entry,
-            route_path,
-            &mut cache,
-        );
-        route_chain_matches_request(&chain, route_path)
+        let partial_json =
+            self.protocol
+                .render_partial(Value::Null, &self.entry, route_path, "")?;
+        let partial: Value =
+            serde_json::from_str(&partial_json).map_err(|source| DesktopError::Serialization {
+                context: "deserializing desktop router partial".to_string(),
+                source,
+            })?;
+        Ok(partial
+            .get("chain")
+            .and_then(Value::as_array)
+            .is_some_and(|chain| json_route_chain_matches_request(chain, route_path)))
     }
 }
 
@@ -736,21 +750,6 @@ fn route_path(request_path: &str) -> &str {
         .map_or(request_path, |(path, _)| path)
 }
 
-fn route_chain_matches_request(
-    chain: &[webui_handler::route_handler::RouteChainEntry],
-    request_path: &str,
-) -> bool {
-    let path = route_path(request_path);
-    if path == "/" {
-        return !chain.is_empty();
-    }
-    match chain {
-        [] => false,
-        [only] => only.path != "/",
-        _ => true,
-    }
-}
-
 fn json_route_chain_matches_request(chain: &[Value], request_path: &str) -> bool {
     let path = route_path(request_path);
     if path == "/" {
@@ -764,7 +763,7 @@ fn json_route_chain_matches_request(chain: &[Value], request_path: &str) -> bool
 }
 
 struct StateRequestContext<'a> {
-    protocol: &'a WebUIProtocol,
+    protocol: &'a Protocol,
     entry: &'a str,
     base_state: &'a Value,
     registry: &'a RouteStateRegistry,
@@ -789,12 +788,10 @@ fn state_for_request(context: StateRequestContext<'_>) -> Result<Value> {
                 map.insert("tokens".to_string(), tokens.clone());
             }
         }
-        let mut cache = CompiledRouteCache::new();
         let params = webui_handler::route_handler::collect_nested_route_params(
             context.protocol,
             context.entry,
             path,
-            &mut cache,
         );
         for (key, value) in params {
             map.insert(key, Value::String(value));
@@ -925,7 +922,7 @@ fn canonical_asset_root(path: Option<&PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 fn render_html(
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     plugin: Option<webui::Plugin>,
     entry: &str,
     request_path: &str,
@@ -933,7 +930,7 @@ fn render_html(
 ) -> Result<String> {
     let handler = create_handler(plugin);
     let mut writer = MemoryWriter::with_capacity(4096);
-    handler.handle(
+    handler.render(
         protocol,
         state,
         &RenderOptions::new(entry, request_path),
@@ -999,6 +996,13 @@ mod tests {
         webui::BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
+            // Desktop apps build with `--plugin=webui` (see the
+            // contact-book-manager example), which is required for the
+            // bundler-neutral state projection compiler to populate
+            // per-component navigation keys. Without it, `navigation_mode`
+            // stays `StateProjectionMode::None` and partial responses ship
+            // no state at all.
+            plugin: Some(webui::Plugin::WebUI),
             ..webui::BuildOptions::default()
         }
     }

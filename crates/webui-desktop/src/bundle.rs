@@ -287,11 +287,12 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
     let mut assets =
         write_generated_css(&assets_dest, &mut claimed_assets, &build_result.css_files)?;
     write_ipc_client(&assets_dest, &mut claimed_assets, &mut assets)?;
+    let protocol = webui::Protocol::new(build_result.protocol);
     write_startup_html(StartupHtmlInput {
         assets_dest: &assets_dest,
         claimed_assets: &mut claimed_assets,
         assets: &mut assets,
-        protocol: &build_result.protocol,
+        protocol: &protocol,
         plugin: build_options.plugin,
         entry: &build_options.entry,
         state_file: options.state_file.as_ref(),
@@ -551,7 +552,7 @@ struct StartupHtmlInput<'a> {
     assets_dest: &'a Path,
     claimed_assets: &'a mut HashSet<String>,
     assets: &'a mut Vec<BundleAsset>,
-    protocol: &'a webui_protocol::WebUIProtocol,
+    protocol: &'a webui::Protocol,
     plugin: Option<webui::Plugin>,
     entry: &'a str,
     state_file: Option<&'a PathBuf>,
@@ -570,7 +571,7 @@ fn write_startup_html(input: StartupHtmlInput<'_>) -> Result<()> {
     }
     let handler = create_handler(input.plugin);
     let mut writer = MemoryWriter::with_capacity(4096);
-    handler.handle(
+    handler.render(
         input.protocol,
         &state,
         &RenderOptions::new(input.entry, "/"),
@@ -965,6 +966,13 @@ mod tests {
         webui::BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
+            // Desktop apps build with `--plugin=webui` (see the
+            // contact-book-manager example), which is required for the
+            // bundler-neutral state projection compiler to populate
+            // per-component navigation keys. Without it, `navigation_mode`
+            // stays `StateProjectionMode::None` and partial responses ship
+            // no state at all.
+            plugin: Some(webui::Plugin::WebUI),
             ..webui::BuildOptions::default()
         }
     }
@@ -1009,7 +1017,7 @@ mod tests {
         assert!(bundle.join("assets/webui-desktop-ipc.js").is_file());
         assert!(fs::read_to_string(bundle.join("assets/index.html"))
             .unwrap()
-            .contains(r#"<link rel="stylesheet" href="my-card.css">"#));
+            .contains(r#"<link rel="stylesheet" href="my-card.css""#));
         assert!(bundle.join("manifest.webui-desktop.json").is_file());
         assert_eq!(manifest.state_path, Some(PathBuf::from("state.json")));
         assert!(manifest

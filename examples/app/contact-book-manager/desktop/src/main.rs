@@ -89,12 +89,16 @@ fn contact_book_build_options(app_dir: PathBuf) -> webui::BuildOptions {
         entry: "index.html".to_string(),
         css: webui::CssStrategy::Link,
         dom: webui::DomStrategy::Shadow,
+        css_bundle: false,
         plugin: Some(webui::Plugin::WebUI),
         components: Vec::new(),
         component_asset_roots: Vec::new(),
+        metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
         css_public_base: None,
         legal_comments: webui::LegalComments::Inline,
+        theme: None,
+        projection_manifests: Vec::new(),
     }
 }
 

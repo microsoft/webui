@@ -219,12 +219,16 @@ impl AppArgs {
             entry: self.entry.clone(),
             css: self.css,
             dom: self.dom,
+            css_bundle: false,
             plugin: self.plugin,
             components: self.components.clone(),
             component_asset_roots: Vec::new(),
+            metafile: false,
             css_file_name_template: self.css_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
+            theme: None,
+            projection_manifests: Vec::new(),
         }
     }
 }
@@ -505,9 +509,6 @@ fn resolve_theme_css(
         .with_context(|| "Desktop theme probe build failed")?;
     let resolved = webui_tokens::resolve_tokens(&probe.protocol.tokens, &token_file)
         .with_context(|| "Desktop theme token resolution failed")?;
-    for warning in &resolved.warnings {
-        print_warning(warning);
-    }
     Ok(Some(resolved.css))
 }
 
@@ -582,12 +583,16 @@ fn package_app_root(args: PackageArgs, app_root: PathBuf) -> Result<()> {
             entry: plan.entry,
             css: webui::CssStrategy::Link,
             dom: webui::DomStrategy::Shadow,
+            css_bundle: false,
             plugin: plan.plugin,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
+            metafile: false,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: webui::LegalComments::Inline,
+            theme: None,
+            projection_manifests: Vec::new(),
         },
         out_dir: plan.bundle_dir.clone(),
         state_file: plan.state_file,
@@ -954,12 +959,16 @@ fn generated_css_names(
         entry: entry.to_string(),
         css: webui::CssStrategy::Link,
         dom: webui::DomStrategy::Shadow,
+        css_bundle: false,
         plugin,
         components: Vec::new(),
         component_asset_roots: Vec::new(),
+        metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
         css_public_base: None,
         legal_comments: webui::LegalComments::Inline,
+        theme: None,
+        projection_manifests: Vec::new(),
     })
     .with_context(|| "Desktop generated CSS discovery build failed")?;
     Ok(result.css_files.into_iter().map(|(name, _)| name).collect())
@@ -1053,19 +1062,20 @@ fn resolve_theme_for_source(
         entry: entry.to_string(),
         css: webui::CssStrategy::Link,
         dom: webui::DomStrategy::Shadow,
+        css_bundle: false,
         plugin,
         components: Vec::new(),
         component_asset_roots: Vec::new(),
+        metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
         css_public_base: None,
         legal_comments: webui::LegalComments::Inline,
+        theme: None,
+        projection_manifests: Vec::new(),
     };
     let probe = webui::build(probe_options).with_context(|| "Desktop theme probe build failed")?;
     let resolved = webui_tokens::resolve_tokens(&probe.protocol.tokens, &token_file)
         .with_context(|| "Desktop theme token resolution failed")?;
-    for warning in &resolved.warnings {
-        print_warning(warning);
-    }
     Ok(resolved.css)
 }
 
@@ -1294,17 +1304,6 @@ fn print_field(label: &str, value: &dyn std::fmt::Display) {
         "  {} {}",
         console::style(format!("{label:<10}")).dim(),
         console::style(value).bold()
-    );
-}
-
-fn print_warning(message: &dyn std::fmt::Display) {
-    if is_json() {
-        return;
-    }
-    eprintln!(
-        "  {} {}",
-        console::style("⚠").yellow(),
-        console::style(message).dim()
     );
 }
 
