@@ -141,19 +141,11 @@ the backend UI thread. The complete event set is `Ready`, `WindowResized`,
 `ThemeChanged`, `ScaleFactorChanged`, `NavigationRequested`,
 `NavigationCompleted`, and `Exiting`.
 
-The same events are mirrored into web content as cancelable-aware `CustomEvent`s
-on `window`: `webui:ready`, `webui:window-resized`,
-`webui:window-moved`, `webui:window-maximized`,
-`webui:window-unmaximized`, `webui:window-minimized`,
-`webui:window-restored`, `webui:window-entered-fullscreen`,
-`webui:window-left-fullscreen`, `webui:window-focused`,
-`webui:window-blurred`, `webui:window-close-requested`,
-`webui:window-closed`, `webui:theme-changed`,
-`webui:scale-factor-changed`, `webui:navigation-requested`,
-`webui:navigation-completed`, and `webui:exiting`. Event data is in `detail`.
-The cancelable Rust events are the close and navigation requests; web listeners
-can observe those events, while the Rust handler is the authority for native
-cancellation.
+The same events are mirrored into web content as `CustomEvent`s on `window`,
+named `webui:` plus the kebab-case event name. Web listeners observe; the Rust
+handler is the only authority that can cancel a close or navigation. See
+[Rust to JavaScript: lifecycle events](#rust-to-javascript-lifecycle-events)
+for the event names, `detail` shapes, and listener examples.
 
 Linux never emits `WindowMoved`/`webui:window-moved`. GTK4 removed the GTK3
 window-position query APIs, and Wayland deliberately does not let a client
@@ -282,12 +274,157 @@ tooling:
 | `linux-deb` | Debian package writer |
 | `linux-rpm` | RPM package writer |
 
-## IPC model
+## Message passing
 
-Desktop IPC is protobuf-first. Web content sends protobuf request bytes to a
-reserved custom-protocol endpoint and receives protobuf response bytes. The
-Rust dispatcher is allowlisted, validates payload size before dispatch, and
-returns structured protobuf errors instead of panicking.
+Desktop apps have three message channels plus a command queue. Pick by
+direction and purpose:
+
+| Direction | Use | Transport | Extensible |
+| --- | --- | --- | --- |
+| JavaScript → Rust, with a reply | `invokeDesktop(method, payload)` | protobuf `POST /_webui/ipc` | Yes, register methods |
+| Rust → JavaScript, fire and forget | `webui:*` events on `window` | injected `CustomEvent` | No, fixed event set |
+| JavaScript → Rust window control | `webui-drag` regions | bounded host message | No, closed command set |
+| Rust → native window | `WindowHandle` | UI-thread command queue | No, fixed command set |
+
+Application data belongs on the first channel. The other two are narrow,
+closed-set control paths that exist so untrusted web content cannot reach
+arbitrary native behavior.
+
+### JavaScript to Rust: `invokeDesktop`
+
+Desktop IPC is protobuf-first and allowlisted. Web content sends request bytes
+to a reserved endpoint and receives response bytes; the Rust dispatcher
+validates size before dispatch and returns structured protobuf errors instead
+of panicking.
+
+Register each method on the runtime config before constructing the runtime.
+`register_protobuf` handles decode and encode for `prost` message types:
+
+```rust
+use webui_desktop::{DesktopSourceConfig, IpcHandlerError};
+
+let mut config = DesktopSourceConfig::new(build_options);
+config.ipc_registry.register_protobuf("contacts.search", |req: SearchRequest| {
+    let hits = store.search(&req.query).map_err(|err| {
+        IpcHandlerError::new(
+            "search-failed",
+            format!("contact search failed: {err}"),
+            "retry the search, or check the contact store path",
+        )
+    })?;
+    Ok(SearchResponse { hits })
+});
+```
+
+Use `register` instead when you want raw `&[u8]` in and `Vec<u8>` out.
+
+Call it from web content through the generated client, which packaging writes
+into the bundle as `assets/webui-desktop-ipc.js` and serves at
+`/webui-desktop-ipc.js`:
+
+```javascript
+import { invokeDesktop } from '/webui-desktop-ipc.js';
+
+const bytes = await invokeDesktop('contacts.search', encodeSearchRequest(query));
+const results = decodeSearchResponse(bytes);
+```
+
+The client is emitted by `webui-desktop package`, so it is present in packaged
+apps but not when running from source with a plain `asset_root`. The
+`/_webui/ipc` endpoint itself works in both modes, so during development either
+copy the packaged client into your asset root or `POST` the frame directly.
+
+`invokeDesktop` resolves with a `Uint8Array` of response payload bytes, or
+throws an `Error` carrying `code`, `message`, and `help` from the Rust side.
+Handle it like any async call:
+
+```javascript
+try {
+  const bytes = await invokeDesktop('contacts.search', payload);
+} catch (error) {
+  console.error(error.code, error.message, error.help);
+}
+```
+
+Method names are an allowlist. An unregistered method returns an
+`unknown-method` error rather than reaching any Rust code. Frames are capped at
+`DEFAULT_MAX_IPC_PAYLOAD_BYTES` (1 MiB); raise it with
+`IpcRegistry::with_max_payload_bytes` on a trusted app. Oversized frames,
+undecodable frames, and version mismatches all return structured errors with a
+`0` request id rather than failing the response.
+
+### Rust to JavaScript: lifecycle events
+
+Every lifecycle event is mirrored into web content as a `CustomEvent`
+dispatched on `window`, named `webui:` plus the kebab-case event name. Event
+data is on `detail`, which always carries a `type` field matching the event
+name:
+
+```javascript
+window.addEventListener('webui:window-resized', (e) => {
+  // e.detail === { type: 'window-resized', window_id: 1, width: 1200, height: 800 }
+  console.log(e.detail.width, e.detail.height);
+});
+
+window.addEventListener('webui:theme-changed', (e) => {
+  // e.detail === { type: 'theme-changed', dark: true }
+});
+```
+
+| Event | `detail` fields beyond `type` |
+| --- | --- |
+| `webui:ready` | none |
+| `webui:window-resized` | `window_id`, `width`, `height` |
+| `webui:window-moved` | `window_id`, `x`, `y` |
+| `webui:window-maximized` | `window_id` |
+| `webui:window-unmaximized` | `window_id` |
+| `webui:window-minimized` | `window_id` |
+| `webui:window-restored` | `window_id` |
+| `webui:window-entered-fullscreen` | `window_id` |
+| `webui:window-left-fullscreen` | `window_id` |
+| `webui:window-focused` | `window_id` |
+| `webui:window-blurred` | `window_id` |
+| `webui:window-close-requested` | `window_id` |
+| `webui:window-closed` | `window_id` |
+| `webui:theme-changed` | `dark` |
+| `webui:scale-factor-changed` | `scale` |
+| `webui:navigation-requested` | `window_id`, `url` |
+| `webui:navigation-completed` | `window_id`, `url` |
+| `webui:exiting` | none |
+
+`theme-changed` and `scale-factor-changed` are application-wide and carry no
+`window_id`. Sizes and positions are logical pixels on every platform; use
+`scale` from `webui:scale-factor-changed` to convert to device pixels.
+
+These are notifications, not decisions. Calling `preventDefault()` on
+`webui:window-close-requested` or `webui:navigation-requested` does nothing:
+the native decision is already made by then, and the Rust handler is the only
+authority that can cancel it. See
+[Lifecycle and native window control](#lifecycle-and-native-window-control) for
+the Rust side.
+
+Events fire on the UI thread and are delivered synchronously into the webview,
+so keep listeners cheap. `webui:ready` and `webui:exiting` bracket the
+session; `webui:exiting` is dispatched as the native loop tears down, so treat
+it as a last-chance notification rather than a place to start async work.
+
+### JavaScript to Rust: window control
+
+Custom titlebars need to drag, minimize, maximize, and close the native window.
+That path is deliberately not general-purpose IPC: the injected drag script
+translates `webui-drag` regions into one of exactly four host messages
+(`start-drag`, `minimize`, `toggle-maximize`, `close`), each capped at 256
+bytes and rejected if it is anything else. Mark regions declaratively rather
+than sending these yourself:
+
+```html
+<header webui-drag>
+  My App
+  <button webui-no-drag @click="{onSettings()}">Settings</button>
+</header>
+```
+
+See [Window options](#window-options) for the drag-region contract.
 
 ## Rust route state
 

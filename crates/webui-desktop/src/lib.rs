@@ -35,7 +35,7 @@ pub use event::{
 };
 pub use ipc::{
     DesktopIpcError, DesktopIpcRequest, DesktopIpcResponse, IpcHandlerError, IpcRegistry,
-    IPC_VERSION,
+    DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION,
 };
 pub use navigation::is_allowed_navigation_url;
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};

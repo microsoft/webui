@@ -1,23 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use anyhow::Result;
 use gtk4::{gdk, gio, glib, prelude::*, Application, ApplicationWindow, HeaderBar};
 use webkit6::{
-    prelude::*, LoadEvent, PolicyDecisionType, URISchemeRequest, URISchemeResponse,
-    UserContentInjectedFrames, UserContentManager, UserScript, UserScriptInjectionTime, WebContext,
-    WebView,
+    prelude::*, LoadEvent, PolicyDecisionType, UserContentInjectedFrames, UserContentManager,
+    UserScript, UserScriptInjectionTime, WebContext, WebView,
 };
 use webui_desktop::{
-    DesktopEvent, DesktopHostMessage, DesktopHttpMethod, DesktopProtocolRequest,
-    DesktopProtocolResponse, DesktopRuntime, DisplayBounds, EventResponse, Rgba, TitlebarStyle,
-    WindowCommand, WindowEffect, WindowId, WindowState, WindowStateStore, DEFAULT_MAX_ASSET_BYTES,
-    DRAG_REGION_SCRIPT,
+    DesktopEvent, DesktopHostMessage, DesktopRuntime, DisplayBounds, EventResponse, Rgba,
+    TitlebarStyle, WindowCommand, WindowEffect, WindowHandle, WindowId, WindowState,
+    WindowStateStore, DRAG_REGION_SCRIPT,
 };
 
-use super::protocol::{finish_scheme_request, handle_scheme_request, startup_url};
+use super::protocol::{handle_scheme_request, startup_url};
 use crate::DesktopFrame;
 
 const WINDOW_ID: WindowId = WindowId::PRIMARY;
@@ -181,17 +180,48 @@ fn configure_titlebar(window: &ApplicationWindow, webview: &WebView, style: &Tit
     }
 }
 
+/// UI-thread handles used to run queued window commands.
+///
+/// `WindowHandle::set_wakeup` requires a `Send + Sync` callback, but GTK
+/// objects are neither. The handles therefore stay in thread-local storage
+/// owned by the UI thread, and the wakeup callback captures nothing but a
+/// request to visit it there.
+#[derive(Clone)]
+struct CommandContext {
+    window: ApplicationWindow,
+    webview: WebView,
+    handle: WindowHandle,
+    events: webui_desktop::EventRegistry,
+}
+
+thread_local! {
+    static COMMAND_CONTEXT: RefCell<Option<CommandContext>> = const { RefCell::new(None) };
+}
+
 fn install_wakeup(window: &ApplicationWindow, webview: &WebView, frame: &DesktopFrame) {
-    let handle = frame.window_handle.clone();
-    let window = window.clone();
-    let webview = webview.clone();
-    let events = frame.events.clone();
-    frame.window_handle.set_wakeup(move || {
-        let handle = handle.clone();
-        let window = window.clone();
-        let webview = webview.clone();
-        let events = events.clone();
-        glib::idle_add_once(move || execute_commands(&window, &webview, &handle, &events));
+    COMMAND_CONTEXT.with(|slot| {
+        *slot.borrow_mut() = Some(CommandContext {
+            window: window.clone(),
+            webview: webview.clone(),
+            handle: frame.window_handle.clone(),
+            events: frame.events.clone(),
+        });
+    });
+    frame.window_handle.set_wakeup(|| {
+        // Captures nothing, so it stays `Send + Sync`. `idle_add_once` hops to
+        // the default main context, which the UI thread owns, so the
+        // thread-local context below is always the one installed above.
+        glib::idle_add_once(|| {
+            let context = COMMAND_CONTEXT.with(|slot| slot.borrow().clone());
+            if let Some(context) = context {
+                execute_commands(
+                    &context.window,
+                    &context.webview,
+                    &context.handle,
+                    &context.events,
+                );
+            }
+        });
     });
 }
 
@@ -333,7 +363,7 @@ fn connect_theme_events(webview: &WebView, events: &webui_desktop::EventRegistry
 }
 
 fn connect_webview_events(webview: &WebView, events: &webui_desktop::EventRegistry) {
-    let events = events.clone();
+    let load_events = events.clone();
     webview.connect_load_changed(move |webview, load_event| {
         if load_event == LoadEvent::Finished {
             if let Some(uri) = webview.uri() {
@@ -341,7 +371,7 @@ fn connect_webview_events(webview: &WebView, events: &webui_desktop::EventRegist
                     window_id: WINDOW_ID,
                     url: uri.to_string(),
                 };
-                dispatch_event(&events, webview, &event);
+                dispatch_event(&load_events, webview, &event);
             }
         }
     });
@@ -514,9 +544,8 @@ fn persist_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
 }
 
 fn display_bounds(window: &ApplicationWindow) -> Vec<DisplayBounds> {
-    let Some(display) = window.display() else {
-        return Vec::new();
-    };
+    // Both `RootExt` and `WidgetExt` expose `display()`, so name the trait.
+    let display = gtk4::prelude::WidgetExt::display(window);
     let monitors = display.monitors();
     let mut bounds = Vec::with_capacity(monitors.n_items() as usize);
     for index in 0..monitors.n_items() {
