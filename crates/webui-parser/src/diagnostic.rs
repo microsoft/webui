@@ -36,10 +36,8 @@ use std::fmt::Write as _;
 pub enum Severity {
     /// A fatal authoring error — the build cannot continue.
     Error,
-    /// A non-fatal warning — the build continues. Part of the diagnostics
-    /// surface for future advisories; not constructed while every current
-    /// authoring check is fatal.
-    #[allow(dead_code)]
+    /// A non-fatal warning — the build continues. Surfaced e.g. for CSS tokens
+    /// used only with a literal `var()` fallback and absent from every theme.
     Warning,
 }
 
@@ -69,6 +67,16 @@ pub mod codes {
     pub const INVALID_FOR_EACH: &str = "invalid-for-each";
     /// `<for each>` item or collection name uses disallowed characters.
     pub const INVALID_FOR_IDENTIFIER: &str = "invalid-for-identifier";
+    /// An explicit repeat key is malformed or used on an invalid element.
+    pub const INVALID_FOR_KEY: &str = "invalid-for-key";
+    /// `<for>` has an invalid, conflicting, or unsupported identifier attribute.
+    pub const INVALID_FOR_ID: &str = "invalid-for-id";
+    /// More than one `<for>` body defines the same identifier in one file.
+    pub const DUPLICATE_FOR_ID: &str = "duplicate-for-id";
+    /// A named `<for>` reference has no definition in its owning file.
+    pub const UNKNOWN_FOR_ID: &str = "unknown-for-id";
+    /// A named `<for>` reference uses a different item variable from its body.
+    pub const INCOMPATIBLE_FOR_ITEM: &str = "incompatible-for-item";
     /// `<if>` element is missing its required `condition` attribute.
     pub const MISSING_IF_CONDITION: &str = "missing-if-condition";
     /// `<if condition>` value is not a parseable expression.
@@ -77,6 +85,8 @@ pub mod codes {
     pub const UNKNOWN_COMPONENT: &str = "unknown-component";
     /// An `@event` handler value is not a valid `{handler()}` expression.
     pub const INVALID_EVENT_HANDLER: &str = "invalid-event-handler";
+    /// A scriptless HTML component contains event bindings and needs authored JS.
+    pub const SCRIPTLESS_EVENT_HANDLER: &str = "scriptless-event-handler";
     /// A `w-ref` binding is missing its required `{braces}`.
     pub const INVALID_W_REF: &str = "invalid-w-ref";
     /// An HTML element is missing its closing tag.
@@ -85,6 +95,24 @@ pub mod codes {
     pub const MALFORMED_HTML_TAG: &str = "malformed-html-tag";
     /// A closing tag has no matching opening tag.
     pub const UNEXPECTED_CLOSING_TAG: &str = "unexpected-closing-tag";
+    /// An unwrapped Light DOM component contains a native `<slot>`.
+    pub const LIGHT_DOM_SLOT: &str = "light-dom-slot";
+    /// A declarative Shadow DOM wrapper has an unsupported mode or placement.
+    pub const INVALID_SHADOW_ROOT_MODE: &str = "invalid-shadow-root-mode";
+    /// Legacy code for the removed compiler-owned Light DOM marker diagnostic.
+    #[deprecated(note = "Light DOM no longer generates compiler-owned markers")]
+    pub const RESERVED_LIGHT_DOM_MARKER: &str = "reserved-light-dom-marker";
+    /// Legacy code for the removed Light DOM scope-collision diagnostic.
+    #[deprecated(note = "Light DOM no longer generates compiler-owned markers")]
+    pub const LIGHT_SCOPE_COLLISION: &str = "light-scope-collision";
+    /// Light component CSS contains a Shadow-only selector.
+    pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
+    /// Compatibility alias for the FAST-owned Light DOM diagnostic code.
+    pub const FAST_LIGHT_DOM_UNSUPPORTED: &str =
+        crate::plugin::fast::diagnostic::FAST_LIGHT_DOM_UNSUPPORTED;
+    /// Legacy code for removed Light-local keyframe namespacing.
+    #[deprecated(note = "Light DOM no longer namespaces component-local keyframes")]
+    pub const DYNAMIC_LIGHT_KEYFRAME: &str = "dynamic-light-keyframe";
     /// An HTML comment was opened but never closed with `-->`.
     pub const UNTERMINATED_HTML_COMMENT: &str = "unterminated-html-comment";
     /// An HTML declaration was opened but never closed with `>`.
@@ -95,6 +123,78 @@ pub mod codes {
     pub const RECURSIVE_TEMPLATE: &str = "recursive-template";
     /// A `<style>` block contains malformed CSS.
     pub const INVALID_CSS: &str = "invalid-css";
+    /// A CSS token required by parser output is missing from the configured theme.
+    pub const MISSING_THEME_TOKEN: &str = "missing-theme-token";
+    /// A CSS token used only with a literal `var()` fallback and absent from
+    /// every theme — non-fatal, but usually a typo. Severity: warning.
+    pub const UNTHEMED_TOKEN: &str = "unthemed-token";
+    /// `<boundary>` is missing its required, non-empty `name` attribute.
+    pub const MISSING_BOUNDARY_NAME: &str = "missing-boundary-name";
+    /// `<boundary name>` is not a static string literal (e.g. it
+    /// contains a `{{binding}}`).
+    pub const INVALID_BOUNDARY_NAME: &str = "invalid-boundary-name";
+    /// Two `<boundary>` directives in the same owning template share a `name`.
+    pub const DUPLICATE_BOUNDARY_NAME: &str = "duplicate-boundary-name";
+    /// A `<boundary>` declaration renders more than once — through repeated
+    /// static callsites of its owning component — without a stable occurrence
+    /// key.
+    pub const MISSING_BOUNDARY_KEY: &str = "missing-boundary-key";
+    /// A `<boundary>` is reachable from a `<for>` repeat body, directly or
+    /// transitively through `<if>`, routes/outlets, or a reusable component.
+    /// A repeat iteration cannot suspend, so the declaration can never be paced
+    /// independently.
+    pub const BOUNDARY_IN_REPEAT: &str = "boundary-in-repeat";
+    /// A `<boundary key>` is empty or has malformed binding delimiters.
+    pub const INVALID_BOUNDARY_KEY: &str = "invalid-boundary-key";
+    /// The protocol-wide boundary declaration identity space was exhausted.
+    pub const TOO_MANY_BOUNDARIES: &str = "too-many-boundaries";
+    /// A `<boundary>` is nested inside another `<boundary>`.
+    pub const NESTED_BOUNDARY: &str = "nested-boundary";
+    /// A `<boundary>` would cut through component host content or an
+    /// inert/raw-text HTML element instead of independently wrapping it.
+    pub const BOUNDARY_CROSSES_SCOPE: &str = "boundary-crosses-scope";
+    /// A `<boundary>` appears before `<body>` opens or after it closes.
+    pub const BOUNDARY_OUTSIDE_BODY: &str = "boundary-outside-body";
+    /// A `<boundary>` appears inside an HTML insertion mode that
+    /// foster-parents unknown elements (`<table>`, `<tbody>`, `<tr>`,
+    /// `<select>`, …), which would separate the generated `<webui-hydrate>`
+    /// sentinel from its payload script.
+    pub const BOUNDARY_IN_FOSTER_CONTEXT: &str = "boundary-in-foster-context";
+    /// A route-local `<boundary>` is nested in ignored route markup instead of
+    /// being a direct child of the `<route>`.
+    pub const INVALID_ROUTE_BOUNDARY_PLACEMENT: &str = "invalid-route-boundary-placement";
+    /// `<webui-hydrate>` was written by an application author. It is reserved
+    /// for the compiler/handler-generated runtime hydration sentinel.
+    pub const AUTHORED_WEBUI_HYDRATE: &str = "authored-webui-hydrate";
+    /// A build declares `<boundary>` streaming checkpoints but has no
+    /// state-projection manifest, so every checkpoint serializes the whole
+    /// state object instead of its own components' keys.
+    /// Severity: warning.
+    pub const STREAMING_WITHOUT_PROJECTION: &str = "streaming-without-projection";
+    /// More than one build output shares the file name of an authored
+    /// `<script type="module" src>`, so its shared chunks cannot be preloaded
+    /// without guessing which output the URL serves.
+    /// Severity: warning.
+    pub const AMBIGUOUS_MODULE_ENTRY: &str = "ambiguous-module-entry";
+    /// A module entry's static import closure exceeded the `modulepreload`
+    /// hint cap. Preloads share one connection, so the remainder would delay
+    /// the entry they are meant to accelerate.
+    /// Severity: warning.
+    pub const EXCESSIVE_MODULE_PRELOADS: &str = "excessive-module-preloads";
+    /// A resolved `modulepreload` href contains characters that cannot be
+    /// written verbatim into an HTML attribute, so the hint was dropped rather
+    /// than emitted or escaped.
+    /// Severity: warning.
+    pub const UNSAFE_MODULE_PRELOAD: &str = "unsafe-module-preload";
+    /// Static component assets were requested for a graph containing `<route>`.
+    pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
+    /// A component's root rendering or hydration policy is malformed.
+    pub const INVALID_COMPONENT_RENDER_POLICY: &str = "invalid-component-render-policy";
+    /// Lazy rendering omitted the intrinsic block-size estimate needed to
+    /// reserve scroll geometry while the browser skips layout.
+    pub const MISSING_RENDER_RESERVATION: &str = "missing-render-reservation";
+    /// A lazy-render intrinsic block-size estimate is malformed or misplaced.
+    pub const INVALID_RENDER_RESERVATION: &str = "invalid-render-reservation";
 }
 
 /// A build-time template-authoring diagnostic.
@@ -128,9 +228,8 @@ impl Diagnostic {
 
     /// Start a non-fatal warning diagnostic.
     ///
-    /// Reserved for future advisories; every current authoring check is fatal,
-    /// so this is not yet called outside tests.
-    #[allow(dead_code)]
+    /// Rendered with the same location/snippet/`help:` layout as an error, but
+    /// the build continues (e.g. an unthemed literal-fallback CSS token).
     #[must_use]
     pub fn warning(title: impl Into<String>) -> Self {
         Self::new(Severity::Warning, title)

@@ -18,9 +18,27 @@ pub enum WebUIError {
         source: std::io::Error,
     },
 
-    /// Component registration failure.
-    #[error("Component registration error: {0}")]
-    ComponentRegistration(String),
+    /// Component registration failure while reading, transforming, or
+    /// inserting an authored component source.
+    ///
+    /// `context` names what was being registered (an app directory or a
+    /// discovered source). The underlying [`ParserError`] is preserved as a
+    /// structured `#[source]` rather than being flattened to a string, so a
+    /// build-time authoring mistake surfaced by a component-source transform
+    /// reaches the CLI as [`ParserError::Template`] with its stable diagnostic
+    /// `code`, source location, snippet, and `help` intact — the same
+    /// structured path already used by [`WebUIError::Parse`].
+    ///
+    /// [`ParserError`]: webui_parser::ParserError
+    /// [`ParserError::Template`]: webui_parser::ParserError::Template
+    #[error("{context}")]
+    ComponentRegistration {
+        /// What was being registered (path or discovered source).
+        context: String,
+        /// The underlying registration error, structurally preserved.
+        #[source]
+        source: webui_parser::ParserError,
+    },
 
     /// Component discovery failure (npm packages or local paths).
     #[error("Component discovery error: {0}")]
@@ -51,6 +69,21 @@ pub enum WebUIError {
     /// Invalid build-option configuration.
     #[error("Invalid build options: {0}")]
     InvalidBuildOptions(String),
+
+    /// Static component asset graph failure with a structured diagnostic.
+    #[error("{0}")]
+    ComponentAssets(Box<webui_parser::Diagnostic>),
+
+    /// Bundler-neutral state projection manifest failure: malformed schema,
+    /// stale/missing input or output file, build-ID mismatch, conflicting or
+    /// duplicate fragment ownership, missing scripted-component coverage, or
+    /// an incompatible plugin. Carries a structured, color-free [`Diagnostic`]
+    /// with a stable `PROJ-*` code (see `webui::projection::codes`).
+    ///
+    /// The diagnostic is boxed so this cold error path does not enlarge
+    /// `Result<_, WebUIError>` on the common success path.
+    #[error("{0}")]
+    Projection(Box<webui_parser::Diagnostic>),
 }
 
 impl WebUIError {

@@ -1,0 +1,13 @@
+{
+  "heading": "Server heading",
+  "count": 2,
+  "selected": "off",
+  "selectedId": "42",
+  "items": [
+    { "name": "Ada" },
+    { "name": "Grace" }
+  ],
+  "childPayload": { "label": "Server child payload" },
+  "showDetails": false,
+  "details": "SSR details"
+}

@@ -40,12 +40,12 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use serde_json::{json, Value};
 use std::hint::black_box;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use webui::streaming::StreamingWriter;
-use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
+use webui::{build, BuildOptions, CssStrategy, Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
-use webui_protocol::WebUIProtocol;
 
 const CONTACT_COUNTS: &[usize] = &[10, 100, 1000];
 const MEASUREMENT_TIME: Duration = Duration::from_secs(8);
@@ -111,7 +111,7 @@ fn build_state(count: usize) -> Value {
     })
 }
 
-fn build_protocol() -> WebUIProtocol {
+fn build_protocol() -> Arc<Protocol> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let app_dir = manifest
         .join("..")
@@ -120,14 +120,15 @@ fn build_protocol() -> WebUIProtocol {
         .join("app")
         .join("contact-book-manager")
         .join("src");
-    build(BuildOptions {
+    let document = build(BuildOptions {
         app_dir,
         entry: "index.html".to_string(),
         css: CssStrategy::Style,
         ..BuildOptions::default()
     })
     .expect("failed to build contact-book-manager protocol")
-    .protocol
+    .protocol;
+    Arc::new(Protocol::new(document))
 }
 
 // ── Writers ────────────────────────────────────────────────────────────
@@ -179,7 +180,7 @@ fn bench_writers(c: &mut Criterion) {
         .map(|(_, state)| {
             let h = WebUIHandler::new();
             let mut w = StringWriter::with_capacity(512 * 1024);
-            h.handle(
+            h.render(
                 &protocol,
                 state,
                 &RenderOptions::new("index.html", "/"),
@@ -205,7 +206,7 @@ fn bench_writers(c: &mut Criterion) {
                 let h = WebUIHandler::new();
                 b.iter(|| {
                     let mut w = StringWriter::with_capacity(output_size);
-                    h.handle(
+                    h.render(
                         black_box(&protocol),
                         black_box(state),
                         &RenderOptions::new("index.html", "/"),
@@ -232,14 +233,13 @@ fn bench_writers(c: &mut Criterion) {
                 b.iter(|| {
                     let (tx, rx) = mpsc::channel::<Bytes>(cap);
                     let mut w = StreamingWriter::new(tx);
-                    h.handle(
+                    h.render(
                         black_box(&protocol),
                         black_box(state),
                         &RenderOptions::new("index.html", "/"),
                         &mut w,
                     )
                     .unwrap();
-                    ResponseWriter::end(&mut w).unwrap();
                     drop(w);
                     black_box(drain_total(rx));
                 });
@@ -263,9 +263,8 @@ fn bench_writers(c: &mut Criterion) {
                     let opts = RenderOptions::new("index.html", "/")
                         .with_head_inject(HEAD_INJECT)
                         .with_body_inject(BODY_INJECT);
-                    h.handle(black_box(&protocol), black_box(state), &opts, &mut w)
+                    h.render(black_box(&protocol), black_box(state), &opts, &mut w)
                         .unwrap();
-                    ResponseWriter::end(&mut w).unwrap();
                     drop(w);
                     black_box(drain_total(rx));
                 });
@@ -281,7 +280,7 @@ fn bench_writers(c: &mut Criterion) {
                 let h = WebUIHandler::new();
                 b.iter(|| {
                     let mut w = StringWriter::with_capacity(output_size);
-                    h.handle(
+                    h.render(
                         black_box(&protocol),
                         black_box(state),
                         &RenderOptions::new("index.html", "/"),
@@ -330,7 +329,7 @@ fn post_inject(html: &str, script: &str) -> String {
 /// `ClientDisconnected` on its next flush — that's the *correct*
 /// production behaviour (cancel the render). We swallow that error
 /// here because it's expected.
-fn streaming_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
+fn streaming_ttfb(protocol: &Arc<Protocol>, state: &Value) -> Duration {
     let (tx, mut rx) = mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
     let proto = protocol.clone();
     let st = state.clone();
@@ -341,8 +340,11 @@ fn streaming_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
         // Both calls may legitimately return Err(ClientDisconnected)
         // when the bench drops the receiver after the first chunk —
         // that's the production-correct cancellation path.
-        let _ = h.handle(&proto, &st, &RenderOptions::new("index.html", "/"), &mut w);
-        let _ = ResponseWriter::end(&mut w);
+        if h.render(&proto, &st, &RenderOptions::new("index.html", "/"), &mut w)
+            .is_err()
+        {
+            let _ = ResponseWriter::end(&mut w);
+        }
     });
     // Block until the first chunk arrives.
     let _ = rx.blocking_recv();
@@ -352,12 +354,12 @@ fn streaming_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
 /// Buffered baseline: the receiver only sees bytes when the entire
 /// render has completed and the result is handed off. This is what
 /// `pnpm start:server` did before streaming.
-fn buffered_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
+fn buffered_ttfb(protocol: &Protocol, state: &Value) -> Duration {
     let h = WebUIHandler::new();
     let cap = 64 * 1024;
     let start = Instant::now();
     let mut w = StringWriter::with_capacity(cap);
-    h.handle(
+    h.render(
         protocol,
         state,
         &RenderOptions::new("index.html", "/"),

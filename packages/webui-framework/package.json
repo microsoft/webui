@@ -1,10 +1,12 @@
 {
   "name": "@microsoft/webui-framework",
-  "version": "0.0.17",
+  "version": "0.0.29",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "type": "module",
-  "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration. 15KB minified, compiled-template path mapping, no hydration markers.",
+  "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
   "license": "MIT",
-  "sideEffects": false,
   "exports": {
     ".": {
       "import": {
@@ -16,6 +18,24 @@
       "import": {
         "types": "./dist/component-asset.d.ts",
         "default": "./dist/component-asset.js"
+      }
+    },
+    "./streaming.js": {
+      "import": {
+        "types": "./dist/streaming-entry.d.ts",
+        "default": "./dist/streaming-entry.js"
+      }
+    },
+    "./lazy-hydration.js": {
+      "import": {
+        "types": "./dist/lazy-hydration-entry.d.ts",
+        "default": "./dist/lazy-hydration-entry.js"
+      }
+    },
+    "./interaction-hydration.js": {
+      "import": {
+        "types": "./dist/interaction-hydration.d.ts",
+        "default": "./dist/interaction-hydration.js"
       }
     }
   },

@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "incremental": true,
     "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
@@ -11,6 +12,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
+    "removeComments": true,
     "outDir": "dist",
     "rootDir": "src"
   },

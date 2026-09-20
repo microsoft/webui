@@ -4,7 +4,11 @@
 /// <reference lib="webworker" />
 
 import { API_CHUNKS, sanitizePayload, type ApiChunk, type ApiPayload } from './payload.js';
-import initWasm, { render } from './wasm/handler/webui_wasm_handler.js';
+import initWasm, {
+  type BoundaryDescriptor,
+  Protocol,
+  type StreamStep,
+} from './wasm/handler/webui_wasm_handler.js';
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -13,7 +17,7 @@ const protocolUrl = new URL("protocol.bin", baseUrl);
 const themeCssUrl = new URL("theme.css", baseUrl);
 const encoder = new TextEncoder();
 let wasmReady: Promise<unknown> | undefined;
-let protocolReady: Promise<Uint8Array> | undefined;
+let protocolReady: Promise<Protocol> | undefined;
 let themeCssReady: Promise<string> | undefined;
 
 self.addEventListener("install", () => {
@@ -52,14 +56,43 @@ async function streamNavigation(): Promise<Response> {
 }
 
 async function streamHtml(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
-  const themeCss = await loadThemeCss();
-  controller.enqueue(encode(documentStart(themeCss)));
+  const [themeCss, protocol] = await Promise.all([loadThemeCss(), loadProtocol()]);
+  const session = protocol.streamResponse('index.html', '/', {
+    headInject: `<style>${themeCss}</style>`,
+  });
+  const pending = new Map<
+    string,
+    Promise<{ chunk: ApiChunk; payload: ApiPayload }>
+  >(
+    API_CHUNKS.map((chunk) => [
+      chunk.label,
+      fetchChunk(chunk).then((payload) => ({ chunk, payload })),
+    ]),
+  );
 
-  const protocol = await loadProtocol();
-  controller.enqueue(encode("<!-- protocol-ready -->\n"));
-
-  await streamChunksAsReady(controller, protocol);
-  controller.enqueue(encode(documentEnd()));
+  let step = session.start('{}');
+  controller.enqueue(step.bytes);
+  while (!step.done) {
+    if (!step.boundary) {
+      step = session.advance();
+      controller.enqueue(step.bytes);
+      continue;
+    }
+    const boundary = pendingBoundary(step);
+    const result = await pending.get(boundary.name);
+    if (!result) {
+      throw new Error(
+        `Unexpected streaming boundary ${boundary.owner}/${boundary.name}`,
+      );
+    }
+    pending.delete(boundary.name);
+    validateBoundaryPayload(boundary, result.chunk, result.payload);
+    step = session.resume(
+      boundary.instanceId,
+      JSON.stringify(result.payload.state),
+    );
+    controller.enqueue(step.bytes);
+  }
 }
 
 async function loadThemeCss(): Promise<string> {
@@ -79,7 +112,7 @@ async function loadThemeCss(): Promise<string> {
   return themeCssReady;
 }
 
-async function loadProtocol(): Promise<Uint8Array> {
+async function loadProtocol(): Promise<Protocol> {
   if (!protocolReady) {
     protocolReady = (async () => {
       await loadWasm();
@@ -87,7 +120,8 @@ async function loadProtocol(): Promise<Uint8Array> {
       if (!response.ok) {
         throw new Error(`Failed to load ${protocolUrl.pathname}: ${response.status}`);
       }
-      return new Uint8Array(await response.arrayBuffer());
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return new Protocol(bytes, 'webui');
     })().catch((error) => {
       protocolReady = undefined;
       throw error;
@@ -108,35 +142,27 @@ function loadWasm(): Promise<unknown> {
   return wasmReady;
 }
 
-async function streamChunksAsReady(
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  protocol: Uint8Array,
-): Promise<void> {
-  const pending = API_CHUNKS.map((chunk) =>
-    fetchChunk(chunk).then((payload) => ({ chunk, payload })),
-  );
+function pendingBoundary(step: StreamStep): BoundaryDescriptor {
+  if (step.done || !step.boundary) {
+    throw new Error('Streaming session returned no pending boundary');
+  }
+  return step.boundary;
+}
 
-  while (pending.length > 0) {
-    const indexed = pending.map((promise, index) =>
-      promise.then((result) => ({ index, result })),
+function validateBoundaryPayload(
+  boundary: BoundaryDescriptor,
+  chunk: ApiChunk,
+  payload: ApiPayload,
+): void {
+  if (boundary.owner !== 'index.html' || boundary.name !== chunk.label) {
+    throw new Error(
+      `Expected index.html/${chunk.label}, received ${boundary.owner}/${boundary.name}`,
     );
-    const { index, result } = await Promise.race(indexed);
-    pending.splice(index, 1);
-
-    controller.enqueue(
-      encode(`<div class="stream-chunk" data-chunk="${result.chunk.label}">\n`),
+  }
+  if (payload.entry !== `${chunk.label}-panel`) {
+    throw new Error(
+      `API payload for ${chunk.label} targets unexpected entry ${payload.entry}`,
     );
-    render(
-      protocol,
-      JSON.stringify(result.payload.state),
-      (chunk: string) => controller.enqueue(encode(chunk)),
-      {
-        entry: result.payload.entry,
-        requestPath: '/',
-        plugin: 'webui',
-      },
-    );
-    controller.enqueue(encode("\n</div>\n"));
   }
 }
 
@@ -164,28 +190,6 @@ function delay(ms: number): Promise<void> {
 
 function encode(value: string): Uint8Array {
   return encoder.encode(value);
-}
-
-function documentStart(themeCss: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebUI Service Worker Streaming</title>
-  <style>${themeCss}</style>
-</head>
-<body>
-  <main class="page">
-    <div class="stream-note">Streaming from service worker + WebUI WASM handler</div>
-`;
-}
-
-function documentEnd(): string {
-  return `  </main>
-</body>
-</html>
-`;
 }
 
 function renderError(error: unknown): string {

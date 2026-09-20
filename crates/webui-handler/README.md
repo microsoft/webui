@@ -8,22 +8,83 @@ High-performance template renderer for the [WebUI](https://github.com/microsoft/
 
 ## Key Functions
 
-### `route_handler::render_partial`
-Renders a JSON partial response for client-side navigation. Returns state, templates, CSS, inventory, and the matched route chain.
+### `Protocol::render_partial`
+Returns a complete client-navigation response with active-route projected
+state.
 
-### `route_handler::render_component_templates`
+### `Protocol::render_component_templates`
 Returns compiled templates and CSS for specific components by tag name. Used for on-demand loading of components not in the route tree (dialogs, overlays). Supports inventory-based deduplication.
 
 ```rust
-let result = route_handler::render_component_templates(
-    &protocol,
+let result = protocol.render_component_templates(
     &["settings-dialog", "notification-panel"],
     &inventory_hex,
 );
-// Returns: { templates: [...], templateStyles: [...], inventory: "..." }
+// Returns: { componentStyles: {...}, templates: {...}, inventory: "..." }
 ```
 
-Available via all bindings: Rust (direct), Node (`renderComponentTemplates`), WASM (`render_component_templates`), FFI (`webui_render_component_templates`), npm (`@microsoft/webui` — `renderComponentTemplates`).
+Available via all bindings: Rust (`Protocol::render_component_templates`), Node/WASM/npm (`Protocol.renderComponentTemplates`), and FFI (`webui_protocol_render_component_templates`).
+
+### Runtime-discovered streaming
+
+`WebUIHandler::stream_response` returns a borrowed `StreamingResponse`.
+`StreamingSession` is the owned byte-returning form used by host bindings.
+
+```rust
+let mut session = StreamingSession::new(handler, protocol, options)?;
+let mut step = session.start(initial_state)?;
+
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            // Writes only this occurrence, through its checkpoint.
+            session.resume(boundary.instance_id, state, BoundaryMode::Final)?
+        }
+        // Writes the shell bytes up to the next occurrence or the terminal.
+        None => session.advance()?,
+    };
+    write_and_flush(&step.bytes)?;
+}
+```
+
+`start`, `resume`, and `advance` return `StreamStep { bytes, boundary, done }`,
+and each step's bytes are one independently writable, independently flushed
+segment. A descriptor contains response-local `instance_id`, stable
+`declaration_id`, owner-local `name`, `owner`, and an optional string or numeric
+`key`. `boundary: Some` waits for `resume`; `boundary: None` with `done: false`
+means the committed occurrence flushed and the caller must `advance`; the done
+step includes terminal and document-tail bytes.
+
+`resume` is boundary-only: it writes the occurrence markers, body, checkpoint,
+and sentinel, then returns. `advance` writes the parent or shell bytes that
+follow through the next occurrence or terminal. This makes an early
+component-local child independently flushable without an authored sibling
+boundary.
+
+`start` and `resume` accept either owned or borrowed state. Pass a freshly loaded
+or decoded `Value` to move changed top-level values without cloning, or `&Value`
+when retaining caller ownership. Equal values preserve the prior reference base.
+Use `resume_current` when the retained snapshot is already authoritative and no
+comparison is needed. Both resume forms stop after the checkpoint flush, so an
+async host can release its worker before calling `advance`.
+
+Commit an occurrence as `BoundaryMode::Updatable` to call
+`update(instance_id, patch)` later, including between its `resume` and the
+following `advance`. Updates are projected state records and do not insert
+markup. Component-local occurrences use generated parent spans so an early child
+can hydrate before the parent tail. One response may commit at most 128
+updatable occurrences, matching what the browser retains; a `resume` past that
+is refused before any byte is written, so the same pending occurrence can be
+committed as `BoundaryMode::Final` instead. Final occurrences release their
+roots at hydration and never count against the cap.
+
+A `<boundary>` may not appear inside a `<for>` repeat body (directly or through
+a component, `<if>`, route, or outlet): the build rejects it with
+`boundary-in-repeat`. Wrap the whole `<for>` in one boundary to pace the list as
+a single region. Boundaries before and after a `<for>` are also valid. A
+component-owned declaration reached from multiple static callsites in one entry
+traversal still requires a unique string or numeric `key`.
 
 ## Documentation
 

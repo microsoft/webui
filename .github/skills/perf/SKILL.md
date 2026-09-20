@@ -1,6 +1,6 @@
 ---
 name: perf
-description: Speed and memory performance rules for Rust crates, webui-framework, and webui-router.
+description: Speed and memory performance rules for Rust crates, the Node addon, webui-framework, and webui-router.
 ---
 
 # Performance
@@ -13,7 +13,7 @@ Use this skill when modifying any performance-sensitive code across the stack.
 
 ## Rust - speed rules
 
-These apply to `webui-handler`, `webui-state`, `webui-expressions`, `webui-parser`, `webui-protocol`, and `webui-ffi`.
+These apply to `webui-handler`, `webui-state`, `webui-expressions`, `webui-parser`, `webui-protocol`, `webui-ffi`, and `webui-node`.
 
 1. **No `format!()` in writer output.** Use sequential `writer.write()` calls. `format!` allocates a temporary `String` every invocation.
 2. **No `.to_string()` on `Cow`.** Write `Cow<str>` directly to avoid defeating zero-copy.
@@ -45,7 +45,7 @@ These apply to `packages/webui-framework` (the client-side Web Component runtime
 1. **Single-pass hydration.** The framework walks the DOM once to connect all bindings. No multi-pass scanning.
 2. **Path-indexed targeted updates.** When an `@observable` changes, only bindings referencing that property are visited - not the entire template.
 3. **DOM cloning over innerHTML.** Use `cloneNode(true)` from cached template fragments. Never use `innerHTML` for component creation.
-4. **Delegated events.** One listener per event type on the shadow root, not one closure per element. Reduces listener count by orders of magnitude.
+4. **Direct event listeners.** Attach `@event` bindings to the bound element, never a shared render root. `$wireEvents` runs once per block instance, so delegating stacks one listener per block on the same node and fires all of them per dispatch — O(N) for no reduction in listener count.
 5. **Microtask coalescing.** Multiple property changes within the same synchronous block batch into a single DOM update via `queueMicrotask`.
 6. **Cursor-based repeat reconciliation.** `<for>` block updates use a diff algorithm that only calls `insertBefore` on nodes that actually moved. Append/prepend/remove are O(1).
 7. **No `for..in` on objects.** Use `Object.keys()` with an indexed `for` loop — faster and prototype-safe without needing `Object.hasOwn`. Applies to `setState`, `setInitialState`, and any code iterating user-provided objects.
@@ -90,15 +90,19 @@ These apply to `packages/webui-router` (the client-side SPA router).
 
 ## Measuring
 
-### Rust benchmarks
+### Server benchmarks
 
 ```bash
 cargo bench -p microsoft-webui --bench contact_book_bench          # full run
 cargo bench -p microsoft-webui --bench contact_book_bench -- --test # quick validation
-cargo xtask bench all                                               # all crates
+cargo bench -p microsoft-webui --bench server_request_bench         # high-level request helper
+cargo xtask bench all                                               # all Rust crates
+cargo xtask bench node-addon                                        # Node/V8/N-API boundary
 ```
 
-Compare **Render/1000 P50** before and after. Verify output **Bytes** is unchanged (same HTML = correct behavior).
+Compare **Render/1000 P50** before and after. For Node changes, save with
+`--save-baseline before` and compare with `--baseline before`. Verify output
+**Bytes** is unchanged (same HTML = correct behavior).
 
 ### Client performance
 

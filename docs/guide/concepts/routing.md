@@ -53,6 +53,9 @@ All WebUI apps with routes **must** include `<base href="/">`. Without it, relat
 <main><outlet /></main>
 ```
 
+The paired form `<outlet></outlet>` is also supported. Outlet directives are
+empty; prefer the shorter self-closing form.
+
 **3. Start the router:**
 
 ```typescript
@@ -62,6 +65,33 @@ Router.start();
 ```
 
 The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
+
+Route segments may contain literal dots, such as `/docs/v2.1` or
+`/users/john.doe`. In `webui serve`, a missed asset lookup falls back to route
+rendering only for requests that explicitly accept `text/html`,
+`application/xhtml+xml`, or `application/json`. `q=0` disables that media type,
+while a malformed or out-of-range `q` value falls back to `q=1.0`; when HTML and
+JSON are both acceptable, the higher `q` wins and exact ties prefer JSON. Missing
+or wildcard-only `Accept` headers return 404, as
+do JS, CSS, image, and other
+non-HTML/non-JSON asset requests.
+
+The router never imports framework code. Authored route components use their
+registered classes. When the application also loads
+`@microsoft/webui-framework`, HTML-only route templates can mount during soft
+navigation without empty TypeScript modules. The router falls back to a full
+document request only when no runtime registers the destination tag.
+
+When the View Transitions API is available, client-side route commits
+use `document.startViewTransition()`. While active, the router installs a
+nonce-bearing `@view-transition { navigation: none; }` override. This disables
+automatic cross-document transitions because they conflict with intercepted
+routes that may need the document fallback. `Router.destroy()` removes the
+override.
+Route readiness does not wait for the animation to finish. Resizing or starting
+a newer transition may skip the animation without failing the committed route;
+route commit errors still follow normal navigation error handling without
+duplicate unhandled transition rejections.
 
 ## Nested Routes
 
@@ -146,7 +176,7 @@ Preserve a component's DOM and state across navigations instead of destroying an
 ```
 
 When navigating from Mail to Calendar and back:
-- **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Route param and query param attributes are updated, but `setState()` is **not called** — your component's `@observable` properties are preserved.
+- **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Route param and query param attributes are updated, and your component's `@observable` properties are preserved.
 - **`settings-page` (no keep-alive):** Destroyed on deactivation, recreated fresh on each visit.
 
 | Behavior | With `keep-alive` | Without |
@@ -154,7 +184,7 @@ When navigating from Mail to Calendar and back:
 | Deactivate | `display: none` (stays in DOM) | `display: none` (stays in DOM) |
 | Reactivate | Reuses existing component — params updated, state preserved | Destroys old, creates new component |
 | Local state | ✅ Preserved (scroll, input, timers, observables) | Lost |
-| Server state | **Skipped** — use a [loader](#route-loaders) to refresh | Applied on mount via `setState()` |
+| Server state | **Skipped** - use a [loader](#route-loaders) to refresh | Loaded with the new component |
 
 <webui-blockquote appearance="tip" title="When to use" icon="💡">
 
@@ -164,7 +194,7 @@ Use on routes with expensive UI (lists, grids, trees) that users switch between 
 
 <webui-blockquote appearance="tip" title="Refreshing data on reactivation" icon="💡">
 
-If a keep-alive component needs fresh data when reactivated, define a static `loader()` method. The router calls it on every navigation (including reactivation) and applies the result via `setState()`.
+If a keep-alive component needs fresh data when reactivated, define a static `loader()` method. The router calls it on every navigation, including reactivation, and uses the returned data to refresh the component.
 
 </webui-blockquote>
 
@@ -184,6 +214,16 @@ How it works:
 
 Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
 
+Preload is an optional runtime tier. Apps that do not enable it do not load the
+preload listener or navigation cache implementation.
+
+`@microsoft/webui-router/preload.js` exposes the framework-agnostic
+`prepareRoutePreload()` handle. Start framework-specific hydration from its
+`onIntent` callback, then pass the handle to
+`Router.start({ preload: prepared })`. WebUI Framework calls
+`wakeInteractionHydration()` from that callback; FAST uses its own hydration
+readiness signal. The router imports neither runtime.
+
 ### Route Loaders
 
 Define a static `loader()` method on a component class to fetch data from a custom source instead of using server-provided state:
@@ -202,11 +242,13 @@ export class LiveDashboard extends WebUIElement {
 
 How it works:
 - The router checks each route component's constructor for a static `loader()` method
+- Results belong to the concrete route-chain entry, so separate declarations
+  that reuse one component tag keep independent params and state
 - Loaders run **before** the view transition — results are ready for synchronous DOM commit
 - The loader receives route `params`, `query`, and an `AbortSignal` tied to the navigation
 - If a loader fails, the router falls back to server-provided `data.state` with a console warning
 - Loaders run on both SSR bootstrap and SPA navigations for consistency
-- Components without a `loader()` use server state as before — fully backwards compatible
+- Components without a `loader()` use server state
 
 ### Controlling State
 
@@ -214,25 +256,54 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | `setState(state)` on every navigation |
-| **I fetch my own data** | `static loader()` on component | Loader runs pre-commit, result passed to `setState()` |
-| **Preserve local state** | `keep-alive` on route | Params/query attrs updated, `setState()` skipped |
-| **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM preserved, loader result applied via `setState()` |
+| **Server provides state to authored code** | Authored route component | Fresh route state is applied when the component mounts |
+| **Template-only soft navigation** | Omit sibling `.ts` / `.js`, load the framework once | The framework mounts the compiled route template |
+| **I fetch my own data** | `static loader()` on component | Loader runs before the route commits and supplies route data |
+| **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
+| **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
+
+FAST route components expose scalar route state as kebab-case HTML
+attributes, so `userName` becomes `user-name`. Strings, numbers, and booleans
+are emitted. Complex values should be initialized from the rendered DOM or
+another documented mechanism appropriate to the component. Keep the payload
+flat when the component reads values through `@attr`.
 
 ```typescript
-// Express example — render_partial returns chain + templates (no state).
-// Caller adds state to the response.
+// Express example - the npm helper returns a complete JSON partial.
 app.get('*', async (req, res) => {
   const state = await db.getPageState(req.path);
-  const partial = handler.renderPartial(protocol, index, req.path, invHex);
-  partial.state = state;
-  res.json(partial);
+  const partialJson = protocol.renderPartial(
+    state,
+    'index.html',
+    req.path,
+    invHex,
+  );
+  res.type('json').send(partialJson);
 });
 ```
+
+Route components that only have `.html` and optional `.css` files do not need a
+JavaScript loader or empty class. Create a custom element only when the route
+component is interactive: event handlers, custom lifecycle code, imperative
+methods, or JavaScript-owned state.
+
+Initial SSR delivers component CSS only for the matched route chain. Styles for
+inactive routes remain deferred until navigation activates those components,
+including when an `<outlet />` is inside a Shadow component.
+
+Matched route styles that target the Document are emitted with the entry styles
+before `</head>`. Link-mode stylesheets are therefore render-blocking for first
+paint, including bundled chunks. A route rendered inside a ShadowRoot cannot use
+a Document stylesheet, so Link mode preloads that resource from the head and
+installs the applying stylesheet inside the owning ShadowRoot before the route
+host.
 
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
+
+The cache is opt-in. The default `Router.start()` path does not load the cache
+module; enabling `cache` or `preload` loads it on demand.
 
 ```typescript
 Router.start({
@@ -297,7 +368,7 @@ Router.invalidate();                             // evict everything
 
 ### Mutation Actions
 
-The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache:
+The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache. Enable this optional runtime with `Router.start({ actions: true })`:
 
 ```typescript
 import { WebUIElement } from '@microsoft/webui-framework';
@@ -322,7 +393,7 @@ The router intercepts `<form method="post">` submissions via a delegated listene
 | **2. Guard** | Skips forms with external `action` URLs or `target` other than `_self` |
 | **3. Call** | Invokes `static action({ formData, params, signal })` on the component class |
 | **4. Invalidate** | Merges the action's returned tags with the route's build-time `invalidates` attribute |
-| **5. Update** | Applies optimistic `result.state` via `setState()` if provided |
+| **5. Update** | Applies optimistic `result.state` if provided |
 | **6. Event** | Dispatches `webui:route:action-complete` on `window` |
 
 ### Pending UI
@@ -336,9 +407,9 @@ Show a loading component during slow navigations. The component is validated at 
 
 | Behavior | Description |
 |----------|-------------|
-| **Threshold** | Pending component appears after 150ms - fast navigations never flash |
+| **Threshold** | Pending component appears when pre-commit navigation work exceeds 150ms - fast navigations never flash |
 | **Mount** | Rendered in the parent route's outlet area |
-| **Replace** | Real content replaces the skeleton when the fetch completes |
+| **Commit** | Removed atomically when settled route content commits, before `webui:route:navigated` |
 | **Keep-alive** | Skipped - keep-alive routes activate instantly from the DOM |
 | **Cached** | Skipped - cached navigations have no fetch delay |
 
@@ -384,7 +455,7 @@ If no `error` attribute is declared on the route, the router falls back to its d
 2. Server matches the full route chain: `app-shell - section-page - topic-page`
 3. Renders all matched components nested at their outlets
 4. Browser displays fully rendered HTML - no JavaScript needed yet
-5. JavaScript loads, hydration runs, router starts and reads `window.__webui`
+5. JavaScript loads, hydration runs, and the router starts from the SSR bootstrap data
 
 #### SSR Output
 
@@ -400,11 +471,9 @@ The server renders `<webui-route>` elements with these DOM attributes:
 | `error` | Error component tag (if declared) |
 | `data-ri` | Route index for O(1) element binding during hydration |
 
-Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
+Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. The `<route>` source attributes remain valid and unchanged, while the rendered route elements expose only the runtime attributes needed for navigation.
 
-The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, and state. The client packages first read any existing `window.__webui`, then lazily parse and remove that block into `window.__webui` when metadata is needed.
-
-When using the WebUI framework plugin, `webui-data` also includes JSON-safe component template metadata and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins emit their own `<f-template>` tags, so they use the same router metadata but do not emit WebUI `templates` or `templateFns`.
+The server also emits inert route bootstrap data so the client router can start without walking the DOM.
 
 ```html
 <script type="application/json" id="webui-data">
@@ -424,12 +493,18 @@ When using the WebUI framework plugin, `webui-data` also includes JSON-safe comp
 
 #### Client Hydration
 
-At startup, the router reads `window.__webui` instead of walking the DOM:
+At startup, the router uses the SSR route chain, route indexes, template
+inventory, and style list emitted by the server. That keeps hydration direct and
+avoids DOM walking or route-pattern recomputation on first load.
 
-1. **Chain**: The SSR chain is provided as JSON in `window.__webui.chain`, eliminating DOM walking and URLPattern usage
-2. **Element binding**: `data-ri` attributes on `<webui-route>` elements enable O(1) lookup by chain index - no component-name matching needed
-3. **Inventory**: `window.__webui.inventory` provides the template bitmask
-4. **CSS/Styles**: `window.__webui.css` and `window.__webui.styles` track injected assets
+The `state` field is **projected** to the hydratable surface rather than
+carrying your entire application state. At build time WebUI records which
+properties each component actually hydrates — its template state roots plus any
+`@observable`/`@attr` fields — and at render time the server emits only those
+keys, dropping everything else (including server-only data). This keeps the
+bootstrap block small even when the underlying render state is large; the client
+hydrates exactly as before, since it only ever reads the properties a component
+observes.
 
 #### SSR Fresh / Loaders
 
@@ -470,6 +545,7 @@ Starts the router. Call after hydration completes.
 Router.start({
   loaders: { ... },           // lazy-loading map (component tag -> async import)
   preload: true,              // speculative fetch on link hover
+  actions: true,              // intercept POST forms and call static action()
   ssrFresh: true,             // skip initial loader replay (default: true)
   cache: {                    // tagged navigation cache
     staleTime: 30_000,        // ms before refetch (0 = disabled)
@@ -532,7 +608,9 @@ Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
-Release all cached component templates to free memory. Removes all entries from `window.__webui.templates` and `window.__webui.templateFns`, then clears their inventory bits so the server will re-send them on the next navigation that needs them.
+Release cached component templates to free memory. The router clears matching
+inventory bits so the server will re-send templates on the next navigation that
+needs them.
 
 ```typescript
 Router.gc();
@@ -580,9 +658,17 @@ Then load dynamically before first use:
 await Router.ensureLoaded('settings-dialog');
 ```
 
-The template is **not** sent during initial SSR or partial navigation —
-only when explicitly requested via `ensureLoaded`. If a user navigates
+The template is **not** sent during initial SSR or partial navigation. It is
+loaded only when explicitly requested via `ensureLoaded`. If a user navigates
 directly to `/settings`, the component renders normally in the outlet.
+
+With `@microsoft/webui-framework` loaded, the promise also covers Link
+stylesheet cache warming or an explicit native-link fallback decision. Warmup
+bytes are never applied. On first mount, the browser validates the original
+native link before the framework can promote its native CSSOM into a shared
+constructable sheet. JSON and NDJSON navigation await the same bounded warmup
+before committing a newly registered route. Without the framework, template
+registration remains immediate.
 
 Configure a custom template endpoint:
 
@@ -592,15 +678,13 @@ Router.start({
 });
 ```
 
-On the server, handle the template endpoint with `renderComponentTemplates`:
+On the server, use the loaded protocol's `renderComponentTemplates` method:
 
 ```javascript
-import { renderComponentTemplates } from '@microsoft/webui';
-
 app.get('/_webui/templates', (req, res) => {
   const tags = (req.query.t ?? '').split(',').filter(Boolean);
   const inv = req.get('X-WebUI-Inventory') ?? '';
-  res.type('json').send(renderComponentTemplates(protocol, tags, inv));
+  res.type('json').send(protocol.renderComponentTemplates(tags, inv));
 });
 ```
 
@@ -627,7 +711,20 @@ When `Accept: application/json` or `application/x-ndjson`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templateStyles": ["<script type=\"importmap\">{\"imports\":{\"user-detail\":\"data:text/css,...\"}}</script>"],
+  "componentStyles": {
+    "version": 1,
+    "strategy": "module",
+    "resources": {
+      "user-detail": {
+        "kind": "module",
+        "specifier": "user-detail",
+        "css": ".detail { ... }"
+      }
+    },
+    "closures": {
+      "user-detail": ["user-detail"]
+    }
+  },
   "templates": {
     "user-detail": { "h": "<section></section>" }
   },
@@ -637,9 +734,9 @@ When `Accept: application/json` or `application/x-ndjson`:
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
-    { "component": "app-shell", "path": "/" },
+    { "component": "app-shell", "client": true, "path": "/" },
     {
-      "component": "user-detail", "path": "users/:id",
+      "component": "user-detail", "client": true, "path": "users/:id",
       "params": { "id": "42" }, "exact": true, "keepAlive": true,
       "pendingComponent": "loading-skeleton",
       "errorComponent": "error-page",
@@ -653,74 +750,113 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state (added by the caller, not by `render_partial`) |
-| `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
+| `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
+| `componentStyles` | Required versioned CSS resource and closure delta; bundled chunks carry their covered component IDs and are tracked independently from template inventory |
 | `templates` | Client template payloads filtered by inventory bitmask |
-| `inventory` | Updated hex bitmask of loaded templates |
+| `inventory` | Updated hex bitmask of loaded component template and style metadata |
 | `path` | The matched request path |
 | `chain` | Matched route chain - one entry per nesting level |
 | `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
 | `cacheControl` | Optional per-response cache overrides |
 
-Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`, `errorComponent`, and `invalidates`.
+Each `chain` entry includes `component` and `path`. It can also include
+`params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`,
+`errorComponent`, and `invalidates`. Component capability is determined by
+custom-element registration, not by a server `client` flag.
 
 **Request headers the router sends:**
 
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates the client already has — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata the client already has - server skips re-sending it |
 
 ### Full HTML (initial load)
 
-Without `Accept: application/json`, return the full SSR'd page. The handler emits `#webui-data` containing the SSR chain, template inventory, and CSS metadata so the client router can bootstrap without DOM walking.
+Without `Accept: application/json`, return the full SSR'd page. The handler
+includes the route chain, template inventory, and CSS list needed for client
+bootstrap. The CSS list contains the matched route chain, not inactive siblings.
 
 ### Partial Navigation
 
-The partial response format is unchanged. Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result.
+Rust `Protocol::render_partial()` and every host binding return the complete
+response, including the state needed by active-route components. The Rust API
+consumes a `serde_json::Value` and moves selected values into the response
+without serializing and reparsing the complete tree. Serialized host boundaries
+use `Protocol::render_partial_json()`; raw input is validated in full while
+unneeded values are skipped without constructing a duplicate JSON tree.
 
-`render_partial()` now requires a `ProtocolIndex` parameter - a pre-computed index that caches expensive lookups (component bit-index maps, compiled route templates, and component closures). Build it once per protocol at startup and reuse it across requests:
+After storing new template metadata, the router dispatches
+`webui:templates-registered`. Optional runtimes may synchronously add resource
+promises with the event detail's `waitUntil()` function. The router awaits those
+promises before route commit and abandons the wait if a newer navigation
+supersedes it. This keeps the router framework-independent while preventing a
+new Link-mode shadow component from painting before its stylesheet is ready.
+For NDJSON responses, deferred state consumption starts only after this commit,
+so a Chunk 2 queued during readiness cannot update the previous route.
+Speculative preloads cache Chunk 1 first and merge Chunk 2 state before marking
+the entry complete; failed commits cancel the unread stream.
+
+For repeated Rust requests, load one `Protocol`:
 
 ```rust
-// Rust - build the index once, reuse across requests
-let mut index = ProtocolIndex::new(&protocol);
-
-let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex, &mut index);
-// Caller adds state to the response
-if let Some(obj) = partial.as_object_mut() {
-    obj.insert("state".into(), state);
-}
+let protocol = Protocol::from_protobuf(&protocol_bytes)?;
+let json = protocol.render_partial(
+    state,
+    "index.html",
+    request_path,
+    inventory_hex,
+)?;
 ```
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller merges state into the JSON before sending
+string partialJson = protocol.RenderPartial(
+    stateJson,
+    entryId,
+    requestPath,
+    inventoryHex);
 ```
 
 ```javascript
 // Node.js
-const partialJson = webui.renderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller adds state before sending
+const partialJson = protocol.renderPartial(
+  state,
+  entryId,
+  requestPath,
+  inventoryHex,
+);
 ```
 
 ### Express Example
 
 ```javascript
-// Build index once at startup
-const index = webui.createIndex(protocol);
+import { Protocol } from '@microsoft/webui';
+import { readFileSync } from 'node:fs';
+
+const protocol = new Protocol(
+  readFileSync('./dist/protocol.bin'),
+  { plugin: 'webui' },
+);
 
 app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns chain + templates; caller adds state
     const inv = req.get('X-WebUI-Inventory') ?? '';
-    const partial = JSON.parse(webui.renderPartial(protocol, index, 'index.html', req.path, inv));
-    partial.state = state;
-    res.type('json').send(JSON.stringify(partial));
+    const partialJson = protocol.renderPartial(
+      state,
+      'index.html',
+      req.path,
+      inv,
+    );
+    res.type('json').send(partialJson);
   } else {
-    res.type('html').send(handler.render(protocol, state, 'index.html', req.path));
+    const html = protocol.render(state, {
+      entry: 'index.html',
+      requestPath: req.path,
+    });
+    res.type('html').send(html);
   }
 });
 ```
@@ -838,6 +974,6 @@ window.addEventListener('webui:hydration-complete', () => {
   });
 });
 
-// Shell component — eagerly loaded (registers custom element, triggers hydration)
+// Shell component - eagerly loaded
 import './app-shell.js';
 ```

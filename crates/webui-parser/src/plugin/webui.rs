@@ -12,7 +12,7 @@
 //! router registers the JSON data directly and evaluates only the closures.
 //! Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
-//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `e`,
+//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `eg`,
 //! `re`, `b`). The client runtime resolves those locators once and then
 //! patches direct node references — **no template string parsing, no regex,
 //! no DOM scanning** on the client-created path.
@@ -26,9 +26,8 @@
 //!   "a": [["title", 0, "title"]],
 //!   "ag": [[[0], 0, 1]],
 //!   "c": [[[0, ["state"]], 0, [[0], 1]]],
-//!   "e": [["click", "onClick", [], [0]]],
+//!   "eg": [["click", [["onClick", [], [0]]]]],
 //!   "b": [{ "h": "<span class=\"check\">✓</span>" }],
-//!   "sa": "my-component",
 //!   "re": [["submit", "onSubmit", [["e"]]]]
 //! }
 //! ```
@@ -60,15 +59,27 @@
 //! 4. **`take_component_templates`** — called after parsing is complete;
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, AttributeContext, ComponentBuildContext, ComponentTemplateArtifact,
+    ElementStartContext, FragmentContext, ParserPlugin, ParserPluginArtifacts, StateSurface,
+};
 use crate::comment_policy;
+use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
-use crate::diagnostic::Diagnostic;
-use crate::html_parser::{find_tag_close, style_element_bounds};
-use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
+use crate::diagnostic::{codes, Diagnostic};
+use crate::html_parser::{
+    find_comment_close, find_declaration_close, find_element_end, find_matching_end,
+    find_tag_close, is_void_element, leading_content, parse_tag, style_element_bounds,
+};
+use crate::{ConditionParser, Result};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
+use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
+
+mod named_repeats;
+use named_repeats::CompileBlocks;
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
@@ -77,6 +88,41 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
+    client_module: ClientModule,
+    uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
+}
+
+struct TrackedClientContext {
+    client_module: ClientModule,
+    uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
+}
+
+/// Authored client-module ownership.
+///
+/// The parser never analyzes JavaScript/TypeScript, so it only needs to know
+/// *whether* a component has a client module — a sibling script or an
+/// externally client-owned package without scannable source — not its
+/// content. Exact reactive keys for an authored component come solely from a
+/// validated bundler projection manifest, consumed later by `webui::build`.
+enum ClientModule {
+    None,
+    Authored,
+}
+
+impl ClientModule {
+    fn from_component(component: &Component) -> Self {
+        if component.is_client_owned {
+            Self::Authored
+        } else {
+            Self::None
+        }
+    }
+
+    fn is_authored(&self) -> bool {
+        matches!(self, Self::Authored)
+    }
 }
 
 /// WebUI Framework parser plugin.
@@ -97,8 +143,6 @@ pub struct WebUIParserPlugin {
     element_events: Cell<u32>,
     /// Global event index, incremented across all elements in a component.
     next_event_idx: Cell<u32>,
-    /// DOM strategy — shadow or light.
-    dom_strategy: DomStrategy,
 }
 
 impl WebUIParserPlugin {
@@ -108,34 +152,65 @@ impl WebUIParserPlugin {
             components: Vec::new(),
             element_events: Cell::new(0),
             next_event_idx: Cell::new(0),
-            dom_strategy: DomStrategy::default(),
         }
     }
 
-    /// Compile all tracked components and return split template payloads.
+    /// Compile component templates and return split browser payloads.
     ///
-    /// Each payload contains JSON-safe metadata plus a component-local closure
-    /// array for condition evaluation. Call this after all HTML parsing is complete.
+    /// Authored (scripted) components default to an unknown (`All`) hydration
+    /// and navigation surface, since this plugin never analyzes JavaScript or
+    /// TypeScript. `webui::build` narrows a scripted component to an exact
+    /// `Keys` surface only after validating a bundler projection manifest for
+    /// its tag. Scriptless components keep an empty hydration surface, but
+    /// retain template roots for client-created soft-navigation rendering
+    /// through a compiler-owned dormant host. Each returned payload contains
+    /// JSON-safe metadata plus a component-local closure array for condition
+    /// evaluation. Call this after all HTML parsing is complete.
     ///
     /// # Errors
     ///
     /// Returns [`crate::ParserError::Template`] if any tracked component
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
-    pub fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
-        let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
+    fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
-            let payload = generate_compiled_template_with_root_source(
+            let is_authored = c.client_module.is_authored();
+            let mut payload = generate_compiled_template_with_root_source(
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
-                use_shadow,
+                c.uses_shadow_dom,
+                !is_authored,
             )?;
-            out.push(ComponentTemplateArtifact::webui(
-                c.tag_name.clone(),
-                payload.template_json,
-                payload.template_functions,
-            ));
+            append_render_policy(&mut payload.template_json, &c.render_policy);
+            // The parser plugin performs no JavaScript/TypeScript analysis: it
+            // cannot prove an authored component's exact reactive key set.
+            // Scripted components default to `All` (unknown surface, full
+            // state preserved) for both hydration and partial navigation.
+            // Only a validated bundler projection manifest — consumed later by
+            // `webui::build` — can narrow a scripted component down to an
+            // exact `Keys` surface. Scriptless components have no script to
+            // analyze at all: their template roots already prove the complete
+            // safe surface, so they always get an exact (possibly empty) key
+            // set derived purely from the template.
+            let hydration = if is_authored {
+                StateSurface::All
+            } else {
+                StateSurface::None
+            };
+            let navigation = navigation_surface(&payload.hydration_roots, &hydration);
+            out.push(
+                ComponentTemplateArtifact::webui(
+                    c.tag_name.clone(),
+                    payload.template_json,
+                    payload.template_functions,
+                    c.uses_shadow_dom,
+                )
+                .with_hydration(hydration)
+                .with_navigation(navigation)
+                .with_template_roots(payload.hydration_roots.clone())
+                .scripted(is_authored),
+            );
         }
         Ok(out)
     }
@@ -145,21 +220,167 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
+        client: TrackedClientContext,
     ) {
+        let template_html = Self::strip_boundary_directive_tags(template_html);
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
-            component.template_html.push_str(template_html);
+            component.template_html.push_str(&template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
+            component.client_module = client.client_module;
+            component.uses_shadow_dom = client.uses_shadow_dom;
+            component.render_policy = client.render_policy;
             return;
         }
-
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
-            template_html: template_html.to_string(),
+            template_html: template_html.into_owned(),
             root_event_source: root_event_source.to_string(),
+            client_module: client.client_module,
+            uses_shadow_dom: client.uses_shadow_dom,
+            render_policy: client.render_policy,
         });
     }
+
+    #[cfg(test)]
+    fn register_component_template(
+        &mut self,
+        _tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()> {
+        <Self as ParserPlugin>::component_built(
+            self,
+            ComponentBuildContext {
+                component,
+                template: processed_template,
+                uses_shadow_dom: false,
+                style: None,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn classify_attribute(&mut self, name: &str) -> AttributeAction {
+        <Self as ParserPlugin>::process_attribute(self, AttributeContext { name })
+    }
+
+    #[cfg(test)]
+    fn finish_element(&mut self, binding_count: u32) -> Option<Vec<u8>> {
+        <Self as ParserPlugin>::finish_opening_tag(
+            self,
+            ElementStartContext {
+                tag_name: "test-element",
+                binding_count,
+            },
+        )
+    }
+
+    fn strip_boundary_directive_tags(template: &str) -> Cow<'_, str> {
+        if !template.contains("<boundary") && !template.contains("</boundary") {
+            return Cow::Borrowed(template);
+        }
+
+        let mut output: Option<String> = None;
+        let mut copied_until = 0usize;
+        let mut index = 0usize;
+        while index < template.len() {
+            let Some(relative) = template[index..].find('<') else {
+                break;
+            };
+            index += relative;
+            let remaining = &template[index..];
+
+            if remaining.starts_with("<!--") {
+                index += find_comment_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+            if remaining.starts_with("<!") {
+                index += find_declaration_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+
+            let Some(tag) = parse_tag(remaining) else {
+                let Some(close) = find_tag_close(remaining) else {
+                    break;
+                };
+                index += close + 1;
+                continue;
+            };
+            let tag_end = index + tag.close + 1;
+
+            let is_boundary = if tag.closing {
+                remaining.starts_with("</boundary")
+            } else {
+                remaining.starts_with("<boundary")
+            };
+            if is_boundary && tag.name == "boundary" {
+                let output = output.get_or_insert_with(|| String::with_capacity(template.len()));
+                output.push_str(&template[copied_until..index]);
+                copied_until = tag_end;
+                index = tag_end;
+                continue;
+            }
+
+            if !tag.closing && !tag.self_closing && is_raw_text_or_rcdata_element(tag.name) {
+                index += raw_text_element_end(remaining, tag.name, tag.close + 1);
+            } else {
+                index = tag_end;
+            }
+        }
+
+        let Some(mut output) = output else {
+            return Cow::Borrowed(template);
+        };
+        output.push_str(&template[copied_until..]);
+        Cow::Owned(output)
+    }
+}
+
+#[inline]
+fn is_raw_text_or_rcdata_element(tag_name: &str) -> bool {
+    // Reuse the parser's canonical raw/RCDATA scope set. Style has a separate
+    // parser path, while template content remains traversable markup here.
+    tag_name.eq_ignore_ascii_case("style")
+        || (!tag_name.eq_ignore_ascii_case("template")
+            && crate::boundary_parent_scope(tag_name).is_some())
+}
+
+fn raw_text_element_end(source: &str, tag_name: &str, mut cursor: usize) -> usize {
+    if tag_name.eq_ignore_ascii_case("plaintext") {
+        return source.len();
+    }
+
+    while cursor < source.len() {
+        let Some(relative) = source[cursor..].find('<') else {
+            break;
+        };
+        cursor += relative;
+        if let Some(close_len) = raw_text_closing_tag_len(&source[cursor..], tag_name) {
+            return cursor + close_len;
+        }
+        cursor += 1;
+    }
+    source.len()
+}
+
+#[inline]
+fn raw_text_closing_tag_len(input: &str, tag_name: &str) -> Option<usize> {
+    let name_end = 2 + tag_name.len();
+    if !input.as_bytes().starts_with(b"</")
+        || !input.get(2..name_end)?.eq_ignore_ascii_case(tag_name)
+    {
+        return None;
+    }
+
+    let delimiter = *input.as_bytes().get(name_end)?;
+    if !delimiter.is_ascii_whitespace() && delimiter != b'/' && delimiter != b'>' {
+        return None;
+    }
+
+    let tag = parse_tag(input)?;
+    (tag.closing && tag.name.eq_ignore_ascii_case(tag_name)).then_some(tag.close + 1)
 }
 
 impl Default for WebUIParserPlugin {
@@ -169,34 +390,41 @@ impl Default for WebUIParserPlugin {
 }
 
 impl ParserPlugin for WebUIParserPlugin {
-    fn start_fragment(&mut self, _fragment_id: &str) {
+    fn begin_fragment(&mut self, _context: FragmentContext<'_>) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
     }
 
-    fn configure(&mut self, options: &ParserOptions) {
-        self.dom_strategy = options.dom_strategy;
-    }
-
-    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+    fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction {
+        let attr_name = context.name;
         if attr_name.starts_with('@') {
             self.element_events.set(self.element_events.get() + 1);
+            return AttributeAction::Skip;
+        }
+        if attr_name == "key" {
             return AttributeAction::Skip;
         }
         AttributeAction::Keep
     }
 
-    fn register_component_template(
-        &mut self,
-        tag_name: &str,
-        component: &Component,
-        processed_template: &str,
-    ) -> Result<()> {
-        self.store_component_template(tag_name, processed_template, &component.html_content);
+    fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
+        let component = context.component;
+        let tag_name = component.tag_name.as_str();
+        self.store_component_template(
+            tag_name,
+            context.template,
+            &component.html_content,
+            TrackedClientContext {
+                client_module: ClientModule::from_component(component),
+                uses_shadow_dom: context.uses_shadow_dom,
+                render_policy: parse_component_render_policy(tag_name, &component.html_content)?,
+            },
+        );
         Ok(())
     }
 
-    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+    fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
+        let binding_attribute_count = context.binding_count;
         let ev_count = self.element_events.get();
         let ev_start = self.next_event_idx.get();
 
@@ -220,11 +448,24 @@ impl ParserPlugin for WebUIParserPlugin {
         )
     }
 
-    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+    fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
         Ok(ParserPluginArtifacts::ComponentTemplates(
             self.take_component_templates()?,
         ))
     }
+}
+
+fn append_render_policy(template_json: &mut String, policy: &ComponentRenderPolicy) {
+    let Some(code) = policy.metadata_code() else {
+        return;
+    };
+    if !template_json.ends_with('}') {
+        return;
+    }
+    template_json.truncate(template_json.len() - 1);
+    template_json.push_str(",\"wp\":");
+    template_json.push(char::from(b'0' + code));
+    template_json.push('}');
 }
 
 // ── Compiled template generation ───────────────────────────────────
@@ -259,27 +500,104 @@ struct TemplateSectionMeta {
     text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
     /// Attribute bindings in source order, shared by SSR markers and client `ag[]` locators.
     attr_bindings: Vec<CompiledAttrBinding>,
-    /// Client attribute groups: `(element_path, start, count)`.
-    attr_groups: Vec<(Vec<usize>, usize, usize)>,
+    /// Client attribute groups: `(element_index, start, count)`.
+    attr_groups: Vec<(usize, usize, usize)>,
     /// Conditional blocks: `(condition_expression_ast, block_index)`.
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
     condition_slots: Vec<SlotLocator>,
-    /// For-loop blocks: `(collection_path, item_variable, block_index)`.
-    repeats: Vec<(String, String, usize)>,
+    /// For-loop blocks and their optional first-child key paths.
+    repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
     repeat_slots: Vec<SlotLocator>,
     /// Body-level events: `(event_name, handler_method, argument_specs)`.
     events: Vec<EventBinding>,
-    /// Client event target element paths aligned to `events`.
-    event_targets: Vec<Vec<usize>>,
+    /// Client event target element indices aligned to `events`.
+    event_targets: Vec<usize>,
 }
 
 #[derive(Clone)]
 struct SlotLocator {
-    parent_path: Vec<usize>,
+    /// Pre-order index of the parent element: 0 is the section root, elements
+    /// are numbered 1..N in the order a depth-first walk of `html` meets them.
+    parent_index: usize,
     before_index: usize,
     order: usize,
+}
+
+struct CompiledRepeat {
+    collection: String,
+    item_var: String,
+    block_index: usize,
+    key_path: Option<String>,
+}
+
+/// Borrowed authoring text; skipping a structural key never shifts source offsets.
+#[derive(Clone)]
+struct TemplateSource<'a> {
+    source: &'a str,
+    range: Range<usize>,
+    repeat_key: Option<usize>,
+}
+
+impl<'a> From<&'a str> for TemplateSource<'a> {
+    fn from(source: &'a str) -> Self {
+        Self {
+            source,
+            range: 0..source.len(),
+            repeat_key: None,
+        }
+    }
+}
+
+impl<'a> TemplateSource<'a> {
+    fn html(&self) -> &'a str {
+        &self.source[self.range.clone()]
+    }
+
+    fn slice(&self, range: Range<usize>) -> Self {
+        Self {
+            source: self.source,
+            range: self.range.start + range.start..self.range.start + range.end,
+            repeat_key: self.repeat_key,
+        }
+    }
+
+    fn trimmed(mut self) -> Self {
+        let html = self.html();
+        let trimmed = html.trim_start();
+        let leading = html.len() - trimmed.len();
+        self.range.start += leading;
+        self.range.end = self.range.start + trimmed.trim_end().len();
+        self
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn locate_error(&self, error: crate::ParserError) -> crate::ParserError {
+        match error {
+            crate::ParserError::Template(diagnostic) => (*diagnostic)
+                .at_offset(self.source, self.range.start)
+                .into(),
+            other => other,
+        }
+    }
+}
+
+struct ParsedForBlock<'a> {
+    collection: String,
+    item_var: String,
+    key_path: Option<String>,
+    id: Option<String>,
+    definition: bool,
+    body: TemplateSource<'a>,
+    offset: usize,
+    consumed: usize,
+}
+
+struct ParsedRepeatKey {
+    path: String,
+    attr_range: Range<usize>,
 }
 
 /// Collected metadata produced by [`compile_to_metadata`].
@@ -289,6 +607,7 @@ struct SlotLocator {
 struct TemplateMeta {
     root: TemplateSectionMeta,
     blocks: Vec<TemplateSectionMeta>,
+    has_named_repeats: bool,
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
     root_events: Vec<EventBinding>,
@@ -337,6 +656,53 @@ enum CompiledAttrPart {
 struct CompiledTemplatePayload {
     template_json: String,
     template_functions: String,
+    /// Template reactive roots used when client navigation creates or updates
+    /// a component whose initial DOM was not server rendered.
+    hydration_roots: Vec<String>,
+}
+
+fn navigation_surface(roots: &[String], hydration: &StateSurface) -> StateSurface {
+    match hydration {
+        StateSurface::All => StateSurface::All,
+        StateSurface::Keys(keys) => StateSurface::keys(union_state_keys(roots, keys)),
+        StateSurface::None => StateSurface::keys(roots.to_vec()),
+    }
+}
+
+/// Union two sorted-or-unsorted key sets into a sorted, deduplicated allowlist.
+///
+/// Called once per component at build time (a cold path), so clarity wins over
+/// micro-optimization; the result feeds the runtime projection allowlist.
+fn union_state_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
+    let mut keys = Vec::with_capacity(roots.len() + attrs.len());
+    keys.extend_from_slice(roots);
+    keys.extend_from_slice(attrs);
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+struct TemplateBuildMetadata {
+    roots: Vec<String>,
+    has_events: bool,
+    #[cfg(test)]
+    scope_count: usize,
+}
+
+struct TemplatePayloadOptions {
+    shadow_dom: bool,
+    emit_static_host: bool,
+}
+
+struct RootScope<'a> {
+    name: &'a str,
+    block_index: usize,
+    parent: Option<usize>,
+}
+
+struct RootVisit<'a> {
+    block: &'a TemplateSectionMeta,
+    scope: Option<usize>,
 }
 
 struct ConditionFunctionEmitter {
@@ -382,7 +748,7 @@ impl ConditionFunctionEmitter {
 /// # Flow
 ///
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
-/// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
+/// 2. Strip the open declarative Shadow DOM wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
 /// 4. Serialize into JSON metadata and component-local condition closures.
 ///
@@ -396,21 +762,26 @@ impl ConditionFunctionEmitter {
 /// | `:config="{{settings}}"`              | `a[]` + `ag[]`             | element kept marker-free          |
 /// | `<if condition="…">body</if>`         | `c[]` + `cl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
+/// | first concrete `key="{{v.id}}"`       | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
-/// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
-/// | `@event="{handler(e)}"`               | `e[]`                      | element kept marker-free          |
+/// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
-/// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
+/// | `<outlet />` / `<outlet></outlet>`    | *(stays in HTML)*          | `<outlet></outlet>`               |
 ///
 /// # Errors
 ///
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
-/// `@event` handler or a non-braced `w-ref` binding.
+/// `@event` handler, non-braced `w-ref`, invalid concrete-child repeat key,
+/// or an invalid, duplicate, unresolved, or item-incompatible named repeat.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
-    Ok(
-        generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)?
-            .template_json,
-    )
+    Ok(generate_compiled_template_with_root_source(
+        tag_name,
+        html_content,
+        html_content,
+        false,
+        false,
+    )?
+    .template_json)
 }
 
 fn generate_compiled_template_with_root_source(
@@ -418,25 +789,46 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
+    scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
-    let trimmed = html_content.trim();
-    let root_events = extract_root_events(tag_name, root_event_source.trim())?;
-    let adopted_stylesheet = extract_adopted_stylesheet_specifier(trimmed);
-    let body = strip_template_wrapper(trimmed);
+    let source = TemplateSource::from(html_content).trimmed();
+    let trimmed = source.html();
+    let shadow_body = shadow_template_body_range(trimmed);
+    let authored_shadow_root = shadow_body.is_some();
+    let mut root_events = if authored_shadow_root {
+        extract_root_events(tag_name, trimmed)?
+    } else {
+        Vec::new()
+    };
+    let raw_root = root_event_source.trim();
+    if root_events.is_empty()
+        && raw_root != trimmed
+        && shadow_template_body_range(raw_root).is_some()
+    {
+        root_events = extract_root_events(tag_name, raw_root)?;
+    }
+    let body = shadow_body.map_or_else(|| source.clone(), |range| source.slice(range));
     let meta = compile_to_metadata(tag_name, body, root_events)?;
+    let build_meta = collect_template_build_metadata(&meta);
+    if scriptless && build_meta.has_events {
+        return Err(scriptless_component_events(tag_name).into());
+    }
     Ok(emit_compiled_template_payload(
         html_content,
         &meta,
-        adopted_stylesheet.as_deref(),
-        shadow_dom,
+        &build_meta,
+        TemplatePayloadOptions {
+            shadow_dom,
+            emit_static_host: scriptless,
+        },
     ))
 }
 
 fn emit_compiled_template_payload(
     html_content: &str,
     meta: &TemplateMeta,
-    adopted_stylesheet: Option<&str>,
-    shadow_dom: bool,
+    build_meta: &TemplateBuildMetadata,
+    options: TemplatePayloadOptions,
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
@@ -444,14 +836,13 @@ fn emit_compiled_template_payload(
 
     emit_json_template_section(&meta.root, &mut out, &mut conditions);
 
-    if let Some(adopted_stylesheet) = adopted_stylesheet {
-        out.push_str(",\"sa\":");
-        emit_js_string(adopted_stylesheet, &mut out);
+    // sd: shadow DOM flag — tells the client runtime to use shadow root
+    if options.shadow_dom {
+        out.push_str(",\"sd\":1");
     }
 
-    // sd: shadow DOM flag — tells the client runtime to use shadow root
-    if shadow_dom {
-        out.push_str(",\"sd\":1");
+    if options.emit_static_host {
+        out.push_str(",\"th\":1");
     }
 
     // re: root events
@@ -468,6 +859,25 @@ fn emit_compiled_template_payload(
             out.push(',');
             emit_js_event_args(args, &mut out);
             out.push(']');
+        }
+        out.push(']');
+    }
+
+    if !build_meta.roots.is_empty() {
+        out.push_str(",\"tr\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            emit_js_string(root, &mut out);
+        }
+        out.push_str("],\"ta\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let attr = webui_protocol::attrs::camel_to_kebab(root);
+            emit_js_string(&attr, &mut out);
         }
         out.push(']');
     }
@@ -490,6 +900,7 @@ fn emit_compiled_template_payload(
     CompiledTemplatePayload {
         template_json: out,
         template_functions: conditions.finish(),
+        hydration_roots: build_meta.roots.clone(),
     }
 }
 
@@ -565,6 +976,70 @@ fn emit_js_event_args(args: &[EventArg], out: &mut String) {
     out.push(']');
 }
 
+fn event_args_use_event(args: &[EventArg]) -> bool {
+    for arg in args {
+        if matches!(arg, EventArg::Event) {
+            return true;
+        }
+    }
+    false
+}
+
+struct EventGroup<'a> {
+    event: &'a str,
+    bindings: Vec<usize>,
+}
+
+fn emit_js_event_groups(events: &[EventBinding], targets: &[usize], out: &mut String) {
+    let groups = collect_event_groups(events);
+    out.push_str(",\"eg\":[");
+    for (group_index, group) in groups.iter().enumerate() {
+        if group_index > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        emit_js_string(group.event, out);
+        out.push_str(",[");
+        for (binding_index, event_index) in group.bindings.iter().enumerate() {
+            if binding_index > 0 {
+                out.push(',');
+            }
+            let (_, handler, args) = &events[*event_index];
+            let target = targets[*event_index];
+            out.push('[');
+            emit_js_string(handler, out);
+            out.push(',');
+            emit_js_event_args(args, out);
+            out.push(',');
+            let _ = write!(out, "{}", target);
+            if event_args_use_event(args) {
+                out.push_str(",1");
+            }
+            out.push(']');
+        }
+        out.push_str("]]");
+    }
+    out.push(']');
+}
+
+fn collect_event_groups(events: &[EventBinding]) -> Vec<EventGroup<'_>> {
+    let mut groups: Vec<EventGroup<'_>> = Vec::with_capacity(events.len());
+    let mut group_indices = std::collections::HashMap::<&str, usize>::with_capacity(events.len());
+    for (index, (event, _, _)) in events.iter().enumerate() {
+        let event_name = event.as_str();
+        if let Some(group_index) = group_indices.get(event_name).copied() {
+            groups[group_index].bindings.push(index);
+            continue;
+        }
+        group_indices.insert(event_name, groups.len());
+        groups.push(EventGroup {
+            event: event_name,
+            bindings: vec![index],
+        });
+    }
+    groups
+}
+
 fn emit_json_attr_binding(
     binding: &CompiledAttrBinding,
     out: &mut String,
@@ -609,6 +1084,191 @@ fn emit_json_attr_binding(
     out.push(']');
 }
 
+#[inline]
+fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
+    if meta.has_named_repeats {
+        collect_template_roots::<true>(meta)
+    } else {
+        collect_template_roots::<false>(meta)
+    }
+}
+
+#[inline(never)]
+fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBuildMetadata {
+    let mut roots = Vec::new();
+    let mut scopes = Vec::<RootScope<'_>>::new();
+    let mut stack = Vec::with_capacity(1 + meta.blocks.len());
+    let mut has_events = !meta.root_events.is_empty();
+    let mut visits = SHARED.then(crate::scoped_visits::ScopedVisits::default);
+    stack.push(RootVisit {
+        block: &meta.root,
+        scope: None,
+    });
+
+    while let Some(visit) = stack.pop() {
+        // Deduplicate when popped, not when queued, to retain discovery order.
+        if let Some(visits) = &mut visits {
+            if !named_repeats::visit_scope(visits, visit.block, &scopes, visit.scope) {
+                continue;
+            }
+        }
+        let block = visit.block;
+        if !block.events.is_empty() {
+            has_events = true;
+        }
+
+        for (_, parts, _) in &block.text_runs {
+            add_part_roots(&mut roots, parts, &scopes, visit.scope);
+        }
+
+        for binding in &block.attr_bindings {
+            match binding {
+                CompiledAttrBinding::Simple { value, .. }
+                | CompiledAttrBinding::Complex { value, .. } => {
+                    add_root(&mut roots, value, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Boolean { condition, .. } => {
+                    add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Template { parts, .. } => {
+                    add_part_roots(&mut roots, parts, &scopes, visit.scope);
+                }
+            }
+        }
+
+        for (condition, block_index) in &block.conditionals {
+            add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(*block_index) {
+                stack.push(RootVisit {
+                    block: child,
+                    scope: visit.scope,
+                });
+            }
+        }
+
+        for repeat in &block.repeats {
+            add_root(&mut roots, &repeat.collection, &scopes, visit.scope);
+            if SHARED && named_repeats::is_ancestor_block(repeat.block_index, &scopes, visit.scope)
+            {
+                continue;
+            }
+            if let Some(child) = meta.blocks.get(repeat.block_index) {
+                let scope = scopes.len();
+                scopes.push(RootScope {
+                    name: &repeat.item_var,
+                    block_index: repeat.block_index,
+                    parent: visit.scope,
+                });
+                stack.push(RootVisit {
+                    block: child,
+                    scope: Some(scope),
+                });
+            }
+        }
+    }
+
+    TemplateBuildMetadata {
+        roots,
+        has_events,
+        #[cfg(test)]
+        scope_count: scopes.len(),
+    }
+}
+
+fn path_root(path: &str) -> &str {
+    match path.find('.') {
+        Some(dot) => &path[..dot],
+        None => path,
+    }
+}
+
+fn is_scoped_path(path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) -> bool {
+    let root = path_root(path);
+    let mut current = scope;
+    while let Some(index) = current {
+        let Some(frame) = scopes.get(index) else {
+            return false;
+        };
+        if frame.name == root {
+            return true;
+        }
+        current = frame.parent;
+    }
+    false
+}
+
+fn add_root(roots: &mut Vec<String>, path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) {
+    if path.is_empty() || is_scoped_path(path, scopes, scope) {
+        return;
+    }
+    let root = path_root(path);
+    if roots.iter().any(|existing| existing == root) {
+        return;
+    }
+    roots.push(root.to_string());
+}
+
+fn add_part_roots(
+    roots: &mut Vec<String>,
+    parts: &[CompiledAttrPart],
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    for part in parts {
+        if let CompiledAttrPart::Dynamic(path) = part {
+            add_root(roots, path, scopes, scope);
+        }
+    }
+}
+
+fn is_condition_literal(value: &str) -> bool {
+    (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+        || value == "true"
+        || value == "false"
+        || (!value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
+}
+
+fn add_condition_roots(
+    roots: &mut Vec<String>,
+    condition: &ConditionExpr,
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    let mut stack = Vec::with_capacity(1);
+    stack.push(condition);
+    while let Some(current) = stack.pop() {
+        match &current.expr {
+            Some(condition_expr::Expr::Identifier(id)) => {
+                add_root(roots, &id.value, scopes, scope);
+            }
+            Some(condition_expr::Expr::Predicate(pred)) => {
+                add_root(roots, &pred.left, scopes, scope);
+                if !is_condition_literal(&pred.right) {
+                    add_root(roots, &pred.right, scopes, scope);
+                }
+            }
+            Some(condition_expr::Expr::Not(not_cond)) => {
+                if let Some(inner) = not_cond.condition.as_ref() {
+                    stack.push(inner);
+                }
+            }
+            Some(condition_expr::Expr::Compound(compound)) => {
+                if let Some(left) = compound.left.as_ref() {
+                    stack.push(left);
+                }
+                if let Some(right) = compound.right.as_ref() {
+                    stack.push(right);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
 /// Emit a compiled condition function as `function(v,s){return EXPR}`.
 /// The function evaluates the condition using `v(path,s)` for value resolution.
 fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String) {
@@ -642,6 +1302,9 @@ fn emit_json_condition_ref(
 /// Emit the JS expression body for a condition (no wrapping).
 fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
     match &condition.expr {
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
+            out.push_str(&id.value);
+        }
         Some(condition_expr::Expr::Identifier(id)) => {
             // Truthiness check: !!v("path",s)
             out.push_str("!!v(");
@@ -732,6 +1395,8 @@ fn emit_js_predicate_right(value: &str, out: &mut String) {
 /// Collect all identifier paths referenced by a condition.
 fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
     match &condition.expr {
+        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
+        }
         Some(condition_expr::Expr::Identifier(id)) => {
             paths.push(id.value.clone());
         }
@@ -766,20 +1431,9 @@ fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
     }
 }
 
-fn emit_js_node_path(path: &[usize], out: &mut String) {
-    out.push('[');
-    for (i, index) in path.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{}", index);
-    }
-    out.push(']');
-}
-
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
     out.push('[');
-    emit_js_node_path(&slot.parent_path, out);
+    let _ = write!(out, "{}", slot.parent_index);
     out.push(',');
     let _ = write!(out, "{}", slot.before_index);
     if slot.order > 0 {
@@ -846,12 +1500,12 @@ fn emit_json_template_section(
 
     if !meta.attr_groups.is_empty() {
         out.push_str(",\"ag\":[");
-        for (i, (path, start, count)) in meta.attr_groups.iter().enumerate() {
+        for (i, (element_index, start, count)) in meta.attr_groups.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push('[');
-            emit_js_node_path(path, out);
+            let _ = write!(out, "{}", element_index);
             out.push(',');
             let _ = write!(out, "{}", start);
             out.push(',');
@@ -885,7 +1539,7 @@ fn emit_json_template_section(
 
     if !meta.repeats.is_empty() {
         out.push_str(",\"r\":[");
-        for (i, ((collection, item_var, block_index), slot)) in meta
+        for (i, (repeat, slot)) in meta
             .repeats
             .iter()
             .zip(meta.repeat_slots.iter())
@@ -895,40 +1549,24 @@ fn emit_json_template_section(
                 out.push(',');
             }
             out.push('[');
-            emit_js_string(collection, out);
+            emit_js_string(&repeat.collection, out);
             out.push(',');
-            emit_js_string(item_var, out);
+            emit_js_string(&repeat.item_var, out);
             out.push(',');
-            let _ = write!(out, "{}", block_index);
+            let _ = write!(out, "{}", repeat.block_index);
             out.push(',');
             emit_js_slot(slot, out);
+            if let Some(key_path) = &repeat.key_path {
+                out.push(',');
+                emit_js_string(key_path, out);
+            }
             out.push(']');
         }
         out.push(']');
     }
 
     if !meta.events.is_empty() {
-        out.push_str(",\"e\":[");
-        for (i, ((event, handler, args), target)) in meta
-            .events
-            .iter()
-            .zip(meta.event_targets.iter())
-            .enumerate()
-        {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            emit_js_string(event, out);
-            out.push(',');
-            emit_js_string(handler, out);
-            out.push(',');
-            emit_js_event_args(args, out);
-            out.push(',');
-            emit_js_node_path(target, out);
-            out.push(']');
-        }
-        out.push(']');
+        emit_js_event_groups(&meta.events, &meta.event_targets, out);
     }
 }
 
@@ -946,33 +1584,37 @@ fn emit_json_template_section(
 /// - **`<if condition="…">`** — parsed via [`parse_if_block`] → conditional slot.
 /// - **`<for each="v in coll">`** — parsed via [`parse_for_block`] → repeat slot.
 /// - **`<outlet …>`** — normalized to `<outlet></outlet>`.
-/// - **`@event="…"`** (inside a tag) — parsed into `e[]` entries plus
+/// - **`@event="…"`** (inside a tag) — parsed into grouped `eg[]` entries plus
 ///   SSR `data-ev="COUNT"` markers that are later replaced by client locators.
 /// - **Everything else** — copied verbatim to the intermediate static HTML.
 ///
 fn compile_to_metadata(
     component: &str,
-    input: &str,
+    input: TemplateSource<'_>,
     root_events: Vec<EventBinding>,
 ) -> Result<TemplateMeta> {
-    let mut blocks = Vec::new();
+    let mut blocks = CompileBlocks::default();
+    let source = input.source;
     let mut root = compile_section(component, input, &mut blocks)?;
+    blocks.resolve(component, source, &mut root)?;
     finalize_template_section(&mut root);
-    for block in &mut blocks {
+    for block in &mut blocks.blocks {
         finalize_template_section(block);
     }
     Ok(TemplateMeta {
         root,
-        blocks,
+        has_named_repeats: blocks.has_named_repeats(),
+        blocks: blocks.blocks,
         root_events,
     })
 }
 
 fn compile_section(
     component: &str,
-    input: &str,
-    blocks: &mut Vec<TemplateSectionMeta>,
+    source: TemplateSource<'_>,
+    blocks: &mut CompileBlocks,
 ) -> Result<TemplateSectionMeta> {
+    let input = source.html();
     let mut meta = TemplateSectionMeta {
         html: String::with_capacity(input.len()),
         text_bindings: Vec::new(),
@@ -1014,12 +1656,14 @@ fn compile_section(
                 }
             }
 
-            if remaining.starts_with("<if ") || remaining.starts_with("<if\n") {
-                if let Some((cond, body, consumed)) = parse_if_block(remaining) {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &body, blocks)?;
-                    blocks[block_index] = block;
+            let opening_name = parse_tag(remaining)
+                .filter(|tag| !tag.closing)
+                .map(|tag| tag.name);
+            if opening_name == Some("if") {
+                if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
+                    let block_index = blocks.reserve();
+                    let block = compile_section(component, body, blocks)?;
+                    blocks.blocks[block_index] = block;
                     let idx = meta.conditionals.len();
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
@@ -1029,16 +1673,25 @@ fn compile_section(
             }
 
             // <for each="item in collection">...</for> → marker + repeat
-            if remaining.starts_with("<for ") || remaining.starts_with("<for\n") {
-                if let Some((collection, item_var, body, consumed)) = parse_for_block(remaining) {
-                    let block_index = blocks.len();
-                    blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &body, blocks)?;
-                    blocks[block_index] = block;
+            if opening_name == Some("for") {
+                let tag_source = source.slice(i..len);
+                if let Some(repeat) = parse_for_block(component, tag_source.clone())
+                    .map_err(|error| tag_source.locate_error(error))?
+                {
+                    let block_index = blocks.repeat_index(component, &repeat)?;
+                    if repeat.definition {
+                        let block = compile_section(component, repeat.body, blocks)?;
+                        blocks.blocks[block_index] = block;
+                    }
                     let idx = meta.repeats.len();
-                    meta.repeats.push((collection, item_var, block_index));
+                    meta.repeats.push(CompiledRepeat {
+                        collection: repeat.collection,
+                        item_var: repeat.item_var,
+                        block_index,
+                        key_path: repeat.key_path,
+                    });
                     meta.html.push_str(&format!("<!--r:{idx}-->"));
-                    i += consumed;
+                    i += repeat.consumed;
                     continue;
                 }
             }
@@ -1051,16 +1704,21 @@ fn compile_section(
                 continue;
             }
 
-            // <outlet ... /> → keep as <outlet></outlet>
+            // Normalize the complete outlet element so a paired closing tag
+            // cannot be mistaken for an ancestor close during finalization.
             if remaining.starts_with("<outlet") {
-                if let Some(close) = find_tag_close(remaining) {
+                if let Some(consumed) = find_element_end(remaining, "outlet") {
                     meta.html.push_str("<outlet></outlet>");
-                    i += close + 1;
+                    i += consumed;
                     continue;
                 }
             }
 
-            if let Some((tag_html, consumed)) = parse_regular_tag(component, remaining, &mut meta)?
+            let repeat_key = source
+                .repeat_key
+                .and_then(|offset| offset.checked_sub(source.range.start + i));
+            if let Some((tag_html, consumed)) =
+                parse_regular_tag(component, remaining, &mut meta, repeat_key)?
             {
                 meta.html.push_str(&tag_html);
                 i += consumed;
@@ -1185,7 +1843,7 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
 fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> bool {
     if let Some(signal) = comment_policy::parse_css_signal_comment(comment) {
         let idx = meta.text_bindings.len();
-        meta.text_bindings.push((signal.path, signal.raw));
+        meta.text_bindings.push((signal.path, false));
         emit_text_marker(meta, idx);
         return true;
     }
@@ -1227,7 +1885,8 @@ struct FragmentAttr {
 fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
-    let nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    insert_implied_table_containers(&mut nodes);
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -1237,9 +1896,10 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let mut event_targets = vec![None; meta.events.len()];
     let mut event_cursor = 0usize;
 
+    let mut element_cursor = 0usize;
     process_fragment_children(
         &nodes,
-        &[],
+        0,
         &text_bindings,
         &mut finalized_html,
         &mut text_runs,
@@ -1248,6 +1908,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
         &mut repeat_slots,
         &mut event_targets,
         &mut event_cursor,
+        &mut element_cursor,
     );
     debug_assert_eq!(event_cursor, meta.events.len());
 
@@ -1262,15 +1923,16 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
 #[allow(clippy::too_many_arguments)]
 fn process_fragment_children(
     nodes: &[FragmentNode],
-    parent_path: &[usize],
+    parent_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
-    attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
+    attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
-    event_targets: &mut [Option<Vec<usize>>],
+    event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
+    element_cursor: &mut usize,
 ) {
     let mut child_index = 0usize;
     let mut index = 0usize;
@@ -1283,7 +1945,11 @@ fn process_fragment_children(
         if let Some((parts, consumed, has_dynamic, is_raw)) =
             collect_text_run(&nodes[index..], text_bindings)
         {
-            if has_dynamic {
+            let adjacent_to_raw = !has_dynamic
+                && ((index > 0 && is_raw_text_marker(&nodes[index - 1], text_bindings))
+                    || (index + consumed < nodes.len()
+                        && is_raw_text_marker(&nodes[index + consumed], text_bindings)));
+            if has_dynamic || adjacent_to_raw {
                 // Decode HTML entities in static parts so that runtime
                 // textContent assignment renders decoded characters
                 // (e.g. `&gt;` → `>`).  Static-only text runs are
@@ -1303,7 +1969,7 @@ fn process_fragment_children(
                 slot_orders.insert(child_index, order + 1);
                 text_runs.push((
                     SlotLocator {
-                        parent_path: parent_path.to_vec(),
+                        parent_index,
                         before_index: child_index,
                         order,
                     },
@@ -1332,7 +1998,7 @@ fn process_fragment_children(
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {
-                            parent_path: parent_path.to_vec(),
+                            parent_index,
                             before_index: child_index,
                             order,
                         });
@@ -1342,7 +2008,7 @@ fn process_fragment_children(
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {
-                            parent_path: parent_path.to_vec(),
+                            parent_index,
                             before_index: child_index,
                             order,
                         });
@@ -1365,11 +2031,11 @@ fn process_fragment_children(
                 }
             }
             FragmentNode::Element(element) => {
-                let mut element_path = parent_path.to_vec();
-                element_path.push(child_index);
+                *element_cursor += 1;
+                let element_index = *element_cursor;
                 serialize_fragment_element(
                     element,
-                    &element_path,
+                    element_index,
                     text_bindings,
                     out,
                     text_runs,
@@ -1378,6 +2044,7 @@ fn process_fragment_children(
                     repeat_slots,
                     event_targets,
                     event_cursor,
+                    element_cursor,
                 );
                 child_index += 1;
                 previous_emitted_text = false;
@@ -1391,30 +2058,30 @@ fn process_fragment_children(
 #[allow(clippy::too_many_arguments)]
 fn serialize_fragment_element(
     element: &FragmentElement,
-    element_path: &[usize],
+    element_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
-    attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
+    attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
-    event_targets: &mut [Option<Vec<usize>>],
+    event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
+    element_cursor: &mut usize,
 ) {
     out.push('<');
     out.push_str(&element.tag_name);
 
     for attr in &element.attrs {
         if let Some((start, count)) = parse_attr_group_marker(&attr.name) {
-            attr_groups.push((element_path.to_vec(), start, count));
+            attr_groups.push((element_index, start, count));
             continue;
         }
 
         if attr.name == "data-ev" {
             if let Some(count) = attr.value.as_deref().and_then(parse_event_marker_count) {
-                let target_path = element_path.to_vec();
                 for slot in event_targets.iter_mut().skip(*event_cursor).take(count) {
-                    *slot = Some(target_path.clone());
+                    *slot = Some(element_index);
                 }
                 *event_cursor += count;
             }
@@ -1436,9 +2103,20 @@ fn serialize_fragment_element(
     }
 
     out.push('>');
+    // `<template>` content is parked in `HTMLTemplateElement.content`, so the
+    // browser never walks it as light DOM and neither runtime numbers it.
+    // Counting it here would shift every index after the template.  The markup
+    // is still emitted verbatim; bindings inside remain unreachable, exactly as
+    // they were before indices replaced node paths.
+    let mut interior = *element_cursor;
+    let counter = if element.tag_name.eq_ignore_ascii_case("template") {
+        &mut interior
+    } else {
+        &mut *element_cursor
+    };
     process_fragment_children(
         &element.children,
-        element_path,
+        element_index,
         text_bindings,
         out,
         text_runs,
@@ -1447,6 +2125,7 @@ fn serialize_fragment_element(
         repeat_slots,
         event_targets,
         event_cursor,
+        counter,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);
@@ -1473,10 +2152,15 @@ fn collect_text_run(
             FragmentNode::Comment(_) => break,
             FragmentNode::TextMarker(index) => {
                 if let Some((path, raw)) = text_bindings.get(*index) {
+                    if *raw && consumed != 0 {
+                        break;
+                    }
                     parts.push(CompiledAttrPart::Dynamic(path.clone()));
                     has_dynamic = true;
                     if *raw {
                         is_raw = true;
+                        consumed += 1;
+                        break;
                     }
                     consumed += 1;
                 } else {
@@ -1492,6 +2176,13 @@ fn collect_text_run(
     }
 
     Some((parts, consumed, has_dynamic, is_raw))
+}
+
+fn is_raw_text_marker(node: &FragmentNode, text_bindings: &[(String, bool)]) -> bool {
+    let FragmentNode::TextMarker(index) = node else {
+        return false;
+    };
+    text_bindings.get(*index).is_some_and(|(_, raw)| *raw)
 }
 
 fn collect_static_text(parts: &[CompiledAttrPart]) -> String {
@@ -1532,6 +2223,126 @@ fn emit_html_attr_value(value: &str, out: &mut String) {
             _ => out.push(ch),
         }
     }
+}
+
+/// Insert the containers the HTML parser implies around bare table children.
+///
+/// Compiled locators are pre-order element indices, and the browser resolves
+/// them against its own parse of `h`. Bare `<col>` and `<tr>` elements written
+/// directly inside `<table>` gain implied `<colgroup>` and `<tbody>` parents,
+/// which insert elements the compiler must count. Comments and whitespace
+/// after the first item remain in that implied parent in the browser.
+///
+/// This pass is intentionally limited to the table containers browsers insert
+/// for otherwise valid table markup. Other HTML recovery rules can also change
+/// hierarchy or element count, so templates must still use browser-valid
+/// nesting.
+///
+/// Iterative, and addressed by path so the borrow checker can see that only one
+/// child list is held at a time.  This runs once per component at build time.
+fn insert_implied_table_containers(nodes: &mut Vec<FragmentNode>) {
+    let mut stack: Vec<Vec<usize>> = vec![Vec::new()];
+
+    while let Some(path) = stack.pop() {
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+
+        for index in 0..list.len() {
+            if let Some(FragmentNode::Element(element)) = list.get_mut(index) {
+                if element.tag_name.eq_ignore_ascii_case("table") {
+                    wrap_table_run(element, "col", "colgroup", false);
+                    wrap_table_run(element, "tr", "tbody", true);
+                }
+            }
+        }
+
+        // Re-resolve: wrapping rows above changes this level's length.
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+        for index in 0..list.len() {
+            if matches!(list.get(index), Some(FragmentNode::Element(_))) {
+                let mut child = path.clone();
+                child.push(index);
+                stack.push(child);
+            }
+        }
+    }
+}
+
+/// Resolve the child list an element path points at.
+fn child_list_at<'a>(
+    roots: &'a mut Vec<FragmentNode>,
+    path: &[usize],
+) -> Option<&'a mut Vec<FragmentNode>> {
+    let mut list = roots;
+    for &index in path {
+        match list.get_mut(index) {
+            Some(FragmentNode::Element(element)) => list = &mut element.children,
+            _ => return None,
+        }
+    }
+    Some(list)
+}
+
+/// Group each run of direct table children into its browser-implied parent.
+fn wrap_table_run(
+    table: &mut FragmentElement,
+    item_tag: &str,
+    parent_tag: &str,
+    include_structural_markers: bool,
+) {
+    if !table
+        .children
+        .iter()
+        .any(|node| is_direct_element_named(node, item_tag))
+    {
+        return;
+    }
+
+    let mut rewritten = Vec::with_capacity(table.children.len());
+    let mut run: Vec<FragmentNode> = Vec::new();
+
+    for node in std::mem::take(&mut table.children) {
+        if is_direct_element_named(&node, item_tag) {
+            run.push(node);
+            continue;
+        }
+        if !run.is_empty() && is_table_run_trivia(&node, include_structural_markers) {
+            run.push(node);
+            continue;
+        }
+        flush_table_run(&mut run, &mut rewritten, parent_tag);
+        rewritten.push(node);
+    }
+    flush_table_run(&mut run, &mut rewritten, parent_tag);
+
+    table.children = rewritten;
+}
+
+fn flush_table_run(run: &mut Vec<FragmentNode>, out: &mut Vec<FragmentNode>, parent_tag: &str) {
+    if run.is_empty() {
+        return;
+    }
+    out.push(FragmentNode::Element(FragmentElement {
+        tag_name: parent_tag.to_string(),
+        attrs: Vec::new(),
+        children: std::mem::take(run),
+        self_closing: false,
+    }));
+}
+
+fn is_direct_element_named(node: &FragmentNode, tag_name: &str) -> bool {
+    matches!(node, FragmentNode::Element(element) if element.tag_name.eq_ignore_ascii_case(tag_name))
+}
+
+fn is_table_run_trivia(node: &FragmentNode, include_structural_markers: bool) -> bool {
+    matches!(node, FragmentNode::Comment(data) if include_structural_markers
+        || (parse_marker_index(data, "c:").is_none() && parse_marker_index(data, "r:").is_none()))
+        || matches!(node, FragmentNode::Text(text) if text.bytes().all(
+            |byte| matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+        ))
 }
 
 fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<FragmentNode> {
@@ -1805,26 +2616,6 @@ fn parse_fragment_start_tag(input: &str) -> Option<(FragmentElement, usize)> {
     ))
 }
 
-fn is_void_element(tag_name: &str) -> bool {
-    matches!(
-        tag_name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
-}
-
 // ── Parsing helpers ────────────────────────────────────────────────
 
 /// Find the position of `count` consecutive closing braces (`}`).
@@ -1859,159 +2650,47 @@ fn is_inside_tag(input: &str, pos: usize) -> bool {
     false
 }
 
-/// Strip `<template shadowrootmode="…">…</template>` wrapper, returning inner content.
-/// Returns the input unchanged if no wrapper is present.
-fn strip_template_wrapper(html: &str) -> &str {
-    if !html.starts_with("<template") {
-        return html;
-    }
-    let Some(open_end) = find_tag_close(html) else {
-        return html;
-    };
-    let inner_start = open_end + 1;
-    let inner_end = html.rfind("</template>").unwrap_or(html.len());
-    if inner_start >= inner_end {
-        return "";
-    }
-    &html[inner_start..inner_end]
-}
-
-fn find_next_block_token(input: &str, cursor: usize, token: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
-    let token_bytes = token.as_bytes();
-    let mut index = cursor;
-    let mut in_tag = false;
-    let mut in_comment = false;
-    let mut quote: Option<u8> = None;
-
-    while index + token_bytes.len() <= bytes.len() {
-        if in_comment {
-            if bytes[index..].starts_with(b"-->") {
-                in_comment = false;
-                index += 3;
-                continue;
-            }
-            index += 1;
-            continue;
-        }
-
-        if let Some(active) = quote {
-            if bytes[index] == active {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        if in_tag {
-            match bytes[index] {
-                b'"' | b'\'' => quote = Some(bytes[index]),
-                b'>' => in_tag = false,
-                _ => {}
-            }
-            index += 1;
-            continue;
-        }
-
-        if &bytes[index..index + token_bytes.len()] == token_bytes {
-            return Some(index);
-        }
-
-        if bytes[index] == b'<' {
-            if bytes[index..].starts_with(b"<!--") {
-                in_comment = true;
-                index += 4;
-                continue;
-            }
-            in_tag = true;
-        }
-
-        index += 1;
-    }
-
-    None
-}
-
-fn find_next_block_open(input: &str, cursor: usize, name: &str) -> Option<usize> {
-    let token = format!("<{name}");
-    let bytes = input.as_bytes();
-    let token_bytes = token.as_bytes();
-    let mut search = cursor;
-
-    while let Some(index) = find_next_block_token(input, search, &token) {
-        let next = bytes.get(index + token_bytes.len()).copied();
-        if match next {
-            None => true,
-            Some(byte) => byte == b'>' || byte.is_ascii_whitespace(),
-        } {
-            return Some(index);
-        }
-        search = index + 1;
-    }
-
-    None
-}
-
-fn find_next_block_close(input: &str, cursor: usize, name: &str) -> Option<usize> {
-    let token = format!("</{name}>");
-    find_next_block_token(input, cursor, &token)
-}
-
-fn find_matching_block_end(input: &str, name: &str) -> Option<usize> {
-    let open_token = format!("<{name}");
-    let close_token = format!("</{name}>");
-    if !input.starts_with(&open_token) {
+/// Return the body of a complete open declarative Shadow DOM template.
+fn shadow_template_body_range(html: &str) -> Option<Range<usize>> {
+    let (html, offset) = leading_content(html);
+    let tag = parse_tag(html)?;
+    if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
         return None;
     }
-
-    let mut depth = 1usize;
-    let mut cursor = open_token.len();
-
-    while cursor < input.len() {
-        let next_open = find_next_block_open(input, cursor, name);
-        let next_close = find_next_block_close(input, cursor, name);
-
-        match (next_open, next_close) {
-            (_, None) => return None,
-            (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
-                depth += 1;
-                cursor = open_pos + open_token.len();
-            }
-            (_, Some(close_pos)) => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(close_pos);
-                }
-                cursor = close_pos + close_token.len();
-            }
-        }
+    let is_open = tag.attrs().any(|attr| {
+        attr.name.eq_ignore_ascii_case("shadowrootmode")
+            && attr
+                .value
+                .is_some_and(|value| value.eq_ignore_ascii_case("open"))
+    });
+    if !is_open {
+        return None;
     }
-
-    None
+    let inner_start = tag.close + 1;
+    let (inner_end, close_end) = find_matching_end(html, tag.name, inner_start)?;
+    (close_end == html.len()).then_some(offset + inner_start..offset + inner_end)
 }
 
 /// Parse `<if condition="EXPR">BODY</if>` → `(condition, body, bytes_consumed)`.
 ///
-/// Only handles the outermost `<if>` — nested `<if>` blocks inside the body
-/// are left as raw HTML for the client runtime to process.
-fn parse_if_block(input: &str) -> Option<(ConditionExpr, String, usize)> {
-    let close_tag = "</if>";
-    let end_pos = find_matching_block_end(input, "if")?;
-    let tag_content = &input[..end_pos];
-
-    // Extract condition
-    let cond_start = tag_content.find("condition=\"")? + "condition=\"".len();
-    let cond_end = tag_content[cond_start..].find('"')? + cond_start;
-    let condition = compile_condition_expr(&tag_content[cond_start..cond_end]);
-
-    // Extract body (after the closing >)
-    let body_start = find_tag_close(tag_content)? + 1;
-    let body = tag_content[body_start..].trim().to_string();
-
-    Some((condition, body, end_pos + close_tag.len()))
+/// Nested blocks are compiled separately into their owning metadata sections.
+fn parse_if_block(
+    source: TemplateSource<'_>,
+) -> Option<(ConditionExpr, TemplateSource<'_>, usize)> {
+    let input = source.html();
+    let tag = parse_tag(input)?;
+    let condition = compile_condition_expr(tag.attr("condition")?);
+    let body_start = tag.close + 1;
+    let (body_end, close_end) = find_matching_end(input, tag.name, body_start)?;
+    Some((
+        condition,
+        source.slice(body_start..body_end).trimmed(),
+        close_end,
+    ))
 }
 
 fn compile_condition_expr(input: &str) -> ConditionExpr {
+    let input = crate::strip_condition_braces(input);
     let parser = ConditionParser::new();
     match parser.parse(input) {
         Ok(condition) => condition,
@@ -2022,33 +2701,185 @@ fn compile_condition_expr(input: &str) -> ConditionExpr {
     }
 }
 
-/// Parse `<for each="item in collection">BODY</for>` → `(collection, item_var, body, consumed)`.
+/// Parse a `<for>` block and the optional key on its first child.
 ///
 /// The `each` attribute must follow the `"item in collection"` pattern.
 /// The body template retains `{{expr}}` mustaches — they are resolved by the
 /// client runtime during reconciliation.
-fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
-    let close_tag = "</for>";
-    let end_pos = find_matching_block_end(input, "for")?;
-    let tag_content = &input[..end_pos];
-
-    // Extract each="item in collection"
-    let each_start = tag_content.find("each=\"")? + "each=\"".len();
-    let each_end = tag_content[each_start..].find('"')? + each_start;
-    let each_val = &tag_content[each_start..each_end];
-
-    let parts: Vec<&str> = each_val.splitn(3, ' ').collect();
-    if parts.len() != 3 || parts[1] != "in" {
-        return None;
+fn parse_for_block<'a>(
+    component: &str,
+    source: TemplateSource<'a>,
+) -> Result<Option<ParsedForBlock<'a>>> {
+    let input = source.html();
+    let Some(tag) = parse_tag(input) else {
+        return Ok(None);
+    };
+    let mut each = None;
+    let mut has_id = false;
+    for attr in tag.attrs() {
+        match attr.name {
+            "each" if each.is_none() => each = Some(attr.value),
+            "id" => has_id = true,
+            "template" => return Err(crate::unsupported_for_template(component)),
+            "key" => return Err(invalid_repeat_key_placement(component, tag.name).into()),
+            _ => {}
+        }
     }
-    let item_var = parts[0].to_string();
-    let collection = parts[2].to_string();
+    let id = if has_id {
+        crate::validate_for_id(component, &tag)?.map(str::to_owned)
+    } else {
+        None
+    };
+    let (body_end, close_end) = if tag.self_closing && id.is_some() {
+        (tag.close + 1, tag.close + 1)
+    } else {
+        let Some(bounds) = find_matching_end(input, tag.name, tag.close + 1) else {
+            return Ok(None);
+        };
+        bounds
+    };
+    let Some(Some(each_val)) = each else {
+        return Ok(None);
+    };
 
-    // Extract body
-    let body_start = find_tag_close(tag_content)? + 1;
-    let body = tag_content[body_start..].trim().to_string();
+    let (item_var, collection) = crate::parse_for_each(component, each_val)?;
+    let mut body = source.slice(tag.close + 1..body_end).trimmed();
+    let repeat_key = first_child_repeat_key(component, item_var, body.html())?;
+    body.repeat_key = repeat_key
+        .as_ref()
+        .map(|key| body.range.start + key.attr_range.start);
+    let key_path = repeat_key.map(|key| key.path);
 
-    Some((collection, item_var, body, end_pos + close_tag.len()))
+    Ok(Some(ParsedForBlock {
+        collection: collection.to_string(),
+        item_var: item_var.to_string(),
+        key_path,
+        id,
+        definition: !tag.self_closing,
+        body,
+        offset: source.range.start,
+        consumed: close_end,
+    }))
+}
+
+fn relative_repeat_key<'a>(item_var: &str, key: &'a str) -> Option<&'a str> {
+    if key == item_var {
+        return Some("");
+    }
+    let relative = key.strip_prefix(item_var)?.strip_prefix('.')?;
+    (!relative.is_empty() && is_valid_event_path(relative)).then_some(relative)
+}
+
+fn skip_repeat_key_trivia<'a>(mut input: &'a str, offset: &mut usize) -> Option<&'a str> {
+    loop {
+        let trimmed = input.trim_start();
+        *offset += input.len().saturating_sub(trimmed.len());
+        input = trimmed;
+        let consumed = if input.starts_with("<!--") {
+            input.find("-->")? + 3
+        } else if input.starts_with("<!") {
+            find_tag_close(input)? + 1
+        } else {
+            return Some(input);
+        };
+        *offset += consumed;
+        input = &input[consumed..];
+    }
+}
+
+fn first_child_repeat_key(
+    component: &str,
+    item_var: &str,
+    body: &str,
+) -> Result<Option<ParsedRepeatKey>> {
+    let mut remaining = body;
+    let mut offset = 0usize;
+    loop {
+        let Some(trimmed) = skip_repeat_key_trivia(remaining, &mut offset) else {
+            return Ok(None);
+        };
+        remaining = trimmed;
+        let Some(tag) = parse_tag(remaining) else {
+            return Ok(None);
+        };
+        if tag.closing {
+            return Ok(None);
+        }
+        let mut key_attr = None;
+        for attr in tag.attrs() {
+            if attr.name != "key" {
+                continue;
+            }
+            if key_attr.is_some() {
+                return Err(invalid_repeat_key_placement(component, tag.name).into());
+            }
+            key_attr = Some(attr);
+        }
+        if matches!(tag.name, "if" | "for" | "outlet") && key_attr.is_some() {
+            return Err(invalid_repeat_key_placement(component, tag.name).into());
+        }
+        if tag.name == "if" {
+            let body_start = tag.close + 1;
+            let Some((body_end, _)) = find_matching_end(remaining, tag.name, body_start) else {
+                return Ok(None);
+            };
+            offset += body_start;
+            remaining = &remaining[body_start..body_end];
+            continue;
+        }
+        if matches!(tag.name, "for" | "outlet") {
+            return Ok(None);
+        }
+        let Some(attr) = key_attr else {
+            return Ok(None);
+        };
+        let path = parse_repeat_key(component, item_var, attr.value.unwrap_or_default())?;
+        return Ok(Some(ParsedRepeatKey {
+            path,
+            attr_range: (offset + attr.raw_range.start)..(offset + attr.raw_range.end),
+        }));
+    }
+}
+
+fn parse_repeat_key(component: &str, item_var: &str, raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    let key = trimmed
+        .strip_prefix("{{")
+        .and_then(|value| value.strip_suffix("}}"))
+        .filter(|value| !value.starts_with('{') && !value.ends_with('}'))
+        .map(str::trim);
+    let Some(key) = key else {
+        return Err(invalid_repeat_key(component, item_var, raw).into());
+    };
+    let Some(relative) = relative_repeat_key(item_var, key) else {
+        return Err(invalid_repeat_key(component, item_var, raw).into());
+    };
+    Ok(relative.to_string())
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_repeat_key(component: &str, item_var: &str, key: &str) -> Diagnostic {
+    Diagnostic::error("invalid repeat key expression")
+        .code(codes::INVALID_FOR_KEY)
+        .component(component)
+        .snippet(key)
+        .help(format!(
+            "use key=\"{{{{{item_var}}}}}\" or key=\"{{{{{item_var}.id}}}}\" on the first concrete element inside <for>"
+        ))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_repeat_key_placement(component: &str, element: &str) -> Diagnostic {
+    Diagnostic::error("invalid repeat key placement")
+        .code(codes::INVALID_FOR_KEY)
+        .component(component)
+        .element(element)
+        .snippet("key")
+        .help(
+            "place the key attribute on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>",
+        )
 }
 
 /// Build a [`Diagnostic`] for an invalid `@event` handler.
@@ -2073,6 +2904,17 @@ fn invalid_event_handler(
         diag = diag.element(tag);
     }
     diag
+}
+
+#[cold]
+#[inline(never)]
+fn scriptless_component_events(component: &str) -> Diagnostic {
+    Diagnostic::error("scriptless component contains event bindings")
+        .code(codes::SCRIPTLESS_EVENT_HANDLER)
+        .component(component)
+        .help(
+            "add a .ts or .js file that defines a WebUIElement for this tag, or remove the @event binding",
+        )
 }
 
 /// Parse `@event="{handler()}"` or `@event={handler()}` into event metadata.
@@ -2145,6 +2987,7 @@ fn parse_regular_tag(
     component: &str,
     input: &str,
     meta: &mut TemplateSectionMeta,
+    repeat_key: Option<usize>,
 ) -> Result<Option<(String, usize)>> {
     if !input.starts_with('<') || input.starts_with("</") || input.starts_with("<!") {
         return Ok(None);
@@ -2244,6 +3087,13 @@ fn parse_regular_tag(
         let raw_attr = tag_body[attr_start..cursor].trim();
         if raw_attr.is_empty() {
             continue;
+        }
+
+        if name == "key" {
+            if repeat_key == Some(attr_start + 1) {
+                continue;
+            }
+            return Err(invalid_repeat_key_placement(component, tag_name).into());
         }
 
         if let Some(event_name) = name.strip_prefix('@') {
@@ -2619,13 +3469,14 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
 fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>> {
-    if !html.starts_with("<template") {
-        return Ok(Vec::new());
-    }
-    let Some(close) = find_tag_close(html) else {
+    let (html, _) = leading_content(html);
+    let Some(root) = parse_tag(html) else {
         return Ok(Vec::new());
     };
-    let tag = &html[..close];
+    if root.closing || !root.name.eq_ignore_ascii_case("template") {
+        return Ok(Vec::new());
+    }
+    let tag = &html[..root.close];
     let mut events = Vec::new();
     let bytes = tag.as_bytes();
     let len = bytes.len();
@@ -2645,23 +3496,133 @@ fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>>
     Ok(events)
 }
 
-fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
-    if !html.starts_with("<template") {
-        return None;
-    }
-    let close = find_tag_close(html)?;
-    let tag = &html[..close];
-    let attr = "shadowrootadoptedstylesheets=\"";
-    let start = tag.find(attr)? + attr.len();
-    let end = tag[start..].find('"')? + start;
-    Some(tag[start..end].to_string())
-}
-
 // ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod whitespace_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boolean_literal_conditions_have_no_state_dependencies() {
+        for value in ["true", "false"] {
+            let condition = ConditionExpr::identifier(value);
+            let mut javascript = String::new();
+            emit_js_condition_expr(&condition, &mut javascript);
+            assert_eq!(javascript, value);
+            let mut paths = Vec::new();
+            collect_condition_paths(&condition, &mut paths);
+            assert!(paths.is_empty());
+        }
+    }
+
+    #[test]
+    fn component_metadata_erases_boundary_directive_tags() {
+        let source = concat!(
+            "<template shadowrootmode=\"open\">",
+            "<boundary name=\"ready\" key=\"item.id\"><span>{{label}}</span></boundary>",
+            "</template>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+        assert_eq!(
+            stripped,
+            "<template shadowrootmode=\"open\"><span>{{label}}</span></template>"
+        );
+        let metadata = generate_compiled_template("my-card", &stripped);
+        assert!(!metadata.contains("<boundary"));
+        assert!(!metadata.contains("</boundary>"));
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_style_content_strings() {
+        let source = r#"<style>.card::before { content: "<boundary name='css'>literal</boundary>"; }</style>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_script_strings() {
+        let source =
+            r#"<script>const marker = '<boundary name="script">literal</boundary>';</script>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_quoted_attribute_values() {
+        let source = r#"<div data-double="<boundary name='double' data-end='>'></boundary>" data-single='<boundary name="single" data-end=">"></boundary>'></div>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_parser_raw_text_and_rcdata() {
+        let source = concat!(
+            "<textarea><boundary name=\"textarea\">literal</boundary></textarea>",
+            "<title><boundary name=\"title\">literal</boundary></title>",
+            "<xmp><boundary name=\"xmp\">literal</boundary></xmp>",
+            "<iframe><boundary name=\"iframe\">literal</boundary></iframe>",
+            "<noembed><boundary name=\"noembed\">literal</boundary></noembed>",
+            "<noframes><boundary name=\"noframes\">literal</boundary></noframes>",
+            "<noscript><boundary name=\"noscript\">literal</boundary></noscript>",
+            "<plaintext><boundary name=\"plaintext\">literal</boundary></plaintext>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_comments_and_near_matches() {
+        let source = concat!(
+            "<!-- <boundary name=\"comment\">literal</boundary> -->",
+            "<p>&lt;boundary&gt; is text</p>",
+            "<boundary-ish>near match</boundary-ish>",
+            "<Boundary>case-sensitive near match</Boundary>",
+            "< boundary>spaced near match</ boundary>",
+            "<boundary",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn component_metadata_boundary_directive_tags_erase_real_wrapper_only() {
+        let source = concat!(
+            "<template shadowrootmode=\"open\">",
+            "<boundary name=\"ready\">",
+            r#"<style>.x::before { content: "<boundary>style</boundary>"; }</style>"#,
+            r#"<script>const marker = '<boundary>script</boundary>';</script>"#,
+            r#"<div data-marker="<boundary>attribute</boundary>">child</div>"#,
+            "</boundary>",
+            "</template>",
+        );
+        let expected = concat!(
+            "<template shadowrootmode=\"open\">",
+            r#"<style>.x::before { content: "<boundary>style</boundary>"; }</style>"#,
+            r#"<script>const marker = '<boundary>script</boundary>';</script>"#,
+            r#"<div data-marker="<boundary>attribute</boundary>">child</div>"#,
+            "</template>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert_eq!(stripped, expected);
+        let metadata = generate_compiled_template("my-card", &stripped);
+        assert_eq!(metadata.matches("<boundary>").count(), 3);
+        assert_eq!(metadata.matches("</boundary>").count(), 3);
+        assert!(!metadata.contains("ready"));
+    }
 
     /// Test helper: compile a template and unwrap. The vast majority of tests
     /// exercise valid templates; tests that assert on authoring errors call
@@ -2681,8 +3642,96 @@ mod tests {
             html_content,
             html_content,
             false,
+            false,
         )
         .expect("valid template compiles")
+    }
+
+    /// Test helper: build a `Component` with no client-module source.
+    fn test_component(
+        tag_name: &str,
+        html_content: &str,
+        css_content: Option<&str>,
+        is_client_owned: bool,
+    ) -> Component {
+        Component {
+            tag_name: tag_name.to_string(),
+            html_content: html_content.to_string(),
+            css_content: css_content.map(str::to_string),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            is_client_owned,
+        }
+    }
+
+    #[test]
+    fn component_render_policy_is_encoded_in_template_metadata() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "lazy-card",
+            r#"<template w-render="lazy" w-reserve-block-size="18rem"><p>hi</p></template>"#,
+            None,
+            true,
+        );
+        plugin
+            .register_component_template(
+                "lazy-card",
+                &component,
+                r#"<template shadowrootmode="open"><p>hi</p></template>"#,
+            )
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].template_json.contains(r#","wp":2"#));
+        assert!(!templates[0].template_json.contains("w-render"));
+        assert!(!templates[0].template_json.contains("w-reserve-block-size"));
+    }
+
+    #[test]
+    fn interaction_policy_is_encoded_in_metadata_and_artifact() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "interaction-shell",
+            r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
+            None,
+            true,
+        );
+        plugin
+            .register_component_template("interaction-shell", &component, "<button>Open</button>")
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert!(templates[0].template_json.contains(r#","wp":3"#));
+        assert!(!templates[0].template_json.contains("w-hydrate"));
+    }
+
+    #[test]
+    fn combined_render_interaction_policy_is_encoded_once() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "interaction-panel",
+            concat!(
+                r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                r#"w-hydrate="interaction"><button>Open</button></template>"#,
+            ),
+            None,
+            true,
+        );
+        plugin
+            .register_component_template("interaction-panel", &component, "<button>Open</button>")
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert!(templates[0].template_json.contains(r#","wp":4"#));
+        assert!(!templates[0].template_json.contains("w-render"));
+        assert!(!templates[0].template_json.contains("w-hydrate"));
     }
 
     fn assert_no_client_markers(result: &str) {
@@ -2714,6 +3763,8 @@ mod tests {
         let mut plugin = WebUIParserPlugin::new();
         assert_eq!(plugin.classify_attribute("@click"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("@keydown"), AttributeAction::Skip);
+        assert_eq!(plugin.classify_attribute("key"), AttributeAction::Skip);
+        assert_eq!(plugin.classify_attribute("data-key"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("w-ref"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
     }
@@ -2724,8 +3775,28 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(r#""h":"<h1></h1>""#));
         assert!(result.contains("\"title\""));
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
         assert!(!result.contains("{{"));
+    }
+
+    #[test]
+    fn test_metadata_emits_template_roots_and_observed_attrs() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<h1>{{displayValue}}</h1><input ?readonly="{{readOnly}}" />"#,
+        );
+
+        assert!(result.contains(r#","tr":["displayValue","readOnly"]"#));
+        assert!(result.contains(r#","ta":["display-value","readonly"]"#));
+    }
+
+    #[test]
+    fn test_metadata_excludes_repeat_scope_roots() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p>{{item.title}} {{heading}}</p></for>"#,
+        );
+        assert!(result.contains(r#","tr":["items","heading"]"#));
     }
 
     #[test]
@@ -2764,7 +3835,10 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"["tokens.light"]"#));
+        assert!(
+            result.contains(r#","tx":[[[1,0],[":root{",["tokens.light"],"}"]]]"#),
+            "raw CSS stays an ordinary text binding: {result}"
+        );
         assert!(!result.contains("/*"));
         assert!(!result.contains("*/"));
     }
@@ -2793,7 +3867,7 @@ mod tests {
         assert!(result.contains(
             r#""h":"<p></p><style>/*! @license <!--t:0--> */.x { color: red; }</style>""#
         ));
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
         assert!(!result.contains(r#"[[[1],0],[["title"]]]"#));
     }
 
@@ -2833,7 +3907,7 @@ mod tests {
         );
         let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(r#""c":[[[0,["state"]],0,[[],0]]]"#));
+        assert!(result.contains(r#""c":[[[0,["state"]],0,[0,0]]]"#));
         assert!(payload
             .template_functions
             .contains(r#"function(v,s){return v("state",s)=="done"}"#));
@@ -2859,9 +3933,9 @@ mod tests {
     #[test]
     fn test_parse_if_block_ignores_close_marker_inside_attr_value() {
         let input = r#"<if condition="count > 0"><div data-note="</if>">yes</div></if>"#;
-        let (_, body, consumed) = parse_if_block(input).expect("if block should parse");
+        let (_, body, consumed) = parse_if_block(input.into()).expect("if block should parse");
 
-        assert_eq!(body, r#"<div data-note="</if>">yes</div>"#);
+        assert_eq!(body.html(), r#"<div data-note="</if>">yes</div>"#);
         assert_eq!(consumed, input.len());
     }
 
@@ -2874,20 +3948,193 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"items\""));
         assert!(result.contains("\"item\""));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0]]]"#));
         assert!(!result.contains("<for"));
+    }
+
+    #[test]
+    fn test_metadata_emits_first_child_key_path() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p class="row" key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
+        assert!(!result.contains("key="));
+        assert!(!result.contains(r#""a":[["key","#));
+    }
+
+    #[test]
+    fn test_metadata_emits_key_from_first_element_inside_if() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><if condition="item.visible"><span key="{{item.id}}">{{item.name}}</span></if></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
+        assert!(!result.contains("key="));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_on_for_directive() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items" key="{{item.id}}"><span>{{item.name}}</span></for>"#,
+        )
+        .expect_err("key on <for> must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_on_repeat_child_directive() {
+        let templates = [
+            r#"<for each="item in items"><if key="{{item.id}}" condition="item.visible"><span>{{item.name}}</span></if></for>"#,
+            r#"<for each="item in items"><for key="{{item.id}}" each="child in item.children"><span>{{child}}</span></for></for>"#,
+            r#"<for each="item in items"><outlet key="{{item.id}}" /></for>"#,
+        ];
+
+        for template in templates {
+            let err = super::generate_compiled_template("my-comp", template)
+                .expect_err("key on a directive must fail compilation");
+            let crate::ParserError::Template(diag) = err else {
+                panic!("expected template diagnostic");
+            };
+            assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+        }
+    }
+
+    #[test]
+    fn test_metadata_leaves_nested_for_key_with_nested_repeat() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="group in groups"><for each="item in group.items"><span key="{{item.id}}">{{item.name}}</span></for></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["groups","group",0,[0,0]]]"#));
+        assert!(result.contains(r#""r":[["group.items","item",1,[0,0],"id"]]"#));
+    }
+
+    #[test]
+    fn test_metadata_scopes_key_through_nested_for_if_for_chain() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="group in groups"><for each="section in group.sections"><if condition="section.visible"><for each="item in section.items"><span key="{{item.id}}">{{item.name}}</span></for></if></for></for>"#,
+        );
+
+        assert!(result.contains(r#"["groups","group",0,[0,0]]"#));
+        assert!(result.contains(r#"["group.sections","section",1,[0,0]]"#));
+        assert!(result.contains(r#"["section.items","item",3,[0,0],"id"]"#));
+        assert!(!result.contains("key="));
+    }
+
+    #[test]
+    fn test_metadata_treats_data_key_as_ordinary_attribute() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p data-key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0]]]"#));
+        assert!(result.contains(r#""a":[["data-key",0,"item.id"]]"#));
+    }
+
+    #[test]
+    fn test_metadata_emits_empty_path_for_primitive_child_key() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item}}">{{item}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],""]]"#));
+    }
+
+    #[test]
+    fn test_metadata_rejects_invalid_first_child_key_path() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item[0]}}">{{item}}</p></for>"#,
+        )
+        .expect_err("invalid explicit key must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_keeps_data_key_alongside_structural_key() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item.id}}" data-key="{{item.label}}">{{item}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
+        assert!(result.contains(r#""a":[["data-key",0,"item.label"]]"#));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_on_later_repeat_child() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><span>{{item.name}}</span><p key="{{item.id}}">{{item.name}}</p></for>"#,
+        )
+        .expect_err("key on a later child must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_outside_repeat() {
+        let err =
+            super::generate_compiled_template("my-comp", r#"<p key="{{row.id}}">{{row.name}}</p>"#)
+                .expect_err("key outside a repeat must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+        assert_eq!(
+            diag.help_text(),
+            Some(
+                "place the key attribute on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>"
+            )
+        );
+    }
+
+    #[test]
+    fn test_metadata_finds_key_after_leading_comment() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><!-- row --><p key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
+        assert!(!result.contains("key="));
     }
 
     #[test]
     fn test_parse_for_block_ignores_open_marker_inside_attr_value() {
         let input =
             r#"<for each="item in items"><div data-note="<for fake>">{{item.name}}</div></for>"#;
-        let (collection, item_var, body, consumed) =
-            parse_for_block(input).expect("for block should parse");
+        let parsed = parse_for_block("my-comp", input.into())
+            .expect("for block should be valid")
+            .expect("for block should parse");
 
-        assert_eq!(collection, "items");
-        assert_eq!(item_var, "item");
-        assert_eq!(body, r#"<div data-note="<for fake>">{{item.name}}</div>"#);
-        assert_eq!(consumed, input.len());
+        assert_eq!(parsed.collection, "items");
+        assert_eq!(parsed.item_var, "item");
+        assert_eq!(
+            parsed.body.html(),
+            r#"<div data-note="<for fake>">{{item.name}}</div>"#
+        );
+        assert_eq!(parsed.consumed, input.len());
     }
 
     #[test]
@@ -2951,7 +4198,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<input title="{{title}}" />"#);
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#"["title",0,"title"]"#));
         assert!(!result.contains(r#"title=\"<!--t:"#));
     }
@@ -2964,7 +4211,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,2]]"#));
+        assert!(result.contains(r#","ag":[[1,0,2]]"#));
         assert!(result.contains(r#"["href",3,["/product/",["handle"]]]"#));
         assert!(result.contains(r#"["class",3,["card ",["variant"]]]"#));
         assert!(!result.contains(r#"/product/<!--t:"#));
@@ -2979,7 +4226,7 @@ mod tests {
         let result = payload.template_json;
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#"["data-active",2,[0,["page"]]]"#));
         assert!(payload
             .template_functions
@@ -2994,7 +4241,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#""config",1,"settings""#));
     }
 
@@ -3050,7 +4297,29 @@ mod tests {
         );
         assert!(!result.contains("shadowrootmode"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
+    }
+
+    #[test]
+    fn test_preserves_ordinary_template_in_light_client_html() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<template data-kind="ordinary"><p>content</p></template>"#,
+        );
+        assert!(
+            result.contains(r#""h":"<template data-kind=\"ordinary\"><p>content</p></template>""#)
+        );
+        assert!(!result.contains(r#","sd":1"#));
+    }
+
+    #[test]
+    fn test_shadow_wrapper_matching_is_ascii_case_insensitive() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<TEMPLATE SHADOWROOTMODE="OPEN"><p>content</p></TEMPLATE>"#,
+        );
+        assert!(result.contains(r#""h":"<p>content</p>""#));
+        assert!(!result.contains("SHADOWROOTMODE"));
     }
 
     #[test]
@@ -3065,9 +4334,35 @@ mod tests {
     }
 
     #[test]
-    fn test_outlet_converted() {
-        let result = generate_compiled_template("my-comp", r#"<main><outlet /></main>"#);
-        assert!(result.contains("<outlet></outlet>"));
+    fn test_outlet_forms_compile_identically_without_lifting_following_blocks() {
+        let self_closing = generate_compiled_template(
+            "my-comp",
+            r#"<div class="shell-content"><main><outlet /></main><if condition="showNestedAfter"><span>nested</span></if></div><if condition="showRootAfter"><span>root</span></if>"#,
+        );
+        let paired = generate_compiled_template(
+            "my-comp",
+            r#"<div class="shell-content"><main><outlet></outlet></main><if condition="showNestedAfter"><span>nested</span></if></div><if condition="showRootAfter"><span>root</span></if>"#,
+        );
+
+        assert_eq!(paired, self_closing);
+        assert!(paired.contains(r#"<main><outlet></outlet></main></div>"#));
+        assert!(paired.contains(
+            r#""c":[[[0,["showNestedAfter"]],0,[1,1]],[[1,["showRootAfter"]],1,[0,1]]]"#,
+        ));
+    }
+
+    #[test]
+    fn test_uppercase_void_element_does_not_own_following_slots() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<div><INPUT><if condition="nested"><span>nested</span></if></div><if condition="root"><span>root</span></if>"#,
+        );
+
+        assert!(result.contains(r#""h":"<div><INPUT /></div>""#), "{result}");
+        assert!(
+            result.contains(r#""c":[[[0,["nested"]],0,[1,1]],[[1,["root"]],1,[0,1]]]"#,),
+            "{result}"
+        );
     }
 
     #[test]
@@ -3075,7 +4370,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<span>📚 {{title}}</span>"#);
         assert!(result.contains("📚"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#","tx":[[[[0],0],["📚 ",["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],["📚 ",["title"]]]]"#));
     }
 
     #[test]
@@ -3094,16 +4389,48 @@ mod tests {
     }
 
     #[test]
+    fn test_authored_component_defaults_to_unknown_surface_and_records_template_roots() {
+        // The parser plugin never analyzes JavaScript/TypeScript, so an
+        // authored (scripted) component's exact surface is unknown here — it
+        // defaults to `All` (full-state safety) regardless of script content.
+        // Only a validated bundler projection manifest, consumed later by
+        // `webui::build`, can narrow this to exact keys. Template roots are
+        // still recorded so the manifest consumer can union them in later.
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
+    }
+
+    #[test]
+    fn test_opaque_authored_component_defaults_to_unknown_surface() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        // Client-owned components without scannable source are still
+        // authored; their surface defaults to `All` (unknown) rather than
+        // silently downgrading to an empty allowlist.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
     fn test_deduplicates_components() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: None,
-            css_tokens: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", None, true);
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
@@ -3111,6 +4438,78 @@ mod tests {
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         assert_eq!(plugin.take_component_templates().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_scriptless_component_emits_dormant_navigation_template() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, false);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(
+            templates[0].navigation,
+            StateSurface::Keys(vec!["name".into()])
+        );
+        assert!(templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_fully_static_scriptless_component_still_emits_host_metadata() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>Static</p>", None, false);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(templates[0].navigation, StateSurface::None);
+        assert!(templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scripted_component_emits_client_template_without_static_host_marker() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        // Client-owned (authored) component: surface defaults to unknown.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scriptless_event_component_template_fails() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component(
+            "test-el",
+            r#"<button @click="{onClick()}">{{name}}</button>"#,
+            None,
+            false,
+        );
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let err = plugin
+            .take_component_templates()
+            .expect_err("scriptless event templates should fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("scriptless-event-handler"),
+            "msg: {message}"
+        );
     }
 
     #[test]
@@ -3135,26 +4534,10 @@ mod tests {
     }
 
     #[test]
-    fn test_compiled_template_emits_adopted_stylesheet_specifier() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-comp"><p>hi</p></template>"#,
-        );
-        assert!(result.contains(r#","sa":"my-comp""#));
-    }
-
-    #[test]
     fn test_plugin_uses_processed_link_template_html() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
 
         plugin
             .register_component_template(
@@ -3176,16 +4559,15 @@ mod tests {
     fn test_plugin_preserves_root_events_from_raw_template_source() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content:
-                r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#
-                    .to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
-        };
+        let comp = test_component(
+            "test-el",
+            concat!(
+                "<!-- Copyright (C) Corporation. All rights reserved. -->\n",
+                r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#,
+            ),
+            Some(".root { color: red; }"),
+            true,
+        );
 
         plugin
             .register_component_template(
@@ -3202,17 +4584,10 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_uses_processed_module_template_html() {
+    fn module_template_does_not_emit_stylesheet_specifier_metadata() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
 
         plugin
             .register_component_template(
@@ -3223,7 +4598,7 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].template_json.contains(r#","sa":"test-el""#));
+        assert!(!templates[0].template_json.contains(r#""sa":"#));
     }
 
     #[test]
@@ -3239,11 +4614,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"["items","item",0,[[],0]]"#),
+            result.contains(r#"["items","item",0,[0,0]]"#),
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[0,["item.active"]],1,[[],0]]"#),
+            result.contains(r#"[[0,["item.active"]],1,[0,0]]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -3263,11 +4638,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"[[0,["showList"]],0,[[],0]]"#),
+            result.contains(r#"[[0,["showList"]],0,[0,0]]"#),
             "conditional block index expected"
         );
         assert!(
-            result.contains(r#"["items","item",1,[[],0]]"#),
+            result.contains(r#"["items","item",1,[0,0]]"#),
             "nested repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -3287,11 +4662,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"["groups","group",0,[[],0]]"#),
+            result.contains(r#"["groups","group",0,[0,0]]"#),
             "outer repeat block index expected"
         );
         assert!(
-            result.contains(r#"["group.items","item",1,[[0],0]]"#),
+            result.contains(r#"["group.items","item",1,[1,0]]"#),
             "inner repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -3322,11 +4697,161 @@ mod tests {
             "test-input",
             r#"<input @keydown="{onKey(e)}" @focus="{onFocus()}" />"#,
             &mut meta,
+            None,
         )
         .expect("regular tag parse should succeed")
         .expect("regular tag should produce output");
 
         assert_eq!(tag_html, r#"<input data-ev="2" />"#);
+    }
+
+    #[test]
+    fn test_bare_table_row_gains_the_implied_tbody() {
+        // The browser moves a bare <tr> into an implied <tbody>.  Emitting that
+        // wrapper keeps compiled indices aligned with the tree it will build.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<table><tbody><tr><td></td></tr></tbody></table>"#),
+            "implied tbody expected: {result}"
+        );
+        // table=1, tbody=2, tr=3, td=4, button=5
+        assert!(result.contains(r#""tx":[[[4,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_implied_tbody_keeps_structural_slots_and_trailing_whitespace() {
+        let result = generate_compiled_template(
+            "my-comp",
+            "<table><tr><td>a</td></tr><if condition=\"show\"><tr><td>conditional</td></tr></if><tr><td>{{cell}}</td></tr>  </table><button @click=\"{go()}\"></button>",
+        );
+
+        assert!(
+            result.contains(
+                r#""h":"<table><tbody><tr><td>a</td></tr><tr><td></td></tr>  </tbody></table><button></button>""#,
+            ),
+            "{result}"
+        );
+        // table=1, tbody=2, first tr=3, td=4, second tr=5, td=6, button=7
+        assert!(result.contains(r#""tx":[[[6,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""c":[[[0,["show"]],0,[2,1]]]"#),
+            "{result}"
+        );
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],7]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_bare_table_columns_gain_the_implied_colgroup() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><col><col><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+
+        assert!(
+            result.contains(
+                r#""h":"<table><colgroup><col /><col /></colgroup><tbody><tr><td></td></tr></tbody></table><button></button>""#,
+            ),
+            "{result}"
+        );
+        // table=1, colgroup=2, cols=3/4, tbody=5, tr=6, td=7, button=8
+        assert!(result.contains(r#""tx":[[[7,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],8]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_implied_colgroup_does_not_claim_following_row_repeat() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><col><for each="row in rows"><tr><td>{{row.value}}</td></tr></for></table>"#,
+        );
+
+        assert!(
+            result.contains(r#""h":"<table><colgroup><col /></colgroup></table>""#),
+            "{result}"
+        );
+        assert!(
+            result.contains(r#""r":[["rows","row",0,[1,1]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_table_run_trivia_uses_html_whitespace() {
+        assert!(is_table_run_trivia(
+            &FragmentNode::Text("\t\n\u{000C}\r ".to_string()),
+            false
+        ));
+        assert!(!is_table_run_trivia(
+            &FragmentNode::Text("\u{00A0}".to_string()),
+            true
+        ));
+    }
+
+    #[test]
+    fn test_authored_tbody_is_not_duplicated() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tbody><tr><td>{{cell}}</td></tr></tbody></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            !result.contains("<tbody><tbody>"),
+            "no double wrap: {result}"
+        );
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_table_sections_keep_their_own_rows() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><thead><tr><th>h</th></tr></thead><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        // thead keeps its row; only the bare trailing row is wrapped.
+        assert!(
+            result
+                .contains(r#"<thead><tr><th>h</th></tr></thead><tbody><tr><td></td></tr></tbody>"#),
+            "{result}"
+        );
+        // table=1, thead=2, tr=3, th=4, tbody=5, tr=6, td=7, button=8
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],8]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_template_content_is_not_numbered() {
+        // <template> children live in `.content`, which neither runtime walk
+        // traverses, so counting them would shift every later index.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<div><template><span></span></template></div><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<div><template><span></span></template></div>"#),
+            "template markup preserved: {result}"
+        );
+        // div=1, template=2, button=3 — the parked <span> is not counted.
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],3]]]]"#),
+            "{result}"
+        );
     }
 
     #[test]
@@ -3337,7 +4862,7 @@ mod tests {
         assert!(!result.contains(r#","tx":"#), "no text bindings");
         assert!(!result.contains(r#","c":"#), "no conditionals");
         assert!(!result.contains(r#","r":"#), "no repeats");
-        assert!(!result.contains(r#","e":"#), "no events");
+        assert!(!result.contains(r#","eg":"#), "no events");
         assert!(!result.contains(r#","re":"#), "no root events");
     }
 
@@ -3357,9 +4882,8 @@ mod tests {
             r#"<p>{{first}}</p><p>{{second}}</p><p>{{third}}</p>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(
-            r#","tx":[[[[0],0],[["first"]]],[[[1],0],[["second"]]],[[[2],0],[["third"]]]]"#
-        ));
+        assert!(result
+            .contains(r#","tx":[[[1,0],[["first"]]],[[2,0],[["second"]]],[[3,0],[["third"]]]]"#));
         assert!(result.contains("\"first\""));
         assert!(result.contains("\"second\""));
         assert!(result.contains("\"third\""));
@@ -3417,7 +4941,7 @@ mod tests {
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
         // text binding compiled
-        assert!(result.contains(r#","tx":[[[[0],0],[["label"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["label"]]]]"#));
         assert!(result.contains("\"label\""));
     }
 
@@ -3426,8 +4950,27 @@ mod tests {
         let result =
             generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
         assert!(
-            result.contains(r#"["click","onClick",[],[0]]"#),
+            result.contains(r#"["click",[["onClick",[],1]]]"#),
             "empty argument list should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_event_groups_preserve_first_seen_order() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<button @click="{onA()}"></button><a @mouseover="{onHover()}"></a><button @click="{onB(e)}"></button>"#,
+        );
+
+        let click_pos = result.find(r#"["click","#).unwrap();
+        let hover_pos = result.find(r#"["mouseover","#).unwrap();
+        assert!(
+            click_pos < hover_pos,
+            "event groups should preserve first-seen order: {result}"
+        );
+        assert!(
+            result.contains(r#"["click",[["onA",[],1],["onB",[["e"]],3,1]]]"#),
+            "duplicate click handlers should share one group: {result}"
         );
     }
 
@@ -3451,12 +4994,35 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<div>{{{rawHtml}}}</div>"#);
         assert_no_client_markers(&result);
         assert!(
-            result.contains(r#","tx":[[[[0],0],[["rawHtml"]],1]]"#),
+            result.contains(r#","tx":[[[1,0],[["rawHtml"]],1]]"#),
             "triple brace produces text locator with raw flag: {result}"
         );
         assert!(
             result.contains("\"rawHtml\""),
             "rawHtml path in text bindings"
+        );
+    }
+
+    #[test]
+    fn raw_binding_is_split_from_adjacent_text_and_escaped_binding() {
+        let result =
+            generate_compiled_template("my-comp", r#"<div>Before {{{html}}} After {{name}}</div>"#);
+
+        assert!(
+            result.contains(
+                r#","tx":[[[1,0],["Before "]],[[1,0,1],[["html"]],1],[[1,0,2],[" After ",["name"]]]]"#,
+            ),
+            "raw HTML must own only its signal while adjacent text remains separate: {result}"
+        );
+    }
+
+    #[test]
+    fn adjacent_raw_bindings_compile_to_distinct_ranges() {
+        let result = generate_compiled_template("my-comp", r#"<div>{{{first}}}{{{second}}}</div>"#);
+
+        assert!(
+            result.contains(r#","tx":[[[1,0],[["first"]],1],[[1,0,1],[["second"]],1]]"#,),
+            "each raw binding needs one metadata entry and one marker range: {result}"
         );
     }
 
@@ -3489,7 +5055,7 @@ mod tests {
 
         assert_no_client_markers(&result);
         assert!(result.contains(r#""h":"<p></p>""#));
-        assert!(result.contains(r#","tx":[[[[0],0],["Hello ",["name"],"!"]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],["Hello ",["name"],"!"]]]"#));
     }
 
     #[test]

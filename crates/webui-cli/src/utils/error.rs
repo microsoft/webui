@@ -132,7 +132,19 @@ pub fn exit_code(err: &anyhow::Error) -> i32 {
         return match web {
             webui::WebUIError::Parse { .. }
             | webui::WebUIError::Serialization(_)
-            | webui::WebUIError::InvalidBuildOptions(_) => 65,
+            | webui::WebUIError::InvalidBuildOptions(_)
+            | webui::WebUIError::ComponentAssets(_)
+            | webui::WebUIError::Projection(_) => 65,
+            // A component registration failure whose underlying cause is a file
+            // read is an I/O error; every other cause (an authoring/template
+            // mistake surfaced by a plugin source transform, an invalid or
+            // duplicate component name, malformed CSS) is a data error, matching
+            // the `Parse` classification.
+            webui::WebUIError::ComponentRegistration {
+                source: webui::ParserError::IO { .. },
+                ..
+            } => 74,
+            webui::WebUIError::ComponentRegistration { .. } => 65,
             webui::WebUIError::Io { .. } => 74,
             _ => 1,
         };
@@ -171,6 +183,34 @@ mod tests {
     fn exit_code_for_parse_error_is_dataerr() {
         let err: anyhow::Error = webui::WebUIError::InvalidBuildOptions("bad".into()).into();
         assert_eq!(exit_code(&err), 65);
+    }
+
+    #[test]
+    fn exit_code_for_registration_template_error_is_dataerr() {
+        let diag = webui::Diagnostic::error("invalid component source")
+            .code("invalid-component-source")
+            .component("file-card")
+            .position(3, 5);
+        let err: anyhow::Error = webui::WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".into(),
+            source: webui::ParserError::Template(Box::new(diag)),
+        }
+        .into();
+        assert_eq!(exit_code(&err), 65);
+    }
+
+    #[test]
+    fn exit_code_for_registration_io_error_is_ioerr() {
+        // A file-read failure during registration is an I/O error (74).
+        let err: anyhow::Error = webui::WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".into(),
+            source: webui::ParserError::IO {
+                context: "read".into(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "nope"),
+            },
+        }
+        .into();
+        assert_eq!(exit_code(&err), 74);
     }
 
     #[test]

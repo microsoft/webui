@@ -3,11 +3,25 @@
 
 use serde::Deserialize;
 
+/// Which parts of the documentation site to generate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ShowMode {
+    /// Generate the complete site, including its navigation and other shell regions.
+    #[default]
+    All,
+    /// Generate only authored page content in a complete, shell-free document.
+    Content,
+}
+
 /// Documentation site configuration (read from config.json).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocsConfig {
     pub site: SiteConfig,
+    /// Display mode, overridden by an explicit CLI `--show` value.
+    #[serde(default)]
+    pub show: ShowMode,
     pub base_path: String,
     pub content_dir: String,
     #[serde(default = "default_out_dir")]
@@ -25,8 +39,40 @@ pub struct DocsConfig {
     pub sidebar_groups: std::collections::BTreeMap<String, Vec<SidebarSection>>,
     #[serde(default)]
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
+    /// Site-owned HTML fragments injected into named template regions before
+    /// component discovery and protocol compilation.
+    #[serde(default)]
+    pub regions: std::collections::BTreeMap<String, RegionConfig>,
+    /// Inline JSON object merged into every page's render state. Mutually
+    /// exclusive with `stateFile`.
+    pub state: Option<serde_json::Value>,
+    /// Path (relative to `config.json`) of a JSON object merged into every
+    /// page's render state. Mutually exclusive with `state`.
+    pub state_file: Option<String>,
     pub hero: Option<HeroConfig>,
     pub footer: Option<FooterConfig>,
+    /// Optional JavaScript bundler configuration (overrides defaults).
+    pub bundler: Option<BundlerConfig>,
+}
+
+/// Site-owned content for one compile-time template region.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionConfig {
+    /// Inline HTML fragment. Mutually exclusive with `htmlFile`.
+    pub html: Option<String>,
+    /// HTML fragment path relative to `config.json`. Mutually exclusive with
+    /// `html`.
+    pub html_file: Option<String>,
+    /// Inline JSON object exposed beneath the region's dotted state path.
+    /// Mutually exclusive with `stateFile`.
+    pub state: Option<serde_json::Value>,
+    /// JSON object path relative to `config.json`. Mutually exclusive with
+    /// `state`.
+    pub state_file: Option<String>,
+    /// Optional JavaScript/TypeScript file bundled only on pages where the
+    /// region is active.
+    pub script_file: Option<String>,
 }
 
 fn default_out_dir() -> String {
@@ -47,6 +93,12 @@ pub struct SiteConfig {
 pub struct NavLink {
     pub text: String,
     pub link: String,
+    /// Markdown file backing this link, relative to `contentDir` with forward
+    /// slashes (e.g. `ai/SKILL.md`). Pages are normally routed by filename, so
+    /// this is only needed when a file's name is dictated by an outside
+    /// convention and should not leak into the URL.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,6 +132,10 @@ pub enum CustomPage {
         /// The build pipeline caches each unique file so that pages that share
         /// a state file only read it once. Mutually exclusive with `state`.
         state_file: Option<String>,
+        /// Path (relative to `config.json`) of a TypeScript/JavaScript file
+        /// to bundle as a per-page script. The file is bundled with esbuild
+        /// and a `<script>` tag is appended to the page output.
+        script_file: Option<String>,
     },
 }
 
@@ -109,6 +165,13 @@ impl CustomPage {
         match self {
             Self::Html(_) => None,
             Self::Full { state_file, .. } => state_file.as_deref(),
+        }
+    }
+
+    pub fn script_file(&self) -> Option<&str> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { script_file, .. } => script_file.as_deref(),
         }
     }
 }
@@ -201,6 +264,29 @@ pub struct FooterConfig {
     pub html: String,
 }
 
+/// JavaScript bundler configuration overrides.
+///
+/// All fields are optional; sensible defaults are applied when omitted.
+/// These settings affect how generated page script entries are bundled into
+/// the output `assets/` directory.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BundlerConfig {
+    /// ECMAScript target (e.g. `"es2022"`). Defaults to `"es2022"`.
+    pub target: Option<String>,
+    /// Packages to treat as external (not bundled).
+    #[serde(default)]
+    pub external: Vec<String>,
+    /// Compile-time constant replacements (e.g. `{ "process.env.NODE_ENV": "\"production\"" }`).
+    #[serde(default)]
+    pub define: std::collections::HashMap<String, String>,
+    /// Module path aliases (e.g. `{ "~": "./src" }`).
+    #[serde(default)]
+    pub alias: std::collections::HashMap<String, String>,
+    /// Additional projection fragments for separately built external bundles.
+    #[serde(default, rename = "projectionManifests")]
+    pub projection_manifests: Vec<String>,
+}
+
 /// A processed page ready for rendering.
 pub struct PageDescriptor {
     pub path: String,
@@ -219,6 +305,23 @@ pub struct BuildStats {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn show_mode_defaults_to_all_and_rejects_unknown_values() -> Result<(), serde_json::Error> {
+        let json = r#"{
+            "site": {"title": "Docs"}, "basePath": "/", "contentDir": ".",
+            "nav": [], "sidebar": []
+        }"#;
+        let config: DocsConfig = serde_json::from_str(json)?;
+        assert_eq!(config.show, ShowMode::All);
+        assert_eq!(
+            serde_json::from_str::<ShowMode>("\"content\"")?,
+            ShowMode::Content
+        );
+        assert_eq!(serde_json::from_str::<ShowMode>("\"all\"")?, ShowMode::All);
+        assert!(serde_json::from_str::<ShowMode>("\"invalid\"").is_err());
+        Ok(())
+    }
 
     // --- HeadTag::to_html ------------------------------------------------
 
@@ -296,5 +399,73 @@ mod tests {
             None,
         );
         assert_eq!(t1.to_html(), t2.to_html());
+    }
+
+    // --- BundlerConfig ---------------------------------------------------
+
+    #[test]
+    fn bundler_config_deserializes_all_fields() {
+        let json = r#"{
+            "target": "es2022",
+            "external": ["lodash"],
+            "define": { "process.env.NODE_ENV": "\"production\"" },
+            "alias": { "~": "./src" },
+            "projectionManifests": ["./shared/projection.json"]
+        }"#;
+        let cfg: BundlerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.target.as_deref(), Some("es2022"));
+        assert_eq!(cfg.external, vec!["lodash"]);
+        assert_eq!(
+            cfg.define.get("process.env.NODE_ENV").unwrap(),
+            "\"production\""
+        );
+        assert_eq!(cfg.alias.get("~").unwrap(), "./src");
+        assert_eq!(cfg.projection_manifests, vec!["./shared/projection.json"]);
+    }
+
+    #[test]
+    fn bundler_config_defaults_when_empty() {
+        let cfg: BundlerConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.target.is_none());
+        assert!(cfg.external.is_empty());
+        assert!(cfg.define.is_empty());
+        assert!(cfg.alias.is_empty());
+        assert!(cfg.projection_manifests.is_empty());
+    }
+
+    // --- CustomPage::script_file -------------------------------------------
+
+    #[test]
+    fn custom_page_script_file_deserializes() {
+        let json = r#"{
+            "layout": "full",
+            "html": "<my-comp></my-comp>",
+            "scriptFile": "./components/my-comp/my-comp.ts"
+        }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert_eq!(page.script_file(), Some("./components/my-comp/my-comp.ts"));
+    }
+
+    #[test]
+    fn custom_page_script_file_none_when_absent() {
+        let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert!(page.script_file().is_none());
+    }
+
+    #[test]
+    fn region_config_deserializes_file_backed_content() {
+        let config: RegionConfig = serde_json::from_str(
+            r#"{
+                "htmlFile": "./regions/summary.html",
+                "stateFile": "./state/summary.json",
+                "scriptFile": "./regions/summary.ts"
+            }"#,
+        )
+        .unwrap();
+        assert!(config.html.is_none());
+        assert_eq!(config.html_file.as_deref(), Some("./regions/summary.html"));
+        assert_eq!(config.state_file.as_deref(), Some("./state/summary.json"));
+        assert_eq!(config.script_file.as_deref(), Some("./regions/summary.ts"));
     }
 }

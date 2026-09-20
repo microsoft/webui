@@ -132,7 +132,12 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         self.scopes.pop();
     }
 
-    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_start(
+        &mut self,
+        name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -142,7 +147,12 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         writer.write(&self.buffer)
     }
 
-    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -175,9 +185,9 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let decoded = FastElementData::decode(data).map_err(|error| {
+        let (decoded, reset_child_index) = FastElementData::decode_v2(data).map_err(|error| {
             HandlerError::PluginData(format!(
-                "FAST v2 hydration plugin expected 4 bytes of element data: {error}"
+                "FAST v2 hydration plugin received invalid element data: {error}"
             ))
         })?;
         if decoded.binding_count > 0 {
@@ -185,53 +195,23 @@ impl HandlerPlugin for FastV2HydrationPlugin {
             self.build_attribute_marker(binding_index, decoded.binding_count);
             writer.write(&self.buffer)?;
         }
+        if reset_child_index {
+            if let Some(counter) = self.scopes.last_mut() {
+                *counter = 0;
+            }
+        }
         Ok(())
     }
 
-    /// FAST emits scalar attributes + `data-state` JSON on route component elements.
+    /// FAST emits scalar attributes on route component elements.
     /// Components read these via `@attr` and their connection lifecycle.
     fn write_route_component_state(
         &self,
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        write_fast_route_component_state(state, writer)
+        super::fast::write_route_component_state(state, writer)
     }
-}
-
-fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
-    let map = match state.as_object() {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-
-    // Emit scalar values as individual kebab-case attributes.
-    for (key, value) in map {
-        let val_str = match value {
-            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-            _ => continue,
-        };
-        let attr_name = webui_protocol::attrs::camel_to_kebab(key);
-        writer.write(" ")?;
-        writer.write(&attr_name)?;
-        writer.write("=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
-        writer.write("\"")?;
-    }
-
-    // Emit data-state JSON for complex values (arrays, objects).
-    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-    if has_complex {
-        let json_str = state.to_string();
-        writer.write(" data-state=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
-        writer.write("\"")?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -267,8 +247,12 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
-        plugin.on_binding_end("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
+        plugin
+            .on_binding_end("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(
             writer.output,
             "<!--fe-b$$start$$0$$userName$$fe-b--><!--fe-b$$end$$0$$userName$$fe-b-->"
@@ -280,10 +264,10 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe-b$$start$$1$$b$$fe-b-->");
     }
 
@@ -305,14 +289,14 @@ mod tests {
         let mut single = FastV2HydrationPlugin::new();
         single.push_scope();
         let mut writer = TestWriter::new();
-        let one = 1u32.to_le_bytes();
+        let one = FastElementData { binding_count: 1 }.encode_v2(false);
         single.on_element_data(&one, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-b-0");
 
         let mut multi = FastV2HydrationPlugin::new();
         multi.push_scope();
         writer.output.clear();
-        let three = 3u32.to_le_bytes();
+        let three = FastElementData { binding_count: 3 }.encode_v2(false);
         multi.on_element_data(&three, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-c-0-3");
     }
@@ -322,49 +306,98 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        let three = 3u32.to_le_bytes();
+        let three = FastElementData { binding_count: 3 }.encode_v2(false);
         plugin.on_element_data(&three, &mut writer).unwrap();
 
         writer.output.clear();
-        plugin.on_binding_start("next", &mut writer).unwrap();
+        plugin.on_binding_start("next", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe-b$$start$$3$$next$$fe-b-->");
+    }
+
+    #[test]
+    fn test_fast_v2_root_host_bindings_reset_child_index() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        let root = FastElementData { binding_count: 2 }.encode_v2(true);
+        plugin.on_element_data(&root, &mut writer).unwrap();
+        let child = FastElementData { binding_count: 1 }.encode_v2(false);
+        plugin.on_element_data(&child, &mut writer).unwrap();
+        assert_eq!(writer.output, " data-fe-c-0-2 data-fe-b-0");
+    }
+
+    #[test]
+    fn test_fast_v2_rejects_four_byte_element_data() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        let result = plugin.on_element_data(&1u32.to_le_bytes(), &mut writer);
+        assert!(
+            matches!(result, Err(crate::HandlerError::PluginData(ref msg)) if msg.contains("5 bytes")),
+            "four-byte FAST 2 data should be rejected: {result:?}"
+        );
+        assert_eq!(writer.output, "");
+    }
+
+    #[test]
+    fn test_fast_v2_parser_and_handler_keep_child_index_local() {
+        use crate::{RenderOptions, WebUIHandler};
+        use webui_parser::{
+            plugin::fast_v2::FastV2ParserPlugin, ComponentRegistration, HtmlParser,
+        };
+        use webui_protocol::WebUIProtocol;
+
+        let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "binding-card",
+                r#"<f-template name="binding-card" shadowrootmode="open"><template @click="{click($e)}" @keydown="{keydown($e)}"><slot f-ref="{slot}"></slot></template></f-template>"#,
+                None,
+                true,
+            ))
+            .unwrap();
+        parser
+            .parse("index.html", "<binding-card></binding-card>")
+            .unwrap();
+        let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+        protocol
+            .components
+            .entry("binding-card".to_string())
+            .or_default()
+            .uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+        let mut writer = TestWriter::new();
+        handler
+            .handle(
+                &protocol,
+                &serde_json::json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert!(
+            writer.output.contains(concat!(
+                r#"<template shadowrootmode="open" data-fe-c-0-2>"#,
+                r#"<slot data-fe-b-0></slot></template>"#
+            )),
+            "FAST 2 child markers should exclude consumed host bindings: {}",
+            writer.output
+        );
     }
 
     #[test]
     fn test_fast_v2_root_scope_disabled() {
         let mut plugin = FastV2HydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
-        let data = 3u32.to_le_bytes();
+        let data = FastElementData { binding_count: 3 }.encode_v2(false);
         plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, "");
-    }
-
-    #[test]
-    fn test_fast_v2_write_route_component_state_emits_data_state() {
-        let plugin = FastV2HydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        let state = serde_json::json!({
-            "title": "Hello",
-            "items": [{"name": "A&B"}]
-        });
-
-        plugin
-            .write_route_component_state(&state, &mut writer)
-            .unwrap();
-
-        assert!(
-            writer.output.contains("data-state="),
-            "FAST v2 handler plugin should emit data-state: {}",
-            writer.output
-        );
-        assert!(
-            writer.output.contains(r#"title="Hello""#),
-            "FAST v2 handler plugin should still emit scalar attrs: {}",
-            writer.output
-        );
     }
 }

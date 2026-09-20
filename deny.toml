@@ -4,6 +4,8 @@ ignore = [
     "RUSTSEC-2025-0141",
     # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
     "RUSTSEC-2024-0320",
+    # actix-http/awc still pin h2 0.3; the low-severity fix is available only in h2 0.4.
+    "RUSTSEC-2026-0258",
 ]
 
 [licenses]
@@ -33,6 +35,8 @@ skip = [
     { name = "getrandom" },
     { name = "hashbrown" },
     { name = "http" },
+    # actix-web 4.14 depends on impl-more 0.3 directly while actix-tls 3.5 still pins impl-more 0.1.
+    { name = "impl-more" },
     { name = "r-efi" },
     # awc 3.8.2 uses rand 0.9 directly while actix-http 3.12 uses rand 0.10.
     { name = "rand" },

@@ -11,6 +11,8 @@ interface RepeatConditionalItem {
 }
 
 export class TestRepeatConditional extends WebUIElement {
+  @observable selectedTitle = '';
+
   @observable items: RepeatConditionalItem[] = [
     {
       title: 'Shirts',
@@ -77,7 +79,10 @@ export class TestRepeatConditional extends WebUIElement {
       },
     ];
   }
+
+  selectItem(title: string): void {
+    this.selectedTitle = title;
+  }
 }
 
 TestRepeatConditional.define('test-repeat-conditional');
-

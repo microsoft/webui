@@ -5,16 +5,16 @@
   --docs-max-width: none;
   
   /* Brand */
-  --docs-color-brand: #a25a02;
-  --docs-color-brand-hover: #c87b0a;
-  --docs-color-brand-bg: rgba(162, 90, 2, 0.06);
+  --docs-color-brand: #8a4800;
+  --docs-color-brand-hover: #6f3900;
+  --docs-color-brand-bg: rgba(138, 72, 0, 0.08);
 
   /* Surfaces */
   --docs-color-bg: #efeae7;
   --docs-color-bg-alt: #ddd7d1;
   --docs-color-text: #272320;
   --docs-color-text-2: rgba(39, 35, 32, 0.70);
-  --docs-color-text-3: rgba(39, 35, 32, 0.44);
+  --docs-color-text-3: #68615c;
   --docs-color-border: rgba(39, 35, 32, 0.10);
 
   /* Code */
@@ -34,7 +34,7 @@
   --docs-card-hover-shadow: 0 8px 32px rgba(39, 35, 32, 0.06);
   --docs-nav-bg: rgba(239, 234, 231, 0.85);
   --docs-nav-backdrop: blur(12px);
-  --docs-hero-gradient: linear-gradient(135deg, #a25a02, #c87b0a 40%, #8a4b03);
+  --docs-hero-gradient: linear-gradient(135deg, #8a4800, #a25a02 40%, #6f3900);
 }
 
 [data-theme="dark"] {
@@ -42,7 +42,7 @@
   --docs-color-bg-alt: #0b0d15;
   --docs-color-text: #d4cfc7;
   --docs-color-text-2: rgba(212, 207, 199, 0.70);
-  --docs-color-text-3: rgba(212, 207, 199, 0.44);
+  --docs-color-text-3: #99928a;
   --docs-color-border: rgba(212, 207, 199, 0.10);
   --docs-color-brand: #c87b0a;
   --docs-color-brand-hover: #e0a040;
@@ -62,7 +62,7 @@
     --docs-color-bg-alt: #0b0d15;
     --docs-color-text: #d4cfc7;
     --docs-color-text-2: rgba(212, 207, 199, 0.70);
-    --docs-color-text-3: rgba(212, 207, 199, 0.44);
+    --docs-color-text-3: #99928a;
     --docs-color-border: rgba(212, 207, 199, 0.10);
     --docs-color-brand: #c87b0a;
     --docs-color-brand-hover: #e0a040;

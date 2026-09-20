@@ -1,4 +1,25 @@
 <if condition="expanded">
+  <style>.raw-context-target { /*{{{styleRule}}}*/ }</style>
   <div class="header"><strong class="name">{{name}}</strong></div>
-  <div class="body">{{{rawHtml}}}</div>
+  <span class="raw-context-target">Styled</span>
+  <div class="body">
+    <span class="before">Before</span>
+    {{{rawHtml}}}
+    <if condition="expanded">
+      <span class="conditional">Conditional</span>
+    </if>
+    <span class="after">After</span>
+  </div>
+  <p class="inline-text">Before {{{inlineRawHtml}}} After {{inlineName}}</p>
+  <div class="adjacent-raw">{{{firstRawHtml}}}{{{secondRawHtml}}}</div>
+  <table>
+    <tbody class="rows">
+      <tr class="before-row"><td>Before row</td></tr>
+      {{{rowsHtml}}}
+      <if condition="expanded">
+        <tr class="conditional-row"><td>Conditional row</td></tr>
+      </if>
+      <tr class="after-row"><td>After row</td></tr>
+    </tbody>
+  </table>
 </if>

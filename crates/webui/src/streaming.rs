@@ -63,7 +63,7 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
-use webui_handler::{HandlerError, ResponseWriter, Result};
+use webui_handler::{FlushWriter, HandlerError, ResponseWriter, Result};
 
 // ── ChunkPool ──────────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ impl Drop for PooledChunk {
 /// actix_web::rt::task::spawn_blocking(move || {
 ///     let mut writer = StreamingWriter::new(tx)
 ///         .with_flush_timeout(Duration::from_secs(30));
-///     handler.handle(&protocol, &state, &opts, &mut writer);
+///     handler.render(&protocol, &state, &opts, &mut writer);
 ///     let _ = ResponseWriter::end(&mut writer);
 /// });
 /// // … wrap rx in a Stream and pass to HttpResponse::streaming …
@@ -618,6 +618,28 @@ impl ResponseWriter for StreamingWriter {
         Ok(())
     }
 
+    fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        if let Some(cause) = self.terminated {
+            return Err(cause.into());
+        }
+        webui_handler::append_attribute_to_bytes(&mut self.buf, name, value);
+        if self.buf.len() >= self.chunk_target {
+            self.flush_buf()?;
+        }
+        Ok(())
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
+        if let Some(cause) = self.terminated {
+            return Err(cause.into());
+        }
+        webui_handler::append_boolean_attribute_to_bytes(&mut self.buf, name);
+        if self.buf.len() >= self.chunk_target {
+            self.flush_buf()?;
+        }
+        Ok(())
+    }
+
     fn end(&mut self) -> Result<()> {
         // Surface the final-flush error so the caller can distinguish
         // "fully delivered" from "client gave up at the very last
@@ -633,6 +655,12 @@ impl ResponseWriter for StreamingWriter {
         if self.terminated.is_some() {
             return Ok(());
         }
+        self.flush_buf()
+    }
+}
+
+impl FlushWriter for StreamingWriter {
+    fn flush(&mut self) -> Result<()> {
         self.flush_buf()
     }
 }
@@ -674,6 +702,20 @@ mod tests {
         let first = rx.try_recv().expect("first chunk should be available");
         assert_eq!(first.len(), StreamingWriter::CHUNK_TARGET);
         ResponseWriter::end(&mut w).unwrap();
+    }
+
+    #[test]
+    fn streaming_writer_explicit_flush_sends_partial_chunk() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+        let mut writer = StreamingWriter::new(tx);
+        ResponseWriter::write(&mut writer, "boundary").unwrap();
+        assert!(rx.try_recv().is_err());
+
+        FlushWriter::flush(&mut writer).unwrap();
+        assert_eq!(
+            rx.try_recv().expect("explicitly flushed chunk"),
+            Bytes::from_static(b"boundary")
+        );
     }
 
     #[test]

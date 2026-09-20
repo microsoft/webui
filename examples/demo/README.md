@@ -46,7 +46,8 @@ examples/demo/
 ├── data/
 │   └── state.json          ← Sample state for solo dev (`webui serve`)
 ├── dist/
-│   └── index.js            ← Bundled client (produced by `pnpm build`)
+│   ├── index.js            ← Bundled client (produced by `pnpm build`)
+│   └── webui-projection.json ← Build-time state projection manifest
 ├── server/                 ← Rust reverse-proxy + SSR host (binary: demo-shell)
 └── README.md
 ```
@@ -67,6 +68,8 @@ source = "src"                      # Source directory
 servedir = "dist"                   # Static assets directory
 state = "data/state.json"           # Optional state file
 theme = "@microsoft/webui-examples-theme"  # Optional theme
+css = "style"                             # Optional CSS strategy
+projection-manifest = ["dist/webui-projection.json"] # Optional, repeatable CLI values
 
 # Optional: separate API server
 [api]

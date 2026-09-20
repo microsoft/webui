@@ -1,1 +1,10 @@
-{ "greeting": "Hello", "name": "World", "count": 0, "doubled": 0, "lastKey": "", "inputValue": "" }
+{
+  "greeting": "Hello",
+  "name": "World",
+  "count": 0,
+  "doubled": 0,
+  "lastKey": "",
+  "inputValue": "",
+  "cellValue": "cell",
+  "afterLabel": "after"
+}

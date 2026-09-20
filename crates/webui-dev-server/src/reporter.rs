@@ -15,13 +15,17 @@
 //! ⚡ WebUI dev server
 //!   ➜ http://localhost:3333/
 //!
-//!   ↻ rebuilt in 0.3s 16:42:51   ← repainted in place
-//!   ↻ rebuilt in 0.4s 16:42:58   ← (replaces previous line)
-//!   ✘ build error: parse failed  ← commits previous line, prints below
-//!   ↻ rebuilt in 0.2s 16:43:10
+//!   ↻ rebuilt app-shell.css in 0.3s 16:42:51   ← repainted in place
+//!   ↻ rebuilt index.html in 0.4s 16:42:58      ← (replaces previous line)
+//!
+//!   ✘ build error: parse failed                ← framed by blank lines
+//!
+//!   ↻ rebuilt styles.css (+2 more) in 0.2s 16:43:10
 //! ```
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use console::style;
@@ -43,6 +47,11 @@ const REWIND_LINE: &str = "\r\x1b[2K";
 /// promptly.
 pub struct RebuildReporter {
     last_was_rebuild: bool,
+    /// True when the previous committed output was a framed diagnostic block (a
+    /// build error or warning). Lets consecutive blocks share a single
+    /// separating blank line (each block prints a trailing blank; only the first
+    /// in a run prints a leading one) instead of stacking a double blank.
+    last_was_block: bool,
     /// True when stderr is an interactive terminal that supports the
     /// `\r\x1b[2K` repaint trick. Captured once at construction —
     /// stream redirection rarely changes mid-process and re-querying
@@ -62,6 +71,7 @@ impl RebuildReporter {
     pub fn new() -> Self {
         Self {
             last_was_rebuild: false,
+            last_was_block: false,
             interactive: std::io::stderr().is_terminal(),
         }
     }
@@ -71,11 +81,20 @@ impl RebuildReporter {
     /// each rebuild prints its own newline-terminated line so log
     /// wrappers (`concurrently`, CI capture, file redirects) flush it.
     ///
+    /// `triggers` are the changed paths that caused this rebuild; the line names
+    /// the first file (and `(+N more)` when several changed) so the developer
+    /// can see what fired. An empty slice prints no trigger.
+    ///
     /// Always writes to **stderr** so it lands on the same stream as
     /// the rest of the dev server's diagnostic output (banners, field
     /// tables, errors).
-    pub fn success(&mut self, elapsed: Duration) {
+    pub fn success(&mut self, elapsed: Duration, triggers: &[PathBuf]) {
         let elapsed_str = format_elapsed(elapsed);
+        let trigger = format_trigger(triggers);
+        let rebuilt = match &trigger {
+            Some(name) => format!("rebuilt {name}"),
+            None => "rebuilt".to_string(),
+        };
         if self.interactive {
             let prefix = if self.last_was_rebuild {
                 REWIND_LINE
@@ -86,7 +105,7 @@ impl RebuildReporter {
                 "{}  {} {} {} {}",
                 prefix,
                 style("↻").cyan().bold(),
-                style("rebuilt").bold(),
+                style(rebuilt).bold(),
                 style(format!("in {elapsed_str}")).dim(),
                 style(local_hms()).dim(),
             );
@@ -95,18 +114,29 @@ impl RebuildReporter {
             eprintln!(
                 "  {} {} {} {}",
                 style("↻").cyan().bold(),
-                style("rebuilt").bold(),
+                style(rebuilt).bold(),
                 style(format!("in {elapsed_str}")).dim(),
                 style(local_hms()).dim(),
             );
         }
         self.last_was_rebuild = true;
+        self.last_was_block = false;
     }
 
     /// Print a rebuild error, committing the previous rolling line first
     /// so it isn't overwritten.
+    ///
+    /// Each error block is framed with surrounding blank lines so that
+    /// consecutive rebuild errors (e.g. repeated saves of a still-broken file)
+    /// read as separate blocks instead of one squished wall. The leading blank
+    /// is printed only for the first error in a run; every error prints a
+    /// trailing blank, so two adjacent errors are separated by exactly one
+    /// blank line.
     pub fn error(&mut self, msg: &str) {
         self.commit_pending();
+        if !self.last_was_block {
+            eprintln!();
+        }
         // Color only the leading marker here. The body (`msg`) arrives
         // pre-rendered from the caller — either plain, or per-line colorized
         // with self-contained SGR spans. We must never wrap it in one span
@@ -117,6 +147,38 @@ impl RebuildReporter {
             style("✘").red().bold(),
             style("build error:").red().bold(),
         );
+        eprintln!();
+        self.last_was_block = true;
+    }
+
+    /// Print non-fatal rebuild advisories, each framed with surrounding blank
+    /// lines so they read as distinct blocks (matching [`error`]). The leading
+    /// blank is printed only when the previous output was not itself a framed
+    /// block; every advisory prints a trailing blank.
+    ///
+    /// No-op when `messages` is empty, so clean rebuilds keep their in-place
+    /// rolling line. Each `message` is the caller's pre-rendered diagnostic body
+    /// (the CLI colorizes per line); the reporter adds the `⚠ build warning:`
+    /// marker.
+    ///
+    /// [`error`]: Self::error
+    pub fn warnings(&mut self, messages: &[String]) {
+        if messages.is_empty() {
+            return;
+        }
+        self.commit_pending();
+        for message in messages {
+            if !self.last_was_block {
+                eprintln!();
+            }
+            eprintln!(
+                "  {} {} {message}",
+                style("⚠").yellow().bold(),
+                style("build warning:").yellow().bold(),
+            );
+            eprintln!();
+            self.last_was_block = true;
+        }
     }
 
     /// Commit any pending rolling rebuild line with a trailing newline,
@@ -140,6 +202,27 @@ fn format_elapsed(elapsed: Duration) -> String {
         format!("{ms}ms")
     } else {
         format!("{:.1}s", elapsed.as_secs_f32())
+    }
+}
+
+/// Format the rebuild trigger from the changed paths: the first file's name,
+/// with `(+N more)` when several distinct files changed. Returns `None` for an
+/// empty trigger set (e.g. a forced rebuild). File names are deduplicated
+/// preserving first-seen order so repeated events for one file read as one.
+fn format_trigger(triggers: &[PathBuf]) -> Option<String> {
+    let mut seen = HashSet::new();
+    let mut names: Vec<&str> = Vec::new();
+    for path in triggers {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if seen.insert(name) {
+                names.push(name);
+            }
+        }
+    }
+    match names.as_slice() {
+        [] => None,
+        [only] => Some((*only).to_string()),
+        [first, rest @ ..] => Some(format!("{first} (+{} more)", rest.len())),
     }
 }
 
@@ -172,7 +255,7 @@ mod tests {
     fn reporter_tracks_pending_state() {
         let mut r = RebuildReporter::new();
         assert!(!r.last_was_rebuild);
-        r.success(Duration::from_millis(123));
+        r.success(Duration::from_millis(123), &[]);
         assert!(r.last_was_rebuild);
         r.commit_pending();
         assert!(!r.last_was_rebuild);
@@ -181,9 +264,76 @@ mod tests {
     #[test]
     fn error_resets_pending() {
         let mut r = RebuildReporter::new();
-        r.success(Duration::from_millis(50));
+        r.success(Duration::from_millis(50), &[]);
         r.error("oops");
         assert!(!r.last_was_rebuild);
+    }
+
+    #[test]
+    fn framed_blocks_track_state_for_blank_line_framing() {
+        // Errors and warnings are both framed blocks: the first in a run is
+        // flagged so consecutive blocks share a single separating blank line; a
+        // success (rolling line) clears the flag so the next block reprints its
+        // leading blank.
+        let mut r = RebuildReporter::new();
+        r.error("boom");
+        assert!(r.last_was_block);
+        r.error("still boom");
+        assert!(r.last_was_block);
+
+        r.success(Duration::from_millis(5), &[]);
+        assert!(!r.last_was_block);
+
+        // Warnings are framed blocks too, so they set (and keep) the flag.
+        r.warnings(&["likely typo".to_string()]);
+        assert!(r.last_was_block);
+        r.warnings(&["another".to_string()]);
+        assert!(r.last_was_block);
+
+        r.success(Duration::from_millis(2), &[]);
+        assert!(!r.last_was_block);
+    }
+
+    #[test]
+    fn empty_warnings_keep_rolling_line() {
+        // No advisories → the rolling rebuild line is preserved for in-place
+        // repaint on the next success.
+        let mut r = RebuildReporter::new();
+        r.success(Duration::from_millis(50), &[]);
+        r.warnings(&[]);
+        assert!(r.last_was_rebuild);
+    }
+
+    #[test]
+    fn warnings_commit_pending_line() {
+        // A non-empty advisory commits the rolling line so it isn't clobbered.
+        let mut r = RebuildReporter::new();
+        r.success(Duration::from_millis(50), &[]);
+        r.warnings(&["CSS token --colr-brand is a likely typo".to_string()]);
+        assert!(!r.last_was_rebuild);
+    }
+
+    #[test]
+    fn format_trigger_renders_file_names() {
+        assert_eq!(format_trigger(&[]), None);
+        assert_eq!(
+            format_trigger(&[PathBuf::from("/app/app-shell/app-shell.css")]),
+            Some("app-shell.css".to_string())
+        );
+        // Repeated events for the same file collapse to one name.
+        assert_eq!(
+            format_trigger(&[PathBuf::from("/app/a.css"), PathBuf::from("/app/sub/a.css"),]),
+            Some("a.css".to_string())
+        );
+        // Several distinct files → first + count of the rest.
+        assert_eq!(
+            format_trigger(&[
+                PathBuf::from("/app/a.css"),
+                PathBuf::from("/app/b.html"),
+                PathBuf::from("/app/c.ts"),
+            ]),
+            Some("a.css (+2 more)".to_string())
+        );
     }
 
     #[test]

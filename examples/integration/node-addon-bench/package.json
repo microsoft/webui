@@ -1,0 +1,19 @@
+{
+  "name": "node-addon-bench",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Runtime benchmark for the WebUI Node.js addon across the V8/N-API boundary.",
+  "type": "module",
+  "scripts": {
+    "test": "node --check bench.mjs",
+    "bench": "node --expose-gc bench.mjs",
+    "bench:quick": "node --expose-gc bench.mjs --quick",
+    "bench:json": "node --expose-gc bench.mjs --json"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@microsoft/webui": "workspace:*"
+  }
+}

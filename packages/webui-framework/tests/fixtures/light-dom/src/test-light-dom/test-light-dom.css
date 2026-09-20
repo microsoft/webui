@@ -1,0 +1,27 @@
+.greeting {
+  color: rgb(12, 34, 56);
+}
+
+/* Global Light CSS can inspect the external ancestor normally. */
+:is(.outside .greeting) {
+  background: rgb(255, 0, 0);
+}
+
+/* A relational selector can inspect nested Light component internals. */
+.child-boundary:has(.child-label) {
+  border: 5px solid rgb(255, 0, 0);
+}
+
+/*
+ * This deliberately collides with the child rule. The parent rule appears
+ * first in the global Light CSS closure, so the child rule wins normally.
+ */
+.child-label {
+  color: rgb(200, 0, 0);
+}
+
+/* The nested host is declared here, so the parent may style its box. */
+test-light-child {
+  display: block;
+  outline: 1px solid rgb(1, 2, 3);
+}

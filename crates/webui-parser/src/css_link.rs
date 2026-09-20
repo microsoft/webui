@@ -84,6 +84,24 @@ impl CssLinkOptions {
             .clone()
     }
 
+    /// Resolve the local filename and public href for a bundled CSS chunk.
+    ///
+    /// Chunk names live in a build-owned namespace rather than the component
+    /// registry, so this deliberately bypasses the per-tag cache: a chunk and a
+    /// component that happen to share a name must never resolve to each other's
+    /// content hash.
+    #[must_use]
+    pub fn resolve_chunk(&self, chunk_name: &str, css_content: &str) -> CssLinkHref {
+        let filename = self
+            .file_name_template
+            .resolve(chunk_name, "css", css_content.as_bytes());
+        let href = match self.public_base.as_deref() {
+            Some(base) => join_css_public_base(base, &filename),
+            None => filename.clone(),
+        };
+        CssLinkHref { filename, href }
+    }
+
     /// File name template used for Link-mode CSS files.
     #[must_use]
     pub fn file_name_template(&self) -> &str {

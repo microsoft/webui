@@ -1,12 +1,20 @@
 # C API
 
-The WebUI FFI (Foreign Function Interface) handler exposes the rendering pipeline as a C-compatible shared library. Any language with C interop, Go, Python, Ruby, PHP, Lua, and more, can load the library and render WebUI templates without a JavaScript runtime. .NET applications should prefer the managed `Microsoft.WebUI` NuGet package, which restores native runtime packages transitively.
+The WebUI FFI (Foreign Function Interface) handler exposes the loaded-protocol
+rendering pipeline as a C-compatible shared library. Any language with C
+interop, Go, Ruby, PHP, Lua, and more, can render compiled WebUI applications
+without a JavaScript runtime. .NET applications should prefer the managed
+`Microsoft.WebUI` NuGet package, which restores native runtime packages
+transitively, and Python applications should prefer the native
+`microsoft-webui` package (see [Python](./python)). .NET wraps this C ABI;
+Python binds the Rust handler directly through PyO3. Only languages without a
+first-class binding need to call the C ABI directly.
 
 ## Building the Shared Library
 
 ```bash
-cargo build -p webui-ffi            # debug
-cargo build -p webui-ffi --release  # release
+cargo build -p microsoft-webui-ffi            # debug
+cargo build -p microsoft-webui-ffi --release  # release
 ```
 
 This produces a shared library:
@@ -19,68 +27,41 @@ This produces a shared library:
 
 The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
 
-## Two Rendering Modes
+## Protocol Rendering
 
-### One-shot: `webui_render`
-
-Parse and render in a single call. Best for simple use cases where you pass raw HTML templates.
-
-```c
-char *html = webui_render(
-    "<h1>{{title}}</h1><ul><for each=\"item in items\"><li>{{item}}</li></for></ul>",
-    "{\"title\": \"Groceries\", \"items\": [\"Milk\", \"Eggs\"]}"
-);
-if (html == NULL) {
-    printf("Error: %s\n", webui_last_error());
-} else {
-    printf("%s\n", html);
-    webui_free(html);
-}
-```
-
-### Pre-compiled: `webui_handler_create` + `webui_handler_render`
-
-Create a reusable handler and render pre-compiled protobuf protocols. Best for production use where the protocol is built once with `webui build` and rendered many times.
+Decode and index `protocol.bin` once with `webui_protocol_create`, then use the
+protocol handle for every operation:
 
 ```c
-// Create handler (optionally with a plugin)
-void *handler = webui_handler_create();
-// or: void *handler = webui_handler_create_with_plugin("webui");
-
-// Set CSP nonce (optional — required if your page uses Content-Security-Policy)
+void *handler = webui_handler_create_with_plugin("webui");
 webui_handler_set_nonce(handler, "Ep7tTOr+HyRkByAPXxZ9ag==");
 
-// Load protocol.bin from disk (your code)
 uint8_t *data = load_file("dist/protocol.bin", &len);
+webui_protocol_t *protocol = webui_protocol_create(data, len);
+if (protocol == NULL) {
+    fprintf(stderr, "Protocol error: %s\n", webui_last_error());
+    webui_handler_destroy(handler);
+    return;
+}
 
-// Render
-char *html = webui_handler_render(handler, data, len, state_json,
-                                  "index.html", request_path);
+char *html = webui_handler_render(
+    handler, protocol, state_json, "index.html", request_path
+);
 if (html) {
-    // use html...
     webui_free(html);
 }
 
-// Clean up
+webui_protocol_destroy(protocol);
 webui_handler_destroy(handler);
 ```
 
+Loaded protocol handles are thread-safe. Handler instances are safe for
+concurrent renders as long as configuration such as the nonce is not mutated
+concurrently.
+
 ## C API Reference
 
-The library exports six functions. The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
-
-### webui_render
-
-```c
-char *webui_render(const char *html, const char *data_json);
-```
-
-Parse an HTML template and render it with JSON state data in a single call. This is the **recommended entry point** for most consumers.
-
-- `html`, null-terminated UTF-8 string containing the HTML template.
-- `data_json`, null-terminated UTF-8 JSON string with the render state.
-- **Returns** a heap-allocated null-terminated UTF-8 string with the rendered HTML, or `NULL` on error.
-- The caller **must** free the returned string with `webui_free()`.
+The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
 
 ### webui_free
 
@@ -88,7 +69,8 @@ Parse an HTML template and render it with JSON state data in a single call. This
 void webui_free(char *string_ptr);
 ```
 
-Free a string returned by `webui_render` or `webui_handler_render`. Passing `NULL` is a safe no-op.
+Free a string returned by a WebUI protocol operation such as
+`webui_handler_render`. Passing `NULL` is a safe no-op.
 
 ### webui_last_error
 
@@ -143,31 +125,164 @@ Set the CSP nonce for inline tags on a handler instance. When set, all subsequen
 
 The nonce is written verbatim — pass the raw base64 string without any encoding. The same value should appear in your `Content-Security-Policy` header.
 
-::: warning Thread Safety
-Handler instances are **not** thread-safe. Do not call `webui_handler_set_nonce` concurrently with `webui_handler_render` or other operations on the same handler. Serialize all access via a mutex or single-threaded use.
-:::
+**Thread safety.** Concurrent render calls are supported after configuration. Do not call
+`webui_handler_set_nonce` or `webui_handler_destroy` while another operation is
+using the same handler.
+
+### Reserved `$webui` state channel
+
+A top-level `$webui` object in the render state JSON passed to
+`webui_handler_render` (or a streaming session) may carry `headEnd`,
+`bodyStart`, and `bodyEnd` strings, each emitted **raw** at the matching
+structural boundary (before `</head>`, after `<body>`, before `</body>`):
+
+```json
+{"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
+```
+
+Members that are missing, `null`, empty, or not strings are ignored rather than
+an error. The `$webui` key is stripped from the client hydration payload, so it
+never reaches the DOM. No extra API call is needed — it travels on the state
+JSON hosts already send.
+
+**Safety.** The values are written verbatim with no escaping, exactly like the
+Rust `head_inject` / `body_inject` options. Never let untrusted request input
+reach the `$webui` key.
+
+### webui_protocol_create / webui_protocol_destroy
+
+```c
+typedef void webui_protocol_t;
+
+webui_protocol_t *webui_protocol_create(const uint8_t *protocol_data,
+                                        uintptr_t protocol_len);
+void webui_protocol_destroy(webui_protocol_t *protocol_ptr);
+```
+
+Decode protobuf bytes and build reusable component and route indices. The
+returned handle is thread-safe and can be shared across requests. Destroy it
+after every render using it has completed. Passing `NULL` to
+`webui_protocol_destroy` is a safe no-op.
 
 ### webui_handler_render
 
 ```c
 char *webui_handler_render(void *handler_ptr,
-                           const uint8_t *protocol_data,
-                           uintptr_t protocol_len,
+                           const webui_protocol_t *protocol_ptr,
                            const char *data_json,
                            const char *entry_id,
                            const char *request_path);
 ```
 
-Render a pre-compiled WebUI protocol (protobuf binary) with JSON state data. This is the lower-level API for callers that have already compiled their templates to protobuf via the CLI.
+Render a protocol handle created by `webui_protocol_create` with JSON state data.
 
 - `handler_ptr`, pointer returned by `webui_handler_create`.
-- `protocol_data`, pointer to protobuf binary data.
-- `protocol_len`, length of the protobuf data in bytes.
+- `protocol_ptr`, pointer returned by `webui_protocol_create`.
 - `data_json`, null-terminated UTF-8 JSON string with the render state.
 - `entry_id`, null-terminated UTF-8 string identifying the entry fragment (e.g., `"index.html"`).
 - `request_path`, null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
+
+### Partial, component-template, and token helpers
+
+| Function | Result |
+|----------|--------|
+| `webui_protocol_render_partial(...)` | Complete JSON partial response containing active-route projected `state`, templates, inventory, path, and route chain |
+| `webui_protocol_render_component_templates(...)` | Requested component template payloads and updated inventory |
+| `webui_protocol_tokens(...)` | Newline-delimited CSS token names |
+
+These functions all accept a protocol handle from `webui_protocol_create`.
+The partial function validates `state_json`, skips unselected values without
+materializing them, and copies only raw values required by authored components on
+the active route.
+
+The explicit create/destroy pair is the C representation of the normal
+`Protocol` object lifecycle. C cannot safely infer ownership from a raw
+`(pointer, length)` input: callers may mutate or free the bytes, pointer
+identity is not content identity, and hashing or copying on every request would
+erase the startup-only performance model.
+
+### Progressive streaming sessions
+
+A streaming session lets a C host render one response in chunks it writes
+itself. Start, resume, and advance return owned step handles with borrowed byte
+slices; update returns an owned byte buffer. WebUI never touches your socket,
+so backpressure and cancellation stay yours.
+
+```c
+webui_streaming_session_t *session = webui_streaming_session_create(
+    handler, protocol, "index.html", "/");
+
+webui_streaming_step_t *step =
+    webui_streaming_session_start(session, initial_state_json);
+if (step == NULL) {
+    fprintf(stderr, "%s\n", webui_last_error());
+}
+
+while (step != NULL) {
+    uintptr_t bytes_len = 0;
+    const uint8_t *bytes = webui_streaming_step_bytes(step, &bytes_len);
+    send_all(socket, bytes, bytes_len);
+    if (webui_streaming_step_done(step)) {
+        webui_streaming_step_destroy(step);
+        break;
+    }
+
+    if (webui_streaming_step_has_boundary(step)) {
+        /* Copies owner, name, typed key, and IDs from the step accessors. */
+        struct app_boundary target = copy_boundary_descriptor(step);
+        webui_streaming_step_destroy(step);
+
+        const char *state_json = load_state(&target);
+        step = webui_streaming_session_resume(
+            session,
+            target.instance_id,
+            state_json,
+            WEBUI_BOUNDARY_MODE_FINAL);
+        free_boundary_descriptor(&target);
+    } else {
+        webui_streaming_step_destroy(step);
+        step = webui_streaming_session_advance(session);
+    }
+    if (step == NULL) {
+        fprintf(stderr, "%s\n", webui_last_error());
+        break;
+    }
+}
+
+webui_streaming_session_destroy(session);
+```
+
+| Function | Result |
+|----------|--------|
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Session handle, or `NULL`. Inherits the handler's nonce (set with `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json`, not through this call. |
+| `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
+| `webui_streaming_session_start(session, state_json)` | Owned step through the first runtime occurrence or terminal, or `NULL` |
+| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Owned step containing only the pending occurrence through its checkpoint |
+| `webui_streaming_session_advance(session)` | Owned step containing following parent bytes through the next occurrence or terminal |
+| `webui_streaming_session_update(session, instance_id, patch_json, out_len)` | Projected state bytes for a committed updatable occurrence |
+| `webui_streaming_step_bytes(step, out_len)` | Borrow binary-safe step bytes until destroy |
+| `webui_streaming_step_done(step)` / `webui_streaming_step_has_boundary(step)` | Read completion and descriptor presence |
+| `webui_streaming_step_boundary_*` | Read IDs, owner/name slices, key type, and typed key |
+| `webui_streaming_step_destroy(step)` | Release the opaque step and all borrowed pointers |
+
+`webui_streaming_step_t` is opaque. Step bytes, owner, name, and string keys are
+borrowed slices with explicit lengths and are not NUL-terminated. Key type is
+none, string, or number; numeric keys are returned as `double`. Copy any
+descriptor values needed after destroying the step. Free update bytes with
+`webui_free`.
+
+If a step has a descriptor, call `resume`. If it has neither a descriptor nor
+`done`, call `advance`. If `done` is true, the response is complete. `resume`
+is boundary-only so the host can send that checkpoint immediately; `advance`
+renders the following parent or document-tail bytes. No sibling boundary is
+needed. An update may be emitted between `resume` and `advance`.
+
+The session clones its own references to the handler and protocol, so you may
+destroy them in any order. Drive a session from one thread at a time. See
+[Streaming Boundaries](/guide/concepts/directives/boundary) for the authoring
+and occurrence rules.
 
 ## Error Handling
 
@@ -179,7 +294,9 @@ The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:
 4. Each thread has independent error state, safe for concurrent use.
 
 ```c
-char *result = webui_render(html, json);
+char *result = webui_handler_render(
+    handler, protocol, json, "index.html", request_path
+);
 if (result == NULL) {
     const char *err = webui_last_error();  // valid until next FFI call
     fprintf(stderr, "Render failed: %s\n", err);
@@ -191,16 +308,21 @@ if (result == NULL) {
 
 Two rules to remember:
 
-1. **Free what you receive.** Every non-`NULL` string returned by `webui_render` or `webui_handler_render` is heap-allocated. You must free it with `webui_free()`.
+1. **Free what you receive.** Every non-`NULL` string returned by a render or
+   protocol operation is heap-allocated. You must free it with `webui_free()`.
 2. **Don't free error strings.** The pointer from `webui_last_error()` is owned by the library. It remains valid until your next FFI call on the same thread.
 
 | Pointer source | Who frees it? | How? |
 |---|---|---|
-| `webui_render` | Caller | `webui_free(ptr)` |
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
+| Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
+| Streaming update bytes | Caller | `webui_free(ptr)` |
+| Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
+| `webui_protocol_create` | Caller | `webui_protocol_destroy(ptr)` |
+| `webui_streaming_session_create` | Caller | `webui_streaming_session_destroy(ptr)` |
 
 ## Using Plugins
 
@@ -215,10 +337,13 @@ if (handler == NULL) {
 }
 
 // Render, output includes hydration markers
-char *html = webui_handler_render(handler, protocol_data, protocol_len,
-                                  state_json, "index.html", "/");
+void *protocol = webui_protocol_create(protocol_data, protocol_len);
+char *html = webui_handler_render(
+    handler, protocol, state_json, "index.html", "/"
+);
 
 webui_free(html);
+webui_protocol_destroy(protocol);
 webui_handler_destroy(handler);
 ```
 
@@ -226,30 +351,51 @@ Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](
 
 ## Python
 
-Python's built-in `ctypes` module can load the shared library directly. No pip packages needed.
+Most Python applications should use the `microsoft-webui` package
+instead of using this FFI directly — it is a native PyO3 binding (not a
+`ctypes` wrapper) with a `Renderer` facade, typed `bytes`/`str` returns, and a
+host-driven `StreamingSession`. See [Python](./python) for installation and
+examples.
+
+### Advanced fallback: `ctypes`
+
+Platforms the `microsoft-webui` wheel matrix doesn't cover (musllinux, 32-bit,
+PyPy, GraalPy, free-threaded builds) can still reach WebUI by loading the
+shared library directly with Python's built-in `ctypes` module. No pip
+packages are needed, but you own memory management, argument marshalling, and
+thread-safety yourself.
 
 ```python
 import ctypes
-from ctypes import c_char_p, c_void_p
+from pathlib import Path
+from ctypes import c_char_p, c_size_t, c_uint8, c_void_p, POINTER
 
-# Load the library
 lib = ctypes.cdll.LoadLibrary("./target/debug/libwebui_ffi.dylib")  # or .so / .dll
 
-# Declare function signatures
-lib.webui_render.argtypes = [c_char_p, c_char_p]
-lib.webui_render.restype = c_void_p
-
+lib.webui_protocol_create.argtypes = [POINTER(c_uint8), c_size_t]
+lib.webui_protocol_create.restype = c_void_p
+lib.webui_protocol_destroy.argtypes = [c_void_p]
+lib.webui_handler_create.restype = c_void_p
+lib.webui_handler_destroy.argtypes = [c_void_p]
+lib.webui_handler_render.argtypes = [
+    c_void_p, c_void_p, c_char_p, c_char_p, c_char_p
+]
+lib.webui_handler_render.restype = c_void_p
 lib.webui_free.argtypes = [c_void_p]
-lib.webui_free.restype = None
-
-lib.webui_last_error.argtypes = []
 lib.webui_last_error.restype = c_char_p
 
-# Render a template
-html = b'<h1>{{title}}</h1><ul><for each="item in items"><li>{{item}}</li></for></ul>'
-state = b'{"title": "Groceries", "items": ["Milk", "Eggs", "Bread"]}'
+protocol_bytes = Path("dist/protocol.bin").read_bytes()
+buffer = (c_uint8 * len(protocol_bytes)).from_buffer_copy(protocol_bytes)
+protocol = lib.webui_protocol_create(buffer, len(protocol_bytes))
+handler = lib.webui_handler_create()
 
-ptr = lib.webui_render(html, state)
+ptr = lib.webui_handler_render(
+    handler,
+    protocol,
+    b'{"title":"Groceries"}',
+    b"index.html",
+    b"/",
+)
 
 if ptr is None or ptr == 0:
     print("Error:", lib.webui_last_error().decode("utf-8"))
@@ -257,7 +403,9 @@ else:
     result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
     lib.webui_free(ptr)
     print(result)
-    # Output: <h1>Groceries</h1><ul><li>Milk</li><li>Eggs</li><li>Bread</li></ul>
+
+lib.webui_protocol_destroy(protocol)
+lib.webui_handler_destroy(handler)
 ```
 
 > **Why `c_void_p`?** Using `c_void_p` as the return type instead of `c_char_p` prevents `ctypes` from automatically converting the pointer to a Python `bytes` object. This lets you copy the string first, then explicitly free the original pointer with `webui_free()`.
@@ -271,24 +419,23 @@ package main
 
 // #cgo LDFLAGS: -L./target/debug -lwebui_ffi
 // #include <stdlib.h>
-//
-// extern char       *webui_render(const char *html, const char *data_json);
-// extern void        webui_free(char *ptr);
-// extern const char *webui_last_error();
+// #include "webui_ffi.h"
 import "C"
 import (
 	"fmt"
+	"os"
 	"unsafe"
 )
 
-func render(html, dataJSON string) (string, error) {
-	cHTML := C.CString(html)
-	defer C.free(unsafe.Pointer(cHTML))
-
+func render(protocol *C.webui_protocol_t, handler unsafe.Pointer, dataJSON string) (string, error) {
 	cJSON := C.CString(dataJSON)
 	defer C.free(unsafe.Pointer(cJSON))
+	cEntry := C.CString("index.html")
+	defer C.free(unsafe.Pointer(cEntry))
+	cPath := C.CString("/")
+	defer C.free(unsafe.Pointer(cPath))
 
-	ptr := C.webui_render(cHTML, cJSON)
+	ptr := C.webui_handler_render(handler, protocol, cJSON, cEntry, cPath)
 	if ptr == nil {
 		return "", fmt.Errorf("render failed: %s", C.GoString(C.webui_last_error()))
 	}
@@ -298,16 +445,24 @@ func render(html, dataJSON string) (string, error) {
 }
 
 func main() {
-	html := `<h1>{{title}}</h1><ul><for each="item in items"><li>{{item}}</li></for></ul>`
-	state := `{"title": "Groceries", "items": ["Milk", "Eggs", "Bread"]}`
+	bytes, err := os.ReadFile("dist/protocol.bin")
+	if err != nil || len(bytes) == 0 {
+		panic("protocol.bin is missing or empty")
+	}
+	protocol := C.webui_protocol_create(
+		(*C.uint8_t)(unsafe.Pointer(&bytes[0])),
+		C.uintptr_t(len(bytes)),
+	)
+	defer C.webui_protocol_destroy(protocol)
+	handler := C.webui_handler_create()
+	defer C.webui_handler_destroy(handler)
 
-	result, err := render(html, state)
+	result, err := render(protocol, handler, `{"title":"Groceries"}`)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	fmt.Println(result)
-	// Output: <h1>Groceries</h1><ul><li>Milk</li><li>Eggs</li><li>Bread</li></ul>
 }
 ```
 
@@ -315,61 +470,63 @@ func main() {
 
 ## C\#
 
-For most .NET applications, prefer the managed `Microsoft.WebUI` NuGet package. The P/Invoke pattern below documents the underlying ABI for custom bindings or manual native loading.
-
-Use `DllImport` (P/Invoke) to call the C API. Strings going *in* can be marshalled automatically with `LPUTF8Str`; strings coming *out* require manual marshalling via `IntPtr` to control when the native memory is freed.
+For .NET applications, prefer the managed `Microsoft.WebUI` NuGet package. It
+wraps the same opaque native handles in `SafeHandle` types:
 
 ```csharp
-using System;
-using System.Runtime.InteropServices;
+using var protocol = new Protocol(File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+string html = handler.Render(
+    protocol,
+    """{"title":"Groceries"}""",
+    "index.html",
+    "/");
+```
 
-class WebUI
+Custom P/Invoke bindings should mirror this lifecycle and receive returned
+strings as `IntPtr`, copy them with `Marshal.PtrToStringUTF8`, then release them
+with `webui_free`.
+
+The package also wraps the streaming session, so an ASP.NET endpoint can pace a
+progressive response without touching the native ABI:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+Response.ContentType = "text/html; charset=utf-8";
+StreamingStep step = session.Start(initialState);
+while (true)
 {
-    [DllImport("webui_ffi")]
-    static extern IntPtr webui_render(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string html,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson);
+    await Response.Body.WriteAsync(step.Bytes);
+    await Response.Body.FlushAsync();
+    if (step.Done) break;
 
-    [DllImport("webui_ffi")]
-    static extern void webui_free(IntPtr ptr);
-
-    [DllImport("webui_ffi")]
-    static extern IntPtr webui_last_error();
-
-    static string Render(string html, string dataJson)
+    if (step.Boundary is BoundaryDescriptor boundary)
     {
-        IntPtr ptr = webui_render(html, dataJson);
-        if (ptr == IntPtr.Zero)
-        {
-            string err = Marshal.PtrToStringUTF8(webui_last_error()) ?? "unknown error";
-            throw new InvalidOperationException($"Render failed: {err}");
-        }
-
-        string result = Marshal.PtrToStringUTF8(ptr) ?? "";
-        webui_free(ptr);
-        return result;
+        string state = await LoadStateAsync(
+            boundary.Owner,
+            boundary.Name,
+            boundary.Key);
+        step = session.Resume(boundary.InstanceId, state, BoundaryMode.Final);
     }
-
-    static void Main()
+    else
     {
-        string html = @"<h1>{{title}}</h1>
-            <ul><for each=""item in items""><li>{{item}}</li></for></ul>";
-        string state = @"{""title"": ""Groceries"", ""items"": [""Milk"", ""Eggs"", ""Bread""]}";
-
-        Console.WriteLine(Render(html, state));
-        // Output: <h1>Groceries</h1><ul><li>Milk</li><li>Eggs</li><li>Bread</li></ul>
+        step = session.Advance();
     }
 }
 ```
 
-> **Why `IntPtr` for return values?** If you use `string` as the return type, the .NET marshaller will try to free the memory with `CoTaskMemFree`, which will crash since the string was allocated by Rust. Always receive as `IntPtr`, copy with `Marshal.PtrToStringUTF8`, and free with `webui_free`.
+Each call returns a `byte[]`, so `HttpResponse.Body` keeps its own write and
+flush semantics. Failures throw `WebUIException` carrying the same diagnostic
+`webui_last_error()` would report. See the [.NET integration](./dotnet).
 
 ## Other Languages
 
 Any language with C FFI support can use WebUI. The pattern is always the same:
 
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
-2. Declare the functions you need, at minimum `webui_render`, `webui_free`, and `webui_last_error`.
+2. Declare the functions you need. For a server, use
+   `webui_protocol_create`, `webui_handler_render`,
+   `webui_protocol_destroy`, `webui_free`, and `webui_last_error`.
 3. Pass UTF-8 null-terminated strings for `html` and `data_json`.
 4. Check the return value, `NULL` means an error occurred.
 5. Copy the returned string into your language's managed memory, then call `webui_free`.

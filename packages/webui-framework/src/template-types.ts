@@ -4,18 +4,41 @@
 /**
  * Template type definitions — shared across packages without pulling in
  * the global `Window` augmentation from `template.ts`.
+ *
+ * These tuple shapes mirror the compact payload emitted by the Rust parser.
+ * Keep them allocation-light and stable: the browser runtime indexes directly
+ * into these arrays on hot hydration/update paths.
  */
 
 export type CompiledAttrPart = string | [path: string];
-export type TemplateNodePath = number[];
-export type TemplateSlotPath = [
-  parentPath: TemplateNodePath,
+
+/**
+ * Pre-order index of an element within one compiled section's static HTML.
+ *
+ * `0` is the section root; elements are numbered `1..N` in the order a
+ * depth-first walk of `h` meets them.  Each section — the root template and
+ * every `<if>` / `<for>` block — numbers independently, and hydration rebuilds
+ * the same numbering from the server-rendered DOM, so a binding resolves by
+ * array index instead of by walking a path of child offsets.
+ */
+export type TemplateNodeIndex = number;
+
+/**
+ * A dynamic insertion point in marker-free template HTML.
+ *
+ * `order` disambiguates text, conditional, and repeat bindings removed at the
+ * same static child offset. It starts at zero for each `(parentIndex,
+ * beforeIndex)` pair, is omitted for the first binding, and has no ordering
+ * meaning between different pairs.
+ */
+export type TemplateSlot = [
+  parentIndex: TemplateNodeIndex,
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlotPath, parts: CompiledAttrPart[], raw?: 1];
+export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
 export type CompiledAttrGroupMeta = [
-  target: TemplateNodePath,
+  target: TemplateNodeIndex,
   start: number,
   count: number,
 ];
@@ -32,7 +55,7 @@ export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
-export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlot];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -40,7 +63,13 @@ export type CompiledAttrMeta =
   | [name: string, kind: 2, condition: TemplateCondition]
   | [name: string, kind: 3, parts: CompiledAttrPart[]];
 
-export type CompiledRepeatMeta = [collection: string, itemVar: string, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledRepeatMeta = [
+  collection: string,
+  itemVar: string,
+  blockIndex: number,
+  slot: TemplateSlot,
+  keyPath?: string,
+];
 export type CompiledEventArg =
   | ['e']
   | ['p', string]
@@ -49,7 +78,13 @@ export type CompiledEventArg =
   | ['b', number]
   | ['z'];
 export type CompiledEventArgs = CompiledEventArg[];
-export type CompiledEventMeta = [name: string, handler: string, args: CompiledEventArgs, target: TemplateNodePath];
+export type CompiledEventBindingMeta = [
+  handler: string,
+  args: CompiledEventArgs,
+  target: TemplateNodeIndex,
+  usesEvent?: 1,
+];
+export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
 export interface TemplateBlockMeta {
   h: string;
@@ -58,13 +93,25 @@ export interface TemplateBlockMeta {
   ag?: CompiledAttrGroupMeta[];
   c?: CompiledConditionalMeta[];
   r?: CompiledRepeatMeta[];
-  e?: CompiledEventMeta[];
+  eg?: CompiledEventGroupMeta[];
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
   b?: TemplateBlockMeta[];
-  sa?: string;
   re?: [string, string, CompiledEventArgs][];
-  /** Shadow DOM flag — when true, client-created components use shadow root. */
-  sd?: boolean;
+  /** Component-level state roots referenced by template bindings. */
+  tr?: string[];
+  /** Observed host attributes index-aligned with `tr`. */
+  ta?: string[];
+  /** Compact shadow DOM flag - when present, client-created components use a shadow root. */
+  sd?: 1;
+  /** Internal compiler-owned dormant TemplateElement host flag. */
+  th?: boolean | 1;
+  /**
+   * Compiler-owned work policy: `1` defers SSR hydration by viewport;
+   * `2` couples hydration to browser-managed lazy rendering relevance;
+   * `3` defers the component module graph until interaction; `4` also applies
+   * browser-managed lazy rendering before that interaction.
+   */
+  wp?: 1 | 2 | 3 | 4;
 }

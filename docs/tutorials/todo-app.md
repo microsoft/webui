@@ -378,8 +378,7 @@ When the page loads:
    elements.
 3. The framework matches each element to its class, re-attaches event listeners,
    and activates reactive bindings.
-4. The `webui:hydration-complete` event fires once every component on the page
-   has been hydrated. The timing breakdown shows how long each component took.
+4. The `webui:hydration-complete` event fires once initial hydration settles.
 
 ---
 
@@ -406,8 +405,13 @@ Create a production build:
 npx webui build ./src --out ./dist --plugin=webui
 ```
 
-The output in `./dist` contains the compiled protocol binary and CSS files
-ready for deployment with any handler (Rust, Node.js, C#, Python, Go).
+The output in `./dist` contains the compiled protocol binary and CSS files.
+Bundle your browser source entry directly. Import
+`@microsoft/webui-framework` from authored component modules. Scriptless
+components contribute no startup state; when the framework is loaded, their
+compiled templates can activate for browser-applied state or soft navigation.
+The protocol and CSS are ready for deployment with any handler (Rust, Node.js,
+C#, Python, Go).
 
 ---
 

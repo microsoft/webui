@@ -67,26 +67,23 @@ runs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.93
+        toolchain: 1.98
         targets: ${{ inputs.rust-targets }}
         components: ${{ inputs.rust-components }}
 
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         shared-key: ${{ inputs.shared-cache-key }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
 
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+    - name: Setup pnpm and Node.js
+      uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
       with:
-        run_install: false
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
-        cache: 'pnpm'
+        version: 12.3.4
+        runtime: node@22
+        install: false
+        cache: true
 
     - name: Install dependencies
       shell: bash
@@ -94,7 +91,7 @@ runs:
 
     - name: Setup .NET
       if: inputs.dotnet != ''
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
       with:
         dotnet-version: ${{ inputs.dotnet }}
 

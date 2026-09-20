@@ -7,8 +7,10 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 const assets = defineComponentAssets({
   'lazy-panel': {
     asset: './lazy-panel.webui.js',
-    module: () => import('../lazy-panel/lazy-panel.js'),
     data: async () => await (await fetch('./lazy-panel-data.json')).json(),
+  },
+  'secondary-panel': {
+    asset: './secondary-panel.webui.js',
   },
 });
 
@@ -16,9 +18,22 @@ export class AppShell extends WebUIElement {
   @attr title = '';
 
   panelSlot!: HTMLDivElement;
+  secondaryPanelSlot!: HTMLDivElement;
+
+  preloadPanel(): void {
+    assets.preload('lazy-panel');
+  }
+
+  preloadSecondaryPanel(): void {
+    assets.preload('secondary-panel');
+  }
 
   async openPanel(): Promise<void> {
     this.panelSlot.replaceChildren(await assets.create('lazy-panel'));
+  }
+
+  async openSecondaryPanel(): Promise<void> {
+    this.secondaryPanelSlot.replaceChildren(await assets.create('secondary-panel'));
   }
 }
 

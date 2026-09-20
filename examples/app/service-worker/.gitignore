@@ -1,5 +1,7 @@
 dist-scripts/
 public/protocol.bin
+public/webui-projection.json
+public/index.html
 public/wasm/
 public/app.js
 public/payload.js

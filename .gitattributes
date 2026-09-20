@@ -17,6 +17,7 @@
 *.pdf binary
 *.zip binary
 *.gz binary
+*.bin binary
 *.wasm binary
 *.woff binary
 *.woff2 binary

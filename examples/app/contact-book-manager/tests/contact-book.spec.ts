@@ -5,10 +5,18 @@
  * End-to-end tests for the Contact Book Manager app.
  *
  * Tests SSR rendering, client-side navigation, and visual regression.
- * The app uses shadow DOM components (cb-*) with WebUI Framework templating.
+ * The app uses WebUI Framework components with nested Shadow DOM boundaries.
  */
 
 import { test, expect, type Page } from '@playwright/test';
+
+function bootstrapStateFromHtml(html: string): Record<string, unknown> {
+  const match = html.match(
+    /<script[^>]+id=["']webui-data["'][^>]*>(.*?)<\/script>/s,
+  );
+  if (!match?.[1]) throw new Error('#webui-data bootstrap block missing');
+  return (JSON.parse(match[1]) as { state?: Record<string, unknown> }).state ?? {};
+}
 
 async function expectSidebarGroupsStable(page: Page): Promise<void> {
   await expect(page.locator('cb-sidebar [data-nav="Dashboard"]')).toHaveCount(1);
@@ -40,7 +48,10 @@ async function expectContactDetailFieldsStable(page: Page): Promise<void> {
 
 test.describe('SSR pages', () => {
   test('dashboard renders with stats', async ({ page }) => {
-    await page.goto('/');
+    const response = await page.goto('/');
+    if (!response) throw new Error('dashboard navigation returned no response');
+    const bootstrapState = bootstrapStateFromHtml(await response.text());
+    expect(Object.keys(bootstrapState).sort()).toEqual(['totalFavorites']);
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
     // Stat cards
     await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();
@@ -49,6 +60,69 @@ test.describe('SSR pages', () => {
     // Recent contacts section
     await expect(page.locator('cb-page-dashboard .section-title')).toContainText('Recent Contacts');
     await expect(page.locator('cb-page-dashboard cb-contact-card').first()).toBeVisible();
+  });
+
+  test('dashboard installs active route styles once per CSS tree', async ({ page }) => {
+    const stylesheetRequests = new Map<string, number>();
+    await page.route('**/*.css', async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      stylesheetRequests.set(path, (stylesheetRequests.get(path) ?? 0) + 1);
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), 'cache-control': 'no-store' },
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('cb-app')).toHaveJSProperty('$ready', true);
+    const resources = await page.locator('cb-app').evaluate((host) => {
+      const root = host.shadowRoot;
+      if (!root) throw new Error('cb-app ShadowRoot missing');
+      const roots: Array<{ name: string; resources: string[] }> = [];
+      const visit = (cssRoot: Document | ShadowRoot, name: string): void => {
+        roots.push({
+          name,
+          resources: Array.from(
+            cssRoot.querySelectorAll<HTMLElement>('[data-webui-resource]'),
+            element => element.dataset.webuiResource ?? '',
+          ),
+        });
+        for (const element of cssRoot.querySelectorAll<HTMLElement>('*')) {
+          if (element.shadowRoot) visit(element.shadowRoot, element.localName);
+        }
+      };
+      visit(root, 'cb-app');
+      const route = root.querySelector('webui-route[active]');
+      if (!route) throw new Error('active dashboard route missing');
+      return { roots };
+    });
+
+    expect(stylesheetRequests.has('/cb-contact-form.css')).toBe(false);
+    expect(stylesheetRequests.has('/cb-contact-detail.css')).toBe(false);
+    const initialDashboardRequests = stylesheetRequests.get('/cb-page-dashboard.css') ?? 0;
+    expect(initialDashboardRequests).toBe(1);
+    expect(stylesheetRequests.get('/cb-contact-card.css')).toBe(5);
+    expect(resources.roots).toEqual(expect.arrayContaining([
+      { name: 'cb-app', resources: ['cb-app'] },
+      { name: 'cb-header', resources: ['cb-header'] },
+      { name: 'cb-sidebar', resources: ['cb-sidebar'] },
+      { name: 'cb-page-dashboard', resources: ['cb-page-dashboard'] },
+    ]));
+    const cardRoots = resources.roots.filter(({ name }) => name === 'cb-contact-card');
+    expect(cardRoots).toHaveLength(5);
+    expect(cardRoots.every(({ resources: installed }) =>
+      installed.length === 1 && installed[0] === 'cb-contact-card')).toBe(true);
+    expect(resources.roots.every(({ resources: installed }) =>
+      new Set(installed).size === installed.length)).toBe(true);
+
+    await page.locator('cb-sidebar').getByRole('link', { name: 'All Contacts' }).click();
+    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.locator('cb-page-dashboard .section-title')).toContainText('Recent Contacts');
+    await expect(page.locator('cb-page-dashboard cb-contact-card .card').first())
+      .toHaveCSS('display', 'flex');
+    expect(stylesheetRequests.get('/cb-page-dashboard.css')).toBe(initialDashboardRequests + 1);
   });
 
   test('contacts page renders contact list', async ({ page }) => {
@@ -69,9 +143,50 @@ test.describe('SSR pages', () => {
   });
 });
 
-// ── Client-side navigation tests ─────────────────────────────────
+test.describe('SSR without JavaScript', () => {
+  test.use({ javaScriptEnabled: false });
+
+  test('dashboard styles are available inside its ShadowRoot', async ({ page }) => {
+    await page.goto('/');
+
+    const card = page.locator('cb-page-dashboard cb-contact-card .card').first();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveCSS('display', 'flex');
+    await expect(card).toHaveCSS('align-items', 'center');
+  });
+});
+
+// ── Navigation tests ──────────────────────────────────────────────
 
 test.describe('client-side navigation', () => {
+  test('HTML-only components use dormant static hosts and soft navigation', async ({ page }) => {
+    await page.goto('/contacts');
+
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
+    await expectSidebarGroupsStable(page);
+
+    const autoDefined = await page.evaluate((tags) => {
+      const results: boolean[] = [];
+      for (let i = 0; i < tags.length; i++) {
+        results.push(customElements.get(tags[i] ?? '') !== undefined);
+      }
+      return results;
+    }, ['cb-sidebar', 'cb-page-contacts', 'cb-contact-card']);
+
+    expect(autoDefined).toEqual([true, true, true]);
+
+    await page.evaluate(() => {
+      (window as Window & { navigationSentinel?: boolean }).navigationSentinel = true;
+    });
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Work' }).click();
+    await expect(page).toHaveURL('/groups/Work');
+    await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
+    await expectActiveSidebarNav(page, 'Work');
+    expect(await page.evaluate(
+      () => (window as Window & { navigationSentinel?: boolean }).navigationSentinel,
+    )).toBe(true);
+  });
+
   test('navigate dashboard to contacts', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
@@ -90,7 +205,7 @@ test.describe('client-side navigation', () => {
     await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
   });
 
-  test('sidebar groups do not duplicate across SPA navigation', async ({ page }) => {
+  test('sidebar groups do not duplicate across navigation', async ({ page }) => {
     await page.goto('/');
     await expectSidebarGroupsStable(page);
 
@@ -103,7 +218,7 @@ test.describe('client-side navigation', () => {
     await expectSidebarGroupsStable(page);
   });
 
-  test('sidebar active state updates across SPA navigation', async ({ page }) => {
+  test('sidebar active state updates across navigation', async ({ page }) => {
     await page.goto('/');
     await expectActiveSidebarNav(page, 'Dashboard');
 
@@ -183,7 +298,7 @@ test.describe('client-side navigation', () => {
     await expectContactDetailFieldsStable(page);
   });
 
-  test('no full page reload during navigation', async ({ page }) => {
+  test('does not reload the document for scriptless route navigation', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => { (window as any).__testMarker = Date.now(); });
 
@@ -192,9 +307,7 @@ test.describe('client-side navigation', () => {
 
     await page.locator('cb-sidebar').getByRole('link', { name: /Favorites/ }).click();
     await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
-
-    const marker = await page.evaluate(() => (window as any).__testMarker);
-    expect(marker).toBeGreaterThan(0);
+    expect(await page.evaluate(() => (window as any).__testMarker)).toBeGreaterThan(0);
   });
 });
 

@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:streaming": "node streaming-server.js"
   },
   "dependencies": {
-    "@microsoft/webui": "workspace:*"
+    "@microsoft/webui": "workspace:*",
+    "@microsoft/webui-framework": "workspace:*"
   }
 }

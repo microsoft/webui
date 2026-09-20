@@ -1,0 +1,23 @@
+.feed-item {
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--border-radius-m);
+  padding: var(--spacing-l);
+}
+
+.feed-item-author {
+  font-weight: 600;
+  margin: 0 0 var(--spacing-s);
+}
+
+.feed-item-text {
+  margin: 0 0 var(--spacing-m);
+  color: var(--color-neutral-700);
+}
+
+.feed-item-like {
+  padding: var(--spacing-s) var(--spacing-m);
+  border-radius: var(--border-radius-s);
+  border: 1px solid var(--color-neutral-300);
+  background-color: var(--color-neutral-50);
+  cursor: pointer;
+}

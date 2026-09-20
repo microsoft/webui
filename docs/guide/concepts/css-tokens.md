@@ -44,7 +44,9 @@ Malformed `var()` calls fail the build instead of hoisting partial token names.
 
 ### Local Definition Exclusion
 
-If a custom property is both **defined** and **used** in the same CSS file, it is **excluded** from the token set. This prevents locally-scoped variables from being hoisted:
+A custom property defined in the same declaration block is **excluded** from
+that block's token requirements. Unconditional `:host` or `:root` defaults also
+satisfy references in the current or descendant components:
 
 ```css
 :host {
@@ -54,6 +56,67 @@ If a custom property is both **defined** and **used** in the same CSS file, it i
 }
 /* Result: only "designSystemColor" is hoisted */
 ```
+
+Selector-scoped overrides do not replace theme defaults outside their matching
+elements. For example, `.green { --brand: var(--green-brand); }` still requires
+the theme's `brand` token when another rule or child component uses
+`var(--brand)`. Conditional defaults inside `@media`, `@supports`, or
+`@container` likewise do not replace unconditional defaults. Put shared
+component defaults in a bare `:host` rule and document defaults in `:root`;
+these can also live inside cascade layers.
+
+Definitions are excluded even when the variable appears in a nested fallback:
+
+```css
+:host {
+  --token-a: red;
+  --foo-bar: var(--token-a, var(--token-b, var(--token-c)));
+}
+/* Result: "token-b" and "token-c" are hoisted; "token-a" is local */
+```
+
+### Theme Validation
+
+When a build is given a theme (`webui build --theme`, `webui serve --theme`, or
+API build options with a theme), every **required** token must exist in every
+theme. For `var(--a, var(--b, var(--c)))`, the theme must provide `a`, `b`, and
+`c` unless those references are covered by same-block definitions or
+unconditional local/ancestor defaults. Missing
+tokens fail with `missing-theme-token`; theme token values that reference an
+undefined or cyclic `var(--token)` are trusted and left to browser CSS
+semantics.
+
+Both the error and the typo advisory point at the offending CSS
+(`--> my-card.css:2:10`, with the source line) and suggest the closest theme
+token by edit distance, so a misspelled `var(--color-neutral-2000)` reports:
+
+```
+✘ error: missing theme token [missing-theme-token]
+  --> my-card.css:2:10
+    color: var(--color-neutral-2000);
+  help: did you mean --color-neutral-200? otherwise define it locally
+```
+
+
+A `var()` usage that supplies a **literal CSS fallback** is exempt — the literal
+already provides a value, so the token is not required:
+
+```css
+:host {
+  color: var(--brand, #000);   /* not required: #000 is the fallback */
+  margin: var(--gap);          /* required: no fallback */
+}
+```
+
+`--brand` is still hoisted into the protocol so the runtime resolves it when a
+theme *does* define it, but its absence does not fail the build. If the same
+token is also used without a fallback anywhere (e.g. a bare `var(--brand)`), it
+becomes required again.
+
+As a safety net for typos, a token used **only** with a literal fallback and
+defined in **no** theme (e.g. a misspelled `var(--colr-brand, #000)`) is
+reported as a non-fatal advisory — `webui build` prints it and it is available
+on `BuildResult::warnings` — rather than failing the build.
 
 ## Comment Handling
 

@@ -9,7 +9,7 @@ There are two ways to install the WebUI build toolchain: as an **npm package** f
 The `@microsoft/webui` npm package gives you:
 
 - **`npx webui build`** - the CLI for building templates into protocols
-- **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
+- **`import { build, Protocol } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
 <webui-press-tabs>
@@ -86,7 +86,59 @@ The managed .NET binding is packaged as `Microsoft.WebUI`:
 dotnet add package Microsoft.WebUI
 ```
 
-It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata; nuget.org publishing is manual until ESRP automation supports this project.
+It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages.
+
+See the [.NET integration guide](/guide/integrations/dotnet) for buffered and
+progressive ASP.NET response examples.
+
+Prepare `protocol.bin` once for repeated rendering:
+
+```csharp
+using Microsoft.WebUI;
+
+using var protocol = new Protocol(
+    File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+
+string html = handler.Render(
+    protocol,
+    """{"title":"Home"}""",
+    "index.html",
+    "/");
+```
+
+`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
+Keep it alive for the server lifetime and dispose it during shutdown.
+
+## Python
+
+The `microsoft-webui` PyPI package is a native PyO3 binding, not a `ctypes`
+wrapper:
+
+> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
+> source distribution are built and attached to each GitHub Release; install one
+> directly, or build from a checkout with `maturin`.
+
+```bash
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
+```
+
+It ships prebuilt wheels for CPython 3.11+ (Windows, macOS, and manylinux, on
+x86_64 and ARM64) plus one sdist, and is **runtime-only** — it renders
+compiled protocols but does not build them. Produce `protocol.bin` with
+`webui build` (the npm or Rust CLI above), then render it from Python:
+
+```python
+from microsoft_webui import Renderer
+
+renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
+
+html = renderer.render({"title": "Home"}, request_path="/")  # -> bytes
+```
+
+`Renderer` decodes and indexes the protocol once, is thread-safe, and releases
+the GIL for the duration of each render. See [Python](/guide/integrations/python)
+for WSGI, ASGI, and progressive-streaming examples.
 
 ---
 
@@ -131,7 +183,7 @@ This gives you:
 
 <webui-blockquote appearance="tip" title="Not every app needs this" icon="💡">
 
-If your pages are purely informational with no client-side interactivity, you only need `@microsoft/webui` for building and rendering. The framework runtime is only needed when components have event handlers, reactive state, or user input.
+If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Load the framework when components need browser-applied state or soft navigation. Add a same-named component module only for events, lifecycle code, decorators, or imperative APIs.
 
 </webui-blockquote>
 
@@ -169,3 +221,80 @@ pnpm add @microsoft/webui-router
 The router works with both WebUI Framework (`@microsoft/webui-framework`) and `@microsoft/fast-element` 3.x components. It's a separate package because it's only needed for apps with client-side navigation.
 
 See the [Routing guide](/guide/concepts/routing) for setup and usage.
+
+## AI Coding Agents
+
+WebUI ships its framework reference inside `@microsoft/webui` as `ai.md`.
+The small `webui-reference` [agent skill](https://agentskills.io) tells GitHub
+Copilot, Claude Code, Cursor, Codex, and other supported agents to read that
+installed reference before working on WebUI code.
+
+**Install the loader once**, after adding `@microsoft/webui` to your project:
+
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>npm</webui-press-tab>
+<webui-press-tab slot="tab">yarn</webui-press-tab>
+<webui-press-tab slot="tab">pnpm</webui-press-tab>
+<webui-press-tab-panel active>
+
+```bash
+npx skills add microsoft/webui --skill webui-reference
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn dlx skills add microsoft/webui --skill webui-reference
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm dlx skills add microsoft/webui --skill webui-reference
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
+The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads
+directly. The installer also sets it up in agent-specific skill directories
+where needed.
+
+The loader asks the agent to read `node_modules/@microsoft/webui/ai.md` from
+the application's installed dependencies.
+Upgrading `@microsoft/webui` updates the guidance with it. You do not need to
+rerun `skills add` for reference updates. If you upgrade during an agent session,
+ask the agent to reread the installed reference.
+
+If you previously installed the full reference as a skill, run the install
+command above once more in the same scope (project or `-g`) to replace it with
+the loader. Commit a project-local installation to share it with your team.
+
+Useful flags:
+
+| Flag | Effect |
+| ---- | ------ |
+| `-g` | Install once for every project on your machine, into the agent's user directory (`~/.copilot/skills/` for Copilot) |
+| `-a <agent>` | Target specific agents, for example `-a github-copilot`. Defaults to prompting |
+| `-l` | List what the repository publishes without installing anything |
+
+To try the reference in a single session without installing it:
+
+```bash
+npx skills use microsoft/webui@webui-reference | copilot
+```
+
+This also uses the reference from your installed package. Releases predating
+bundled `ai.md`, and Rust-only toolchains without `@microsoft/webui`, need a
+reference from their matching release instead. The loader reports missing
+guidance rather than silently using a newer version.
+
+<webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
+
+Read the installed `ai.md` directly, or use [AI Reference](/ai) for the current
+release's rules and anti-patterns without wiring up an agent. The website may
+describe a newer version than your project uses.
+
+</webui-blockquote>

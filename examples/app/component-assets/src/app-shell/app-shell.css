@@ -33,6 +33,12 @@ h1 {
   line-height: var(--line-height-base);
 }
 
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-s);
+}
+
 button {
   justify-self: start;
   border: 0;

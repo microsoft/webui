@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 export interface NavigationTarget {
-  pathname: string;
   requestPath: string;
 }
 
@@ -16,8 +15,7 @@ export function stripBaseFromPathname(pathname: string, basePath = ''): string {
 export function buildNavigationTarget(url: URL, basePath = ''): NavigationTarget {
   const pathname = stripBaseFromPathname(url.pathname, basePath);
   return {
-    pathname,
-    requestPath: `${pathname}${url.search}` || '/',
+    requestPath: `${pathname}${url.search}`,
   };
 }
 

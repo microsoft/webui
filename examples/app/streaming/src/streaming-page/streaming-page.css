@@ -1,0 +1,25 @@
+:host {
+  display: block;
+}
+
+header {
+  margin-bottom: var(--spacing-xl);
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+}
+
+section[aria-label="Feed"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+}
+
+footer {
+  margin-top: var(--spacing-xl);
+  color: var(--color-neutral-700);
+  font-size: var(--font-size-m);
+}

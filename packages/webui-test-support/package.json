@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-test-support",
-  "version": "0.0.17",
+  "version": "0.0.29",
   "type": "module",
   "private": true,
   "description": "Private shared test utilities for WebUI workspace packages.",
@@ -26,6 +26,10 @@
     "./fixture-server": {
       "types": "./src/fixture-server.ts",
       "default": "./src/fixture-server.ts"
+    },
+    "./fixture-streaming": {
+      "types": "./src/fixture-streaming.ts",
+      "default": "./src/fixture-streaming.ts"
     }
   }
 }

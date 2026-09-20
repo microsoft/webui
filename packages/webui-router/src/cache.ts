@@ -6,14 +6,14 @@
  * server-provided partial responses.
  */
 
-import type { CacheConfig } from './types.js';
+import type { CacheConfig, ComponentStyles } from './types.js';
 
 /** JSON partial response from the server. */
 export interface PartialResponse {
   /** Top-level application state (non-streaming responses). */
   state?: Record<string, unknown>;
-  /** Module CSS definitions to append before installing template closures. */
-  templateStyles?: string[];
+  /** Versioned component stylesheet definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** JSON-safe template metadata keyed by component tag. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by component tag. */
@@ -134,7 +134,7 @@ export class NavigationCache {
 
     this.cache.set(requestPath, {
       data, tags, ts: Date.now(), staleTime, preload,
-      complete: !preload && !streaming,
+      complete: !streaming,
     });
 
     // Build reverse tag index

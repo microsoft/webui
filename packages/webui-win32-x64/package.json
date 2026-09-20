@@ -13,5 +13,8 @@
     "win32"
   ],
   "preferUnplugged": true,
-  "version": "0.0.17"
+  "publishConfig": {
+    "tag": "latest"
+  },
+  "version": "0.0.29"
 }

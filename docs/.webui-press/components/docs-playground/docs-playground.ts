@@ -23,13 +23,19 @@ import { json as jsonLang } from "@codemirror/lang-json";
 import { css as cssLang } from "@codemirror/lang-css";
 
 interface WasmModule {
-  build_protocol(files: Record<string, string>, entry: string): Uint8Array;
-  render(
-    protocol: Uint8Array,
+  build_protocol(
+    files: Record<string, string>,
+    entry: string,
+    projectionManifests?: unknown[],
+    dom?: 'shadow' | 'light',
+  ): Uint8Array;
+  Protocol: new (protocol: Uint8Array, plugin?: string) => {
+    renderStream(
     state: string,
     onChunk: (chunk: string) => void,
-    options?: { entry?: string; requestPath?: string; plugin?: string },
-  ): void;
+      options?: { entry?: string; requestPath?: string },
+    ): void;
+  };
 }
 
 interface FileEntry {
@@ -294,6 +300,7 @@ export class DocsPlayground extends WebUIElement {
   @observable errorSnippet = "";
   @observable errorHelp = "";
   @observable errorRaw = "";
+  @observable errorCanRetry = false;
 
   private active: string = ENTRY_FILE;
   private entry: string = ENTRY_FILE;
@@ -304,6 +311,7 @@ export class DocsPlayground extends WebUIElement {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private themeObserver: MutationObserver | null = null;
   private suppressNextEditBlur = false;
+  private wasmLoadAttempt = 0;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -481,12 +489,6 @@ export class DocsPlayground extends WebUIElement {
     this.setActive(name);
     this.setupEditor();
     this.scrollTabIntoView(name);
-  }
-
-  onTabKeydown(ev: KeyboardEvent): void {
-    if (ev.key !== "Enter" && ev.key !== " ") return;
-    ev.preventDefault();
-    this.selectTab(ev);
   }
 
   closeFile(e: Event): void {
@@ -798,6 +800,7 @@ export class DocsPlayground extends WebUIElement {
     this.errorSnippet = "";
     this.errorHelp = "";
     this.errorRaw = "";
+    this.errorCanRetry = false;
   }
 
   /**
@@ -847,13 +850,21 @@ export class DocsPlayground extends WebUIElement {
       this.errorRaw = rest;
     }
 
-    this.errorExpanded = true;
+    this.errorExpanded = Boolean(head);
     this.hasError = true;
   }
 
   /** Toggle the expand/collapse state of the error panel. */
   toggleError(): void {
     this.errorExpanded = !this.errorExpanded;
+  }
+
+  /** Retry loading the preview runtime after a recoverable network failure. */
+  retryPreview(): void {
+    this.wasm = null;
+    this.wasmLoadAttempt += 1;
+    this.clearError();
+    void this.loadWasm();
   }
 
   private scheduleRender(): void {
@@ -883,7 +894,8 @@ export class DocsPlayground extends WebUIElement {
       const t1 = performance.now();
       const stateJson = this.fileByName(this.stateFile)?.content || "{}";
       let html = "";
-      this.wasm.render(proto, stateJson, (chunk) => {
+      const protocol = new this.wasm.Protocol(proto);
+      protocol.renderStream(stateJson, (chunk) => {
         html += chunk;
       }, { entry: this.entry, requestPath: "/" });
       const t2 = performance.now();
@@ -943,17 +955,20 @@ export class DocsPlayground extends WebUIElement {
       this.setPreviewStatus("Loading WASM", "loading");
       const baseMeta = document.querySelector('meta[name="base"]');
       const base = baseMeta?.getAttribute("content") || "/";
-      const wasmUrl = base + "wasm/all/webui_wasm_all.js";
+      const retrySuffix =
+        this.wasmLoadAttempt > 0 ? `?retry=${this.wasmLoadAttempt}` : "";
+      const wasmUrl = base + "wasm/all/webui_wasm_all.js" + retrySuffix;
       const mod = await import(/* @vite-ignore */ wasmUrl);
       await mod.default();
       this.wasm = mod;
       this.doRender();
     } catch (e) {
-      this.setPreviewStatus("Failed", "failed");
-      this.setError(
-        'WASM not available at "wasm/all/webui_wasm_all.js". Run "cargo xtask build-wasm" to enable the playground.\n\n' +
-          String(e),
-      );
+      this.setPreviewStatus("Unavailable", "failed");
+      this.setError(`Preview couldn't load.\n\n${String(e)}`);
+      this.errorHelp =
+        "The WebAssembly runtime could not be loaded. Check your connection, or run `cargo xtask build-wasm` when developing locally, then retry the preview.";
+      this.errorCanRetry = true;
+      this.errorExpanded = false;
     }
   }
 }

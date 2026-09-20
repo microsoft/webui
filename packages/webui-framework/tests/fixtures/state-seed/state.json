@@ -5,5 +5,6 @@
   "navCategories": [
     { "handle": "featured", "title": "Featured", "activeClass": "active" },
     { "handle": "sale", "title": "Sale", "activeClass": "" }
-  ]
+  ],
+  "serverItems": ["server one", "server two"]
 }

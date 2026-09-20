@@ -16,6 +16,11 @@ pub(crate) enum WasmError {
     #[error("{0}")]
     Parse(#[from] webui_parser::ParserError),
 
+    /// Projection manifest validation or coverage failed.
+    #[cfg(feature = "parser")]
+    #[error("{0}")]
+    Projection(String),
+
     /// Protocol protobuf bytes could not be decoded or encoded.
     #[error("Protocol error: {0}")]
     Protocol(#[from] webui_protocol::ProtocolError),

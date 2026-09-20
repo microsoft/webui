@@ -8,6 +8,9 @@
 
 import { Router } from '@microsoft/webui-router';
 
+// Shell component — eagerly loaded.
+import './cb-app/cb-app.js';
+
 // Listen for the framework's global hydration-complete event.
 window.addEventListener('webui:hydration-complete', onHydrationComplete);
 
@@ -19,18 +22,11 @@ function onHydrationComplete(): void {
   // Page components use lazy loaders for code-split navigation.
   Router.start({
     loaders: {
-      'cb-page-dashboard': () => import('./pages/cb-page-dashboard/cb-page-dashboard.js'),
-      'cb-page-contacts': () => import('./pages/cb-page-contacts/cb-page-contacts.js'),
-      'cb-page-favorites': () => import('./pages/cb-page-favorites/cb-page-favorites.js'),
-      'cb-page-group': () => import('./pages/cb-page-group/cb-page-group.js'),
       'cb-contact-detail': () => import('./organisms/cb-contact-detail/cb-contact-detail.js'),
       'cb-contact-form': () => import('./organisms/cb-contact-form/cb-contact-form.js'),
     },
   });
 }
-
-// Shell component — eagerly loaded (child imports are co-located in each component)
-import './cb-app/cb-app.js';
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

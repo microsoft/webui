@@ -2,10 +2,7 @@
 // Licensed under the MIT license.
 
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import nodePath from "node:path";
-import { resolve, platformKey } from "./platform.js";
+import { packageName, platformKey, resolve } from "./platform.js";
 
 const require = createRequire(import.meta.url);
 
@@ -19,18 +16,40 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
+  /** Fallback DOM strategy for unwrapped components: "shadow" (default) or "light". */
+  dom?: "shadow" | "light";
+  /**
+   * Merge component stylesheets into shared bundled chunks.
+   *
+   * Composes with `css`: bundling decides how stylesheets are grouped, `css`
+   * decides how they reach the page. Stylesheets reached from more than one CSS
+   * tree are split into their own chunk so they are downloaded and cached once.
+   *
+   * Rejected with `css: "module"`, which already inlines every stylesheet as a
+   * data URI.
+   */
+  cssBundle?: boolean;
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
+  /** Generate and return an esbuild-compatible component asset metafile. */
+  metafile?: boolean;
   /** Emitted asset filename template for Link-mode CSS and component assets. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
   cssPublicBase?: string;
-  /** Output directory (used by CLI fallback for build-to-disk). */
-  outDir?: string;
+  /** Design token theme: a JSON file path or npm package name. */
+  theme?: string;
+  /** Projection manifest file paths, merged in order. */
+  projectionManifests?: string[];
+  /** Inline manifests with logical paths anchoring root/stale validation. */
+  projectionManifestObjects?: Array<{
+    path: string;
+    manifest: unknown;
+  }>;
 }
 
 /** Build statistics. */
@@ -57,6 +76,10 @@ export interface BuildResult {
   cssFiles: string[];
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
+  /** Esbuild-compatible component asset metafile JSON when requested. */
+  metafile?: string;
+  /** Non-fatal build advisories as plain diagnostic strings. */
+  warnings: string[];
   /** Build statistics. */
   stats: BuildStats;
 }
@@ -67,14 +90,81 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
+}
+
+/** Options fixed for the lifetime of a loaded protocol. */
+export interface ProtocolOptions {
   /** Handler plugin name. */
   plugin?: string;
 }
 
+/**
+ * Whether a committed boundary may receive later state updates.
+ *
+ * `final` releases every boundary-local reference once the island hydrates.
+ * `updatable` retains the roots and projection so `update()` can patch them,
+ * so use it only for boundaries you actually intend to patch.
+ */
+export type BoundaryMode = "final" | "updatable";
+
+export type ComponentStyleResource = (
+  | { kind: "link"; href: string }
+  | { kind: "style"; css: string }
+  | { kind: "module"; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
+
+export interface ComponentStyles {
+  version: 1;
+  strategy: "link" | "style" | "module";
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
+}
+
+/** A runtime-discovered boundary occurrence waiting to be resumed. */
+export interface BoundaryDescriptor {
+  /** Gapless response-local occurrence ID passed to `resume()` and `update()`. */
+  instanceId: number;
+  /** Stable build-local ID for the authored boundary declaration. */
+  declarationId: number;
+  /** Entry or component template that owns the declaration. */
+  owner: string;
+  /** Free-form authored boundary name. */
+  name: string;
+  /** Evaluated boundary key, preserving its authored JSON type. */
+  key?: string | number;
+}
+
+/** Bytes and continuation state produced by a streaming session step. */
+export interface StreamStep {
+  /** Complete bytes produced by this semantic step. */
+  bytes: Buffer;
+  /** Whether the document tail and terminal record have been emitted. */
+  done: boolean;
+  /** Runtime occurrence waiting for `resume()`, present only at a boundary. */
+  boundary?: BoundaryDescriptor;
+}
+
+/** Per-response settings for a host-driven streaming session. */
+export interface StreamOptions {
+  /** Fragment ID to start rendering from (default: "index.html"). */
+  entry?: string;
+  /** URL path to match routes against (default: "/"). */
+  requestPath?: string;
+  /** CSP nonce applied to generated inline `<script>` tags. */
+  nonce?: string;
+  /** HTML injected at the structural `head_end` boundary. */
+  headInject?: string;
+  /** HTML injected at the structural `body_end` boundary. */
+  bodyInject?: string;
+}
+
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
-  /** Module CSS `<style>` strings for the requested components. */
-  templateStyles: string[];
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
@@ -91,6 +181,8 @@ export interface PartialResponse {
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
   templateFunctions?: Record<string, string>;
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
   /** The request path. */
@@ -107,62 +199,123 @@ export interface PartialResponse {
 // ── Internal: native addon loading ───────────────────────────────────
 
 interface NativeAddon {
-  render(
-    protocol: Buffer,
-    stateJson: string,
-    entry: string,
-    requestPath: string,
-    onChunk: (html: string) => void,
-    plugin?: string,
-  ): void;
+  Protocol?: new (protocol: Buffer, plugin?: string) => NativeProtocol;
   build(options: {
     appDir: string;
     entry?: string;
     css?: string;
+    dom?: string;
+    cssBundle?: boolean;
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];
+    metafile?: boolean;
     cssFileNameTemplate?: string;
     cssPublicBase?: string;
+    projectionManifests?: string[];
+    projectionManifestObjects?: Array<{
+      path: string;
+      json: string;
+    }>;
   }): BuildResult;
   inspect(protocolData: Buffer): string;
-  renderPartial(protocolData: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
-  renderComponentTemplates(protocolData: Buffer, componentTagsJson: string, inventoryHex: string): string;
 }
 
-let addon: NativeAddon | null = null;
-let fallbackWarned = false;
+interface NativeProtocol {
+  render(stateJson: string, entry: string, requestPath: string): Buffer;
+  prepareState(stateJson: string): PreparedState;
+  renderPrepared(state: PreparedState, entry: string, requestPath: string): Buffer;
+  renderStream(
+    stateJson: string,
+    entry: string,
+    requestPath: string,
+    onChunk: (html: string) => void,
+  ): void;
+  streamResponse(
+    entry: string,
+    requestPath: string,
+    options?: {
+      nonce?: string;
+      headInject?: string;
+      bodyInject?: string;
+    },
+  ): NativeStreamingSession;
+  renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
+  renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
+  tokens(): string[];
+}
 
-function loadAddon(): NativeAddon | null {
+declare const preparedStateBrand: unique symbol;
+
+/**
+ * An immutable, process-local native state snapshot.
+ *
+ * The snapshot retains its parsed native state until this handle is garbage
+ * collected. Create snapshots only for state that will be rendered repeatedly.
+ */
+export interface PreparedState {
+  readonly [preparedStateBrand]: never;
+}
+
+interface NativeStreamingSession {
+  start(stateJson: string): NativeStreamStep;
+  resume(instanceId: number, stateJson: string, mode?: BoundaryMode): NativeStreamStep;
+  advance(): NativeStreamStep;
+  update(instanceId: number, patchJson: string): Buffer;
+}
+
+interface NativeBoundaryDescriptor {
+  instanceId: number;
+  declarationId: number;
+  owner: string;
+  name: string;
+  key?: string | number | null;
+}
+
+interface NativeStreamStep {
+  bytes: Buffer;
+  done: boolean;
+  boundary?: NativeBoundaryDescriptor | null;
+}
+
+let addon: NativeAddon | undefined;
+
+function loadAddon(): NativeAddon {
   if (addon) return addon;
 
   const addonPath = resolve("addon");
-  if (addonPath) {
-    try {
-      // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
-      if (addonPath.endsWith(".node")) {
-        addon = require(addonPath) as NativeAddon;
-      } else {
-        const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
-        process.dlopen(m, addonPath);
-        addon = m.exports;
-      }
-      return addon;
-    } catch {
-      // Fall through to WASM.
-    }
+  if (!addonPath) {
+    throw new Error(
+      `[webui] Native addon not found for ${platformKey()}. ${addonInstallHelp()} ` +
+        'The Node API does not fall back to the CLI; invoke "webui" explicitly for filesystem builds.',
+    );
   }
-  return null;
+
+  try {
+    // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
+    if (addonPath.endsWith(".node")) {
+      addon = require(addonPath) as NativeAddon;
+    } else {
+      const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
+      process.dlopen(m, addonPath);
+      addon = m.exports;
+    }
+  } catch (cause) {
+    throw new Error(
+      `[webui] Failed to load native addon at ${addonPath}. ${addonInstallHelp()}`,
+      { cause },
+    );
+  }
+  return addon;
 }
 
-function warnFallback(): void {
-  if (fallbackWarned) return;
-  fallbackWarned = true;
-  console.warn(
-    `[webui] Native addon not available for ${platformKey()}. ` +
-      `Using WASM fallback — performance may be degraded.\n` +
-      `Install the platform-specific package for optimal performance.`,
-  );
+function addonInstallHelp(): string {
+  try {
+    return `Reinstall ${packageName()} or set WEBUI_ADDON_PATH to a compatible addon.`;
+  } catch (error) {
+    const platformError = error instanceof Error ? error.message : String(error);
+    return `${platformError} Set WEBUI_ADDON_PATH to a compatible addon.`;
+  }
 }
 
 // ── Build API ────────────────────────────────────────────────────────
@@ -170,209 +323,237 @@ function warnFallback(): void {
 /** Build a WebUI application from an app directory. */
 export function build(options: BuildOptions): BuildResult {
   const native = loadAddon();
-  if (native?.build) {
-    return native.build(options);
+  if (typeof native.build !== "function") {
+    throw new Error(
+      `[webui] Native addon is incompatible: build() is required. ${addonInstallHelp()}`,
+    );
+  }
+  const { projectionManifestObjects, ...nativeOptions } = options;
+  return native.build({
+    ...nativeOptions,
+    projectionManifestObjects: projectionManifestObjects?.map(
+      ({ path, manifest }) => ({
+        path,
+        json: JSON.stringify(manifest),
+      })
+    ),
+  });
+}
+
+// ── Runtime protocol API ─────────────────────────────────────────────
+
+/**
+ * A decoded protocol with reusable indices for all runtime operations.
+ *
+ * Create one instance when the server loads `protocol.bin` and share it
+ * across requests. Construction decodes and indexes the protocol once.
+ */
+export class Protocol {
+  readonly #native: NativeProtocol;
+
+  constructor(protocolData: Buffer, options?: ProtocolOptions) {
+    const NativeProtocol = loadAddon().Protocol;
+    if (!NativeProtocol) {
+      throw new Error(
+        `[webui] Native addon is incompatible: Protocol is required. ${addonInstallHelp()}`,
+      );
+    }
+    this.#native = new NativeProtocol(protocolData, options?.plugin);
   }
 
-  // Fallback: shell out to CLI binary.
-  const binPath = resolve("bin");
-  if (!binPath) {
-    throw new Error(
-      "[webui] Cannot build: no native addon or CLI binary available.",
+  /** Render a complete HTML response as a UTF-8 Node.js buffer. */
+  render(state: object | string, options?: RenderOptions): Buffer {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.render(
+      stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
     );
   }
 
-  const args = ["build", options.appDir ?? "."];
-  if (options.entry) args.push("--entry", options.entry);
-  if (options.css) args.push("--css", options.css);
-  if (options.plugin) args.push("--plugin", options.plugin);
-  if (options.components) {
-    for (const c of options.components) {
-      args.push("--components", c);
-    }
-  }
-  if (options.componentAssetRoots && options.componentAssetRoots.length > 0) {
-    args.push("--emit-component-assets", options.componentAssetRoots.join(","));
-  }
-  if (options.cssFileNameTemplate) {
-    args.push("--css-file-name-template", options.cssFileNameTemplate);
-  }
-  if (options.cssPublicBase) {
-    args.push("--css-public-base", options.cssPublicBase);
-  }
-  if (options.outDir) args.push("--out", options.outDir);
-
-  execFileSync(binPath, args, { stdio: "inherit" });
-
-  // CLI fallback does not return in-memory protocol.
-  if (options.outDir) {
-    const protocol = fs.readFileSync(nodePath.join(options.outDir, "protocol.bin"));
-    return {
-      protocol,
-      cssFiles: [],
-      componentAssetFiles: readComponentAssetFiles(options.outDir),
-      stats: emptyStats(),
-    };
+  /**
+   * Parse state once for repeated rendering.
+   *
+   * The returned snapshot is immutable and does not observe later mutations to
+   * the source object. Prepare a new snapshot when request state changes.
+   */
+  prepareState(state: object | string): PreparedState {
+    return this.#native.prepareState(
+      typeof state === "string" ? state : JSON.stringify(state),
+    );
   }
 
-  return { protocol: Buffer.alloc(0), cssFiles: [], componentAssetFiles: [], stats: emptyStats() };
+  /** Render a prepared state snapshot without serializing or parsing it again. */
+  renderPrepared(state: PreparedState, options?: RenderOptions): Buffer {
+    return this.#native.renderPrepared(
+      state,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+    );
+  }
+
+  /** Stream a complete HTML response in chunks around 16 KiB. */
+  renderStream(
+    state: object | string,
+    onChunk: (html: string) => void,
+    options?: RenderOptions,
+  ): void {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    this.#native.renderStream(
+      stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+      onChunk,
+    );
+  }
+
+  /** Produce a complete JSON partial-navigation response. */
+  renderPartial(
+    state: object | string,
+    entryId: string,
+    requestPath: string,
+    inventoryHex: string,
+  ): string {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.renderPartial(stateJson, entryId, requestPath, inventoryHex);
+  }
+
+  /** Render component templates and styles for on-demand loading. */
+  renderComponentTemplates(
+    componentTags: string[],
+    inventoryHex: string,
+  ): string {
+    return this.#native.renderComponentTemplates(componentTags, inventoryHex);
+  }
+
+  /** Return CSS token names in build order. */
+  tokens(): string[] {
+    return this.#native.tokens();
+  }
+
+  /**
+   * Open a host-driven progressive response.
+   *
+   * Unlike {@link renderStream}, which pushes every chunk during one
+   * synchronous call, the returned session hands each chunk back so this
+   * server owns the socket, the write order, and backpressure.
+   */
+  streamResponse(options?: StreamOptions): StreamingSession {
+    return new StreamingSession(
+      this.#native.streamResponse(
+        options?.entry ?? "index.html",
+        options?.requestPath ?? "/",
+        {
+          nonce: options?.nonce,
+          headInject: options?.headInject,
+          bodyInject: options?.bodyInject,
+        },
+      ),
+    );
+  }
 }
-
-function readComponentAssetFiles(outDir: string): string[] {
-  const files: string[] = [];
-  const entries = fs.readdirSync(outDir, { withFileTypes: true });
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry.isFile()) continue;
-    const name = entry.name;
-    const path = nodePath.join(outDir, name);
-    const content = fs.readFileSync(path, "utf8");
-    if (!content.startsWith("const asset=") || !content.includes("webui-component-asset")) continue;
-    files.push(name, content);
-  }
-  return files;
-}
-
-// ── Render API ───────────────────────────────────────────────────────
 
 /**
- * Render a pre-compiled protocol with state data.
- * Uses native addon when available, WASM fallback otherwise.
+ * A progressive HTML response written one chunk at a time.
+ *
+ * Every method returns the bytes it produced instead of writing them, so the
+ * caller decides when they reach the socket and can await `drain` between
+ * chunks. The session holds no transport and never blocks on one.
+ *
+ * `start()` discovers the first runtime occurrence. Each `resume()` commits
+ * only the pending occurrence. An optional `update()` may follow for an
+ * `updatable` occurrence, then `advance()` discovers the next occurrence or
+ * returns the document tail and terminal record.
+ *
+ * ```js
+ * const session = protocol.streamResponse({ requestPath: req.url });
+ * let step = session.start(shellState);
+ * res.write(step.bytes);
+ *
+ * while (!step.done) {
+ *   const boundary = step.boundary;
+ *   const state = await loadBoundary(boundary.owner, boundary.name, boundary.key);
+ *   step = session.resume(boundary.instanceId, state);
+ *   res.write(step.bytes);
+ *   step = session.advance();
+ *   res.write(step.bytes);
+ * }
+ * res.end();
+ * ```
  */
-export function render(
-  protocol: Buffer,
-  state: object | string,
-  options?: RenderOptions,
-): string {
-  const native = loadAddon();
-  if (native) {
-    let result = "";
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    const entry = options?.entry ?? "index.html";
-    const requestPath = options?.requestPath ?? "/";
-    native.render(protocol, stateStr, entry, requestPath, (chunk) => {
-      result += chunk;
-    }, options?.plugin);
-    return result;
+export class StreamingSession {
+  readonly #native: NativeStreamingSession;
+
+  /** @internal Created by {@link Protocol.streamResponse}. */
+  constructor(native: NativeStreamingSession) {
+    this.#native = native;
   }
 
-  warnFallback();
-  throw new Error(
-    "[webui] render() requires the native addon. WASM render fallback not yet wired.",
-  );
+  /** Render until the first runtime boundary occurrence or terminal. */
+  start(state: object | string): StreamStep {
+    return toStreamStep(this.#native.start(toStateJson(state)));
+  }
+
+  /** Commit the pending occurrence through its checkpoint, then stop. */
+  resume(
+    instanceId: number,
+    state: object | string,
+    mode: BoundaryMode = "final",
+  ): StreamStep {
+    return toStreamStep(this.#native.resume(instanceId, toStateJson(state), mode));
+  }
+
+  /** Write following parent bytes and discover the next boundary or terminal. */
+  advance(): StreamStep {
+    return toStreamStep(this.#native.advance());
+  }
+
+  /** Push a projected state patch to a committed `updatable` occurrence. */
+  update(instanceId: number, patch: object | string): Buffer {
+    return this.#native.update(instanceId, toStateJson(patch));
+  }
 }
 
-/**
- * Render a protocol with streaming output.
- * Each HTML fragment is passed to the onChunk callback as it is produced.
- */
-export function renderStream(
-  protocol: Buffer,
-  state: object | string,
-  onChunk: (html: string) => void,
-  options?: RenderOptions,
-): void {
-  const native = loadAddon();
-  if (native) {
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    const entry = options?.entry ?? "index.html";
-    const requestPath = options?.requestPath ?? "/";
-    native.render(protocol, stateStr, entry, requestPath, onChunk, options?.plugin);
-    return;
+function toStreamStep(step: NativeStreamStep): StreamStep {
+  const boundary = step.boundary;
+  if (!boundary) {
+    return { bytes: step.bytes, done: step.done };
   }
-
-  warnFallback();
-  throw new Error(
-    "[webui] renderStream() requires the native addon. WASM render fallback not yet wired.",
-  );
+  return {
+    bytes: step.bytes,
+    done: step.done,
+    boundary: toBoundaryDescriptor(boundary),
+  };
 }
 
-// ── Convenience ──────────────────────────────────────────────────────
-
-/** Build and render in a single call. */
-export function buildAndRender(
-  options: BuildOptions,
-  state: object | string,
-  renderOpts?: RenderOptions,
-): string {
-  const result = build(options);
-  if (!result.protocol || result.protocol.length === 0) {
-    throw new Error("[webui] Build did not return protocol data.");
+function toBoundaryDescriptor(
+  boundary: NativeBoundaryDescriptor,
+): BoundaryDescriptor {
+  const descriptor: BoundaryDescriptor = {
+    instanceId: boundary.instanceId,
+    declarationId: boundary.declarationId,
+    owner: boundary.owner,
+    name: boundary.name,
+  };
+  if (boundary.key !== undefined && boundary.key !== null) {
+    descriptor.key = boundary.key;
   }
-  return render(result.protocol, state, renderOpts);
+  return descriptor;
+}
+
+function toStateJson(state: object | string): string {
+  return typeof state === "string" ? state : JSON.stringify(state);
 }
 
 /** Inspect protocol bytes and return JSON representation. */
 export function inspect(protocolData: Buffer): string {
   const native = loadAddon();
-  if (native?.inspect) {
-    return native.inspect(protocolData);
-  }
-  throw new Error("[webui] inspect() requires the native addon.");
-}
-
-/**
- * Produce a complete JSON partial response for client-side navigation.
- *
- * Returns a JSON string with `state`, `templates`, `inventory`, `path`, and `chain`.
- * Pipe directly to the HTTP response — no post-processing needed.
- *
- * If you need to inspect the response, parse it with the exported `PartialResponse` type:
- * ```ts
- * const partial: PartialResponse = JSON.parse(renderPartial(...));
- * ```
- */
-export function renderPartial(
-  protocolData: Buffer,
-  stateJson: string,
-  entryId: string,
-  requestPath: string,
-  inventoryHex: string,
-): string {
-  const native = loadAddon();
-  if (native?.renderPartial) {
-    return native.renderPartial(protocolData, stateJson, entryId, requestPath, inventoryHex);
-  }
-  throw new Error("[webui] renderPartial() requires the native addon.");
-}
-
-/**
- * Render component templates and styles for on-demand loading.
- *
- * Used by `Router.ensureLoaded()` to fetch templates for components that
- * are not part of the route tree (e.g., dialogs, popovers). Uses the same
- * inventory bitfield as partial navigation to avoid sending duplicates.
- *
- * Returns a JSON string. Parse with the exported `ComponentTemplatesResponse` type:
- * ```ts
- * const resp: ComponentTemplatesResponse = JSON.parse(renderComponentTemplates(...));
- * ```
- */
-export function renderComponentTemplates(
-  protocolData: Buffer,
-  componentTags: string[],
-  inventoryHex: string,
-): string {
-  const native = loadAddon();
-  if (native?.renderComponentTemplates) {
-    return native.renderComponentTemplates(
-      protocolData,
-      JSON.stringify(componentTags),
-      inventoryHex,
+  if (typeof native.inspect !== "function") {
+    throw new Error(
+      `[webui] Native addon is incompatible: inspect() is required. ${addonInstallHelp()}`,
     );
   }
-  throw new Error("[webui] renderComponentTemplates() requires the native addon.");
+  return native.inspect(protocolData);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-function emptyStats(): BuildStats {
-  return {
-    durationMs: 0,
-    fragmentCount: 0,
-    componentCount: 0,
-    cssFileCount: 0,
-    protocolSizeBytes: 0,
-    tokenCount: 0,
-  };
-}

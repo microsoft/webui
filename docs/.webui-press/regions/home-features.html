@@ -1,0 +1,20 @@
+<!-- Copyright (c) Microsoft Corporation. -->
+<!-- Licensed under the MIT license. -->
+
+<if condition="hero">
+  <div class="features-grid">
+    <for each="feature in hero.features">
+      <div class="feature-card">
+        <div class="feature-card-header">
+          <div class="feature-icon">{{feature.icon}}</div>
+          <h2>{{feature.title}}</h2>
+        </div>
+        <p>{{feature.description}}</p>
+      </div>
+    </for>
+  </div>
+</if>
+
+<benchmark-explorer
+  :benchmarks="{{benchmarks}}"
+></benchmark-explorer>

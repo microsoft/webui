@@ -15,7 +15,7 @@
 
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { build, render, renderStream } from "@microsoft/webui";
+import { build, Protocol } from "@microsoft/webui";
 
 const appDir = resolve(import.meta.dirname, "../../app/hello-world/src");
 const stateFile = resolve(import.meta.dirname, "../../app/hello-world/data/state.json");
@@ -26,8 +26,9 @@ if (process.argv[2] && process.argv[3]) {
   const statePath = resolve(import.meta.dirname, process.argv[3]);
   const protocolData = readFileSync(protocolPath);
   const stateJson = readFileSync(statePath, "utf-8");
+  const protocol = new Protocol(protocolData);
 
-  renderStream(protocolData, stateJson, (chunk) => process.stdout.write(chunk));
+  protocol.renderStream(stateJson, (chunk) => process.stdout.write(chunk));
   process.stdout.write("\n");
 } else {
   // Build + render mode (default): compile hello-world templates, then render
@@ -40,7 +41,8 @@ if (process.argv[2] && process.argv[3]) {
     `${result.stats.durationMs}ms`
   );
 
-  const html = render(result.protocol, state);
+  const protocol = new Protocol(result.protocol);
+  const html = protocol.render(state);
   process.stdout.write(html);
   process.stdout.write("\n");
 }

@@ -7,17 +7,17 @@
 //! matching route among sibling route fragments.
 
 use crate::route_matcher;
-use crate::route_matcher::CompiledRouteCache;
+use crate::route_matcher::CompiledRouteIndex;
 use crate::{ResponseWriter, Result};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUiFragmentRoute};
 
-/// Write pending/error attributes for a route fragment.
+/// Write attributes needed by the client before a route partial resolves.
 ///
-/// Cache-related attributes (cache-tags, invalidates) and query/keep-alive
-/// are omitted from the DOM — they're delivered via the inline SSR chain JSON.
-/// Only pending/error are kept as DOM attributes because the client needs them
-/// for descendant fallback scanning on first navigation into unvisited subtrees.
-pub(crate) fn write_route_pending_attrs(
+/// Cache-related attributes (cache-tags, invalidates) and query are omitted
+/// from the DOM because they're delivered via the inline SSR chain JSON.
+/// Pending/error/keep-alive remain available on unmatched placeholders so the
+/// client can select destination boundary UI before the partial arrives.
+pub(crate) fn write_route_navigation_attrs(
     writer: &mut dyn ResponseWriter,
     route: &WebUiFragmentRoute,
 ) -> Result<()> {
@@ -30,6 +30,32 @@ pub(crate) fn write_route_pending_attrs(
         writer.write(" error=\"")?;
         writer.write(&route.error_component)?;
         writer.write("\"")?;
+    }
+    if route.keep_alive {
+        writer.write(" keep-alive")?;
+    }
+    Ok(())
+}
+
+// Keep hidden siblings in declaration order so client boundary ties match SSR.
+pub(crate) fn write_hidden_routes(
+    writer: &mut dyn ResponseWriter,
+    routes: &[WebUiFragmentRoute],
+) -> Result<()> {
+    for route in routes {
+        if route.fragment_id.is_empty() {
+            continue;
+        }
+        writer.write("<webui-route path=\"")?;
+        writer.write(&route.path)?;
+        writer.write("\" component=\"")?;
+        writer.write(&route.fragment_id)?;
+        writer.write("\"")?;
+        if route.exact {
+            writer.write(" exact")?;
+        }
+        write_route_navigation_attrs(writer, route)?;
+        writer.write(" style=\"display:none\"></webui-route>")?;
     }
     Ok(())
 }
@@ -72,23 +98,29 @@ pub(crate) fn write_escaped_state_attr(writer: &mut dyn ResponseWriter, value: &
 /// This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal + 1 param).
 ///
 /// `route_base` is used to resolve relative paths (starting with `./`).
+///
+/// Request segmentation is deferred until a route fragment is actually seen:
+/// every record entry calls this, and the overwhelming majority of records —
+/// component bodies, conditions, loop bodies — carry no routes at all, so a
+/// route-free record must not pay for a segment vector.
 pub(crate) fn find_best_route_match(
     fragments: &[WebUIFragment],
     request_path: &str,
     route_base: &str,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> Option<(String, route_matcher::RouteMatch)> {
     let mut best: Option<(String, route_matcher::RouteMatch)> = None;
-
-    let request_segments = route_matcher::split_request_path(request_path);
+    let mut request_segments: Option<Vec<&str>> = None;
 
     for item in fragments {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
-            let resolved_path = route_matcher::resolve_route_path_cow(&route_frag.path, route_base);
-            if let Some(m) = route_matcher::match_route_cached_with_segments(
-                cache,
-                resolved_path.as_ref(),
-                &request_segments,
+            let segments = request_segments
+                .get_or_insert_with(|| route_matcher::split_request_path(request_path));
+            if let Some(m) = route_matcher::match_route_indexed_with_segments(
+                route_index,
+                &route_frag.path,
+                route_base,
+                segments,
                 route_frag.exact,
             ) {
                 let is_better = best

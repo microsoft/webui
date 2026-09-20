@@ -6,12 +6,6 @@ import { WebUIElement, observable } from '@microsoft/webui-framework';
 import '#organisms/mp-navbar/mp-navbar.js';
 import '#organisms/mp-mobile-menu/mp-mobile-menu.js';
 import '#organisms/mp-cart-panel/mp-cart-panel.js';
-import '#organisms/mp-footer/mp-footer.js';
-
-interface NavCategory {
-  handle: string;
-  title: string;
-}
 
 interface MobileMenuController extends HTMLElement {
   openMenu(): void;
@@ -28,15 +22,12 @@ interface CartStateDetail {
 }
 
 export class MpApp extends WebUIElement {
-  @observable storeName!: string;
-  @observable searchQuery!: string;
   @observable currentPath!: string;
   @observable cartOpen!: string;
   @observable cartHref!: string;
   @observable cartCloseHref!: string;
   @observable subtotal!: string;
   @observable taxes!: string;
-  @observable navCategories!: NavCategory[];
   @observable cartItems!: any[];
   mobileMenu!: MobileMenuController;
 

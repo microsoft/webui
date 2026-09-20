@@ -213,7 +213,7 @@ fn catalog_grid_image_preloads(products: &[&Product]) -> Vec<String> {
     products
         .iter()
         .take(CATALOG_GRID_PRELOAD_COUNT)
-        .map(|product| format!("{}?w=640&q=75", &product.image_url))
+        .map(|product| format!("{}?w=640&q=75", product.image_url))
         .collect()
 }
 

@@ -5,7 +5,7 @@ import { readFile, writeFile } from "fs/promises";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import themeJson from "@microsoft/webui-examples-theme/tokens.json";
-import initWasm, { protocol_tokens } from "../public/wasm/handler/webui_wasm_handler.js";
+import initWasm, { Protocol } from "../public/wasm/handler/webui_wasm_handler.js";
 
 interface ThemeFile {
   themes: Record<string, Record<string, string>>;
@@ -22,8 +22,8 @@ const themeFile: ThemeFile = themeJson;
 
 await initWasm({ module_or_path: await readFile(wasmPath) });
 
-const protocol = new Uint8Array(await readFile(protocolPath));
-const requiredTokens = protocol_tokens(protocol) as string[];
+const protocol = new Protocol(new Uint8Array(await readFile(protocolPath)));
+const requiredTokens = protocol.tokens();
 const html = await readFile(bootstrapPath, "utf-8");
 const lightCss = resolveTheme("light", requiredTokens);
 const darkCss = resolveTheme("dark", requiredTokens);

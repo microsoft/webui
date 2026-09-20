@@ -3,7 +3,13 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { collectItemMarkers, nextElement, findByOrdinal } from './markers.js';
+import {
+  collectItemMarkers,
+  nextElement,
+  findByOrdinal,
+  skipBlockRange,
+  buildSSRIndex,
+} from './markers.js';
 
 // ── Mock helpers ────────────────────────────────────────────────
 // markers.ts only reads nodeType, data, and nextSibling — lightweight
@@ -13,6 +19,7 @@ interface MockNode {
   nodeType: number;
   data?: string;
   nextSibling: MockNode | null;
+  hasAttribute?(name: string): boolean;
 }
 
 const ELEMENT = 1;
@@ -67,6 +74,33 @@ describe('collectItemMarkers', () => {
     const { items, end } = collectItemMarkers(wrStart as unknown as Comment);
     assert.equal(items.length, 1);
     assert.strictEqual(end, null, 'end should be null when <!--/wr--> is missing');
+  });
+
+  test('ignores item and end markers from nested repeats', () => {
+    const outerStart = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const outerItem1 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerStart1 = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const innerItem1 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerEnd1 = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+    const outerItem2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerStart2 = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const innerItem2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerEnd2 = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+    const outerEnd = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+
+    outerStart.nextSibling = outerItem1;
+    outerItem1.nextSibling = innerStart1;
+    innerStart1.nextSibling = innerItem1;
+    innerItem1.nextSibling = innerEnd1;
+    innerEnd1.nextSibling = outerItem2;
+    outerItem2.nextSibling = innerStart2;
+    innerStart2.nextSibling = innerItem2;
+    innerItem2.nextSibling = innerEnd2;
+    innerEnd2.nextSibling = outerEnd;
+
+    const { items, end } = collectItemMarkers(outerStart as unknown as Comment);
+    assert.deepEqual(items, [outerItem1, outerItem2]);
+    assert.strictEqual(end, outerEnd);
   });
 
   test('skips non-comment siblings', () => {
@@ -158,6 +192,14 @@ describe('nextElement', () => {
     assert.strictEqual(result, null);
   });
 
+  test('returns null when hitting <!--/wc--> before an element', () => {
+    const marker = { nodeType: COMMENT, data: 'wc', nextSibling: null } as MockNode;
+    const wcEnd = { nodeType: COMMENT, data: '/wc', nextSibling: null } as MockNode;
+    marker.nextSibling = wcEnd;
+
+    assert.strictEqual(nextElement(marker as unknown as Comment), null);
+  });
+
   test('returns null when hitting next <!--wi--> before an element', () => {
     const marker = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
     const wi2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
@@ -220,6 +262,44 @@ describe('findByOrdinal', () => {
 
     assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 0), link);
     assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 1), div);
+  });
+
+  test('skips compiler-emitted style fallbacks when counting elements', () => {
+    const style = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      localName: 'style',
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(style, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      button,
+    );
+  });
+
+  test('does not skip authored data-webui-resource attributes', () => {
+    const authored = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(authored, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      authored,
+    );
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 1),
+      button,
+    );
   });
 
   test('skips conditional block content when counting elements', () => {
@@ -358,5 +438,270 @@ describe('findByOrdinal', () => {
       findByOrdinal(parent as unknown as Node, ELEMENT, 0), null,
       'should return null for parent with no children',
     );
+  });
+});
+
+// ── skipBlockRange ──────────────────────────────────────────────
+
+describe('skipBlockRange', () => {
+  function chain(...nodes: MockNode[]): MockNode {
+    for (let i = 0; i < nodes.length - 1; i++) nodes[i].nextSibling = nodes[i + 1];
+    return nodes[0];
+  }
+  const el = (): MockNode => ({ nodeType: ELEMENT, nextSibling: null }) as MockNode;
+  const comment = (data: string): MockNode =>
+    ({ nodeType: COMMENT, data, nextSibling: null }) as MockNode;
+
+  test('returns the node after a simple conditional range', () => {
+    const start = comment('wc');
+    const inner = el();
+    const end = comment('/wc');
+    const after = el();
+    chain(start, inner, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('consumes nested ranges of the same type via depth tracking', () => {
+    const start = comment('wc');
+    const nestedStart = comment('wc');
+    const nestedEnd = comment('/wc');
+    const end = comment('/wc');
+    const after = el();
+    chain(start, nestedStart, nestedEnd, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('ignores a different block type inside the range', () => {
+    const start = comment('wc');
+    const repeatStart = comment('wr');
+    const repeatEnd = comment('/wr');
+    const end = comment('/wc');
+    const after = el();
+    chain(start, repeatStart, repeatEnd, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('skips a repeat range and returns the following sibling', () => {
+    const start = comment('wr');
+    const item = comment('wi');
+    const node = el();
+    const end = comment('/wr');
+    const after = el();
+    chain(start, item, node, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wr'), after);
+  });
+
+  test('returns null when the range is unterminated', () => {
+    const start = comment('wc');
+    const inner = el();
+    chain(start, inner);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), null);
+  });
+});
+
+// ── buildSSRIndex ───────────────────────────────────────────────
+
+describe('buildSSRIndex', () => {
+  interface TreeNode {
+    nodeType: number;
+    data?: string;
+    tagName?: string;
+    firstChild: TreeNode | null;
+    nextSibling: TreeNode | null;
+  }
+
+  function el(tagName: string, ...children: TreeNode[]): TreeNode {
+    for (let i = 0; i < children.length - 1; i++) children[i].nextSibling = children[i + 1];
+    return { nodeType: ELEMENT, tagName, firstChild: children[0] ?? null, nextSibling: null };
+  }
+  function txt(): TreeNode {
+    return { nodeType: TEXT, firstChild: null, nextSibling: null };
+  }
+  function cmt(data: string): TreeNode {
+    return { nodeType: COMMENT, data, firstChild: null, nextSibling: null };
+  }
+  const build = (t: TreeNode, s: TreeNode, markers = true) =>
+    buildSSRIndex(t as unknown as Node, s as unknown as Node, markers);
+
+  test('pairs elements while ignoring whitespace the server dropped', () => {
+    // The compiled template keeps authored whitespace; SSR does not.
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', txt(), tplA, txt(), tplB, txt());
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('skips a compiler-emitted style fallback the template never contained', () => {
+    // Inline-CSS components render a `<style data-webui-resource>` into the
+    // render root that `meta.h` has no counterpart for. Counting it shifts
+    // every binding onto the previous element's node.
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', tplA, tplB);
+    const style = {
+      nodeType: ELEMENT,
+      tagName: 'STYLE',
+      localName: 'style',
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
+    } as unknown as TreeNode;
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', style, ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('skips a compiler-emitted CSS import map the template never contained', () => {
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', tplA, tplB);
+    const importMap = {
+      nodeType: ELEMENT,
+      tagName: 'SCRIPT',
+      localName: 'script',
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) =>
+        name === 'type' ? 'importmap' :
+          name === 'data-webui-resource' ? 'card' : null,
+    } as unknown as TreeNode;
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', importMap, ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('indexes authored elements that use data-webui-resource', () => {
+    const tplAuthored = el('DIV');
+    const tplButton = el('BUTTON');
+    const tpl = el('ROOT', tplAuthored, tplButton);
+    const ssrAuthored = {
+      ...el('DIV'),
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as unknown as TreeNode;
+    const ssrButton = el('BUTTON');
+    const ssr = el('ROOT', ssrAuthored, ssrButton);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrAuthored);
+    assert.strictEqual(index.elements[2], ssrButton);
+  });
+
+  test('collects block markers in document order across depths', () => {
+    // <!--wc-->A  <section><!--wc-->C</section>  <!--wc-->B
+    // A and B sit at the root, C inside a static element; the compiled
+    // `c` table lists all three in that same source order.
+    const tplSection = el('SECTION', el('INNER'));
+    const tpl = el('ROOT', tplSection);
+
+    const markerA = cmt('wc');
+    const endA = cmt('/wc');
+    const markerC = cmt('wc');
+    const endC = cmt('/wc');
+    const markerB = cmt('wc');
+    const endB = cmt('/wc');
+    const ssrSection = el('SECTION', markerC, endC, el('INNER'));
+    const ssr = el('ROOT', markerA, endA, ssrSection, markerB, endB);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.conds, [markerA, markerC, markerB]);
+  });
+
+  test('collects raw ranges and excludes their elements from static pairing', () => {
+    const tplStatic = el('SPAN');
+    const tpl = el('ROOT', tplStatic);
+    const rawStart = cmt('w0');
+    const rawEnd = cmt('/w0');
+    const ssrStatic = el('SPAN');
+    const ssr = el('ROOT', rawStart, el('B'), el('I'), rawEnd, ssrStatic);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.raws, [[rawStart, rawEnd]]);
+    assert.strictEqual(index.elements[1], ssrStatic);
+  });
+
+  test('ignores legacy-looking comments inside an indexed raw range', () => {
+    const tplStatic = el('SPAN');
+    const tpl = el('ROOT', tplStatic);
+    const rawStart = cmt('w0');
+    const contentComment = cmt('/wh');
+    const rawEnd = cmt('/w0');
+    const ssrStatic = el('SPAN');
+    const ssr = el('ROOT', rawStart, el('B'), contentComment, el('I'), rawEnd, ssrStatic);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.raws, [[rawStart, rawEnd]]);
+    assert.strictEqual(index.elements[1], ssrStatic);
+  });
+
+  test('does not pair elements inside a structural range', () => {
+    // The <p> rendered inside the conditional belongs to the block's own
+    // metadata, so the template's first element must pair with <div>.
+    const tplDiv = el('DIV');
+    const tpl = el('ROOT', tplDiv);
+    const ssrDiv = el('DIV');
+    const ssr = el('ROOT', cmt('wc'), el('P'), cmt('/wc'), ssrDiv);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrDiv);
+  });
+
+  test('descends into a template-empty element to find its block marker', () => {
+    // <ul><for …></ul> compiles to an empty <ul>.
+    const tplUl = el('UL');
+    const tpl = el('ROOT', tplUl);
+    const marker = cmt('wr');
+    const ssr = el('ROOT', el('UL', marker, cmt('/wr')));
+
+    assert.deepStrictEqual(build(tpl, ssr).repeats, [marker]);
+    // Sections without blocks skip that descent entirely.
+    assert.deepStrictEqual(build(tpl, ssr, false).repeats, []);
+  });
+
+  test('stops at a child component that contributes no template children', () => {
+    // Whatever the server rendered inside <my-child> belongs to that
+    // component, so its markers must not be collected here.
+    const tpl = el('ROOT', el('MY-CHILD'));
+    const ssr = el('ROOT', el('MY-CHILD', cmt('wc'), cmt('/wc')));
+
+    assert.deepStrictEqual(build(tpl, ssr).conds, []);
+  });
+
+  test('pairs slotted children the parent template owns', () => {
+    const tplSpan = el('SPAN');
+    const tpl = el('ROOT', el('MY-CHILD', tplSpan));
+    const ssrSpan = el('SPAN');
+    const ssr = el('ROOT', el('MY-CHILD', ssrSpan));
+
+    assert.strictEqual(build(tpl, ssr).elements[2], ssrSpan);
   });
 });

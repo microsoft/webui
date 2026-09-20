@@ -1,28 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
-
-import '#atoms/mp-price/mp-price.js';
-import '#atoms/mp-product-image/mp-product-image.js';
-
-interface CartItem {
-  handle: string;
-  title: string;
-  color: string;
-  size: string;
-  variantLabel: string;
-  price: string;
-  quantity: number;
-  gradient: string;
-  imageUrl: string;
-  increaseTo: number;
-  decreaseTo: number;
-  redirectTo: string;
-}
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
 export class MpCartPanel extends WebUIElement {
-  @observable cartItems!: CartItem[];
   @attr subtotal!: string;
   @attr taxes!: string;
   @attr({ attribute: 'cart-open' }) cartOpen!: string;

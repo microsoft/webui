@@ -107,7 +107,12 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         self.scopes.pop();
     }
 
-    fn on_binding_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_start(
+        &mut self,
+        _name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -115,7 +120,12 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         writer.write(BINDING_START_MARKER)
     }
 
-    fn on_binding_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        _name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -144,9 +154,9 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let decoded = FastElementData::decode(data).map_err(|error| {
+        let decoded = FastElementData::decode_v3(data).map_err(|error| {
             HandlerError::PluginData(format!(
-                "FAST hydration plugin expected 4 bytes of element data: {error}"
+                "FAST 3 hydration plugin expected 4 bytes of element data: {error}"
             ))
         })?;
         if decoded.binding_count > 0 {
@@ -157,50 +167,15 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         Ok(())
     }
 
-    /// FAST emits scalar attributes + `data-state` JSON on route component elements.
+    /// FAST emits scalar attributes on route component elements.
     /// Components read these via `@attr` and their connection lifecycle.
     fn write_route_component_state(
         &self,
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        write_fast_route_component_state(state, writer)
+        super::fast::write_route_component_state(state, writer)
     }
-}
-
-fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
-    let map = match state.as_object() {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-
-    // Emit scalar values as individual kebab-case attributes.
-    for (key, value) in map {
-        let val_str = match value {
-            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-            _ => continue,
-        };
-        let attr_name = webui_protocol::attrs::camel_to_kebab(key);
-        writer.write(" ")?;
-        writer.write(&attr_name)?;
-        writer.write("=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
-        writer.write("\"")?;
-    }
-
-    // Emit data-state JSON for complex values (arrays, objects).
-    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-    if has_complex {
-        let json_str = state.to_string();
-        writer.write(" data-state=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
-        writer.write("\"")?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -236,8 +211,8 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Root scope should not emit markers
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
         let data = 3u32.to_le_bytes();
@@ -250,7 +225,9 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -259,9 +236,13 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
         writer.output.clear();
-        plugin.on_binding_end("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_end("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:/b-->");
     }
 
@@ -270,10 +251,10 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -284,18 +265,18 @@ mod tests {
         // Push first active scope (root is disabled)
         plugin.push_scope();
         // Active scope emits compact markers.
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         // Push child scope: markers are still emitted.
         plugin.push_scope();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
-        plugin.on_binding_end("b", &mut writer).unwrap();
+        plugin.on_binding_end("b", false, &mut writer).unwrap();
         // Pop child scope: parent remains active.
         plugin.pop_scope();
         writer.output.clear();
-        plugin.on_binding_start("c", &mut writer).unwrap();
+        plugin.on_binding_start("c", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -352,7 +333,7 @@ mod tests {
 
         // Next binding still emits the compact sequential marker.
         writer.output.clear();
-        plugin.on_binding_start("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -363,26 +344,32 @@ mod tests {
         // Push first active scope (root is disabled)
         plugin.push_scope();
         // Active scope emits binding markers.
-        plugin.on_binding_start("root", &mut writer).unwrap();
-        plugin.on_binding_end("root", &mut writer).unwrap();
+        plugin.on_binding_start("root", false, &mut writer).unwrap();
+        plugin.on_binding_end("root", false, &mut writer).unwrap();
         // Component scope
         plugin.push_scope();
         // For-loop binding in component emits compact markers.
         writer.output.clear();
-        plugin.on_binding_start("for-1", &mut writer).unwrap();
+        plugin
+            .on_binding_start("for-1", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
         // For-loop item scope
         plugin.push_scope();
         writer.output.clear();
-        plugin.on_binding_start("signal", &mut writer).unwrap();
+        plugin
+            .on_binding_start("signal", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
-        plugin.on_binding_end("signal", &mut writer).unwrap();
+        plugin.on_binding_end("signal", false, &mut writer).unwrap();
         plugin.pop_scope();
-        plugin.on_binding_end("for-1", &mut writer).unwrap();
+        plugin.on_binding_end("for-1", false, &mut writer).unwrap();
         plugin.pop_scope();
         // Back to first active scope: compact markers are still emitted.
         writer.output.clear();
-        plugin.on_binding_start("root2", &mut writer).unwrap();
+        plugin
+            .on_binding_start("root2", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -410,31 +397,6 @@ mod tests {
             "invalid payload length should produce a plugin-data error: {result:?}"
         );
         assert_eq!(writer.output, "");
-    }
-
-    #[test]
-    fn test_write_route_component_state_emits_data_state() {
-        let plugin = FastV3HydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        let state = serde_json::json!({
-            "title": "Hello",
-            "items": [{"name": "A&B"}]
-        });
-
-        plugin
-            .write_route_component_state(&state, &mut writer)
-            .unwrap();
-
-        assert!(
-            writer.output.contains("data-state="),
-            "FAST handler plugin should emit data-state: {}",
-            writer.output
-        );
-        assert!(
-            writer.output.contains(r#"title="Hello""#),
-            "FAST handler plugin should still emit scalar attrs: {}",
-            writer.output
-        );
     }
 
     // ── Integration tests (full render cycles with WebUIHandler) ────────
@@ -491,6 +453,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -511,6 +474,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -528,12 +492,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "for-1")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "for-1".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -557,12 +523,14 @@ mod tests {
                     ConditionExpr::identifier("show"),
                     "if-1",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-1".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Visible</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -593,12 +561,14 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::signal("after", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-comp".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("inner", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -621,6 +591,7 @@ mod tests {
                     WebUIFragment::plugin(2u32.to_le_bytes().to_vec()),
                     WebUIFragment::raw(">content</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -656,6 +627,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -665,6 +638,7 @@ mod tests {
                     WebUIFragment::raw("Hello "),
                     WebUIFragment::signal("name", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -675,6 +649,7 @@ mod tests {
                     WebUIFragment::signal("content", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -715,6 +690,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("hydratableComponent")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -726,6 +702,7 @@ mod tests {
                     WebUIFragment::for_loop("category", "categories", "categoryTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -748,6 +725,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -758,6 +736,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "category.items", "itemTemplate"),
                     WebUIFragment::raw("</ul>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -776,6 +755,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</li>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -785,6 +765,7 @@ mod tests {
                     WebUIFragment::raw("item-"),
                     WebUIFragment::signal("item.id", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -795,6 +776,7 @@ mod tests {
                     WebUIFragment::signal("item.specialText", false),
                     WebUIFragment::raw(")"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -880,6 +862,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-comp")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -890,6 +873,7 @@ mod tests {
                     WebUIFragment::signal("missing_field", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -916,6 +900,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-comp")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -926,12 +911,14 @@ mod tests {
                     WebUIFragment::for_loop("item", "missing_items", "loop-body"),
                     WebUIFragment::raw("</ul>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "loop-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -956,6 +943,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-comp")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -966,6 +954,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -990,6 +979,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-comp")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -1000,12 +990,14 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "loop-body"),
                     WebUIFragment::raw("</ul>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "loop-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -1037,10 +1029,10 @@ mod tests {
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
-                .on_binding_start("items", &mut writer_bind)
+                .on_binding_start("items", false, &mut writer_bind)
                 .unwrap();
             plugin_bind
-                .on_binding_end("items", &mut writer_bind)
+                .on_binding_end("items", false, &mut writer_bind)
                 .unwrap();
 
             assert_eq!(
@@ -1062,10 +1054,10 @@ mod tests {
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
-                .on_binding_start("visible", &mut writer_bind)
+                .on_binding_start("visible", false, &mut writer_bind)
                 .unwrap();
             plugin_bind
-                .on_binding_end("visible", &mut writer_bind)
+                .on_binding_end("visible", false, &mut writer_bind)
                 .unwrap();
 
             assert_eq!(

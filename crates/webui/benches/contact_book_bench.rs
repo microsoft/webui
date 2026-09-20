@@ -6,7 +6,7 @@
 //! benchmark time, then measures protocol parsing and handler rendering at
 //! different data scales (10 / 100 / 1,000 contacts).
 //!
-//! Run with: `cargo bench -p webui --bench contact_book_bench`
+//! Run with: `cargo bench -p microsoft-webui --bench contact_book_bench`
 
 use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
@@ -15,11 +15,19 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::RenderOptions;
+use webui_handler::{Protocol, RenderOptions};
 use webui_protocol::WebUIProtocol;
 
 /// Contact counts to benchmark.
 const CONTACT_COUNTS: &[usize] = &[10, 100, 1000];
+
+/// Request path rendered by every benchmark.
+///
+/// The `/contacts` route renders `cb-page-contacts`, which loops over the full
+/// `filteredContacts` array. The root `/` route renders `cb-page-dashboard`,
+/// which only ever emits the five most recent contacts, so its output does not
+/// scale with [`CONTACT_COUNTS`] and cannot measure list rendering.
+const REQUEST_PATH: &str = "/contacts";
 
 /// Measurement time per benchmark — 30 s gives criterion enough samples for
 /// stable statistics even at the 1,000-contact scale.
@@ -28,30 +36,49 @@ const MEASUREMENT_TIME: Duration = Duration::from_secs(30);
 /// Minimum time to spend collecting samples for the summary table.
 const SUMMARY_MIN_TIME: Duration = Duration::from_secs(3);
 
-/// Estimated bytes of HTML output per contact (without plugin).
+/// Measured bytes of HTML output per contact on [`REQUEST_PATH`] (no plugin).
 /// Used to pre-allocate the writer buffer: `count * BYTES_PER_CONTACT + BASE_HTML_BYTES`.
-const BYTES_PER_CONTACT: usize = 512;
+///
+/// `cb-page-contacts` renders one `cb-contact-card` per contact with 12 dynamic
+/// attributes each, measuring ~2,422 B/contact; rounded up for headroom.
+const BYTES_PER_CONTACT: usize = 2_432;
 
-/// Estimated bytes of HTML output per contact with the hydration plugin.
-/// Plugin adds binding markers per signal/loop, increasing output ~50%.
-const BYTES_PER_CONTACT_WITH_PLUGIN: usize = 768;
+/// Same as [`BYTES_PER_CONTACT`] but with the hydration plugin, which adds
+/// binding markers per signal and loop. Measured ~3,651 B/contact.
+const BYTES_PER_CONTACT_WITH_PLUGIN: usize = 3_712;
 
 /// Approximate size of the static HTML shell (head, header, sidebar, chrome)
-/// that is independent of the contact count.
-const BASE_HTML_BYTES: usize = 8_192;
+/// that is independent of the contact count. Measured ~9,787 B.
+const BASE_HTML_BYTES: usize = 12_288;
 
 /// Same as [`BASE_HTML_BYTES`] but for plugin output which includes extra
-/// hydration scaffolding in the shell.
-const BASE_HTML_BYTES_WITH_PLUGIN: usize = 16_384;
+/// hydration scaffolding in the shell. Measured ~21,314 B.
+const BASE_HTML_BYTES_WITH_PLUGIN: usize = 24_576;
 
 /// Extra headroom added to the bench writer beyond the warmup-measured size,
-/// so the buffer is never reallocated during timed iterations.
+/// so the buffer is never reallocated during timed iterations. Rendering is
+/// deterministic, so the timed output matches the warmup byte-for-byte and this
+/// headroom only absorbs incidental drift.
 const WRITER_HEADROOM: usize = 1_024;
 
-/// Initial capacity for the summary writer. 64 KiB is enough for the largest
-/// render (1,000 contacts with plugin produces ~443 KiB, but the summary pass
-/// reuses the same writer via `clear()`).
-const SUMMARY_WRITER_CAPACITY: usize = 64 * 1024;
+/// Largest scale in [`CONTACT_COUNTS`], used to size the summary writer.
+const MAX_CONTACT_COUNT: usize = {
+    let mut max = 0;
+    let mut idx = 0;
+    while idx < CONTACT_COUNTS.len() {
+        if CONTACT_COUNTS[idx] > max {
+            max = CONTACT_COUNTS[idx];
+        }
+        idx += 1;
+    }
+    max
+};
+
+/// Initial capacity for the summary writer, sized for the largest render the
+/// summary pass performs (1,000 contacts with the plugin, ~3.5 MiB). The writer
+/// is reused across scenarios via `clear()`, so one allocation covers them all.
+const SUMMARY_WRITER_CAPACITY: usize =
+    MAX_CONTACT_COUNT * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN;
 
 /// Expected upper bound of samples collected per summary scenario.
 /// Used only for `Vec::with_capacity` — does not limit collection.
@@ -95,6 +122,8 @@ impl ResponseWriter for BenchWriter {
         self.output.push_str(content);
         Ok(())
     }
+
+    webui_handler::string_response_writer_methods!(output);
 
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
@@ -204,7 +233,7 @@ fn build_contact_state(contact_count: usize) -> Value {
     let recent: Vec<Value> = contacts[contact_count.saturating_sub(recent_count)..].to_vec();
 
     json!({
-        "page": "dashboard",
+        "page": "contacts",
         "searchQuery": "",
         "activeGroup": "all",
         "groups": GROUPS,
@@ -240,7 +269,7 @@ fn contact_book_app_dir() -> PathBuf {
 /// `.pb` file. Any change to `examples/app/contact-book-manager/src/` is
 /// automatically reflected in the next benchmark run, making regressions and
 /// improvements traceable to specific template changes.
-fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
+fn build_contact_book_protocol() -> (Protocol, Vec<u8>) {
     let app_dir = contact_book_app_dir();
     assert!(
         app_dir.join("index.html").exists(),
@@ -257,7 +286,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
     .expect("failed to build contact-book-manager protocol");
 
     let bytes = result.protocol_bytes.clone();
-    (result.protocol, bytes)
+    (Protocol::new(result.protocol), bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +294,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
 // ---------------------------------------------------------------------------
 
 struct BenchFixture {
-    protocol: WebUIProtocol,
+    protocol: Protocol,
     protocol_bytes: Vec<u8>,
     states: Vec<(usize, Value)>,
 }
@@ -311,7 +340,7 @@ fn protocol_deserialization_bench(c: &mut Criterion) {
 
 fn handler_rendering_bench(c: &mut Criterion) {
     let fixture = setup();
-    let mut group = c.benchmark_group("contact_book_render");
+    let mut group = c.benchmark_group("contact_book_contacts_render");
     group.measurement_time(MEASUREMENT_TIME);
 
     for (count, state) in &fixture.states {
@@ -319,10 +348,10 @@ fn handler_rendering_bench(c: &mut Criterion) {
         let handler = WebUIHandler::new();
         let mut warmup_writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
         handler
-            .handle(
+            .render(
                 &fixture.protocol,
                 state,
-                &RenderOptions::new("index.html", "/"),
+                &RenderOptions::new("index.html", REQUEST_PATH),
                 &mut warmup_writer,
             )
             .unwrap_or_else(|e| panic!("warmup render failed for {count} contacts: {e}"));
@@ -334,10 +363,10 @@ fn handler_rendering_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&fixture.protocol),
                     black_box(state),
-                    &RenderOptions::new("index.html", "/"),
+                    &RenderOptions::new("index.html", REQUEST_PATH),
                     &mut w,
                 )
                 .unwrap_or_else(|e| panic!("render failed for {count} contacts: {e}"));
@@ -354,7 +383,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
 
 fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
     let fixture = setup();
-    let mut group = c.benchmark_group("contact_book_render_fast_plugin");
+    let mut group = c.benchmark_group("contact_book_contacts_render_fast_plugin");
     group.measurement_time(MEASUREMENT_TIME);
 
     for (count, state) in &fixture.states {
@@ -362,10 +391,10 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
         let mut warmup_writer =
             BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
         handler
-            .handle(
+            .render(
                 &fixture.protocol,
                 state,
-                &RenderOptions::new("index.html", "/"),
+                &RenderOptions::new("index.html", REQUEST_PATH),
                 &mut warmup_writer,
             )
             .unwrap_or_else(|e| {
@@ -379,10 +408,10 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&fixture.protocol),
                     black_box(state),
-                    &RenderOptions::new("index.html", "/"),
+                    &RenderOptions::new("index.html", REQUEST_PATH),
                     &mut w,
                 )
                 .unwrap_or_else(|e| panic!("render with plugin failed for {count} contacts: {e}"));
@@ -499,7 +528,7 @@ fn collect_parse_samples(name: &str, bytes: &[u8]) -> SummaryRow {
 
 fn collect_render_samples(
     name: &str,
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     state: &Value,
     use_plugin: bool,
 ) -> SummaryRow {
@@ -513,10 +542,10 @@ fn collect_render_samples(
     for _ in 0..RENDER_WARMUP_ITERATIONS {
         writer.clear();
         handler
-            .handle(
+            .render(
                 protocol,
                 state,
-                &RenderOptions::new("index.html", "/"),
+                &RenderOptions::new("index.html", REQUEST_PATH),
                 &mut writer,
             )
             .expect("warmup failed in summary pass");
@@ -531,10 +560,10 @@ fn collect_render_samples(
         writer.clear();
         let start = Instant::now();
         handler
-            .handle(
+            .render(
                 black_box(protocol),
                 black_box(state),
-                &RenderOptions::new("index.html", "/"),
+                &RenderOptions::new("index.html", REQUEST_PATH),
                 &mut writer,
             )
             .expect("render failed in summary pass");
@@ -618,11 +647,48 @@ fn run_summary_pass(fixture: &BenchFixture) {
     print_summary(&rows);
 }
 
+/// Fails fast when the benchmark renders a route whose output does not grow
+/// with the contact count.
+///
+/// Renders [`CONTACT_COUNTS`] in ascending order and requires strictly
+/// increasing output. A route that ignores `contacts`/`filteredContacts` —
+/// such as the dashboard, which caps its list at [`MAX_RECENT_CONTACTS`] —
+/// produces a flat byte count and is rejected here instead of silently
+/// reporting meaningless scaling numbers.
+fn validate_output_scales_with_contacts(fixture: &BenchFixture) {
+    let handler = WebUIHandler::new();
+    let mut previous_bytes = 0;
+
+    for (count, state) in &fixture.states {
+        let mut writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
+        handler
+            .render(
+                &fixture.protocol,
+                state,
+                &RenderOptions::new("index.html", REQUEST_PATH),
+                &mut writer,
+            )
+            .unwrap_or_else(|e| panic!("validation render failed for {count} contacts: {e}"));
+
+        assert!(
+            writer.len() > previous_bytes,
+            "benchmark route {REQUEST_PATH} does not scale with the contact count: \
+             {count} contacts produced {} bytes, which is not more than the {previous_bytes} \
+             bytes produced by the previous, smaller scale",
+            writer.len(),
+        );
+        previous_bytes = writer.len();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Custom main — runs criterion then prints the summary table
 // ---------------------------------------------------------------------------
 
 fn main() {
+    let fixture = setup();
+    validate_output_scales_with_contacts(&fixture);
+
     // Run criterion benchmarks (handles --test, filters, etc.)
     benches();
 

@@ -4,19 +4,23 @@ Components are the building blocks of WebUI applications. They leverage the nati
 
 ## Component Discovery
 
-WebUI uses a component discovery system that automatically scans and registers components at build time:
+WebUI automatically discovers components at build time:
 
-1. The framework scans specified directories for component files
-2. It identifies HTML files with hyphenated names as components
-3. It associates matching CSS and JS files with their components
-4. The discovered components are compiled into the WebUI protocol
+1. WebUI resolves local or npm package roots
+2. The selected plugin discovers component templates and styles
+3. WebUI validates and compiles the components
+
+The `webui` plugin identifies HTML files with hyphenated names and associates
+matching CSS and JavaScript or TypeScript files. Other built-in plugins may
+support different source layouts. See [Plugins](/guide/concepts/plugins/) for
+FAST component discovery.
 
 ### Component File Structure
 
 ```
 my-component.html  # Required - component template
 my-component.css   # Optional - component styles
-my-component.js    # Optional - client-side behavior
+my-component.js    # Optional - authored client behavior
 ```
 
 Components must follow these naming conventions:
@@ -24,11 +28,17 @@ Components must follow these naming conventions:
 - **Hyphen required**: All component names must contain at least one hyphen (e.g., `user-card`, `nav-menu`, `data-table`)
 - **File name = component name**: The HTML file name determines the component's tag name
 
+An HTML-only component still receives compiled browser template metadata, but
+it contributes no initial browser state. When the framework runtime is loaded,
+it can activate the component for browser-applied state or soft navigation. Add
+the JavaScript or TypeScript file only for authored events, lifecycle code,
+decorators, or imperative APIs.
+
 ### The `<template>` Tag
 
-The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
-
-Most components omit it and write just the content:
+Most components write only their content. Shadow is the default fallback for
+that unwrapped content; build with `--dom light` to render it directly in the
+host:
 
 ```html
 <!-- user-card.html -->
@@ -37,7 +47,14 @@ Most components omit it and write just the content:
 <p>{{email}}</p>
 ```
 
-Include it explicitly when you need **root host events** - event listeners on the shadow root that catch events bubbling up from children:
+A sole bare top-level `<template>` is an explicit Light-mode wrapper and is
+unwrapped even when the build fallback is Shadow. Templates with attributes or
+policy directives do not select a mode; use the `shadowrootmode` attribute for
+an explicit Shadow root.
+
+In a Light build, use a sole top-level
+`<template shadowrootmode="open">` when a component must remain Shadow for a
+native `<slot>`, native encapsulation, or root events on the host element:
 
 ```html
 <!-- task-list.html -->
@@ -51,7 +68,15 @@ Include it explicitly when you need **root host events** - event listeners on th
 </template>
 ```
 
-When you include the `<template>` tag, the framework uses yours instead of auto-injecting one.
+The wrapper must contain the complete component. Closed roots, invalid values
+or placement, additional top-level content, and `<slot>` in an unwrapped
+component fail the build. The compiler never generates this wrapper.
+
+Component templates must use browser-valid HTML nesting. WebUI recognizes native
+void tags case-insensitively and accounts for the `<colgroup>` and `<tbody>` that
+browsers imply around direct `<col>` and `<tr>` runs. If an `<if>` or `<for>`
+controls table columns or rows, write the `<colgroup>` or `<tbody>` explicitly
+so its SSR hydration markers share one parser context.
 
 ## How Components Work
 
@@ -65,7 +90,8 @@ When WebUI discovers components:
 
 2. **Runtime**:
    - The server-side handler renders components based on state
-   - Components are output as Declarative Shadow DOM elements
+   - Unwrapped components follow the build's Shadow/Light fallback
+   - Components with a valid sole open wrapper always output Declarative Shadow DOM
    - Dynamic content is injected according to the protocol
 
 ## Component Organization
@@ -153,7 +179,7 @@ The TypeScript file lives alongside the HTML and CSS:
 ```
 user-card/
 ├── user-card.html   ← Template (declarative)
-├── user-card.css    ← Styles (scoped via Shadow DOM)
+├── user-card.css    ← Styles (scoped at build time)
 └── user-card.ts     ← Behavior (TypeScript class)
 ```
 
@@ -162,7 +188,8 @@ user-card/
 WebUI intentionally keeps HTML, CSS, and TypeScript in separate files:
 
 - **HTML** defines structure and data bindings (`{{expr}}`, `<if>`, `<for>`)
-- **CSS** defines visual presentation (scoped via Shadow DOM)
+- **CSS** defines visual presentation. WebUI scopes Light CSS and preserves
+  native Shadow scoping for Shadow components
 - **TypeScript** defines interactive behavior (event handlers, state mutations)
 
 There is no JSX, no CSS-in-JS, and no template literals. This separation
@@ -177,45 +204,36 @@ In addition to discovering components in your app directory, WebUI can load comp
 
 ### npm Packages
 
-Components published as npm packages can be discovered automatically. The package must:
+Install the package into `node_modules/`. Default WebUI discovery derives the
+component name from each hyphenated `<component-name>.html` filename, exactly as
+for local components. It scans the package's `components/` directory when present,
+otherwise the package root. Nested directories are supported; a directory does
+not need to repeat the component name.
 
-1. Be installed via npm, pnpm, or yarn (present in `node_modules/`)
-2. Include a `package.json` with:
-   - `exports["./template-webui.html"]` - the component's HTML template
-   - `exports["./styles.css"]` - the component's CSS (optional)
-   - `customElements` - path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
-
-The Custom Elements Manifest provides the component's tag name:
-
-```json
-{
-  "schemaVersion": "1.0.0",
-  "modules": [{
-    "kind": "javascript-module",
-    "declarations": [{
-      "kind": "class",
-      "name": "MyButton",
-      "tagName": "my-button"
-    }]
-  }]
-}
+```text
+package.json
+components/
+  my-button.html
+  my-button.css
+  my-button.ts
 ```
 
-**Example `package.json`:**
+This registers `<my-button>`. Matching `.css` provides styles; a matching `.ts`
+or `.js` sibling marks only that component as authored. `.spec.ts` files and
+package JavaScript exports do not make unrelated components scripted. Import
+authored browser registrations through the package's module exports separately.
+Scriptless components need neither a registration import nor a projection entry.
 
-```json
-{
-  "name": "@reactive-ui/button",
-  "version": "1.0.0",
-  "customElements": "./custom-elements.json",
-  "exports": {
-    "./template-webui.html": "./dist/template-webui.html",
-    "./styles.css": "./dist/styles.css"
-  }
-}
-```
+When `components/` exists, other package directories such as `dist/` are not
+scanned for duplicate source templates. Hidden directories and nested
+`node_modules/` are skipped.
 
-**Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
+**Scoped packages:** A bare scope such as `@reactive-ui` checks each installed
+sub-package in the nearest matching scope directory for named HTML components.
+An unrelated nearer `node_modules/` does not hide an ancestor's scope.
+Packages without component sources are skipped; failures in declared components
+are reported rather than silently omitted.
+`@scope/*` and `@scope/package/*` can also be used as collection spellings.
 
 ### Local Paths
 
@@ -225,10 +243,14 @@ You can also point to directories outside your app folder:
 webui build ./my-app --out ./dist --components ./shared/components
 ```
 
-Local path discovery works identically to app directory scanning - HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
+Local path discovery works identically to app directory scanning - HTML files with
+hyphenated names are registered as components, matching CSS files are auto-paired,
+and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 
-npm package discovery results are cached at `~/.webui/cache/components/`. The cache invalidates automatically when a package's `package.json` content changes. Local path sources are always re-scanned.
+npm package discovery results are cached at `~/.webui/cache/components/` and
+updated automatically when the selected discovery plugin's source inputs change.
+Local path sources are always re-scanned.
 
 See the [CLI Reference](/guide/cli/) for full `--components` usage.

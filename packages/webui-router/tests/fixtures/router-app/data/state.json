@@ -1,5 +1,6 @@
 {
   "appTitle": "Router Test",
+  "dashboardTitle": "SSR Dashboard",
   "isHome": true,
   "isAlpha": false,
   "isBeta": false,

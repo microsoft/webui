@@ -9,9 +9,8 @@
 
 import {
   ROUTE_SELECTOR,
-  isExact,
-  routeComponent,
   activateRoute,
+  mountedRouteComponent,
   renderRoot,
   createRouteStub,
   setRouteMeta,
@@ -85,7 +84,7 @@ export function findChangeLevel(
   const len = Math.min(oldChain.length, newChain.length);
   for (let i = 0; i < len; i++) {
     if (
-      oldChain[i].component !== newChain[i].component ||
+      !sameRouteDeclaration(oldChain[i], newChain[i]) ||
       !paramsEqual(oldChain[i].params, newChain[i].params)
     ) {
       return i;
@@ -93,6 +92,35 @@ export function findChangeLevel(
   }
   // If chains differ in length, change starts at the shorter length
   return len;
+}
+
+/**
+ * Whether two chain entries represent the same authored route declaration.
+ * Bound params are intentionally excluded because one declaration owns all of
+ * its parameterized instances.
+ */
+export function sameRouteDeclaration(
+  a: Pick<RouteChainEntry, 'component' | 'path'>,
+  b: Pick<RouteChainEntry, 'component' | 'path'>,
+): boolean {
+  return a.component === b.component && a.path === b.path;
+}
+
+function findRouteElement(
+  elements: ArrayLike<Element>,
+  entry: RouteChainEntry,
+): HTMLElement | null {
+  for (let i = 0; i < elements.length; i++) {
+    const child = elements[i];
+    if (
+      child.tagName === 'WEBUI-ROUTE' &&
+      child.getAttribute('component') === entry.component &&
+      child.getAttribute('path') === entry.path
+    ) {
+      return child as HTMLElement;
+    }
+  }
+  return null;
 }
 
 /**
@@ -107,12 +135,8 @@ export function findOrCreateRouteElement(
 ): HTMLElement {
   // For top-level routes, search direct children of body
   if (!parent) {
-    for (const child of document.body.children) {
-      if (child.tagName === 'WEBUI-ROUTE' &&
-          child.getAttribute('component') === entry.component) {
-        return child as HTMLElement;
-      }
-    }
+    const routeEl = findRouteElement(document.body.children, entry);
+    if (routeEl) return routeEl;
     const el = createRouteStub(entry);
     document.body.appendChild(el);
     return el;
@@ -120,25 +144,13 @@ export function findOrCreateRouteElement(
 
   // For nested routes, search in parent component's render root
   if (parent.el) {
-    const compEl = parent.compEl ?? parent.el.querySelector(parent.component);
+    const compEl = parent.compEl ?? mountedRouteComponent(parent.el, parent.component);
     if (compEl) {
       const root = renderRoot(compEl);
       const allRoutes = root.querySelectorAll(ROUTE_SELECTOR);
 
-      // Match by component + path for stronger identity
-      for (const child of allRoutes) {
-        if (child.getAttribute('component') === entry.component &&
-            child.getAttribute('path') === (entry.path || null)) {
-          return child as HTMLElement;
-        }
-      }
-      // Fallback: match by component only (backwards compat)
-      for (const child of allRoutes) {
-        if (child.getAttribute('component') === entry.component) {
-          return child as HTMLElement;
-        }
-      }
-
+      const routeEl = findRouteElement(allRoutes, entry);
+      if (routeEl) return routeEl;
       // Not found — create stub and place in the correct container
       const stub = createRouteStub(entry);
 
@@ -181,37 +193,4 @@ export function paramsEqual(
     if (a[aKeys[i]] !== b[aKeys[i]]) return false;
   }
   return true;
-}
-
-/**
- * Find top-level route elements — direct children of `<body>`.
- */
-export function discoverTopRoutes(): HTMLElement[] {
-  const results: HTMLElement[] = [];
-  for (const child of document.body.children) {
-    if (child.tagName === 'WEBUI-ROUTE') {
-      results.push(child as HTMLElement);
-    }
-  }
-  return results;
-}
-
-/**
- * Find child route elements inside a parent route's component.
- * Traverses: parent route → component → component's render root → `<webui-route>` elements.
- */
-export function discoverChildRoutes(parentRoute: HTMLElement): HTMLElement[] {
-  const results: HTMLElement[] = [];
-  const comp = routeComponent(parentRoute);
-  if (!comp) return results;
-
-  const compEl = parentRoute.querySelector(comp);
-  if (!compEl) return results;
-
-  const root = renderRoot(compEl);
-  for (const child of root.querySelectorAll(ROUTE_SELECTOR)) {
-    results.push(child as HTMLElement);
-  }
-
-  return results;
 }

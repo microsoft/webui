@@ -32,7 +32,10 @@ The binary protocol is the key to WebUI's performance. By moving parsing, expres
 
 ## Server Render Phase
 
-At runtime, the server handler loads the compiled protocol **once** at startup and reuses it for every request.
+At runtime, the server constructs one loaded `Protocol` from the compiled bytes
+at startup and reuses it for every request. Rust, Node, WASM, C, and .NET all
+follow this explicit lifecycle. Protocol decoding and deterministic index
+construction never occur on the request path.
 
 For each incoming request, the handler:
 
@@ -40,7 +43,8 @@ For each incoming request, the handler:
 2. Walks the compiled protocol fragments in order
 3. Copies **static fragments** directly to the output buffer (no processing needed)
 4. Resolves **dynamic fragments** by looking up keys in the JSON state
-5. Emits the final HTML response
+5. Includes only the browser state needed by components on the active route
+6. Emits the final HTML response
 
 ```
 ┌──────────────┐     ┌────────────────┐     ┌──────────────┐
@@ -56,30 +60,39 @@ For each incoming request, the handler:
 - **No expression compilation** - expressions are pre-compiled to key lookups
 - **No JavaScript runtime** - the server is pure native code (Rust, C, or any FFI host)
 
-### Declarative Shadow DOM
+### Light DOM and Declarative Shadow DOM
 
-The rendered HTML includes [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) markup. This means the browser can display fully styled component content **before any JavaScript loads**:
+With `--dom light`, unwrapped components render directly into the custom-element
+host. Paired CSS and component-local `<style>` blocks remain authored/global in
+the owning CSS tree, then the handler installs them in cascade order before
+interactivity starts:
 
 ```html
 <my-card>
-  <template shadowrootmode="open">
-    <style>/* scoped styles */</style>
-    <h2>Card Title</h2>
-    <p>Content rendered on the server</p>
-  </template>
+  <h2>Card Title</h2>
+  <p>Content rendered on the server</p>
 </my-card>
 ```
 
-The user sees rendered content immediately - no blank page, no loading spinner.
+Shadow is the default fallback for unwrapped components. Components whose
+complete template is a sole bare `<template>` explicitly use Light and are
+unwrapped. Components whose complete template is a sole open declarative Shadow
+root use
+[Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom)
+even in a Light build. Both explicit forms display fully styled server content before
+JavaScript.
 
 ## Client Hydration Phase
 
-After the browser renders the server HTML, JavaScript loads and Web Components **hydrate** as independent islands of interactivity.
+After the browser renders the server HTML, authored Web Components **hydrate**
+as independent islands of interactivity. HTML-only components remain as
+server-rendered content unless later navigation or state updates need them.
 
 ### How hydration works
 
 1. **Custom elements upgrade** - the browser calls `connectedCallback` for each registered Web Component
-2. **Shadow root detection** - the framework finds the existing Declarative Shadow DOM root (it does **not** recreate the DOM)
+2. **Existing DOM detection** - the framework uses the rendered Light children
+   or Declarative Shadow DOM root without recreating the DOM
 3. **Bindings wired** - template expressions (`{{count}}`, `?disabled`) are connected to class properties
 4. **Events connected** - `@click`, `@keydown`, and other handlers are attached with their compiled argument scopes
 5. **Reactive state activated** - `@observable` properties become live; changes trigger targeted DOM updates
@@ -113,7 +126,11 @@ Understanding the relationship between server and client is critical for buildin
 
 ### The server is the source of truth for the initial render
 
-Every value bound in a template - `{{expression}}`, `<for each="item in items">`, `<if condition="expr">` - must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys in this JSON object. If a key is missing, the binding renders empty or the condition evaluates to false.
+Every value bound in a template - `{{expression}}`, `<for each="item in items">`,
+`<if condition="expr">` - should have a corresponding key in the server state
+JSON. The handler resolves bindings by looking up keys in this object. Missing
+text and attribute bindings render empty. A missing condition identifier is a
+falsy operand, so its positive branch is hidden and its negated branch is shown.
 
 ### Derived state belongs in the server or the template
 
@@ -126,6 +143,11 @@ If a value must appear in the initial HTML, it must come from the server state J
 ```
 
 For complex derived values, compute them on the server and include them in the state JSON.
+
+State that participates in hydration is client-facing. When enabled with a
+bundler manifest, route-scoped projection reduces serialization work and
+response bytes, but it is not a secrecy boundary. Without a manifest, WebUI
+preserves full state. Do not put secrets in browser render state.
 
 ### The client handles interactivity after hydration
 
@@ -144,10 +166,10 @@ WebUI's architecture is designed so that the most common operation - rendering a
 |-----------|--------|
 | **Pre-serialized static fragments** | Copied byte-for-byte to the output buffer - no processing |
 | **Key-based dynamic resolution** | Simple hash map lookup against JSON state - no expression parsing |
-| **No runtime allocations for structure** | Template shape is fixed at build time; only data values vary |
+| **Loaded protocol reuse** | Decode protobuf and build deterministic indices once at startup |
 | **No JavaScript on the server** | Native code (Rust/C) handles rendering - no VM startup, no GC pauses |
-| **Declarative Shadow DOM** | Browser renders content before JS loads - no white flash |
+| **Light or Declarative Shadow DOM SSR** | Browser renders content before JS loads - no white flash |
 | **Islands Architecture** | Only interactive components ship JS - static content has zero client cost |
-| **Binary Protocol Buffer** | Compact, zero-copy deserialization - faster than JSON or text templates |
+| **Binary Protocol Buffer** | Compact build artifact with no runtime template parsing |
 
 The result: server render times measured in microseconds, not milliseconds. First Contentful Paint that doesn't depend on JavaScript. And client-side interactivity that activates without rebuilding the DOM.

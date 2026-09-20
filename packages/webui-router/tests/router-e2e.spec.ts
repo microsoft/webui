@@ -15,18 +15,243 @@
  */
 
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+interface DashboardPartial {
+  state?: Record<string, unknown>;
+  chain?: Array<{
+    component?: string;
+    path?: string;
+    keepAlive?: boolean;
+    pendingComponent?: string;
+    errorComponent?: string;
+    invalidates?: string[];
+  }>;
+  cacheTags?: string[];
+}
+
+type TransitionTestWindow = typeof window & {
+  __viewTransitions: ViewTransition[];
+  __transitionRejections: Array<{ name: string; message: string; promise: string }>;
+};
+
+async function waitForDashboardRoute(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const dashboard = document.querySelector('route-shell')?.shadowRoot
+      ?.querySelector('route-dashboard');
+    const router = (window as unknown as {
+      __testRouter?: { activeComponent?: string };
+    }).__testRouter;
+    return dashboard &&
+      (dashboard as unknown as { $ready?: boolean }).$ready === true &&
+      router?.activeComponent === 'route-dashboard';
+  });
+}
+
+async function interceptDashboardPartial(
+  page: Page,
+  pathname: string,
+  dashboardTitle?: string,
+  delayMs = 0,
+  release?: Promise<void>,
+): Promise<{ response?: DashboardPartial }> {
+  const capture: { response?: DashboardPartial } = {};
+  await page.route('**/*', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      url.pathname !== pathname ||
+      !request.headers()['accept']?.includes('application/json')
+    ) {
+      await route.continue();
+      return;
+    }
+
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+    const response = await route.fetch();
+    const partial = await response.json() as DashboardPartial;
+    capture.response = partial;
+    const state = { ...partial.state };
+    if (dashboardTitle === undefined) {
+      delete state.dashboardTitle;
+    } else {
+      state.dashboardTitle = dashboardTitle;
+    }
+    await release;
+    await route.fulfill({
+      response,
+      json: {
+        ...partial,
+        state,
+      },
+    });
+  });
+  return capture;
+}
+
+async function dashboardRouteState(page: Page): Promise<{
+  path: string | null;
+  pending: string | null;
+  error: string | null;
+  keepAlive: boolean;
+  marker: string | null;
+}> {
+  return page.evaluate(() => {
+    const routes = document.querySelector('route-shell')?.shadowRoot
+      ?.querySelectorAll<HTMLElement>('webui-route');
+    const active = routes
+      ? Array.from(routes).find(route => route.hasAttribute('active'))
+      : undefined;
+    const dashboard = active?.querySelector('route-dashboard') as
+      | (HTMLElement & { __identityMarker?: string })
+      | null;
+    return {
+      path: active ? active.getAttribute('path') ?? '' : null,
+      pending: active?.getAttribute('pending') ?? null,
+      error: active?.getAttribute('error') ?? null,
+      keepAlive: active?.hasAttribute('keep-alive') ?? false,
+      marker: dashboard?.__identityMarker ?? null,
+    };
+  });
+}
 
 test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(10);
+    await expect(page.locator('nav a')).toHaveCount(11);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
     await page.goto('/alpha');
     await expect(page.locator('h2')).toContainText('Alpha Page');
     await expect(page.locator('.content')).toContainText('Welcome to the Alpha page');
+  });
+
+  test.describe('route declaration identity', () => {
+    test('direct /projects SSR switches to the distinct root declaration', async ({ page }) => {
+      await page.goto('/projects');
+      await waitForDashboardRoute(page);
+      await expect(page.getByTestId('dashboard-title')).toHaveText('SSR Dashboard');
+
+      await page.evaluate(() => {
+        const dashboard = document.querySelector('route-shell')?.shadowRoot
+          ?.querySelector<HTMLElement>('webui-route[active] route-dashboard');
+        if (dashboard) {
+          (dashboard as HTMLElement & { __identityMarker?: string }).__identityMarker =
+            'projects-ssr';
+        }
+      });
+
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: 'projects-ssr',
+      });
+
+      const release = Promise.withResolvers<void>();
+      const rootPartial = await interceptDashboardPartial(page, '/', 'Catalog', 0, release.promise);
+      try {
+        await page.locator('a[href="/"]').click();
+        await expect.poll(() => rootPartial.response).toBeDefined();
+        await expect.soft(page.locator('loading-skeleton[data-webui-pending]'))
+          .toBeVisible({ timeout: 1000 });
+      } finally {
+        release.resolve();
+      }
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('Catalog');
+
+      expect(rootPartial.response?.chain?.at(-1)).toMatchObject({
+        component: 'route-dashboard',
+        path: '',
+        pendingComponent: 'loading-skeleton',
+        invalidates: ['catalog-route'],
+      });
+      expect(rootPartial.response?.chain?.at(-1)?.keepAlive).toBeUndefined();
+      expect(rootPartial.response?.cacheTags).toContain('catalog-route');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: '',
+        pending: 'loading-skeleton',
+        error: 'error-display',
+        keepAlive: false,
+        marker: null,
+      });
+
+      await page.unroute('**/*');
+      await interceptDashboardPartial(page, '/projects');
+      await page.evaluate(() => {
+        window.navigation.navigate('/projects');
+      });
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('SSR Dashboard');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: 'projects-ssr',
+      });
+    });
+
+    test('direct root SSR switches to the distinct /projects declaration', async ({ page }) => {
+      await page.goto('/');
+      await waitForDashboardRoute(page);
+      await expect(page.getByTestId('dashboard-title')).toHaveText('SSR Dashboard');
+
+      expect(await dashboardRouteState(page)).toEqual({
+        path: '',
+        pending: 'loading-skeleton',
+        error: 'error-display',
+        keepAlive: false,
+        marker: null,
+      });
+
+      const projectsPartial = await interceptDashboardPartial(
+        page,
+        '/projects',
+        'Projects',
+        350,
+      );
+      await page.evaluate(() => {
+        window.navigation.navigate('/projects');
+      });
+
+      await page.waitForTimeout(250);
+      await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('Projects');
+
+      expect(projectsPartial.response?.chain?.at(-1)).toMatchObject({
+        component: 'route-dashboard',
+        path: 'projects',
+        keepAlive: true,
+        pendingComponent: 'error-display',
+        errorComponent: 'error-display',
+        invalidates: ['projects-route'],
+      });
+      expect(projectsPartial.response?.cacheTags).toContain('projects-route');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: null,
+      });
+    });
   });
 
   test('beta page renders via SSR', async ({ page }) => {
@@ -56,6 +281,79 @@ test.describe('client-side navigation', () => {
       { timeout: 5000 },
     );
     await page.waitForTimeout(300);
+  });
+
+  test.describe('pre-hydration route intent', () => {
+    test('prefetches once, then activates components and router on click', async ({ page }) => {
+      const requests: string[] = [];
+      let compilerMarker = false;
+      let servedNdjson = false;
+      page.on('request', (request) => {
+        if (
+          request.url().endsWith('/beta')
+          && request.headers()['accept']?.includes('application/json')
+        ) {
+          requests.push(request.url());
+        }
+      });
+      await page.route('**/*', async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (
+          url.pathname === '/beta'
+          && request.headers()['accept']?.includes('application/json')
+        ) {
+          const response = await route.fetch();
+          const body = await response.text();
+          servedNdjson = true;
+          await route.fulfill({
+            response,
+            body: `${body}\n`,
+            contentType: 'application/x-ndjson',
+          });
+          return;
+        }
+        if (
+          request.resourceType() !== 'document'
+          || !url.searchParams.has('interaction-app')
+        ) {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const html = (await response.text()).replace(
+          'src="/index.js"',
+          'src="/interaction-entry.js"',
+        );
+        compilerMarker = html.includes('data-webui-interaction');
+        await route.fulfill({ response, body: html });
+      });
+      await page.goto('/?interaction-app=1');
+      await page.waitForFunction(
+        () => (window as unknown as {
+          __testInteractionInstalled?: boolean;
+        }).__testInteractionInstalled === true,
+      );
+      expect(compilerMarker).toBe(true);
+      await expect(page.locator('[data-webui-interaction]')).toHaveCount(0);
+      expect(await page.evaluate(
+        () => customElements.get('route-shell') === undefined,
+      )).toBe(true);
+
+      await Promise.all([
+        page.waitForResponse((response) => response.url().endsWith('/beta')),
+        page.getByRole('link', { name: 'Beta' }).hover(),
+      ]);
+      await page.getByRole('link', { name: 'Beta' }).click();
+      await expect(page).toHaveURL(/\/beta$/);
+      await expect(page.locator('page-beta')).toBeVisible();
+      expect(await page.evaluate(
+        () => customElements.get('route-shell') !== undefined,
+      )).toBe(true);
+      expect(servedNdjson).toBe(true);
+      await expect(page.locator('[data-webui-interaction]')).toHaveCount(0);
+      expect(requests).toHaveLength(1);
+    });
   });
 
   test('navigates without full page reload', async ({ page }) => {
@@ -292,6 +590,56 @@ test.describe('query parameter passing', () => {
 });
 
 test.describe('ensureLoaded — non-route components', () => {
+  test('waits for Link stylesheet readiness before resolving', async ({ page }) => {
+    let releaseCss!: () => void;
+    let cssRequested!: () => void;
+    const cssGate = new Promise<void>(resolve => {
+      releaseCss = resolve;
+    });
+    const requestSeen = new Promise<void>(resolve => {
+      cssRequested = resolve;
+    });
+    await page.route('**/test-dialog.css', async route => {
+      cssRequested();
+      await cssGate;
+      await route.continue();
+    });
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+
+    await page.evaluate(() => {
+      const target = window as typeof window & { __ensureLoadedResolved?: boolean };
+      target.__ensureLoadedResolved = false;
+      const router = (window as any).__testRouter;
+      void router.ensureLoaded('test-dialog').then(() => {
+        target.__ensureLoadedResolved = true;
+      });
+    });
+    await requestSeen;
+    await page.evaluate(async () => {
+      await new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+    });
+    expect(await page.evaluate(() => {
+      const target = window as typeof window & { __ensureLoadedResolved?: boolean };
+      return {
+        registered: !!window.__webui?.templates?.['test-dialog'],
+        resolved: target.__ensureLoadedResolved,
+      };
+    })).toEqual({ registered: true, resolved: false });
+
+    releaseCss();
+    await page.waitForFunction(() => {
+      return (window as typeof window & {
+        __ensureLoadedResolved?: boolean;
+      }).__ensureLoadedResolved === true;
+    });
+  });
+
   test('ensureLoaded registers a component template from the server', async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(() => {
@@ -463,43 +811,360 @@ test.describe('route loaders', () => {
   });
 });
 
+test.describe('view transition rejection ownership', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await waitForDashboardRoute(page);
+    await page.evaluate(() => {
+      const runtime = window as TransitionTestWindow;
+      runtime.__viewTransitions = [];
+      runtime.__transitionRejections = [];
+      const start = document.startViewTransition.bind(document);
+      document.startViewTransition = (...args) => {
+        const transition = start(...args);
+        runtime.__viewTransitions.push(transition);
+        return transition;
+      };
+      window.addEventListener('unhandledrejection', event => {
+        const transition = runtime.__viewTransitions.find(candidate =>
+          candidate.ready === event.promise ||
+          candidate.finished === event.promise ||
+          candidate.updateCallbackDone === event.promise,
+        );
+        runtime.__transitionRejections.push({
+          name: event.reason?.name,
+          message: event.reason?.message,
+          promise: !transition ? 'other'
+            : event.promise === transition.ready ? 'ready'
+              : event.promise === transition.finished ? 'finished' : 'updateCallbackDone',
+        });
+      });
+    });
+  });
+
+  test('a committed route can immediately resize without an unhandled rejection', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.evaluate(() => new Promise<void>(resolve => {
+      window.addEventListener('webui:route:navigated', () => resolve(), { once: true });
+      window.navigation.navigate('/alpha');
+    }));
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    // Let the browser dispatch rejection events before inspecting the promises.
+    await page.evaluate(() => new Promise<void>(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    ));
+    const result = await page.evaluate(async () => {
+      const runtime = window as TransitionTestWindow;
+      const transition = runtime.__viewTransitions[0];
+      await transition.finished;
+      return {
+        rejections: runtime.__transitionRejections,
+      };
+    });
+    expect(result.rejections).toEqual([]);
+    expect(errors).toEqual([]);
+    await expect(page.locator('h2')).toHaveText('Alpha Page');
+  });
+
+  test('a throwing route destroy logs the original error without duplicate native rejections', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const response = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/alpha' &&
+      response.request().headers()['accept']?.includes('application/json') === true,
+    );
+    const result = await page.evaluate(async () => {
+      const runtime = window as TransitionTestWindow;
+      const dashboard = document.querySelector('route-shell')?.shadowRoot
+        ?.querySelector<HTMLElement & { $destroy(): void }>('route-dashboard');
+      if (!dashboard) throw new Error('the dashboard route must be mounted');
+      const failure = new Error('route destroy failed');
+      const destroy = dashboard.$destroy;
+      const logError = console.error;
+      const loggedErrors: unknown[] = [];
+      let notifications = 0;
+      const onNavigated = (): void => { notifications++; };
+      window.addEventListener('webui:route:navigated', onNavigated);
+      dashboard.$destroy = () => { throw failure; };
+      console.error = (...args: unknown[]) => {
+        if (args[0] === '[Router] Navigation error:') loggedErrors.push(args[1]);
+        logError(...args);
+      };
+      try {
+        await window.navigation.navigate('/alpha').finished;
+        // Observe native promises only after unhandledrejection can be dispatched.
+        await new Promise<void>(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        const transition = runtime.__viewTransitions[0];
+        const states = await Promise.allSettled([
+          transition.ready, transition.updateCallbackDone, transition.finished,
+        ]);
+        return {
+          transitions: runtime.__viewTransitions.length,
+          states: states.map(state =>
+            state.status === 'rejected' && state.reason === failure),
+          loggedErrors: loggedErrors.map(error => error === failure),
+          notifications,
+          rejections: runtime.__transitionRejections,
+        };
+      } finally {
+        dashboard.$destroy = destroy;
+        console.error = logError;
+        window.removeEventListener('webui:route:navigated', onNavigated);
+      }
+    });
+    const partialResponse = await response;
+    expect(partialResponse.ok()).toBe(true);
+    expect((await partialResponse.json()).chain).toEqual(expect.arrayContaining([
+      expect.objectContaining({ component: 'page-alpha' }),
+    ]));
+    expect(result.transitions).toBe(1);
+    expect(result.states).toEqual([true, true, true]);
+    expect(result.loggedErrors).toEqual([true]);
+    expect(result.notifications).toBe(0);
+    expect(result.rejections).toEqual([]);
+    expect(errors).toEqual([]);
+    await expect(page.locator('route-dashboard')).toHaveCount(1);
+    await expect(page.locator('page-alpha')).toHaveCount(0);
+  });
+
+  for (const reason of ['superseded', 'invalidated'] as const) {
+    test(`${reason} native transitions do not reject a committed route`, async ({ page }) => {
+      const errors: string[] = [];
+      page.on('pageerror', error => errors.push(error.message));
+      await page.evaluate(cause => new Promise<void>(resolve => {
+        if (cause === 'invalidated') {
+          // Duplicate snapshot names invalidate native animation preparation.
+          document.documentElement.style.viewTransitionName = 'duplicate';
+          document.body.style.viewTransitionName = 'duplicate';
+        }
+        window.addEventListener('webui:route:navigated', () => {
+          if (cause === 'superseded') {
+            document.startViewTransition(() => {});
+          }
+          resolve();
+        }, { once: true });
+        window.navigation.navigate('/alpha');
+      }), reason);
+      await page.evaluate(() => new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ));
+      const result = await page.evaluate(async () => {
+        const runtime = window as TransitionTestWindow;
+        const transition = runtime.__viewTransitions[0];
+        const states = await Promise.allSettled([
+          transition.ready, transition.updateCallbackDone, transition.finished,
+        ]);
+        return {
+          states: states.map(state => state.status === 'fulfilled'
+            ? 'fulfilled' : state.reason.name),
+          rejections: runtime.__transitionRejections,
+        };
+      });
+      expect(result.states).toEqual([
+        reason === 'superseded' ? 'AbortError' : 'InvalidStateError',
+        'fulfilled',
+        'fulfilled',
+      ]);
+      expect(result.rejections).toEqual([]);
+      expect(errors).toEqual([]);
+      await expect(page.locator('h2')).toHaveText('Alpha Page');
+    });
+  }
+});
+
 test.describe('pending UI', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await page.waitForFunction(() => {
-      const el = document.querySelector('route-shell');
-      return el && (el as any).$ready === true;
-    }, null);
-    await page.waitForFunction(
-      () => !!(window as any).navigation,
-      null,
-      { timeout: 5000 },
-    );
-    await page.waitForTimeout(300);
+    await waitForDashboardRoute(page);
   });
 
   test('shows pending skeleton during slow navigation then replaces with real content', async ({ page }) => {
-    // Intercept the partial JSON fetch for /slow and delay it by 500ms
+    const received = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     await page.route('**/slow', async (route) => {
       const request = route.request();
       if (request.headers()['accept']?.includes('application/json')) {
-        // Delay the response to trigger pending UI (threshold is 150ms)
-        await new Promise(r => setTimeout(r, 500));
-        await route.continue();
+        const response = await route.fetch();
+        received.resolve();
+        await release.promise;
+        await route.fulfill({ response });
       } else {
         await route.continue();
       }
     });
 
-    // Navigate to the slow page
-    await page.click('a[href="/slow"]');
-
-    // The loading skeleton element should appear after ~150ms
-    await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
-
-    // After the fetch completes (~500ms), real content should replace the skeleton
+    try {
+      await page.click('a[href="/slow"]');
+      await received.promise;
+      await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
+    } finally {
+      release.resolve();
+    }
     await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('h2')).toContainText('Slow Page');
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+  });
+
+  test('atomically settles pending UI across consecutive same-component commits', async ({ page }) => {
+    await page.goto('/items/0');
+    await page.waitForFunction(() => {
+      const shell = document.querySelector('route-shell');
+      return shell && (shell as { $ready?: boolean }).$ready === true;
+    });
+    await expect(page.locator('page-detail h2')).toHaveText('Item 0');
+
+    await page.evaluate(() => {
+      type DetailConstructor = CustomElementConstructor & {
+        loader?: (context: {
+          params: Record<string, string>;
+        }) => Promise<Record<string, unknown>>;
+      };
+      type PendingTestWindow = Window & {
+        __pendingCommitSnapshots?: number[];
+        __releaseDetailLoader?: () => void;
+      };
+
+      const runtime = window as PendingTestWindow;
+      const detail = customElements.get('page-detail') as DetailConstructor | undefined;
+      const startViewTransition = document.startViewTransition?.bind(document);
+      if (!detail || !startViewTransition) {
+        throw new Error('pending lifecycle test requires page-detail and View Transitions');
+      }
+
+      runtime.__pendingCommitSnapshots = [];
+      document.startViewTransition = ((update: () => void) =>
+        startViewTransition(() => {
+          update();
+          const root = document.querySelector('route-shell')?.shadowRoot;
+          runtime.__pendingCommitSnapshots?.push(
+            root?.querySelectorAll('[data-webui-pending]').length ?? -1,
+          );
+        })) as typeof document.startViewTransition;
+
+      detail.loader = ({ params }) => new Promise(resolve => {
+        runtime.__releaseDetailLoader = () => {
+          delete runtime.__releaseDetailLoader;
+          resolve({ itemId: params.itemId });
+        };
+      });
+    });
+
+    for (const itemId of ['1', '2']) {
+      const committed = page.evaluate((nextItemId) => {
+        return new Promise<{ heading: string | null; pendingAtEvent: number }>(resolve => {
+          window.addEventListener('webui:route:navigated', () => {
+            const root = document.querySelector('route-shell')?.shadowRoot;
+            const detail = root?.querySelector<HTMLElement>('page-detail');
+            resolve({
+              heading: detail?.shadowRoot?.querySelector('h2')?.textContent ?? null,
+              pendingAtEvent:
+                root?.querySelectorAll('[data-webui-pending]').length ?? -1,
+            });
+          }, { once: true });
+          window.navigation.navigate(`/items/${nextItemId}`);
+        });
+      }, itemId);
+
+      await page.waitForFunction(
+        () => typeof (window as Window & {
+          __releaseDetailLoader?: () => void;
+        }).__releaseDetailLoader === 'function',
+      );
+      await expect(page.locator('[data-webui-pending]')).toBeVisible();
+      await expect(page.locator('page-detail h2')).not.toHaveText(`Item ${itemId}`);
+
+      await page.evaluate(() => {
+        (window as Window & {
+          __releaseDetailLoader?: () => void;
+        }).__releaseDetailLoader?.();
+      });
+
+      expect(await committed).toEqual({
+        heading: `Item ${itemId}`,
+        pendingAtEvent: 0,
+      });
+      await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
+    }
+
+    expect(await page.evaluate(
+      () => (window as Window & {
+        __pendingCommitSnapshots?: number[];
+      }).__pendingCommitSnapshots,
+    )).toEqual([0, 0]);
+  });
+
+  test('shows the destination pending boundary after a prior route is active', async ({ page }) => {
+    await page.goto('/alpha');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.evaluate(() => {
+      const shell = document.querySelector('route-shell');
+      const beta = shell?.shadowRoot?.querySelector('webui-route[component="page-beta"]');
+      beta?.setAttribute('pending', 'error-display');
+    });
+    await page.route('**/slow', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+
+    await page.click('a[href="/slow"]');
+
+    const pending = page.locator('loading-skeleton');
+    await expect(pending).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('error-display')).toHaveCount(0);
+    const host = await pending.evaluate((element) => {
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host.tagName : null;
+    });
+    expect(host).toBe('ROUTE-SHELL');
+  });
+
+  test('prefers a literal destination boundary over the active parameter route', async ({ page }) => {
+    await page.goto('/items/1');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.route('**/items/settings', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+    await page.evaluate(() => {
+      const link = document.createElement('a');
+      link.href = '/items/settings';
+      link.textContent = 'Settings';
+      document.body.appendChild(link);
+    });
+
+    await page.click('a[href="/items/settings"]');
+
+    await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('error-display')).toHaveCount(0);
+  });
+
+  test('skips pending for an unvisited keep-alive destination', async ({ page }) => {
+    await page.route('**/keepalive', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+
+    await page.click('a[href="/keepalive"]');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+    await expect(page.locator('page-keepalive')).toBeVisible({ timeout: 5000 });
   });
 
   test('skips pending for fast navigations', async ({ page }) => {
@@ -567,6 +1232,66 @@ test.describe('error boundaries', () => {
 
     // The error display element should be mounted
     await expect(page.locator('error-display')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('shows the root error boundary after a catch-all SSR entry', async ({ page }) => {
+    await page.goto('/not-found');
+    await page.waitForFunction(() => (window as Window & {
+      __testRouter?: { activeComponent: string };
+    }).__testRouter?.activeComponent === 'page-alpha');
+    await page.route('**/', route => route.fulfill({
+      status: 503,
+      contentType: 'text/plain',
+      body: 'Service unavailable',
+    }));
+
+    await page.locator('a[href="/"]').click();
+    await expect(page.locator('error-display[data-webui-error]')).toBeVisible();
+  });
+
+  test('shows the destination error boundary after a prior route is active', async ({ page }) => {
+    await page.goto('/alpha');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.evaluate(() => {
+      const shell = document.querySelector('route-shell');
+      const beta = shell?.shadowRoot?.querySelector('webui-route[component="page-beta"]');
+      beta?.setAttribute('error', 'loading-skeleton');
+      const failing = shell?.shadowRoot?.querySelector('webui-route[component="page-failing"]');
+      failing?.setAttribute('pending', 'loading-skeleton');
+    });
+    await page.route('**/failing', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 300));
+        await route.fulfill({
+          status: 500,
+          contentType: 'text/plain',
+          body: 'Internal Server Error',
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.click('a[href="/failing"]');
+
+    const error = page.locator('error-display');
+    await expect(error).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+    const host = await error.evaluate((element) => {
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host.tagName : null;
+    });
+    expect(host).toBe('ROUTE-SHELL');
+
+    await page.unroute('**/failing');
+    await page.evaluate(() => {
+      (window as any).navigation.navigate('/alpha?retry=1');
+    });
+    await expect(page.locator('page-alpha')).toBeVisible({ timeout: 5000 });
+    await expect(error).toHaveCount(0);
   });
 
   test('error component does not appear for successful navigations', async ({ page }) => {

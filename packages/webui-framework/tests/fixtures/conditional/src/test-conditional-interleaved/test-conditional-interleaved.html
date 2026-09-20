@@ -1,0 +1,19 @@
+<if condition="showStats"><header class="head">head</header></if>
+<section class="box">
+  <div class="box-head">
+    <if condition="compact"><h1 class="compact-title">compact title</h1></if>
+    <if condition="!compact"><h2 class="full-title">full title</h2></if>
+  </div>
+  <div class="box-body">body</div>
+  <if condition="compact"><div class="extra">extra</div></if>
+</section>
+<if condition="showStats">
+  <section class="stats">
+    <div class="grid">
+      <div class="cell">
+        <if condition="value"><span class="num">{{value}}</span></if>
+        <if condition="!value"><span class="num pending">pending</span></if>
+      </div>
+    </div>
+  </section>
+</if>

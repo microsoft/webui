@@ -8,22 +8,30 @@ change and compares.
 This document is the reference for what to run, when to run it, and
 how to compare results.
 
+Production cross-framework measurements live in the standalone
+[microsoft/webui-benchmarks](https://github.com/microsoft/webui-benchmarks)
+repository. This document covers the implementation benchmarks maintained with
+WebUI itself.
+
 ## Quick reference
 
 | Bench | Layer | Wall time | What it measures | Use when |
 |---|---|---|---|---|
-| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
+| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, watcher hashing, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
+| `cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench` | criterion micro | ~20 s | small/large file hashing and event bursts with reused scratch | watcher hashing CPU and I/O tradeoffs |
+| `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
+| `cargo xtask bench lazy-hydration` | Playwright + CDP | ~1 min | hydration, heap, rendering, and trace metrics at 10/100/1000 rows | validating offscreen work reduction |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
 
 ## The before/after workflow
 
-All benches support **named baselines**. The flag pattern is
-identical across criterion, example, and Playwright benches:
+Criterion, example, and Playwright benches support **named before/after
+baselines**:
 
 ```bash
 # 1. Snapshot current numbers as 'before'
@@ -40,21 +48,69 @@ Baselines are stored at `target/bench-baselines/`:
 * `streaming-resource-<name>.json`  — alloc + RSS + CPU table
 * `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
 * `browser-<name>.json`             — browser metrics table
-* `target/criterion/<bench>/<name>` — criterion's native baseline
-                                       directory tree
+* `browser-lazy-hydration-<name>.json` — offscreen rendering/hydration matrix
+* `node-addon-<name>.json`          — Node/V8/N-API latency table
+* `target/criterion/<bench>/<name>`   — criterion's native baseline directory tree
 
 The compare phase prints a Δ%-table for every row. Negative Δ% =
 improvement; positive = regression.
+
+### Criterion baselines are recorded per target
+
+`cargo xtask bench all` invokes each Criterion target separately —
+`cargo bench -p <package> --bench <target> -- --save-baseline NAME` — rather
+than a single `cargo bench --workspace`. A workspace-wide run forwards
+Criterion's flags to *every* benchable target, including the libtest
+unit-test harnesses of libraries and binaries, which abort with
+`error: Unrecognized option: 'save-baseline'` before a single baseline is
+written.
+
+Because each target runs on its own, criterion writes one baseline directory
+per bench:
+
+```bash
+cargo xtask bench all --save-baseline before
+# target/criterion/<group>/<bench-id>/before/ for every Criterion target
+```
+
+The target list lives in `CRITERION_BENCHES` in `xtask/src/main.rs`. Add new
+`benches/*.rs` harnesses there so `bench all` and its baselines pick them up.
+
+### Updating the homepage benchmark snapshot
+
+The docs homepage consumes only
+`docs/.webui-press/state/benchmark-summary.json`. From the
+`microsoft/webui-benchmarks` repository root, export the validated compact DTO
+after matching progressive SSR, complete SSR, and headed browser runs:
+
+```bash
+pnpm run export:summary -- \
+  --input results/ssr-todo-<official-name>.json \
+  --complete-input results/ssr-todo-<official-name>-complete.json \
+  --browser-input results/ssr-todo-browser-outcomes-<official-name>.json \
+  --output results/benchmark-summary.json
+```
+
+Every `results/` path above belongs to `microsoft/webui-benchmarks`. The
+exporter rejects quick, incomplete, noncanonical, or mismatched captures and
+publishes exactly five selectors in this order: **No Streaming RPS**,
+**Streaming RPS**, **LCP**, **JS Heap**, and **Renderer Private MB**. **No
+Streaming RPS** is selected by default. Copy only the generated
+`results/benchmark-summary.json` to
+`webui/docs/.webui-press/state/benchmark-summary.json`. Keep full raw captures
+and machine evidence in `webui-benchmarks` or its CI artifacts; do not copy
+them into the WebUI documentation tree.
 
 ### Threshold guidance
 
 | Source | Treat as noise | Treat as signal |
 |---|---|---|
 | criterion (well-isolated wall-clock) | < ±2% | > ±5% |
-| streaming-resource (alloc count) | exact — any change matters | any non-zero |
+| streaming-resource (alloc count) | exact; any change matters | any non-zero |
 | streaming-resource (bytes, CPU) | < ±2% | > ±5% |
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
+| node-addon P50 (V8/N-API) | < ±5% | > ±10% |
 
 ## Anatomy of each bench
 
@@ -65,16 +121,36 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-parser/benches/parser_bench.rs`
 * `crates/webui-protocol/benches/protocol_bench.rs`
 * `crates/webui-handler/benches/handler_bench.rs`
+* `crates/webui-handler/benches/streaming_hydration_bench.rs` - buffered,
+  fused-streaming, and async-resumable split-path comparisons
 * `crates/webui-expressions/benches/expressions_bench.rs`
 * `crates/webui-state/benches/state_bench.rs`
-* `crates/webui/benches/contact_book_bench.rs` — end-to-end render
-* `crates/webui/benches/streaming_bench.rs` — writer-path wall-clock + TTFB
+* `crates/webui/benches/contact_book_bench.rs`: end-to-end render
+* `crates/webui/benches/streaming_bench.rs`: writer-path wall-clock + TTFB
+* `crates/webui-dev-server/benches/watch_hash_bench.rs`: file hashing and
+  32-file bursts with one reusable scratch buffer
+* `crates/webui/benches/component_assets_bench.rs`: static asset graph rendering
+* `crates/webui/benches/server_request_bench.rs`: router-aware full HTML and
+  JSON requests, including sparse projection from a large parsed state tree
 
 These integrate with criterion's HTML reports
 (`target/criterion/report/index.html`) and native baseline support
 (`--save-baseline NAME` / `--baseline NAME`). `cargo xtask bench`
 passes those flags through so you don't need to remember `cargo
 bench` invocation details.
+
+The watcher hashing benchmark includes opening and metadata, but creates its
+fixtures outside timing. Run the same harness against both implementations:
+
+```bash
+cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench -- --save-baseline before
+cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench -- --baseline before
+```
+
+Report small-file bursts as well as large files: bounded reads can trade extra
+I/O calls for lower content-buffer allocation. Distinguish Criterion's printed
+time estimates from extracted median estimates, and source-derived buffer
+bounds from measured process RSS.
 
 ### `streaming-resource` (counting allocator + getrusage)
 
@@ -86,11 +162,11 @@ run a clean process where every `alloc` we observe came from the code
 under test (or its dependencies).
 
 Reports per (path × scale):
-- **allocs/run** — exact count from the custom allocator
-- **bytes/run** — exact bytes requested from the allocator
-- **wall µs/run** — `Instant::elapsed()` per iteration
-- **user µs/run** — `getrusage(RUSAGE_SELF).ru_utime` delta
-- **process RSS** — `ru_maxrss` high-water mark
+- **allocs/run:** exact count from the custom allocator
+- **bytes/run:** exact bytes requested from the allocator
+- **wall µs/run:** `Instant::elapsed()` per iteration
+- **user µs/run:** `getrusage(RUSAGE_SELF).ru_utime` delta
+- **process RSS:** `ru_maxrss` high-water mark
 
 This is the **only** bench in the suite that gives you exact
 allocation numbers. Use it to verify "zero per-write allocation"
@@ -115,11 +191,11 @@ with its own actix server and a Playwright spec that drives Chromium
 through `PerformanceObserver`. Reports the **only** browser-perceived
 metrics in the suite:
 
-- **TTFB** — `responseStart - requestStart` from `PerformanceNavigationTiming`
-- **FCP** — first-contentful-paint from `PerformanceObserver`
-- **LCP** — largest-contentful-paint from `PerformanceObserver`
-- **DCL** — `domContentLoadedEventEnd - startTime`
-- **load** — `loadEventEnd - startTime`
+- **TTFB:** `responseStart - requestStart` from `PerformanceNavigationTiming`
+- **FCP:** first-contentful-paint from `PerformanceObserver`
+- **LCP:** largest-contentful-paint from `PerformanceObserver`
+- **DCL:** `domContentLoadedEventEnd - startTime`
+- **load:** `loadEventEnd - startTime`
 
 This is the bench that answers "does streaming actually help users
 see the page faster?" The HTTP-level benches prove the bytes get to
@@ -129,6 +205,47 @@ The spec also asserts a **hard regression check**: at the 100 ms
 render scenario, streaming TTFB must be ≥5× lower than buffered
 TTFB. If that ever fails, something is fundamentally wrong with the
 implementation.
+
+### `node-addon` (Node.js + N-API)
+
+`examples/integration/node-addon-bench/` is a separate pnpm package
+that loads the release `microsoft-webui-node` artifact through the
+public `@microsoft/webui` API. Unlike a Rust benchmark, it includes
+V8/N-API string and callback crossings:
+
+- **Protocol construction:** Node `Buffer` to protobuf decode/index after the addon is loaded
+- **JSON-string render:** N-API conversion, JSON parse, Rust render,
+  and the returned UTF-8 Node `Buffer`
+- **Object render:** the same path plus public-wrapper
+  `JSON.stringify`
+- **Streaming first callback:** state conversion and JSON parse,
+  followed by rendering until JavaScript receives the first 16 KiB chunk
+- **Streaming total:** all callback crossings and complete render
+
+It uses the same Contact Book fixture and 10/100/1000 scales as the
+Rust end-to-end benchmark, rendering `/contacts` so output grows with
+the workload. The first-callback metric is in-process; it is not HTTP
+TTFB. The runner verifies JSON-string, object-state, and streamed output are
+byte-identical before collecting samples.
+
+### `lazy-hydration` (offscreen hydration matrix)
+
+`cargo xtask bench lazy-hydration` drives the Playwright + CDP lazy-hydration
+matrix in `examples/integration/streaming-browser-bench` across the `eager`,
+`lazy-hydrate`, and `lazy-render` modes at 10/100/1000 rows. It reports bundle
+init cost, hydration CPU, hydrated-root and listener counts, JS heap, rendering
+trace metrics, and validated interaction counts.
+
+```bash
+cargo xtask bench lazy-hydration --save-baseline before
+# … change …
+cargo xtask bench lazy-hydration --baseline before
+```
+
+The command maps its baseline flags onto the `WEBUI_LAZY_HYDRATION_SAVE` and
+`WEBUI_LAZY_HYDRATION_COMPARE` env vars consumed by the spec, and writes
+`target/bench-baselines/browser-lazy-hydration-<name>.json`. See the bench
+README for run-count, mode-subset, and framework-source overrides.
 
 ## Recommended PR workflow
 
@@ -156,16 +273,29 @@ cargo xtask bench all --save-baseline before
 cargo xtask bench all --baseline before
 ```
 
+For changes touching `crates/webui-node/` or `packages/webui/` runtime
+render methods:
+
+```bash
+cargo xtask bench node-addon --save-baseline before
+# … change …
+cargo xtask bench node-addon --baseline before
+```
+
+Run both phases on the same machine and Node major version. Paste the
+P50 comparison table into the PR description; use P95/P99 to diagnose
+tail behavior rather than as a hard gate.
+
 The criterion `--baseline` flag emits the per-bench `change:` lines
 inline (e.g. `Performance has improved` / `regressed` / `within
 noise threshold`).
 
 ## Where the data lives
 
-* **Stdout** — every bench prints a human-readable table.
-* **JSON snapshots** — non-criterion benches write to
+* **Stdout:** every bench prints a human-readable table.
+* **JSON snapshots:** non-criterion benches write to
   `target/bench-baselines/`.
-* **Criterion HTML** — `target/criterion/report/index.html` for full
+* **Criterion HTML:** `target/criterion/report/index.html` for full
   PDF/CDF plots and per-baseline violin plots.
 
 ## Why so many benches?
@@ -175,6 +305,8 @@ Each layer measures a different thing. A change can:
 - improve allocation count but regress wall-clock (allocator changes)
 - improve micro-bench wall-clock but regress browser FCP (chunk-size
   changes that hurt parser progressive rendering)
+- leave Rust render time unchanged but regress Node throughput through
+  extra N-API string copies or callback crossings
 - improve TTFB but introduce a memory leak (no cleanup of pool
   buffers on error paths)
 
@@ -183,14 +315,14 @@ catches one third of them.
 
 ## Reproducibility tips
 
-* **Close other applications** — CPU-intensive background work adds
+* **Close other applications:** CPU-intensive background work adds
   noise.
-* **Plug in to power** (laptops) — battery savers throttle the CPU.
-* **Pin to release builds** — `cargo bench` and `cargo xtask bench`
+* **Plug in to power** (laptops): battery savers throttle the CPU.
+* **Pin to release builds:** `cargo bench` and `cargo xtask bench`
   always use release; debug builds are not representative.
-* **Run on the same machine** — cross-machine baselines are not
+* **Run on the same machine:** cross-machine baselines are not
   meaningful.
-* **Compare medians (P50)**, not means — robust against thermal
+* **Compare medians (P50)**, not means; medians are robust against thermal
   spikes.
 * **Re-run if Dev% > 15%** in any criterion row.
 
@@ -208,6 +340,10 @@ benchmark. The bar:
 3. **Playwright** if the metric is browser-perceived (paint, layout,
    hydration time). Mirror the structure of
    `examples/integration/streaming-browser-bench/`.
+4. **External runtime package** if the boundary itself is under test
+   (Node/V8/N-API, a VM, or another host runtime). Mirror
+   `examples/integration/node-addon-bench/` and keep smoke validation
+   separate from release performance results.
 
 Wire it into `cargo xtask bench` so the standard before/after
 workflow works without users needing to know per-bench invocation

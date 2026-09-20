@@ -20,13 +20,20 @@ Your backend handler loads the pre-compiled protocol, receives state data, and p
 
 ### 3. Hydrate - Interactive islands come alive
 
-On the client, only **Web Components marked as interactive** hydrate. Each component is an island - self-contained with its own Shadow DOM, styles, and behavior. A page with 10 components where only 2 need click handlers ships JavaScript for just those 2. The other 8 remain server-rendered HTML with zero client-side cost.
+On the client, only **Web Components marked as interactive** hydrate. Each
+component is an island with its own template, authored styles, and behavior.
+Unwrapped components default to Shadow; a build can opt into Light while
+retaining explicit Shadow islands. A page
+with 10 components where only 2 need click handlers ships JavaScript for just
+those 2. The other 8 remain server-rendered HTML with zero client-side cost.
 
 ## Key Concepts
 
 - **Protocol Buffer binary** - Templates compile to a compact binary format. The handler reads fragments sequentially - static fragments are emitted as-is, dynamic fragments are resolved from state. See [How It Works](/guide/concepts/how-it-works).
 
 - **Islands Architecture** - Each Web Component is an interactive island. Static content is server-rendered with no JavaScript. Only components that need interactivity hydrate on the client. See [Interactivity](/guide/concepts/interactivity).
+
+- **Explicit startup state boundary** - A same-named `.ts` or `.js` module opts a component into authored hydration state. Scriptless templates remain dormant at startup and activate only when browser use requires them. See [Hydration](/guide/concepts/hydration).
 
 - **Language agnostic** - Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings. See [Language Integrations](/guide/integrations/ffi).
 
@@ -63,4 +70,5 @@ On the client, only **Web Components marked as interactive** hydrate. Each compo
 - **[Playground](/playground/)** - Experiment in the browser with zero setup.
 - **[Installation Guide](./installation)** - Set up WebUI locally.
 - **[Hello World Tutorial](/tutorials/hello-world)** - Build your first WebUI app step by step.
+- **[WebUI Press named regions](./webui-press)** - Customize documentation layouts without forking the template.
 - **[Why WebUI?](./why)** - Understand the architecture and performance benefits in depth.

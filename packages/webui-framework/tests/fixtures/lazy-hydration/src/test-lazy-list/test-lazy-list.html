@@ -1,0 +1,22 @@
+<template w-hydrate="lazy">
+<button class="replace" type="button" @click="{replaceItems()}">Replace</button>
+<button class="toggle-summary" type="button" @click="{toggleSummary()}">Toggle summary</button>
+<if condition="showSummary">
+  <p class="summary">{{summary}}</p>
+</if>
+<div class="items">
+  <for each="item in items">
+    <test-lazy-item key="{{item.id}}" label="{{item.label}}" count="{{item.count}}"></test-lazy-item>
+  </for>
+</div>
+<div class="explicit-undefined-items">
+  <for each="value in explicitUndefinedItems">
+    <span class="explicit-undefined-item" data-value="{{value}}">{{value}}</span>
+  </for>
+</div>
+<div class="sparse-items">
+  <for each="value in sparseItems">
+    <span class="sparse-item" data-value="{{value}}">{{value}}</span>
+  </for>
+</div>
+</template>

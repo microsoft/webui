@@ -2,5 +2,20 @@
   "open": true,
   "busy": false,
   "details": "Details",
-  "count": 1
+  "count": 1,
+  "empty": false,
+  "clientOnlyOpen": false,
+  "outerOpen": true,
+  "innerOpen": false,
+  "snapshotOpen": false,
+  "snapshotItems": [],
+  "showStats": true,
+  "compact": false,
+  "value": "",
+  "outer": true,
+  "inner": false,
+  "tail": true,
+  "escOuter": true,
+  "escInner": true,
+  "escAfter": true
 }

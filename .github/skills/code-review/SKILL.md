@@ -312,7 +312,7 @@ Every behavioral change must include corresponding documentation updates. Missin
 |-------|-----|
 | **DESIGN.md updated** | If the change modifies public APIs, protocol fields, behavioral contracts, error variants, or SSR markers, `DESIGN.md` must be updated in the same commit. |
 | **User-facing docs updated** | If the change affects CLI flags, template syntax, component authoring, routing, or integration behavior, `docs/` must be updated. |
-| **AI reference updated** | If the change affects anything a code-generation AI would need to know, `docs/guide/ai.md` must be updated. |
+| **AI reference updated** | If the change affects anything a code-generation AI would need to know, `docs/ai.md` must be updated. |
 | **README links to docs portal** | Package READMEs should defer to the docs portal, not duplicate content. |
 | **No stale examples** | Code examples in docs must use current API signatures, flag names, and marker formats. |
 | **docs build passes** | `cd docs && pnpm build` must succeed (catches broken links, unescaped `{{`, missing pages). |

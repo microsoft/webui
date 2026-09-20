@@ -9,31 +9,17 @@ WebUI separates static and dynamic content at build time into a binary protocol 
 ```csharp
 using Microsoft.WebUI;
 
-// One-shot render (parse + render in a single call)
-var html = "<div>Hello, {{name}}!</div>";
-var json = """{"name": "World"}""";
-var result = WebUIRenderer.RenderHtml(html, json);
-// result: "<div>Hello, World!</div>"
-```
-
-## Handler API (Higher Performance)
-
-For repeated renders with pre-compiled protocol data, use the `WebUIHandler`:
-
-```csharp
-using Microsoft.WebUI;
-
-// Create a handler (optionally with a plugin name)
-using var handler = new WebUIHandler("webui");
-
 // Load pre-compiled protocol binary (from `webui build`)
-byte[] protocol = File.ReadAllBytes("app.webui");
+using var protocol = new Protocol(File.ReadAllBytes("app.webui"));
+using var handler = new WebUIHandler("webui");
 
 // Render with different state each time
 var html = handler.Render(protocol, """{"user": "Alice"}""", "index.html", "/");
 ```
 
-Refer to the WebUI documentation for the available plugin identifiers.
+`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
+Keep it alive for the server lifetime. Refer to the WebUI documentation for the
+available plugin identifiers.
 
 ## Client-Side Navigation (Partial Responses)
 
@@ -49,7 +35,7 @@ app.MapGet("/users/{id}", (HttpContext ctx, string id) =>
     {
         // Client-side navigation — return JSON partial (no assembly required)
         var inventoryHex = ctx.Request.Headers["X-WebUI-Inventory"].FirstOrDefault() ?? "";
-        var json = handler.RenderPartial(protocol, stateJson, "index.html", ctx.Request.Path, inventoryHex);
+        var json = protocol.RenderPartial(stateJson, "index.html", ctx.Request.Path, inventoryHex);
         return Results.Content(json, "application/json");
     }
 
@@ -60,6 +46,51 @@ app.MapGet("/users/{id}", (HttpContext ctx, string id) =>
 ```
 
 The response is a JSON string — pipe it directly to the HTTP response. No deserialization needed.
+
+`protocol.RenderComponentTemplates(tags, inventoryHex)` returns the template
+payload for on-demand component loading. `protocol.Tokens()` returns CSS token
+names in build order.
+
+## Progressive Streaming
+
+`WebUIHandler.StreamResponse` returns one host-owned, single-driver session:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+StreamingStep step = session.Start(initialStateJson);
+
+while (true)
+{
+    await response.Body.WriteAsync(step.Bytes);
+    await response.Body.FlushAsync();
+    if (step.Done) break;
+
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadBoundaryStateAsync(boundary);
+        step = session.Resume(
+            boundary.InstanceId,
+            state,
+            BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
+}
+```
+
+| Member | Result |
+|---|---|
+| `Start(stateJson)` | Shell bytes through the first descriptor or terminal |
+| `Resume(instanceId, stateJson, mode)` | Only the pending occurrence's bytes through its checkpoint |
+| `Advance()` | Following parent bytes through the next descriptor or terminal |
+| `Update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
+
+A descriptor requires `Resume`; no descriptor with `Done == false` requires
+`Advance`; `Done == true` means complete. `Resume` is boundary-only and
+`Advance` carries following parent or tail bytes, so no sibling boundary is
+needed. `Update` is valid between an occurrence's `Resume` and `Advance`.
 
 ## Installation
 
@@ -82,7 +113,7 @@ The managed package depends on all supported `Microsoft.WebUI.Runtime.<rid>` pac
 
 ### Package Metadata
 
-Packed NuGet artifacts include this README, repository metadata, Source Link, a package license URL with license acceptance required, release notes links, discoverability tags, the `© Microsoft Corporation. All rights reserved.` notice, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files; nuget.org publishing remains manual/externally tracked until ESRP supports automated NuGet publishing for this project. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
+Packed NuGet artifacts include this README, repository metadata, Source Link, the SPDX `MIT` license expression with license acceptance required, release notes links, discoverability tags, the `© Microsoft Corporation. All rights reserved.` notice, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
 ### Manual Native Library Path
 
@@ -98,7 +129,7 @@ export WEBUI_LIB_PATH=/path/to/libwebui_ffi.dylib  # direct file path
 
 ```bash
 # Build the native FFI library
-cargo build --release -p webui-ffi
+cargo build --release -p microsoft-webui-ffi
 
 # Build and test the .NET package
 cargo xtask dotnet

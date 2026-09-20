@@ -5,21 +5,62 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, WebUIHandler};
 use webui_tokens::TokenFile;
 
-use crate::content::process_content;
+use crate::bundler::{
+    bundle_assets, collect_component_scripts_for_html, discover_component_scripts,
+    extract_bundle_scripts, inject_module_script_tags, inject_script_tag, module_script_tag,
+    page_bundle_signature, resolve_config_component_source, resolve_node_modules, BundleOptions,
+    BundleResult, BundleThread, PageBundleEntry, RootBundleEntry, ScriptSource,
+};
+use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
-use crate::types::{BuildStats, DocsConfig};
+use crate::regions::RegionSet;
+use crate::state::{load_render_states, merge_page_state};
+use crate::types::{BuildStats, DocsConfig, PageDescriptor, ShowMode};
+
+webui_handler::define_string_response_writer!(StringWriter, buf);
+
+fn region_layout(page: &PageDescriptor) -> &str {
+    let layout = page.state["page"]["layout"].as_str().unwrap_or("doc");
+    if layout == "home" && !page.is_home {
+        "doc"
+    } else {
+        layout
+    }
+}
+
+fn template_css(template_dir: &Path, show: ShowMode) -> Result<String> {
+    if show == ShowMode::Content {
+        return Ok(include_str!("../template/docs.css").to_string());
+    }
+    let mut css = String::new();
+    for name in ["docs.css", "shell.css"] {
+        let path = template_dir.join(name);
+        match fs::read_to_string(&path) {
+            Ok(source) => css.push_str(&source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Io(format!(
+                    "Cannot read {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(css)
+}
 
 /// Persistent state held by the dev server across rebuilds. The dev
 /// server always performs a full rebuild on every watcher tick — the
@@ -44,6 +85,9 @@ pub struct BuildCache {
     /// retry path and shaves disk I/O off every rebuild. Stale files
     /// from deleted source pages survive until the next process restart.
     pub skip_clean: bool,
+    /// Dev-mode flag: when true, the bundler skips minification for
+    /// faster rebuilds during `webui-press serve`.
+    pub dev_mode: bool,
 }
 
 impl BuildCache {
@@ -60,6 +104,7 @@ impl BuildCache {
     pub fn set_dev_rebuild(&mut self) {
         self.quiet = true;
         self.skip_clean = true;
+        self.dev_mode = true;
     }
 }
 
@@ -86,6 +131,53 @@ fn inject_theme_tokens(
         .map_err(|e| Error::Build(format!("Failed to resolve theme tokens: {e}")))?;
     webui_tokens::inject_into_state(state, &resolved);
     Ok(())
+}
+
+struct NotFoundStateInput<'a> {
+    config: &'a DocsConfig,
+    base_path: &'a str,
+    nav: Value,
+    footer: Value,
+    content: &'a str,
+    head_injection: &'a str,
+    global_state: Option<&'a Value>,
+}
+
+fn build_not_found_state(input: NotFoundStateInput<'_>) -> Value {
+    let state = json_obj([
+        (
+            "site",
+            json_obj([
+                ("title", Value::String(input.config.site.title.clone())),
+                ("base", Value::String(input.base_path.to_string())),
+            ]),
+        ),
+        ("navigation", input.nav),
+        ("sidebar", json_obj([("sections", Value::Array(vec![]))])),
+        (
+            "page",
+            json_obj([
+                ("title", Value::String("Page Not Found".to_string())),
+                (
+                    "description",
+                    Value::String("The page you're looking for doesn't exist.".to_string()),
+                ),
+                ("content", Value::String(input.content.to_string())),
+                ("isHome", Value::Bool(false)),
+                ("layout", Value::String("doc".to_string())),
+            ]),
+        ),
+        ("hero", Value::Null),
+        ("footer", input.footer),
+        ("prev", Value::Null),
+        ("next", Value::Null),
+        ("pageData", Value::Null),
+        ("headTags", Value::String(input.head_injection.to_string())),
+        ("label", Value::String("Copy".to_string())),
+        ("icon", Value::String("🌙".to_string())),
+    ]);
+
+    merge_page_state(state, input.global_state, None)
 }
 
 // ── Output helpers ──────────────────────────────────────────────
@@ -118,6 +210,30 @@ fn print_success(cache: &BuildCache, message: &str) {
     eprintln!("  {} {message}", style("✔").green());
 }
 
+fn print_bundle_summary(cache: &BuildCache, result: &BundleResult) {
+    print_success(
+        cache,
+        &format!(
+            "Bundled {} component script{} into {} root script{} and {} page script group{} in {:.0}ms",
+            result.component_count,
+            if result.component_count == 1 { "" } else { "s" },
+            usize::from(result.root_script.is_some()),
+            if result.root_script.is_some() {
+                ""
+            } else {
+                "s"
+            },
+            result.page_entry_count,
+            if result.page_entry_count == 1 {
+                ""
+            } else {
+                "s"
+            },
+            result.duration.as_secs_f64() * 1000.0
+        ),
+    );
+}
+
 fn print_finish(cache: &BuildCache, message: &str) {
     if cache.quiet {
         return;
@@ -132,30 +248,6 @@ fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
         map.insert(k.to_string(), v);
     }
     Value::Object(map)
-}
-
-/// A writer that collects rendered HTML into a String buffer.
-struct StringWriter {
-    buf: String,
-}
-
-impl StringWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
 }
 
 /// Build a documentation site from the given configuration.
@@ -227,8 +319,8 @@ pub fn build_docs_with_cache(
     // the link tags change. We don't write the CSS files yet — that
     // happens after content processing succeeds, so a content failure
     // can't corrupt the previous valid output.
-    let base_css_src = template_dir.join("docs.css");
-    let has_base_css = base_css_src.exists();
+    let base_css = template_css(template_dir, config.show)?;
+    let has_base_css = !base_css.is_empty();
     let base_css_link = if has_base_css {
         format!("<link rel=\"stylesheet\" href=\"{base_path}docs.css\">")
     } else {
@@ -257,15 +349,17 @@ pub fn build_docs_with_cache(
     // Step 1: Process content. Highlighter is cached across rebuilds —
     // syntect's default syntax/theme load is ~30-50ms which we don't want
     // to pay every keystroke.
+    let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-
-    let pages = process_content(config, config_dir, &highlighter, &head_injection)?;
+    let mut pages =
+        process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
 
     // Step 2: Resolve component sources for the per-page builds
     let mut component_sources: Vec<String> = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_default();
     // Built-in component library (e.g. crates/webui-press/components/)
     let builtin_components = template_dir.parent().map(|p| p.join("components"));
     if let Some(ref bc) = builtin_components {
@@ -273,11 +367,12 @@ pub fn build_docs_with_cache(
             component_sources.push(bc.to_string_lossy().to_string());
         }
     }
-    // User component dirs from config
-    if let Some(ref user_dirs) = config.components {
-        for d in user_dirs {
-            let abs = std::env::current_dir().unwrap_or_default().join(d);
-            component_sources.push(abs.to_string_lossy().to_string());
+    // User component sources from config. Local paths are resolved against
+    // the current project root; npm package names/scopes must stay bare so
+    // webui-discovery resolves them from node_modules.
+    if let Some(ref user_sources) = config.components {
+        for source in user_sources {
+            component_sources.push(resolve_config_component_source(source, &cwd));
         }
     }
     // Template-local components (e.g. docs-search, docs-theme-toggle living
@@ -286,6 +381,19 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
+    let regions = RegionSet::load(&config.regions, config_dir, template_html)?;
+    // Validate configured region names even when the selected presentation
+    // makes every shell region inactive. Authored page content is never filtered.
+    let regions = if config.show == ShowMode::Content {
+        RegionSet::load(
+            &Default::default(),
+            config_dir,
+            include_str!("../template/content.html").to_string(),
+        )?
+    } else {
+        regions
+    };
+    let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
     // Always done — a from-scratch run guarantees the output matches
@@ -303,8 +411,8 @@ pub fn build_docs_with_cache(
     // because we clean before processing — but that order means a
     // failure leaves no output at all, never half-output).
     if has_base_css {
-        fs::copy(&base_css_src, site_dir.join("docs.css"))
-            .map_err(|e| Error::Io(format!("Cannot copy docs.css: {e}")))?;
+        fs::write(site_dir.join("docs.css"), &base_css)
+            .map_err(|e| Error::Io(format!("Cannot write docs.css: {e}")))?;
     }
     if has_theme_css {
         fs::write(site_dir.join("theme.css"), &custom_css)
@@ -323,23 +431,206 @@ pub fn build_docs_with_cache(
             .map_err(|e| Error::Io(format!("Cannot create dir {}: {e}", page_dir.display())))?;
     }
 
-    // Kick off TypeScript component bundling on a background thread.
-    // esbuild (npx process startup) takes 100s of ms and is independent
-    // of the render pipeline, so we overlap it with the per-page
-    // protocol build + render.
-    let template_dir_owned = template_dir.to_path_buf();
-    let component_sources_clone = component_sources.clone();
-    let site_dir_clone = site_dir.clone();
-    let bundle_handle = std::thread::spawn(move || -> Result<usize> {
-        let node_modules = std::env::current_dir()
-            .unwrap_or_default()
-            .join("node_modules");
-        bundle_components(
-            &template_dir_owned,
-            &component_sources_clone,
-            &site_dir_clone,
-            &node_modules,
+    // Step 2b: Extract <script bundle> tags from page content BEFORE
+    // rendering. Page scripts become imports in the page's virtual esbuild
+    // entry; the source HTML keeps plain, non-bundled scripts untouched.
+    //
+    // Also collect `scriptFile` entries from customPages config. These
+    // produce per-page scripts without polluting the HTML string.
+    let mut explicit_page_scripts: HashMap<String, Vec<ScriptSource>> = HashMap::new();
+    let mut page_contents_with_scripts: HashMap<String, String> = HashMap::new();
+
+    for page in &pages {
+        let content = page.state["page"]["content"].as_str().unwrap_or("");
+        if content.contains("<script") && content.contains("bundle") {
+            let (modified, scripts) = extract_bundle_scripts(content);
+            if !scripts.is_empty() {
+                page_contents_with_scripts.insert(page.path.clone(), modified);
+                explicit_page_scripts
+                    .entry(page.path.clone())
+                    .or_default()
+                    .extend(scripts);
+            }
+        }
+        for script_file in regions.script_files(region_layout(page)) {
+            explicit_page_scripts
+                .entry(page.path.clone())
+                .or_default()
+                .push(ScriptSource::File(script_file.to_string()));
+        }
+    }
+
+    // Collect scriptFile from customPages config.
+    for (link, custom_page) in &config.custom_pages {
+        if let Some(script_path) = custom_page.script_file() {
+            // Build the full page path matching how process_content constructs
+            // URL paths: base_path + link (minus leading slash).
+            let normalized = if link.ends_with('/') {
+                link.clone()
+            } else {
+                format!("{link}/")
+            };
+            let page_path = format!("{}{}", base_path, &normalized[1..]);
+            explicit_page_scripts
+                .entry(page_path)
+                .or_default()
+                .push(ScriptSource::File(script_path.to_string()));
+        }
+    }
+
+    let not_found_content = format!(
+        "<h1>404 — Page Not Found</h1>\
+         <p>The page you're looking for doesn't exist or has been moved.</p>\
+         <p><a href=\"{base_path}\">← Back to Home</a></p>"
+    );
+
+    let template_script_path = template_dir.join("index.ts");
+    let template_script = if config.show == ShowMode::All && template_script_path.exists() {
+        Some(
+            template_script_path
+                .canonicalize()
+                .unwrap_or(template_script_path),
         )
+    } else {
+        None
+    };
+    let template_shell = regions.template_shell();
+    let root_component_scripts =
+        collect_component_scripts_for_html(&[template_shell.as_str()], &component_script_index)?;
+    let root_bundle = if template_script.is_some() || !root_component_scripts.is_empty() {
+        Some(RootBundleEntry {
+            script_path: template_script,
+            component_scripts: root_component_scripts,
+        })
+    } else {
+        None
+    };
+
+    // Build virtual entries only for pages with content-specific scripts.
+    // Template/chrome scripts are loaded once through the root entry, so pages
+    // that only use template components do not get duplicate tiny page-N files.
+    let mut page_bundles: Vec<PageBundleEntry> = Vec::new();
+    let mut page_bundle_ids: HashMap<String, usize> = HashMap::with_capacity(pages.len());
+    let mut page_bundle_signatures: HashMap<String, usize> = HashMap::new();
+    for page in &pages {
+        let content = page_contents_with_scripts
+            .get(&page.path)
+            .map(String::as_str)
+            .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
+        let region_fragments = regions.html_fragments(region_layout(page));
+        let mut html_sources = Vec::with_capacity(region_fragments.len() + 1);
+        html_sources.push(content);
+        html_sources.extend(region_fragments);
+        let mut component_scripts =
+            collect_component_scripts_for_html(&html_sources, &component_script_index)?;
+        if let Some(root) = &root_bundle {
+            component_scripts.retain(|path| !root.component_scripts.contains(path));
+        }
+        let explicit_scripts = explicit_page_scripts.remove(&page.path).unwrap_or_default();
+        if component_scripts.is_empty() && explicit_scripts.is_empty() {
+            continue;
+        }
+        let signature = page_bundle_signature(&component_scripts, &explicit_scripts, config_dir);
+        if let Some(&id) = page_bundle_signatures.get(&signature) {
+            page_bundle_ids.insert(page.path.clone(), id);
+            continue;
+        }
+
+        let id = page_bundles.len();
+        page_bundle_signatures.insert(signature, id);
+        page_bundle_ids.insert(page.path.clone(), id);
+        page_bundles.push(PageBundleEntry {
+            id,
+            page_path: page.path.clone(),
+            component_scripts,
+            explicit_scripts,
+        });
+    }
+
+    let not_found_region_fragments = regions.html_fragments("doc");
+    let mut not_found_sources = Vec::with_capacity(not_found_region_fragments.len() + 1);
+    not_found_sources.push(not_found_content.as_str());
+    not_found_sources.extend(not_found_region_fragments);
+    let mut not_found_component_scripts =
+        collect_component_scripts_for_html(&not_found_sources, &component_script_index)?;
+    if let Some(root) = &root_bundle {
+        not_found_component_scripts.retain(|path| !root.component_scripts.contains(path));
+    }
+    let not_found_scripts: Vec<ScriptSource> = regions
+        .script_files("doc")
+        .map(|path| ScriptSource::File(path.to_string()))
+        .collect();
+    let not_found_bundle_id =
+        if not_found_component_scripts.is_empty() && not_found_scripts.is_empty() {
+            None
+        } else {
+            let signature =
+                page_bundle_signature(&not_found_component_scripts, &not_found_scripts, config_dir);
+            if let Some(&id) = page_bundle_signatures.get(&signature) {
+                Some(id)
+            } else {
+                let id = page_bundles.len();
+                page_bundle_signatures.insert(signature, id);
+                page_bundles.push(PageBundleEntry {
+                    id,
+                    page_path: format!("{base_path}404/"),
+                    component_scripts: not_found_component_scripts,
+                    explicit_scripts: not_found_scripts,
+                });
+                Some(id)
+            }
+        };
+
+    // Start the one client bundle in parallel with per-page template parsing.
+    // Each page blocks only when it reaches projection finalization.
+    let node_modules = if root_bundle.is_some() || !page_bundles.is_empty() {
+        Some(resolve_node_modules(config_dir)?)
+    } else {
+        None
+    };
+    let (projection_source, projection_completer) = webui::projection_manifest_barrier();
+    let site_dir_for_bundle = site_dir.clone();
+    let root_bundle_for_bundle = root_bundle.clone();
+    let page_bundles_for_bundle = page_bundles.clone();
+    let bundler_config = config.bundler.clone();
+    let config_dir_for_bundle = config_dir.to_path_buf();
+    let content_dir_for_bundle = PathBuf::from(&config.content_dir);
+    let base_path_for_bundle = base_path.to_string();
+    let dev_mode = cache.dev_mode;
+    // Published before the projection completer wakes page builds. This keeps
+    // parsing overlapped with esbuild while making exact generated URLs
+    // available before each protocol is handed to the renderer.
+    let generated_preloads = Arc::new(OnceLock::new());
+    let generated_preloads_for_bundle = Arc::clone(&generated_preloads);
+    let bundle_thread = BundleThread::spawn(move || {
+        match bundle_assets(&BundleOptions {
+            site_dir: &site_dir_for_bundle,
+            base_path: &base_path_for_bundle,
+            node_modules: node_modules.as_deref(),
+            root_bundle: root_bundle_for_bundle.as_ref(),
+            page_bundles: &page_bundles_for_bundle,
+            bundler_config: bundler_config.as_ref(),
+            dev_mode,
+            config_dir: &config_dir_for_bundle,
+            content_dir: &content_dir_for_bundle,
+        }) {
+            Ok(result) => {
+                if generated_preloads_for_bundle
+                    .set(result.preloads.clone())
+                    .is_err()
+                {
+                    let message = "Generated preload metadata was published twice".to_string();
+                    projection_completer.complete(Err(message.clone()));
+                    return Err(Error::Build(message));
+                }
+                projection_completer.complete(Ok(result.projection.clone()));
+                Ok(result)
+            }
+            Err(error) => {
+                projection_completer.complete(Err(error.to_string()));
+                Err(error)
+            }
+        }
     });
 
     // Per-page build + render + write in parallel.
@@ -355,17 +646,23 @@ pub fn build_docs_with_cache(
     let component_css: std::sync::Mutex<HashMap<String, String>> =
         std::sync::Mutex::new(HashMap::new());
 
-    pages.par_iter().try_for_each(|page| -> Result<()> {
+    let page_start = Instant::now();
+    pages.par_iter_mut().try_for_each(|page| -> Result<()> {
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
 
-        let content = page.state["page"]["content"].as_str().unwrap_or("");
+        // Use modified content (with bundled script tags removed) if scripts were extracted.
+        let content = page_contents_with_scripts
+            .get(&page.path)
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
 
-        // Protect <pre> blocks from HTML parser whitespace normalization.
+        // Protect markdown code blocks before injecting content into the
+        // region-resolved template.
         let (protected, pre_blocks) = protect_pre_blocks(content);
-
-        // Substitute the raw signal in the template with the literal HTML.
-        let page_html = template_html.replace("{{{page.content}}}", &protected);
+        let page_html = regions
+            .render(region_layout(page))
+            .replace("{{{page.content}}}", &protected);
 
         // Per-page temp dir holding only this page's index.html — components
         // come exclusively from `component_sources`, which already includes
@@ -389,14 +686,25 @@ pub fn build_docs_with_cache(
         fs::write(page_tmp.join("index.html"), &page_html)
             .map_err(|e| Error::Io(format!("Cannot write page temp: {e}")))?;
 
-        let build_result = webui::build(BuildOptions {
+        let mut build_result = webui::build(BuildOptions {
             app_dir: page_tmp.clone(),
             entry: "index.html".to_string(),
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
+            theme: token_file.clone(),
+            projection_manifests: vec![projection_source.clone()],
             ..BuildOptions::default()
         })
-        .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
+        .map_err(|e| Error::Build(format!("{}: {}", page.path, e.chain_message())))?;
+        let preloads = generated_preloads.get().ok_or_else(|| {
+            Error::Build("Generated preload metadata was not published".to_string())
+        })?;
+        let (hrefs, mut preload_warnings) = preloads.resolve(
+            &build_result.protocol.module_preloads,
+            page_bundle_ids.get(&page.path).copied(),
+        );
+        build_result.protocol.module_preloads = hrefs;
+        build_result.warnings.append(&mut preload_warnings);
 
         total_bytes.fetch_add(
             build_result.protocol_bytes.len(),
@@ -416,20 +724,18 @@ pub fn build_docs_with_cache(
             }
         }
 
-        let mut themed_state;
-        let render_state = if let Some(token_file) = token_file.as_ref() {
-            themed_state = page.state.clone();
-            inject_theme_tokens(&mut themed_state, token_file, &build_result.protocol.tokens)?;
-            &themed_state
-        } else {
-            &page.state
-        };
+        let layout = region_layout(page).to_string();
+        regions.apply_state(&layout, &mut page.state)?;
+        if let Some(token_file) = token_file.as_ref() {
+            inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
+        }
 
+        let protocol = Protocol::new(build_result.protocol);
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
-                &build_result.protocol,
-                render_state,
+                &protocol,
+                &page.state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
             )
@@ -446,7 +752,16 @@ pub fn build_docs_with_cache(
         Ok(())
     })?;
 
-    print_success(cache, &format!("Rendered {} pages", pages.len()));
+    print_success(
+        cache,
+        &format!(
+            "Rendered {} pages in {:.0}ms",
+            pages.len(),
+            page_start.elapsed().as_secs_f64() * 1000.0
+        ),
+    );
+    let bundle_result = bundle_thread.join()?;
+    print_bundle_summary(cache, &bundle_result);
 
     // Step 4: Search index. Strip rendered HTML to plain text and emit
     // an entry per non-home page. Done from-scratch every build.
@@ -489,44 +804,21 @@ pub fn build_docs_with_cache(
         .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
         .unwrap_or(Value::Null);
 
-    let not_found_content = format!(
-        "<h1>404 — Page Not Found</h1>\
-         <p>The page you're looking for doesn't exist or has been moved.</p>\
-         <p><a href=\"{base_path}\">← Back to Home</a></p>"
-    );
-    let mut not_found_state = json_obj([
-        (
-            "site",
-            json_obj([
-                ("title", Value::String(config.site.title.clone())),
-                ("base", Value::String(base_path.to_string())),
-            ]),
-        ),
-        ("navigation", nav_val),
-        ("sidebar", json_obj([("sections", Value::Array(vec![]))])),
-        (
-            "page",
-            json_obj([
-                ("title", Value::String("Page Not Found".to_string())),
-                (
-                    "description",
-                    Value::String("The page you're looking for doesn't exist.".to_string()),
-                ),
-                ("content", Value::String(not_found_content.clone())),
-                ("isHome", Value::Bool(false)),
-                ("layout", Value::String("doc".to_string())),
-            ]),
-        ),
-        ("hero", Value::Null),
-        ("footer", footer_val),
-        ("prev", Value::Null),
-        ("next", Value::Null),
-    ]);
-    not_found_state["headTags"] = Value::String(head_injection);
-    not_found_state["label"] = Value::String("Copy".to_string());
-    not_found_state["icon"] = Value::String("🌙".to_string());
+    let mut not_found_state = build_not_found_state(NotFoundStateInput {
+        config,
+        base_path,
+        nav: nav_val,
+        footer: footer_val,
+        content: &not_found_content,
+        head_injection: &head_injection,
+        global_state: render_states.global(),
+    });
+    regions.apply_state("doc", &mut not_found_state)?;
 
-    let not_found_html = template_html.replace("{{{page.content}}}", &not_found_content);
+    let (protected_not_found, not_found_pre_blocks) = protect_pre_blocks(&not_found_content);
+    let not_found_html = regions
+        .render("doc")
+        .replace("{{{page.content}}}", &protected_not_found);
     let nf_tmp = std::env::temp_dir().join(format!(
         "webui-press-404-{}-{:x}",
         std::process::id(),
@@ -538,14 +830,23 @@ pub fn build_docs_with_cache(
     fs::create_dir_all(&nf_tmp).map_err(|e| Error::Io(e.to_string()))?;
     fs::write(nf_tmp.join("index.html"), &not_found_html).map_err(|e| Error::Io(e.to_string()))?;
 
-    let nf_build = webui::build(BuildOptions {
+    let mut nf_build = webui::build(BuildOptions {
         app_dir: nf_tmp.clone(),
         entry: "index.html".to_string(),
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
+        theme: token_file.clone(),
+        projection_manifests: vec![projection_source],
         ..BuildOptions::default()
     })
-    .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+    .map_err(|e| Error::Build(format!("404 build failed: {}", e.chain_message())))?;
+    let preloads = generated_preloads
+        .get()
+        .ok_or_else(|| Error::Build("Generated preload metadata was not published".to_string()))?;
+    let (hrefs, mut preload_warnings) =
+        preloads.resolve(&nf_build.protocol.module_preloads, not_found_bundle_id);
+    nf_build.protocol.module_preloads = hrefs;
+    nf_build.warnings.append(&mut preload_warnings);
 
     if let Some(token_file) = token_file.as_ref() {
         inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;
@@ -566,17 +867,19 @@ pub fn build_docs_with_cache(
         }
     }
 
+    let nf_protocol = Protocol::new(nf_build.protocol);
     let mut writer_404 = StringWriter::with_capacity(4096);
     handler
         .render(
-            &nf_build.protocol,
+            &nf_protocol,
             &not_found_state,
             &RenderOptions::new("index.html", &format!("{base_path}404/")),
             &mut writer_404,
         )
         .map_err(|e| Error::Render(format!("404: {e}")))?;
 
-    fs::write(site_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
+    let not_found_output = restore_pre_blocks(&writer_404.buf, &not_found_pre_blocks);
+    fs::write(site_dir.join("404.html"), not_found_output).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
     print_success(cache, "Generated 404 page");
 
@@ -597,11 +900,83 @@ pub fn build_docs_with_cache(
         print_success(cache, &format!("Wrote {css_count} component stylesheets"));
     }
 
-    // Step 8: Wait for the background bundling thread.
-    let component_count = bundle_handle
-        .join()
-        .map_err(|_| Error::Build("Bundle thread panicked".to_string()))??;
-    print_success(cache, &format!("Bundled {component_count} components"));
+    // Step 8: Inject page script <script> tags into rendered pages.
+    if bundle_result.root_script.is_some() || !bundle_result.script_map.is_empty() {
+        let mut linked_count = 0usize;
+        for page in &pages {
+            let page_rel_paths = if let Some(bundle_id) = page_bundle_ids.get(&page.path) {
+                let rel_paths = bundle_result.script_map.get(bundle_id).ok_or_else(|| {
+                    Error::Build(format!(
+                        "Missing bundled script for page {} entry {}",
+                        page.path, bundle_id
+                    ))
+                })?;
+                if rel_paths.is_empty() {
+                    None
+                } else {
+                    Some(rel_paths)
+                }
+            } else {
+                None
+            };
+            if bundle_result.root_script.is_none() && page_rel_paths.is_none() {
+                continue;
+            }
+            let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
+            let target = page_dir.join("index.html");
+            let mut html = fs::read_to_string(&target)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", target.display())))?;
+
+            if let Some(rel_path) = bundle_result.root_script.as_ref() {
+                let tag = module_script_tag(base_path, rel_path);
+                inject_script_tag(&mut html, &tag);
+                linked_count += 1;
+            }
+            if let Some(rel_paths) = page_rel_paths {
+                linked_count += inject_module_script_tags(&mut html, base_path, rel_paths);
+            }
+
+            fs::write(&target, &html)
+                .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
+        }
+        if let Some(bundle_id) = not_found_bundle_id {
+            let rel_paths = bundle_result.script_map.get(&bundle_id).ok_or_else(|| {
+                Error::Build(format!(
+                    "Missing bundled script for 404 page entry {bundle_id}"
+                ))
+            })?;
+            let target = site_dir.join("404.html");
+            let mut html = fs::read_to_string(&target)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", target.display())))?;
+            if let Some(rel_path) = bundle_result.root_script.as_ref() {
+                let tag = module_script_tag(base_path, rel_path);
+                inject_script_tag(&mut html, &tag);
+                linked_count += 1;
+            }
+            linked_count += inject_module_script_tags(&mut html, base_path, rel_paths);
+            fs::write(&target, &html)
+                .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
+        } else if let Some(rel_path) = bundle_result.root_script.as_ref() {
+            let target = site_dir.join("404.html");
+            let mut html = fs::read_to_string(&target)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", target.display())))?;
+            let tag = module_script_tag(base_path, rel_path);
+            inject_script_tag(&mut html, &tag);
+            fs::write(&target, &html)
+                .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
+            linked_count += 1;
+        }
+        if linked_count > 0 {
+            print_success(
+                cache,
+                &format!(
+                    "Linked {} script tag{}",
+                    linked_count,
+                    if linked_count == 1 { "" } else { "s" }
+                ),
+            );
+        }
+    }
 
     let elapsed = start.elapsed();
     let total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
@@ -697,153 +1072,323 @@ pub(crate) fn truncate_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+#[derive(Default)]
+struct SearchText {
+    content: String,
+    headings: Vec<SearchHeading>,
+}
+
+/// Heading metadata emitted into `search-index.json`.
+///
+/// The client search UI uses this to create separate, anchor-linked rows for
+/// matching sections (`Page > Heading`) without re-parsing page HTML at runtime.
+struct SearchHeading {
+    text: String,
+    anchor: String,
+    level: u8,
+}
+
+/// Mutable heading capture state while scanning rendered HTML.
+struct CurrentHeading {
+    text: String,
+    anchor: String,
+    level: u8,
+}
+
+struct HtmlTag<'a> {
+    name: &'a str,
+    is_end: bool,
+}
+
 /// Build a single search-index entry for a page. Strips HTML tags,
-/// collapses whitespace, and truncates to 500 bytes. Called once per
-/// page during descriptor construction in `process_content` so cache
-/// hits carry their entry forward verbatim.
+/// decodes escaped text, captures headings for weighted ranking,
+/// collapses whitespace, and truncates body content to 500 bytes.
 pub(crate) fn build_search_entry(title: &str, path: &str, html: &str) -> Value {
-    let mut clean = String::with_capacity(html.len() / 2);
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                clean.push(' ');
-            }
-            _ if !in_tag => clean.push(ch),
-            _ => {}
-        }
-    }
-    // split_whitespace collapses arbitrary runs; we re-emit a single
-    // space between tokens. Avoiding `collect::<Vec<_>>().join(" ")` so
-    // we don't allocate an intermediate vector for sequential access.
-    let mut content = String::with_capacity(clean.len());
-    let mut first = true;
-    for tok in clean.split_whitespace() {
-        if !first {
-            content.push(' ');
-        }
-        content.push_str(tok);
-        first = false;
-    }
+    let search_text = extract_search_text(html);
+    let content = normalize_search_text(&search_text.content);
     let truncated = truncate_utf8(&content, 500);
+    let headings: Vec<Value> = search_text
+        .headings
+        .into_iter()
+        .map(|heading| {
+            json_obj([
+                ("text", Value::String(heading.text)),
+                ("anchor", Value::String(heading.anchor)),
+                (
+                    "level",
+                    Value::Number(serde_json::Number::from(u64::from(heading.level))),
+                ),
+            ])
+        })
+        .collect();
     json_obj([
         ("title", Value::String(title.to_string())),
         ("path", Value::String(path.to_string())),
         ("content", Value::String(truncated.to_string())),
+        ("headings", Value::Array(headings)),
     ])
 }
 
-fn is_component_ts_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
+fn extract_search_text(html: &str) -> SearchText {
+    let mut text = SearchText {
+        content: String::with_capacity(html.len() / 2),
+        headings: Vec::with_capacity(8),
     };
-    path.extension().is_some_and(|extension| extension == "ts")
-        && !file_name.ends_with(".spec.ts")
-        && !file_name.ends_with(".test.ts")
-        && !file_name.ends_with(".d.ts")
-}
+    let mut current_heading: Option<CurrentHeading> = None;
+    let mut skip_header_anchor = 0usize;
+    let mut cursor = 0;
 
-/// Collect component `.ts` files from a directory tree (iterative).
-fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&d) else {
-            continue;
+    while cursor < html.len() {
+        let remaining = &html[cursor..];
+        let Some(tag_offset) = remaining.find('<') else {
+            push_search_text(
+                &mut text,
+                current_heading.as_mut(),
+                skip_header_anchor,
+                remaining,
+            );
+            break;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if is_component_ts_file(&path) {
-                files.push(path);
+        let text_end = cursor + tag_offset;
+        push_search_text(
+            &mut text,
+            current_heading.as_mut(),
+            skip_header_anchor,
+            &html[cursor..text_end],
+        );
+        let tag_start = text_end + 1;
+        let Some(tag_len) = html[tag_start..].find('>') else {
+            push_search_text(
+                &mut text,
+                current_heading.as_mut(),
+                skip_header_anchor,
+                &html[text_end..],
+            );
+            break;
+        };
+        let tag_end = tag_start + tag_len;
+        handle_search_tag(
+            &html[tag_start..tag_end],
+            &mut text,
+            &mut current_heading,
+            &mut skip_header_anchor,
+        );
+        cursor = tag_end + 1;
+    }
+
+    text
+}
+
+fn handle_search_tag(
+    raw_tag: &str,
+    text: &mut SearchText,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if let Some(tag) = parse_html_tag(raw_tag) {
+        if tag.is_end {
+            handle_end_tag(tag.name, text, current_heading, skip_header_anchor);
+        } else {
+            handle_start_tag(tag.name, raw_tag, current_heading, skip_header_anchor);
+        }
+    }
+    push_search_space(text, current_heading.as_mut(), *skip_header_anchor);
+}
+
+fn handle_start_tag(
+    name: &str,
+    raw_tag: &str,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if let Some(level) = heading_level(name) {
+        *current_heading = Some(CurrentHeading {
+            text: String::with_capacity(64),
+            anchor: attr_value(raw_tag, "id").unwrap_or("").to_string(),
+            level,
+        });
+    } else if name.eq_ignore_ascii_case("a") && raw_tag.contains("header-anchor") {
+        *skip_header_anchor += 1;
+    }
+}
+
+fn handle_end_tag(
+    name: &str,
+    text: &mut SearchText,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if name.eq_ignore_ascii_case("a") && *skip_header_anchor > 0 {
+        *skip_header_anchor -= 1;
+    }
+    if heading_level(name).is_some() {
+        if let Some(raw_heading) = current_heading.take() {
+            let heading_text = normalize_search_text(&raw_heading.text);
+            if !heading_text.is_empty() {
+                text.headings.push(SearchHeading {
+                    text: heading_text,
+                    anchor: raw_heading.anchor,
+                    level: raw_heading.level,
+                });
             }
         }
     }
-    files.sort();
-    files
 }
 
-/// Bundle component TypeScript files into a single `components.js` via esbuild.
-/// Returns the number of components bundled.
-fn bundle_components(
-    template_dir: &Path,
-    component_sources: &[String],
-    site_dir: &Path,
-    node_modules: &Path,
-) -> Result<usize> {
-    let mut ts_files = Vec::new();
+fn parse_html_tag(raw: &str) -> Option<HtmlTag<'_>> {
+    let mut tag = raw.trim_start();
+    if tag.starts_with('!') || tag.starts_with('?') {
+        return None;
+    }
+    let is_end = tag.starts_with('/');
+    if is_end {
+        tag = tag[1..].trim_start();
+    }
 
-    // Collect from user component directories
-    for dir in component_sources {
-        let p = Path::new(dir);
-        if p.exists() {
-            ts_files.extend(collect_ts_files(p));
+    let mut name_end = 0;
+    for (idx, byte) in tag.bytes().enumerate() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            name_end = idx + 1;
+        } else {
+            break;
         }
     }
+    if name_end == 0 {
+        return None;
+    }
+    Some(HtmlTag {
+        name: &tag[..name_end],
+        is_end,
+    })
+}
 
-    // Collect from template subdirectories (docs-search, docs-theme-toggle, etc.)
-    if let Ok(entries) = fs::read_dir(template_dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                ts_files.extend(collect_ts_files(&entry.path()));
-            }
+/// Return a heading level for `h1` through `h6`.
+///
+/// The scanner works on tag names from already-rendered markdown, so an ASCII
+/// byte check is sufficient and avoids allocating a lowercased copy.
+fn heading_level(name: &str) -> Option<u8> {
+    let bytes = name.as_bytes();
+    if bytes.len() == 2 && bytes[0].eq_ignore_ascii_case(&b'h') && (b'1'..=b'6').contains(&bytes[1])
+    {
+        Some(bytes[1] - b'0')
+    } else {
+        None
+    }
+}
+
+/// Extract an HTML attribute value from a rendered start tag without a DOM
+/// parser.
+///
+/// Search indexing runs once per page at build time, but it still avoids regex
+/// and allocation-heavy parsing. This helper handles quoted and unquoted values
+/// because heading IDs are generated as ordinary HTML attributes.
+fn attr_value<'a>(raw_tag: &'a str, attr_name: &str) -> Option<&'a str> {
+    let bytes = raw_tag.as_bytes();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
         }
+
+        let name_start = cursor;
+        while bytes.get(cursor).is_some_and(|b| is_attr_name_byte(*b)) {
+            cursor += 1;
+        }
+        if name_start == cursor {
+            cursor += 1;
+            continue;
+        }
+        let name = &raw_tag[name_start..cursor];
+
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+
+        let (value_start, value_end) = attr_value_range(raw_tag, cursor);
+        if name.eq_ignore_ascii_case(attr_name) {
+            return Some(&raw_tag[value_start..value_end]);
+        }
+        cursor = value_end.saturating_add(1);
     }
 
-    if ts_files.is_empty() {
-        return Ok(0);
-    }
-
-    // Generate the entry file content
-    let imports: String = ts_files
-        .iter()
-        .map(|f| format!("import \"{}\";", f.to_string_lossy().replace('\\', "/")))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let out_file = site_dir.join("components.js");
-
-    let status = std::process::Command::new(npx_command())
-        .arg("esbuild")
-        .arg("--bundle")
-        .arg("--format=esm")
-        .arg("--minify")
-        .arg("--loader:.html=text")
-        .arg("--loader:.css=text")
-        .arg(format!("--outfile={}", out_file.to_string_lossy()))
-        .env("NODE_PATH", node_modules)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(imports.as_bytes());
-            }
-            child.wait_with_output()
-        })
-        .map_err(|e| Error::Build(format!("npx esbuild failed: {e}")))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(Error::Build(format!("esbuild error: {stderr}")));
-    }
-
-    Ok(ts_files.len())
+    None
 }
 
-#[cfg(windows)]
-fn npx_command() -> &'static str {
-    "npx.cmd"
+fn is_attr_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
 }
 
-#[cfg(not(windows))]
-fn npx_command() -> &'static str {
-    "npx"
+fn attr_value_range(raw_tag: &str, cursor: usize) -> (usize, usize) {
+    let bytes = raw_tag.as_bytes();
+    match bytes.get(cursor).copied() {
+        Some(b'"' | b'\'') => {
+            let quote = bytes[cursor];
+            let value_start = cursor + 1;
+            let value_end = raw_tag[value_start..]
+                .find(char::from(quote))
+                .map_or(raw_tag.len(), |offset| value_start + offset);
+            (value_start, value_end)
+        }
+        Some(_) => {
+            let value_start = cursor;
+            let value_end = raw_tag[value_start..]
+                .find(char::is_whitespace)
+                .map_or(raw_tag.len(), |offset| value_start + offset);
+            (value_start, value_end)
+        }
+        None => (raw_tag.len(), raw_tag.len()),
+    }
+}
+
+fn push_search_text(
+    text: &mut SearchText,
+    current_heading: Option<&mut CurrentHeading>,
+    skip_header_anchor: usize,
+    value: &str,
+) {
+    if skip_header_anchor > 0 {
+        return;
+    }
+    text.content.push_str(value);
+    if let Some(heading) = current_heading {
+        heading.text.push_str(value);
+    }
+}
+
+fn push_search_space(
+    text: &mut SearchText,
+    current_heading: Option<&mut CurrentHeading>,
+    skip_header_anchor: usize,
+) {
+    if skip_header_anchor > 0 {
+        return;
+    }
+    text.content.push(' ');
+    if let Some(heading) = current_heading {
+        heading.text.push(' ');
+    }
+}
+
+fn normalize_search_text(raw: &str) -> String {
+    let decoded = html_escape::decode_html_entities(raw);
+    let mut normalized = String::with_capacity(decoded.len());
+    let mut first = true;
+    for token in decoded.split_whitespace() {
+        if !first {
+            normalized.push(' ');
+        }
+        normalized.push_str(token);
+        first = false;
+    }
+    normalized
 }
 
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
@@ -929,8 +1474,12 @@ fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
 
 /// Cheap deterministic hash for building unique temp directory names.
 fn fxhash(s: &str) -> u64 {
+    fxhash_bytes(s.as_bytes())
+}
+
+fn fxhash_bytes(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
+    for &b in bytes {
         hash ^= u64::from(b);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
@@ -941,14 +1490,71 @@ fn fxhash(s: &str) -> u64 {
 mod tests {
     use super::*;
 
-    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn test_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
+        let mut map = Map::with_capacity(N);
+        for (key, value) in entries {
+            map.insert(key.to_string(), value);
+        }
+        Value::Object(map)
+    }
+
+    fn string_value(value: &str) -> Value {
+        Value::String(value.to_string())
+    }
+
+    fn docs_config() -> TestResult<DocsConfig> {
+        let config = serde_json::from_str(
+            r#"{
+                "site": { "title": "Docs" },
+                "basePath": "/",
+                "contentDir": ".",
+                "nav": [],
+                "sidebar": []
+            }"#,
+        )?;
+        Ok(config)
+    }
 
     #[test]
-    fn npx_command_uses_platform_executable() {
-        #[cfg(windows)]
-        assert_eq!(npx_command(), "npx.cmd");
-        #[cfg(not(windows))]
-        assert_eq!(npx_command(), "npx");
+    fn not_found_state_includes_global_state() -> TestResult {
+        let config = docs_config()?;
+        let global = test_obj([("release", test_obj([("version", string_value("v1.2.3"))]))]);
+
+        let state = build_not_found_state(NotFoundStateInput {
+            config: &config,
+            base_path: "/",
+            nav: Value::Array(vec![]),
+            footer: Value::Null,
+            content: "<h1>404</h1>",
+            head_injection: "<meta name=\"docs\">",
+            global_state: Some(&global),
+        });
+
+        assert_eq!(state["release"]["version"], "v1.2.3");
+        assert_eq!(state["page"]["title"], "Page Not Found");
+        assert_eq!(state["pageData"], Value::Null);
+        assert_eq!(state["headTags"], "<meta name=\"docs\">");
+        Ok(())
+    }
+
+    #[test]
+    fn custom_home_layout_uses_non_home_regions() {
+        let state = test_obj([("page", test_obj([("layout", string_value("home"))]))]);
+        let custom_page = PageDescriptor {
+            path: "/custom/".to_string(),
+            is_home: false,
+            state: state.clone(),
+        };
+        let home_page = PageDescriptor {
+            path: "/".to_string(),
+            is_home: true,
+            state,
+        };
+
+        assert_eq!(region_layout(&custom_page), "doc");
+        assert_eq!(region_layout(&home_page), "home");
     }
 
     // --- truncate_utf8 ---------------------------------------------------
@@ -1054,8 +1660,9 @@ mod tests {
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
         });
+        let protocol = Protocol::new(build_result.protocol);
         handler.render(
-            &build_result.protocol,
+            &protocol,
             &Value::Object(Map::new()),
             &RenderOptions::new("index.html", "/"),
             &mut writer,
@@ -1077,31 +1684,31 @@ mod tests {
     }
 
     #[test]
-    fn collect_ts_files_skips_tests_and_declarations() -> TestResult {
-        let root = std::env::temp_dir().join(format!(
-            "webui-press-ts-collect-test-{}-{:x}",
-            std::process::id(),
-            fxhash("ts-collect")
-        ));
-        if root.exists() {
-            fs::remove_dir_all(&root)?;
-        }
-        fs::create_dir_all(root.join("my-widget"))?;
-        fs::write(root.join("my-widget/my-widget.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.spec.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.test.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.d.ts"), "")?;
-
-        let files = collect_ts_files(&root);
-
-        fs::remove_dir_all(&root)?;
-
-        assert_eq!(
-            files,
-            vec![root.join("my-widget/my-widget.ts")],
-            "only hydration entry files should be bundled"
+    fn build_search_entry_decodes_code_text_and_captures_headings() {
+        let entry = build_search_entry(
+            "`<for>` Loop Directive",
+            "/guide/concepts/directives/for/",
+            r##"<h1 id="for"><code>&lt;for&gt;</code> Loop Directive <a class="header-anchor" href="#for">#</a></h1><p>Use <code>&lt;for&gt;</code> loops.</p><h2 id="syntax">Syntax <a class="header-anchor" href="#syntax">#</a></h2><h3 id="nested">Nested Search <a class="header-anchor" href="#nested">#</a></h3>"##,
         );
-        Ok(())
+
+        assert_eq!(entry["title"].as_str(), Some("`<for>` Loop Directive"));
+        assert_eq!(
+            entry["content"].as_str(),
+            Some("<for> Loop Directive Use <for> loops. Syntax Nested Search")
+        );
+        let Some(headings) = entry["headings"].as_array() else {
+            panic!("headings should be an array: {entry:?}");
+        };
+        assert_eq!(headings.len(), 3);
+        assert_eq!(headings[0]["text"].as_str(), Some("<for> Loop Directive"));
+        assert_eq!(headings[0]["anchor"].as_str(), Some("for"));
+        assert_eq!(headings[0]["level"].as_u64(), Some(1));
+        assert_eq!(headings[1]["text"].as_str(), Some("Syntax"));
+        assert_eq!(headings[1]["anchor"].as_str(), Some("syntax"));
+        assert_eq!(headings[1]["level"].as_u64(), Some(2));
+        assert_eq!(headings[2]["text"].as_str(), Some("Nested Search"));
+        assert_eq!(headings[2]["anchor"].as_str(), Some("nested"));
+        assert_eq!(headings[2]["level"].as_u64(), Some(3));
     }
 
     // --- fxhash ----------------------------------------------------------

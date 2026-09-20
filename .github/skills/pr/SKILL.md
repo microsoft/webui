@@ -18,10 +18,13 @@ PR titles must use a [Conventional Commits](https://www.conventionalcommits.org/
 |--------|-------------|---------|
 | `feat:` | New feature or capability | `feat: add HTTP/2 support to hyper example` |
 | `fix:` | Bug fix | `fix: render missing signals as empty` |
+| `perf:` | Speed or memory improvement, measured | `perf: reduce allocations on hot paths` |
 | `chore:` | Maintenance, refactoring, CI, docs, dependencies | `chore: move shared files to examples/app` |
 
 
 The prefix is **lowercase**, followed by a colon and a space, then a short imperative description.
+
+A `perf:` PR must report before/after numbers in its description - see the **perf** skill for how to measure.
 
 ## Linking PRs to issues
 

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use std::fmt;
 use thiserror::Error;
 
 /// Errors that can occur during token loading, resolution, or CSS generation.
@@ -25,9 +24,16 @@ pub enum TokenError {
     #[error("Invalid token file schema: {0}")]
     Schema(String),
 
-    /// A cyclic dependency was detected among token values.
-    #[error("Cyclic token dependency detected: {0}")]
-    CyclicDependency(String),
+    /// A flat token required by a caller is missing from a theme.
+    #[error(
+        "Token --{token} required by caller but not found in theme '{theme}'. Add --{token} to the theme or remove it from the required list."
+    )]
+    MissingToken {
+        /// Theme that is missing the token.
+        theme: String,
+        /// Token name without the `--` prefix.
+        token: String,
+    },
 }
 
 impl TokenError {
@@ -46,56 +52,7 @@ impl TokenError {
             source,
         }
     }
-
-    /// Format a cycle path for display.
-    pub(crate) fn cycle(chain: &[&str]) -> Self {
-        Self::CyclicDependency(
-            chain
-                .iter()
-                .map(|s| format!("--{s}"))
-                .collect::<Vec<_>>()
-                .join(" → "),
-        )
-    }
 }
 
 /// Result type alias for token operations.
 pub type Result<T> = std::result::Result<T, TokenError>;
-
-/// Warnings produced during token resolution (non-fatal).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenWarning {
-    /// A token required by the protocol was not found in the token file.
-    MissingToken { theme: String, token: String },
-
-    /// A token value references another token via `var(--x)` that is not
-    /// defined in the token file.
-    MissingDependency {
-        theme: String,
-        token: String,
-        dependency: String,
-    },
-}
-
-impl fmt::Display for TokenWarning {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingToken { theme, token } => {
-                write!(
-                    f,
-                    "Token --{token} required by protocol but not found in theme '{theme}'"
-                )
-            }
-            Self::MissingDependency {
-                theme,
-                token,
-                dependency,
-            } => {
-                write!(
-                    f,
-                    "Token --{token} in theme '{theme}' references --{dependency} which is not defined"
-                )
-            }
-        }
-    }
-}

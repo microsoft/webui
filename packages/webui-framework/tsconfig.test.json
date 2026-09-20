@@ -3,6 +3,10 @@
     "target": "esnext",
     "module": "esnext",
     "moduleResolution": "bundler",
+    "paths": {
+      "@microsoft/webui-framework": ["./src/index.ts"],
+      "@microsoft/webui-framework/streaming.js": ["./src/streaming-entry.ts"]
+    },
     "lib": ["ESNext", "DOM"],
     "strict": true,
     "experimentalDecorators": true,

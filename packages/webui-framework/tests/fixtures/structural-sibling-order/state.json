@@ -1,0 +1,23 @@
+{
+  "turns": [
+    {
+      "turnId": "ssr-exact",
+      "messages": [
+        { "messageId": "ssr-user", "kind": "user", "hidden": false },
+        { "messageId": "ssr-assistant", "kind": "assistant", "hidden": false }
+      ],
+      "terminal": { "type": "failed" }
+    }
+  ],
+  "minimalTurns": [
+    {
+      "messages": ["user", "assistant"],
+      "failed": true
+    }
+  ],
+  "beforeRepeat": "",
+  "beforeBlocks": "",
+  "betweenBlocks": "",
+  "showTextConditional": true,
+  "textItems": ["item"]
+}

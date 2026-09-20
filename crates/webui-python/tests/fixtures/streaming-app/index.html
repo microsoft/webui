@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <if condition="show">
+      <boundary name="greeting" key="{{integerKey}}">
+        <p class="greeting">Hello, {{name}}!</p>
+      </boundary>
+      <p id="greeting-tail">Greeting committed.</p>
+      <boundary name="status" key="{{floatKey}}">
+        <p id="status">{{status}}</p>
+      </boundary>
+      <p id="status-tail">Status committed.</p>
+      <boundary name="summary" key="{{stringKey}}">
+        <p id="summary">{{summary}}</p>
+      </boundary>
+      <footer>Streaming complete.</footer>
+    </if>
+  </body>
+</html>

@@ -1,5 +1,26 @@
 {
   "page": "dashboard",
   "activeGroup": "",
-  "groups": ["work", "family", "friends", "other"]
+  "groups": [
+    {
+      "className": "nav-item nav-item-group",
+      "label": "work",
+      "slug": "work"
+    },
+    {
+      "className": "nav-item nav-item-group",
+      "label": "family",
+      "slug": "family"
+    },
+    {
+      "className": "nav-item nav-item-group",
+      "label": "friends",
+      "slug": "friends"
+    },
+    {
+      "className": "nav-item nav-item-group",
+      "label": "other",
+      "slug": "other"
+    }
+  ]
 }

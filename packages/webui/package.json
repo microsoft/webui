@@ -2,7 +2,10 @@
   "name": "@microsoft/webui",
   "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
   "license": "MIT",
-  "version": "0.0.17",
+  "version": "0.0.29",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,20 +15,26 @@
     "webui": "bin/webui"
   },
   "files": [
+    "ai.md",
     "bin/",
-    "dist/",
+    "dist/index.*",
+    "dist/install.*",
+    "dist/platform.*",
+    "dist/projection/",
     "wasm/"
   ],
   "scripts": {
     "build": "tsc",
     "postbuild": "node dist/install.js",
+    "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js"
   },
   "engines": {
     "node": ">=18"
   },
   "exports": {
+    "./ai.md": "./ai.md",
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
@@ -37,6 +46,12 @@
         "types": "./dist/platform.d.ts",
         "default": "./dist/platform.js"
       }
+    },
+    "./projection.js": {
+      "import": {
+        "types": "./dist/projection/index.d.ts",
+        "default": "./dist/projection/index.js"
+      }
     }
   },
   "optionalDependencies": {
@@ -47,8 +62,22 @@
     "@microsoft/webui-win32-arm64": "workspace:*",
     "@microsoft/webui-win32-x64": "workspace:*"
   },
-   "devDependencies": {
+  "peerDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3 || 7.0.2"
+  },
+  "peerDependenciesMeta": {
+    "esbuild": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "esbuild": "catalog:",
+    "typescript": "catalog:",
+    "typescript-6": "catalog:"
   }
 }

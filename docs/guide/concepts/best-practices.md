@@ -4,7 +4,10 @@ This page covers proven patterns and common pitfalls when building WebUI applica
 
 ## SSR State Completeness
 
-Every binding in your template must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys - if a key is missing, the binding renders empty or the condition evaluates to false.
+Every binding in your template should have a corresponding key in the server
+state JSON. The handler resolves bindings by looking up keys. A missing text or
+attribute binding renders empty; a missing condition identifier is a falsy
+operand, so a positive branch is hidden and a negated branch is shown.
 
 **The rule:** check every `{{binding}}`, `<if condition>`, and `<for each>` in your template and ensure the server provides the data.
 
@@ -124,7 +127,7 @@ In your server state JSON, use actual booleans:
 
 ## Observable Truthiness in `<if>` Conditions
 
-The `<if>` directive evaluates conditions using standard JavaScript truthiness rules. Understanding these rules prevents subtle rendering bugs.
+The `<if>` directive evaluates conditions with JavaScript-like truthiness, with one important exception: empty collections. The server evaluator treats an empty array or object as falsy, while the compiled client condition is plain `!!value`, where both are truthy. Understanding these rules prevents subtle rendering bugs.
 
 | Value | Truthy? | Notes |
 |-------|---------|-------|
@@ -136,7 +139,8 @@ The `<if>` directive evaluates conditions using standard JavaScript truthiness r
 | `""` | ❌ No | Empty string |
 | `"false"` | ✅ Yes ⚠️ | Non-empty string - this is truthy! |
 | `"0"` | ✅ Yes ⚠️ | Non-empty string - this is truthy! |
-| `[]` (empty array) | ✅ Yes ⚠️ | Arrays are objects - always truthy |
+| `[]` (empty array) | ⚠️ Differs | Falsy on the server, truthy on the client - never test it directly |
+| `{}` (empty object) | ⚠️ Differs | Falsy on the server, truthy on the client - never test it directly |
 | `[].length` → `0` | ❌ No | Use `.length` to check for empty arrays |
 
 ### Common patterns
@@ -160,7 +164,7 @@ The `<if>` directive evaluates conditions using standard JavaScript truthiness r
 
 <webui-blockquote appearance="tip" title="Tip" icon="💡">
 
-Always use `.length` to check whether an array is empty. An empty array `[]` is truthy - only its `.length` (which is `0`) is falsy.
+Always use `.length` to check whether an array is empty. Never write `<if condition="items">`: the server treats `[]` as falsy while the client treats it as truthy, so server-rendered output and hydration can disagree. `items.length` is `0` for an empty array, which is falsy on both sides.
 
 </webui-blockquote>
 
@@ -313,9 +317,11 @@ onThemeChanged(): void {
 ```
 
 ```html
-<div ?data-dark="{{theme == 'dark'}}">
-  <slot></slot>
-</div>
+<template shadowrootmode="open">
+  <div ?data-dark="{{theme == 'dark'}}">
+    <slot></slot>
+  </div>
+</template>
 ```
 
 ```css
@@ -327,83 +333,39 @@ onThemeChanged(): void {
 
 ## Route-Scoped State
 
-Each SSR route handler should return only the data that its template actually binds to. Sending the entire application state on every route wastes bandwidth and slows down rendering.
+Return only the state roots rendered by the active route. Do not send complete
+application collections to a page that binds one record.
 
-❌ **Anti-pattern - returning full app state:**
-
-```json
-{
-  "user": { "...full profile..." },
-  "products": [ "...all 500 products..." ],
-  "cart": { "...full cart..." },
-  "recommendations": [ "..." ],
-  "recentlyViewed": [ "..." ],
-  "notifications": [ "..." ]
-}
-```
-
-This might be 240 KB for a product detail page that only needs the product and user name.
-
-✅ **Correct - return only what the view binds to:**
-
-```json
-{
-  "user": { "name": "Alice" },
-  "product": {
-    "name": "Widget Pro",
-    "price": 29.99,
-    "description": "A professional widget.",
-    "inStock": true,
-    "reviews": [
-      { "text": "Great!", "author": "Bob", "rating": 5 }
-    ]
-  }
-}
-```
-
-This is roughly 15 KB - the handler renders faster, the network transfer is smaller, and the client parses less JSON.
-
-**Rule:** For each route, look at the template bindings and return exactly those keys. Nothing more.
+Validated projection manifests narrow browser hydration state automatically,
+but they are not a reason to over-fetch server data. See
+[Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection)
+for payload mechanics and
+[Performance](/guide/concepts/performance#project-only-the-state-hydration-needs)
+for optimization guidance.
 
 ## Light DOM vs Shadow DOM
 
-WebUI defaults to Shadow DOM for style encapsulation, but Light DOM is available when performance is the priority.
+Use Light DOM when ordinary document composition, inheritance, and shared CSS
+are intentional. Use Shadow DOM when the component requires native `<slot>`
+projection, host selectors, or a real style boundary.
 
-### Performance Comparison
+Do not use `<slot>`, `:host`, `:host-context`, or `::slotted` in an effective
+Light component; the compiler rejects those combinations. In a Light build,
+keep one component Shadow with a sole open wrapper:
 
-| Metric | Shadow DOM | Light DOM | Improvement |
-|--------|-----------|-----------|-------------|
-| First Contentful Paint | Baseline | 26% faster | Fewer shadow roots to process |
-| Layout Operations | Baseline | 60% fewer | No shadow boundary recalculations |
-| Memory per Component | Baseline | Lower | No shadow root overhead |
-
-### When to Use Each
-
-**Shadow DOM** (default):
-
-- Components with styles that must not leak or be affected by the page
-- Third-party components embedded in unknown host pages
-- Design system components where style isolation is a requirement
-
-**Light DOM**:
-
-- High-component-count pages (tables with hundreds of rows, long lists)
-- Performance-critical rendering paths where FCP matters
-- Pages where global CSS is acceptable and preferred
-
-### Enabling Light DOM
-
-```bash
-webui build ./src --out ./dist --dom=light
+```html
+<template shadowrootmode="open">
+  <slot></slot>
+</template>
 ```
 
-In Rust handler configuration, use `DomStrategy::Light`.
+Only `open` is supported. A policy wrapper such as `w-render` or `w-hydrate`
+does not select a DOM mode.
 
-<webui-blockquote appearance="tip" title="Tip" icon="💡">
-
-Start with Shadow DOM (the default). Switch individual components or pages to Light DOM only when profiling shows a measurable benefit.
-
-</webui-blockquote>
+See [Components](/guide/concepts/components) for the complete authoring
+contract and
+[Choose Light and Shadow DOM deliberately](/guide/concepts/performance#choose-light-and-shadow-dom-deliberately)
+for performance tradeoffs.
 
 ## Summary
 
@@ -412,7 +374,9 @@ Start with Shadow DOM (the default). Switch individual components or pages to Li
 | Provide all bound keys in server state | Missing keys silently render empty |
 | Use template expressions over shadow observables | Fewer properties, no sync bugs, no extra server state |
 | Use `@attr({ mode: 'boolean' })` for true/false | Follows HTML spec, avoids string `"false"` trap |
-| Check `.length` for empty arrays | Empty arrays are truthy; `.length` of `0` is falsy |
+| Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
-| Use Light DOM for performance-critical pages | Measurably faster FCP and fewer layout operations |
+| Use `--dom light` only when its composition/network wins fit the app | Avoids trading native CSS isolation for the wrong workload |
+| Author an open wrapper for Shadow islands in a Light build | Keeps slots, encapsulation, and CSS-heavy components tree-local |
+| Put native `<slot>` only in an effective Shadow component | Native slots do not work in Light DOM |

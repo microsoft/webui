@@ -44,11 +44,17 @@ Historically, frameworks existed because the web platform lacked key primitives.
 
 - **Web Components** - reusable custom elements with a standard lifecycle, no framework runtime required
 - **Declarative Shadow DOM** - server-renderable encapsulation without JavaScript
-- **CSS containment** - layout and paint isolation for predictable rendering performance
-- **Adopted stylesheets** - shared, constructable stylesheets across shadow roots
+- **CSS composition** - authored global Light CSS when composition is desired,
+  with native Shadow CSS boundaries when isolation is required
+- **Adopted stylesheets** - shared, constructable stylesheets when module
+  delivery is selected
 - **Navigation API** - client-side routing without framework abstractions
 
-WebUI builds directly on these platform primitives rather than wrapping them in an abstraction layer. Templates use standard HTML and native Web Components. The optional client-side router uses the Navigation API. Styling uses adopted stylesheets and CSS containment. No proprietary component model, no virtual DOM, no framework runtime in the browser.
+WebUI builds directly on these platform primitives rather than wrapping them in
+an abstraction layer. Templates use standard HTML and native Web Components.
+The optional client-side router uses the Navigation API. Styling uses ordinary
+paired CSS, authored/global in Light DOM and natively isolated in Shadow DOM. No
+proprietary component model or virtual DOM is required.
 
 When you build on the web platform, you inherit its improvements for free. Every browser performance optimization, every new CSS feature, every platform API lands in your app without a framework upgrade.
 
@@ -62,7 +68,11 @@ With WebUI's Islands Architecture:
 
 - **Static content** is server-rendered HTML. It arrives fully formed in the initial response. No JavaScript is shipped, no hydration occurs, no client-side processing is needed. It is just HTML and CSS - the fastest thing a browser can render.
 
-- **Interactive components** are Web Components that hydrate on the client. Each island is self-contained with its own Shadow DOM, encapsulated styles, and TypeScript behavior. Islands hydrate independently - they don't wait for each other or for a global framework to initialize.
+- **Interactive components** are Web Components that hydrate on the client.
+  Each island has its own template, authored styles, and TypeScript behavior.
+  Unwrapped components default to Shadow. Light builds keep explicit sole open
+  wrappers as Shadow islands for slots or native boundaries. Islands hydrate independently - they don't wait for
+  each other or for a global framework to initialize.
 
 - **You control the boundary.** The hydration plugin system lets you decide exactly which components are interactive islands and how they hydrate (on load, on visible, on interaction).
 
@@ -79,16 +89,22 @@ The result: dramatically less JavaScript, faster time-to-interactive, and better
 
 ## Performance
 
-Build-time compilation eliminates per-request template overhead. Islands Architecture eliminates unnecessary client-side JavaScript. Together, they produce measurable gains:
+Build-time compilation eliminates per-request template parsing. Islands
+Architecture avoids unnecessary client-side JavaScript. The first-party
+benchmark renders the same 100-item todo application through one product
+matrix. Every row performs dynamic SSR from warm structural input,
+materializes a unique current UTC timestamp into every todo inside the request,
+and keeps its natural response size, one process or worker, one pinned CPU, and
+the same randomized seven-round HTTP protocol.
 
-| Benchmark | Result |
-|-----------|--------|
-| vs. Fastify (raw SSR) | **4.3× faster** |
-| vs. React SSR | **8.2× faster** |
-| Small pages | **Sub-millisecond** rendering |
-| Large lists (1,000+ items) | **Linear scaling** |
-
-These numbers follow directly from the architecture:
+The matrix keeps product renderer APIs separate from HTTP transports. React and
+Next.js, and Vue and Nuxt therefore remain distinct rows. Products without a
+canonical server share one minimal `node:http` transport. The publication shows
+MAD, p95 latency, and natural response byte ranges beside throughput, and
+derives winner language from the measured gap rather than assuming a WebUI
+lead. See the
+[complete methodology](./concepts/performance).
+The architecture contributes through:
 
 - **Static fragments** are pre-serialized bytes copied directly to the output buffer. No string concatenation, no template interpretation.
 - **Dynamic fragments** resolve to simple key lookups against a flat state object. No expression compilation at runtime.
@@ -113,16 +129,20 @@ WebUI's Rust-native handler eliminates all of this:
 - **Minimal memory footprint** - the handler is a small, statically-linked binary
 - **Multi-threaded** - handles concurrent requests across all CPU cores without contention
 
-The practical result: fewer servers, lower memory consumption, more predictable latency, and lower cloud bills. A single WebUI server can handle the load that previously required multiple Node.js instances behind a load balancer.
+The practical result is a native SSR option without a required Node.js server.
+Capacity and cost still depend on the application and deployment, so measure
+the complete production stack under its expected load.
 
 ## Summary
 
-WebUI exists because modern web rendering does too much redundant work — on the server and in the browser.
+WebUI exists because modern web rendering does too much redundant work on the server and in the browser.
 
 | Problem | WebUI's Answer |
 |---------|----------------|
-| Full JS bundles shipped to browser | Islands Architecture — only interactive components ship JS |
+| Full JS bundles shipped to browser | Islands Architecture, so only interactive components ship JS |
 | Framework abstractions over the platform | Direct use of Web Components, Shadow DOM, Navigation API |
 | Node.js runtime required on server | Rust-native rendering, no JavaScript runtime, no GC pauses |
 
-The result is a framework that is extremely fast, renders pages in **sub-millisecond time**, ships **minimal JavaScript to the browser**, and works from **any backend language** — without a JavaScript runtime on the server.
+The result is a framework designed for **high-throughput native SSR**, **small
+browser runtimes**, and integration from **multiple backend languages** without
+requiring a JavaScript runtime on the server.

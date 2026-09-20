@@ -92,7 +92,7 @@ fn validate_template(template: &str, option_name: &str) -> Result<(), AssetFileN
     }
     if contains_invalid_filename_template_byte(template) {
         return Err(AssetFileNameTemplateError::new(format!(
-            "{option_name} must be ASCII and cannot contain path separators, Windows-reserved filename characters, control characters, or whitespace"
+            "{option_name} must be ASCII and cannot contain path separators, URL-significant or Windows-reserved filename characters, control characters, or whitespace"
         )));
     }
     if template.contains("..") {
@@ -175,7 +175,18 @@ fn contains_invalid_filename_template_byte(value: &str) -> bool {
         || value.bytes().any(|b| {
             matches!(
                 b,
-                0x00..=0x1F | b'"' | b'*' | b'/' | b':' | b'<' | b'>' | b'?' | b'\\' | b'|'
+                0x00..=0x1F
+                    | b'"'
+                    | b'#'
+                    | b'%'
+                    | b'*'
+                    | b'/'
+                    | b':'
+                    | b'<'
+                    | b'>'
+                    | b'?'
+                    | b'\\'
+                    | b'|'
             ) || b.is_ascii_whitespace()
         })
 }
@@ -202,6 +213,8 @@ mod tests {
         for template in [
             "[name]:[hash].[ext]",
             "[name]*[hash].[ext]",
+            "[name]#[hash].[ext]",
+            "[name]%[hash].[ext]",
             "[name]?[hash].[ext]",
             "[name]|[hash].[ext]",
             "resume [hash].[ext]",

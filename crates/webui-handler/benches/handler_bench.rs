@@ -6,7 +6,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_protocol::plugin::FastElementData;
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
@@ -37,6 +38,8 @@ impl ResponseWriter for BenchWriter {
         Ok(())
     }
 
+    webui_handler::string_response_writer_methods!(output);
+
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
     }
@@ -64,7 +67,7 @@ fn build_state(item_count: usize) -> Value {
     })
 }
 
-fn build_mixed_protocol() -> WebUIProtocol {
+fn build_mixed_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -75,6 +78,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::component("card"),
                 WebUIFragment::raw("</section>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -96,10 +100,14 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::for_loop("item", "items", "item-frag"),
                 WebUIFragment::raw("</ul>"),
                 WebUIFragment::if_cond(ConditionExpr::identifier("show_footer"), "footer-frag"),
-                // Simulate parser-plugin payload consumed by FastV2HydrationPlugin.
-                WebUIFragment::plugin((3u32).to_le_bytes().to_vec()),
+                WebUIFragment::plugin(
+                    FastElementData { binding_count: 3 }
+                        .encode_v2(false)
+                        .to_vec(),
+                ),
                 WebUIFragment::raw("</x-card>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -112,6 +120,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::raw(" size-"),
                 WebUIFragment::signal("size", false),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -125,6 +134,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::signal("item.name", false),
                 WebUIFragment::raw("</li>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -136,10 +146,11 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::signal("footer", false),
                 WebUIFragment::raw("</footer>"),
             ],
+            contains_boundary: false,
         },
     );
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_plugin_fast_bench(c: &mut Criterion) {
@@ -150,7 +161,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     let baseline_handler = WebUIHandler::new();
     let mut baseline_writer = BenchWriter::new(16 * 1024);
     baseline_handler
-        .handle(
+        .render(
             &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
@@ -166,7 +177,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(
+                .render(
                     black_box(&protocol),
                     black_box(&state),
                     &RenderOptions::new("index.html", "/"),
@@ -183,7 +194,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(
+                .render(
                     black_box(&protocol),
                     black_box(&state),
                     &RenderOptions::new("index.html", "/"),
@@ -207,7 +218,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
         let handler = WebUIHandler::new();
         let mut writer = BenchWriter::new(count * 80 + 1024);
         handler
-            .handle(
+            .render(
                 &protocol,
                 &state,
                 &RenderOptions::new("index.html", "/"),
@@ -222,7 +233,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&protocol),
                     black_box(st),
                     &RenderOptions::new("index.html", "/"),
@@ -236,7 +247,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_condition_protocol() -> WebUIProtocol {
+fn build_condition_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -276,6 +287,7 @@ fn build_condition_protocol() -> WebUIProtocol {
                 ),
                 WebUIFragment::raw("</div>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -290,11 +302,12 @@ fn build_condition_protocol() -> WebUIProtocol {
             id.to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(content)],
+                contains_boundary: false,
             },
         );
     }
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn build_condition_state() -> Value {
@@ -316,7 +329,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(1024);
     handler
-        .handle(
+        .render(
             &protocol,
             &state_true,
             &RenderOptions::new("index.html", "/"),
@@ -330,7 +343,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state_true),
                 &RenderOptions::new("index.html", "/"),
@@ -354,7 +367,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state_mixed),
                 &RenderOptions::new("index.html", "/"),
@@ -367,7 +380,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_nested_component_protocol() -> WebUIProtocol {
+fn build_nested_component_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -378,6 +391,7 @@ fn build_nested_component_protocol() -> WebUIProtocol {
                 WebUIFragment::component("app"),
                 WebUIFragment::raw("</body></html>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -393,6 +407,7 @@ fn build_nested_component_protocol() -> WebUIProtocol {
                 WebUIFragment::for_loop("item", "items", "item-component"),
                 WebUIFragment::raw("</ul></div>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -408,6 +423,7 @@ fn build_nested_component_protocol() -> WebUIProtocol {
                 WebUIFragment::if_cond(ConditionExpr::identifier("item.enabled"), "enabled-badge"),
                 WebUIFragment::raw("</li>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -415,10 +431,11 @@ fn build_nested_component_protocol() -> WebUIProtocol {
         "enabled-badge".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<span class=\"badge\">✓</span>")],
+            contains_boundary: false,
         },
     );
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_nested_components_bench(c: &mut Criterion) {
@@ -429,7 +446,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(8 * 1024);
     handler
-        .handle(
+        .render(
             &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
@@ -443,7 +460,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(8 * 1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state),
                 &RenderOptions::new("index.html", "/"),
@@ -456,7 +473,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_signal_protocol(signal_path: &str) -> WebUIProtocol {
+fn build_signal_protocol(signal_path: &str) -> Protocol {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
@@ -466,9 +483,10 @@ fn build_signal_protocol(signal_path: &str) -> WebUIProtocol {
                 WebUIFragment::signal(signal_path, false),
                 WebUIFragment::raw("</div>"),
             ],
+            contains_boundary: false,
         },
     );
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_state_depth_bench(c: &mut Criterion) {
@@ -497,7 +515,7 @@ fn handler_state_depth_bench(c: &mut Criterion) {
             let mut w = BenchWriter::new(256);
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&protocol),
                     black_box(state),
                     &RenderOptions::new("index.html", "/"),
@@ -511,12 +529,151 @@ fn handler_state_depth_bench(c: &mut Criterion) {
     group.finish();
 }
 
+/// Build a document whose fragment graph is wide enough that per-fragment
+/// preparation cost is visible, including a large sibling route table.
+fn build_construction_document(fragment_count: usize, routes_per_page: usize) -> WebUIProtocol {
+    let mut fragments = HashMap::new();
+
+    let mut root = Vec::with_capacity(fragment_count + routes_per_page);
+    for route in 0..routes_per_page {
+        root.push(WebUIFragment::route(
+            format!("/section-{route}"),
+            format!("route-{route}.html"),
+        ));
+        fragments.insert(
+            format!("route-{route}.html"),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>route body</p>")],
+                contains_boundary: false,
+            },
+        );
+    }
+    for page in 0..fragment_count {
+        root.push(WebUIFragment::component(format!("card-{page}")));
+        fragments.insert(
+            format!("card-{page}"),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::attribute("data-card-label", format!("card {page}")),
+                    WebUIFragment::attribute(":card-detail-text", format!("detail {page}")),
+                    WebUIFragment::signal(format!("cards.{page}.title"), false),
+                    WebUIFragment::raw("</div>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+    }
+
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: root,
+            contains_boundary: false,
+        },
+    );
+
+    WebUIProtocol::new(fragments)
+}
+
+/// Control for the load-time half of the render fragment index: a render-time
+/// win must not be paid for by a disproportionate `Protocol::new` regression.
+fn handler_protocol_construction_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("handler_protocol_construction");
+
+    let cases = [
+        ("small_16_fragments", 16usize, 0usize),
+        ("medium_128_fragments", 128, 0),
+        ("wide_128_routes", 32, 128),
+        ("large_512_fragments", 512, 0),
+    ];
+
+    for (label, fragment_count, routes) in cases {
+        let document = build_construction_document(fragment_count, routes);
+        group.throughput(Throughput::Elements(
+            u64::try_from(document.fragments.len()).unwrap_or(u64::MAX),
+        ));
+        group.bench_function(label, |b| {
+            b.iter_batched(
+                || document.clone(),
+                |document| Protocol::new(black_box(document)),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn handler_route_outlet_bench(c: &mut Criterion) {
+    use webui_protocol::WebUiFragmentRoute;
+
+    let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+        (
+            "index.html".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    children: ["", "projects", "*rest"]
+                        .into_iter()
+                        .map(|path| WebUiFragmentRoute {
+                            path: path.into(),
+                            fragment_id: "bench-page".into(),
+                            exact: true,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                })],
+                ..Default::default()
+            },
+        ),
+        (
+            "app-shell".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+                ..Default::default()
+            },
+        ),
+        (
+            "bench-page".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Page</p>")],
+                ..Default::default()
+            },
+        ),
+    ])));
+    let handler = WebUIHandler::new();
+    let state = Value::Null;
+    let mut writer = BenchWriter::new(1024);
+    let mut group = c.benchmark_group("handler_route_outlet");
+    for path in ["/", "/projects", "/missing"] {
+        let options = RenderOptions::new("index.html", path);
+        writer.clear();
+        handler
+            .render(&protocol, &state, &options, &mut writer)
+            .unwrap_or_else(|error| panic!("route warmup failed: {error}"));
+        group.throughput(Throughput::Bytes(writer.len() as u64));
+        group.bench_function(path, |b| {
+            b.iter(|| {
+                writer.clear();
+                handler
+                    .render(black_box(&protocol), &state, &options, &mut writer)
+                    .unwrap_or_else(|error| panic!("route render failed: {error}"));
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     handler_plugin_fast_bench,
     handler_loop_scaling_bench,
     handler_condition_variety_bench,
     handler_nested_components_bench,
-    handler_state_depth_bench
+    handler_state_depth_bench,
+    handler_protocol_construction_bench,
+    handler_route_outlet_bench
 );
 criterion_main!(benches);

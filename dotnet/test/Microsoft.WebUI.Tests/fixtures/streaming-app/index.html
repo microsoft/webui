@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Streaming Fixture</title>
+    <script type="module" async src="./index.js"></script>
+  </head>
+  <body>
+    <if condition="show">
+      <boundary name="string-row" key="{{stringKey}}">
+        <stream-item label="{{firstLabel}}"></stream-item>
+      </boundary>
+      <p>between-boundaries</p>
+      <boundary name="number-row" key="{{numberKey}}">
+        <stream-item label="{{secondLabel}}"></stream-item>
+      </boundary>
+    </if>
+    <p>always-complete</p>
+  </body>
+</html>

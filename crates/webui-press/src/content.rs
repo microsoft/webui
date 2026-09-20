@@ -11,7 +11,8 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
-use crate::types::{DocsConfig, PageDescriptor, SidebarItem, SidebarSection};
+use crate::state::{load_render_states, merge_page_state, LoadedStates};
+use crate::types::{DocsConfig, NavLink, PageDescriptor, ShowMode, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
 /// canonical URL path that includes the site's `base_path` prefix and
@@ -39,6 +40,10 @@ fn normalize_link(base: &str, link: &str) -> String {
     }
 }
 
+fn config_paths_match(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+}
+
 /// Build a JSON object from key-value pairs without using `json!` (which calls `unwrap`).
 fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
     let mut map = Map::with_capacity(N);
@@ -47,22 +52,6 @@ fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
     }
     Value::Object(map)
 }
-
-/// Top-level state keys reserved by the docs renderer. Custom-page `stateFile`
-/// objects whose top-level fields are flattened onto the page state must not
-/// shadow these names — collisions are silently skipped so the canonical docs
-/// state always wins.
-const RESERVED_STATE_KEYS: &[&str] = &[
-    "site",
-    "navigation",
-    "sidebar",
-    "page",
-    "hero",
-    "footer",
-    "prev",
-    "next",
-    "pageData",
-];
 
 /// Parsed frontmatter from a markdown file.
 #[derive(Debug)]
@@ -152,13 +141,10 @@ fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
     links
 }
 
-/// Build the page registry by walking content_dir for every `.md` file.
+/// Strip a redundant filename when it should resolve to its parent folder.
 ///
-/// Discovery is filesystem-driven: any markdown file under content_dir becomes
-/// a page. The sidebar/nav config controls navigation, not discovery.
-/// Strip redundant filename if it matches the parent folder name.
 /// E.g., "my-button/my-button" → "my-button"
-///      "my-button/usage" → "my-button/usage" (unchanged)
+///       "my-button/usage" → "my-button/usage" (unchanged)
 fn normalize_path_as_index(path: &str) -> &str {
     // Find the last slash to split parent/filename
     let Some(slash_pos) = path.rfind('/') else {
@@ -179,7 +165,94 @@ fn normalize_path_as_index(path: &str) -> &str {
     }
 }
 
-fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std::path::PathBuf)> {
+/// Resolve the public URL path for a markdown file.
+///
+/// `rel_path` is the file's path relative to the content directory, using
+/// forward slashes (e.g. `guide/install.md`). A nav entry that claims this
+/// file via its `source` field wins outright, which lets a page keep a stable
+/// URL when its filename is dictated by an outside convention. Any fragment
+/// (`#`) or query string (`?`) in the override link is stripped before the
+/// route is formed — they are navigation-only markers that cannot appear in a
+/// filesystem path and would break prev/next matching against normalized
+/// sidebar links. Otherwise the URL is derived from the filesystem: `.md` is
+/// dropped, then a trailing `index` — or a filename that repeats its parent
+/// folder — collapses to the folder.
+fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>) -> String {
+    let prefix = base_path.trim_end_matches('/');
+
+    if let Some(&link) = sources.get(rel_path) {
+        // Strip any fragment (#) or query (?) — they are navigation-only and
+        // cannot appear in a filesystem-derived route or match sidebar links.
+        let end = link.find(['#', '?']).unwrap_or(link.len());
+        let link = &link[..end];
+        let cleaned = link.trim_matches('/');
+        return if cleaned.is_empty() {
+            format!("{prefix}/")
+        } else {
+            format!("{prefix}/{cleaned}")
+        };
+    }
+
+    let trimmed = rel_path.trim_end_matches(".md");
+    let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
+    let trimmed = normalize_path_as_index(trimmed);
+
+    if trimmed.is_empty() || trimmed == "index" {
+        format!("{prefix}/")
+    } else {
+        format!("{prefix}/{trimmed}")
+    }
+}
+
+fn markdown_link_base_url(source_path: &Path, content_dir: &Path, base_path: &str) -> String {
+    let parent = source_path
+        .strip_prefix(content_dir)
+        .ok()
+        .and_then(Path::parent);
+    let parent = parent
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    let prefix = base_path.trim_end_matches('/');
+    let parent = parent.trim_matches('/');
+    let mut url = String::with_capacity(prefix.len() + parent.len() + 2);
+    url.push_str(prefix);
+    url.push('/');
+    if !parent.is_empty() {
+        url.push_str(parent);
+        url.push('/');
+    }
+    url
+}
+
+/// Map each nav entry that declares a `source` file to its configured link.
+///
+/// Keys are content-relative markdown paths; values are raw config links.
+/// Entries whose `link` starts with `http` are excluded because `source` is
+/// only meaningful for internal routes; pairing it with an external URL would
+/// produce an invalid route in `page_url_path`.
+fn nav_source_overrides(nav: &[NavLink]) -> HashMap<&str, &str> {
+    nav.iter()
+        .filter_map(|item| {
+            let source = item.source.as_deref()?;
+            if item.link.starts_with("http") {
+                return None;
+            }
+            Some((source, item.link.as_str()))
+        })
+        .collect()
+}
+
+/// Build the page registry by walking content_dir for every `.md` file.
+///
+/// Discovery is filesystem-driven: any markdown file under content_dir becomes
+/// a page. The sidebar/nav config controls navigation, not discovery.
+fn build_page_registry(
+    content_dir: &Path,
+    base_path: &str,
+    sources: &HashMap<&str, &str>,
+) -> Vec<(String, std::path::PathBuf)> {
     let mut pages = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![content_dir.to_path_buf()];
 
@@ -203,39 +276,51 @@ fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std:
                 continue;
             }
 
-            // Compute URL: relative path from content_dir, drop trailing /index.md,
-            // drop .md, prefix with base_path.
             let rel = match path.strip_prefix(content_dir) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let trimmed = rel_str.trim_end_matches(".md");
-
-            // Strip /index suffix
-            let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
-
-            // Strip redundant filename if it matches parent folder
-            // e.g., "webui-button/webui-button" → "webui-button"
-            let trimmed = normalize_path_as_index(trimmed);
-
-            // Root index.md => "/"
-            let url_path = if trimmed.is_empty() || trimmed == "index" {
-                if base_path.is_empty() {
-                    "/".to_string()
-                } else {
-                    base_path.trim_end_matches('/').to_string() + "/"
-                }
-            } else {
-                let prefix = base_path.trim_end_matches('/');
-                format!("{prefix}/{trimmed}")
-            };
-            pages.push((url_path, path));
+            pages.push((page_url_path(&rel_str, base_path, sources), path));
         }
     }
 
     pages.sort_by(|a, b| a.0.cmp(&b.0));
     pages
+}
+
+fn build_sidebar_item_state(item: &SidebarItem, base: &str, url_path: &str) -> (Value, bool) {
+    let item_path = normalize_link(base, &item.link);
+    let active = !item_path.is_empty() && item_path == url_path;
+    let mut descendant_active = false;
+    let children: Vec<Value> = item
+        .items
+        .iter()
+        .map(|child| {
+            let child_path = normalize_link(base, &child.link);
+            let child_active = !child_path.is_empty() && child_path == url_path;
+            descendant_active |= child_active;
+            json_obj([
+                ("text", Value::String(child.text.clone())),
+                ("link", Value::String(child_path)),
+                ("active", Value::Bool(child_active)),
+                ("hasChildren", Value::Bool(false)),
+                ("children", Value::Array(vec![])),
+            ])
+        })
+        .collect();
+    let expanded = active || descendant_active;
+    (
+        json_obj([
+            ("text", Value::String(item.text.clone())),
+            ("link", Value::String(item_path)),
+            ("active", Value::Bool(active)),
+            ("expanded", Value::Bool(expanded)),
+            ("hasChildren", Value::Bool(!children.is_empty())),
+            ("children", Value::Array(children)),
+        ]),
+        expanded,
+    )
 }
 
 fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value {
@@ -253,38 +338,23 @@ fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value
         .map(|(_, s)| s.as_slice())
         .unwrap_or(&config.sidebar);
 
-    // Convert a SidebarItem to a JSON value (iterative via stack for children)
-    let item_to_value = |item: &SidebarItem| -> Value {
-        let item_path = normalize_link(base, &item.link);
-        let active = !item_path.is_empty() && item_path == url_path;
-        let children: Vec<Value> = item
-            .items
-            .iter()
-            .map(|child| {
-                let child_path = normalize_link(base, &child.link);
-                let child_active = !child_path.is_empty() && child_path == url_path;
-                json_obj([
-                    ("text", Value::String(child.text.clone())),
-                    ("link", Value::String(child_path)),
-                    ("active", Value::Bool(child_active)),
-                    ("hasChildren", Value::Bool(false)),
-                    ("children", Value::Array(vec![])),
-                ])
-            })
-            .collect();
-        json_obj([
-            ("text", Value::String(item.text.clone())),
-            ("link", Value::String(item_path)),
-            ("active", Value::Bool(active)),
-            ("hasChildren", Value::Bool(!children.is_empty())),
-            ("children", Value::Array(children)),
-        ])
-    };
-
+    let mut current_section = String::new();
     let sections: Vec<Value> = active_sidebar
         .iter()
         .map(|section| {
-            let items: Vec<Value> = section.items.iter().map(item_to_value).collect();
+            let mut section_active = false;
+            let items: Vec<Value> = section
+                .items
+                .iter()
+                .map(|item| {
+                    let (value, branch_active) = build_sidebar_item_state(item, base, url_path);
+                    section_active |= branch_active;
+                    value
+                })
+                .collect();
+            if section_active {
+                current_section.clone_from(&section.title);
+            }
             json_obj([
                 ("title", Value::String(section.title.clone())),
                 ("items", Value::Array(items)),
@@ -292,7 +362,10 @@ fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value
         })
         .collect();
 
-    json_obj([("sections", Value::Array(sections))])
+    json_obj([
+        ("sections", Value::Array(sections)),
+        ("currentSection", Value::String(current_section)),
+    ])
 }
 
 fn find_sidebar_text(url_path: &str, config: &DocsConfig) -> Option<String> {
@@ -321,62 +394,6 @@ fn find_sidebar_text(url_path: &str, config: &DocsConfig) -> Option<String> {
     None
 }
 
-/// Resolve and load every custom page's `stateFile` once, returning a map keyed
-/// by the custom-page link (e.g. `/playground/`) holding the parsed JSON value.
-/// Inline `state` values are passed through untouched.
-///
-/// State files are cached by canonical filesystem path so that two custom pages
-/// pointing at the same file only read and parse it once.
-fn load_custom_page_states(
-    config: &DocsConfig,
-    config_dir: &Path,
-) -> Result<HashMap<String, Value>> {
-    let mut cache: HashMap<std::path::PathBuf, Value> = HashMap::new();
-    let mut out: HashMap<String, Value> = HashMap::with_capacity(config.custom_pages.len());
-
-    for (link, page) in &config.custom_pages {
-        let inline = page.inline_state();
-        let path = page.state_file();
-
-        if inline.is_some() && path.is_some() {
-            return Err(crate::error::Error::Build(format!(
-                "Custom page {link}: 'state' and 'stateFile' are mutually exclusive — pick one."
-            )));
-        }
-
-        if let Some(value) = inline {
-            out.insert(link.clone(), value.clone());
-            continue;
-        }
-
-        if let Some(rel) = path {
-            let abs = config_dir.join(rel);
-            let key = fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
-            let value = if let Some(cached) = cache.get(&key) {
-                cached.clone()
-            } else {
-                let raw = fs::read_to_string(&abs).map_err(|e| {
-                    crate::error::Error::Build(format!(
-                        "Custom page {link}: cannot read stateFile {}: {e}",
-                        abs.display()
-                    ))
-                })?;
-                let parsed: Value = serde_json::from_str(&raw).map_err(|e| {
-                    crate::error::Error::Build(format!(
-                        "Custom page {link}: stateFile {} is not valid JSON: {e}",
-                        abs.display()
-                    ))
-                })?;
-                cache.insert(key, parsed.clone());
-                parsed
-            };
-            out.insert(link.clone(), value);
-        }
-    }
-
-    Ok(out)
-}
-
 /// Process all content files and return page descriptors.
 ///
 /// `config_dir` is the directory containing `config.json`; relative paths
@@ -386,22 +403,34 @@ fn load_custom_page_states(
 /// `head_injection` is the fully-resolved `<head>` snippet (CSS link
 /// tags + `config.head` entries). It MUST be computed before this call
 /// so the descriptor is render-ready.
+#[allow(dead_code)] // Public library API; the binary uses preloaded state for 404 parity.
 pub fn process_content(
     config: &DocsConfig,
     config_dir: &Path,
     highlighter: &Highlighter,
     head_injection: &str,
 ) -> Result<Vec<PageDescriptor>> {
+    let states = load_render_states(config, config_dir)?;
+    process_content_with_states(config, highlighter, head_injection, &states)
+}
+
+pub(crate) fn process_content_with_states(
+    config: &DocsConfig,
+    highlighter: &Highlighter,
+    head_injection: &str,
+    states: &LoadedStates,
+) -> Result<Vec<PageDescriptor>> {
     let content_dir = Path::new(&config.content_dir);
     let base_path = &config.base_path;
-
-    // Load custom-page state once before the parallel pipeline.
-    let custom_states = load_custom_page_states(config, config_dir)?;
 
     let nav_links: Vec<Value> = config
         .nav
         .iter()
         .map(|item| {
+            let full_layout = !item.link.starts_with("http")
+                && config.custom_pages.iter().any(|(path, page)| {
+                    config_paths_match(path, &item.link) && page.layout() == "full"
+                });
             let (link, section) = if item.link.starts_with("http") {
                 // External links can never match a docs section. Use the URL
                 // itself as a unique sentinel so the equality check below
@@ -423,11 +452,13 @@ pub fn process_content(
                 ("text", Value::String(item.text.clone())),
                 ("link", Value::String(link)),
                 ("section", Value::String(section)),
+                ("fullLayout", Value::Bool(full_layout)),
             ])
         })
         .collect();
 
-    let mut registry = build_page_registry(content_dir, base_path);
+    let mut registry =
+        build_page_registry(content_dir, base_path, &nav_source_overrides(&config.nav));
 
     // Register custom pages
     for page_link in config.custom_pages.keys() {
@@ -468,6 +499,7 @@ pub fn process_content(
                     .custom_pages
                     .get(&logical_path)
                     .or_else(|| config.custom_pages.get(logical_path.trim_end_matches('/')));
+                let custom_state = states.custom_page_state(&logical_path);
 
                 if let Some(entry) = custom_entry {
                     html = entry.html().to_string();
@@ -486,8 +518,25 @@ pub fn process_content(
                         fm.layout.unwrap_or_else(|| "doc".to_string())
                     };
 
-                    if !is_home {
-                        html = render_markdown(body, highlighter, base_path)?;
+                    if !is_home || config.show == ShowMode::Content {
+                        // Canonical page URL: every page is written as
+                        // `<dir>/index.html`, so it is served with a trailing
+                        // slash. In-page anchors need this exact path so they
+                        // aren't resolved against `<base href>`.
+                        let page_url = if url_path.ends_with('/') {
+                            url_path.to_string()
+                        } else {
+                            format!("{url_path}/")
+                        };
+                        let link_base_url =
+                            markdown_link_base_url(full_path, content_dir, base_path);
+                        html = render_markdown(
+                            body,
+                            highlighter,
+                            base_path,
+                            &page_url,
+                            &link_base_url,
+                        )?;
                     }
 
                     if let Some(d) = fm.description {
@@ -597,51 +646,24 @@ pub fn process_content(
                             ("isHome", Value::Bool(is_home)),
                             ("layout", Value::String(layout)),
                             ("section", Value::String(page_section)),
+                            ("mobileNavigationOpen", Value::Bool(false)),
                         ]),
                     ),
                     ("hero", hero_val),
                     ("footer", footer_val),
                     ("prev", Value::Null),
                     ("next", Value::Null),
-                    (
-                        "pageData",
-                        custom_states
-                            .get(&logical_path)
-                            .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    ),
+                    ("pageData", custom_state.cloned().unwrap_or(Value::Null)),
                     ("headTags", Value::String(head_injection.to_string())),
                     ("label", Value::String("Copy".to_string())),
                     ("icon", Value::String("🌙".to_string())),
                 ]);
 
-                // Flatten the loaded custom-page state object onto the top-level
-                // page state so component templates can bind directly to its
-                // fields (e.g. `<for each="item in files">`). This is what enables
-                // SSR for components driven by a `stateFile`. Reserved keys are
-                // never overwritten.
-                let state = if let Some(Value::Object(extra)) = custom_states
-                    .get(&logical_path)
-                    .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-                {
-                    let mut map = match state {
-                        Value::Object(m) => m,
-                        other => {
-                            let mut m = Map::new();
-                            m.insert("_root".to_string(), other);
-                            m
-                        }
-                    };
-                    for (k, v) in extra {
-                        if !RESERVED_STATE_KEYS.contains(&k.as_str()) && !map.contains_key(k) {
-                            map.insert(k.clone(), v.clone());
-                        }
-                    }
-                    Value::Object(map)
-                } else {
-                    state
-                };
+                // Flatten shared state first, then custom-page state. Component
+                // templates can bind directly to these fields (e.g.
+                // `<for each="item in files">`) while reserved docs keys keep
+                // their canonical values.
+                let state = merge_page_state(state, states.global(), custom_state);
 
                 Ok((
                     idx,
@@ -773,6 +795,33 @@ mod tests {
         assert!(out.ends_with("é-page"), "got {out}");
     }
 
+    #[test]
+    fn config_paths_match_with_or_without_trailing_slash() {
+        assert!(config_paths_match("/playground", "/playground/"));
+        assert!(config_paths_match("/playground/", "/playground"));
+        assert!(!config_paths_match("/playground", "/guide/"));
+    }
+
+    #[test]
+    fn sidebar_item_expands_for_active_descendant() {
+        let item = SidebarItem {
+            text: "Template Syntax".to_string(),
+            link: "/guide/concepts/directives".to_string(),
+            items: vec![SidebarItem {
+                text: "Signals".to_string(),
+                link: "/guide/concepts/directives/signals".to_string(),
+                items: Vec::new(),
+            }],
+        };
+
+        let (state, branch_active) =
+            build_sidebar_item_state(&item, "/webui/", "/webui/guide/concepts/directives/signals");
+
+        assert!(branch_active);
+        assert_eq!(state["expanded"], Value::Bool(true));
+        assert_eq!(state["children"][0]["active"], Value::Bool(true));
+    }
+
     // --- normalize_path_as_index -----------------------------------------
 
     #[test]
@@ -802,6 +851,155 @@ mod tests {
     #[test]
     fn normalize_path_as_index_no_slash_returns_unchanged() {
         assert_eq!(normalize_path_as_index("webui-button"), "webui-button");
+    }
+
+    // --- page_url_path ----------------------------------------------------
+
+    fn sources(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn page_url_path_derives_url_from_filesystem() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("guide/install.md", "/webui/", &none),
+            "/webui/guide/install"
+        );
+    }
+
+    #[test]
+    fn page_url_path_collapses_index_and_root() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("guide/index.md", "/webui/", &none),
+            "/webui/guide"
+        );
+        assert_eq!(page_url_path("index.md", "/webui/", &none), "/webui/");
+        assert_eq!(page_url_path("index.md", "", &none), "/");
+    }
+
+    #[test]
+    fn page_url_path_collapses_filename_repeating_its_folder() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("components/webui-button/webui-button.md", "/webui/", &none),
+            "/webui/components/webui-button"
+        );
+    }
+
+    #[test]
+    fn page_url_path_nav_source_overrides_derived_url() {
+        // `SKILL.md` is a filename fixed by the agent-skill spec; the nav entry
+        // keeps the page on `/ai` instead of leaking it as `/ai/SKILL`.
+        let map = sources(&[("ai/SKILL.md", "/ai")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_tolerates_surrounding_slashes() {
+        let map = sources(&[("ai/SKILL.md", "ai/"), ("b/SKILL.md", "/b")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+        assert_eq!(page_url_path("b/SKILL.md", "", &map), "/b");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_can_target_site_root() {
+        let map = sources(&[("home/landing.md", "/")]);
+        assert_eq!(page_url_path("home/landing.md", "/webui/", &map), "/webui/");
+    }
+
+    #[test]
+    fn page_url_path_ignores_nav_source_for_other_files() {
+        let map = sources(&[("ai/SKILL.md", "/ai")]);
+        assert_eq!(
+            page_url_path("guide/SKILL.md", "/webui/", &map),
+            "/webui/guide/SKILL"
+        );
+    }
+
+    #[test]
+    fn page_url_path_nav_source_strips_fragment_from_override() {
+        // A nav link like "/ai#rules" must route to "/ai", not "/ai#rules".
+        let map = sources(&[("ai/SKILL.md", "/ai#rules")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_strips_query_from_override() {
+        // A nav link like "/ai?v=2" must route to "/ai", not "/ai?v=2".
+        let map = sources(&[("ai/SKILL.md", "/ai?v=2")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn markdown_link_base_uses_source_directory_for_index_and_leaf_pages() {
+        let content_dir = Path::new("docs");
+        assert_eq!(
+            markdown_link_base_url(Path::new("docs/guide/index.md"), content_dir, "/webui/"),
+            "/webui/guide/"
+        );
+        assert_eq!(
+            markdown_link_base_url(
+                Path::new("docs/guide/installation.md"),
+                content_dir,
+                "/webui/"
+            ),
+            "/webui/guide/"
+        );
+        assert_eq!(
+            markdown_link_base_url(
+                Path::new("docs/guide/topic/index.md"),
+                content_dir,
+                "/webui/"
+            ),
+            "/webui/guide/topic/"
+        );
+    }
+
+    // --- nav_source_overrides ---------------------------------------------
+
+    fn nav_link(text: &str, link: &str, source: Option<&str>) -> NavLink {
+        NavLink {
+            text: text.to_string(),
+            link: link.to_string(),
+            source: source.map(String::from),
+        }
+    }
+
+    #[test]
+    fn nav_source_overrides_collects_only_entries_declaring_a_source() {
+        let nav = vec![
+            nav_link("Guide", "/guide/", None),
+            nav_link("AI", "/ai", Some("ai/SKILL.md")),
+            nav_link("GitHub", "https://github.com/microsoft/webui", None),
+        ];
+        let map = nav_source_overrides(&nav);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
+    }
+
+    #[test]
+    fn nav_source_overrides_empty_nav_yields_no_overrides() {
+        assert!(nav_source_overrides(&[]).is_empty());
+    }
+
+    #[test]
+    fn nav_source_overrides_excludes_external_link_with_source() {
+        // Accidentally pairing `source` with an external URL must be silently
+        // dropped so it never reaches `page_url_path` as a broken route.
+        let nav = vec![
+            nav_link("AI", "/ai", Some("ai/SKILL.md")),
+            nav_link(
+                "GitHub",
+                "https://github.com/microsoft/webui",
+                Some("github.md"),
+            ),
+        ];
+        let map = nav_source_overrides(&nav);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
+        assert!(!map.contains_key("github.md"));
     }
 
     #[test]

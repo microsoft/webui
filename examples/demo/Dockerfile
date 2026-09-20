@@ -63,6 +63,7 @@ RUN cd examples/app/contact-book-manager && pnpm build
 RUN cd examples/app/component-assets && pnpm build
 RUN cd examples/app/routes && pnpm build
 RUN cd examples/app/commerce && pnpm build
+RUN cd examples/app/streaming && pnpm build
 
 # Build the demo shell client (bundles src/index.ts → dist/index.js)
 RUN cd examples/demo && pnpm build
@@ -164,6 +165,12 @@ COPY --from=builder --chown=app:app /build/examples/app/commerce/src/ ./apps/com
 COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./apps/commerce/dist/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/images/ ./apps/commerce/images/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/demo.toml ./apps/commerce/demo.toml
+
+# streaming (Node API drives webui serve over the bounded control stream)
+COPY --from=builder --chown=app:app /build/examples/app/streaming/src/ ./apps/streaming/src/
+COPY --from=builder --chown=app:app /build/examples/app/streaming/dist/ ./apps/streaming/dist/
+COPY --from=builder --chown=app:app /build/examples/app/streaming/server/dist/ ./apps/streaming/server/dist/
+COPY --from=builder --chown=app:app /build/examples/app/streaming/demo.toml ./apps/streaming/demo.toml
 
 # Demo shell (the `/` UI itself — a real WebUI app)
 COPY --from=builder --chown=app:app /build/examples/demo/src/  ./shell/src/

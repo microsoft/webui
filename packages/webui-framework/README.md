@@ -6,15 +6,19 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
-- compiled template path mapping for direct DOM binding resolution
-- light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
-- SSR state seeding from `window.__webui.state` (like Preact's props)
+- direct DOM binding updates
+- Shadow-default components with opt-in global Light and authored Shadow islands
+- SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
 > 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)**, see the [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity) for component authoring patterns. For framework internals (hydration, path resolution, reactive update model), see [RENDERING.md](./RENDERING.md).
 
 ## Install
+
+Trusted Types support is automatic; no setup call is needed. To enforce it,
+allow the `webui` policy in CSP. See [Trusted Types](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types)
+for CSP requirements and raw-HTML limits.
 
 In this workspace:
 
@@ -79,7 +83,9 @@ CounterCard.define('counter-card');
 <button @click="{increment()}">Increment</button>
 ```
 
-Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--dom=light` for light DOM rendering.
+Unwrapped components default to Shadow. A `dom: "light"` build renders them as
+Light while preserving any sole top-level
+`<template shadowrootmode="open">` component as Shadow.
 
 ### Use it from your page
 
@@ -87,13 +93,219 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 <counter-card label="Taps"></counter-card>
 ```
 
+### HTML-only dormant components
+
+If a component has no event handlers, custom lifecycle code, or client-only
+methods, it can ship only `component.html` and optional `component.css`.
+
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; template-only roots stay in the trusted SSR DOM.
+Without a module, template bindings render on the server and the component
+contributes no projected keys. Without projection metadata, the server
+preserves full state. The compiler still emits template metadata for scriptless
+components. When the framework is loaded, it can activate that template when
+browser state or client-side creation needs it.
+If that first write omits a repeat collection, the host preserves the existing
+SSR items until the collection is explicitly supplied.
+
+Create a custom element only for an Interactive Island: event handlers, custom
+lifecycle code, imperative methods, or state that TypeScript code reads or
+mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
+to access the value or when the value is part of the component's public API.
+
+### Offscreen work reduction
+
+For components repeated beyond the initial viewport, put the complete policy on
+the component template:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+>
+  <!-- Component content -->
+</template>
+```
+
+`w-render="lazy"` combines visibility-deferred hydration with the browser's
+`content-visibility: auto` rendering deferral. The reservation is the typical
+rendered block size of one instance; WebUI emits it as
+`contain-intrinsic-block-size: auto 18rem` before first layout. The SSR DOM
+remains present, searchable, and accessible while the browser skips offscreen
+style, layout, and paint work. The generated policy applies to instances in the
+document, Light DOM, and standard Shadow DOM components. A Light component
+inside a Shadow root receives the rule through its precomputed style
+closure, which delivers the stylesheet into that root under every CSS strategy.
+
+Import the optional coordinator entry once before component modules:
+
+```ts
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './product-card.js';
+```
+
+Use hydration-only deferral when rendering containment is not safe for a
+component:
+
+```html
+<template w-hydrate="lazy">
+  <!-- Component content -->
+</template>
+```
+
+Components are eager by default. Instance attributes provide explicit escape
+hatches:
+
+```html
+<!-- Keep rendering deferral, but hydrate this instance immediately. -->
+<product-card w-hydrate="eager"></product-card>
+
+<!-- Disable both rendering and hydration deferral for this instance. -->
+<product-card w-render="eager"></product-card>
+```
+
+Client-created instances and reconnects after a successful mount remain eager.
+If the optional entry or `IntersectionObserver` is unavailable, hydration falls
+back to eager; `content-visibility` remains browser-managed. See
+[Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
+
+Router applications should author `<template w-hydrate="interaction">` and use
+the framework-agnostic `@microsoft/webui-router/preload.js` handle. FAST and
+other hydration runtimes use that same handle with their own readiness signal.
+Non-router apps use the lower-level framework entry:
+
+```ts
+import {
+  installInteractionHydration,
+  isInteractionReplay,
+} from
+  '@microsoft/webui-framework/interaction-hydration.js';
+
+installInteractionHydration({
+  load: () => import('./components.js'),
+});
+```
+
+Pointer-down, focus, and keyboard intent starts `load()` without cancellation.
+An unmodified primary click waits and replays on its original composed-path
+target; `load()` must resolve only after listeners are ready. Hover, modified
+clicks, and previously cancelled clicks do not replay. Use
+`isInteractionReplay(event)` to deduplicate ancestor capture work.
+
+This opt-in trades first-interaction latency for lower startup JS and heap.
+Prefer an eager root with lazy descendants when request-to-hydrated time matters.
+Synthetic replay cannot preserve transient user activation or target controls
+inside closed shadow roots; hydrate those paths eagerly.
+
+One offscreen singleton boundary can retain browser rendering deferral while
+also deferring its module graph:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+  w-hydrate="interaction"
+>
+  <!-- Component content -->
+</template>
+```
+
+Do not use the combined form for repeated items. A visible app root gains no
+rendering benefit from `content-visibility`; keep interaction on that root and
+put `w-render="lazy"` on offscreen descendants.
+
+
 ### Build with the WebUI plugin
 
 ```bash
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata and condition closure arrays consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates` or `window.__webui.templateFns`.
+The WebUI plugin prepares component templates for the browser. Bundle your
+source browser entry directly. Import `@microsoft/webui-framework` from authored
+component modules. An app that stays static after SSR needs no framework
+browser import. Import the framework once when HTML-only components must accept
+browser state or participate in soft navigation.
+
+The plugin alone preserves full server state. To emit exact `@observable` and
+`@attr` state surfaces, run the application's bundler first with
+`@microsoft/webui/projection.js`, then pass its manifest to `webui build` with
+`--projection-manifest`. The manifest tooling is build-only; this runtime
+package does not depend on esbuild or TypeScript.
+
+### Progressive streaming hydration
+
+Streaming applications opt into a separate side-effect entry:
+
+```ts
+import '@microsoft/webui-framework/streaming.js';
+import './counter-card.js';
+```
+
+Import it before component registration modules and load the application entry
+early with `<script type="module" async>` in `<head>`. The server must render
+authored `<boundary>` directives through
+`WebUIHandler::render_streaming`. The default
+`@microsoft/webui-framework` entry has no dependency on the coordinator, so
+normal applications pay no streaming bundle or initialization cost.
+
+To keep the full application out of `<head>`, put the explicit
+`import '@microsoft/webui-framework/streaming.js'` in a small application-owned
+entry. Register that file with your bundler, preserve its side effect, and
+share framework modules with the application. Identify its output and static
+dependencies through native bundler metadata and your existing asset handoff.
+WebUI does not create entries, inject imports, or require a streaming manifest.
+
+Load the coordinator with `type="module" async`; marker-based deferral handles
+application-first delivery without a second framework bundle.
+The application may load later, but early-interactive components still need
+their registration modules. Use `fetchpriority="low"` on deferred authored
+module scripts to exclude them from automatic modulepreload hints. See
+[Separate coordinator and application assets](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets).
+
+Boundaries may be authored in entries and reusable components, including
+runtime conditions, outlets, and selected routes. A boundary-bearing subtree
+reached from a `<for>` body fails the build with `boundary-in-repeat`. A whole
+`<for>` may sit inside one boundary, and boundaries before or after a `<for>`
+are valid. A component-local boundary uses a generated parent span, so an early
+compiler-marked child can hydrate before the opaque parent tail in light or
+shadow DOM. The server's boundary-only `resume` emits that checkpoint first;
+`advance` emits the following parent tail, with no sibling boundary workaround.
+Authored boundaries cannot nest.
+
+Span resolution is entirely coordinator-owned: the generated `data-ws-span` and
+`data-ws-enclosing` attributes, and the open-span registry that pairs them, live
+only in the opt-in streaming entry. It resolves the one ancestor an entitled
+early child may skip and passes that element to the activation hook, which
+compares it by identity. The always-shipped entry therefore carries no span
+attribute name and no span bookkeeping at all.
+
+Each runtime occurrence receives an ephemeral state object directly during
+activation. The coordinator does not publish that state to
+`window.__webui.state`, and it removes generated checkpoint and span
+scaffolding after commit. Updates apply state to retained roots and never insert
+markup or rerun hydration.
+
+The browser reads the single unversioned
+`[sequence, kind, target, payload]` contract for final checkpoints,
+updatable checkpoints, updates, span completions, and terminal. Every commit
+also emits a `performance.mark()` - `webui:boundary:<id>`,
+`webui:boundary:<id>:update`, `webui:span:<id>`, or
+`webui:streaming:terminal` - which needs no flag or listener.
+Set `window.__WEBUI_STREAMING_DEBUG__ = true` only when tooling needs the live
+`webui:boundary-hydrated` event as well.
+
+A range record can reuse the exact preceding range state with `stateRef` and
+carry only a top-level `stateDelta`. References are backward-only and resolved
+before activation; missing, stale, forward, or malformed references halt and
+clean up the stream. The reference base is released on terminal, cancellation,
+failure, or coordinator reset.
+
+Set `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond budget to
+make the coordinator yield between boundaries instead of draining its queue in
+one pass. That is for pages where an intermediary coalesces the response into a
+single chunk; it costs total hydration time, so leave it unset otherwise.
 
 ### Property binding lifecycle
 
@@ -103,24 +315,66 @@ Property bindings use the `:` prefix to pass values directly to child DOM proper
 <profile-card :config="{{settings}}"></profile-card>
 ```
 
-For client-created component trees, the runtime upgrades the cloned child elements while they are still detached, wires bindings, and applies the first binding pass before appending them to the connected DOM. A child can read an initial parent-provided property in `connectedCallback`. If the parent value is not set, the child may initialize its own fallback there, and later parent updates still flow through the live binding.
+For client-created component trees, WebUI applies initial property bindings
+before child `connectedCallback` methods run. A child can read an initial
+parent-provided property in `connectedCallback`. If the parent value is not set,
+the child may initialize its own fallback there, and later parent updates still
+flow through the live binding.
 
-### DOM strategy (`--dom`)
+During SSR hydration the framework trusts the server-rendered DOM and does not
+re-render it. An `@observable` written before hydration finishes — in a field
+initializer, the `constructor`, or before `super.connectedCallback()` — cannot
+update that DOM, so the write is dropped and the runtime logs a
+`[WebUI] Hydration mismatch` warning naming the properties. Seed such values in
+the SSR state, or assign them from `hydratedCallback()`. The warning is
+development-only and is dead-code-eliminated from production bundles via the
+`__WEBUI_DEV__` compile-time flag (on by default; `webui-press build` sets it to
+`false`). See the
+[Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
 
-The `--dom` flag controls how the server renders component content:
+Override the protected `hydratedCallback()` hook for work that requires the
+component's bindings, events, and `w-ref` references to be ready. It runs
+exactly once with the first successful ordinary SSR hydration, client-created
+mount, lazy activation, deferred streamed activation, or dormant static-host
+wake. If CSP blocks the temporary Link-mode prepaint guard, a client-created
+mount keeps non-style content detached and delays `$ready` and this callback
+until its native links load and the content is appended. Reactive writes made
+while detached are reconciled immediately before append. A synchronous
+disconnect/reconnect preserves the pending mount; a lasting disconnect cancels
+it. The callback's once-latch is set before author code runs, so a thrown
+callback is not retried on reconnect.
 
-| Flag | Behavior |
-|------|----------|
-| `--dom=shadow` (default) | Wraps component HTML in `<template shadowrootmode="open">` |
-| `--dom=light` | Renders component content as direct children of the host element |
+`connectedCallback()` remains a native per-connection lifecycle. On ordinary
+SSR and client-created mounts, `super.connectedCallback()` hydrates
+synchronously, but a lazy root or streamed `data-ws` root can return while still
+deferred. Therefore `connectedCallback()` cannot be used as a universal
+post-hydration signal. Descendants must not structurally mutate a containing
+component's SSR subtree before it hydrates, because hydration relies on stable
+compiled paths.
+
+### Light and Shadow DOM
+
+An unwrapped component receives a generated open Shadow root by default. In a
+`dom: "light"` build it renders as direct children of its host. A component
+whose sole top-level element is a bare `<template>` explicitly renders as Light
+and is unwrapped, even under the Shadow fallback. A sole
+`<template shadowrootmode="open">` remains Shadow in either mode. Templates with
+attributes and policy wrappers do not select a mode. Closed roots and invalid
+values or placement are build errors; `<slot>` is rejected only for effective
+Light components.
 
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path
 - If `childNodes` exist but no shadow root → light DOM SSR path
 - If neither → client-created path (uses `meta.sd` to decide)
 
-Light DOM is useful for simpler styling (CSS inheritance works naturally) and
-better search-engine indexing.  Shadow DOM provides style encapsulation.
+Light components use authored/global ordinary CSS in the owning CSS tree.
+Shadow components keep native Shadow scoping. `:host`, `:host-context`, and
+`::slotted` fail in effective Light CSS.
+The Link, Style, and Module delivery strategies all support both modes.
+
+In a Light build, add open wrappers to slot, native-encapsulation, or CSS-heavy
+frequently restyled components.
 
 ---
 
@@ -133,9 +387,9 @@ Base class for framework components.
 | Member | Purpose |
 |--------|---------|
 | `static define(tagName)` | Register the class as a custom element |
+| `protected hydratedCallback()` | Run once after the first successful hydration or client mount |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
-| `setState(state)` | Populate `@observable` properties from router/server state |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
@@ -166,19 +420,49 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-The asset module default-exports WebUI template/style metadata and compiled
-condition closures. CSS module importmaps use the current page nonce from
-`window.__webui.nonce` or `<meta name="webui-nonce">`. Asset loads skip importing
-when the root template is already in `window.__webui.templates`, share in-flight
-requests by URL, and dedupe CSS module styles against `window.__webui.styles`.
-`create(tag)` does not block on data by default; it applies data later with
-`setState()`. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only
-when a component must wait briefly for state before mounting.
+The asset graph keeps entry-owned templates external, leaves single-root
+dependencies inline, and emits dependencies shared by multiple roots once as
+flat dynamic chunks. Component assets cannot be combined with `<route>`. Load
+the normal entry bundle first so external prerequisites are registered.
+Current assets require version 3 and an atomically validated
+`componentStyles` catalog; any other version is rejected as unsupported.
+
+The compiler records final Link stylesheet filenames in the protocol. For
+Shadow builds, the handler emits that finite manifest as inert JSON in the
+document head; body-only host protocols emit it at the start of their rendered
+body fragment. Light builds emit the same hrefs as deduplicated document
+stylesheets because their CSS must apply globally.
+Automatic Shadow intent preloading therefore requires HTML rendered through the
+WebUI handler or `Protocol`, which emits `#webui-component-assets`. A shell that
+uses build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it does not receive the earlier
+compiler-owned style preload.
+Shared chunk and content-hashed stylesheet filenames are generated and must not
+be copied into authored code. Each root asset carries its own dynamic imports;
+`--metafile` remains available for analysis and build tooling.
+
+In Shadow builds, `preload(tag)` reads the compiler-owned style metadata and
+starts Link styles beside the authored root asset, component module, and
+optional data request. Only the stable root asset URL remains in application
+code; shared chunks and content-hashed CSS stay compiler-owned.
+
+Bundler-generated loaders can use `asset: () => import('./settings-dialog.webui.js')`
+instead of a URL. This keeps chunk naming and public-path rewriting inside the
+bundler while preserving the same `preload(tag)` and `create(tag)` lifecycle.
+Concurrent roots share in-flight chunk and stylesheet work. `create(tag)`
+creates the element after template/module work is ready and does not block on
+optional data by default. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
+must wait briefly for state before mounting. A rejected root asset or authored
+module is evicted from the registry so a later `preload(tag)` or `create(tag)`
+retries it.
 
 ### `@observable`
 
-Marks a property as reactive.  When the value changes, the framework
-re-evaluates the compiled bindings that reference it.
+Marks a property as reactive. When the value changes, the framework
+updates template bindings that reference it. Use it for state that TypeScript
+code reads or mutates. Values used only by the template do not need an
+`@observable` class field.
 
 ```ts
 class SearchPanel extends WebUIElement {
@@ -205,7 +489,8 @@ Notes:
 
 - default attribute names use kebab-case
 - attribute values arrive as strings
-- use `@observable` for richer client-only state
+- during SSR hydration, an existing host attribute wins over projected state
+- use `@observable` for state that client code reads or mutates
 
 ### `@volatile`
 
@@ -224,7 +509,7 @@ class CartSummary extends WebUIElement {
 
 ## Template Features
 
-The WebUI plugin compiles these template features into runtime metadata:
+The WebUI plugin supports these template features:
 
 - text bindings: `{{title}}`
 - attribute bindings: `href="{{item.href}}"`
@@ -232,6 +517,10 @@ The WebUI plugin compiles these template features into runtime metadata:
 - refs: `w-ref="addInput"`
 - conditionals: `<if condition="...">`
 - repeats: `<for each="item in items">`
+
+Components that use `@event` must have authored `.ts` or `.js` code that
+defines a `WebUIElement` for the tag. HTML-only components do not provide
+application event handlers.
 
 Example from `examples/app/todo-webui`:
 
@@ -257,11 +546,17 @@ Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on t
 
 ## Recommended Patterns
 
-- Treat decorated properties as the source of truth.
+- Treat decorated properties as the source of truth for state used by
+  TypeScript code.
 - Update state with property assignments such as `this.open = !this.open`.
 - Use `$emit()` for child-to-parent communication.
 - Use `w-ref` for true DOM-only concerns like focus or reading input values.
-- Prefer `@observable someValue!: T;` when a value is expected to be seeded externally after construction.
+- Omit `@observable` for values that are only read by the template and seeded
+  externally after construction.
+- Omit the TypeScript class when compiled template behavior is sufficient,
+  including browser-applied state, route updates, and client-created instances.
+  Add a same-named module only for authored events, lifecycle, decorators, or
+  imperative APIs.
 
 Avoid imperative DOM mutation for application state that can be represented by reactive properties.
 
@@ -279,10 +574,11 @@ resource-constrained devices.
    `$update(path)` only visits bindings that reference the changed property.
    Everything else is skipped via a per-path index built once at hydration time.
 
-2. **Zero allocations during updates.**
+2. **Zero framework allocations during ordinary updates.**
    Targeted updates are a single `Map.get()` → direct array iteration.
    No intermediate arrays, no object creation, no spread operators on the
-   update path.
+   update path. A changed raw HTML binding necessarily parses and creates its
+   replacement DOM nodes inside its pre-resolved ownership range.
 
 3. **Parse once, clone forever.**
    Compiled template HTML is parsed via `innerHTML` once per component tag
@@ -296,9 +592,9 @@ resource-constrained devices.
 
 5. **Single-pass hydration via path mapping.**
    SSR DOM is matched to compiled template bindings through
-   template-parallel traversal (`$resolveSSR`).  No marker comments, no
-   data attributes — just path-based node resolution.  The hydration walk
-   touches each DOM node exactly once.
+   the lockstep hydration walk (`buildSSRIndex`). Ordinary buffered hydration
+   needs no marker comments or data attributes for binding resolution. The
+   hydration walk touches each DOM node exactly once.
 
 6. **Keep the framework out of the GC's way.**
    Fewer JS objects = fewer GC pauses.  Binding arrays are pre-built at
@@ -360,7 +656,9 @@ Angular all require a JavaScript runtime on the server.  This framework's SSR
 is driven by data (template metadata + state values), not code.  Any language
 that can read the compiled metadata and produce HTML can serve as the SSR
 backend.  No comment markers or data attributes are needed — the runtime
-resolves SSR DOM nodes via template-parallel path traversal.
+resolves ordinary buffered SSR nodes via the lockstep hydration walk.
+Progressive streaming uses temporary checkpoint and generated-span scaffolding
+to activate complete runtime regions; it removes that scaffolding after commit.
 
 ### Build → Serve → Hydrate → Update
 
@@ -393,9 +691,9 @@ flowchart LR
 
 ```mermaid
 graph TD
-    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>$resolveSSR, $applySSRState,<br/>$update, events, cleanup"]
+    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>buildSSRIndex, $applySSRState,<br/>$update, events, cleanup"]
 
-    DIFF["element/diff.ts (~130 lines)<br/><i>List Reconciliation</i><br/>keyed/sequential diffing<br/>for @for repeat blocks"]
+    DIFF["element/diff.ts<br/><i>List Reconciliation</i><br/>positional + explicit-key diffing<br/>for &lt;for&gt; repeat blocks"]
 
     COND["element/conditions.ts<br/><i>Condition Evaluation</i><br/>evaluateCondition (iterative),<br/>conditionUsesPath"]
 
@@ -426,8 +724,8 @@ When the server renders a component, it emits HTML content (as a declarative
 shadow root or as light DOM children) along with an inert `#webui-data`
 JSON payload.  The browser parses this DOM before any JavaScript runs.
 When the component's JS loads and `connectedCallback` fires, the framework
-uses compiled template paths to resolve SSR DOM nodes without any marker
-comments or data attributes:
+uses compiled template paths to resolve ordinary buffered SSR DOM nodes without
+binding markers:
 
 ```mermaid
 sequenceDiagram
@@ -442,11 +740,12 @@ sequenceDiagram
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed observables from __webui.state
+    FW->>FW: $applySSRState() — seed decorated state
     FW->>FW: $hydrate() — template-parallel path resolution
-    FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
+    FW->>FW: buildSSRIndex() — number SSR nodes in one pre-order walk
     FW->>FW: $wireEvents() + $wireRefs()
     FW->>FW: $buildPathIndex(), $ready = true
+    FW->>CE: hydratedCallback() (once)
     Note over FW: DOM is already correct from SSR.<br/>No $update() call needed.
 ```
 
@@ -471,6 +770,7 @@ sequenceDiagram
     FW->>FW: $wireEvents() + $wireRefs()
     FW->>FW: $buildPathIndex(), $ready = true
     FW->>FW: $update() — flush initial property values
+    FW->>CE: hydratedCallback() (once)
 ```
 
 ---
@@ -489,15 +789,14 @@ interface TemplateMeta {
   tx?: [slot, parts][];                // Text run locators
   a?: CompiledAttrMeta[];              // Attribute bindings
   ag?: [path, start, count][];         // Attribute target groups
-  c?: [conditionAST, blockIndex][];    // Conditional blocks
-  cl?: SlotPath[];                     // Conditional anchor slots
-  r?: [collection, itemVar, blockIdx][];// Repeat blocks
-  rl?: SlotPath[];                     // Repeat anchor slots
-  e?: [event, handler, argSpecs, targetPath][]; // Events
+  c?: [conditionAST, blockIndex, slot][]; // Conditional blocks
+  r?: [collection, itemVar, blockIdx, slot][]; // Repeat blocks
+  eg?: [event, [[handler, argSpecs, targetIndex, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
-  sa?: string;                         // Adopted stylesheet specifier
-  sd?: boolean;                        // Shadow DOM flag for client-created
+  sd?: 1;                              // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
+  tr?: string[];                       // Template state roots
+  ta?: string[];                       // Host attributes aligned with tr
 }
 ```
 
@@ -517,7 +816,7 @@ Compiled metadata:
     [[[0], 0], [["title"]]],           // slot in <h1>, dynamic "title"
     [[[1], 1], ["Count: ", ["count"]]]  // slot in <button>, static + dynamic
   ],
-  e: [["click", "increment", [], [1]]] // click -> increment, no event args
+  eg: [["click", [["increment", [], [1]]]]] // click -> increment, no event args
 }
 ```
 
@@ -558,15 +857,16 @@ sequenceDiagram
 ### Why Updates Are O(affected)
 
 After hydration, every dynamic value in the template is connected to a direct
-DOM node reference stored in a binding array.  A per-path index maps each
-`@observable` property name to the subset of bindings that reference it.
+DOM node reference stored in a binding array. A per-path index maps each
+decorated property or compiled template root to the subset of bindings that
+reference it.
 
 When `this.count = 5` fires, the `@observable` setter calls `$update('count')`,
 which looks up `'count'` in the index and only patches the bindings that
 actually depend on `count` — not every binding in the component.
 
-Computed/volatile getters (paths not in the `@observable` set) are stored
-under a wildcard key and always included in targeted updates.
+Computed/volatile getters and other paths that are not known state roots are
+stored under a wildcard key and always included in targeted updates.
 
 ```typescript
 // Targeted update (simplified):
@@ -588,70 +888,70 @@ path index ensures only affected pointers are visited.
 
 ## SSR State Seeding
 
-When the server renders `<span>42</span>` for `@observable count = 0`, the
-browser sees `42` in the DOM but the JavaScript property `this.count` is still
-`0` (the class default).  Without seeding, the first `$update()` would
-overwrite the SSR content with the wrong value.
+When the server renders `<span>42</span>` for a template binding, the browser
+sees `42` in the DOM before the component's JavaScript state exists. Without
+seeding, the first `$update()` would overwrite the SSR content with the wrong
+value.
 
-State seeding uses `window.__webui.state` — a JSON object loaded from the
-server-emitted `#webui-data` block.  Like Preact's props, this delivers the
-same data used for SSR rendering to the client.  During `$mount()`,
-`$applySSRState()` writes matching keys directly to observable backing fields
-before any bindings are wired:
+State seeding uses `window.__webui.state` loaded from the server-emitted
+`#webui-data` block. When the protocol contains projection metadata, only
+`@observable` and `@attr` keys from reachable authored components select
+initial state; HTML-only dormant components and authored template-only roots
+contribute no startup keys. Without projection metadata, the server preserves
+full state. The startup state is not a permanent application store. Eager
+components consume it during hydration, lazy components copy their projected
+roots before deferral, and the framework releases the global handoff when
+`webui:hydration-complete` fires on a page without a route chain. Routed pages
+retain it for router-owned lazy startup. Normalized template closure entries are
+released as soon as their functions are embedded in template metadata. During
+`$mount()`, `$applySSRState()` writes matching decorated keys
+directly to observable backing fields before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
-    APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
+    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42 } }"] --> APPLY["$applySSRState()"]
+    APPLY --> SEED["Write decorated backing fields"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
 
-`$applySSRState()` only sets properties that exist in the component's
-`@observable` set — unknown keys are ignored.  Writes go to the backing
-field (`_prop`) directly, avoiding reactive updates before bindings are wired.
+Decorated writes go to the backing field (`_prop`) directly, avoiding reactive
+updates before bindings are wired. For `@attr`, an existing SSR host attribute
+takes precedence and the projected value is skipped. Template-only values
+remain represented by the SSR DOM until browser state explicitly changes them.
+Later `setState()` calls, including router partials, accept both decorated
+properties and compiled template roots; undecorated roots are stored in hidden
+framework state. The first write to a dormant HTML-only host replays only the
+roots present in that write, preserving omitted SSR text, attributes,
+conditions, and repeats.
 
 ---
 
 ## Repeat Reconciliation
 
-`@for(item of items)` blocks support two reconciliation strategies,
-implemented in `element/diff.ts` (~130 lines):
+`<for>` blocks reconcile by array position by default. The existing block at
+index `i` receives the current item at index `i`; only a new or removed tail
+creates or removes blocks.
 
-### Keyed Reconciliation
+Duplicate values and attributes are safe because dynamic attributes never act
+as hidden keys. Reordering rebinds existing blocks in place, so local
+browser-owned or component state remains associated with positions rather than
+logical items.
 
-When the repeat block's root element has attribute bindings (e.g.
-`<todo-item id="{{item.id}}">`), the framework uses the first attribute as a
-key.  This preserves DOM nodes across reorders:
-
-```mermaid
-flowchart TD
-    subgraph Before ["Before: items = [A, B, C]"]
-        A1["&lt;todo-item&gt; key=A"]
-        B1["&lt;todo-item&gt; key=B"]
-        C1["&lt;todo-item&gt; key=C"]
-    end
-
-    subgraph After ["After: items = [C, A]"]
-        C2["&lt;todo-item&gt; key=C ← reused"]
-        A2["&lt;todo-item&gt; key=A ← reused"]
-        B2["key=B ← removed"]
-    end
-
-    A1 -.->|"moved"| A2
-    C1 -.->|"moved"| C2
-    B1 -.->|"destroyed"| B2
-```
-
-### Sequential Reconciliation
-
-When no keying attributes exist, items are matched by position.  Excess items
-are removed; new items are appended.
+For reorderable or stateful lists, author `key="{{item.id}}"` on the first
+child inside `<for>` to move existing blocks with their logical items.
+`key="{{item}}"` supports arrays of unique string or finite-number primitives.
+`key` is compiler-only metadata and is removed from SSR and client HTML;
+`data-key` remains an ordinary attribute with no identity semantics. Key paths
+are compiler-validated and stored only for explicitly keyed repeats, so
+unkeyed bindings carry no key state or map allocation. Duplicate or invalid
+runtime keys warn once, clear identity, and use positional reconciliation until
+valid identity is re-established.
 
 ### SSR State Reading
 
 On initial hydration, the repeat system walks existing SSR children and
 reconstructs collection instances by matching them against the compiled
-template via `$resolveSSR` path traversal.  State is already seeded from
+template via the `buildSSRIndex` walk.  State is already seeded from
 `window.__webui.state`, so repeat items reflect the server-rendered list
 without parsing marker comments.
 
@@ -663,9 +963,49 @@ The framework supports three CSS delivery strategies:
 
 | Strategy | How it works |
 |----------|-------------|
-| **Link** | `<link>` tag baked into `meta.h` — loaded by the browser naturally |
-| **Inline** | `<style>` tag baked into `meta.h` — no external request |
+| **Link** | `<link>` tag baked into `meta.h`; the first client-created shadow instance authorizes shared constructable sheets through native loading, then warm instances adopt them before paint |
+| **Style** | `<style>` tag baked into `meta.h` — no external request |
 | **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
+
+Link promotion is progressive enhancement. Registration performs a bounded
+`<link rel="preload" as="style">` using the stylesheet's CORS, integrity, and
+referrer-policy attributes, so the native stylesheet link can reuse the same
+style-destination request. Preload bytes are never applied directly, and a
+preload cannot inspect response MIME type; the first client instance's native
+link remains authoritative for CSP, MIME, integrity, CORS, redirects, and
+service workers. The framework releases the instance's paint guard as soon as
+every original link loads, before constructing the shared ordered set from
+native CSSOM. It then adopts that set before existing sheets with one assignment
+and shares it with later instances. Promoted links remain disabled in place so
+reconnect hydration retains the compiled element indexes. Classes with an authored
+`hydratedCallback()` still take the guarded native path on warm mounts, allowing
+lifecycle-added `<style>` elements to preserve native cascade order. If
+construction is unsupported, native CSSOM or
+unredirected, non-service-worker timing is unavailable, or `@import`, unsafe URL
+syntax, link attributes, bindings, compiled events, or authored DOM `<style>`
+cascade semantics cannot be preserved, the original links remain. An anonymous
+first-layer shadow guard prevents component CSS from overriding the loading
+gate and cancels host transitions before hiding. When CSP blocks that guard,
+non-style content, `$ready`, and `hydratedCallback()` remain deferred; current
+reactive state is reconciled before append. If that reconciliation changes a
+request-affecting bound link value, the framework waits for the replacement
+native load before append. Disconnecting permanently cancels
+the pending mount, while a synchronous reconnect preserves it. A link error
+is reported, leaves the browser's native links in place, releases the temporary
+guard, and completes deferred hydration. The component may be unstyled after a
+definitive stylesheet failure, but it remains visible and usable. SSR hydration,
+Style, Module, and authored/global Light DOM behavior are unchanged.
+
+### Intent-time Link preloading for component assets
+
+In a Shadow build, call `assets.preload(tag)` from pointer, focus, or other
+intent handling. The framework reads the compiler-owned head manifest, so
+application code never derives or hardcodes content-hashed CSS names. Link
+styles begin before the root asset executes, and later template registration
+reuses the same style-destination request. Repeated intent is deduplicated. An
+intent that never mounts the component may still produce the browser's standard
+unused-preload warning. Light builds load component-asset CSS as document
+stylesheets at the structural head boundary instead.
 
 CSS module stylesheets are cached so each component instance adopts the same
 parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the
@@ -675,40 +1015,50 @@ stylesheet specifier for a component.
 
 ## Path-Based Binding Resolution
 
-Unlike frameworks that use comment markers or data attributes to locate
-dynamic content, this framework uses **compiled template paths** — arrays of
-child-node indices that describe exactly where each binding lives in the DOM
-tree.
+Unlike frameworks that use comment markers or data attributes to locate each
+dynamic binding, this framework uses **compiled element indices** — each
+binding names its element by pre-order position within its compiled section.
+Progressive streaming's temporary boundary and span markers locate complete
+activation regions, not individual bindings.
 
-### Client-created resolution (`$resolve`)
+### Client-created resolution (`collectTemplateElements`)
 
-For client-created components, the DOM matches `meta.h` exactly (it was cloned
-from the parsed template fragment).  Resolution is a simple child-node index
-walk:
-
-```typescript
-// path = [1, 0] → root.childNodes[1].childNodes[0]
-let cur: Node = root;
-for (const idx of path) {
-  cur = cur.childNodes[idx];
-}
-```
-
-### SSR resolution (`$resolveSSR`)
-
-SSR DOM may differ from the compiled template — the browser's HTML parser can
-strip whitespace-only text nodes.  `$resolveSSR` walks the SSR DOM and the
-compiled template DOM **in parallel**, translating each child-node index into
-an element-ordinal or text-ordinal lookup:
+For client-created components the DOM matches `meta.h` exactly (it was cloned
+from the parsed template fragment), so a plain pre-order walk reproduces the
+compiled numbering:
 
 ```typescript
-// For element nodes: count element siblings up to idx in template,
-// then find the element at that ordinal in SSR DOM.
-// For text nodes: same approach with text node ordinals.
+// elements[0] is the section root; elements[i] is the i-th element
+// a depth-first walk of the template meets.
+const elements = collectTemplateElements(root);
+const target = elements[index];
 ```
 
-This template-parallel traversal eliminates the need for any marker comments,
-`data-*` attributes, or DOM annotations.  The SSR server emits clean HTML.
+### SSR resolution (`buildSSRIndex`)
+
+SSR DOM differs from the compiled template: the renderer strips inter-element
+whitespace, `<if>` / `<for>` bodies are rendered inline between structural
+markers, and raw HTML values can contribute arbitrary element runs.
+`buildSSRIndex` walks the SSR DOM and the compiled template DOM **in lockstep**,
+skipping whole marker ranges, and numbers the result the same way:
+
+```typescript
+// Elements are paired positionally and numbered in pre-order.
+// Structural and raw HTML ranges are skipped whole - that content
+// is not part of the enclosing section's static element numbering.
+// Text is the exception: whitespace stripping means text nodes do
+// not line up, so each text slot resolves from its compiled
+// right-hand static or marker boundary.
+```
+
+This eliminates annotations for ordinary bindings: no `data-w-*` attributes and
+no comments around escaped text. The SSR server emits five structural comments
+for `<if>` / `<for>` bodies plus paired `<!--wN-->` / `<!--/wN-->` markers around each raw HTML
+binding. Structural closing/item markers are removed after hydration. Raw HTML
+anchors remain so updates can replace zero or multiple direct sibling nodes
+without touching content outside the binding's range. These exact marker
+comments are framework-reserved and must not appear in the trusted raw value
+inside that range.
 
 ---
 
@@ -716,17 +1066,18 @@ This template-parallel traversal eliminates the need for any marker comments,
 
 | Operation | Cost | Why |
 |-----------|------|-----|
-| Initial hydration | O(bindings) | Single pass over compiled path mappings |
+| Initial hydration | O(nodes) | One pre-order walk numbers the subtree; each binding is then an index lookup |
 | Reactive update | O(affected) | Per-path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create/destroy a block instance |
-| Repeat reconciliation | O(items) | Keyed map lookup or sequential scan |
+| Repeat reconciliation | O(items) | Positional scan; explicit keys use a reusable map only when order changes |
 | Event wiring | O(events) | One-time during hydration |
 
 ### What the framework does NOT do
 
 - **No virtual DOM** — no tree copy, no diff algorithm
 - **No runtime template parsing** — the Rust compiler handles all syntax
-- **No `innerHTML` on updates** — only `textContent` and `setAttribute`
+- **No parent-wide `innerHTML` on updates** — raw HTML parses into its bounded
+  contextual range; escaped text and attributes patch direct node references
 - **No `querySelector` on updates** — all nodes are pre-resolved references
 - **No recursion in hot paths** — conditions use iterative stack evaluation
 
@@ -742,9 +1093,14 @@ The runtime exposes hydration timing via the Performance API:
 
 ```ts
 window.addEventListener('webui:hydration-complete', () => {
-  console.log('All initial framework components are hydrated.');
+  console.log('The startup hydration cohort is complete.');
 });
 ```
+
+Parser-startup lazy components hold this event only through their first
+intersection result. Initially visible roots finish first; dormant roots do not
+hold the one-shot event open or redispatch it later. Use `hydratedCallback()`
+for instance readiness.
 
 ---
 

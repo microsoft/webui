@@ -1,3 +1,4 @@
+<template shadowrootmode="open">
 <span class="greeting">{{greeting}}</span>, <span class="name">{{name}}</span>!
 <span class="count">{{count}}</span> (<span class="doubled">{{doubled}}</span>)
 <button class="inc" @click="{increment()}">+</button>
@@ -6,3 +7,4 @@
 <input class="text-input" @input="{onInput(e)}" @keydown="{onKeydown(e)}" />
 <span class="last-key">{{lastKey}}</span>
 <span class="input-value">{{inputValue}}</span>
+</template>
