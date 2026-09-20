@@ -121,7 +121,7 @@ fn build_window(app: &Application, frame: DesktopFrame) {
         .remember_state
         .then(|| WindowStateStore::for_app_id("com.microsoft.webui.desktop"));
     restore_state(&window, state_store.as_ref());
-    install_events(&window, &webview, &manager, &frame, state_store.clone());
+    install_events(&window, &webview, &manager, &frame, state_store);
     install_wakeup(&window, &webview, &frame);
 
     if frame.window.maximized {
