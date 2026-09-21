@@ -45,7 +45,7 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       # GTK4 and WebKitGTK 6.0 back the Linux desktop backend in
-      # microsoft-webui-desktop-cli, which is a workspace member, so every
+      # microsoft-webui-desktop-runner, which is a workspace member, so every
       # `cargo clippy/test/build --workspace` on Linux needs their dev
       # packages. Folded into the protoc step to avoid a second apt update.
       run: |

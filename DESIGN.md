@@ -5705,7 +5705,7 @@ webui/
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
 │   ├── webui-desktop/        # Rust-native desktop runtime primitives (custom protocol, protobuf IPC, packaging model)
-│   ├── webui-desktop-cli/    # Desktop sidecar backend (binary: "webui-desktop")
+│   ├── webui-desktop-runner/    # Desktop sidecar backend (binary: "webui-desktop")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
@@ -5750,7 +5750,7 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
-webui-cli ──────► webui-desktop-cli (sidecar process, no webview deps in webui-cli)
+webui-cli ──────► webui-desktop-runner (sidecar process, no webview deps in webui-cli)
                        │
                        ├── webui-desktop
                        ├── webui

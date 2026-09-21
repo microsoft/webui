@@ -1,4 +1,4 @@
-# microsoft-webui-desktop-cli
+# microsoft-webui-desktop-runner
 
 Desktop sidecar backend for running and packaging WebUI applications.
 

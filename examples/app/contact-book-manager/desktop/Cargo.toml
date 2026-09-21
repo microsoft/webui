@@ -15,7 +15,7 @@ source = ["microsoft-webui-desktop/source"]
 [dependencies]
 microsoft-webui = { path = "../../../../crates/webui", features = ["cli"] }
 microsoft-webui-desktop = { path = "../../../../crates/webui-desktop", default-features = false }
-microsoft-webui-desktop-cli = { path = "../../../../crates/webui-desktop-cli", default-features = false }
+microsoft-webui-desktop-runner = { path = "../../../../crates/webui-desktop-runner", default-features = false }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

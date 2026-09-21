@@ -84,5 +84,5 @@ buffer handoff, not complete window startup:
 
 ```bash
 cargo bench -p contact-book-desktop --bench desktop_state
-cargo bench -p microsoft-webui-desktop-cli --bench macos_response
+cargo bench -p microsoft-webui-desktop-runner --bench macos_response
 ```

@@ -102,7 +102,7 @@ fn try_sidecar_binary(binary: &OsStr, args: &DesktopArgs) -> Result<bool> {
 }
 
 fn try_workspace_sidecar(root: &Path, args: &DesktopArgs) -> Result<bool> {
-    let sidecar_path = root.join("crates/webui-desktop-cli");
+    let sidecar_path = root.join("crates/webui-desktop-runner");
     if !verify_sidecar_version(workspace_sidecar_command(root), sidecar_path)? {
         return Ok(false);
     }
@@ -119,7 +119,7 @@ fn workspace_sidecar_command(root: &Path) -> Command {
         .arg("--manifest-path")
         .arg(root.join("Cargo.toml"))
         .arg("-p")
-        .arg("microsoft-webui-desktop-cli")
+        .arg("microsoft-webui-desktop-runner")
         .arg("--");
     command
 }
@@ -222,9 +222,11 @@ fn find_workspace_root() -> Option<PathBuf> {
 
 fn workspace_has_desktop_sidecar(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
-        .map(|content| content.contains("crates/*") || content.contains("webui-desktop-cli"))
+        .map(|content| content.contains("crates/*") || content.contains("webui-desktop-runner"))
         .unwrap_or(false)
-        && root.join("crates/webui-desktop-cli/Cargo.toml").is_file()
+        && root
+            .join("crates/webui-desktop-runner/Cargo.toml")
+            .is_file()
 }
 
 #[cfg(test)]

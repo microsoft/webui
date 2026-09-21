@@ -117,7 +117,7 @@ fn desktop_cargo_toml() -> String {
     let dependencies = [
         ("webui", "microsoft-webui"),
         ("webui-desktop", "microsoft-webui-desktop"),
-        ("webui-desktop-runner", "microsoft-webui-desktop-cli"),
+        ("webui-desktop-runner", "microsoft-webui-desktop-runner"),
     ];
     let mut text = String::from(
         r#"[package]

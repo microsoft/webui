@@ -1,5 +1,5 @@
 [package]
-name = "microsoft-webui-desktop-cli"
+name = "microsoft-webui-desktop-runner"
 description = "Desktop sidecar backend invoked by the WebUI CLI"
 version.workspace = true
 edition.workspace = true

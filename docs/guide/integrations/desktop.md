@@ -111,7 +111,7 @@ effects, because GTK4 exposes no portable blur, and no tray, because GTK4
 removed `GtkStatusIcon`. On Windows, `overlay` removes the native caption
 buttons, so web content must draw its own.
 
-`platform_capabilities()` in `webui-desktop-cli` is the source of truth; the
+`platform_capabilities()` in `webui-desktop-runner` is the source of truth; the
 table above mirrors it. Availability also depends on the desktop environment:
 a Linux compositor may ignore `always_on_top`, and Wayland controls window
 placement, so `center` is advisory there.

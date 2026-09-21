@@ -759,7 +759,7 @@ dependencies = [
  "criterion",
  "microsoft-webui",
  "microsoft-webui-desktop",
- "microsoft-webui-desktop-cli",
+ "microsoft-webui-desktop-runner",
  "serde",
  "serde_json",
 ]
@@ -2204,7 +2204,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "microsoft-webui-desktop-cli"
+name = "microsoft-webui-desktop-runner"
 version = "0.0.29"
 dependencies = [
  "anyhow",
