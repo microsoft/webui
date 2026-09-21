@@ -5194,12 +5194,17 @@ including parser diagnostic codes, locations, snippets, and help when present.
 
 Press materializes its embedded template and built-in components into a
 content-addressed cache and generates per-page scratch directories. Both live
-under the system temporary directory when that directory is on the project's
-filesystem volume, and under a self-ignoring `<config-dir>/.webui-press-cache`
-when it is not. The extracted tree contains TypeScript sources that become
-bundler inputs, so a cache on another volume would split one bundle across
-filesystem roots and fail with `PROJ-C015`; keeping it on the project's volume
-also makes the cache publish step a same-volume (atomic) `rename`.
+under the system temporary directory when that directory is on the same volume
+as the configured output directory, and under a self-ignoring
+`<config-dir>/.webui-press-cache` when it is not. The output directory decides
+the volume because it holds the generated entry points, the bundler
+`outbase`/`outdir`, and the projection manifest, so the build root always
+contains it. The extracted tree contains TypeScript sources that become bundler
+inputs, so a cache on another volume would split one bundle across filesystem
+roots and fail with `PROJ-C015`; keeping it on the output volume also makes the
+cache publish step a same-volume (atomic) `rename`. A project whose sources and
+output directory are themselves on different volumes has no expressible build
+root at all, and `PROJ-C015` reports that directly.
 
 Content mode selects the bundled content document before region expansion,
 component/script reachability, compilation, and SSR. It retains document

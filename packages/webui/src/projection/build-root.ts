@@ -74,8 +74,8 @@ function crossRootError(first: string, second: string): ProjectionError {
       location: right,
       help:
         `"${left}" and "${right}" are on different filesystem roots, so no single build root contains both. ` +
-        "Keep one bundler invocation on a single filesystem volume: on Windows, point TEMP/TMP at a directory " +
-        "on the drive that holds the project, or move the project onto the drive that holds TEMP.",
+        "Keep one bundler invocation on a single filesystem volume. On Windows this usually means a TEMP/TMP " +
+        "directory, or a configured output directory, on a different drive than the sources.",
     }),
   ]);
 }

@@ -12,8 +12,8 @@
 //! build fails.
 //!
 //! On Windows that happens whenever `TEMP`/`TMP` point at `C:\…` while the
-//! project sits on another drive. This module keeps every Press scratch
-//! directory on the project's own volume in that case, and otherwise keeps the
+//! build sits on another drive. This module keeps every Press scratch
+//! directory on the build's own volume in that case, and otherwise keeps the
 //! shared system temp directory so unrelated projects still share one cache.
 //!
 //! Staying on one volume also keeps the cache publish step a same-volume
@@ -27,26 +27,41 @@ use std::{fs, path};
 /// on another volume. Self-ignoring, so consuming repositories need no change.
 const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
 
-/// Returns the base directory for Press scratch and cache directories built
-/// from `project_dir`, creating it when it is project-local.
+/// Returns the base directory for Press scratch and cache directories.
+///
+/// `build_dir` is the configured output directory, which decides the volume:
+/// it holds the generated entry points, the esbuild `outbase`/`outdir`, and the
+/// projection manifest, so the build root always contains it. `out_dir` is
+/// resolved independently of the config file (it may be absolute or relative to
+/// the working directory), which is why it cannot be inferred from
+/// `project_dir`.
+///
+/// `project_dir` is the config directory, and only supplies a home for the
+/// fallback cache. A project whose sources and output directory are themselves
+/// on different volumes cannot be expressed in one build root at all; no
+/// scratch placement changes that, and `PROJ-C015` reports it.
 ///
 /// Callers hoist the result for the whole build, so this stays uncached: a
 /// process-wide cache would hand a second project the first project's base.
-pub(crate) fn scratch_base(project_dir: &Path) -> io::Result<PathBuf> {
-    resolve_scratch_base(project_dir, &std::env::temp_dir())
+pub(crate) fn scratch_base(build_dir: &Path, project_dir: &Path) -> io::Result<PathBuf> {
+    resolve_scratch_base(build_dir, project_dir, &std::env::temp_dir())
 }
 
-/// Resolves the scratch base for `project_dir` against `system_temp`.
+/// Resolves the scratch base against an explicit `system_temp`.
 ///
 /// Split from [`scratch_base`] so tests can exercise cross-volume behavior
 /// without a second drive letter.
-fn resolve_scratch_base(project_dir: &Path, system_temp: &Path) -> io::Result<PathBuf> {
-    let project = path::absolute(project_dir)?;
+fn resolve_scratch_base(
+    build_dir: &Path,
+    project_dir: &Path,
+    system_temp: &Path,
+) -> io::Result<PathBuf> {
+    let build = path::absolute(build_dir)?;
     let system = path::absolute(system_temp)?;
-    if same_volume(&system, &project) {
+    if same_volume(&system, &build) {
         return Ok(system);
     }
-    let local = project.join(PROJECT_SCRATCH_DIR);
+    let local = path::absolute(project_dir)?.join(PROJECT_SCRATCH_DIR);
     prepare_project_scratch(&local)?;
     Ok(local)
 }
@@ -141,11 +156,11 @@ mod tests {
 
     #[test]
     fn same_volume_keeps_system_temp_when_volumes_match() -> TestResult {
-        let project = unique_dir("same-volume");
-        fs::create_dir_all(&project)?;
+        let build = unique_dir("same-volume");
+        fs::create_dir_all(&build)?;
         let system = std::env::temp_dir();
-        let outcome = resolve_scratch_base(&project, &system);
-        let _ = fs::remove_dir_all(&project);
+        let outcome = resolve_scratch_base(&build, &build, &system);
+        let _ = fs::remove_dir_all(&build);
         assert_eq!(outcome?, path::absolute(&system)?);
         Ok(())
     }
@@ -156,9 +171,9 @@ mod tests {
         let project = unique_dir("cross-volume");
         fs::create_dir_all(&project)?;
         // A UNC path is a distinct volume from any local drive, so this models
-        // the `TEMP` on `C:` / project on `E:` case without a second drive.
+        // the `TEMP` on `C:` / build on `E:` case without a second drive.
         let foreign_temp = Path::new(r"\\webui-press-test\temp");
-        let outcome = resolve_scratch_base(&project, foreign_temp);
+        let outcome = resolve_scratch_base(&project, &project, foreign_temp);
         let resolved = match outcome {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -172,6 +187,24 @@ mod tests {
 
         assert_eq!(resolved, expected);
         assert_eq!(ignored?, "*\n");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_volume_decides_the_base_not_the_config_directory() -> TestResult {
+        // An output directory configured onto the system temp volume keeps the
+        // shared cache even though the config directory is elsewhere: the
+        // generated entry points, `outbase`/`outdir`, and the manifest all live
+        // under the output directory, so that is the volume the build root
+        // must be on.
+        let system = std::env::temp_dir();
+        let build = system.join("webui-press-output-volume");
+        let project = Path::new(r"\\webui-press-test\project");
+        assert_eq!(
+            resolve_scratch_base(&build, project, &system)?,
+            path::absolute(&system)?
+        );
         Ok(())
     }
 

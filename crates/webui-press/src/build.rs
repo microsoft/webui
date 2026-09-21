@@ -297,12 +297,12 @@ pub fn build_docs_with_cache(
     // at `<basePath>`, so the same flat layout works.
     let site_dir = out_dir.to_path_buf();
 
-    // Per-page and 404 scratch directories stay on the project's own volume so
-    // a whole Press build never spans two filesystem roots.
-    let scratch_root = crate::scratch::scratch_base(config_dir).map_err(|e| {
+    // Per-page and 404 scratch directories follow the output volume so a whole
+    // Press build never spans two filesystem roots.
+    let scratch_root = crate::scratch::scratch_base(out_dir, config_dir).map_err(|e| {
         Error::Io(format!(
             "Cannot prepare the Press scratch directory for {}: {e}",
-            config_dir.display()
+            out_dir.display()
         ))
     })?;
 
