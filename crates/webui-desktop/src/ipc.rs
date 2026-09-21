@@ -223,17 +223,63 @@ impl IpcRegistry {
         };
 
         match handler(&request.payload) {
-            Ok(payload) => self.encode_response(DesktopIpcResponse {
-                version: IPC_VERSION,
-                request_id: request.request_id,
-                result: Some(desktop_ipc_response::Result::Payload(payload)),
-            }),
-            Err(err) => self.encode_response(DesktopIpcResponse {
-                version: IPC_VERSION,
-                request_id: request.request_id,
-                result: Some(desktop_ipc_response::Result::Error(err.into_frame())),
-            }),
+            Ok(payload) => {
+                // Check before encoding so an oversized handler result never
+                // gets copied into a response buffer just to be rejected.
+                if payload.len() > self.max_payload_bytes {
+                    return self.oversized_response_error(request.request_id);
+                }
+                self.encode_bounded_response(
+                    request.request_id,
+                    DesktopIpcResponse {
+                        version: IPC_VERSION,
+                        request_id: request.request_id,
+                        result: Some(desktop_ipc_response::Result::Payload(payload)),
+                    },
+                )
+            }
+            Err(err) => self.encode_bounded_response(
+                request.request_id,
+                DesktopIpcResponse {
+                    version: IPC_VERSION,
+                    request_id: request.request_id,
+                    result: Some(desktop_ipc_response::Result::Error(err.into_frame())),
+                },
+            ),
         }
+    }
+
+    /// Encode a handler response, rejecting it if the finished frame exceeds
+    /// the configured limit.
+    ///
+    /// The payload check alone is not enough: protobuf framing and a long
+    /// handler error message both add bytes on top of it.
+    fn encode_bounded_response(
+        &self,
+        request_id: u64,
+        response: DesktopIpcResponse,
+    ) -> Result<Vec<u8>> {
+        let frame = self.encode_response(response)?;
+        if frame.len() > self.max_payload_bytes {
+            return self.oversized_response_error(request_id);
+        }
+        Ok(frame)
+    }
+
+    /// Structured rejection for a response that exceeds the size limit.
+    ///
+    /// The frame this produces is a couple of hundred bytes, so it is returned
+    /// without a further size check and cannot recurse. A limit configured
+    /// below that floor is a misconfiguration; the default is 1 MiB.
+    #[cold]
+    #[inline(never)]
+    fn oversized_response_error(&self, request_id: u64) -> Result<Vec<u8>> {
+        self.encode_error(
+            request_id,
+            "payload-too-large",
+            "desktop IPC response exceeds the configured size limit",
+            "return a smaller response from the handler or raise the trusted app IPC limit",
+        )
     }
 
     fn encode_error(
@@ -276,6 +322,57 @@ mod tests {
         let mut bytes = Vec::new();
         request.encode(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn oversized_handler_response_is_rejected() {
+        // Large enough that a structured rejection frame fits inside it.
+        let limit = 4096;
+        let mut registry = IpcRegistry::new().with_max_payload_bytes(limit);
+        // A tiny request that asks for a response far past the limit.
+        registry.register("flood", move |_| Ok(vec![0_u8; limit * 16]));
+
+        let request = encode_request("flood", b"x");
+        assert!(
+            request.len() <= limit,
+            "the request itself must stay under the cap"
+        );
+
+        let response = registry.dispatch_frame(&request).unwrap();
+        assert!(
+            response.len() <= limit,
+            "rejection frame must respect the cap"
+        );
+        let decoded = DesktopIpcResponse::decode(response.as_slice()).unwrap();
+        assert_eq!(decoded.request_id, 42);
+        match decoded.result.unwrap() {
+            desktop_ipc_response::Result::Error(err) => {
+                assert_eq!(err.code, "payload-too-large");
+                assert!(!err.help.is_empty());
+            }
+            desktop_ipc_response::Result::Payload(_) => {
+                panic!("oversized response was returned to the caller")
+            }
+        }
+    }
+
+    #[test]
+    fn response_framing_overhead_counts_against_the_limit() {
+        let limit = 4096;
+        let mut registry = IpcRegistry::new().with_max_payload_bytes(limit);
+        // Exactly at the cap, so only the protobuf framing pushes it over.
+        registry.register("edge", move |_| Ok(vec![0_u8; limit]));
+
+        let response = registry
+            .dispatch_frame(&encode_request("edge", b"x"))
+            .unwrap();
+        let decoded = DesktopIpcResponse::decode(response.as_slice()).unwrap();
+        match decoded.result.unwrap() {
+            desktop_ipc_response::Result::Error(err) => assert_eq!(err.code, "payload-too-large"),
+            desktop_ipc_response::Result::Payload(_) => {
+                panic!("frame exceeding the cap was returned to the caller")
+            }
+        }
     }
 
     #[test]

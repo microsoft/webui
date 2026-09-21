@@ -79,9 +79,14 @@ pub enum EventResponse {
 /// UI-thread lifecycle callback. Handlers must not block the UI thread.
 pub type EventHandler = dyn Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static;
 /// Thread-safe registration and dispatch container for lifecycle callbacks.
+///
+/// The handler list is copy-on-write. Registration rebuilds it, and dispatch
+/// clones the `Arc` and releases the lock before invoking anything, so a
+/// handler is free to register another handler or dispatch a nested event
+/// without re-entering a non-reentrant mutex on the UI thread.
 #[derive(Clone, Default)]
 pub struct EventRegistry {
-    handlers: Arc<Mutex<Vec<Arc<EventHandler>>>>,
+    handlers: Arc<Mutex<Arc<[Arc<EventHandler>]>>>,
 }
 impl EventRegistry {
     /// Register a callback invoked by the backend UI thread.
@@ -89,24 +94,32 @@ impl EventRegistry {
     where
         F: Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static,
     {
-        if let Ok(mut handlers) = self.handlers.lock() {
-            handlers.push(Arc::new(handler));
+        if let Ok(mut slot) = self.handlers.lock() {
+            let mut next = Vec::with_capacity(slot.len() + 1);
+            next.extend(slot.iter().map(Arc::clone));
+            next.push(Arc::new(handler));
+            *slot = next.into();
         }
     }
     /// Dispatch an event and report cancellation.
+    ///
+    /// Every handler observes the event even after one cancels it, so the
+    /// outcome does not depend on registration order.
     #[must_use]
     pub fn dispatch(&self, event: &DesktopEvent) -> EventResponse {
-        let Ok(handlers) = self.handlers.lock() else {
+        // Clone the list and drop the guard before invoking user callbacks.
+        // Holding it across a callback would deadlock the UI thread the moment
+        // a handler registered another handler or dispatched a nested event.
+        let Ok(handlers) = self.handlers.lock().map(|slot| Arc::clone(&slot)) else {
             return EventResponse::Continue;
         };
-        if handlers
-            .iter()
-            .any(|handler| handler(event) == EventResponse::PreventDefault)
-        {
-            EventResponse::PreventDefault
-        } else {
-            EventResponse::Continue
+        let mut response = EventResponse::Continue;
+        for handler in handlers.iter() {
+            if handler(event) == EventResponse::PreventDefault {
+                response = EventResponse::PreventDefault;
+            }
         }
+        response
     }
 }
 /// Event JavaScript serialization error.
@@ -346,6 +359,61 @@ pub const DRAG_REGION_SCRIPT: &str = "(()=>{const p=m=>window.webuiHostPostMessa
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    #[test]
+    fn dispatch_lets_a_handler_register_and_dispatch_without_deadlocking() {
+        let registry = EventRegistry::default();
+        let nested = registry.clone();
+        let nested_once = Arc::new(AtomicBool::new(false));
+        registry.on_event(move |_| {
+            // Both calls re-enter the registry. While `dispatch` held the
+            // handler mutex across callbacks, either one deadlocked the UI
+            // thread against a non-reentrant mutex.
+            if !nested_once.swap(true, Ordering::SeqCst) {
+                nested.on_event(|_| EventResponse::Continue);
+                let _ = nested.dispatch(&DesktopEvent::Ready);
+            }
+            EventResponse::Continue
+        });
+        // Dispatch on a worker so a regression fails this test instead of
+        // hanging the suite forever.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let response = registry.dispatch(&DesktopEvent::Ready);
+            let _ = tx.send(response);
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(EventResponse::Continue),
+            "re-entrant dispatch deadlocked"
+        );
+    }
+    #[test]
+    fn dispatch_runs_every_handler_even_after_one_cancels() {
+        let registry = EventRegistry::default();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let first = Arc::clone(&seen);
+        registry.on_event(move |_| {
+            first.fetch_add(1, Ordering::SeqCst);
+            EventResponse::PreventDefault
+        });
+        let second = Arc::clone(&seen);
+        registry.on_event(move |_| {
+            second.fetch_add(1, Ordering::SeqCst);
+            EventResponse::Continue
+        });
+        assert_eq!(
+            registry.dispatch(&DesktopEvent::Ready),
+            EventResponse::PreventDefault
+        );
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "cancelling handler hid the event from later handlers"
+        );
+    }
     #[test]
     fn event_js() {
         assert!(DesktopEvent::WindowResized {
