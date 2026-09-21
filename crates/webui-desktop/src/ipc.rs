@@ -107,10 +107,15 @@ impl IpcHandlerError {
 type IpcHandler = dyn Fn(&[u8]) -> std::result::Result<Vec<u8>, IpcHandlerError> + Send + Sync;
 
 /// Allowlisted protobuf IPC method registry.
-#[derive(Default)]
 pub struct IpcRegistry {
     handlers: HashMap<String, Box<IpcHandler>>,
     max_payload_bytes: usize,
+}
+
+impl Default for IpcRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IpcRegistry {

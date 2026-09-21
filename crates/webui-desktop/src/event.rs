@@ -78,49 +78,194 @@ pub enum EventResponse {
 }
 /// UI-thread lifecycle callback. Handlers must not block the UI thread.
 pub type EventHandler = dyn Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static;
+
+/// Maximum number of persistent and subscribed lifecycle callbacks.
+pub const MAX_EVENT_HANDLERS: usize = 256;
+
+/// Lifecycle callback registration error.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum EventRegistrationError {
+    #[error("desktop event handler registry is full (max {MAX_EVENT_HANDLERS}); help: drop unused subscriptions before registering more handlers")]
+    Capacity,
+    #[error("desktop event handler registry is closed; help: register handlers before the desktop frame shuts down")]
+    Closed,
+    #[error("desktop event handler registry is unavailable because a callback panicked; help: restart the application")]
+    Unavailable,
+}
+
+struct EventRegistration {
+    id: u64,
+    handler: Arc<EventHandler>,
+}
+
+#[derive(Default)]
+struct EventRegistryState {
+    handlers: Option<Arc<[EventRegistration]>>,
+    next_id: u64,
+    closed: bool,
+}
+
 /// Thread-safe registration and dispatch container for lifecycle callbacks.
 ///
-/// The handler list is copy-on-write. Registration rebuilds it, and dispatch
-/// clones the `Arc` and releases the lock before invoking anything, so a
-/// handler is free to register another handler or dispatch a nested event
-/// without re-entering a non-reentrant mutex on the UI thread.
+/// Dispatch clones one `Arc` snapshot without allocating and releases the lock
+/// before invoking callbacks. A dispatch already in progress may finish with
+/// its original snapshot; registration and removal affect future dispatches.
+/// Nested dispatch observes the current snapshot at the time it starts.
 #[derive(Clone, Default)]
 pub struct EventRegistry {
-    handlers: Arc<Mutex<Arc<[Arc<EventHandler>]>>>,
+    inner: Arc<Mutex<EventRegistryState>>,
 }
+
+/// Removes a subscribed lifecycle callback when dropped.
+///
+/// The subscription holds a weak registry reference, so retaining it in state
+/// owned by its callback does not create an ownership cycle.
+#[must_use = "dropping the subscription immediately removes the event handler"]
+pub struct EventSubscription {
+    owner: std::sync::Weak<Mutex<EventRegistryState>>,
+    id: u64,
+}
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        remove_event_handler(&owner, self.id);
+    }
+}
+
 impl EventRegistry {
-    /// Register a callback invoked by the backend UI thread.
-    pub fn on_event<F>(&self, handler: F)
+    /// Register a callback that remains installed until the registry closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventRegistrationError`] when the registry reached its handler
+    /// cap, has closed, or its state is unavailable after a callback panic.
+    pub fn on_event<F>(&self, handler: F) -> Result<(), EventRegistrationError>
     where
         F: Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static,
     {
-        if let Ok(mut slot) = self.handlers.lock() {
-            let mut next = Vec::with_capacity(slot.len() + 1);
-            next.extend(slot.iter().map(Arc::clone));
-            next.push(Arc::new(handler));
-            *slot = next.into();
-        }
+        self.register(Arc::new(handler)).map(|_| ())
     }
+
+    /// Register a callback removed automatically when its subscription drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EventRegistrationError`] when the registry reached its handler
+    /// cap, has closed, or its state is unavailable after a callback panic.
+    pub fn subscribe<F>(&self, handler: F) -> Result<EventSubscription, EventRegistrationError>
+    where
+        F: Fn(&DesktopEvent) -> EventResponse + Send + Sync + 'static,
+    {
+        let id = self.register(Arc::new(handler))?;
+        Ok(EventSubscription {
+            owner: Arc::downgrade(&self.inner),
+            id,
+        })
+    }
+
+    fn register(&self, handler: Arc<EventHandler>) -> Result<u64, EventRegistrationError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| EventRegistrationError::Unavailable)?;
+        if state.closed {
+            return Err(EventRegistrationError::Closed);
+        }
+        let len = state.handlers.as_ref().map_or(0, |handlers| handlers.len());
+        if len >= MAX_EVENT_HANDLERS {
+            return Err(EventRegistrationError::Capacity);
+        }
+        let id = state.next_id;
+        state.next_id = state.next_id.wrapping_add(1);
+        let mut next = Vec::with_capacity(len + 1);
+        if let Some(handlers) = state.handlers.as_ref() {
+            next.extend(handlers.iter().map(|entry| EventRegistration {
+                id: entry.id,
+                handler: Arc::clone(&entry.handler),
+            }));
+        }
+        next.push(EventRegistration { id, handler });
+        let previous = state.handlers.replace(next.into());
+        drop(state);
+        drop(previous);
+        Ok(id)
+    }
+
     /// Dispatch an event and report cancellation.
     ///
-    /// Every handler observes the event even after one cancels it, so the
-    /// outcome does not depend on registration order.
+    /// Every handler in the dispatch snapshot observes the event even after one
+    /// cancels it, so the outcome does not depend on registration order.
     #[must_use]
     pub fn dispatch(&self, event: &DesktopEvent) -> EventResponse {
-        // Clone the list and drop the guard before invoking user callbacks.
-        // Holding it across a callback would deadlock the UI thread the moment
-        // a handler registered another handler or dispatched a nested event.
-        let Ok(handlers) = self.handlers.lock().map(|slot| Arc::clone(&slot)) else {
+        let handlers = {
+            let Ok(state) = self.inner.lock() else {
+                return EventResponse::Continue;
+            };
+            if state.closed {
+                return EventResponse::Continue;
+            }
+            state.handlers.as_ref().map(Arc::clone)
+        };
+        let Some(handlers) = handlers else {
             return EventResponse::Continue;
         };
         let mut response = EventResponse::Continue;
-        for handler in handlers.iter() {
-            if handler(event) == EventResponse::PreventDefault {
+        for registration in handlers.iter() {
+            if (registration.handler)(event) == EventResponse::PreventDefault {
                 response = EventResponse::PreventDefault;
             }
         }
         response
     }
+
+    /// Close the registry and release all callbacks.
+    ///
+    /// Dispatch after closure is inert. A dispatch that already cloned its
+    /// snapshot may finish before those callbacks are released.
+    pub(crate) fn close(&self) {
+        let handlers = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            state.closed = true;
+            state.handlers.take()
+        };
+        drop(handlers);
+    }
+}
+
+fn remove_event_handler(owner: &Mutex<EventRegistryState>, id: u64) {
+    let previous = {
+        let Ok(mut state) = owner.lock() else {
+            return;
+        };
+        let Some(handlers) = state.handlers.as_ref() else {
+            return;
+        };
+        let Some(index) = handlers.iter().position(|entry| entry.id == id) else {
+            return;
+        };
+        if handlers.len() == 1 {
+            state.handlers.take()
+        } else {
+            let mut next = Vec::with_capacity(handlers.len() - 1);
+            next.extend(
+                handlers
+                    .iter()
+                    .enumerate()
+                    .filter(|(entry_index, _)| *entry_index != index)
+                    .map(|(_, entry)| EventRegistration {
+                        id: entry.id,
+                        handler: Arc::clone(&entry.handler),
+                    }),
+            );
+            state.handlers.replace(next.into())
+        }
+    };
+    drop(previous);
 }
 /// Event JavaScript serialization error.
 #[derive(Debug, Error)]
@@ -201,75 +346,155 @@ pub enum WindowCommand {
     SetAlwaysOnTop(bool),
 }
 /// Maximum number of commands buffered for the native UI thread before
-/// `WindowHandle::send` reports back-pressure instead of growing without bound.
+/// [`WindowHandle::send`] reports back-pressure instead of growing without bound.
 pub const MAX_QUEUED_WINDOW_COMMANDS: usize = 256;
+/// Maximum UTF-8 bytes accepted in one queued window title.
+pub const MAX_WINDOW_TITLE_BYTES: usize = 16 * 1024;
+/// Maximum aggregate UTF-8 title bytes buffered for the native UI thread.
+pub const MAX_QUEUED_WINDOW_TITLE_BYTES: usize = 64 * 1024;
 
 /// Command queue error.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Eq, PartialEq)]
 pub enum WindowCommandError {
     #[error(
         "desktop window command queue is full; help: wait for the UI thread to drain commands"
     )]
     QueueFull,
+    #[error("desktop window title is too large: {size} bytes (max {MAX_WINDOW_TITLE_BYTES}); help: shorten the title before sending it")]
+    TitleTooLarge { size: usize },
+    #[error("desktop window title queue is full: {queued} of {MAX_QUEUED_WINDOW_TITLE_BYTES} bytes queued, {requested} more requested; help: wait for the UI thread to drain title updates")]
+    TitleQueueFull { queued: usize, requested: usize },
+    #[error("desktop window command queue is closed; help: stop sending commands after the desktop frame shuts down")]
+    Closed,
     #[error(
         "desktop window command queue is unavailable because the native UI thread panicked; help: restart the application"
     )]
     Unavailable,
 }
+
 /// Sendable handle that queues commands and wakes the native UI loop.
 #[derive(Clone, Default)]
 pub struct WindowHandle {
-    inner: Arc<WindowHandleInner>,
+    inner: Arc<Mutex<WindowHandleState>>,
 }
-struct WindowHandleInner {
-    queue: Mutex<VecDeque<WindowCommand>>,
-    wakeup: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+
+#[derive(Default)]
+struct WindowHandleState {
+    queue: Option<VecDeque<WindowCommand>>,
+    wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
+    queued_title_bytes: usize,
+    wake_scheduled: bool,
+    closed: bool,
 }
-impl Default for WindowHandleInner {
-    fn default() -> Self {
-        Self {
-            queue: Mutex::new(VecDeque::with_capacity(32)),
-            wakeup: Mutex::new(None),
-        }
-    }
-}
+
 impl WindowHandle {
     /// Install the backend wakeup callback.
+    ///
+    /// Installing a callback while commands are queued schedules one wakeup.
+    /// The callback is always invoked after releasing the queue lock.
     pub fn set_wakeup<F>(&self, wakeup: F)
     where
         F: Fn() + Send + Sync + 'static,
     {
-        if let Ok(mut slot) = self.inner.wakeup.lock() {
-            *slot = Some(Arc::new(wakeup));
+        let wakeup: Arc<dyn Fn() + Send + Sync> = Arc::new(wakeup);
+        let (previous, notify) = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            if state.closed {
+                return;
+            }
+            let previous = state.wakeup.replace(Arc::clone(&wakeup));
+            let has_backlog = state.queue.as_ref().is_some_and(|queue| !queue.is_empty());
+            let notify = has_backlog.then(|| {
+                state.wake_scheduled = true;
+                wakeup
+            });
+            (previous, notify)
+        };
+        drop(previous);
+        if let Some(notify) = notify {
+            notify();
         }
     }
+
     /// Drain queued commands on the UI thread.
     #[must_use]
     pub fn drain_commands(&self) -> Vec<WindowCommand> {
-        let Ok(mut queue) = self.inner.queue.lock() else {
-            return Vec::new();
+        let queue = {
+            let Ok(mut state) = self.inner.lock() else {
+                return Vec::new();
+            };
+            state.wake_scheduled = false;
+            state.queued_title_bytes = 0;
+            state.queue.take()
         };
-        queue.drain(..).collect()
+        queue.map_or_else(Vec::new, VecDeque::into)
     }
+
     /// Queue a native command.
+    ///
+    /// Success means the command was accepted into the bounded queue, not that
+    /// the native UI thread has already applied it.
     pub fn send(&self, command: WindowCommand) -> Result<(), WindowCommandError> {
-        let mut q = self
-            .inner
-            .queue
-            .lock()
-            .map_err(|_| WindowCommandError::Unavailable)?;
-        if q.len() >= MAX_QUEUED_WINDOW_COMMANDS {
-            return Err(WindowCommandError::QueueFull);
-        }
-        q.push_back(command);
-        drop(q);
-        if let Ok(w) = self.inner.wakeup.lock() {
-            if let Some(w) = w.as_ref() {
-                w();
+        let command = normalize_command(command);
+        let notify = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| WindowCommandError::Unavailable)?;
+            if state.closed {
+                return Err(WindowCommandError::Closed);
             }
+            let (command, title_bytes) = command?;
+            let queue_len = state.queue.as_ref().map_or(0, VecDeque::len);
+            if queue_len >= MAX_QUEUED_WINDOW_COMMANDS {
+                return Err(WindowCommandError::QueueFull);
+            }
+            if title_bytes > MAX_QUEUED_WINDOW_TITLE_BYTES - state.queued_title_bytes {
+                return Err(WindowCommandError::TitleQueueFull {
+                    queued: state.queued_title_bytes,
+                    requested: title_bytes,
+                });
+            }
+            state.queued_title_bytes += title_bytes;
+            state
+                .queue
+                .get_or_insert_with(VecDeque::new)
+                .push_back(command);
+            if state.wake_scheduled {
+                None
+            } else if let Some(wakeup) = state.wakeup.as_ref().map(Arc::clone) {
+                state.wake_scheduled = true;
+                Some(wakeup)
+            } else {
+                None
+            }
+        };
+        if let Some(notify) = notify {
+            notify();
         }
         Ok(())
     }
+
+    /// Close the command session and discard pending commands.
+    ///
+    /// The frame owner calls this during teardown. Wakeup callbacks and queued
+    /// command payloads are released only after the state lock is released.
+    pub(crate) fn close(&self) {
+        let (wakeup, queue) = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            state.closed = true;
+            state.wake_scheduled = false;
+            state.queued_title_bytes = 0;
+            (state.wakeup.take(), state.queue.take())
+        };
+        drop(wakeup);
+        drop(queue);
+    }
+
     /// Queue title update.
     pub fn set_title(&self, title: impl Into<String>) -> Result<(), WindowCommandError> {
         self.send(WindowCommand::SetTitle(title.into()))
@@ -302,8 +527,8 @@ impl WindowHandle {
     pub fn focus(&self) -> Result<(), WindowCommandError> {
         self.send(WindowCommand::Focus)
     }
-    /// Queue closing.
-    pub fn close(&self) -> Result<(), WindowCommandError> {
+    /// Queue a native close request.
+    pub fn request_close(&self) -> Result<(), WindowCommandError> {
         self.send(WindowCommand::Close)
     }
     /// Queue native drag.
@@ -314,6 +539,22 @@ impl WindowHandle {
     pub fn set_always_on_top(&self, value: bool) -> Result<(), WindowCommandError> {
         self.send(WindowCommand::SetAlwaysOnTop(value))
     }
+}
+
+fn normalize_command(command: WindowCommand) -> Result<(WindowCommand, usize), WindowCommandError> {
+    let WindowCommand::SetTitle(title) = command else {
+        return Ok((command, 0));
+    };
+    let size = title.len();
+    if size > MAX_WINDOW_TITLE_BYTES {
+        return Err(WindowCommandError::TitleTooLarge { size });
+    }
+    let title = if title.capacity() == size {
+        title
+    } else {
+        title.into_boxed_str().into_string()
+    };
+    Ok((WindowCommand::SetTitle(title), size))
 }
 /// Strictly bounded host message sent from injected web content.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -356,116 +597,5 @@ impl DesktopHostMessage {
 /// and `window` are skipped.
 pub const DRAG_REGION_SCRIPT: &str = "(()=>{const p=m=>window.webuiHostPostMessage&&window.webuiHostPostMessage(JSON.stringify(m));const d=e=>{const q=typeof e.composedPath==='function'?e.composedPath():[];for(let i=0;i<q.length;i++){const n=q[i];if(!n||n.nodeType!==1)continue;if(n.hasAttribute('webui-no-drag'))return false;if(n.hasAttribute('webui-drag'))return true}return false};document.addEventListener('pointerdown',e=>{if(e.button===0&&d(e))p('start-drag')});document.addEventListener('dblclick',e=>{if(e.button===0&&d(e))p('toggle-maximize')})})();";
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc;
-    use std::time::Duration;
-    #[test]
-    fn dispatch_lets_a_handler_register_and_dispatch_without_deadlocking() {
-        let registry = EventRegistry::default();
-        let nested = registry.clone();
-        let nested_once = Arc::new(AtomicBool::new(false));
-        registry.on_event(move |_| {
-            // Both calls re-enter the registry. While `dispatch` held the
-            // handler mutex across callbacks, either one deadlocked the UI
-            // thread against a non-reentrant mutex.
-            if !nested_once.swap(true, Ordering::SeqCst) {
-                nested.on_event(|_| EventResponse::Continue);
-                let _ = nested.dispatch(&DesktopEvent::Ready);
-            }
-            EventResponse::Continue
-        });
-        // Dispatch on a worker so a regression fails this test instead of
-        // hanging the suite forever.
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let response = registry.dispatch(&DesktopEvent::Ready);
-            let _ = tx.send(response);
-        });
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(10)),
-            Ok(EventResponse::Continue),
-            "re-entrant dispatch deadlocked"
-        );
-    }
-    #[test]
-    fn dispatch_runs_every_handler_even_after_one_cancels() {
-        let registry = EventRegistry::default();
-        let seen = Arc::new(AtomicUsize::new(0));
-        let first = Arc::clone(&seen);
-        registry.on_event(move |_| {
-            first.fetch_add(1, Ordering::SeqCst);
-            EventResponse::PreventDefault
-        });
-        let second = Arc::clone(&seen);
-        registry.on_event(move |_| {
-            second.fetch_add(1, Ordering::SeqCst);
-            EventResponse::Continue
-        });
-        assert_eq!(
-            registry.dispatch(&DesktopEvent::Ready),
-            EventResponse::PreventDefault
-        );
-        assert_eq!(
-            seen.load(Ordering::SeqCst),
-            2,
-            "cancelling handler hid the event from later handlers"
-        );
-    }
-    #[test]
-    fn event_js() {
-        assert!(DesktopEvent::WindowResized {
-            window_id: WindowId(1),
-            width: 2,
-            height: 3
-        }
-        .to_javascript()
-        .unwrap()
-        .contains("webui:window-resized"));
-    }
-    #[test]
-    fn event_js_emits_a_quoted_event_name() {
-        let script = DesktopEvent::Ready.to_javascript().unwrap();
-        assert!(
-            script.starts_with("window.dispatchEvent(new CustomEvent(\"webui:ready\","),
-            "unexpected script: {script}"
-        );
-    }
-    #[test]
-    fn drag_script_resolves_regions_through_shadow_dom() {
-        // Regression: a `document`-level listener sees shadow DOM events
-        // retargeted to the host, so `target.closest()` cannot find a drag
-        // region declared inside a component's shadow root.
-        assert!(DRAG_REGION_SCRIPT.contains("composedPath"));
-        assert!(!DRAG_REGION_SCRIPT.contains("closest"));
-    }
-    #[test]
-    fn drag_script_ignores_non_primary_buttons() {
-        assert!(DRAG_REGION_SCRIPT.contains("e.button===0"));
-    }
-    #[test]
-    fn command_queue_applies_back_pressure_at_the_documented_cap() {
-        let handle = WindowHandle::default();
-        for _ in 0..MAX_QUEUED_WINDOW_COMMANDS {
-            handle.send(WindowCommand::Focus).unwrap();
-        }
-        assert!(matches!(
-            handle.send(WindowCommand::Focus),
-            Err(WindowCommandError::QueueFull)
-        ));
-        assert_eq!(handle.drain_commands().len(), MAX_QUEUED_WINDOW_COMMANDS);
-        // Draining on the UI thread must relieve the back-pressure.
-        handle.send(WindowCommand::Focus).unwrap();
-    }
-    #[test]
-    fn host_messages() {
-        assert_eq!(
-            DesktopHostMessage::from_json("\"start-drag\"").unwrap(),
-            DesktopHostMessage::StartDrag
-        );
-        assert!(DesktopHostMessage::from_json("{}").is_err());
-        assert!(DesktopHostMessage::from_json(&"x".repeat(257)).is_err());
-    }
-}
+#[path = "event_tests.rs"]
+mod tests;

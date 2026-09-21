@@ -36,7 +36,7 @@ instead of relying on a static exported site:
 ```bash
 pnpm --dir examples/app/contact-book-manager run build:deps
 pnpm --dir examples/app/contact-book-manager run build:client
-cargo run -p contact-book-desktop
+cargo run -p contact-book-desktop --features source
 ```
 
 The desktop example uses a hidden-inset titlebar with a declarative `webui-drag`
@@ -58,8 +58,7 @@ PACKAGES=/tmp/contact-book-packages
 cd examples/app/contact-book-manager
 cargo run -p microsoft-webui-cli -- desktop package . \
   --target macos-app \
-  --out "$PACKAGES" \
-  --release
+  --out "$PACKAGES"
 
 open "$PACKAGES/Contact-Book-Manager.app"
 ```
@@ -75,8 +74,9 @@ running.
 
 ## Desktop performance
 
-The package command's `--release` flag optimizes the app runner, not just the
-packaging CLI. Measure the packaged app through page hydration and include
+The package command builds an optimized, runtime-only app runner by default,
+not just an optimized packaging CLI. Use `--debug` for a debug package.
+Measure the packaged app through page hydration and include
 WebKit's helper processes when reporting memory.
 
 The focused release microbenchmarks cover seed preparation and macOS response
@@ -84,5 +84,5 @@ buffer handoff, not complete window startup:
 
 ```bash
 cargo bench -p contact-book-desktop --bench desktop_state
-cargo bench -p microsoft-webui-desktop-runner --bench macos_response
+cargo bench -p microsoft-webui-desktop --features native --bench macos_response
 ```

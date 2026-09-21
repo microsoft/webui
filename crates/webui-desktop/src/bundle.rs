@@ -20,15 +20,11 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "source")]
 use webui::RenderOptions;
 #[cfg(feature = "source")]
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-#[cfg(feature = "source")]
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
-#[cfg(feature = "source")]
-use webui_handler::plugin::webui::WebUIHydrationPlugin;
-#[cfg(feature = "source")]
 use webui_handler::ResponseWriter;
 
 use crate::error::{DesktopError, Result};
+#[cfg(feature = "source")]
+use crate::hydration::{handler_for_plugin, plugin_name};
 
 pub use crate::window::WindowOptions;
 
@@ -395,15 +391,6 @@ fn validate_bundle_output(options: &DesktopBundleOptions) -> Result<()> {
 }
 
 #[cfg(feature = "source")]
-fn plugin_name(plugin: webui::Plugin) -> &'static str {
-    match plugin {
-        webui::Plugin::Fast | webui::Plugin::FastV2 => "fast",
-        webui::Plugin::FastV3 => "fast-v3",
-        webui::Plugin::WebUI => "webui",
-    }
-}
-
-#[cfg(feature = "source")]
 fn prepare_out_dir(out_dir: &Path) -> Result<()> {
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).map_err(|source| DesktopError::Io {
@@ -584,7 +571,7 @@ fn write_startup_html(input: StartupHtmlInput<'_>) -> Result<()> {
     if let Value::Object(map) = &mut state {
         map.insert("basePath".to_string(), Value::String("/".to_string()));
     }
-    let handler = create_handler(input.plugin);
+    let handler = handler_for_plugin(input.plugin);
     let mut writer = MemoryWriter::with_capacity(4096);
     handler.render(
         input.protocol,
@@ -642,22 +629,6 @@ fn write_state_value(state: &Value, state_dest: &Path) -> Result<()> {
         context: format!("writing desktop bundle state {}", state_dest.display()),
         source,
     })
-}
-
-#[cfg(feature = "source")]
-fn create_handler(plugin: Option<webui::Plugin>) -> webui::WebUIHandler {
-    match plugin {
-        Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-        }
-        Some(webui::Plugin::FastV3) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()))
-        }
-        Some(webui::Plugin::WebUI) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
-        }
-        None => webui::WebUIHandler::new(),
-    }
 }
 
 #[cfg(feature = "source")]

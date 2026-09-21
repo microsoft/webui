@@ -72,6 +72,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Threading",
 ] }
 block2 = "0.6.2"
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
+objc2-web-kit = { version = "0.3.2", default-features = false }
 webview2-com = "0.39.1"
 gtk4 = { version = "0.11.3", default-features = false }
 webkit6 = { version = "0.6.1", default-features = false }

@@ -8,13 +8,12 @@ use std::sync::Arc;
 
 use percent_encoding::percent_decode_str;
 use serde_json::Value;
-use webui::{Protocol, RenderOptions};
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
-use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::ResponseWriter;
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
 use crate::error::{DesktopError, Result};
+use crate::hydration::handler_for_name;
+#[cfg(feature = "source")]
+use crate::hydration::handler_for_plugin;
 use crate::ipc::IpcRegistry;
 use crate::path::resolve_safe_path;
 use crate::protocol::{
@@ -125,7 +124,7 @@ pub struct DesktopRuntime {
     startup_html: String,
     window_css: String,
     ipc_registry: IpcRegistry,
-    plugin: Option<webui::Plugin>,
+    handler: WebUIHandler,
     route_state: RouteStateRegistry,
     api_routes: ApiRouteRegistry,
     token_css: Option<HashMap<String, String>>,
@@ -399,11 +398,12 @@ impl DesktopRuntime {
             token_css: token_css.as_ref(),
             request_path: "/",
         })?;
+        let handler = handler_for_plugin(config.build_options.plugin);
         let window_css = window_css_block(&config.window, DesktopPlatform::current());
         let startup_html = apply_window_css(
             render_html(
                 &protocol,
-                config.build_options.plugin,
+                &handler,
                 &config.build_options.entry,
                 "/",
                 &startup_state,
@@ -422,7 +422,7 @@ impl DesktopRuntime {
             startup_html,
             window_css,
             ipc_registry: config.ipc_registry,
-            plugin: config.build_options.plugin,
+            handler,
             route_state: config.route_state,
             api_routes: config.api_routes,
             token_css,
@@ -497,7 +497,7 @@ impl DesktopRuntime {
             &manifest.integrity.assets,
             config.max_asset_bytes,
         )?;
-        let plugin = parse_plugin(manifest.plugin.as_deref());
+        let handler = handler_for_name(manifest.plugin.as_deref());
         let startup_state = state_for_request(StateRequestContext {
             protocol: &protocol,
             entry: &manifest.entry,
@@ -508,7 +508,7 @@ impl DesktopRuntime {
         })?;
         let window_css = window_css_block(&manifest.window, DesktopPlatform::current());
         let startup_html = apply_window_css(
-            render_html(&protocol, plugin, &manifest.entry, "/", &startup_state)?,
+            render_html(&protocol, &handler, &manifest.entry, "/", &startup_state)?,
             &window_css,
         );
 
@@ -523,7 +523,7 @@ impl DesktopRuntime {
             startup_html,
             window_css,
             ipc_registry: config.ipc_registry,
-            plugin,
+            handler,
             route_state: config.route_state,
             api_routes: config.api_routes,
             token_css: config.token_css,
@@ -577,7 +577,7 @@ impl DesktopRuntime {
                 let html = apply_window_css(
                     render_html(
                         &self.protocol,
-                        self.plugin,
+                        &self.handler,
                         &self.entry,
                         request_path,
                         &self.state_for_request(request_path)?,
@@ -869,15 +869,6 @@ fn decode_segment(segment: &str) -> String {
         .unwrap_or_else(|_| segment.to_string())
 }
 
-fn parse_plugin(plugin: Option<&str>) -> Option<webui::Plugin> {
-    match plugin {
-        Some("fast") | Some("fast-v2") => Some(webui::Plugin::FastV2),
-        Some("fast-v3") => Some(webui::Plugin::FastV3),
-        Some("webui") => Some(webui::Plugin::WebUI),
-        _ => None,
-    }
-}
-
 fn read_state(path: Option<&PathBuf>) -> Result<Value> {
     let Some(path) = path else {
         return Ok(Value::Object(serde_json::Map::new()));
@@ -950,12 +941,11 @@ fn canonical_asset_root(path: Option<&PathBuf>) -> Result<Option<PathBuf>> {
 
 fn render_html(
     protocol: &Protocol,
-    plugin: Option<webui::Plugin>,
+    handler: &WebUIHandler,
     entry: &str,
     request_path: &str,
     state: &Value,
 ) -> Result<String> {
-    let handler = create_handler(plugin);
     let mut writer = MemoryWriter::with_capacity(4096);
     handler.render(
         protocol,
@@ -964,21 +954,6 @@ fn render_html(
         &mut writer,
     )?;
     Ok(writer.buf)
-}
-
-fn create_handler(plugin: Option<webui::Plugin>) -> webui::WebUIHandler {
-    match plugin {
-        Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-        }
-        Some(webui::Plugin::FastV3) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()))
-        }
-        Some(webui::Plugin::WebUI) => {
-            webui::WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
-        }
-        None => webui::WebUIHandler::new(),
-    }
 }
 
 struct MemoryWriter {

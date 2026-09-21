@@ -102,7 +102,7 @@ fn try_sidecar_binary(binary: &OsStr, args: &DesktopArgs) -> Result<bool> {
 }
 
 fn try_workspace_sidecar(root: &Path, args: &DesktopArgs) -> Result<bool> {
-    let sidecar_path = root.join("crates/webui-desktop-runner");
+    let sidecar_path = root.join("crates/webui-desktop");
     if !verify_sidecar_version(workspace_sidecar_command(root), sidecar_path)? {
         return Ok(false);
     }
@@ -119,7 +119,8 @@ fn workspace_sidecar_command(root: &Path) -> Command {
         .arg("--manifest-path")
         .arg(root.join("Cargo.toml"))
         .arg("-p")
-        .arg("microsoft-webui-desktop-runner")
+        .arg("microsoft-webui-desktop")
+        .args(["--features", "cli", "--bin", "webui-desktop"])
         .arg("--");
     command
 }
@@ -222,16 +223,37 @@ fn find_workspace_root() -> Option<PathBuf> {
 
 fn workspace_has_desktop_sidecar(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
-        .map(|content| content.contains("crates/*") || content.contains("webui-desktop-runner"))
+        .map(|content| content.contains("crates/*") || content.contains("webui-desktop"))
         .unwrap_or(false)
-        && root
-            .join("crates/webui-desktop-runner/Cargo.toml")
-            .is_file()
+        && root.join("crates/webui-desktop/Cargo.toml").is_file()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_sidecar_explicitly_enables_sdk_cli_feature() {
+        let root = Path::new("workspace");
+        let command = workspace_sidecar_command(root);
+        let args: Vec<_> = command.get_args().map(OsStr::to_os_string).collect();
+        assert_eq!(command.get_program(), OsStr::new("cargo"));
+        assert_eq!(
+            args,
+            [
+                OsString::from("run"),
+                OsString::from("--manifest-path"),
+                root.join("Cargo.toml").into_os_string(),
+                OsString::from("-p"),
+                OsString::from("microsoft-webui-desktop"),
+                OsString::from("--features"),
+                OsString::from("cli"),
+                OsString::from("--bin"),
+                OsString::from("webui-desktop"),
+                OsString::from("--"),
+            ]
+        );
+    }
 
     #[test]
     fn accepts_matching_sidecar_version() {

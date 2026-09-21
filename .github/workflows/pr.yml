@@ -29,7 +29,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --features microsoft-webui-desktop/cli,contact-book-desktop/source -- -D warnings
 
       - name: Deny (licenses & advisories)
         run: |
@@ -48,7 +48,31 @@ jobs:
           skip-build: 'true'
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo xtask test
+
+      - name: Check packaged desktop dependencies
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          forbidden = {
+              "microsoft-webui", "microsoft-webui-parser",
+              "microsoft-webui-discovery", "tokio", "rayon", "clap",
+          }
+          native = {"gtk4", "webkit6", "objc2", "webview2-com", "windows"}
+          for package, excluded in [
+              ("contact-book-desktop", forbidden),
+              ("microsoft-webui-desktop", forbidden | native),
+          ]:
+              tree = subprocess.check_output([
+                  "cargo", "tree", "-p", package,
+                  "--no-default-features", "--edges", "normal,build",
+                  "--prefix", "none", "--format", "{p}",
+              ], text=True)
+              packages = {line.split()[0] for line in tree.splitlines() if line}
+              unexpected = packages & excluded
+              if unexpected:
+                  raise SystemExit(f"{package} includes unwanted dependencies: " + ", ".join(sorted(unexpected)))
+          PY
 
   # ── Phase 2: Build (Linux + macOS + Windows) ────────────────────────
   build-linux:
@@ -72,6 +96,11 @@ jobs:
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
 
+      - name: Test native desktop SDK
+        run: |
+          cargo test -p microsoft-webui-desktop --no-default-features --features native
+          cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
+
   build-windows:
     name: Build (Windows)
     runs-on: windows-latest
@@ -82,6 +111,9 @@ jobs:
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
+
+      - name: Test native desktop SDK
+        run: cargo test -p microsoft-webui-desktop --no-default-features --features native
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

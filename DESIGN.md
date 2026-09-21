@@ -5704,8 +5704,7 @@ webui/
 │   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
-│   ├── webui-desktop/        # Rust-native desktop runtime primitives (custom protocol, protobuf IPC, packaging model)
-│   ├── webui-desktop-runner/    # Desktop sidecar backend (binary: "webui-desktop")
+│   ├── webui-desktop/        # Desktop SDK with optional native backends and tooling (binary: "webui-desktop")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
@@ -5750,12 +5749,12 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
-webui-cli ──────► webui-desktop-runner (sidecar process, no webview deps in webui-cli)
+webui-cli ──────► webui-desktop (sidecar process, enabled by the cli feature)
                        │
-                       ├── webui-desktop
-                       ├── webui
                        ├── webui-handler
-                       └── webui-protocol
+                       ├── webui-protocol
+                       ├── webui (source feature only)
+                       └── system webview (native feature only)
 
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
      └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
@@ -5866,10 +5865,10 @@ Desktop runtime uses direct platform backends:
 - macOS: WKWebView.
 - Linux: GTK4 with WebKitGTK 6.
 
-Native shells are hidden behind the `webui_desktop_runner` frame abstraction.
+Native shells are hidden behind the `webui_desktop` frame abstraction.
 App-specific runners construct a runtime-neutral `DesktopFrame` and call
-`webui_desktop_runner::run_frame(frame)` or
-`webui_desktop_runner::run_runtime(runtime, window)`. The crate dispatches to a
+`webui_desktop::run_frame(frame)` or
+`webui_desktop::run_runtime(runtime, window)`. The crate dispatches to a
 target-gated `PlatformFrameBackend` that implements the shared
 `DesktopFrameBackend` trait. Application code must not branch on
 `cfg(target_os)` to choose `macos`, `windows`, or `linux`; platform differences
@@ -5897,21 +5896,51 @@ Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
 Windows. The runtime still uses the same `DesktopRuntime` dispatcher on every
 platform: no localhost server, one shared protocol/state/asset graph, bounded
 asset reads, and route/API/IPC dispatch through the custom app origin.
-Packaged app runners use `webui_desktop_runner::find_packaged_resources_dir()`
+Packaged app runners use `webui_desktop::find_packaged_resources_dir()`
 to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
 layouts remain behind one API.
 
-The `microsoft-webui-desktop` crate enables its `source` feature by default so
-development runners can use `DesktopApp`, `DesktopSourceConfig`, and
-`DesktopRuntime::from_source` without configuration. The feature also exposes
-desktop bundle construction and packaging APIs. Packaged runner crates should
-forward that feature from a default-on local `source` feature and depend on
-`microsoft-webui-desktop` with `default-features = false`. Building the runner
-with `--no-default-features` removes all source compilation, bundle construction,
-and package construction entry points while preserving bundle manifest types and
+The `microsoft-webui-desktop` SDK has no default features. Its base API includes
+bundle loading, frame configuration, lifecycle ownership, rendering, and IPC,
+without native GUI dependencies. `native` enables the current platform's stock
+backend; `source` enables `BuildOptions`, `DesktopSourceConfig`,
+`DesktopRuntime::from_source`, bundle construction, and packaging APIs.
+`cli` enables the sidecar binary and implies both `native` and `source`.
+Application manifests enable `native` on their SDK dependency and forward
+`source` through an opt-in local feature, so source compilation is absent from
+normal production builds. Runtime-only builds preserve bundle manifest types and
 `DesktopRuntime::from_bundle`, `from_bundle_config`, and
-`from_bundle_config_and_manifest`. This makes `webui::build` unreachable so
-release LTO can omit the build-time compiler from the packaged executable.
+`from_bundle_config_and_manifest`. The compiler dependency is optional, not
+merely unreachable: runtime-only builds use `webui-handler`'s `Protocol`,
+`RenderOptions`, and `WebUIHandler` directly, and do not depend on the parser,
+discovery, Tokio, Rayon, or CLI argument parsing. The stateless handler factory
+is selected once when a runtime loads and shared across renders.
+The `DesktopError::Build` variant is available only with `source`.
+
+The SDK's `cli` feature enables the `webui-desktop` binary and its
+command-line dependencies. The binary declares
+`required-features = ["cli"]` so runtime-only crate checks do not accidentally
+compile development tools.
+
+Portable modules inherit the workspace's `unsafe_code = "deny"` policy.
+Only the target-gated native adapter modules allow unsafe code for their FFI
+boundaries. Physical package consolidation does not change the IPC wire format,
+bundle layout, or process isolation provided by the system webview.
+Native and custom backend errors cross the public API as
+`DesktopError::Backend`, retaining their source error.
+Missing bundle resources report `DesktopError::PackagedResourcesNotFound`
+with a development-or-packaging hint rather than falling back to compilation.
+
+`DesktopApp::from_bundle` and `from_bundle_config` return a
+`DesktopAppBuilder` after loading the manifest once. The
+`from_bundle_config_and_manifest` constructor accepts an already-loaded manifest
+without additional manifest I/O. With `source`, `DesktopApp::from_source`
+accepts `DesktopSourceConfig`. Both paths register host state/routes/API/IPC
+before startup SSR, apply a single resolved window configuration to renderer and
+native frame, and preserve shell configuration and stable app identity.
+`DesktopAppBuilder::build` returns an owning `DesktopFrame`, not a runtime.
+`run_frame_with(frame, &backend)` validates capabilities before invoking a custom
+`DesktopFrameBackend`, and is available without stock native dependencies.
 
 When callers need manifest metadata, they should load
 `DesktopBundleManifest` once and call
@@ -5930,9 +5959,9 @@ Windows developer machine with the WebView2 Runtime installed.
 #### Desktop command surface
 
 ```bash
-webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--watch] [shared build flags] [window flags] [--ipc <SCHEMA>]
-webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags] [--ipc <SCHEMA>]
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--release] [--bundle-out <DIR>] [--no-web-build] [signing/package flags]
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--watch] [shared build flags] [window flags]
+webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [signing/package flags]
 ```
 
 `run` builds from source paths, renders the startup HTML in process, creates the
@@ -5948,9 +5977,11 @@ start an HTTP server or browser polling loop.
 - Optional seed `state.json`. Dynamic desktop apps should treat this as seed
   data only; route-scoped data comes from Rust route providers.
 - A desktop manifest with app id, app name, version, publisher, window defaults,
-  WebUI build options, IPC schema hashes, asset roots, capabilities, and package
+  WebUI build options, asset roots, capabilities, and package
   metadata.
-- Generated IPC client/stub artifacts when an IPC schema is provided.
+- A generic JavaScript protobuf-envelope client. Application message types and
+  codecs are supplied by the application; typed interface generation is not
+  implemented.
 - Integrity hashes for packaged protocol and assets.
 
 `package` is the one-command Rust-first packaging entry point. When the input is
@@ -5961,6 +5992,15 @@ artifacts with that runner. When the input is an existing desktop bundle, the
 command remains a lower-level packager and accepts `--runner <PATH>` for the
 app-specific executable. The generic sidecar runner is only for file-backed or
 static seed-state bundles.
+
+App-root packaging builds the runner with `--release --no-default-features`
+by default. `--debug` explicitly selects the debug profile; `--release` remains
+accepted for existing commands. Production capabilities can be enabled through
+`webuiDesktop.runnerFeatures` (an array of Cargo feature names) and additional
+`--runner-features` values. `webuiDesktop.runnerDefaultFeatures: true` or
+`--runner-default-features` explicitly restores defaults for custom runners.
+These options affect a Cargo-built runner, not an executable supplied with
+`--runner`.
 
 Example app metadata:
 
@@ -6049,6 +6089,18 @@ The stable envelope contains:
 Rust dispatch is allowlisted. Unknown methods fail closed. Payload size limits
 are enforced before decoding. Errors are structured protobuf frames and never
 panics. Development-only IPC methods are disabled in packaged builds.
+`IpcRegistry::new()` and `IpcRegistry::default()` both use the 1 MiB limit.
+Rust clients can match the public `desktop_ipc_response::Result` variants when
+decoding a `DesktopIpcResponse`.
+
+The current generic application API is JavaScript-to-Rust request/reply:
+`invokeDesktop(method, payload)` returns a `Promise<Uint8Array>`, while
+`IpcRegistry::register_protobuf` adapts application `prost` types to synchronous
+Rust handlers. This does not provide asynchronous Rust execution, Rust-initiated
+application RPC, or arbitrary application notifications in either direction.
+The separate lifecycle event and window-control interfaces are closed sets,
+not substitutes for an application message bus. The envelope helper is emitted
+into bundles; source-backed hosts must currently provide that client asset.
 
 #### Rust route/state providers
 
@@ -6057,9 +6109,10 @@ instead of baking route data into static files. Developers register route state
 providers in their desktop host:
 
 ```rust
-let runtime = webui_desktop::DesktopApp::builder(build_options)
+let mut config = webui_desktop::DesktopSourceConfig::new(build_options);
+config.asset_root = Some("./dist".into());
+let frame = webui_desktop::DesktopApp::from_source(config)
     .state_value(seed_state)
-    .asset_root("./dist")
     .route("/", |ctx| {
         Ok(json!({ "page": "dashboard", "recentContacts": recent_contacts() }))
     })?
@@ -6068,6 +6121,7 @@ let runtime = webui_desktop::DesktopApp::builder(build_options)
         Ok(contact_detail_state(id))
     })?
     .build()?;
+webui_desktop::run_frame(frame)?;
 ```
 
 Route providers run inside the Rust desktop host for full HTML renders and
@@ -6380,9 +6434,15 @@ Examples and end-to-end walkthroughs are maintained in [examples/README.md](exam
 The public `webui desktop init [APP_ROOT] [--force]` command is a progressive
 scaffold. It creates `src/index.html`, `package.json` with a `webuiDesktop`
 block, and `desktop/Cargo.toml` plus `desktop/src/main.rs`. The generated runner
-uses `find_packaged_resources_dir()` to choose the immutable packaged bundle
-path or the source `DesktopSourceConfig` path and uses `BuildOptions::default()`
-for fields it does not customize. Init checks all generated paths before writing
+uses one SDK dependency with `native` enabled and an opt-in local `source`
+feature. `find_packaged_resources_dir()` selects the immutable packaged bundle;
+only a build with `source` may fall back to source compilation. Without packaged
+resources or source support, launch fails before native startup with an
+actionable error. Source and bundle construction preserve window, shell, and app
+identity together rather than discarding manifest shell configuration.
+The generated Cargo manifest declares its own workspace boundary and an
+optimized release profile; it never modifies an enclosing workspace. Init
+checks all generated paths before writing
 and returns an actionable error unless `--force` is supplied.
 
 ## Desktop Window Contract
@@ -6391,8 +6451,26 @@ and returns an actionable error unless `--force` is supplied.
 
 For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` once into startup HTML. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
 
-Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`.
+Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
+
+`DesktopFrame` is a non-cloneable session owner. Dropping it closes registrations
+and the command channel, including validation failures and native launch errors.
+`on_event` registers a session-lifetime callback and returns a registration
+result; `subscribe` returns a `#[must_use] EventSubscription` whose drop removes
+that callback. Registration is limited to 256 handlers and fails after shutdown.
+Tokens hold weak registry references. Dispatch clones one immutable handler
+snapshot; registration/removal affects later snapshots, while an in-progress
+dispatch may finish. Neither callbacks nor destruction of callback captures run
+under registry locks.
 
 `WindowHandle` is `Send + Sync`; it queues bounded `WindowCommand`s and invokes a backend-installed wakeup callback. Backends drain it only on their UI thread. They install `DRAG_REGION_SCRIPT`, expose `window.webuiHostPostMessage`, and parse payloads through `DesktopHostMessage::from_json`. The only valid JSON string payloads are `"start-drag"`, `"minimize"`, `"toggle-maximize"`, and `"close"`; payloads over 256 bytes are rejected.
+
+Command submission returns acceptance, not confirmation that the operation was
+applied. Queues allocate lazily and cap 256 commands, 16 KiB per title, and
+64 KiB aggregate queued title bytes. `request_close()` requests native close;
+session shutdown closes the sender, drops pending commands and wakeup captures,
+and rejects subsequent submissions with `WindowCommandError::Closed`.
+Wakeups are coalesced until a drain, installed callbacks wake any existing
+backlog, and wakeup invocation/destruction occurs outside channel locks.
 
 When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, effect, jump-list, popover, and download features before native startup rather than silently ignoring them.

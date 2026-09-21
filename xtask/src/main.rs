@@ -734,6 +734,8 @@ struct Step {
     run: fn() -> Result<(), String>,
 }
 
+const DESKTOP_DEV_FEATURES: &str = "microsoft-webui-desktop/cli,contact-book-desktop/source";
+
 impl Step {
     const LICENSE_HEADERS: Self = Self {
         name: "license-headers",
@@ -752,7 +754,15 @@ impl Step {
             ensure_rustup_component("clippy")?;
             run_command_quiet(
                 "cargo",
-                &["clippy", "--workspace", "--", "-D", "warnings"],
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--features",
+                    DESKTOP_DEV_FEATURES,
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
                 None,
             )
         },
@@ -770,14 +780,49 @@ impl Step {
     };
     const TEST: Self = Self {
         name: "test",
-        run: || run_command_quiet("cargo", &["test", "--workspace"], None),
+        run: || {
+            run_command_quiet(
+                "cargo",
+                &["test", "--workspace", "--features", DESKTOP_DEV_FEATURES],
+                None,
+            )?;
+            run_command_quiet(
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "microsoft-webui-desktop",
+                    "--no-default-features",
+                ],
+                None,
+            )?;
+            run_command_quiet(
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "microsoft-webui-desktop",
+                    "--no-default-features",
+                    "--features",
+                    "native",
+                ],
+                None,
+            )
+        },
     };
     const BUILD: Self = Self {
         name: "build",
         run: || {
             run_command_quiet(
                 "cargo",
-                &["build", "--workspace", "--exclude", "xtask"],
+                &[
+                    "build",
+                    "--workspace",
+                    "--exclude",
+                    "xtask",
+                    "--features",
+                    DESKTOP_DEV_FEATURES,
+                ],
                 None,
             )
         },

@@ -1,18 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Runtime-neutral primitives for WebUI desktop applications.
+//! Native desktop SDK for WebUI applications.
 //!
-//! The webview backend lives in the desktop binary crate. This crate keeps the
-//! high-sensitivity behavior testable without creating native windows:
-//! safe asset path resolution, custom-protocol routing, startup SSR rendering,
-//! bundle metadata, and protobuf IPC dispatch.
+//! Bundle loading, rendering, IPC, and frame configuration are available without
+//! native dependencies. Enable `native` for the platform webview, `source` for
+//! development compilation, and `cli` for the `webui-desktop` tooling binary.
 
-#[cfg(feature = "source")]
 mod app;
 mod bundle;
 mod error;
 mod event;
+mod frame;
+mod hydration;
 mod ipc;
 mod navigation;
 #[cfg(feature = "source")]
@@ -23,7 +23,18 @@ mod runtime;
 mod window;
 mod window_state;
 
-#[cfg(feature = "source")]
+#[cfg(all(feature = "native", target_os = "linux"))]
+#[allow(unsafe_code)]
+pub mod linux;
+#[cfg(all(feature = "native", target_os = "macos"))]
+#[allow(unsafe_code)]
+pub mod macos;
+#[cfg(all(feature = "native", target_os = "windows"))]
+#[allow(unsafe_code)]
+pub mod windows;
+
+#[cfg(feature = "native")]
+pub use app::run_packaged_app;
 pub use app::{DesktopApp, DesktopAppBuilder};
 #[cfg(feature = "source")]
 pub use bundle::{build_desktop_bundle, DesktopBundleOptions};
@@ -35,12 +46,20 @@ pub use bundle::{
 pub use error::{DesktopError, Result};
 pub use event::{
     DesktopEvent, DesktopHostMessage, DesktopHostMessageError, EventHandler, EventJavascriptError,
-    EventRegistry, EventResponse, WindowCommand, WindowCommandError, WindowHandle, WindowId,
-    DRAG_REGION_SCRIPT, MAX_HOST_MESSAGE_BYTES,
+    EventRegistrationError, EventRegistry, EventResponse, EventSubscription, WindowCommand,
+    WindowCommandError, WindowHandle, WindowId, DRAG_REGION_SCRIPT, MAX_EVENT_HANDLERS,
+    MAX_HOST_MESSAGE_BYTES, MAX_QUEUED_WINDOW_COMMANDS, MAX_QUEUED_WINDOW_TITLE_BYTES,
+    MAX_WINDOW_TITLE_BYTES,
 };
+pub use frame::{
+    find_packaged_resources_dir, run_frame_with, validate_frame_capabilities, DesktopFrame,
+    DesktopFrameBackend, DesktopFrameCapabilities,
+};
+#[cfg(feature = "native")]
+pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
 pub use ipc::{
-    DesktopIpcError, DesktopIpcRequest, DesktopIpcResponse, IpcHandlerError, IpcRegistry,
-    DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION,
+    desktop_ipc_response, DesktopIpcError, DesktopIpcRequest, DesktopIpcResponse, IpcHandlerError,
+    IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION,
 };
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
@@ -58,3 +77,8 @@ pub use window::{
     WindowEffect, WindowInsets, WindowOptions,
 };
 pub use window_state::{DisplayBounds, WindowState, WindowStateError, WindowStateStore};
+
+#[cfg(feature = "source")]
+pub use webui::{
+    BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin, DEFAULT_CSS_FILE_NAME_TEMPLATE,
+};

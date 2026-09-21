@@ -576,12 +576,15 @@ development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 webui desktop init [APP_ROOT] [--force]
 webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>]
 webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--release] [--bundle-out <DIR>] [--no-web-build]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
 ```
 
 `webui desktop init` creates a minimal `src/index.html`, `package.json`, and
 `desktop/` Rust runner. It refuses to replace existing generated files; pass
 `--force` when regenerating a scaffold.
+The runner is a standalone Cargo workspace with an optimized release profile.
+It depends on one desktop SDK and enables source compilation only when run with
+`--features source`.
 
 **Arguments:**
 
@@ -604,7 +607,10 @@ webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> 
 | `--icon <FILE>` | App icon override for app-root packaging | `webuiDesktop.icon` |
 | `--runner <PATH>` | App-specific runner executable for existing bundle packaging | sidecar runner |
 | `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
-| `--release` | Build the app-specific runner with `cargo build --release` | `false` |
+| `--release` | Explicitly select the default optimized runner build | optimized by default |
+| `--debug` | Build a debug runner instead of an optimized release runner | `false` |
+| `--runner-features <FEATURES>` | Additional comma-separated Cargo features for the app-specific runner | `webuiDesktop.runnerFeatures` |
+| `--runner-default-features` | Include the runner's default Cargo features | `webuiDesktop.runnerDefaultFeatures`, otherwise `false` |
 | `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
 | `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
 
@@ -636,9 +642,16 @@ webui desktop package ./my-app --target macos-app --out ./packages
 ```
 
 For app roots, `webui desktop package` reads `webuiDesktop` from `package.json`,
-runs configured web build scripts, builds the app-specific Cargo runner crate,
+runs configured web build scripts, builds the app-specific Cargo runner crate
+with `--release --no-default-features`,
 stages non-generated assets, builds the bundle, and packages the runner-backed
 app. Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
+Use `--debug` for a debug package. To include optional application capabilities,
+set `webuiDesktop.runnerFeatures` to an array of Cargo feature names, or add
+`--runner-features tray,native-dialogs` if your runner declares those features.
+Use `runnerDefaultFeatures: true` or `--runner-default-features` only when the
+runner intentionally needs its default features in production. These build
+options do not change a prebuilt executable supplied with `--runner`.
 Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
 as `CFBundleIconFile`, and portable layouts copy the icon into resources.
 Existing bundle packaging remains available:
@@ -655,19 +668,20 @@ Installer targets (`windows-msi`, `windows-msix`, `linux-appimage`, `linux-deb`,
 `linux-rpm`) return actionable tooling diagnostics until their platform packagers
 are enabled.
 
-For an app-specific Rust runner, keep source mode available by default during
-development and forward it explicitly to the desktop crate:
+For an app-specific Rust runner, enable the native SDK and keep source
+compilation opt-in:
 
 ```toml
 [features]
-default = ["source"]
+default = []
 source = ["microsoft-webui-desktop/source"]
 
 [dependencies]
-microsoft-webui-desktop = { version = "0.0.29", default-features = false }
+microsoft-webui-desktop = { version = "0.0.29", features = ["native"] }
 ```
 
-Build the runner used in a package without the source compiler:
+`webui desktop package` builds this lean configuration automatically. For a
+manual runner build:
 
 ```bash
 cargo build --release -p my-desktop-runner --no-default-features
@@ -676,8 +690,12 @@ cargo build --release -p my-desktop-runner --no-default-features
 The lean runner still supports `DesktopRuntime::from_bundle`,
 `DesktopRuntime::from_bundle_config`, and
 `DesktopRuntime::from_bundle_config_and_manifest`. It does not expose source,
-bundle-building, or package-building APIs, so run unpackaged development builds
-with the default features enabled.
+bundle-building, or package-building APIs. Run unpackaged development builds
+with `cargo run --features source`. Build options are reexported by
+`webui_desktop` when `source` is enabled; applications need no separate compiler
+or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
+app code. See the [desktop SDK guide](../integrations/desktop.md) for the shared
+source/bundle app builder and customization APIs.
 
 ## Error output and exit codes
 

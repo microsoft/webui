@@ -162,9 +162,12 @@ missing-tool diagnostics until the platform packagers are enabled.
 Use `--devtools` on desktop build/run to make development webviews inspectable.
 On macOS, inspect from Safari's Develop menu.
 
-Rust desktop apps that need dynamic route data should use
-`webui_desktop::DesktopApp::builder(...).route(...)` in their host binary. The
-CLI `--state` flag is a file-backed fallback for simple demos.
+Rust desktop apps that need dynamic route data can configure `.route(...)` on
+`webui_desktop::DesktopApp::from_bundle(path)?` or, with the `source` feature,
+`DesktopApp::from_source(config)`. Both builders produce a desktop frame.
+See the [desktop SDK guide](https://microsoft.github.io/webui/guide/integrations/desktop)
+for setup and customization. The CLI `--state` flag is a file-backed fallback
+for simple demos.
 
 ## App Layout
 

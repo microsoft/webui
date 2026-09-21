@@ -11,6 +11,18 @@ pub type Result<T> = std::result::Result<T, DesktopError>;
 /// Errors produced by the runtime-neutral WebUI desktop layer.
 #[derive(Debug, Error)]
 pub enum DesktopError {
+    /// No desktop bundle could be found beside the running executable.
+    #[error("packaged desktop resources were not found")]
+    PackagedResourcesNotFound,
+
+    /// A native or custom desktop backend could not complete an operation.
+    #[error("desktop backend failed")]
+    Backend {
+        /// Underlying backend failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// I/O failure while reading or writing desktop runtime data.
     #[error("I/O error while {context}")]
     Io {
@@ -22,6 +34,7 @@ pub enum DesktopError {
     },
 
     /// WebUI source build failed.
+    #[cfg(feature = "source")]
     #[error("desktop WebUI build failed")]
     Build(#[from] webui::WebUIError),
 
@@ -183,6 +196,9 @@ impl DesktopError {
     #[must_use]
     pub fn hint(&self) -> Option<&str> {
         match self {
+            DesktopError::PackagedResourcesNotFound => Some(
+                "Run the app from its packaged bundle, or enable the source feature for development with cargo run --features source",
+            ),
             DesktopError::InvalidAssetPath { .. } => {
                 Some("Use a relative asset path without '.', '..', backslashes, NUL bytes, or drive prefixes")
             }

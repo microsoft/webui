@@ -9,18 +9,17 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::{Map, Value};
 #[cfg(feature = "source")]
-use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
+use webui_desktop::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 use webui_desktop::{
-    ApiContext, DesktopBundleConfig, DesktopBundleManifest, DesktopEvent, DesktopHttpMethod,
-    DesktopProtocolResponse, DesktopRuntime, EventResponse, RouteContext, RouteStateRegistry,
-    WindowOptions,
+    ApiContext, DesktopApp, DesktopBundleConfig, DesktopBundleManifest, DesktopEvent,
+    DesktopHttpMethod, DesktopProtocolResponse, EventResponse, RouteContext, RouteStateRegistry,
 };
 #[cfg(feature = "source")]
-use webui_desktop::{DesktopSourceConfig, TitlebarStyle};
+use webui_desktop::{DesktopSourceConfig, TitlebarStyle, WindowOptions};
 
 mod state;
 use state::{load_state, read_state, SharedState};
-use webui_desktop_runner::DesktopFrame;
+use webui_desktop::DesktopFrame;
 
 #[derive(Debug)]
 struct ContactApiError {
@@ -30,33 +29,33 @@ struct ContactApiError {
 
 fn main() -> Result<()> {
     #[cfg(feature = "source")]
-    let (runtime, window) = match packaged_resources_dir() {
-        Some(resources) => packaged_runtime(&resources)?,
-        None => source_runtime()?,
+    let frame = match packaged_resources_dir() {
+        Some(resources) => packaged_frame(&resources)?,
+        None => source_frame()?,
     };
     #[cfg(not(feature = "source"))]
-    let (runtime, window) = {
+    let frame = {
         let resources = packaged_resources_dir().ok_or_else(|| {
             anyhow::anyhow!(
                 "packaged desktop resources were not found; rebuild with the source feature for development"
             )
         })?;
-        packaged_runtime(&resources)?
+        packaged_frame(&resources)?
     };
 
-    let frame = DesktopFrame::new(Arc::new(runtime), window);
     frame.on_event(|event| match event {
         DesktopEvent::WindowCloseRequested { .. } => {
             eprintln!("Contact Book close requested; unsaved-change checks belong here");
             EventResponse::Continue
         }
         _ => EventResponse::Continue,
-    });
-    webui_desktop_runner::run_frame(frame)
+    })?;
+    webui_desktop::run_frame(frame)?;
+    Ok(())
 }
 
 #[cfg(feature = "source")]
-fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
+fn source_frame() -> Result<DesktopFrame> {
     let root = workspace_root();
     let app_root = root.join("examples/app/contact-book-manager");
     let app_dir = root.join("examples/app/contact-book-manager/src");
@@ -70,9 +69,7 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
     config.theme = Some(("@microsoft/webui-examples-theme".to_string(), app_root));
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
-    let runtime = DesktopRuntime::from_source(config)?;
-
-    let window = WindowOptions {
+    config.window = WindowOptions {
         title: "Contact Book Manager".to_string(),
         width: 1200,
         height: 800,
@@ -82,24 +79,24 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
         remember_state: true,
         ..WindowOptions::default()
     };
-    Ok((runtime, window))
+    Ok(DesktopApp::from_source(config)
+        .app_id("com.microsoft.webui.contactbook")
+        .build()?)
 }
 
-fn packaged_runtime(resources: &std::path::Path) -> Result<(DesktopRuntime, WindowOptions)> {
+fn packaged_frame(resources: &std::path::Path) -> Result<DesktopFrame> {
     let manifest = DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))?;
-    let window = manifest.window.clone();
     let state_path = resources.join("state.json");
     let (seed, state) = load_state(&state_path)?;
     let mut config = DesktopBundleConfig::new(resources.to_path_buf());
     config.state = Some(seed);
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
-    let runtime = DesktopRuntime::from_bundle_config_and_manifest(config, manifest)?;
-    Ok((runtime, window))
+    Ok(DesktopApp::from_bundle_config_and_manifest(config, manifest).build()?)
 }
 
 fn packaged_resources_dir() -> Option<PathBuf> {
-    webui_desktop_runner::find_packaged_resources_dir()
+    webui_desktop::find_packaged_resources_dir()
 }
 
 #[cfg(feature = "source")]
@@ -112,15 +109,15 @@ fn workspace_root() -> PathBuf {
 }
 
 #[cfg(feature = "source")]
-fn contact_book_build_options(app_dir: PathBuf) -> webui::BuildOptions {
-    webui::BuildOptions {
+fn contact_book_build_options(app_dir: PathBuf) -> webui_desktop::BuildOptions {
+    webui_desktop::BuildOptions {
         app_dir,
         entry: "index.html".to_string(),
-        css: webui::CssStrategy::Link,
-        dom: webui::DomStrategy::Shadow,
-        plugin: Some(webui::Plugin::WebUI),
+        css: webui_desktop::CssStrategy::Link,
+        dom: webui_desktop::DomStrategy::Shadow,
+        plugin: Some(webui_desktop::Plugin::WebUI),
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-        ..webui::BuildOptions::default()
+        ..webui_desktop::BuildOptions::default()
     }
 }
 
@@ -718,7 +715,7 @@ mod tests {
         config.state = Some(seed);
         register_routes(&mut config.route_state, Arc::clone(&store)).unwrap();
         register_api_routes(&mut config.api_routes, store).unwrap();
-        let runtime = DesktopRuntime::from_source(config).unwrap();
+        let runtime = webui_desktop::DesktopRuntime::from_source(config).unwrap();
         let request_json = |method, path: &str, body: &[u8], status| {
             let response = runtime
                 .handle_request(&DesktopProtocolRequest {

@@ -45,8 +45,8 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       # GTK4 and WebKitGTK 6.0 back the Linux desktop backend in
-      # microsoft-webui-desktop-runner, which is a workspace member, so every
-      # `cargo clippy/test/build --workspace` on Linux needs their dev
+      # microsoft-webui-desktop's native feature, used by the desktop example.
+      # Workspace validation enables that feature and needs their dev
       # packages. Folded into the protoc step to avoid a second apt update.
       run: |
         sudo apt-get update -qq
@@ -107,7 +107,7 @@ runs:
     - name: Build workspace
       if: inputs.skip-build != 'true'
       shell: bash
-      run: cargo build --workspace --exclude xtask
+      run: cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
 
     - name: Build examples
       if: inputs.skip-build != 'true'
