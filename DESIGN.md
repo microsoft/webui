@@ -4336,7 +4336,12 @@ export interface AdapterContext {
   bytes. Disk outputs can never be represented as `"virtual"` to skip stale
   validation.
 - `rootDir` contains the manifest and every physical normalized input/output.
-  The compiler rejects graph members outside it.
+  The compiler rejects graph members outside it. Because manifest keys are
+  root-relative, one bundler invocation must stay on a single filesystem root:
+  artifacts split across roots (separate Windows drive letters, typically a
+  `TEMP` directory on another volume) have no expressible `rootDir` and are
+  rejected with `PROJ-C015`. Adapters derive this root with the exported
+  `resolveBuildRoot(paths)` helper rather than reimplementing the scan.
 
 The compiler parses source lazily. It seeds modules containing a supported
 literal `.define(...)`/`customElements.define(...)` candidate (or a framework
@@ -4949,6 +4954,7 @@ No color in diagnostic data; color is added only by `webui-cli` output layer.
 | `PROJ-C012` | error | Circular import detected during symbol resolution |
 | `PROJ-C013` | error | Adapter graph is incomplete/inconsistent (unknown entry/member, missing resolved edge/source, path outside root) |
 | `PROJ-C014` | error | Adapter omitted exact bytes for a physical emitted output |
+| `PROJ-C015` | error | Manifest, physical inputs, and outputs span filesystem roots, so no build root can express them (e.g. Windows `TEMP` on another drive) |
 
 #### Peer dependency diagnostics (PROJ-P*)
 
@@ -5169,7 +5175,9 @@ The esbuild adapter:
    files during `onEnd` for `write: true` (esbuild has completed writes before
    `onEnd`).
 9. Chooses the common ancestor of the manifest, physical inputs, and outputs
-   as `rootDir`, constructs `AdapterContext`, and calls the shared compiler.
+   as `rootDir` via `resolveBuildRoot()`, constructs `AdapterContext`, and calls
+   the shared compiler. Artifacts spanning filesystem roots fail with
+   `PROJ-C015` naming both offending paths.
 10. Writes canonical compact JSON to a same-directory temporary file, flushes
    it, and atomically renames it over the manifest.
 11. If the build or projection compiler has errors, the manifest is **not**
@@ -5191,6 +5199,20 @@ The adapter handles all outputs in one `onEnd` pass.
 overrides configuration on the initial build and every serve config reload.
 Page and 404 build errors retain the core error's complete source chain,
 including parser diagnostic codes, locations, snippets, and help when present.
+
+Press materializes its embedded template and built-in components into a
+content-addressed cache and generates per-page scratch directories. Both live
+under the system temporary directory when that directory is on the same volume
+as the configured output directory, and under a self-ignoring
+`<config-dir>/.webui-press-cache` when it is not. The output directory decides
+the volume because it holds the generated entry points, the bundler
+`outbase`/`outdir`, and the projection manifest, so the build root always
+contains it. The extracted tree contains TypeScript sources that become bundler
+inputs, so a cache on another volume would split one bundle across filesystem
+roots and fail with `PROJ-C015`; keeping it on the output volume also makes the
+cache publish step a same-volume (atomic) `rename`. A project whose sources and
+output directory are themselves on different volumes has no expressible build
+root at all, and `PROJ-C015` reports that directly.
 
 Content mode selects the bundled content document before region expansion,
 component/script reachability, compilation, and SSR. It retains document

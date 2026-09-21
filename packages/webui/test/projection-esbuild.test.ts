@@ -17,7 +17,9 @@ import * as esbuild from "esbuild";
 import {
   esbuildProjection,
   hashContent,
+  resolveBuildRoot,
   validateManifestSchema,
+  ProjectionError,
 } from "@microsoft/webui/projection.js";
 import type {
   ProjectionManifest,
@@ -773,4 +775,61 @@ SharedCard.define('shared-card');
       ["value"]
     );
   });
+});
+
+describe("resolveBuildRoot", () => {
+  const isWindows = process.platform === "win32";
+
+  test("returns the deepest directory containing every artifact", () => {
+    const root = process.cwd();
+    assert.equal(
+      resolveBuildRoot([
+        path.join(root, "dist", "webui-projection.json"),
+        path.join(root, "src", "card.ts"),
+        path.join(root, "dist", "entry.js"),
+      ]),
+      root
+    );
+  });
+
+  test("accepts a single artifact", () => {
+    const manifest = path.join(process.cwd(), "dist", "manifest.json");
+    assert.equal(
+      resolveBuildRoot([manifest]),
+      path.dirname(manifest)
+    );
+  });
+
+  test("rejects an empty artifact list with PROJ-C015", () => {
+    assert.throws(
+      () => resolveBuildRoot([]),
+      (error: unknown) =>
+        error instanceof ProjectionError &&
+        error.diagnostics[0]?.code === "PROJ-C015"
+    );
+  });
+
+  test(
+    "reports PROJ-C015 naming both paths when artifacts span filesystem roots",
+    { skip: isWindows ? false : "requires Windows drive letters" },
+    () => {
+      const manifest = String.raw`E:\project\dist\webui-projection.json`;
+      const foreignInput = String.raw`C:\Users\me\AppData\Local\Temp\webui-press\template\index.ts`;
+      assert.throws(
+        () => resolveBuildRoot([manifest, foreignInput]),
+        (error: unknown) => {
+          assert.ok(error instanceof ProjectionError);
+          const diagnostic = error.diagnostics[0];
+          assert.equal(diagnostic?.code, "PROJ-C015");
+          assert.equal(diagnostic?.severity, "error");
+          assert.equal(diagnostic?.location, foreignInput);
+          // The help line must name both paths: the only fix is moving one.
+          assert.ok(diagnostic?.help?.includes(manifest));
+          assert.ok(diagnostic?.help?.includes(foreignInput));
+          assert.ok(diagnostic?.help?.includes("TEMP"));
+          return true;
+        }
+      );
+    }
+  );
 });

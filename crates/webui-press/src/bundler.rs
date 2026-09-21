@@ -28,10 +28,28 @@ const require = createRequire(pathToFileURL(path.join(config.resolveDir, "__webu
 const esbuild = require(require.resolve("esbuild"));
 const projectionUrl = pathToFileURL(config.projectionEntry).href;
 const { esbuildProjection } = await import(projectionUrl);
-await esbuild.build({
-  ...config.build,
-  plugins: [esbuildProjection({ manifest: config.manifest })],
-});
+try {
+  await esbuild.build({
+    ...config.build,
+    plugins: [esbuildProjection({ manifest: config.manifest })],
+  });
+} catch (error) {
+  // esbuild's own summary message drops note text, which is where projection
+  // diagnostics put their actionable `help:` line. Re-format the raw messages
+  // so the cause survives to the terminal. Press reads this stderr through a
+  // pipe, so set `exitCode` rather than calling `process.exit`, which can drop
+  // the pending write.
+  const errors = error?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) {
+    throw error;
+  }
+  const formatted = await esbuild.formatMessages(errors, {
+    kind: "error",
+    color: false,
+  });
+  process.stderr.write(formatted.join(""));
+  process.exitCode = 1;
+}
 if (process.env.WEBUI_PROJECTION_PROFILE === "1") {
   console.error(`[webui-press] esbuild-total=${(performance.now() - started).toFixed(1)}ms`);
 }

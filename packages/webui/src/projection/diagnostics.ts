@@ -56,6 +56,11 @@ export const PROJECTION_CODES = {
   C013: "PROJ-C013",
   /** Adapter omitted exact bytes for a physical emitted output. */
   C014: "PROJ-C014",
+  /**
+   * Physical inputs, outputs, and the manifest do not share one filesystem
+   * root, so no build root can express them as relative manifest keys.
+   */
+  C015: "PROJ-C015",
 
   // Peer dependency diagnostics
   /**
@@ -176,6 +181,7 @@ export const CODE_SEVERITY: Readonly<Record<ProjectionCode, DiagnosticSeverity>>
   "PROJ-C012": "error",
   "PROJ-C013": "error",
   "PROJ-C014": "error",
+  "PROJ-C015": "error",
   "PROJ-P001": "error",
   "PROJ-P002": "error",
   "PROJ-P003": "warning",
@@ -213,6 +219,7 @@ export const CODE_TITLES: Readonly<Record<ProjectionCode, string>> = {
   "PROJ-C012": "Circular import detected during symbol resolution",
   "PROJ-C013": "Adapter module graph is incomplete or inconsistent",
   "PROJ-C014": "Adapter omitted bytes for a physical emitted output",
+  "PROJ-C015": "Projection inputs and outputs do not share a filesystem root",
   "PROJ-P001": "Required peer 'typescript' is absent or below the supported range",
   "PROJ-P002": "Required peer 'esbuild' is absent or below the supported range",
   "PROJ-P003": "Peer is present but above the tested range",
