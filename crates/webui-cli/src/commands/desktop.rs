@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,8 @@ use crate::utils::output;
 
 const DESKTOP_BINARY_ENV: &str = "WEBUI_DESKTOP_BINARY";
 const DEFAULT_DESKTOP_BINARY: &str = "webui-desktop";
+const SIDECAR_VERSION_ARG: &str = "--webui-version";
+const WEBUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Args)]
 pub struct DesktopArgs {
@@ -89,13 +91,28 @@ fn append_sidecar_args(command: &mut Command, args: &DesktopArgs) {
     command.args(&args.args);
 }
 
-fn try_sidecar_binary(binary: &std::ffi::OsStr, args: &DesktopArgs) -> Result<bool> {
+fn try_sidecar_binary(binary: &OsStr, args: &DesktopArgs) -> Result<bool> {
+    if !verify_sidecar_version(Command::new(binary), sidecar_path(binary))? {
+        return Ok(false);
+    }
+
     let mut command = Command::new(binary);
     append_sidecar_args(&mut command, args);
     run_optional_command(&mut command)
 }
 
 fn try_workspace_sidecar(root: &Path, args: &DesktopArgs) -> Result<bool> {
+    let sidecar_path = root.join("crates/webui-desktop-cli");
+    if !verify_sidecar_version(workspace_sidecar_command(root), sidecar_path)? {
+        return Ok(false);
+    }
+
+    let mut command = workspace_sidecar_command(root);
+    append_sidecar_args(&mut command, args);
+    run_optional_command(&mut command)
+}
+
+fn workspace_sidecar_command(root: &Path) -> Command {
     let mut command = Command::new("cargo");
     command
         .arg("run")
@@ -104,8 +121,56 @@ fn try_workspace_sidecar(root: &Path, args: &DesktopArgs) -> Result<bool> {
         .arg("-p")
         .arg("microsoft-webui-desktop-cli")
         .arg("--");
-    append_sidecar_args(&mut command, args);
-    run_optional_command(&mut command)
+    command
+}
+
+fn verify_sidecar_version(mut command: Command, path: PathBuf) -> Result<bool> {
+    command.arg(SIDECAR_VERSION_ARG);
+    match command.output() {
+        Ok(output) if sidecar_version_matches(output.status.success(), &output.stdout) => Ok(true),
+        Ok(output) => Err(anyhow::Error::msg(sidecar_version_skew_error(
+            path,
+            &output.stdout,
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn sidecar_version_matches(status_success: bool, stdout: &[u8]) -> bool {
+    status_success
+        && std::str::from_utf8(stdout).is_ok_and(|version| version.trim() == WEBUI_VERSION)
+}
+
+fn sidecar_version_skew_error(path: PathBuf, stdout: &[u8]) -> String {
+    let reported_version = std::str::from_utf8(stdout)
+        .ok()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .unwrap_or("unavailable");
+
+    format!(
+        "Desktop sidecar version mismatch: found {DEFAULT_DESKTOP_BINARY} at {} (reported version: {reported_version}), but webui is version {WEBUI_VERSION}.\nhelp: Set {DESKTOP_BINARY_ENV} to a matching webui-desktop executable, or reinstall WebUI desktop support.",
+        path.display()
+    )
+}
+
+fn sidecar_path(binary: &OsStr) -> PathBuf {
+    let binary = Path::new(binary);
+    if binary.components().count() > 1 {
+        return fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
+    }
+
+    let Some(paths) = std::env::var_os("PATH") else {
+        return binary.to_path_buf();
+    };
+    for directory in std::env::split_paths(&paths) {
+        let candidate = directory.join(binary);
+        if candidate.is_file() {
+            return fs::canonicalize(&candidate).unwrap_or(candidate);
+        }
+    }
+    binary.to_path_buf()
 }
 
 fn run_optional_command(command: &mut Command) -> Result<bool> {
@@ -160,4 +225,41 @@ fn workspace_has_desktop_sidecar(root: &Path) -> bool {
         .map(|content| content.contains("crates/*") || content.contains("webui-desktop-cli"))
         .unwrap_or(false)
         && root.join("crates/webui-desktop-cli/Cargo.toml").is_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_matching_sidecar_version() {
+        assert!(sidecar_version_matches(true, WEBUI_VERSION.as_bytes()));
+        assert!(sidecar_version_matches(
+            true,
+            format!("{WEBUI_VERSION}\n").as_bytes()
+        ));
+    }
+
+    #[test]
+    fn rejects_mismatched_sidecar_version_with_actionable_diagnostic() {
+        let path = PathBuf::from("/tools/webui-desktop");
+        assert!(!sidecar_version_matches(true, b"0.0.28\n"));
+
+        let diagnostic = sidecar_version_skew_error(path, b"0.0.28\n");
+        assert_eq!(
+            diagnostic,
+            format!(
+                "Desktop sidecar version mismatch: found webui-desktop at /tools/webui-desktop (reported version: 0.0.28), but webui is version {WEBUI_VERSION}.\nhelp: Set WEBUI_DESKTOP_BINARY to a matching webui-desktop executable, or reinstall WebUI desktop support."
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_sidecar_without_version_query_support() {
+        assert!(!sidecar_version_matches(false, b""));
+
+        let diagnostic = sidecar_version_skew_error(PathBuf::from("/tools/webui-desktop"), b"");
+        assert!(diagnostic.contains("reported version: unavailable"));
+        assert!(diagnostic.contains("help:"));
+    }
 }

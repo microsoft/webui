@@ -8,12 +8,14 @@
 //! safe asset path resolution, custom-protocol routing, startup SSR rendering,
 //! bundle metadata, and protobuf IPC dispatch.
 
+#[cfg(feature = "source")]
 mod app;
 mod bundle;
 mod error;
 mod event;
 mod ipc;
 mod navigation;
+#[cfg(feature = "source")]
 mod package;
 mod path;
 mod protocol;
@@ -21,11 +23,14 @@ mod runtime;
 mod window;
 mod window_state;
 
+#[cfg(feature = "source")]
 pub use app::{DesktopApp, DesktopAppBuilder};
+#[cfg(feature = "source")]
+pub use bundle::{build_desktop_bundle, DesktopBundleOptions};
 pub use bundle::{
-    build_desktop_bundle, BundleAsset, BundleIntegrity, DesktopBundleManifest,
-    DesktopBundleOptions, DesktopDownloadPolicy, DesktopJumpListItem, DesktopMenu, DesktopMenuItem,
-    DesktopPackageTarget, DesktopPopoverPolicy, DesktopShellConfig, TrayConfig,
+    BundleAsset, BundleIntegrity, DesktopBundleManifest, DesktopDownloadPolicy,
+    DesktopJumpListItem, DesktopMenu, DesktopMenuItem, DesktopPackageTarget, DesktopPopoverPolicy,
+    DesktopShellConfig, TrayConfig,
 };
 pub use error::{DesktopError, Result};
 pub use event::{
@@ -38,14 +43,15 @@ pub use ipc::{
     DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION,
 };
 pub use navigation::is_allowed_navigation_url;
+#[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};
 pub use protocol::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES,
     IPC_ENDPOINT,
 };
-pub use runtime::{
-    ApiContext, ApiRouteRegistry, DesktopBundleConfig, DesktopRuntime, DesktopSourceConfig,
-};
+#[cfg(feature = "source")]
+pub use runtime::DesktopSourceConfig;
+pub use runtime::{ApiContext, ApiRouteRegistry, DesktopBundleConfig, DesktopRuntime};
 pub use runtime::{RouteContext, RouteStateRegistry};
 pub use window::{
     apply_window_css, window_css_block, DesktopPlatform, Rgba, RgbaParseError, TitlebarStyle,

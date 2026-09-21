@@ -5900,6 +5900,19 @@ asset reads, and route/API/IPC dispatch through the custom app origin.
 Packaged app runners use `webui_desktop_runner::find_packaged_resources_dir()`
 to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
 layouts remain behind one API.
+
+The `microsoft-webui-desktop` crate enables its `source` feature by default so
+development runners can use `DesktopApp`, `DesktopSourceConfig`, and
+`DesktopRuntime::from_source` without configuration. The feature also exposes
+desktop bundle construction and packaging APIs. Packaged runner crates should
+forward that feature from a default-on local `source` feature and depend on
+`microsoft-webui-desktop` with `default-features = false`. Building the runner
+with `--no-default-features` removes all source compilation, bundle construction,
+and package construction entry points while preserving bundle manifest types and
+`DesktopRuntime::from_bundle`, `from_bundle_config`, and
+`from_bundle_config_and_manifest`. This makes `webui::build` unreachable so
+release LTO can omit the build-time compiler from the packaged executable.
+
 When callers need manifest metadata, they should load
 `DesktopBundleManifest` once and call
 `DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. This avoids

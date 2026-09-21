@@ -14,6 +14,10 @@ categories = ["gui", "web-programming"]
 [lib]
 name = "webui_desktop"
 
+[features]
+default = ["source"]
+source = []
+
 [dependencies]
 microsoft-webui = { path = "../webui", version = "0.0.29", features = ["cli"] }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.29" }

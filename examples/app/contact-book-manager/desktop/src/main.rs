@@ -8,12 +8,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{Map, Value};
+#[cfg(feature = "source")]
 use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 use webui_desktop::{
     ApiContext, DesktopBundleConfig, DesktopBundleManifest, DesktopEvent, DesktopHttpMethod,
-    DesktopProtocolResponse, DesktopRuntime, DesktopSourceConfig, EventResponse, RouteContext,
-    RouteStateRegistry, TitlebarStyle, WindowOptions,
+    DesktopProtocolResponse, DesktopRuntime, EventResponse, RouteContext, RouteStateRegistry,
+    WindowOptions,
 };
+#[cfg(feature = "source")]
+use webui_desktop::{DesktopSourceConfig, TitlebarStyle};
 
 mod state;
 use state::{load_state, read_state, SharedState};
@@ -26,9 +29,19 @@ struct ContactApiError {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "source")]
     let (runtime, window) = match packaged_resources_dir() {
         Some(resources) => packaged_runtime(&resources)?,
         None => source_runtime()?,
+    };
+    #[cfg(not(feature = "source"))]
+    let (runtime, window) = {
+        let resources = packaged_resources_dir().ok_or_else(|| {
+            anyhow::anyhow!(
+                "packaged desktop resources were not found; rebuild with the source feature for development"
+            )
+        })?;
+        packaged_runtime(&resources)?
     };
 
     let frame = DesktopFrame::new(Arc::new(runtime), window);
@@ -42,6 +55,7 @@ fn main() -> Result<()> {
     webui_desktop_runner::run_frame(frame)
 }
 
+#[cfg(feature = "source")]
 fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
     let root = workspace_root();
     let app_root = root.join("examples/app/contact-book-manager");
@@ -88,6 +102,7 @@ fn packaged_resources_dir() -> Option<PathBuf> {
     webui_desktop_runner::find_packaged_resources_dir()
 }
 
+#[cfg(feature = "source")]
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -96,6 +111,7 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+#[cfg(feature = "source")]
 fn contact_book_build_options(app_dir: PathBuf) -> webui::BuildOptions {
     webui::BuildOptions {
         app_dir,
@@ -686,6 +702,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "source")]
     #[test]
     fn registered_api_mutations_reach_parameterized_routes_and_preserve_tokens() {
         use webui_desktop::DesktopProtocolRequest;

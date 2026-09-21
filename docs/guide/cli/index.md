@@ -655,6 +655,30 @@ Installer targets (`windows-msi`, `windows-msix`, `linux-appimage`, `linux-deb`,
 `linux-rpm`) return actionable tooling diagnostics until their platform packagers
 are enabled.
 
+For an app-specific Rust runner, keep source mode available by default during
+development and forward it explicitly to the desktop crate:
+
+```toml
+[features]
+default = ["source"]
+source = ["microsoft-webui-desktop/source"]
+
+[dependencies]
+microsoft-webui-desktop = { version = "0.0.29", default-features = false }
+```
+
+Build the runner used in a package without the source compiler:
+
+```bash
+cargo build --release -p my-desktop-runner --no-default-features
+```
+
+The lean runner still supports `DesktopRuntime::from_bundle`,
+`DesktopRuntime::from_bundle_config`, and
+`DesktopRuntime::from_bundle_config_and_manifest`. It does not expose source,
+bundle-building, or package-building APIs, so run unpackaged development builds
+with the default features enabled.
+
 ## Error output and exit codes
 
 When a template has an authoring mistake, the CLI prints a structured diagnostic with a stable error code, the source location, the offending snippet, and an actionable `help:` line:

@@ -1342,7 +1342,12 @@ webui desktop run ./src
 Write a host crate only when you need dynamic route state or IPC. To generate a
 working progressive scaffold, use `webui desktop init ./my-app`; it creates the
 entry template, package metadata, and a packaged-vs-source Rust runner. Existing
-files are protected unless `--force` is passed.
+files are protected unless `--force` is passed. Rust runners should forward a
+default-on `source` feature to `microsoft-webui-desktop/source`; build packaged
+runners with `cargo build --release -p <runner> --no-default-features` so the
+build-time template compiler is not linked into the shipped executable. The
+runtime-only build continues to support all `DesktopRuntime::from_bundle*`
+entry points.
 
 ```bash
 # Dev server with live reload

@@ -25,6 +25,10 @@ mod init;
 #[derive(Parser)]
 #[command(name = "webui-desktop", about = "WebUI desktop runner and packager")]
 struct Cli {
+    /// Print the machine-readable WebUI version used by the sidecar and exit
+    #[arg(long, global = true)]
+    webui_version: bool,
+
     /// Output format: `human` or `json`
     #[arg(long, value_enum, default_value_t = OutputFormat::Human, global = true)]
     format: OutputFormat,
@@ -332,6 +336,10 @@ fn monotonic_millis() -> u128 {
 
 fn main() {
     let cli = Cli::parse();
+    if cli.webui_version {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     set_format(cli.format);
     if let Err(err) = run(cli) {
         print_error(&err);
@@ -1364,6 +1372,18 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn parses_machine_readable_version_flag() {
+        let cli = Cli::try_parse_from(["webui-desktop", "--webui-version"]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                webui_version: true,
+                ..
+            })
+        ));
+    }
 
     fn write_file(root: &Path, path: &str, content: &str) {
         let full = root.join(path);

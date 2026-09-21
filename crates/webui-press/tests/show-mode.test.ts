@@ -163,6 +163,9 @@ test('native content serve hydrates SSR nodes and keeps the override after confi
   await expect(noJs.getByRole('heading', { name: /^API\b/, level: 2 })).toBeVisible();
 
   const page = await browser.newPage();
+  // This test drives cross-document navigation itself and verifies rebuilds by polling the server.
+  // Disable the injected live-reload client so a rebuild cannot race an explicit page.goto().
+  await page.route('**/__webui_press/livereload', route => route.abort());
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {

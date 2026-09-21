@@ -19,9 +19,13 @@ path = "src/main.rs"
 name = "webui_desktop_runner"
 path = "src/lib.rs"
 
+[features]
+default = ["source"]
+source = ["microsoft-webui-desktop/source"]
+
 [dependencies]
 microsoft-webui = { path = "../webui", version = "0.0.29", features = ["cli"] }
-microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.29" }
+microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.29", default-features = false }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.29" }
 anyhow = { workspace = true }
 clap = { workspace = true }

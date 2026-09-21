@@ -24,6 +24,7 @@ use crate::protocol::{
 use crate::{apply_window_css, window_css_block, DesktopPlatform};
 
 /// Source-backed desktop runtime configuration.
+#[cfg(feature = "source")]
 pub struct DesktopSourceConfig {
     /// WebUI build options.
     pub build_options: webui::BuildOptions,
@@ -53,6 +54,7 @@ pub struct DesktopSourceConfig {
     pub window: crate::WindowOptions,
 }
 
+#[cfg(feature = "source")]
 impl DesktopSourceConfig {
     /// Create a source config from WebUI build options.
     #[must_use]
@@ -374,6 +376,7 @@ impl DesktopRuntime {
     ///
     /// Returns [`DesktopError`] if the WebUI build fails, state cannot be read
     /// or parsed, assets cannot be canonicalized, or startup rendering fails.
+    #[cfg(feature = "source")]
     pub fn from_source(config: DesktopSourceConfig) -> Result<Self> {
         let build_result = webui::build(config.build_options.clone())?;
         let state = match config.state {
@@ -826,6 +829,7 @@ fn state_for_request(context: StateRequestContext<'_>) -> Result<Value> {
     Ok(state)
 }
 
+#[cfg(feature = "source")]
 fn resolve_config_token_css(
     token_css: Option<HashMap<String, String>>,
     theme: Option<(String, PathBuf)>,
@@ -930,6 +934,7 @@ fn validate_manifest_relative_path(path: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn canonical_asset_root(path: Option<&PathBuf>) -> Result<Option<PathBuf>> {
     match path {
         Some(path) => path
@@ -999,7 +1004,7 @@ impl ResponseWriter for MemoryWriter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "source"))]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;

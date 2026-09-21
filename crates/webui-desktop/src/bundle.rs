@@ -1,19 +1,31 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#[cfg(feature = "source")]
 use std::collections::HashSet;
+#[cfg(feature = "source")]
 use std::ffi::OsString;
 use std::fs;
+#[cfg(feature = "source")]
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "source")]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "source")]
 use serde_json::Value;
+#[cfg(feature = "source")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "source")]
 use webui::RenderOptions;
+#[cfg(feature = "source")]
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
+#[cfg(feature = "source")]
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+#[cfg(feature = "source")]
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
+#[cfg(feature = "source")]
 use webui_handler::ResponseWriter;
 
 use crate::error::{DesktopError, Result};
@@ -212,6 +224,7 @@ impl DesktopBundleManifest {
 }
 
 /// Inputs for generating an immutable desktop bundle.
+#[cfg(feature = "source")]
 pub struct DesktopBundleOptions {
     /// WebUI build options.
     pub build_options: webui::BuildOptions,
@@ -248,6 +261,7 @@ pub struct DesktopBundleOptions {
 /// Returns [`DesktopError`] if WebUI build fails, bundle files cannot be
 /// written, static assets escape the asset root, or manifest serialization
 /// fails.
+#[cfg(feature = "source")]
 pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBundleManifest> {
     validate_bundle_output(&options)?;
     prepare_out_dir(&options.out_dir)?;
@@ -351,6 +365,7 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
     Ok(manifest)
 }
 
+#[cfg(feature = "source")]
 fn validate_bundle_output(options: &DesktopBundleOptions) -> Result<()> {
     let output = normalized_absolute_path(&options.out_dir)?;
     let lexical_output = lexical_absolute_path(&options.out_dir)?;
@@ -379,6 +394,7 @@ fn validate_bundle_output(options: &DesktopBundleOptions) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn plugin_name(plugin: webui::Plugin) -> &'static str {
     match plugin {
         webui::Plugin::Fast | webui::Plugin::FastV2 => "fast",
@@ -387,6 +403,7 @@ fn plugin_name(plugin: webui::Plugin) -> &'static str {
     }
 }
 
+#[cfg(feature = "source")]
 fn prepare_out_dir(out_dir: &Path) -> Result<()> {
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).map_err(|source| DesktopError::Io {
@@ -400,12 +417,14 @@ fn prepare_out_dir(out_dir: &Path) -> Result<()> {
     })
 }
 
+#[cfg(feature = "source")]
 pub(crate) fn normalized_absolute_path(path: &Path) -> Result<PathBuf> {
     let absolute = lexical_absolute_path(path)?;
     let base = resolve_existing_ancestor(&absolute)?;
     Ok(normalize_components(&base))
 }
 
+#[cfg(feature = "source")]
 pub(crate) fn lexical_absolute_path(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -420,6 +439,7 @@ pub(crate) fn lexical_absolute_path(path: &Path) -> Result<PathBuf> {
     Ok(normalize_components(&absolute))
 }
 
+#[cfg(feature = "source")]
 fn normalize_components(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -436,6 +456,7 @@ fn normalize_components(path: &Path) -> PathBuf {
     normalized
 }
 
+#[cfg(feature = "source")]
 fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return path.canonicalize().map_err(|source| DesktopError::Io {
@@ -466,6 +487,7 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+#[cfg(feature = "source")]
 pub(crate) fn reject_path_overlap(
     output: &Path,
     input: &Path,
@@ -481,6 +503,7 @@ pub(crate) fn reject_path_overlap(
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn write_generated_css(
     assets_dest: &Path,
     claimed_assets: &mut HashSet<String>,
@@ -499,6 +522,7 @@ fn write_generated_css(
     Ok(assets)
 }
 
+#[cfg(feature = "source")]
 fn write_ipc_client(
     assets_dest: &Path,
     claimed_assets: &mut HashSet<String>,
@@ -515,6 +539,7 @@ fn write_ipc_client(
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn copy_app_icon(
     icon_file: &Path,
     assets_dest: &Path,
@@ -536,6 +561,7 @@ fn copy_app_icon(
     Ok(PathBuf::from("assets").join(relative))
 }
 
+#[cfg(feature = "source")]
 struct StartupHtmlInput<'a> {
     assets_dest: &'a Path,
     claimed_assets: &'a mut HashSet<String>,
@@ -547,6 +573,7 @@ struct StartupHtmlInput<'a> {
     token_css: Option<&'a std::collections::HashMap<String, String>>,
 }
 
+#[cfg(feature = "source")]
 fn write_startup_html(input: StartupHtmlInput<'_>) -> Result<()> {
     const STARTUP_HTML_NAME: &str = "index.html";
     claim_asset(input.claimed_assets, STARTUP_HTML_NAME)?;
@@ -574,6 +601,7 @@ fn write_startup_html(input: StartupHtmlInput<'_>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn read_bundle_state(path: Option<&PathBuf>) -> Result<Value> {
     let Some(path) = path else {
         return Ok(Value::Object(serde_json::Map::new()));
@@ -588,6 +616,7 @@ fn read_bundle_state(path: Option<&PathBuf>) -> Result<Value> {
     })
 }
 
+#[cfg(feature = "source")]
 fn write_bundle_state(
     state_file: &Path,
     token_css: Option<&std::collections::HashMap<String, String>>,
@@ -603,6 +632,7 @@ fn write_bundle_state(
     write_state_value(&state, state_dest)
 }
 
+#[cfg(feature = "source")]
 fn write_state_value(state: &Value, state_dest: &Path) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(state).map_err(|source| DesktopError::Serialization {
         context: "serializing desktop bundle state".to_string(),
@@ -614,6 +644,7 @@ fn write_state_value(state: &Value, state_dest: &Path) -> Result<()> {
     })
 }
 
+#[cfg(feature = "source")]
 fn create_handler(plugin: Option<webui::Plugin>) -> webui::WebUIHandler {
     match plugin {
         Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
@@ -629,10 +660,12 @@ fn create_handler(plugin: Option<webui::Plugin>) -> webui::WebUIHandler {
     }
 }
 
+#[cfg(feature = "source")]
 struct MemoryWriter {
     buf: String,
 }
 
+#[cfg(feature = "source")]
 impl MemoryWriter {
     fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -641,6 +674,7 @@ impl MemoryWriter {
     }
 }
 
+#[cfg(feature = "source")]
 impl ResponseWriter for MemoryWriter {
     fn write(&mut self, content: &str) -> webui_handler::Result<()> {
         self.buf.push_str(content);
@@ -652,6 +686,7 @@ impl ResponseWriter for MemoryWriter {
     }
 }
 
+#[cfg(feature = "source")]
 fn copy_static_assets(
     asset_root: &Path,
     assets_dest: &Path,
@@ -712,6 +747,7 @@ fn copy_static_assets(
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn claim_asset(claimed_assets: &mut HashSet<String>, path: &str) -> Result<()> {
     if claimed_assets.insert(path.to_string()) {
         return Ok(());
@@ -721,10 +757,12 @@ fn claim_asset(claimed_assets: &mut HashSet<String>, path: &str) -> Result<()> {
     })
 }
 
+#[cfg(feature = "source")]
 fn copy_file(source: &Path, dest: &Path) -> Result<()> {
     copy_file_to(source, dest)
 }
 
+#[cfg(feature = "source")]
 pub(crate) fn copy_file_to(source: &Path, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|source| DesktopError::Io {
@@ -739,6 +777,7 @@ pub(crate) fn copy_file_to(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn asset_record(relative: &str, path: &Path) -> Result<BundleAsset> {
     let size_bytes = fs::metadata(path)
         .map_err(|source| DesktopError::Io {
@@ -756,6 +795,7 @@ fn asset_record(relative: &str, path: &Path) -> Result<BundleAsset> {
     })
 }
 
+#[cfg(feature = "source")]
 fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path).map_err(|source| DesktopError::Io {
         context: format!("hashing desktop bundle file {}", path.display()),
@@ -777,6 +817,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex_lower(&digest))
 }
 
+#[cfg(feature = "source")]
 fn hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -787,6 +828,7 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(feature = "source")]
 const IPC_CLIENT_JS: &str = r#"// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
@@ -936,7 +978,7 @@ export async function invokeDesktop(method, payload = new Uint8Array()) {
 }
 "#;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "source"))]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
