@@ -1,5 +1,9 @@
 # WebUI Press
 
+WebUI Press is WebUI's native static site generator (SSG). It turns Markdown,
+HTML templates, and Web Components into pre-rendered, hydration-ready static
+output that can be deployed to GitHub Pages, a CDN, or any static host.
+
 ## Installation
 
 Install the native CLI package:

@@ -3,7 +3,7 @@
 // Licensed under the MIT license.
 
 import { spawnSync } from "node:child_process";
-import { packageNameFor, platformKey, resolveBinary } from "./platform.mjs";
+import { packageNameFor, platformKey, resolveBinary } from "./platform.js";
 
 const binary = resolveBinary();
 

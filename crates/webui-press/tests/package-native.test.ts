@@ -11,7 +11,7 @@ import {
   packageNameFor,
   platformKey,
   resolveBinaryFrom,
-} from '../platform.mjs';
+} from '../dist/platform.js';
 
 test('webui-press package maps supported platforms to native packages', () => {
   assert.equal(platformKey('linux', 'x64'), 'linux-x64');

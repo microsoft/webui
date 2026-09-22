@@ -8,20 +8,20 @@
   },
   "type": "module",
   "bin": {
-    "webui-press": "webui-press.mjs"
+    "webui-press": "dist/webui-press.js"
   },
   "files": [
     "bin/",
-    "install.mjs",
-    "platform.mjs",
-    "README.md",
-    "webui-press.mjs"
+    "dist/install.*",
+    "dist/platform.*",
+    "dist/webui-press.*",
+    "README.md"
   ],
   "scripts": {
-    "build": "node install.mjs",
-    "build:test": "esbuild \"**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=. --outdir=dist-test --out-extension:.js=.mjs",
-    "postinstall": "node install.mjs",
-    "test": "pnpm --filter @webui/docs... build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
+    "build": "tsc && node dist/install.js",
+    "build:test": "tsc --project tsconfig.test.json --noEmit && esbuild \"tests/**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=tests --outdir=dist-test --out-extension:.js=.mjs",
+    "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
+    "test": "pnpm --filter @webui/docs... build && pnpm run build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
   },
   "optionalDependencies": {
     "@microsoft/webui-press-darwin-arm64": "workspace:*",
@@ -34,6 +34,8 @@
   "devDependencies": {
     "@microsoft/webui": "workspace:*",
     "@playwright/test": "catalog:",
-    "esbuild": "catalog:"
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
   }
 }

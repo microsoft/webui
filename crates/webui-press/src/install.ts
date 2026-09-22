@@ -4,10 +4,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { binaryNameFor, packageNameFor, platformKey, resolveBinary } from "./platform.mjs";
+import { binaryNameFor, packageNameFor, platformKey, resolveBinary } from "./platform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const binDir = path.join(__dirname, "bin");
+const packageRoot = path.resolve(__dirname, "..");
+const binDir = path.join(packageRoot, "bin");
 const npmBinDest = path.join(binDir, "webui-press");
 const nativeBinDest = path.join(binDir, binaryNameFor());
 
@@ -33,13 +34,9 @@ try {
       error instanceof Error ? error.message : String(error)
     }`,
   );
-  // Fall through to package guidance.
 }
 
-if (
-  process.env.npm_lifecycle_event === "postinstall" &&
-  fs.existsSync(path.join(__dirname, "Cargo.toml"))
-) {
+if (process.env.npm_lifecycle_event === "postinstall" && fs.existsSync(path.join(packageRoot, "Cargo.toml"))) {
   process.exit(0);
 }
 
@@ -55,7 +52,7 @@ try {
 } catch {
   console.warn(
     `[webui-press] Warning: Unsupported platform ${key}. ` +
-      `The webui-press CLI will not be available. ` +
+      `The webui-press CLI will not be available.\n` +
       `Set WEBUI_PRESS_BINARY_PATH to use a custom binary.`,
   );
 }
