@@ -86,13 +86,18 @@ jobs:
           shared-cache-key: ubuntu-build
 
       - name: Install native IPC test display
-        run: sudo apt-get install -y -qq dbus-x11 xvfb xauth
+        run: sudo apt-get install -y -qq apparmor dbus-x11 xvfb xauth
 
       - name: Fetch native IPC fixture dependencies
         run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
       - name: Test native IPC source and package
         run: |
+          # Allow only fixture executables to create WebKitGTK sandbox namespaces.
+          # Keep both AppArmor's global restriction and WebKit's sandbox enabled.
+          profile=crates/webui-desktop/tests/fixtures/native-ipc/linux-apparmor
+          sudo apparmor_parser -r "$profile"
+          trap 'sudo apparmor_parser -R "$profile"' EXIT
           GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
             python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 

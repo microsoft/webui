@@ -194,12 +194,9 @@ pub(super) fn webui_path_from_uri(uri: &str) -> String {
 
 /// Read the request body, treating a missing content stream as empty.
 fn read_request_body(request: &ICoreWebView2WebResourceRequest) -> WindowsResult<Vec<u8>> {
-    // SAFETY: The COM request object is valid for the duration of the
-    // WebResourceRequested callback. A null content stream means an empty body.
-    match unsafe { request.Content() } {
-        Ok(stream) => read_request_stream(stream),
-        Err(error) if error.code() == E_POINTER => Ok(Vec::new()),
-        Err(error) => Err(error),
+    match super::request::content(request)? {
+        Some(stream) => read_request_stream(stream),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -285,7 +282,7 @@ fn status_reason(status: u16) -> &'static str {
 
 /// Read-only `IStream` over an in-memory response body.
 #[implement(IStream)]
-struct MemoryStream {
+pub(super) struct MemoryStream {
     // Share the complete body, not just its bytes. COM stream clones retain the
     // outbound budget lease until the final native reader releases the buffer.
     data: Arc<DesktopResponseBody>,
@@ -294,7 +291,7 @@ struct MemoryStream {
 
 impl MemoryStream {
     /// Wrap an owned body in a stream positioned at its start.
-    fn new(data: DesktopResponseBody) -> Self {
+    pub(super) fn new(data: DesktopResponseBody) -> Self {
         Self {
             data: Arc::new(data),
             position: Mutex::new(0),

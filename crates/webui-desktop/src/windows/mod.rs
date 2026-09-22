@@ -26,6 +26,7 @@ mod ipc_policy;
 mod message;
 mod nonclient;
 mod protocol;
+mod request;
 mod state;
 mod wakeup;
 mod webview;
@@ -51,8 +52,6 @@ use state::FrameState;
 
 /// Origin served to web content by the resource interceptor.
 pub(super) const APP_ORIGIN: &str = "https://app.webui.localhost";
-/// Virtual host that serves packaged static assets.
-pub(super) const APP_HOST: &str = "app.webui.localhost";
 /// Filter matching every request the WebView2 instance issues.
 pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("*");
 /// Private message used to wake the UI thread for queued commands.
@@ -125,7 +124,6 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         Arc::clone(&frame.runtime),
         Rc::downgrade(&ipc),
     )?;
-    let has_virtual_host_assets = webview::register_virtual_host_assets(&webview)?;
     message::set_controller_bounds(&controller, window_frame.hwnd)?;
     // SAFETY: The controller is live and owns the WebView2 surface.
     unsafe { controller.SetIsVisible(true)? };
@@ -164,7 +162,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
     message::publish(window_frame.hwnd, &DesktopEvent::Ready);
-    webview::navigate_to_startup_url(&webview, has_virtual_host_assets)?;
+    webview::navigate_to_startup_url(&webview)?;
     let message_loop_result = message::message_loop();
     let _ = frame.events.dispatch(&DesktopEvent::Exiting);
     message_loop_result

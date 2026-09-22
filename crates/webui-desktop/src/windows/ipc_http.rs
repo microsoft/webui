@@ -9,7 +9,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Environment, ICoreWebView2HttpRequestHeaders, ICoreWebView2WebResourceRequest,
     ICoreWebView2WebResourceRequestedEventArgs,
 };
-use windows::{core::Result as WindowsResult, Win32::Foundation::E_POINTER};
+use windows::core::Result as WindowsResult;
 
 use super::{
     ipc::WindowsIpc,
@@ -206,12 +206,7 @@ fn request_body(
     claimed: Option<usize>,
     reserve: impl FnMut(usize) -> Result<(), IpcError>,
 ) -> Result<Vec<u8>, IpcError> {
-    // SAFETY: Content is only accessed on its owning UI thread.
-    let stream = match unsafe { request.Content() } {
-        Ok(stream) => Some(stream),
-        Err(err) if err.code() == E_POINTER => None,
-        Err(_) => return Err(error(IpcErrorCode::Transport)),
-    };
+    let stream = super::request::content(request).map_err(|_| error(IpcErrorCode::Transport))?;
     read_body(
         max_bytes,
         claimed,

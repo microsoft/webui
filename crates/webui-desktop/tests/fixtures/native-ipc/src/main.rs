@@ -79,6 +79,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let diagnostic_window = Arc::clone(&window);
     let disconnect_host = Arc::clone(&host);
     let frame = builder
+        // This module exists only in the runtime, never in packaged assets.
+        // Its browser load bypasses the legacy fetch shim and proves that
+        // WebView2's native resource handler still owns packaged requests.
+        .api_route("/fixture-runtime.js", |_| {
+            Ok(webui_desktop::DesktopProtocolResponse::new(
+                200,
+                "text/javascript",
+                b"export const servedByRuntime = true;".to_vec(),
+            ))
+        })?
         .api_route("/fixture-disconnect-observation", move |_| {
             let observed = disconnect_host.disconnect_observed();
             Ok(webui_desktop::DesktopProtocolResponse::new(

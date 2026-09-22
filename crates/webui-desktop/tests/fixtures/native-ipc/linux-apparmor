@@ -1,0 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+# Ubuntu 24.04 restricts user namespaces for unconfined applications. Permit
+# only this fixture's source/package executable copies to create the namespaces
+# WebKitGTK's bubblewrap sandbox needs; do not disable the WebKit sandbox or the
+# system-wide AppArmor restriction. Loaded only for the Linux CI fixture step.
+profile webui-native-ipc-fixture /**/crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/webui-native-ipc-fixture flags=(unconfined) {
+  userns,
+}

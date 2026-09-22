@@ -15,8 +15,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
     ICoreWebView2Controller2, ICoreWebView2Environment, ICoreWebView2EnvironmentOptions,
     ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2NavigationStartingEventHandler,
-    ICoreWebView2WebMessageReceivedEventArgs, ICoreWebView2_3, COREWEBVIEW2_COLOR,
-    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY,
+    ICoreWebView2WebMessageReceivedEventArgs, COREWEBVIEW2_COLOR,
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
@@ -34,7 +33,7 @@ use windows::Win32::Graphics::Dwm::{
 use super::command::execute_host_message;
 use super::message::system_dark;
 use super::protocol::read_pwstr;
-use super::{APP_HOST, APP_ORIGIN, WINDOW_ID};
+use super::{APP_ORIGIN, WINDOW_ID};
 
 /// Byte size of the 32-bit values passed to `DwmSetWindowAttribute`.
 const DWM_ATTRIBUTE_SIZE: u32 = 4;
@@ -83,14 +82,8 @@ pub(super) fn create_environment() -> Result<ICoreWebView2Environment> {
 }
 
 /// Resolve the first URL loaded into the window.
-fn startup_url(use_packaged_index: bool) -> String {
-    let default_path = if use_packaged_index {
-        "/index.html"
-    } else {
-        "/"
-    };
-    let path =
-        std::env::var("WEBUI_DESKTOP_START_PATH").unwrap_or_else(|_| default_path.to_string());
+fn startup_url() -> String {
+    let path = std::env::var("WEBUI_DESKTOP_START_PATH").unwrap_or_else(|_| "/".to_string());
     startup_url_for_path(&path)
 }
 
@@ -378,38 +371,13 @@ fn is_allowed_navigation_url(url: &str) -> bool {
     crate::is_allowed_navigation_url(url, APP_ORIGIN)
 }
 
-/// Map packaged static assets onto the app host when they exist.
-pub(super) fn register_virtual_host_assets(webview: &ICoreWebView2) -> Result<bool> {
-    let Some(resources) = crate::find_packaged_resources_dir() else {
-        return Ok(false);
-    };
-    let assets = resources.join("assets");
-    if !assets.is_dir() {
-        return Ok(false);
-    }
-
-    let webview: ICoreWebView2_3 = webview.cast()?;
-    let host = CoTaskMemPWSTR::from(APP_HOST);
-    let assets = assets.to_string_lossy();
-    let assets = CoTaskMemPWSTR::from(assets.as_ref());
-    // SAFETY: `webview` is a live COM interface and both string buffers outlive
-    // this call.
-    unsafe {
-        webview.SetVirtualHostNameToFolderMapping(
-            *host.as_ref().as_pcwstr(),
-            *assets.as_ref().as_pcwstr(),
-            COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY,
-        )?;
-    }
-    Ok(true)
-}
-
 /// Navigate the window to its configured startup URL.
-pub(super) fn navigate_to_startup_url(
-    webview: &ICoreWebView2,
-    use_packaged_index: bool,
-) -> Result<()> {
-    let url = startup_url(use_packaged_index);
+///
+/// Source and packaged content must both use WebResourceRequested. A virtual
+/// host folder mapping bypasses that event, including authenticated IPC routes
+/// and dynamic app routes; packaged assets are already served by the runtime.
+pub(super) fn navigate_to_startup_url(webview: &ICoreWebView2) -> Result<()> {
+    let url = startup_url();
     let url = CoTaskMemPWSTR::from(url.as_str());
     // SAFETY: `webview` is live and the URL buffer outlives this call.
     unsafe { webview.Navigate(*url.as_ref().as_pcwstr())? };

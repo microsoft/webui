@@ -128,13 +128,24 @@ python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 
 Linux requires GTK >= 4.10 and WebKitGTK 6.0 >= 2.42. Ubuntu 24.04 CI package
 dependencies are `build-essential`, `pkg-config`, `protobuf-compiler`,
-`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `dbus-x11`, `xvfb`, and `xauth`. Use
+`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `apparmor`, `dbus-x11`, `xvfb`, and `xauth`. Use
 standard sandbox-enabled WebKitGTK in a non-root CI account:
 
 ```sh
-GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" \
+GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
   python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 ```
+
+Ubuntu 24.04's AppArmor restriction on unprivileged user namespaces can make
+WebKitGTK abort with `bwrap: setting up uid map: Permission denied`, followed by
+`Failed to fully launch dbus-proxy`. The Linux CI step temporarily loads
+`linux-apparmor` with `sudo apparmor_parser -r` and removes it with
+`sudo apparmor_parser -R` in an exit trap, including on test failure. The profile
+allows user namespaces only for this fixture's executable copies under `.runs`,
+covering both source and SDK-packaged paths. WebKit's bubblewrap/seccomp sandbox
+and the system-wide AppArmor restriction remain enabled; the harness itself
+does not grant permissions. Do not disable either sandbox or the global
+user-namespace restriction to run this fixture.
 
 The existing GTK adapter disables page cache for IPC-enabled views. That does
 not constitute a Linux history pass until this real test runs there.
