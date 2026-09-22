@@ -26,7 +26,11 @@ const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "mjs", "cs", "h", "proto
 
 /// Individual tracked files to skip (relative to workspace root).
 /// Generated files that are checked in but not hand-authored belong here.
-const SKIP_FILES: &[&str] = &["crates/webui-ffi/include/webui_ffi.h"];
+const SKIP_FILES: &[&str] = &[
+    "crates/webui-ffi/include/webui_ffi.h",
+    "packages/webui-desktop/src/generated/webui_desktop.ts",
+    "packages/webui-desktop/test/fixture.ts",
+];
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -298,6 +302,22 @@ mod tests {
             "crates/webui-ffi/include/webui_ffi.h"
         )));
         assert!(!is_skipped_file(Path::new("crates/webui/src/lib.rs")));
+    }
+
+    #[test]
+    fn skips_only_generated_desktop_codecs_not_authored_runtime_or_tests() {
+        assert!(is_skipped_file(Path::new(
+            "packages/webui-desktop/src/generated/webui_desktop.ts"
+        )));
+        assert!(is_skipped_file(Path::new(
+            "packages/webui-desktop/test/fixture.ts"
+        )));
+        assert!(!is_skipped_file(Path::new(
+            "packages/webui-desktop/src/transport.ts"
+        )));
+        assert!(!is_skipped_file(Path::new(
+            "packages/webui-desktop/test/transport.test.ts"
+        )));
     }
 
     #[test]
