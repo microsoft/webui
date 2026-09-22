@@ -11,6 +11,10 @@ pub type Result<T> = std::result::Result<T, DesktopError>;
 /// Errors produced by the runtime-neutral WebUI desktop layer.
 #[derive(Debug, Error)]
 pub enum DesktopError {
+    /// Application IPC configuration or delivery failed.
+    #[error("desktop application IPC failed")]
+    Ipc(#[from] crate::ipc::IpcError),
+
     /// No desktop bundle could be found beside the running executable.
     #[error("packaged desktop resources were not found")]
     PackagedResourcesNotFound,
@@ -164,23 +168,6 @@ pub enum DesktopError {
         help: String,
     },
 
-    /// Protobuf IPC request payload is larger than the configured cap.
-    #[error("desktop IPC payload is too large: {size} bytes (max {max_bytes} bytes)")]
-    IpcPayloadTooLarge {
-        /// Actual payload size.
-        size: usize,
-        /// Configured maximum size.
-        max_bytes: usize,
-    },
-
-    /// Protobuf IPC request decoding failed.
-    #[error("failed to decode desktop IPC request")]
-    IpcDecode(#[from] prost::DecodeError),
-
-    /// Protobuf IPC response encoding failed.
-    #[error("failed to encode desktop IPC response")]
-    IpcEncode(#[from] prost::EncodeError),
-
     /// Platform runtime does not support a required desktop capability.
     #[error("unsupported desktop runtime: {message}")]
     UnsupportedRuntime {
@@ -204,9 +191,6 @@ impl DesktopError {
             }
             DesktopError::AssetTooLarge { .. } => {
                 Some("Reduce the asset size or raise the desktop max asset size for a trusted app")
-            }
-            DesktopError::IpcPayloadTooLarge { .. } => {
-                Some("Reduce the IPC payload size or raise the IPC limit for a trusted app")
             }
             DesktopError::InvalidRoutePattern { help, .. } => Some(help.as_str()),
             DesktopError::RouteProvider { .. } => {
@@ -236,5 +220,29 @@ impl DesktopError {
             source = err.source();
         }
         message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DesktopError;
+    use crate::ipc::{IpcError, IpcErrorCode};
+
+    #[test]
+    fn ipc_errors_preserve_their_typed_source_and_actionable_chain() {
+        let error = DesktopError::from(IpcError::new(
+            IpcErrorCode::PayloadTooLarge,
+            "frame exceeds the configured limit",
+            "send a smaller message",
+        ));
+        assert!(matches!(
+            &error,
+            DesktopError::Ipc(source) if source.code == IpcErrorCode::PayloadTooLarge
+        ));
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(
+            error.chain_message(),
+            "desktop application IPC failed: frame exceeds the configured limit; help: send a smaller message"
+        );
     }
 }

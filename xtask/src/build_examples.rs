@@ -199,6 +199,8 @@ fn ensure_example_deps() -> Result<(), String> {
             "@microsoft/webui-framework",
             "--filter",
             "@microsoft/webui-router",
+            "--filter",
+            "@microsoft/webui-desktop",
             "run",
             "build",
         ],

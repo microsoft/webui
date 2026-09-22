@@ -1,0 +1,601 @@
+{
+  "enums": [
+    {
+      "name": "example.desktop.Status",
+      "reserved": [],
+      "reserved_names": [],
+      "values": {
+        "READY": 1,
+        "STATUS_UNSPECIFIED": 0
+      }
+    }
+  ],
+  "major": 1,
+  "messages": [
+    {
+      "fields": [
+        {
+          "kind": "uint64",
+          "map": false,
+          "map_key": false,
+          "name": "id",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "bytes",
+          "map": false,
+          "map_key": false,
+          "name": "image",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "title",
+          "number": 3,
+          "oneof": null,
+          "optional": true,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "int64",
+          "map": false,
+          "map_key": false,
+          "name": "minimum",
+          "number": 4,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "enum",
+          "map": false,
+          "map_key": false,
+          "name": "status",
+          "number": 5,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": "example.desktop.Status"
+        },
+        {
+          "kind": "sint32",
+          "map": false,
+          "map_key": false,
+          "name": "scores",
+          "number": 6,
+          "oneof": null,
+          "optional": false,
+          "packed": true,
+          "repeated": true,
+          "target": null
+        },
+        {
+          "kind": "message",
+          "map": true,
+          "map_key": false,
+          "name": "labels",
+          "number": 7,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.desktop.Item.LabelsEntry"
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "text",
+          "number": 8,
+          "oneof": "choice",
+          "optional": true,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "int64",
+          "map": false,
+          "map_key": false,
+          "name": "number",
+          "number": 9,
+          "oneof": "choice",
+          "optional": true,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "bool",
+          "map": false,
+          "map_key": false,
+          "name": "enabled",
+          "number": 11,
+          "oneof": null,
+          "optional": true,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "message",
+          "map": true,
+          "map_key": false,
+          "name": "chunks",
+          "number": 12,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.desktop.Item.ChunksEntry"
+        },
+        {
+          "kind": "message",
+          "map": false,
+          "map_key": false,
+          "name": "metrics",
+          "number": 13,
+          "oneof": null,
+          "optional": true,
+          "packed": false,
+          "repeated": false,
+          "target": "example.types.Metrics"
+        },
+        {
+          "kind": "message",
+          "map": true,
+          "map_key": false,
+          "name": "flags",
+          "number": 14,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.desktop.Item.FlagsEntry"
+        },
+        {
+          "kind": "message",
+          "map": true,
+          "map_key": false,
+          "name": "unsigned_keys",
+          "number": 15,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.desktop.Item.UnsignedKeysEntry"
+        },
+        {
+          "kind": "message",
+          "map": true,
+          "map_key": false,
+          "name": "signed_keys",
+          "number": 16,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.desktop.Item.SignedKeysEntry"
+        }
+      ],
+      "map_entry": false,
+      "name": "example.desktop.Item",
+      "reserved": [
+        [
+          10,
+          11
+        ]
+      ],
+      "reserved_names": [
+        "blobs"
+      ]
+    },
+    {
+      "fields": [
+        {
+          "kind": "int32",
+          "map": false,
+          "map_key": true,
+          "name": "key",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "bytes",
+          "map": false,
+          "map_key": false,
+          "name": "value",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": true,
+      "name": "example.desktop.Item.ChunksEntry",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "bool",
+          "map": false,
+          "map_key": true,
+          "name": "key",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "value",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": true,
+      "name": "example.desktop.Item.FlagsEntry",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": true,
+          "name": "key",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "value",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": true,
+      "name": "example.desktop.Item.LabelsEntry",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "int64",
+          "map": false,
+          "map_key": true,
+          "name": "key",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "value",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": true,
+      "name": "example.desktop.Item.SignedKeysEntry",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "uint64",
+          "map": false,
+          "map_key": true,
+          "name": "key",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "value",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": true,
+      "name": "example.desktop.Item.UnsignedKeysEntry",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "text",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": false,
+      "name": "example.desktop.Label",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "double",
+          "map": false,
+          "map_key": false,
+          "name": "infinity",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "float",
+          "map": false,
+          "map_key": false,
+          "name": "not_a_number",
+          "number": 2,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "fixed64",
+          "map": false,
+          "map_key": false,
+          "name": "maximum_fixed",
+          "number": 3,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "sfixed64",
+          "map": false,
+          "map_key": false,
+          "name": "minimum_fixed",
+          "number": 4,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "sint64",
+          "map": false,
+          "map_key": false,
+          "name": "minimum_zigzag",
+          "number": 5,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "fixed32",
+          "map": false,
+          "map_key": false,
+          "name": "maximum_fixed32",
+          "number": 6,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "sfixed32",
+          "map": false,
+          "map_key": false,
+          "name": "minimum_fixed32",
+          "number": 7,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "uint32",
+          "map": false,
+          "map_key": false,
+          "name": "maximum_unsigned",
+          "number": 8,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "int32",
+          "map": false,
+          "map_key": false,
+          "name": "minimum_signed",
+          "number": 9,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "bool",
+          "map": false,
+          "map_key": false,
+          "name": "truth",
+          "number": 10,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        },
+        {
+          "kind": "message",
+          "map": false,
+          "map_key": false,
+          "name": "details",
+          "number": 11,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": true,
+          "target": "example.types.Metrics.Detail"
+        }
+      ],
+      "map_entry": false,
+      "name": "example.types.Metrics",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [
+        {
+          "kind": "string",
+          "map": false,
+          "map_key": false,
+          "name": "URL_value",
+          "number": 1,
+          "oneof": null,
+          "optional": false,
+          "packed": false,
+          "repeated": false,
+          "target": null
+        }
+      ],
+      "map_entry": false,
+      "name": "example.types.Metrics.Detail",
+      "reserved": [],
+      "reserved_names": []
+    },
+    {
+      "fields": [],
+      "map_entry": false,
+      "name": "google.protobuf.Empty",
+      "reserved": [],
+      "reserved_names": []
+    }
+  ],
+  "methods": [
+    {
+      "development_only": false,
+      "id": 1101,
+      "input": "example.desktop.Item",
+      "kind": "rpc",
+      "name": "example.desktop.Host.Save",
+      "output": "google.protobuf.Empty",
+      "receiver": "host",
+      "service": "Host"
+    },
+    {
+      "development_only": false,
+      "id": 1102,
+      "input": "example.desktop.Item",
+      "kind": "notification",
+      "name": "example.desktop.Host.Selected",
+      "output": "webui.ipc.Notification",
+      "receiver": "host",
+      "service": "Host"
+    },
+    {
+      "development_only": false,
+      "id": 2001,
+      "input": "example.desktop.Item",
+      "kind": "rpc",
+      "name": "example.desktop.Renderer.LabelFor",
+      "output": "example.desktop.Label",
+      "receiver": "renderer",
+      "service": "Renderer"
+    },
+    {
+      "development_only": false,
+      "id": 2002,
+      "input": "example.desktop.Item",
+      "kind": "notification",
+      "name": "example.desktop.Renderer.Changed",
+      "output": "webui.ipc.Notification",
+      "receiver": "renderer",
+      "service": "Renderer"
+    }
+  ],
+  "name": "example.desktop"
+}

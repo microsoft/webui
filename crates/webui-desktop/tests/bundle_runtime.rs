@@ -9,14 +9,17 @@ use std::fs;
 use prost::Message;
 use tempfile::TempDir;
 use webui_desktop::{
-    desktop_ipc_response, BundleIntegrity, DesktopBundleConfig, DesktopBundleManifest,
-    DesktopIpcRequest, DesktopIpcResponse, DesktopProtocolRequest, DesktopProtocolResponse,
-    DesktopRuntime, DesktopShellConfig, IpcRegistry, WindowOptions, IPC_ENDPOINT, IPC_VERSION,
+    BundleIntegrity, DesktopApp, DesktopBundleConfig, DesktopBundleManifest,
+    DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime, DesktopShellConfig,
+    WindowOptions,
 };
 use webui_protocol::{
     web_ui_fragment::Fragment, FragmentList, WebUIFragment, WebUIFragmentRaw, WebUIFragmentSignal,
     WebUIProtocol,
 };
+
+#[path = "support/echo.rs"]
+mod echo;
 
 fn bundle(plugin: Option<&str>) -> TempDir {
     let dir = TempDir::new().unwrap();
@@ -105,17 +108,19 @@ fn bundle_config_preserves_host_state_routes_and_ipc() {
     let dir = bundle(Some("webui"));
     let mut config = DesktopBundleConfig::new(dir.path().to_path_buf());
     config.state = Some(serde_json::from_str(r#"{"greeting":"Host"}"#).unwrap());
-    config.ipc_registry = IpcRegistry::default();
+    config.ipc_registry = echo::registry();
     config
         .api_routes
         .route("/api/hello", |_| {
             Ok(DesktopProtocolResponse::text(200, "Hello"))
         })
         .unwrap();
-    config
-        .ipc_registry
-        .register("echo", |payload| Ok(payload.to_vec()));
-    let runtime = DesktopRuntime::from_bundle_config(config).unwrap();
+    let frame = DesktopApp::from_bundle_config(config)
+        .unwrap()
+        .ipc_options(echo::options())
+        .build()
+        .unwrap();
+    let runtime = &frame.runtime;
     assert!(runtime.startup_html().contains("Host"));
     assert!(!runtime.startup_html().contains("Bundled"));
     assert_eq!(
@@ -125,24 +130,7 @@ fn bundle_config_preserves_host_state_routes_and_ipc() {
             .body,
         b"Hello"
     );
-    let frame = DesktopIpcRequest {
-        version: IPC_VERSION,
-        request_id: 7,
-        method: "echo".to_string(),
-        payload: b"runtime-only".to_vec(),
-    }
-    .encode_to_vec();
-    let response = runtime
-        .handle_request(&DesktopProtocolRequest::post(IPC_ENDPOINT, &frame))
-        .unwrap();
-    let reply = DesktopIpcResponse::decode(response.body.as_slice()).unwrap();
-    assert_eq!(reply.request_id, 7);
-    assert_eq!(
-        reply.result,
-        Some(desktop_ipc_response::Result::Payload(
-            b"runtime-only".to_vec()
-        ))
-    );
+    echo::assert_echo(&frame, b"runtime-only");
 }
 
 #[test]

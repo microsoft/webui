@@ -1,0 +1,422 @@
+{
+  "format": 1,
+  "schema_hash": "ab014d39db1e9865769dbb911c250bee14c6bc4cc9d93d67324c39099b13342d",
+  "contract": {
+    "name": "webui.test.native",
+    "major": 1,
+    "methods": [
+      {
+        "id": 1101,
+        "name": "fixture.native.Host.Save",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1102,
+        "name": "fixture.native.Host.Selected",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "notification",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "webui.ipc.Notification"
+      },
+      {
+        "id": 1103,
+        "name": "fixture.native.Host.Release",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "google.protobuf.Empty",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1104,
+        "name": "fixture.native.Host.Wait",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1105,
+        "name": "fixture.native.Host.Finish",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Report",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1106,
+        "name": "fixture.native.Host.Done",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "notification",
+        "development_only": false,
+        "input": "google.protobuf.Empty",
+        "output": "webui.ipc.Notification"
+      },
+      {
+        "id": 1107,
+        "name": "fixture.native.Host.CancellationObserved",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "google.protobuf.Empty",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1108,
+        "name": "fixture.native.Host.LifecycleHold",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1109,
+        "name": "fixture.native.Host.LifecycleCheck",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1110,
+        "name": "fixture.native.Host.SessionGeneration",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "google.protobuf.Empty",
+        "output": "fixture.native.Generation"
+      },
+      {
+        "id": 1111,
+        "name": "fixture.native.Host.SameDocument",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Generation",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1112,
+        "name": "fixture.native.Host.HistoryProbe",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Generation",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 1113,
+        "name": "fixture.native.Host.HistoryVerified",
+        "service": "Host",
+        "receiver": "host",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Generation",
+        "output": "google.protobuf.Empty"
+      },
+      {
+        "id": 2001,
+        "name": "fixture.native.Renderer.LabelFor",
+        "service": "Renderer",
+        "receiver": "renderer",
+        "kind": "rpc",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "fixture.native.Label"
+      },
+      {
+        "id": 2002,
+        "name": "fixture.native.Renderer.Changed",
+        "service": "Renderer",
+        "receiver": "renderer",
+        "kind": "notification",
+        "development_only": false,
+        "input": "fixture.native.Item",
+        "output": "webui.ipc.Notification"
+      }
+    ],
+    "messages": [
+      {
+        "name": "fixture.native.Generation",
+        "file": "application.proto",
+        "rust": "messages::fixture::native::Generation",
+        "ts": "Generation",
+        "map_entry": false,
+        "fields": [
+          {
+            "number": 1,
+            "name": "value",
+            "kind": "uint64",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 2,
+            "name": "phase",
+            "kind": "string",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          }
+        ],
+        "reserved": [],
+        "reserved_names": []
+      },
+      {
+        "name": "fixture.native.Item",
+        "file": "application.proto",
+        "rust": "messages::fixture::native::Item",
+        "ts": "Item",
+        "map_entry": false,
+        "fields": [
+          {
+            "number": 1,
+            "name": "id",
+            "kind": "uint64",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 2,
+            "name": "image",
+            "kind": "bytes",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 3,
+            "name": "phase",
+            "kind": "string",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          }
+        ],
+        "reserved": [],
+        "reserved_names": []
+      },
+      {
+        "name": "fixture.native.Label",
+        "file": "application.proto",
+        "rust": "messages::fixture::native::Label",
+        "ts": "Label",
+        "map_entry": false,
+        "fields": [
+          {
+            "number": 1,
+            "name": "text",
+            "kind": "string",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          }
+        ],
+        "reserved": [],
+        "reserved_names": []
+      },
+      {
+        "name": "fixture.native.Report",
+        "file": "application.proto",
+        "rust": "messages::fixture::native::Report",
+        "ts": "Report",
+        "map_entry": false,
+        "fields": [
+          {
+            "number": 1,
+            "name": "labels",
+            "kind": "uint32",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 2,
+            "name": "changes",
+            "kind": "uint32",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 3,
+            "name": "confirmations",
+            "kind": "uint32",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 4,
+            "name": "invalid_rejected",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 5,
+            "name": "cancelled",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 6,
+            "name": "unsubscribed",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 7,
+            "name": "void_completed",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 8,
+            "name": "notification_accepted",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 9,
+            "name": "handler_rejected",
+            "kind": "bool",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 10,
+            "name": "visibility",
+            "kind": "string",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          },
+          {
+            "number": 11,
+            "name": "user_agent",
+            "kind": "string",
+            "target": null,
+            "repeated": false,
+            "packed": false,
+            "optional": false,
+            "oneof": null,
+            "map": false,
+            "map_key": false
+          }
+        ],
+        "reserved": [],
+        "reserved_names": []
+      },
+      {
+        "name": "google.protobuf.Empty",
+        "file": "google/protobuf/empty.proto",
+        "rust": "()",
+        "ts": "Empty",
+        "map_entry": false,
+        "fields": [],
+        "reserved": [],
+        "reserved_names": []
+      }
+    ],
+    "enums": []
+  },
+  "retired_ids": []
+}

@@ -1,0 +1,60 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+package fixture.native;
+import "webui/ipc/options.proto";
+import "google/protobuf/empty.proto";
+option (webui.ipc.contract_name) = "webui.test.native";
+option (webui.ipc.contract_major) = 1;
+
+message Item {
+  uint64 id = 1;
+  bytes image = 2;
+  string phase = 3;
+}
+message Label { string text = 1; }
+message Generation { uint64 value = 1; string phase = 2; }
+message Report {
+  uint32 labels = 1;
+  uint32 changes = 2;
+  uint32 confirmations = 3;
+  bool invalid_rejected = 4;
+  bool cancelled = 5;
+  bool unsubscribed = 6;
+  bool void_completed = 7;
+  bool notification_accepted = 8;
+  bool handler_rejected = 9;
+  string visibility = 10;
+  string user_agent = 11;
+}
+service Host {
+  option (webui.ipc.receiver) = HOST;
+  rpc Save(Item) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1101; }
+  rpc Selected(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 1102;
+    option (webui.ipc.notification) = true;
+  }
+  rpc Release(google.protobuf.Empty) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1103; }
+  rpc Wait(Item) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1104; }
+  rpc Finish(Report) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1105; }
+  rpc Done(google.protobuf.Empty) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 1106;
+    option (webui.ipc.notification) = true;
+  }
+  rpc CancellationObserved(google.protobuf.Empty) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1107; }
+  rpc LifecycleHold(Item) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1108; }
+  rpc LifecycleCheck(Item) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1109; }
+  rpc SessionGeneration(google.protobuf.Empty) returns (Generation) { option (webui.ipc.id) = 1110; }
+  rpc SameDocument(Generation) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1111; }
+  rpc HistoryProbe(Generation) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1112; }
+  rpc HistoryVerified(Generation) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1113; }
+}
+service Renderer {
+  option (webui.ipc.receiver) = RENDERER;
+  rpc LabelFor(Item) returns (Label) { option (webui.ipc.id) = 2001; }
+  rpc Changed(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 2002;
+    option (webui.ipc.notification) = true;
+  }
+}

@@ -807,6 +807,30 @@ impl Step {
                     "native",
                 ],
                 None,
+            )?;
+            run_command_quiet(
+                "pnpm",
+                &["--filter", "@microsoft/webui-desktop", "test"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &["crates/webui-desktop-build/tests/run-rust.mjs"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &["crates/webui-desktop-build/tests/run-typescript.mjs"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &[
+                    "packages/webui-desktop/scripts/sync-bootstrap.mjs",
+                    "--check",
+                    "crates/webui-desktop/src/generated/ipc",
+                ],
+                None,
             )
         },
     };

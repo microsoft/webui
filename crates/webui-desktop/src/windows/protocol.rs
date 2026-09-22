@@ -4,11 +4,12 @@
 //! WebView2 `WebResourceRequested` interception and the in-memory response stream.
 
 use std::ffi::c_void;
+use std::rc::Weak;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime,
-    DEFAULT_MAX_ASSET_BYTES,
+    DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopResponseBody,
+    DesktopRuntime, DEFAULT_MAX_ASSET_BYTES,
 };
 use anyhow::Result;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -28,6 +29,7 @@ use windows::Win32::System::Com::{
     STATSTG, STGC, STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
 
+use super::ipc::WindowsIpc;
 use super::{APP_ORIGIN, APP_REQUEST_FILTER};
 
 /// Serve every app-origin request from the desktop runtime.
@@ -35,11 +37,31 @@ pub(super) fn register_runtime_handler(
     environment: &ICoreWebView2Environment,
     webview: &ICoreWebView2,
     runtime: Arc<DesktopRuntime>,
+    ipc: Weak<WindowsIpc>,
 ) -> Result<ICoreWebView2WebResourceRequestedEventHandler> {
     register_web_resource_filter(webview)?;
     let environment = environment.clone();
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
+            // IPC must bypass the legacy runtime and fetch shim entirely.
+            // SAFETY: Request is retained by these live event args on this STA.
+            let request = unsafe { args.Request()? };
+            let uri = read_pwstr_bounded(8192, |out| unsafe { request.Uri(out) })?;
+            if let Some(path) = super::ipc_policy::reserved_path(&uri) {
+                if let Some(ipc) = ipc.upgrade() {
+                    super::ipc_http::handle(&ipc, &environment, &args, path)?;
+                } else {
+                    let response = create_webview_response(
+                        &environment,
+                        super::ipc_http::error_response(crate::ipc::IpcErrorCode::Closed),
+                    )?;
+                    // SAFETY: Live args, synchronous response on its owning STA.
+                    unsafe {
+                        args.SetResponse(&response)?;
+                    }
+                }
+                return Ok(());
+            }
             handle_web_resource_request(&environment, &runtime, &args)?;
         }
         Ok(())
@@ -108,11 +130,42 @@ fn handle_web_resource_request(
 }
 
 /// Read one request header, returning `None` when it is absent.
-fn read_header(headers: &ICoreWebView2HttpRequestHeaders, name: &str) -> Option<String> {
+pub(super) fn read_header(headers: &ICoreWebView2HttpRequestHeaders, name: &str) -> Option<String> {
     let name = CoTaskMemPWSTR::from(name);
     // SAFETY: `headers` is live for the callback and the name buffer outlives
     // this call; a missing header is reported as an error and mapped to `None`.
-    read_pwstr(|out| unsafe { headers.GetHeader(*name.as_ref().as_pcwstr(), out) }).ok()
+    read_pwstr_bounded(8192, |out| unsafe {
+        headers.GetHeader(*name.as_ref().as_pcwstr(), out)
+    })
+    .ok()
+}
+
+/// Bound native UTF-16 before allocating the Rust copy. Invalid UTF-16 is an
+/// explicit error, never an untrusted string conversion panic.
+pub(super) fn read_pwstr_bounded(
+    max_units: usize,
+    read: impl FnOnce(*mut PWSTR) -> WindowsResult<()>,
+) -> WindowsResult<String> {
+    let mut raw = PWSTR::null();
+    let result = read(&mut raw);
+    let _owned = CoTaskMemPWSTR::from(raw);
+    result?;
+    if raw.is_null() {
+        return Ok(String::new());
+    }
+    let mut len = 0;
+    // SAFETY: WebView2 returns a NUL-terminated CoTaskMem string. Stop at its
+    // first NUL or the configured bound while the allocation guard is alive.
+    unsafe {
+        while len < max_units && *raw.0.add(len) != 0 {
+            len += 1;
+        }
+        if *raw.0.add(len) != 0 {
+            return Err(WindowsError::from(E_INVALIDARG));
+        }
+        String::from_utf16(std::slice::from_raw_parts(raw.0, len))
+            .map_err(|_| WindowsError::from(E_INVALIDARG))
+    }
 }
 
 /// Read a WebView2 `PWSTR` out-parameter into an owned `String`.
@@ -180,7 +233,7 @@ fn read_request_stream(stream: WinIStream) -> WindowsResult<Vec<u8>> {
 }
 
 /// Wrap a runtime response in a WebView2 response object.
-fn create_webview_response(
+pub(super) fn create_webview_response(
     environment: &ICoreWebView2Environment,
     response: DesktopProtocolResponse,
 ) -> WindowsResult<ICoreWebView2WebResourceResponse> {
@@ -218,10 +271,14 @@ fn status_reason(status: u16) -> &'static str {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         413 => "Payload Too Large",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "OK",
     }
 }
@@ -229,15 +286,17 @@ fn status_reason(status: u16) -> &'static str {
 /// Read-only `IStream` over an in-memory response body.
 #[implement(IStream)]
 struct MemoryStream {
-    data: Arc<[u8]>,
+    // Share the complete body, not just its bytes. COM stream clones retain the
+    // outbound budget lease until the final native reader releases the buffer.
+    data: Arc<DesktopResponseBody>,
     position: Mutex<usize>,
 }
 
 impl MemoryStream {
     /// Wrap an owned body in a stream positioned at its start.
-    fn new(data: Vec<u8>) -> Self {
+    fn new(data: DesktopResponseBody) -> Self {
         Self {
-            data: data.into(),
+            data: Arc::new(data),
             position: Mutex::new(0),
         }
     }
@@ -381,6 +440,42 @@ impl IStream_Impl for MemoryStream_Impl {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Released(Arc<AtomicUsize>);
+    impl Drop for Released {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn native_stream_clones_keep_body_and_lease_until_final_release() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let bytes = vec![1, 2, 3];
+        let pointer = bytes.as_ptr();
+        let memory = MemoryStream::new(DesktopResponseBody::with_guard(
+            bytes,
+            Released(Arc::clone(&released)),
+        ));
+        assert_eq!(memory.data.as_slice().as_ptr(), pointer);
+        let stream: IStream = memory.into();
+        // SAFETY: Both are locally implemented, live COM streams. No WebView or
+        // native window is needed to exercise their reference-counted lifetime.
+        let clone = unsafe { stream.Clone() }.unwrap();
+        drop(stream);
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        let mut bytes = [0_u8; 3];
+        let mut read = 0;
+        // SAFETY: The destination and count are writable for the declared sizes.
+        unsafe { clone.Read(bytes.as_mut_ptr().cast(), 3, Some(&mut read)) }
+            .ok()
+            .unwrap();
+        assert_eq!(read, 3);
+        assert_eq!(bytes, [1, 2, 3]);
+        drop(clone);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn request_uri_maps_to_runtime_path() {

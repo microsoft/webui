@@ -48,7 +48,7 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if GTK cannot initialize.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: crate::WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window))
+    run_frame(DesktopFrame::new(runtime, window)?)
 }
 
 pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
@@ -66,23 +66,63 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     };
     let frame = Rc::new(frame);
     let app = application.build();
+    let ipc_owner = Rc::new(RefCell::new(None));
+    let ipc_for_activation = Rc::clone(&ipc_owner);
+    let startup_error = Rc::new(RefCell::new(None));
+    let error_for_activation = Rc::clone(&startup_error);
     let activation_frame = Rc::clone(&frame);
     let activation = app.connect_activate(move |app| {
-        build_window(app, &activation_frame, state_store.clone());
+        if let Err(error) = build_window(
+            app,
+            &activation_frame,
+            state_store.clone(),
+            &ipc_for_activation,
+        ) {
+            *error_for_activation.borrow_mut() = Some(error);
+            app.quit();
+        }
     });
     app.run();
     // Disconnect before dropping the session owner, even if GTK retains the app.
     app.disconnect(activation);
+    let ipc = ipc_owner.borrow_mut().take();
+    if let Some(ipc) = ipc {
+        ipc.close();
+    }
     let context = COMMAND_CONTEXT.with(|slot| slot.borrow_mut().take());
     drop(context);
     let _ = frame.events.dispatch(&DesktopEvent::Exiting);
+    if let Some(error) = startup_error.borrow_mut().take() {
+        return Err(error);
+    }
     Ok(())
 }
 
-fn build_window(app: &Application, frame: &DesktopFrame, state_store: Option<WindowStateStore>) {
+fn build_window(
+    app: &Application,
+    frame: &DesktopFrame,
+    state_store: Option<WindowStateStore>,
+    ipc_owner: &Rc<RefCell<Option<Rc<super::ipc::GtkIpc>>>>,
+) -> Result<()> {
+    if ipc_owner.borrow().is_some() {
+        return Ok(());
+    }
     let context = WebContext::new();
     let runtime = Arc::clone(&frame.runtime);
+    let ipc_enabled = frame.ipc_bridge().is_enabled();
+    let ipc_for_scheme = Rc::downgrade(ipc_owner);
     context.register_uri_scheme("webui", move |request| {
+        let ipc = ipc_for_scheme
+            .upgrade()
+            .and_then(|slot| slot.borrow().clone());
+        let handled = match ipc {
+            Some(ipc) => super::ipc_scheme::handle(&ipc, request),
+            None if ipc_enabled => super::ipc_scheme::reject_unavailable(request),
+            None => false,
+        };
+        if handled {
+            return;
+        }
         handle_scheme_request(request, &runtime);
     });
 
@@ -104,6 +144,16 @@ fn build_window(app: &Application, frame: &DesktopFrame, state_store: Option<Win
         .web_context(&context)
         .user_content_manager(&manager)
         .build();
+    let ipc = if frame.ipc_bridge().is_enabled() {
+        Some(super::ipc::GtkIpc::install(
+            frame.ipc_bridge(),
+            &webview,
+            &manager,
+        )?)
+    } else {
+        None
+    };
+    *ipc_owner.borrow_mut() = ipc.clone();
     if let Some(color) = frame.window.background {
         webview.set_background_color(&to_gdk_rgba(color));
     } else if frame.window.effect != WindowEffect::None {
@@ -130,6 +180,23 @@ fn build_window(app: &Application, frame: &DesktopFrame, state_store: Option<Win
 
     restore_state(&window, state_store.as_ref());
     install_events(&window, &webview, &manager, frame, state_store);
+    if let Some(ipc) = ipc {
+        let weak = Rc::downgrade(&ipc);
+        // GTK stops this signal at the earlier handler if the application
+        // prevents closing. Only an accepted close reaches this callback.
+        window.connect_close_request(move |_| {
+            if let Some(ipc) = weak.upgrade() {
+                ipc.close();
+            }
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(&ipc);
+        window.connect_destroy(move |_| {
+            if let Some(ipc) = weak.upgrade() {
+                ipc.close();
+            }
+        });
+    }
     install_wakeup(&window, &webview, frame);
 
     if frame.window.maximized {
@@ -149,6 +216,7 @@ fn build_window(app: &Application, frame: &DesktopFrame, state_store: Option<Win
     webview.load_uri(&startup_url());
     let ready = DesktopEvent::Ready;
     dispatch_event(&frame.events, &webview, &ready);
+    Ok(())
 }
 
 fn configure_constraints(window: &ApplicationWindow, options: &crate::WindowOptions) {

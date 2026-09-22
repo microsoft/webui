@@ -3,6 +3,7 @@
 
 //! Same-origin `fetch` bridge that routes app requests through the desktop runtime.
 
+use std::rc::Weak;
 use std::sync::Arc;
 
 use crate::{DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime};
@@ -76,7 +77,7 @@ const FETCH_BRIDGE_SCRIPT: &str = r#"
   window.fetch = async (input, init) => {
     const request = new Request(input, init);
     const url = new URL(request.url, location.href);
-    if (url.origin !== appOrigin) {
+    if (url.origin !== appOrigin || url.pathname === '/_webui/ipc' || url.pathname.startsWith('/_webui/ipc/')) {
       return originalFetch(input, init);
     }
     const id = nextId++;
@@ -106,10 +107,14 @@ pub(super) fn register_fetch_bridge(
     webview: &ICoreWebView2,
     runtime: Arc<DesktopRuntime>,
     hwnd: HWND,
+    ipc: Weak<super::ipc::WindowsIpc>,
 ) -> Result<ICoreWebView2WebMessageReceivedEventHandler> {
     inject_fetch_bridge_script(webview)?;
     let handler = WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
         if let (Some(webview), Some(args)) = (sender, args) {
+            if let Some(ipc) = ipc.upgrade() {
+                ipc.message(&args)?;
+            }
             if handle_host_message(hwnd, &args)? {
                 return Ok(());
             }
@@ -189,6 +194,11 @@ fn fetch_bridge_response(
         .get("url")
         .and_then(Value::as_str)
         .ok_or_else(|| "desktop fetch bridge request is missing a URL".to_string())?;
+    // Never accept application IPC through the old Base64 transport, even if
+    // an app manually constructs a legacy fetch-bridge message.
+    if !super::ipc_policy::app_url(url) || super::ipc_policy::reserved_path(url).is_some() {
+        return Err("this URL is not available through the legacy fetch bridge".into());
+    }
     let body = message
         .get("bodyBase64")
         .and_then(Value::as_str)

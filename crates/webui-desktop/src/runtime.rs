@@ -64,7 +64,7 @@ impl DesktopSourceConfig {
             state: None,
             asset_root: None,
             max_asset_bytes: DEFAULT_MAX_ASSET_BYTES,
-            ipc_registry: IpcRegistry::new(),
+            ipc_registry: IpcRegistry::default(),
             route_state: RouteStateRegistry::new(),
             api_routes: ApiRouteRegistry::new(),
             token_css: None,
@@ -104,7 +104,7 @@ impl DesktopBundleConfig {
             bundle_dir,
             state: None,
             max_asset_bytes: DEFAULT_MAX_ASSET_BYTES,
-            ipc_registry: IpcRegistry::new(),
+            ipc_registry: IpcRegistry::default(),
             route_state: RouteStateRegistry::new(),
             api_routes: ApiRouteRegistry::new(),
             token_css: None,
@@ -123,7 +123,8 @@ pub struct DesktopRuntime {
     max_asset_bytes: u64,
     startup_html: String,
     window_css: String,
-    ipc_registry: IpcRegistry,
+    ipc_registry: Arc<IpcRegistry>,
+    development: bool,
     handler: WebUIHandler,
     route_state: RouteStateRegistry,
     api_routes: ApiRouteRegistry,
@@ -421,7 +422,8 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
-            ipc_registry: config.ipc_registry,
+            ipc_registry: Arc::new(config.ipc_registry),
+            development: true,
             handler,
             route_state: config.route_state,
             api_routes: config.api_routes,
@@ -522,7 +524,8 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
-            ipc_registry: config.ipc_registry,
+            ipc_registry: Arc::new(config.ipc_registry),
+            development: false,
             handler,
             route_state: config.route_state,
             api_routes: config.api_routes,
@@ -539,8 +542,18 @@ impl DesktopRuntime {
         &self,
         request: &DesktopProtocolRequest<'_>,
     ) -> Result<DesktopProtocolResponse> {
-        if request.path == IPC_ENDPOINT {
-            return self.handle_ipc_request(request);
+        let path = route_path(request.path);
+        if matches!(request.method, DesktopHttpMethod::Get) {
+            if let Some(response) = crate::ipc_assets::response(path) {
+                return Ok(response);
+            }
+        }
+        if path == IPC_ENDPOINT || path == "/_webui/ipc/outbound" {
+            return Err(DesktopError::UnsupportedRuntime {
+                message: "application IPC requires a frame-scoped document session".to_string(),
+                help: "route reserved IPC requests through the desktop frame's IPC bridge"
+                    .to_string(),
+            });
         }
 
         if let Some(response) = self.api_routes.resolve(request)? {
@@ -597,19 +610,12 @@ impl DesktopRuntime {
         &self.startup_html
     }
 
-    fn handle_ipc_request(
-        &self,
-        request: &DesktopProtocolRequest<'_>,
-    ) -> Result<DesktopProtocolResponse> {
-        if request.method != DesktopHttpMethod::Post {
-            return Ok(DesktopProtocolResponse::text(
-                405,
-                "desktop IPC endpoint requires POST",
-            ));
-        }
-        self.ipc_registry
-            .dispatch_frame(request.body)
-            .map(DesktopProtocolResponse::protobuf)
+    pub(crate) fn ipc_registry(&self) -> Arc<IpcRegistry> {
+        Arc::clone(&self.ipc_registry)
+    }
+
+    pub(crate) fn is_development(&self) -> bool {
+        self.development
     }
 
     fn generated_css(&self, request_path: &str) -> Option<&str> {
@@ -983,7 +989,6 @@ impl ResponseWriter for MemoryWriter {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use prost::Message;
     use tempfile::TempDir;
 
     fn write_file(root: &std::path::Path, path: &str, content: &str) {
@@ -1075,7 +1080,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, 200);
-        let html = String::from_utf8(response.body).unwrap();
+        let html = std::str::from_utf8(response.body.as_slice()).unwrap();
         // A full page load on a non-root route must carry the same titlebar
         // custom properties as the startup document, or a custom titlebar
         // collapses as soon as the user navigates.
@@ -1118,33 +1123,24 @@ mod tests {
     }
 
     #[test]
-    fn dispatches_ipc_endpoint() {
+    fn dispatches_ipc_through_the_owning_frame() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "index.html", "<main>Hello</main>");
 
         let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
-        config
-            .ipc_registry
-            .register("echo", |payload| Ok(payload.to_vec()));
+        config.ipc_registry = crate::ipc_test_support::registry();
         let runtime = DesktopRuntime::from_source(config).unwrap();
-
-        let request = crate::ipc::DesktopIpcRequest {
-            version: crate::ipc::IPC_VERSION,
-            request_id: 7,
-            method: "echo".to_string(),
-            payload: b"ping".to_vec(),
-        };
-        let mut body = Vec::new();
-        request.encode(&mut body).unwrap();
-
-        let response = runtime
-            .handle_request(&DesktopProtocolRequest::post(IPC_ENDPOINT, &body))
-            .unwrap();
-
-        assert_eq!(response.status, 200);
-        assert_eq!(response.content_type, "application/x-protobuf");
-        let decoded = crate::ipc::DesktopIpcResponse::decode(response.body.as_slice()).unwrap();
-        assert_eq!(decoded.request_id, 7);
+        assert!(matches!(
+            runtime.handle_request(&DesktopProtocolRequest::post(IPC_ENDPOINT, b"unadmitted")),
+            Err(DesktopError::UnsupportedRuntime { .. })
+        ));
+        let frame = crate::DesktopFrame::with_ipc_options(
+            Arc::new(runtime),
+            crate::WindowOptions::default(),
+            crate::ipc_test_support::options(),
+        )
+        .unwrap();
+        crate::ipc_test_support::assert_echo(&frame, b"ping");
     }
 
     #[test]
@@ -1568,7 +1564,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, 200);
-        let html = String::from_utf8(response.body).unwrap();
+        let html = std::str::from_utf8(response.body.as_slice()).unwrap();
         assert!(html.contains("<p>favorites</p>"));
     }
 

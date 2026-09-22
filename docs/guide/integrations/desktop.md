@@ -420,89 +420,221 @@ tooling:
 
 ## Message passing
 
-Desktop apps have three message channels plus a command queue. Pick by
-direction and purpose:
+Application messages use generated Rust and TypeScript interfaces from one
+proto3 contract. This is a Mojo-style authoring model over supported system
+WebView APIs, not Chromium's internal Mojo runtime.
 
 | Direction | Use | Transport | Extensible |
 | --- | --- | --- | --- |
-| JavaScript → Rust, with a reply | `invokeDesktop(method, payload)` | protobuf `POST /_webui/ipc` | Yes, register methods |
-| Rust → JavaScript, fire and forget | `webui:*` events on `window` | injected `CustomEvent` | No, fixed event set |
+| JavaScript → Rust request | Generated host method returning `Promise<T>` | bounded protobuf | Yes, shared schema |
+| Rust → JavaScript request | Generated renderer method returning `IpcCall<T>` | bounded protobuf | Yes, shared schema |
+| Rust → JavaScript notification | Generated renderer emitter and JS subscription | bounded protobuf | Yes, shared schema |
+| JavaScript → Rust notification | Generated host emitter and Rust handler | bounded protobuf | Yes, shared schema |
+| Native lifecycle → JavaScript | `webui:*` events on `window` | injected `CustomEvent` | No, fixed event set |
 | JavaScript → Rust window control | `webui-drag` regions | bounded host message | No, closed command set |
 | Rust → native window | `WindowHandle` | UI-thread command queue | No, fixed command set |
 
-Application data belongs on the request/reply channel. Lifecycle notifications
-and window controls are narrow, closed-set interfaces rather than a
-general-purpose application message bus.
+Lifecycle notifications and window controls remain separate from application
+data. A native lifecycle event is not an application RPC response.
 
-### JavaScript to Rust: `invokeDesktop`
+### Define and generate the contract
 
-Desktop IPC is protobuf-first and allowlisted. Web content sends request bytes
-to a reserved endpoint and receives response bytes; the Rust dispatcher
-validates size before dispatch and returns structured protobuf errors instead
-of panicking.
+Install the browser runtime and pinned generator tooling:
 
-Register methods before building the app.
-`register_protobuf` handles decode and encode for `prost` message types:
+```sh
+pnpm add @microsoft/webui-desktop
+pnpm add -D ts-proto@2.12.3 @bufbuild/protobuf@2.15.0
+```
 
-```rust
-use webui_desktop::{DesktopApp, IpcHandlerError, IpcRegistry};
+The host also needs `protoc`. The generator reports a missing tool rather than
+downloading it silently. A minimal `schema/application.proto` can declare both
+directions:
 
-let mut ipc = IpcRegistry::new();
-ipc.register_protobuf("contacts.search", move |req: SearchRequest| {
-    let hits = store.search(&req.query).map_err(|err| {
-        IpcHandlerError::new(
-            "search-failed",
-            format!("contact search failed: {err}"),
-            "retry the search, or check the contact store path",
-        )
-    })?;
-    Ok(SearchResponse { hits })
+```proto
+syntax = "proto3";
+package example.desktop;
+import "webui/ipc/options.proto";
+import "google/protobuf/empty.proto";
+
+option (webui.ipc.contract_name) = "example.desktop";
+option (webui.ipc.contract_major) = 1;
+
+message Item { uint64 id = 1; bytes image = 2; }
+message Label { string text = 1; }
+
+service Host {
+  option (webui.ipc.receiver) = HOST;
+  rpc Save(Item) returns (google.protobuf.Empty) {
+    option (webui.ipc.id) = 1101;
+  }
+  rpc Selected(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 1102;
+    option (webui.ipc.notification) = true;
+  }
+}
+
+service Renderer {
+  option (webui.ipc.receiver) = RENDERER;
+  rpc LabelFor(Item) returns (Label) {
+    option (webui.ipc.id) = 2001;
+  }
+  rpc Changed(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 2002;
+    option (webui.ipc.notification) = true;
+  }
+}
+```
+
+IDs above 1023 are application-owned and must remain unique and stable. An
+`Empty` response is an acknowledged RPC: its promise resolves when the handler
+finishes. An explicit `Notification` is different: its emitter waits for
+bounded admission, not subscriber completion.
+
+Generate the bindings and commit the generated files and compatibility lock:
+
+```sh
+webui desktop ipc generate schema/application.proto \
+  --include schema \
+  --rust-out desktop/src/generated \
+  --ts-out src/generated \
+  --lock schema/ipc-schema.lock.json \
+  --ts-proto-plugin node_modules/.bin/protoc-gen-ts_proto
+```
+
+Use the same command with `--check` in CI to detect drift without rewriting
+files. The SDK options schema is included automatically. Rust build scripts can
+instead call `webui_desktop_build::generate`.
+
+### JavaScript requests and receivers
+
+Bundle the generated `ipc.ts` with the application:
+
+```typescript
+import { createDesktopTransport } from '@microsoft/webui-desktop';
+import { connectDesktop } from './generated/ipc.js';
+
+const connection = await connectDesktop(createDesktopTransport(), {
+  renderer: {
+    async labelFor(item, context) {
+      context.signal.throwIfAborted();
+      return { text: `Item ${item.id}` };
+    },
+  },
+  onError: error => console.error(error.code, error.message),
 });
 
+const changed = connection.renderer.onChanged(item => updateView(item));
+const item = { id: 42n, image: new Uint8Array([1, 2, 3]) };
+
+await connection.host.save(item, { timeoutMs: 5_000 });
+await connection.host.selected(item);
+
+changed.close();
+connection.close();
+```
+
+`save` is JS-to-Rust request/reply; `selected` is a notification to the Rust
+receiver. `labelFor` handles Rust-initiated requests. `onChanged` receives
+Rust-initiated notifications. `updateView` is application code.
+
+### Rust receivers and messages to JavaScript
+
+```rust
+use std::sync::Arc;
+use webui_desktop::{
+    ipc::{CallOptions, IpcFuture, IpcOptions, IpcRegistry, NotificationContext, RequestContext},
+    DesktopApp,
+};
+
+#[path = "generated/ipc.rs"]
+mod generated;
+use generated::{messages::example::desktop::Item, HostHandler, RendererClient};
+
+struct Host;
+
+impl HostHandler for Host {
+    fn save(&self, context: RequestContext, item: Item) -> IpcFuture<()> {
+        Box::pin(async move {
+            let page = RendererClient::new(context.session);
+            let label = page.label_for(item.clone(), CallOptions::default()).await?;
+            println!("{}", label.text);
+            page.changed(item).await?;
+            Ok(())
+        })
+    }
+
+    fn selected(&self, _context: NotificationContext, item: Item) -> IpcFuture<()> {
+        Box::pin(async move {
+            println!("Selected {}", item.id);
+            Ok(())
+        })
+    }
+}
+
+let mut registry = IpcRegistry::new(&generated::SCHEMA);
+generated::register_host(&mut registry, Arc::new(Host))?;
 let frame = DesktopApp::from_bundle(resources)?
-    .ipc_registry(ipc)
+    .ipc_registry(registry)
+    .ipc_options(IpcOptions::for_schema(&generated::SCHEMA))
     .build()?;
 webui_desktop::run_frame(frame)?;
 ```
 
-`SearchRequest`, `SearchResponse`, and `store` are application-defined. Use the
-same registry with a source-backed builder, or use `register` when you want raw
-`&[u8]` in and `Vec<u8>` out.
+Startup registration installs both Rust RPC and notification handlers before
+the document becomes ready. The SDK executes Rust application handlers away
+from the native UI thread; application code does not need Tokio just to bind
+handlers. Source hosts use the same registry and options with
+`DesktopApp::from_source(config)`.
 
-Call it from web content through the generated client, which packaging writes
-into the bundle as `assets/webui-desktop-ipc.js` and serves at
-`/webui-desktop-ipc.js`:
+### Types, permissions, and lifetime
 
-```javascript
-import { invokeDesktop } from '/webui-desktop-ipc.js';
+Application code uses generated objects rather than method strings or manual
+byte encoding. JavaScript 64-bit integers are `bigint`; bytes are `Uint8Array`;
+protobuf maps are `Map<K,V>`. Invalid types and out-of-range values are rejected,
+not silently coerced.
 
-const bytes = await invokeDesktop('contacts.search', encodeSearchRequest(query));
-const results = decodeSearchResponse(bytes);
+The default denies application methods. `IpcOptions::for_schema` explicitly
+grants the generated contract; hosts may narrow its ID allowlists. Both ends
+must use the same schema hash and major version. The native bootstrap and
+reserved runtime assets are identical in source and packaged modes.
+
+Requests return typed promises/futures and structured `IpcError`s. Timeouts
+include queue time. `AbortSignal`, dropped Rust calls, navigation and shutdown
+settle callers once; cancellation does not roll back completed side effects.
+There are no automatic retries. Notifications preserve order per subscriber,
+and subscription disposal prevents queued callbacks from starting. Expensive
+browser work still belongs in Web Workers; blocking Rust work must cooperate
+with cancellation or remain within its bounded application workers.
+
+IPC capacity is bounded by frames, retained bytes, calls, and callback fanout.
+Overload rejects explicitly. Native metadata carries admission and availability
+signals; application payloads remain protobuf binary, without base64 or
+per-byte object arrays. No idle polling or localhost server is introduced.
+
+Connections belong to an admitted document, not just a URL. Full navigation
+revokes old credentials and callbacks; reacquire a connection in the replacement
+document. Ordinary same-document routing preserves it. The authenticated
+principal is the committed main-document capability. Cross-origin documents
+without that capability are denied; same-origin parent delegation is within
+the trusted application boundary.
+
+WebKit may restore a document from its back/forward cache without rerunning
+application modules. The SDK retires its old connections on `pagehide` and
+prepares a fresh inactive bootstrap epoch before a cache-eligible page freezes.
+Reconnect explicitly on restored `pageshow`; this waits for normal native
+admission and does not replay calls or revive old subscriptions:
+
+```typescript
+window.addEventListener('pageshow', event => {
+  if (event.persisted) {
+    reconnectAndBindHandlers().catch(reportError);
+  }
+});
 ```
 
-The client is included in desktop bundles, so it is present in packaged
-apps but not when running from source with a plain `asset_root`. The
-`/_webui/ipc` endpoint itself works in both modes, so during development either
-copy the packaged client into your asset root or `POST` the frame directly.
-
-`invokeDesktop` resolves with a `Uint8Array` of response payload bytes, or
-throws an `Error` carrying `code`, `message`, and `help` from the Rust side.
-Handle it like any async call:
-
-```javascript
-try {
-  const bytes = await invokeDesktop('contacts.search', payload);
-} catch (error) {
-  console.error(error.code, error.message, error.help);
-}
-```
-
-Method names are an allowlist. An unregistered method returns an
-`unknown-method` error rather than reaching any Rust code. Frames are capped at
-`DEFAULT_MAX_IPC_PAYLOAD_BYTES` (1 MiB); raise it with
-`IpcRegistry::with_max_payload_bytes` on a trusted app. Oversized or undecodable
-request frames return structured errors with a `0` request id. A decoded
-request with an unsupported version retains its request id in the error response.
+`reconnectAndBindHandlers` is application code that creates a new transport,
+calls the generated `connectDesktop`, and retains its new subscriptions. The
+old connection remains closed, even after a successful restoration.
 
 ### Rust to JavaScript: lifecycle events
 

@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use super::response::finish_scheme_request;
 use crate::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime,
     DEFAULT_MAX_ASSET_BYTES,
 };
-use gtk4::{gio, glib};
-use webkit6::{prelude::*, URISchemeRequest, URISchemeResponse};
+use gtk4::gio;
+use webkit6::{prelude::*, URISchemeRequest};
 
 pub(super) fn startup_url() -> String {
     let path = std::env::var("WEBUI_DESKTOP_START_PATH").unwrap_or_else(|_| "/".to_string());
@@ -83,14 +84,4 @@ fn read_body(request: &URISchemeRequest) -> std::result::Result<Vec<u8>, Desktop
         }
     }
     Ok(out)
-}
-
-pub(super) fn finish_scheme_request(request: &URISchemeRequest, response: DesktopProtocolResponse) {
-    let bytes = glib::Bytes::from_owned(response.body);
-    let stream = gio::MemoryInputStream::from_bytes(&bytes);
-    let length = i64::try_from(bytes.len()).unwrap_or(-1);
-    let scheme_response = URISchemeResponse::new(&stream, length);
-    scheme_response.set_content_type(&response.content_type);
-    scheme_response.set_status(u32::from(response.status), None);
-    request.finish_with_response(&scheme_response);
 }

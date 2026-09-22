@@ -17,6 +17,12 @@ mod bridge;
 mod command;
 mod create;
 mod event;
+mod ipc;
+mod ipc_body;
+mod ipc_control;
+mod ipc_deadline;
+mod ipc_http;
+mod ipc_policy;
 mod message;
 mod nonclient;
 mod protocol;
@@ -25,6 +31,7 @@ mod wakeup;
 mod webview;
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::{DesktopEvent, DesktopRuntime, WindowId, WindowOptions, WindowStateStore};
@@ -50,6 +57,8 @@ pub(super) const APP_HOST: &str = "app.webui.localhost";
 pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("*");
 /// Private message used to wake the UI thread for queued commands.
 pub(super) const WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 1;
+/// Coalesced, payload-free native IPC completion/control wake.
+pub(super) const IPC_WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 2;
 /// Identity of the single window owned by this backend.
 pub(super) const WINDOW_ID: WindowId = WindowId::PRIMARY;
 /// Discriminator for fetch-bridge requests.
@@ -72,7 +81,7 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if WebView2 cannot initialize.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window))
+    run_frame(DesktopFrame::new(runtime, window)?)
 }
 
 /// Run a desktop frame until the native window closes.
@@ -97,21 +106,32 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window.devtools)?;
+    let ipc = ipc::WindowsIpc::new(frame.ipc_bridge(), &webview, window_frame.hwnd)?;
+    let _ipc_shutdown = ipc::Shutdown(Rc::clone(&ipc));
 
     let navigation_starting = webview::register_navigation_guard(&webview, frame.events.clone())?;
     let navigation_completed =
         webview::register_navigation_completed(&webview, frame.events.clone())?;
     webview::inject_drag_script(&webview)?;
-    let web_message_received =
-        bridge::register_fetch_bridge(&webview, Arc::clone(&frame.runtime), window_frame.hwnd)?;
-    let web_resource_requested =
-        protocol::register_runtime_handler(&environment, &webview, Arc::clone(&frame.runtime))?;
+    let web_message_received = bridge::register_fetch_bridge(
+        &webview,
+        Arc::clone(&frame.runtime),
+        window_frame.hwnd,
+        Rc::downgrade(&ipc),
+    )?;
+    let web_resource_requested = protocol::register_runtime_handler(
+        &environment,
+        &webview,
+        Arc::clone(&frame.runtime),
+        Rc::downgrade(&ipc),
+    )?;
     let has_virtual_host_assets = webview::register_virtual_host_assets(&webview)?;
     message::set_controller_bounds(&controller, window_frame.hwnd)?;
     // SAFETY: The controller is live and owns the WebView2 surface.
     unsafe { controller.SetIsVisible(true)? };
 
     let state = Box::new(FrameState {
+        ipc: Rc::clone(&ipc),
         controller,
         _navigation_starting: navigation_starting,
         _navigation_completed: navigation_completed,
@@ -129,6 +149,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     // Installing a wakeup flushes an existing backlog. WebView2 initialization
     // pumps messages, so the native receiver must exist before attachment.
     install_wakeup(window_frame.hwnd)?;
+    ipc.install(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT)?;
 
     if frame.window.fullscreen {
         state::with_window_state(window_frame.hwnd, |state| {

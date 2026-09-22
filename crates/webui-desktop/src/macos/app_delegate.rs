@@ -36,6 +36,8 @@ use super::window::DesktopWindow;
 use super::{dispatch_event, MacosLaunchOptions};
 
 pub(super) struct AppDelegateIvars {
+    pub(in crate::macos) command_wake: OnceCell<super::commands::CommandWake>,
+    pub(in crate::macos) ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     pub(in crate::macos) window: OnceCell<Retained<DesktopWindow>>,
     pub(in crate::macos) webview: OnceCell<Retained<WKWebView>>,
     pub(in crate::macos) scheme_handler: OnceCell<Retained<DesktopSchemeHandler>>,
@@ -221,6 +223,12 @@ define_class!(
         }
         #[unsafe(method(windowWillClose:))]
         fn windowWillClose(&self, _notification: &NSNotification) {
+            if let Some(wake) = self.ivars().command_wake.get() {
+                wake.close();
+            }
+            if let Some(ipc) = &self.ivars().ipc {
+                ipc.close();
+            }
             persist_window_state_if_enabled(self);
             dispatch_for_delegate(
                 self,
@@ -252,6 +260,8 @@ impl DesktopAppDelegate {
     pub(super) fn new(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Retained<Self> {
         let maximized = options.options.maximized;
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
+            command_wake: OnceCell::new(),
+            ipc: options.ipc,
             window: OnceCell::new(),
             webview: OnceCell::new(),
             scheme_handler: OnceCell::new(),

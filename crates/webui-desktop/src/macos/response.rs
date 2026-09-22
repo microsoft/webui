@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use crate::DesktopProtocolResponse;
+use std::ffi::c_void;
+use std::ptr::NonNull;
+
+use crate::{DesktopProtocolResponse, DesktopResponseBody};
+use block2::RcBlock;
 use objc2::ffi::NSInteger;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::ProtocolObject;
@@ -43,6 +47,15 @@ pub(super) fn send_response(
     url: Option<&NSURL>,
     response: DesktopProtocolResponse,
 ) {
+    send_response_cancellable(task, url, response, || true);
+}
+
+pub(super) fn send_response_cancellable(
+    task: &ProtocolObject<dyn WKURLSchemeTask>,
+    url: Option<&NSURL>,
+    response: DesktopProtocolResponse,
+    is_live: impl Fn() -> bool,
+) {
     let fallback_url = url
         .is_none()
         .then(|| NSURL::URLWithString(ns_string!("webui://app/")))
@@ -75,13 +88,47 @@ pub(super) fn send_response(
     // SAFETY: The task is live for the callback. WebKit requires the response,
     // optional data, then completion, and may retain the data beyond this call.
     unsafe {
+        if !is_live() {
+            return;
+        }
         task.didReceiveResponse(&http_response);
+        if !is_live() {
+            return;
+        }
         if !response.body.is_empty() {
-            // Foundation owns the Vec allocation and its Rust deallocator.
-            let data = NSData::from_vec(response.body);
+            let data = native_data(response.body);
             task.didReceiveData(&data);
         }
-        task.didFinish();
+        if is_live() {
+            task.didFinish();
+        }
+    }
+}
+
+fn native_data(body: DesktopResponseBody) -> Retained<NSData> {
+    let length = body.len();
+    let bytes = NonNull::from(body.as_slice()).cast::<c_void>();
+    // Capture the complete body, not just its Vec. Foundation retains this
+    // block with its no-copy storage, so an IPC reservation cannot be returned
+    // while WebKit still owns the bytes after didFinish or task cancellation.
+    let deallocator = RcBlock::new(move |_bytes: NonNull<c_void>, _length: usize| {
+        let _keep_body_until_block_release = &body;
+    });
+    // SAFETY: `bytes` points into the uniquely owned body captured by the block,
+    // and is valid for `length` bytes. Immutable NSData never mutates it.
+    // Foundation copies/retains the block before this call returns and releases
+    // it only after relinquishing the no-copy storage. Dropping that capture
+    // frees the original Vec with its original capacity and then its lease;
+    // the callback must not additionally free or reconstruct the allocation.
+    // DesktopResponseBody is Send + Sync, so final release on a WebKit thread
+    // does not transfer UI-thread-local objects across threads.
+    unsafe {
+        NSData::initWithBytesNoCopy_length_deallocator(
+            NSData::alloc(),
+            bytes,
+            length,
+            Some(&deallocator),
+        )
     }
 }
 
@@ -90,6 +137,10 @@ pub(super) fn send_response(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use objc2::rc::autoreleasepool;
     use objc2::{define_class, msg_send, DefinedClass, Message};
@@ -149,6 +200,89 @@ mod tests {
             // SAFETY: NSObject init has the expected signature for this test subclass.
             unsafe { msg_send![super(this), init] }
         }
+    }
+
+    struct ReleaseCount(Arc<AtomicUsize>);
+
+    impl Drop for ReleaseCount {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn native_buffer_retains_response_lease_after_http_completion() {
+        for cancel_after_data in [false, true] {
+            autoreleasepool(|_| {
+                let released = Arc::new(AtomicUsize::new(0));
+                let task = TestSchemeTask::new();
+                let mut bytes = Vec::with_capacity(8192);
+                bytes.extend_from_slice(&[1, 2, 3]);
+                let original_pointer = bytes.as_ptr();
+                let body =
+                    DesktopResponseBody::with_guard(bytes, ReleaseCount(Arc::clone(&released)));
+                autoreleasepool(|_| {
+                    send_response_cancellable(
+                        ProtocolObject::from_ref(&*task),
+                        None,
+                        DesktopProtocolResponse::protobuf(body),
+                        || !cancel_after_data || task.ivars().data.borrow().is_none(),
+                    );
+                });
+                let expected: &[&str] = if cancel_after_data {
+                    &["response", "data"]
+                } else {
+                    &["response", "data", "finish"]
+                };
+                assert_eq!(*task.ivars().calls.borrow(), expected);
+                assert_eq!(released.load(Ordering::SeqCst), 0);
+                let retained = task.ivars().data.borrow_mut().take().unwrap();
+                // SAFETY: The native buffer is immutable and retained in this scope.
+                assert_eq!(
+                    unsafe { retained.as_bytes_unchecked() }.as_ptr(),
+                    original_pointer
+                );
+                drop(task);
+                assert_eq!(released.load(Ordering::SeqCst), 0);
+                drop(retained);
+                assert_eq!(released.load(Ordering::SeqCst), 1);
+            });
+        }
+    }
+
+    #[test]
+    fn cancelled_and_empty_responses_release_without_native_buffer_ownership() {
+        for (bytes, cancel) in [(vec![1, 2, 3], true), (Vec::new(), false)] {
+            autoreleasepool(|_| {
+                let released = Arc::new(AtomicUsize::new(0));
+                let task = TestSchemeTask::new();
+                send_response_cancellable(
+                    ProtocolObject::from_ref(&*task),
+                    None,
+                    DesktopProtocolResponse::protobuf(DesktopResponseBody::with_guard(
+                        bytes,
+                        ReleaseCount(Arc::clone(&released)),
+                    )),
+                    || !cancel,
+                );
+                assert!(task.ivars().data.borrow().is_none());
+                assert_eq!(released.load(Ordering::SeqCst), 1);
+            });
+        }
+    }
+
+    #[test]
+    fn stopped_response_never_delivers_later_data_or_finish() {
+        autoreleasepool(|_| {
+            let task = TestSchemeTask::new();
+            send_response_cancellable(
+                ProtocolObject::from_ref(&*task),
+                None,
+                DesktopProtocolResponse::new(200, "application/x-protobuf", vec![1, 2, 3]),
+                || task.ivars().calls.borrow().is_empty(),
+            );
+            assert_eq!(*task.ivars().calls.borrow(), ["response"]);
+        });
     }
 
     #[test]

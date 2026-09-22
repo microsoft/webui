@@ -18,6 +18,8 @@ use super::dispatch_event;
 
 pub(super) struct NavigationDelegateIvars {
     pub(super) events: EventRegistry,
+    ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    ipc_navigation: std::cell::RefCell<Option<Retained<WKNavigation>>>,
 }
 
 define_class!(
@@ -33,6 +35,30 @@ define_class!(
     // SAFETY: Method signatures match WKNavigationDelegate.
     #[allow(non_snake_case)]
     unsafe impl WKNavigationDelegate for DesktopNavigationDelegate {
+        #[unsafe(method(webView:didStartProvisionalNavigation:))]
+        unsafe fn started(&self, _web_view: &WKWebView, navigation: Option<&WKNavigation>) {
+            if let Some(ipc) = &self.ivars().ipc {
+                ipc.navigation_started();
+                let previous = self
+                    .ivars()
+                    .ipc_navigation
+                    .replace(navigation.map(objc2::Message::retain));
+                drop(previous);
+            }
+        }
+
+        #[unsafe(method(webView:didCommitNavigation:))]
+        unsafe fn committed(&self, web_view: &WKWebView, navigation: Option<&WKNavigation>) {
+            if let Some(ipc) = &self.ivars().ipc {
+                let matches = navigation
+                    .zip(self.ivars().ipc_navigation.borrow().as_deref())
+                    .is_some_and(|(commit, started)| std::ptr::eq(commit, started));
+                if matches {
+                    ipc.committed(web_view);
+                }
+            }
+        }
+
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         unsafe fn webView_decidePolicyForNavigationAction_decisionHandler(
             &self,
@@ -86,8 +112,16 @@ define_class!(
 );
 
 impl DesktopNavigationDelegate {
-    pub(super) fn new(mtm: MainThreadMarker, events: EventRegistry) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars { events });
+    pub(super) fn new(
+        mtm: MainThreadMarker,
+        events: EventRegistry,
+        ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars {
+            events,
+            ipc,
+            ipc_navigation: std::cell::RefCell::new(None),
+        });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
     }

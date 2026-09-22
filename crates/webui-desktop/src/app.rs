@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::error::{DesktopError, Result};
 use crate::frame::DesktopFrame;
-use crate::ipc::IpcRegistry;
+use crate::ipc::{IpcOptions, IpcRegistry};
 #[cfg(feature = "source")]
 use crate::runtime::DesktopSourceConfig;
 use crate::runtime::{DesktopBundleConfig, DesktopRuntime};
@@ -40,6 +40,7 @@ struct BundleApp {
 /// state participate in the first render, not only subsequent requests.
 pub struct DesktopAppBuilder {
     input: AppInput,
+    ipc_options: IpcOptions,
 }
 
 impl DesktopAppBuilder {
@@ -134,6 +135,16 @@ impl DesktopAppBuilder {
         self
     }
 
+    /// Configure application IPC permissions and bounded resource limits.
+    ///
+    /// The default denies all application methods. Use
+    /// [`IpcOptions::for_schema`] to explicitly grant a generated contract.
+    #[must_use]
+    pub fn ipc_options(mut self, options: IpcOptions) -> Self {
+        self.ipc_options = options;
+        self
+    }
+
     /// Register a Rust route state provider.
     ///
     /// Patterns support literal segments and `:param` captures, e.g.
@@ -194,7 +205,9 @@ impl DesktopAppBuilder {
                 } = *app;
                 let window = config.window.clone();
                 let runtime = DesktopRuntime::from_source(config)?;
-                let mut frame = DesktopFrame::new(Arc::new(runtime), window).with_shell(shell);
+                let mut frame =
+                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?
+                        .with_shell(shell);
                 frame.app_id = app_id;
                 Ok(frame)
             }
@@ -204,9 +217,11 @@ impl DesktopAppBuilder {
                 let shell = manifest.shell.clone();
                 let app_id = manifest.app_id.clone();
                 let runtime = DesktopRuntime::from_bundle_config_and_manifest(config, manifest)?;
-                Ok(DesktopFrame::new(Arc::new(runtime), window)
-                    .with_shell(shell)
-                    .with_app_id(app_id))
+                Ok(
+                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?
+                        .with_shell(shell)
+                        .with_app_id(app_id),
+                )
             }
         }
     }
@@ -224,6 +239,7 @@ impl DesktopApp {
     #[must_use]
     pub fn from_source(config: DesktopSourceConfig) -> DesktopAppBuilder {
         DesktopAppBuilder {
+            ipc_options: IpcOptions::default(),
             input: AppInput::Source(Box::new(SourceApp {
                 config,
                 shell: DesktopShellConfig::default(),
@@ -262,6 +278,7 @@ impl DesktopApp {
         manifest: DesktopBundleManifest,
     ) -> DesktopAppBuilder {
         DesktopAppBuilder {
+            ipc_options: IpcOptions::default(),
             input: AppInput::Bundle(Box::new(BundleApp { config, manifest })),
         }
     }
@@ -287,14 +304,10 @@ pub fn run_packaged_app() -> Result<()> {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use prost::Message;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::frame::test_support;
-    use crate::{
-        desktop_ipc_response, BundleAsset, DesktopIpcRequest, DesktopIpcResponse,
-        DesktopProtocolRequest, DesktopProtocolResponse, TitlebarStyle, IPC_ENDPOINT, IPC_VERSION,
-    };
+    use crate::{BundleAsset, DesktopProtocolRequest, DesktopProtocolResponse, TitlebarStyle};
 
     #[derive(Serialize)]
     struct Seed {
@@ -302,8 +315,6 @@ mod tests {
     }
 
     fn configure(builder: DesktopAppBuilder, calls: Arc<AtomicUsize>) -> Result<DesktopAppBuilder> {
-        let mut ipc = IpcRegistry::new();
-        ipc.register("echo", |payload| Ok(payload.to_vec()));
         builder
             .state(&Seed { label: "seed" })?
             .token_css(HashMap::from([(
@@ -322,7 +333,8 @@ mod tests {
                 icon_path: Some(PathBuf::from("assets/icon.png")),
                 ..DesktopShellConfig::default()
             })
-            .ipc_registry(ipc)
+            .ipc_registry(crate::ipc_test_support::registry())
+            .ipc_options(crate::ipc_test_support::options())
             .route("/", move |ctx| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(ctx.base_state["label"], "seed");
@@ -355,25 +367,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.body, b"registered");
 
-        let request = DesktopIpcRequest {
-            version: IPC_VERSION,
-            request_id: 7,
-            method: "echo".to_string(),
-            payload: b"registered".to_vec(),
-        }
-        .encode_to_vec();
-        let response = frame
-            .runtime
-            .handle_request(&DesktopProtocolRequest::post(IPC_ENDPOINT, &request))
-            .unwrap();
-        let response = DesktopIpcResponse::decode(response.body.as_slice()).unwrap();
-        assert_eq!(response.request_id, 7);
-        assert_eq!(
-            response.result,
-            Some(desktop_ipc_response::Result::Payload(
-                b"registered".to_vec()
-            ))
-        );
+        crate::ipc_test_support::assert_echo(frame, b"registered");
     }
 
     #[test]

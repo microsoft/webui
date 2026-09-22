@@ -85,6 +85,28 @@ jobs:
         with:
           shared-cache-key: ubuntu-build
 
+      - name: Install native IPC test display
+        run: sudo apt-get install -y -qq dbus-x11 xvfb xauth
+
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test native IPC source and package
+        run: |
+          GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" \
+            python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-linux
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
+
   build-macos:
     name: Build (macOS)
     runs-on: macos-latest-large
@@ -101,6 +123,23 @@ jobs:
           cargo test -p microsoft-webui-desktop --no-default-features --features native
           cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
 
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test native IPC source and package
+        run: python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-macos
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
+
   build-windows:
     name: Build (Windows)
     runs-on: windows-latest
@@ -114,6 +153,23 @@ jobs:
 
       - name: Test native desktop SDK
         run: cargo test -p microsoft-webui-desktop --no-default-features --features native
+
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test native IPC source and package
+        run: python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-windows
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

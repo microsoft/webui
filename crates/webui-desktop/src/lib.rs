@@ -7,13 +7,23 @@
 //! native dependencies. Enable `native` for the platform webview, `source` for
 //! development compilation, and `cli` for the `webui-desktop` tooling binary.
 
+#[cfg(test)]
+extern crate self as webui_desktop;
+
+#[cfg(test)]
+#[path = "../tests/support/echo.rs"]
+mod ipc_test_support;
+
 mod app;
 mod bundle;
 mod error;
 mod event;
 mod frame;
 mod hydration;
-mod ipc;
+pub mod ipc;
+mod ipc_assets;
+#[cfg(feature = "native")]
+mod native_ipc;
 mod navigation;
 #[cfg(feature = "source")]
 mod package;
@@ -57,16 +67,13 @@ pub use frame::{
 };
 #[cfg(feature = "native")]
 pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
-pub use ipc::{
-    desktop_ipc_response, DesktopIpcError, DesktopIpcRequest, DesktopIpcResponse, IpcHandlerError,
-    IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION,
-};
+pub use ipc::{IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION};
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};
 pub use protocol::{
-    DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES,
-    IPC_ENDPOINT,
+    DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopResponseBody,
+    DesktopResponseLease, DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
 };
 #[cfg(feature = "source")]
 pub use runtime::DesktopSourceConfig;

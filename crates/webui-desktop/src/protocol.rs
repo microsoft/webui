@@ -73,24 +73,108 @@ impl<'a> DesktopProtocolRequest<'a> {
 }
 
 /// Runtime-neutral representation of a custom-protocol response.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct DesktopProtocolResponse {
     /// HTTP status code.
     pub status: u16,
     /// Content type header value.
     pub content_type: String,
     /// Response body bytes.
-    pub body: Vec<u8>,
+    pub body: DesktopResponseBody,
 }
+
+/// Owned response bytes and any resource reservation backing their lifetime.
+///
+/// Native adapters must retain the complete body, or both values returned by
+/// [`Self::into_parts`], until the native consumer releases the bytes.
+pub struct DesktopResponseBody {
+    bytes: Vec<u8>,
+    lease: Option<DesktopResponseLease>,
+}
+
+/// Opaque response-lifetime reservation released when the native body is freed.
+pub struct DesktopResponseLease {
+    _owner: Box<dyn Send + Sync>,
+}
+
+impl DesktopResponseBody {
+    /// Attach a reservation to an owned response buffer without copying it.
+    #[must_use]
+    pub fn with_guard<G: Send + Sync + 'static>(bytes: Vec<u8>, guard: G) -> Self {
+        Self {
+            bytes,
+            lease: Some(DesktopResponseLease {
+                _owner: Box::new(guard),
+            }),
+        }
+    }
+
+    /// Borrow response bytes while retaining their reservation.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Transfer bytes and reservation to a native ownership container.
+    ///
+    /// The returned lease must not be dropped before the last native view of
+    /// the corresponding buffer is released.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, Option<DesktopResponseLease>) {
+        (self.bytes, self.lease)
+    }
+}
+
+impl From<Vec<u8>> for DesktopResponseBody {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self { bytes, lease: None }
+    }
+}
+
+impl AsRef<[u8]> for DesktopResponseBody {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::ops::Deref for DesktopResponseBody {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+
+impl std::fmt::Debug for DesktopResponseBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DesktopResponseBody")
+            .field("length", &self.bytes.len())
+            .field("reserved", &self.lease.is_some())
+            .finish()
+    }
+}
+
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for DesktopResponseBody {
+    fn eq(&self, other: &T) -> bool {
+        self.bytes.as_slice() == other.as_ref()
+    }
+}
+
+impl Eq for DesktopResponseBody {}
 
 impl DesktopProtocolResponse {
     /// Create a response.
     #[must_use]
-    pub fn new(status: u16, content_type: impl Into<String>, body: Vec<u8>) -> Self {
+    pub fn new(
+        status: u16,
+        content_type: impl Into<String>,
+        body: impl Into<DesktopResponseBody>,
+    ) -> Self {
         Self {
             status,
             content_type: content_type.into(),
-            body,
+            body: body.into(),
         }
     }
 
@@ -106,7 +190,7 @@ impl DesktopProtocolResponse {
 
     /// Create a protobuf response.
     #[must_use]
-    pub fn protobuf(body: Vec<u8>) -> Self {
+    pub fn protobuf(body: impl Into<DesktopResponseBody>) -> Self {
         Self::new(200, "application/x-protobuf", body)
     }
 
@@ -218,4 +302,61 @@ pub(crate) fn read_known_asset_response(
         content_type.to_string(),
         body,
     ))
+}
+
+#[cfg(test)]
+mod response_body_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct ReleaseCount(Arc<AtomicUsize>);
+
+    impl Drop for ReleaseCount {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn response_body_retains_its_reservation_until_drop() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let bytes = vec![1, 2, 3];
+        let address = bytes.as_ptr();
+        let body = DesktopResponseBody::with_guard(bytes, ReleaseCount(Arc::clone(&released)));
+        assert_eq!(body.as_slice(), &[1, 2, 3]);
+        assert_eq!(body.as_ptr(), address);
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        drop(body);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn native_transfer_preserves_reservation_and_allocation() {
+        let released = Arc::new(AtomicUsize::new(0));
+        let bytes = vec![4, 5, 6];
+        let address = bytes.as_ptr();
+        let response = DesktopProtocolResponse::protobuf(DesktopResponseBody::with_guard(
+            bytes,
+            ReleaseCount(Arc::clone(&released)),
+        ));
+        let (bytes, lease) = response.body.into_parts();
+        assert_eq!(bytes.as_ptr(), address);
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        drop(bytes);
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        drop(lease);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ordinary_responses_do_not_need_a_reservation() {
+        let response = DesktopProtocolResponse::new(201, "text/plain", b"created".to_vec());
+        assert_eq!(response.body, b"created");
+        let (bytes, lease) = response.body.into_parts();
+        assert_eq!(bytes, b"created");
+        assert!(lease.is_none());
+    }
 }

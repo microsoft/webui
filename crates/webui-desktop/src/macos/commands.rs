@@ -1,11 +1,57 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{WindowCommand, WindowHandle};
+use objc2::rc::Weak;
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSApplication;
+use objc2_app_kit::{NSApplication, NSWindow};
+
+thread_local! {
+    static TARGETS: RefCell<HashMap<u64, Rc<dyn Fn()>>> = RefCell::new(HashMap::new());
+}
+static NEXT_TARGET: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+#[path = "commands_tests.rs"]
+mod tests;
+
+pub(super) struct CommandWake {
+    id: u64,
+    closed: Cell<bool>,
+    _ui_local: std::marker::PhantomData<Rc<()>>,
+}
+
+impl CommandWake {
+    pub(super) fn close(&self) {
+        if self.closed.replace(true) {
+            return;
+        }
+        let target = TARGETS.with(|targets| targets.borrow_mut().remove(&self.id));
+        drop(target);
+    }
+}
+
+impl Drop for CommandWake {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+fn register_target(drain: Rc<dyn Fn()>) -> CommandWake {
+    let id = NEXT_TARGET.fetch_add(1, Ordering::Relaxed);
+    TARGETS.with(|targets| targets.borrow_mut().insert(id, drain));
+    CommandWake {
+        id,
+        closed: Cell::new(false),
+        _ui_local: std::marker::PhantomData,
+    }
+}
 
 // `dispatch_get_main_queue()` is a header-only inline wrapper around the
 // `_dispatch_main_q` symbol in libdispatch (part of `libSystem`), so the
@@ -28,14 +74,32 @@ fn dispatch_get_main_queue() -> *mut c_void {
     std::ptr::addr_of!(_dispatch_main_q).cast_mut()
 }
 
-pub(super) fn install_wakeup(handle: &WindowHandle) {
-    let wake_handle = handle.clone();
-    handle.set_wakeup(move || schedule_drain(wake_handle.clone()));
+pub(super) fn install_wakeup(window: &NSWindow, handle: &WindowHandle) -> CommandWake {
+    let window = Weak::new(window);
+    let commands = handle.clone();
+    let target = register_target(Rc::new(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(window) = window.load() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        for command in commands.drain_commands() {
+            execute_command(&window, command, &app);
+        }
+    }));
+    // Only an opaque id enters the Send + Sync wake callback. The owning
+    // window is weak and UI-local; hidden/unfocused windows remain addressable,
+    // and commands can never fall back to a different key/main window.
+    let id = target.id;
+    handle.set_wakeup(move || schedule_drain(id));
+    target
 }
 
-fn schedule_drain(handle: WindowHandle) {
-    let context = Box::into_raw(Box::new(handle)).cast::<c_void>();
-    // SAFETY: `context` owns a WindowHandle until `drain_on_main_queue` reconstructs
+fn schedule_drain(id: u64) {
+    let context = Box::into_raw(Box::new(id)).cast::<c_void>();
+    // SAFETY: `context` owns an id until `drain_on_main_queue` reconstructs
     // it. Grand Central Dispatch invokes that callback exactly once on the main queue.
     unsafe { dispatch_async_f(dispatch_get_main_queue(), context, drain_on_main_queue) };
 }
@@ -43,16 +107,14 @@ fn schedule_drain(handle: WindowHandle) {
 unsafe extern "C" fn drain_on_main_queue(context: *mut c_void) {
     // SAFETY: `context` was created by `Box::into_raw` in `schedule_drain` and is
     // delivered exactly once by dispatch_async_f.
-    let handle = unsafe { Box::from_raw(context.cast::<WindowHandle>()) };
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    let Some(window) = app.keyWindow().or_else(|| app.mainWindow()) else {
-        return;
-    };
-    for command in handle.drain_commands() {
-        execute_command(&window, command, &app);
+    let id = unsafe { Box::from_raw(context.cast::<u64>()) };
+    drain_target(*id);
+}
+
+fn drain_target(id: u64) {
+    let target = TARGETS.with(|targets| targets.borrow().get(&id).cloned());
+    if let Some(target) = target {
+        target();
     }
 }
 

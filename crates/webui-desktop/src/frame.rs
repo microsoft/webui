@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::ipc::{IpcBridge, IpcHost, IpcOptions, IpcWindow, IpcWindowOwner};
 use crate::{
     DesktopError, DesktopEvent, DesktopRuntime, DesktopShellConfig, EventRegistrationError,
     EventRegistry, EventResponse, EventSubscription, Result, TitlebarStyle, WindowEffect,
@@ -28,20 +29,65 @@ pub struct DesktopFrame {
     pub events: EventRegistry,
     /// Sendable command queue for native window control.
     pub window_handle: WindowHandle,
+    ipc_owner: IpcWindowOwner,
 }
 
 impl DesktopFrame {
-    /// Create a desktop frame with default shell options.
-    #[must_use]
-    pub fn new(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Self {
-        Self {
+    /// Create a desktop frame with default shell options and deny-all IPC permissions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configured IPC schema is invalid.
+    pub fn new(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<Self> {
+        Self::with_ipc_options(runtime, window, IpcOptions::default())
+    }
+
+    /// Create a frame with explicit application IPC permissions and resource limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the IPC schema or limits are invalid.
+    pub fn with_ipc_options(
+        runtime: Arc<DesktopRuntime>,
+        window: WindowOptions,
+        options: IpcOptions,
+    ) -> Result<Self> {
+        let origin = if cfg!(target_os = "windows") {
+            "https://app.webui.localhost"
+        } else {
+            "webui://app"
+        }
+        .to_string();
+        let host = if runtime.is_development() {
+            IpcHost::Source { origin }
+        } else {
+            IpcHost::Packaged { origin }
+        };
+        let ipc_owner = IpcWindowOwner::new(runtime.ipc_registry(), options, host)?;
+        Ok(Self {
             app_id: None,
             runtime,
             window,
             shell: DesktopShellConfig::default(),
             events: EventRegistry::default(),
             window_handle: WindowHandle::default(),
-        }
+            ipc_owner,
+        })
+    }
+
+    /// Return a weak handle to this window's document-scoped application IPC.
+    #[must_use]
+    pub fn ipc(&self) -> IpcWindow {
+        self.ipc_owner.window()
+    }
+
+    /// Return the native transport facade for a custom backend.
+    ///
+    /// Adapters must supply trusted main-frame navigation and origin information
+    /// and retain the owning frame until callbacks and the native loop finish.
+    #[must_use]
+    pub fn ipc_bridge(&self) -> IpcBridge {
+        self.ipc_owner.bridge()
     }
 
     /// Register a non-blocking callback for the frame's lifetime.
@@ -90,6 +136,7 @@ impl Drop for DesktopFrame {
     fn drop(&mut self) {
         // Callback captures may own window handles. Stop commands before
         // releasing those captures so their destructors cannot enqueue work.
+        self.ipc_owner.close();
         self.window_handle.close();
         self.events.close();
     }
@@ -98,6 +145,8 @@ impl Drop for DesktopFrame {
 /// Cross-platform shell capabilities supported by the active backend.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DesktopFrameCapabilities {
+    /// Backend supports authenticated, document-scoped application IPC.
+    pub application_ipc: bool,
     /// Backend can install an application menu.
     pub app_menu: bool,
     /// Backend can expose Windows-style jump lists or an equivalent launcher menu.
@@ -188,7 +237,7 @@ impl DesktopFrameBackend for PlatformFrameBackend {
 /// Returns an error if the current platform shell cannot initialize.
 #[cfg(feature = "native")]
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window))
+    run_frame(DesktopFrame::new(runtime, window)?)
 }
 
 /// Run a prebuilt desktop frame in the current platform backend.
@@ -215,7 +264,15 @@ pub fn run_frame_with<B: DesktopFrameBackend + ?Sized>(
     frame: DesktopFrame,
     backend: &B,
 ) -> Result<()> {
-    validate_frame_capabilities(&frame.window, &frame.shell, backend.capabilities())?;
+    let capabilities = backend.capabilities();
+    validate_frame_capabilities(&frame.window, &frame.shell, capabilities)?;
+    if frame.runtime.ipc_registry().is_enabled() && !capabilities.application_ipc {
+        return Err(DesktopError::UnsupportedRuntime {
+            message: "the selected backend does not support application IPC".to_string(),
+            help: "use a native WebUI backend or implement the frame-scoped IPC adapter contract"
+                .to_string(),
+        });
+    }
     backend.run_frame(frame)
 }
 
@@ -331,6 +388,7 @@ fn platform_run_frame(_frame: DesktopFrame) -> Result<()> {
 #[cfg(all(feature = "native", target_os = "macos"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
+        application_ipc: true,
         app_menu: true,
         jump_list: false,
         popovers: false,
@@ -357,6 +415,7 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 #[cfg(all(feature = "native", target_os = "windows"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
+        application_ipc: true,
         app_menu: false,
         jump_list: false,
         popovers: false,
@@ -380,6 +439,7 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 #[cfg(all(feature = "native", target_os = "linux"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
+        application_ipc: true,
         app_menu: false,
         jump_list: false,
         popovers: false,
@@ -498,7 +558,7 @@ mod tests {
         };
 
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, window);
+        let frame = DesktopFrame::new(runtime, window).unwrap();
 
         assert_eq!(frame.window.title, "Frame Test");
         assert!(frame.shell.icon_path.is_none());
@@ -515,7 +575,9 @@ mod tests {
         shell.downloads.enabled = true;
 
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, WindowOptions::default()).with_shell(shell);
+        let frame = DesktopFrame::new(runtime, WindowOptions::default())
+            .unwrap()
+            .with_shell(shell);
 
         assert_eq!(
             frame.shell.icon_path.as_deref(),
@@ -602,8 +664,9 @@ mod tests {
     #[test]
     fn custom_backend_runs_without_native_features_and_closes_the_frame() {
         let (_bundle, runtime) = test_support::runtime();
-        let frame =
-            DesktopFrame::new(runtime, WindowOptions::default()).with_app_id("com.example.custom");
+        let frame = DesktopFrame::new(runtime, WindowOptions::default())
+            .unwrap()
+            .with_app_id("com.example.custom");
         let handle = frame.window_handle.clone();
         let backend = RecordingBackend {
             calls: AtomicUsize::new(0),
@@ -625,7 +688,8 @@ mod tests {
                 effect: WindowEffect::Mica,
                 ..WindowOptions::default()
             },
-        );
+        )
+        .unwrap();
         let handle = frame.window_handle.clone();
         let backend = RecordingBackend {
             calls: AtomicUsize::new(0),
@@ -643,8 +707,9 @@ mod tests {
     #[test]
     fn backend_failure_is_propagated_and_closes_the_frame() {
         let (_bundle, runtime) = test_support::runtime();
-        let frame =
-            DesktopFrame::new(runtime, WindowOptions::default()).with_app_id("com.example.custom");
+        let frame = DesktopFrame::new(runtime, WindowOptions::default())
+            .unwrap()
+            .with_app_id("com.example.custom");
         let handle = frame.window_handle.clone();
         let backend = RecordingBackend {
             calls: AtomicUsize::new(0),
@@ -662,7 +727,7 @@ mod tests {
     #[test]
     fn frame_supports_persistent_and_scoped_event_handlers() {
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, WindowOptions::default());
+        let frame = DesktopFrame::new(runtime, WindowOptions::default()).unwrap();
         let persistent = Arc::new(AtomicUsize::new(0));
         let scoped = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&persistent);
@@ -691,7 +756,7 @@ mod tests {
     #[test]
     fn frame_propagates_registration_capacity_errors() {
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, WindowOptions::default());
+        let frame = DesktopFrame::new(runtime, WindowOptions::default()).unwrap();
         for _ in 0..MAX_EVENT_HANDLERS {
             frame.on_event(|_| EventResponse::Continue).unwrap();
         }
@@ -709,7 +774,7 @@ mod tests {
     #[test]
     fn dropping_frame_releases_cyclic_callbacks_and_closes_retained_handles() {
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, WindowOptions::default());
+        let frame = DesktopFrame::new(runtime, WindowOptions::default()).unwrap();
         let registry = frame.events.clone();
         let handle = frame.window_handle.clone();
         let capture = Arc::new(());
@@ -751,7 +816,7 @@ mod tests {
         }
 
         let (_bundle, runtime) = test_support::runtime();
-        let frame = DesktopFrame::new(runtime, WindowOptions::default());
+        let frame = DesktopFrame::new(runtime, WindowOptions::default()).unwrap();
         let result = Arc::new(Mutex::new(None));
         let capture = SendOnDrop {
             handle: frame.window_handle.clone(),

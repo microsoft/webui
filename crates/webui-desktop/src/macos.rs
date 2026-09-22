@@ -29,6 +29,11 @@ mod commands;
 mod effects;
 mod geometry;
 mod host_message;
+mod ipc;
+mod ipc_control;
+mod ipc_message;
+mod ipc_scheme;
+mod ipc_wake;
 mod launch;
 mod menu;
 mod navigation;
@@ -50,11 +55,16 @@ mod window;
 #[path = "windows/wakeup.rs"]
 mod windows_wakeup_contract;
 
+#[cfg(test)]
+#[path = "linux/ipc_input.rs"]
+mod gtk_input_contract;
+
 use app_delegate::DesktopAppDelegate;
 use scheme::set_runtime;
 
 /// Options threaded from a [`DesktopFrame`] into [`DesktopAppDelegate::new`].
 struct MacosLaunchOptions {
+    ipc: Option<std::rc::Rc<ipc::MacIpc>>,
     title: Retained<NSString>,
     options: WindowOptions,
     shell: DesktopShellConfig,
@@ -79,7 +89,7 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if AppKit cannot start on the main thread.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: crate::WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window))
+    run_frame(DesktopFrame::new(runtime, window)?)
 }
 
 pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
@@ -103,6 +113,10 @@ fn run_app(
             let delegate = DesktopAppDelegate::new(
                 mtm,
                 MacosLaunchOptions {
+                    ipc: frame
+                        .ipc_bridge()
+                        .is_enabled()
+                        .then(|| ipc::MacIpc::new(frame.ipc_bridge())),
                     title,
                     options: window,
                     shell: frame.shell.clone(),
@@ -115,6 +129,12 @@ fn run_app(
             (app, delegate)
         });
         app.run();
+        if let Some(wake) = delegate.ivars().command_wake.get() {
+            wake.close();
+        }
+        if let Some(ipc) = &delegate.ivars().ipc {
+            ipc.close();
+        }
         if !delegate.ivars().exiting.replace(true) {
             let _ = frame.events.dispatch(&DesktopEvent::Exiting);
         }

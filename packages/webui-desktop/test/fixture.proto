@@ -1,0 +1,7 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+package webui.desktop.test;
+message Item { uint64 id = 1; sint64 signed = 2; bytes data = 3; }
+message Empty {}

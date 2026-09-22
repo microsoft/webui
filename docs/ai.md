@@ -1353,6 +1353,17 @@ runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
 
+For application messages, define one proto3 contract and run
+`webui desktop ipc generate` to produce Rust/TypeScript APIs. Use generated
+host calls, renderer request handlers and notification subscriptions, not raw
+method strings or manual byte encoding. JavaScript 64-bit values are `bigint`,
+bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
+explicit `IpcOptions` before building the frame. Requests return typed
+promises/futures; notification completion acknowledges admission rather than
+subscriber completion. Dispose subscriptions and honor cancellation.
+See the [IPC guide](./guide/integrations/desktop.md#message-passing) for the
+complete shared-schema example.
+
 ```bash
 # Dev server with live reload
 webui serve ./src --state ./data/state.json --plugin=webui --watch

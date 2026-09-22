@@ -1,0 +1,14 @@
+{
+  "rust": [
+    "example.desktop.rs",
+    "example.types.rs",
+    "ipc.rs",
+    "ipc_messages.rs"
+  ],
+  "typescript": [
+    "application.ts",
+    "google/protobuf/empty.ts",
+    "ipc.ts",
+    "types.ts"
+  ]
+}

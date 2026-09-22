@@ -21,6 +21,7 @@ use webui_desktop::{
 use webui_desktop::{DesktopRuntime, DesktopSourceConfig};
 
 mod init;
+mod ipc;
 mod runner_build;
 
 #[derive(Parser)]
@@ -68,6 +69,8 @@ enum Commands {
     Build(BuildArgs),
     /// Package a desktop bundle for a native target
     Package(PackageArgs),
+    /// Generate typed Rust and TypeScript desktop IPC bindings
+    Ipc(ipc::IpcArgs),
 }
 
 #[derive(Args)]
@@ -368,6 +371,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Commands::Run(args)) => run_desktop(args),
         Some(Commands::Build(args)) => build_bundle(args),
         Some(Commands::Package(args)) => package_bundle(args),
+        Some(Commands::Ipc(args)) => ipc::execute(args),
         None => webui_desktop::run_packaged_app().map_err(Into::into),
     }
 }
@@ -1403,6 +1407,9 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
     map.insert("snippet".to_string(), Value::Null);
     map.insert("help".to_string(), Value::Null);
     map.insert("chain".to_string(), Value::Array(chain));
+    if let Some(error) = err.downcast_ref::<webui_desktop_build::GenerateError>() {
+        ipc::write_error_details(error, &mut map);
+    }
     Value::Object(map)
 }
 

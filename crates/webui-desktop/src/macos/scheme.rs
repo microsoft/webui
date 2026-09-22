@@ -14,7 +14,7 @@ use crate::{
 };
 use objc2::rc::autoreleasepool;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString, NSURLRequest, NSURL};
 use objc2_web_kit::{WKURLSchemeHandler, WKURLSchemeTask, WKWebView};
 
@@ -37,8 +37,10 @@ fn runtime() -> Option<Arc<DesktopRuntime>> {
         .and_then(|guard| guard.as_ref().cloned())
 }
 
-#[derive(Debug, Default)]
-pub(super) struct SchemeHandlerIvars;
+pub(super) struct SchemeHandlerIvars {
+    state: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    ipc: Option<std::rc::Rc<super::ipc_scheme::IpcScheme>>,
+}
 
 define_class!(
     // SAFETY: Scheme handler is an NSObject subclass with no Drop implementation.
@@ -59,24 +61,46 @@ define_class!(
             _web_view: &WKWebView,
             url_scheme_task: &ProtocolObject<dyn WKURLSchemeTask>,
         ) {
-            autoreleasepool(|_| handle_scheme_task(url_scheme_task));
+            autoreleasepool(|_| {
+                if !self
+                    .ivars()
+                    .ipc
+                    .as_ref()
+                    .is_some_and(|ipc| ipc.start(url_scheme_task))
+                {
+                    handle_scheme_task(url_scheme_task);
+                }
+            });
         }
 
         #[unsafe(method(webView:stopURLSchemeTask:))]
         unsafe fn webView_stopURLSchemeTask(
             &self,
             _web_view: &WKWebView,
-            _url_scheme_task: &ProtocolObject<dyn WKURLSchemeTask>,
+            url_scheme_task: &ProtocolObject<dyn WKURLSchemeTask>,
         ) {
+            if let Some(ipc) = &self.ivars().ipc {
+                ipc.stop(url_scheme_task);
+            }
         }
     }
 );
 
 impl DesktopSchemeHandler {
-    pub(super) fn new(mtm: MainThreadMarker) -> objc2::rc::Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SchemeHandlerIvars);
+    pub(super) fn new(
+        mtm: MainThreadMarker,
+        state: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    ) -> objc2::rc::Retained<Self> {
+        let ipc = state
+            .as_ref()
+            .map(|state| super::ipc_scheme::IpcScheme::new(std::rc::Rc::clone(state)));
+        let this = Self::alloc(mtm).set_ivars(SchemeHandlerIvars { state, ipc });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
+    }
+
+    pub(super) fn ipc_state(&self) -> Option<std::rc::Rc<super::ipc::MacIpc>> {
+        self.ivars().state.clone()
     }
 }
 

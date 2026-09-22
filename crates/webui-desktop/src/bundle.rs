@@ -284,7 +284,7 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
     let mut claimed_assets = HashSet::new();
     let mut assets =
         write_generated_css(&assets_dest, &mut claimed_assets, &build_result.css_files)?;
-    write_ipc_client(&assets_dest, &mut claimed_assets, &mut assets)?;
+    write_ipc_assets(&assets_dest, &mut claimed_assets, &mut assets)?;
     let protocol = webui::Protocol::new(build_result.protocol);
     write_startup_html(StartupHtmlInput {
         assets_dest: &assets_dest,
@@ -510,19 +510,32 @@ fn write_generated_css(
 }
 
 #[cfg(feature = "source")]
-fn write_ipc_client(
+fn write_ipc_assets(
     assets_dest: &Path,
     claimed_assets: &mut HashSet<String>,
     assets: &mut Vec<BundleAsset>,
 ) -> Result<()> {
-    const IPC_CLIENT_NAME: &str = "webui-desktop-ipc.js";
-    claim_asset(claimed_assets, IPC_CLIENT_NAME)?;
-    let path = assets_dest.join(IPC_CLIENT_NAME);
-    fs::write(&path, IPC_CLIENT_JS).map_err(|source| DesktopError::Io {
-        context: format!("writing desktop IPC client {}", path.display()),
-        source,
-    })?;
-    assets.push(asset_record(IPC_CLIENT_NAME, &path)?);
+    for (name, bytes) in [
+        ("_webui/ipc/runtime.js", crate::ipc_assets::BROWSER_RUNTIME),
+        (
+            "_webui/ipc/bootstrap.js",
+            crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT.as_bytes(),
+        ),
+    ] {
+        claim_asset(claimed_assets, name)?;
+        let path = assets_dest.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| DesktopError::Io {
+                context: format!("creating desktop IPC asset directory {}", parent.display()),
+                source,
+            })?;
+        }
+        fs::write(&path, bytes).map_err(|source| DesktopError::Io {
+            context: format!("writing desktop IPC asset {}", path.display()),
+            source,
+        })?;
+        assets.push(asset_record(name, &path)?);
+    }
     Ok(())
 }
 
@@ -799,156 +812,6 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(feature = "source")]
-const IPC_CLIENT_JS: &str = r#"// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT license.
-
-const IPC_ENDPOINT = "/_webui/ipc";
-const IPC_VERSION = 1;
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
-
-function varint(value) {
-  let n = BigInt(value);
-  const out = [];
-  while (n >= 0x80n) {
-    out.push(Number((n & 0x7fn) | 0x80n));
-    n >>= 7n;
-  }
-  out.push(Number(n));
-  return out;
-}
-
-function bytesField(tag, bytes) {
-  return [tag, ...varint(bytes.length), ...bytes];
-}
-
-function concat(parts) {
-  let size = 0;
-  for (let i = 0; i < parts.length; i++) {
-    size += parts[i].length;
-  }
-  const out = new Uint8Array(size);
-  let offset = 0;
-  for (let i = 0; i < parts.length; i++) {
-    out.set(parts[i], offset);
-    offset += parts[i].length;
-  }
-  return out;
-}
-
-function readVarint(bytes, cursor) {
-  let shift = 0n;
-  let value = 0n;
-  while (cursor.offset < bytes.length) {
-    const byte = bytes[cursor.offset++];
-    value |= BigInt(byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) {
-      return value;
-    }
-    shift += 7n;
-  }
-  throw new Error("invalid desktop IPC varint");
-}
-
-function readBytes(bytes, cursor) {
-  const len = Number(readVarint(bytes, cursor));
-  const end = cursor.offset + len;
-  if (end > bytes.length) {
-    throw new Error("invalid desktop IPC length");
-  }
-  const value = bytes.subarray(cursor.offset, end);
-  cursor.offset = end;
-  return value;
-}
-
-function skipField(bytes, cursor, wireType) {
-  if (wireType === 0) {
-    readVarint(bytes, cursor);
-    return;
-  }
-  if (wireType === 2) {
-    readBytes(bytes, cursor);
-    return;
-  }
-  throw new Error(`unsupported desktop IPC wire type ${wireType}`);
-}
-
-function decodeError(bytes) {
-  const cursor = { offset: 0 };
-  const error = { code: "", message: "", help: "" };
-  while (cursor.offset < bytes.length) {
-    const tag = Number(readVarint(bytes, cursor));
-    const field = tag >> 3;
-    const wireType = tag & 7;
-    if (wireType === 2 && field === 1) {
-      error.code = textDecoder.decode(readBytes(bytes, cursor));
-    } else if (wireType === 2 && field === 2) {
-      error.message = textDecoder.decode(readBytes(bytes, cursor));
-    } else if (wireType === 2 && field === 3) {
-      error.help = textDecoder.decode(readBytes(bytes, cursor));
-    } else {
-      skipField(bytes, cursor, wireType);
-    }
-  }
-  return error;
-}
-
-function decodeResponse(bytes) {
-  const cursor = { offset: 0 };
-  const response = { version: 0, requestId: 0, payload: null, error: null };
-  while (cursor.offset < bytes.length) {
-    const tag = Number(readVarint(bytes, cursor));
-    const field = tag >> 3;
-    const wireType = tag & 7;
-    if (wireType === 0 && field === 1) {
-      response.version = Number(readVarint(bytes, cursor));
-    } else if (wireType === 0 && field === 2) {
-      response.requestId = Number(readVarint(bytes, cursor));
-    } else if (wireType === 2 && field === 3) {
-      response.payload = readBytes(bytes, cursor);
-    } else if (wireType === 2 && field === 4) {
-      response.error = decodeError(readBytes(bytes, cursor));
-    } else {
-      skipField(bytes, cursor, wireType);
-    }
-  }
-  return response;
-}
-
-function encodeRequest(requestId, method, payload) {
-  const methodBytes = textEncoder.encode(method);
-  const payloadBytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
-  return concat([
-    Uint8Array.from([8, ...varint(IPC_VERSION)]),
-    Uint8Array.from([16, ...varint(requestId)]),
-    Uint8Array.from(bytesField(26, methodBytes)),
-    Uint8Array.from(bytesField(34, payloadBytes)),
-  ]);
-}
-
-let nextRequestId = 1;
-
-export async function invokeDesktop(method, payload = new Uint8Array()) {
-  const requestId = nextRequestId++;
-  const frame = encodeRequest(requestId, method, payload);
-  const response = await fetch(IPC_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-protobuf" },
-    body: frame,
-  });
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const decoded = decodeResponse(bytes);
-  if (decoded.error) {
-    const err = new Error(decoded.error.message);
-    err.code = decoded.error.code;
-    err.help = decoded.error.help;
-    throw err;
-  }
-  return decoded.payload || new Uint8Array();
-}
-"#;
-
 #[cfg(all(test, feature = "source"))]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -1015,7 +878,8 @@ mod tests {
         assert!(bundle.join("assets/app.js").is_file());
         assert!(bundle.join("assets/my-card.css").is_file());
         assert!(bundle.join("assets/index.html").is_file());
-        assert!(bundle.join("assets/webui-desktop-ipc.js").is_file());
+        assert!(bundle.join("assets/_webui/ipc/runtime.js").is_file());
+        assert!(bundle.join("assets/_webui/ipc/bootstrap.js").is_file());
         assert!(fs::read_to_string(bundle.join("assets/index.html"))
             .unwrap()
             .contains(r#"<link rel="stylesheet" href="my-card.css""#));
@@ -1030,7 +894,7 @@ mod tests {
             .integrity
             .assets
             .iter()
-            .any(|asset| asset.path == "assets/webui-desktop-ipc.js"));
+            .any(|asset| asset.path == "assets/_webui/ipc/runtime.js"));
     }
 
     #[test]
@@ -1038,7 +902,7 @@ mod tests {
         let app = TempDir::new().unwrap();
         let out = TempDir::new().unwrap();
         write_file(app.path(), "index.html", "<main>Hello</main>");
-        write_file(app.path(), "public/webui-desktop-ipc.js", "collision");
+        write_file(app.path(), "public/_webui/ipc/runtime.js", "collision");
 
         let err = build_desktop_bundle(DesktopBundleOptions {
             build_options: webui::BuildOptions {

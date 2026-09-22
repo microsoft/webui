@@ -60,8 +60,9 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         window.center();
     }
 
-    let scheme_handler = DesktopSchemeHandler::new(mtm);
-    let navigation_delegate = DesktopNavigationDelegate::new(mtm, ivars.events.clone());
+    let scheme_handler = DesktopSchemeHandler::new(mtm, ivars.ipc.clone());
+    let navigation_delegate =
+        DesktopNavigationDelegate::new(mtm, ivars.events.clone(), ivars.ipc.clone());
     let host_message_handler = DesktopHostMessageHandler::new(mtm);
     let webview = build_webview(
         mtm,
@@ -70,6 +71,9 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         &host_message_handler,
         rect,
     );
+    if let Some(ipc) = &ivars.ipc {
+        ipc.attach(&webview);
+    }
     // SAFETY: `navigation_delegate` is retained in the delegate OnceCell for
     // the app lifetime. The policy implementation allows only the custom app
     // origin and cancels everything else.
@@ -101,7 +105,10 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     let theme_observer = install_theme_observer(mtm, ivars.events.clone(), webview.clone());
     let _ = ivars.theme_observer.set(theme_observer);
 
-    super::commands::install_wakeup(&ivars.window_handle);
+    let _ = ivars.command_wake.set(super::commands::install_wakeup(
+        &window,
+        &ivars.window_handle,
+    ));
     window.makeKeyAndOrderFront(None);
     load_startup_url(&webview);
 
@@ -191,6 +198,21 @@ fn build_webview(
             ProtocolObject::from_ref(&**host_message_handler),
             &NSString::from_str("webuiHost"),
         );
+        if let Some(ipc) = scheme_handler.ipc_state() {
+            let handler = super::ipc_message::DesktopIpcMessageHandler::new(mtm, ipc);
+            content.addScriptMessageHandlerWithReply_contentWorld_name(
+                ProtocolObject::from_ref(&*handler),
+                &objc2_web_kit::WKContentWorld::pageWorld(mtm),
+                &NSString::from_str("webuiDesktopIpc"),
+            );
+            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+                WKUserScript::alloc(mtm),
+                &NSString::from_str(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+            );
+            content.addUserScript(&script);
+        }
         let webview = WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), rect, &config);
         if options.devtools || devtools_enabled_by_env() {
             // SAFETY: `setInspectable:` is a WebKit setter on a live WKWebView

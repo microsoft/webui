@@ -2,7 +2,14 @@
 // Licensed under the MIT license.
 
 mod backend;
+mod ipc;
+mod ipc_control;
+mod ipc_input;
+mod ipc_message;
+mod ipc_scheme;
+mod ipc_wake;
 mod protocol;
+mod response;
 mod state;
 
 /// Scheme and authority the Linux backend serves app content from, with no

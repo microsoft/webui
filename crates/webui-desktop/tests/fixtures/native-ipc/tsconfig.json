@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@microsoft/webui-desktop": ["../../../../../packages/webui-desktop/src/index.ts"],
+      "@bufbuild/protobuf/wire": ["../../../../../packages/webui-desktop/node_modules/@bufbuild/protobuf/dist/esm/wire/index.d.ts"]
+    }
+  },
+  "include": ["renderer.ts", "generated/ts/**/*.ts"]
+}

@@ -285,7 +285,7 @@ pub(super) fn inject_drag_script(webview: &ICoreWebView2) -> Result<()> {
 }
 
 /// Register a script that runs before any page script on every document.
-fn add_document_script(webview: &ICoreWebView2, source: &str) -> Result<()> {
+pub(super) fn add_document_script(webview: &ICoreWebView2, source: &str) -> Result<()> {
     let webview = webview.clone();
     let script = CoTaskMemPWSTR::from(source);
     AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(

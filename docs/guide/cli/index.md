@@ -574,6 +574,7 @@ development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 
 ```bash
 webui desktop init [APP_ROOT] [--force]
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--ts-proto-plugin <PATH>] [--check]
 webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>]
 webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
 webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
@@ -696,6 +697,16 @@ with `cargo run --features source`. Build options are reexported by
 or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
 app code. See the [desktop SDK guide](../integrations/desktop.md) for the shared
 source/bundle app builder and customization APIs.
+
+`webui desktop ipc generate` creates typed Rust and TypeScript bindings from
+one proto3 application contract. Keep its compatibility lock and generated
+outputs together. `--check` compares outputs without rewriting them.
+`--protoc` and `--ts-proto-plugin` select explicitly installed compiler tools;
+generation never downloads them silently. With `--format json`, generation
+failures preserve their stable `ipc-*` code and actionable `help`; filesystem
+errors also identify the affected `file`. See
+[message passing](../integrations/desktop.md#message-passing) for the schema,
+four communication flows, permissions and lifetime rules.
 
 ## Error output and exit codes
 

@@ -33,6 +33,10 @@ skip = [
     { name = "convert_case" },
     { name = "getrandom" },
     { name = "http" },
+    # prost-build's current petgraph release requires these older hashing crates.
+    # They are confined to IPC generation tooling, not the desktop runtime.
+    { name = "hashbrown", version = "=0.15.5" },
+    { name = "foldhash", version = "=0.1.5" },
     { name = "r-efi" },
     # awc 3.8.2 uses rand 0.9 directly while actix-http 3.12 uses rand 0.10.
     { name = "rand" },
@@ -53,4 +57,3 @@ skip = [
     # older system-deps than glib-sys/gio-sys/cairo-sys-rs.
     { name = "system-deps" },
 ]
-

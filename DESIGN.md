@@ -5962,6 +5962,7 @@ Windows developer machine with the WebView2 Runtime installed.
 webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--watch] [shared build flags] [window flags]
 webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags]
 webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [signing/package flags]
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--ts-proto-plugin <PATH>] [--check]
 ```
 
 `run` builds from source paths, renders the startup HTML in process, creates the
@@ -5979,9 +5980,9 @@ start an HTTP server or browser polling loop.
 - A desktop manifest with app id, app name, version, publisher, window defaults,
   WebUI build options, asset roots, capabilities, and package
   metadata.
-- A generic JavaScript protobuf-envelope client. Application message types and
-  codecs are supplied by the application; typed interface generation is not
-  implemented.
+- The shared browser IPC runtime and native admission bootstrap. Application
+  interfaces and codecs are generated separately from proto3 contracts through
+  `webui desktop ipc generate` and bundled with application code.
 - Integrity hashes for packaged protocol and assets.
 
 `package` is the one-command Rust-first packaging entry point. When the input is
@@ -6073,34 +6074,137 @@ logged.
 
 #### Desktop IPC
 
-Desktop IPC is protobuf-first. The app shell serves a reserved custom-protocol
-endpoint for IPC requests; JavaScript sends protobuf request bytes via
-`fetch()` and receives protobuf response bytes. Platform string-only webview IPC
-channels such as `window.ipc.postMessage` are not used for payload bytes.
+Application IPC uses generated Rust/TypeScript interfaces over bounded binary
+transport. It does not embed Chromium's Mojo runtime. The separate lifecycle
+and window-control channels remain closed sets, not application message buses.
 
-The stable envelope contains:
+`microsoft-webui-desktop-build` compiles proto3 descriptors with protoc,
+prost-build, prost-reflect and pinned ts-proto tooling. It emits Rust messages,
+role markers, host handler registration, renderer clients, TypeScript clients
+and receivers, validation metadata, a normalized schema hash and an ID-evolution
+lock. Compiler/reflection dependencies are build-time only.
+The CLI's JSON diagnostics preserve the generator's stable `ipc-*` code,
+actionable help, and filesystem path when available through contextual wrappers.
 
-- protocol version
-- request id
-- method identifier
-- payload bytes
-- response payload bytes or structured error
+Services declare a receiver (`HOST` or `RENDERER`); every method has a unique,
+explicit uint32 ID above 1023. An acknowledged RPC returning
+`google.protobuf.Empty` is distinct from a notification marked with
+`webui.ipc.Notification` and `notification = true`. Removed IDs are retired,
+never reused. Protobuf fields and enum values preserve reservation history.
+Generation rejects unsupported streaming, recursive message graphs, proto2 and
+unsupported well-known types rather than silently omitting them.
 
-Rust dispatch is allowlisted. Unknown methods fail closed. Payload size limits
-are enforced before decoding. Errors are structured protobuf frames and never
-panics. Development-only IPC methods are disabled in packaged builds.
-`IpcRegistry::new()` and `IpcRegistry::default()` both use the 1 MiB limit.
-Rust clients can match the public `desktop_ipc_response::Result` variants when
-decoding a `DesktopIpcResponse`.
+Application 64-bit integers map to Rust `i64`/`u64` and TypeScript `bigint`.
+Bytes map to `Vec<u8>`/`Uint8Array`; maps use native Rust map types and
+TypeScript `Map<K,V>` without key coercion. Generated value and iterative wire
+validation enforce ranges, oneofs, collection counts and depth before decoding.
+Protobuf field ordering is not a canonical application-byte representation;
+compatibility hashing uses the normalized descriptor, not incidental encoding
+order.
 
-The current generic application API is JavaScript-to-Rust request/reply:
-`invokeDesktop(method, payload)` returns a `Promise<Uint8Array>`, while
-`IpcRegistry::register_protobuf` adapts application `prost` types to synchronous
-Rust handlers. This does not provide asynchronous Rust execution, Rust-initiated
-application RPC, or arbitrary application notifications in either direction.
-The separate lifecycle event and window-control interfaces are closed sets,
-not substitutes for an application message bus. The envelope helper is emitted
-into bundles; source-backed hosts must currently provide that client asset.
+`IpcRegistry::new(&schema)` owns immutable host RPC and startup notification
+definitions. `IpcRegistry::default()` disables application IPC. Registration
+alone grants no renderer authority: `IpcOptions` deny methods by default;
+`IpcOptions::for_schema` explicitly grants the declared IDs, with host/renderer
+allowlists available for narrowing. Development-only methods require both an
+explicit development grant and an actual source-backed host; packaged hosts
+deny them even when the executable was compiled with source support.
+
+`DesktopRuntime` shares immutable registry definitions with rendering state.
+The non-cloneable `DesktopFrame` owns mutable IPC state. Its `ipc()` handle and
+native `ipc_bridge()` facade are weak; they cannot keep a closed frame accepting
+work. Frame construction validates registry/options and can fail.
+`DesktopAppBuilder::ipc_options` supplies the frame's policy. Custom backends
+must advertise `application_ipc` and implement the bridge contract.
+`DesktopError::Ipc` retains the structured `IpcError` as its source; wire-v2
+payload and codec failures use `IpcErrorCode`, not the removed v1 codec variants.
+
+Each committed document receives a new session. Native lifecycle tracking
+supplies `CommittedMainDocument`, probes the current main document's random
+nonce, verifies that navigation did not change, and issues a fresh random
+challenge. The evaluated activation wrapper checks that nonce before invoking
+bootstrap, which checks again. Hello echoes the proof; admission atomically
+consumes the matching live activation and verifies wire version, contract
+name/major and exact schema hash. Secret comparisons do not stop at the first
+different byte.
+
+The authenticated principal is possession of the native-authorized
+main-document capability, not a fabricated physical sender-frame identity.
+Cross-origin callers cannot read the capability under SOP. Same-origin parent
+delegation is within the trusted application boundary. This permits GTK's
+provenance-free reply signal without broadening CORS or trusting renderer
+origin/counter claims. GTK IPC views disable page-cache until restoration can
+prove fresh admission. Full navigation revokes old sessions; cancelled revoked
+navigation remains disconnected. Same-document routing preserves the session.
+
+For browser back/forward-cache restoration, trusted `pagehide` retires the
+current connection and pending hello. A cache-eligible document prepares a new
+cryptographic nonce and inactive bootstrap epoch before freezing. The frozen
+bootstrap exposes the current nonce through a read-only getter. On restored
+`pageshow`, application code must explicitly reconnect and await the existing
+trusted native commit/probe/activation sequence. Old transports, callbacks,
+proofs and credentials cannot retarget this epoch. There is no reload
+workaround, automatic RPC replay, automatic application reconnect, or second
+activation from JavaScript lifecycle events.
+
+Native control metadata contains only bounded admission, availability and
+closure information. WKWebView and WebKitGTK use reply-capable handlers;
+WebView2 correlates web messages. `disconnect_authenticated` requires generation
+and session token; generation alone grants no authority. Failed or late hello
+delivery retires only its authenticated session, never a replacement.
+Tokens remain closure-held and header-only, not in URLs, logs or user events.
+
+Wire version 2 replaces the unmerged string-method envelope. Its protobuf
+`IpcFrame` contains version, document generation, sender-local ID, kind,
+method ID, remaining timeout, and payload/error oneof. Kinds are `REQUEST`,
+`RESULT`, `ERROR`, `NOTIFY`, `ACCEPT`, and `CANCEL`. Caller IDs increase without
+reuse, with independent spaces for each direction. Duplicate invocations never
+reexecute; unknown kinds, mismatched roles, stale versions and schemas fail
+closed. No heuristic legacy fallback or automatic retry exists.
+
+Binary frames POST to `/_webui/ipc` using the session header. A `204` is bounded
+ingress acceptance, not handler completion. Rust results and Rust-initiated
+requests/notifications enter the bounded outbound queue; native code signals
+availability and JavaScript drains `/_webui/ipc/outbound` until `204`, with no
+idle polling. Dirty/draining coordination prevents a wake racing the final
+empty response from being lost. Application bytes never become base64 or
+per-byte native objects. The SDK injects one generated bootstrap and serves the
+same reserved runtime assets in source and packaged modes.
+Bodyless outbound GETs use Fetch keepalive so browser history traversal cannot
+cancel them before document retirement is observed. The document's abort
+controller still cancels them on native closure or trusted pagehide; no read
+continues into a replacement session. Payload POSTs do not use keepalive, which
+would impose the browser's separate 64 KiB request-body quota.
+
+RPC APIs return typed promises or `IpcCall<T>` futures. `RESULT`/`ERROR` settle
+RPCs; notifications use `ACCEPT`/`ERROR` to acknowledge capacity reservation,
+not callback completion. Notifications run in receipt order per subscription;
+invalid or cancelled intermediate work cannot let successors overtake their
+predecessors. Scoped subscription disposal prevents queued callbacks from
+starting; an already-running callback may finish. Startup Rust notification
+handlers are bound before readiness and reinstalled for replacement documents.
+
+Application handlers, decoding and user future polling run on bounded SDK
+workers, never native UI/protocol callback threads. Execution resources are
+lazy; disabled or unused IPC does not start workers or deadline threads.
+Deadlines include local queue time and use monotonic timing. Cancellation,
+dropped callers, navigation and shutdown settle waiters once, but cannot roll
+back completed side effects or forcibly terminate arbitrary blocking Rust code.
+Retired tasks retain their permits until actual completion.
+
+Default limits include 1 MiB frames, 4 KiB native controls, 64 pending calls per
+direction, 128 queued frames, 8 MiB queued bytes per direction, 8 MiB admitted
+input, and 16 MiB retained bytes per frame. Limits also cap callbacks, worker
+tasks, readiness waiters, collection entries and depth. Overload fails promptly;
+separate bounded control reserves keep cancellation/completion deliverable under
+payload saturation. Raw varints are bounded before narrowing into codec types.
+
+Reservations precede SDK buffer growth and survive queue removal, cancellation,
+navigation and native transfer. `DesktopResponseBody` owns bytes and an opaque
+lease; native NSData, GBytes and IStream owners must retain that lease until the
+last view releases the buffer. A response body is not freely cloneable.
+Limits bound SDK-owned transport resources, not arbitrary application
+allocations or uncooperative application work.
 
 #### Rust route/state providers
 
@@ -6190,7 +6294,7 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 `dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, the SPDX `MIT` license expression with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and exact `hotfix/*` release branches and can also be queued manually. `PrepareRelease` runs one explicit source-only Component Detection scan before any release jobs, so policy-compliant dependency registration does not rescan restored Cargo caches in every matrix leg. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. The container uses an ephemeral Cargo target directory so it cannot reuse host objects linked against a newer glibc or leave root-owned state in Azure's target cache. Its artifact-staging bind mount keeps mode-aware wheel exports after the container exits without disturbing the natives the host run staged. The macOS and Windows legs install the same pinned `maturin` version before building their wheels. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Production stable builds require `refs/heads/main`; production hotfix builds require the exact `refs/heads/hotfix/v<version>` branch. Other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. Before any hotfix artifact build, `ValidateHotfix` runs the complete `cargo xtask check` gate against the backported release line. `BuildArtifacts` then runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. A seventh job builds the release WASM variants concurrently with those native legs. The assembly job merges all seven outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only --prebuilt-wasm`, because that directory contains versioned release archives rather than incremental build inputs. The packer consumes the downloaded WASM output, generates npm, crate, NuGet, Python, and standalone artifacts, and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Hotfix builds must instead be selected by a manually authorized CD run, so pushing an unprotected hotfix branch cannot publish production packages by itself. The CD pipeline independently verifies that a hotfix release commit descends from its corresponding stable tag before signing. Its `SignArtifacts` stage validates release metadata and signs NuGet packages in one job while two parallel jobs stage the npm/crate and Python/standalone outputs. Splitting the outputs lets 1ES analyze and generate SBOMs for independent artifact groups concurrently. For production runs, `TagRelease` creates or verifies the annotated Git tag only after every signed or staged output passes its 1ES checks. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 61 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and exact `hotfix/*` release branches and can also be queued manually. `PrepareRelease` runs one explicit source-only Component Detection scan before any release jobs, so policy-compliant dependency registration does not rescan restored Cargo caches in every matrix leg. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. The container uses an ephemeral Cargo target directory so it cannot reuse host objects linked against a newer glibc or leave root-owned state in Azure's target cache. Its artifact-staging bind mount keeps mode-aware wheel exports after the container exits without disturbing the natives the host run staged. The macOS and Windows legs install the same pinned `maturin` version before building their wheels. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Production stable builds require `refs/heads/main`; production hotfix builds require the exact `refs/heads/hotfix/v<version>` branch. Other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. Before any hotfix artifact build, `ValidateHotfix` runs the complete `cargo xtask check` gate against the backported release line. `BuildArtifacts` then runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. A seventh job builds the release WASM variants concurrently with those native legs. The assembly job merges all seven outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only --prebuilt-wasm`, because that directory contains versioned release archives rather than incremental build inputs. The packer consumes the downloaded WASM output, generates npm, crate, NuGet, Python, and standalone artifacts, and validates the exact 10 npm, 17 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Hotfix builds must instead be selected by a manually authorized CD run, so pushing an unprotected hotfix branch cannot publish production packages by itself. The CD pipeline independently verifies that a hotfix release commit descends from its corresponding stable tag before signing. Its `SignArtifacts` stage validates release metadata and signs NuGet packages in one job while two parallel jobs stage the npm/crate and Python/standalone outputs. Splitting the outputs lets 1ES analyze and generate SBOMs for independent artifact groups concurrently. For production runs, `TagRelease` creates or verifies the annotated Git tag only after every signed or staged output passes its 1ES checks. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 64 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
 
 Hotfix automation extends the stable-release rules above. `cargo xtask hotfix
 <commit> <oldest-tag>` fetches release refs, selects every stable `v`-prefixed

@@ -1,0 +1,50 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+package example.desktop;
+import "webui/ipc/options.proto";
+import "google/protobuf/empty.proto";
+import "types.proto";
+option (webui.ipc.contract_name) = "example.desktop";
+option (webui.ipc.contract_major) = 1;
+
+enum Status { STATUS_UNSPECIFIED = 0; READY = 1; }
+message Item {
+  uint64 id = 1;
+  bytes image = 2;
+  optional string title = 3;
+  int64 minimum = 4;
+  Status status = 5;
+  repeated sint32 scores = 6;
+  map<string, string> labels = 7;
+  oneof choice {
+    string text = 8;
+    int64 number = 9;
+  }
+  reserved 10;
+  reserved "blobs";
+  map<int32, bytes> chunks = 12;
+  optional bool enabled = 11;
+  example.types.Metrics metrics = 13;
+  map<bool, string> flags = 14;
+  map<uint64, string> unsigned_keys = 15;
+  map<int64, string> signed_keys = 16;
+}
+message Label { string text = 1; }
+service Host {
+  option (webui.ipc.receiver) = HOST;
+  rpc Save(Item) returns (google.protobuf.Empty) { option (webui.ipc.id) = 1101; }
+  rpc Selected(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 1102;
+    option (webui.ipc.notification) = true;
+  }
+}
+service Renderer {
+  option (webui.ipc.receiver) = RENDERER;
+  rpc LabelFor(Item) returns (Label) { option (webui.ipc.id) = 2001; }
+  rpc Changed(Item) returns (webui.ipc.Notification) {
+    option (webui.ipc.id) = 2002;
+    option (webui.ipc.notification) = true;
+  }
+}
