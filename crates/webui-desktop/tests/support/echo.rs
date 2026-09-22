@@ -15,7 +15,7 @@ use webui_desktop::{
         Admission, CommittedMainDocument, Endpoint, FieldKind, FieldShape, Hello, Host, IpcBridge,
         IpcError, IpcErrorCode, IpcLimits, IpcOptions, IpcRegistry, IpcSchema, IpcWake,
         MessageShape, MethodDescriptor, MethodKind, NativeControl, OwnedIpcHttpRequest, Rpc,
-        SessionInfo,
+        SessionInfo, IPC_VERSION,
     },
     DesktopFrame, DesktopHttpMethod,
 };
@@ -129,7 +129,7 @@ pub fn assert_echo(frame: &DesktopFrame, payload: &[u8]) {
         .unwrap();
     let info = block_on(bridge.admit(Admission {
         hello: Hello {
-            wire_version: 2,
+            wire_version: IPC_VERSION,
             contract_name: SCHEMA.name.to_string(),
             contract_major: SCHEMA.major,
             schema_hash: SCHEMA.hash.to_string(),
@@ -138,7 +138,7 @@ pub fn assert_echo(frame: &DesktopFrame, payload: &[u8]) {
     }))
     .unwrap();
     let request = IpcFrame {
-        version: 2,
+        version: IPC_VERSION,
         generation: info.generation,
         id: 7,
         kind: Kind::Request as i32,

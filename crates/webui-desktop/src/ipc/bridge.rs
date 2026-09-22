@@ -18,7 +18,6 @@ use futures_util::{
     future::{AbortHandle, Abortable},
     FutureExt,
 };
-use prost::Message;
 use std::{
     sync::{atomic::Ordering, Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},

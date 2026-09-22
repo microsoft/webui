@@ -56,7 +56,10 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<(String, String), 
         }
         writeln!(out, "validateBytes: (bytes, limits) => validateMessage(bytes, {i}, messageShapes, limits),\n}};").ok();
     }
-    writeln!(out, "export const schema: ConnectionSchema = {{ hello: {{ wireVersion: 2, contractName: {:?}, contractMajor: {}, schemaHash }}, methods: [", contract.name, contract.major).ok();
+    // `wireVersion` must match `webui_desktop::ipc::IPC_VERSION` (currently 3):
+    // the generated renderer and the framework's Rust host ship in the same
+    // binary and are never independently versioned.
+    writeln!(out, "export const schema: ConnectionSchema = {{ hello: {{ wireVersion: 3, contractName: {:?}, contractMajor: {}, schemaHash }}, methods: [", contract.name, contract.major).ok();
     for method in &contract.methods {
         let response = if method.kind == "rpc" {
             format!(

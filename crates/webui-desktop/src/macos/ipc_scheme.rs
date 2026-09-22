@@ -10,7 +10,6 @@ use objc2::runtime::ProtocolObject;
 use objc2::Message;
 use objc2_foundation::{NSString, NSURLRequest, NSURL};
 use objc2_web_kit::WKURLSchemeTask;
-use prost::Message as _;
 
 use crate::ipc::{IpcError, IpcErrorCode, OwnedIpcHttpRequest};
 use crate::{DesktopHttpMethod, DesktopProtocolResponse};

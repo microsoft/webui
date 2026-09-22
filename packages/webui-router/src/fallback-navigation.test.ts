@@ -105,6 +105,21 @@ describe('resolveLinkNavigation', () => {
     );
   });
 
+  test('declines a different custom-scheme authority', () => {
+    assert.equal(
+      resolveLinkNavigation(
+        click(),
+        {
+          ...link('/dashboard'),
+          resolved: 'webui://other/dashboard',
+        },
+        CURRENT,
+        [],
+      ),
+      null,
+    );
+  });
+
   test('declines a missing href', () => {
     assert.equal(
       resolveLinkNavigation(click(), { ...link('/favorites'), href: null }, CURRENT, []),

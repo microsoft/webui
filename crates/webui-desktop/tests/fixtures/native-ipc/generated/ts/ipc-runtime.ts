@@ -62,7 +62,7 @@ encode: () => codec_1.Empty.encode({}).finish(), decode: bytes => { codec_1.Empt
 validate: value => { if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); },
 validateBytes: (bytes, limits) => validateMessage(bytes, 4, messageShapes, limits),
 };
-export const schema: ConnectionSchema = { hello: { wireVersion: 2, contractName: "webui.test.native", contractMajor: 1, schemaHash }, methods: [
+export const schema: ConnectionSchema = { hello: { wireVersion: 3, contractName: "webui.test.native", contractMajor: 1, schemaHash }, methods: [
 { id: 1101, name: "fixture.native.Host.Save", receiver: "host", kind: "rpc", developmentOnly: false, request: message_1, response: message_4 },
 { id: 1102, name: "fixture.native.Host.Selected", receiver: "host", kind: "notification", developmentOnly: false, request: message_1 },
 { id: 1103, name: "fixture.native.Host.Release", receiver: "host", kind: "rpc", developmentOnly: false, request: message_4, response: message_4 },

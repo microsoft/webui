@@ -2,41 +2,31 @@
 // Licensed under the MIT license.
 
 import { IpcError, errorCode } from './errors.js';
-import { IpcFrame, Kind, type WireError } from './generated/webui_desktop.js';
+import { IpcFrame, Kind, type WireError } from './envelope.js';
 import type { IpcLimits } from './limits.js';
-import { BoundaryReader, readDelimited, readUint32, skipField } from './boundary.js';
-import { validateMessage, type MessageShape } from './validation.js';
 
-const errorShape: readonly MessageShape[] = [{ fields: [1, 2, 3, 4].map(number => ({
-  number, name: '', kind: 'string', repeated: false, optional: false, mapKey: false,
-})) }];
+/** Current envelope wire version (see `webui_desktop::ipc::IPC_VERSION`). The
+ * renderer runtime and the Rust host ship in the same binary and are never
+ * independently versioned, so a stale build fails closed here rather than
+ * misparsing bytes in the new layout. */
+export const IPC_VERSION = 3;
 
 export { IpcFrame, Kind };
 export function frame(generation: bigint, id: bigint, kind: Kind): IpcFrame {
-  return { version: 2, generation, id, kind, methodId: 0, timeoutMs: 0 };
+  return { version: IPC_VERSION, generation, id, kind, methodId: 0, timeoutMs: 0 };
 }
 
-/** Reject ambiguous envelopes and groups before the mature protobuf decoder. */
+/**
+ * Decode and semantically validate a v3 envelope. The fixed layout has no
+ * ambiguity to police (no duplicate/unknown fields, no wire-type confusion),
+ * so `IpcFrame.decode` alone both parses and structurally validates the
+ * bytes; only the envelope's own semantic invariants are checked here.
+ */
 export function decodeFrame(bytes: Uint8Array, limits: IpcLimits): IpcFrame {
   if (bytes.byteLength > limits.maxFrameBytes) throw new IpcError('payload-too-large');
   try {
-    const reader = new BoundaryReader(bytes);
-    let seen = 0;
-    while (reader.pos < reader.len) {
-      const [field, wire] = reader.tag();
-      if (!field || wire === 3 || wire === 4 || wire > 5) throw new IpcError('invalid-frame');
-      if (field <= 8) {
-        const expected = field === 2 || field === 3 ? 1 : field >= 7 ? 2 : 0;
-        if (wire !== expected || (seen & (1 << field)) ||
-            (field >= 7 && (seen & ((1 << 7) | (1 << 8))))) throw new IpcError('invalid-frame');
-        seen |= 1 << field;
-      }
-      if (field === 8) validateMessage(readDelimited(reader), 0, errorShape, limits);
-      else if (field <= 6 && wire === 0) readUint32(reader);
-      else skipField(reader, wire);
-    }
     const value = IpcFrame.decode(bytes);
-    if (value.version !== 2) throw new IpcError('unsupported-version');
+    if (value.version !== IPC_VERSION) throw new IpcError('unsupported-version');
     if (!value.id || !value.generation || value.kind < 1 || value.kind > 6) throw new IpcError('invalid-frame');
     const invocation = value.kind === Kind.REQUEST || value.kind === Kind.NOTIFY;
     if (invocation ? !value.methodId : value.methodId !== 0 || value.timeoutMs !== 0) throw new IpcError('invalid-frame');
@@ -53,7 +43,7 @@ export function decodeFrame(bytes: Uint8Array, limits: IpcLimits): IpcFrame {
     }
     return value;
   } catch (error) {
-    if (error instanceof IpcError && error.code !== 'invalid-payload') throw error;
+    if (error instanceof IpcError) throw error;
     throw new IpcError('invalid-frame');
   }
 }

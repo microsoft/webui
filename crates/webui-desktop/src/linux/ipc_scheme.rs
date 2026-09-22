@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use glib::translate::ToGlibPtr;
 use gtk4::{gio, glib};
-use prost::Message;
 use webkit6::{prelude::*, URISchemeRequest};
 
 use super::ipc_input::{append, ReadBuffer, ReadLimits};

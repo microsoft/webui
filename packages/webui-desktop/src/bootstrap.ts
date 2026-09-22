@@ -143,7 +143,7 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
       attempted = true;
       try {
         hello = projectHello(hello);
-        if (hello.wireVersion !== 2 || !hello.contractName || hello.contractName.length > 1024 ||
+        if (hello.wireVersion !== 3 || !hello.contractName || hello.contractName.length > 1024 ||
             !Number.isSafeInteger(hello.contractMajor) || hello.contractMajor <= 0 ||
             hello.contractMajor > 0xffffffff || !isHex(hello.schemaHash, 64)) throw new IpcError('invalid-payload');
       } catch (error) {

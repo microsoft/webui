@@ -6,7 +6,6 @@ use super::{
     wire::{ipc_frame::Body, IpcFrame, Kind},
     IpcError, IpcErrorCode, IpcLimits, IPC_VERSION,
 };
-use prost::Message;
 
 /// Generated scalar or message field metadata.
 #[derive(Clone, Copy)]
@@ -234,66 +233,18 @@ fn field<'a>(input: &mut &'a [u8], wire: u8) -> Result<&'a [u8], IpcError> {
 
 /// Decode a strict v2 envelope after checking complete size and wire boundaries.
 /// Application bytes remain opaque here; generated validators run on workers.
+/// Decode a strict v3 envelope. The fixed layout has no ambiguity to police
+/// (no duplicate/unknown fields, no wire-type confusion), so a single decode
+/// pass both parses and structurally validates the bytes; only the envelope's
+/// own semantic invariants are checked afterward. Application bytes remain
+/// opaque here - generated validators run on workers.
 pub fn decode_frame(bytes: &[u8], limits: &IpcLimits) -> Result<IpcFrame, IpcError> {
     if bytes.len() > limits.max_frame_bytes {
         return Err(fail(IpcErrorCode::PayloadTooLarge));
     }
-    let mut input = bytes;
-    let mut seen = 0u16;
-    while !input.is_empty() {
-        let (number, wire) = key(&mut input)?;
-        let data = field(&mut input, wire)?;
-        if number <= 8 {
-            let mask = 1u16 << number;
-            if seen & mask != 0 {
-                return Err(fail(IpcErrorCode::InvalidFrame));
-            }
-            seen |= mask;
-            let expected = match number {
-                2 | 3 => 1,
-                7 | 8 => 2,
-                _ => 0,
-            };
-            if wire != expected {
-                return Err(fail(IpcErrorCode::InvalidFrame));
-            }
-            if wire == 0 {
-                let mut scalar = data;
-                if varint(&mut scalar)? > u64::from(u32::MAX) {
-                    return Err(fail(IpcErrorCode::InvalidFrame));
-                }
-            }
-            if number == 8 {
-                validate_error(data, limits)?;
-            }
-        }
-    }
-    if seen & (1 << 7) != 0 && seen & (1 << 8) != 0 {
-        return Err(fail(IpcErrorCode::InvalidFrame));
-    }
     let frame = IpcFrame::decode(bytes).map_err(|_| fail(IpcErrorCode::InvalidFrame))?;
     validate_frame(&frame, limits)?;
     Ok(frame)
-}
-fn validate_error(mut bytes: &[u8], limits: &IpcLimits) -> Result<(), IpcError> {
-    if bytes.len() > limits.max_error_text_bytes_total + 128 {
-        return Err(fail(IpcErrorCode::PayloadTooLarge));
-    }
-    let mut total = 0usize;
-    while !bytes.is_empty() {
-        let (number, wire) = key(&mut bytes)?;
-        let data = field(&mut bytes, wire)?;
-        if number <= 4 {
-            if wire != 2 {
-                return Err(fail(IpcErrorCode::InvalidFrame));
-            }
-            total += data.len();
-            if total > limits.max_error_text_bytes_total {
-                return Err(fail(IpcErrorCode::PayloadTooLarge));
-            }
-        }
-    }
-    Ok(())
 }
 fn validate_frame(frame: &IpcFrame, limits: &IpcLimits) -> Result<(), IpcError> {
     if frame.version != IPC_VERSION {
@@ -332,6 +283,15 @@ fn validate_frame(frame: &IpcFrame, limits: &IpcLimits) -> Result<(), IpcError> 
     };
     if !valid {
         return Err(fail(IpcErrorCode::InvalidFrame));
+    }
+    if let Some(Body::Error(error)) = &frame.body {
+        let total = error.code.len()
+            + error.message.len()
+            + error.help.len()
+            + error.application_code.len();
+        if total > limits.max_error_text_bytes_total {
+            return Err(fail(IpcErrorCode::PayloadTooLarge));
+        }
     }
     Ok(())
 }

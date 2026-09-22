@@ -240,18 +240,46 @@ fn registry_registration_is_transactional_and_never_overwrites() {
 fn malformed_envelopes_and_wire_versions_fail_closed() {
     let limits = IpcLimits::default();
     for bytes in [
+        // Too short to even hold the fixed 30-byte header.
         vec![0x80],
-        vec![
-            0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2,
-        ],
-        vec![0x0b],
-        vec![0x3a, 0xff, 0xff, 0xff, 0xff, 0x0f],
-        vec![0x00],
+        Vec::new(),
+        vec![0u8; 29],
+        // Well-formed 30-byte header (accept, no body) but an invalid body tag.
+        {
+            let mut bytes = IpcFrame {
+                version: IPC_VERSION,
+                generation: 1,
+                id: 1,
+                kind: Kind::Accept as i32,
+                method_id: 0,
+                timeout_ms: 0,
+                body: None,
+            }
+            .encode_to_vec();
+            *bytes.last_mut().unwrap() = 9;
+            bytes
+        },
+        // Payload length prefix claiming more bytes than actually remain.
+        {
+            let mut bytes = IpcFrame {
+                version: IPC_VERSION,
+                generation: 1,
+                id: 1,
+                kind: Kind::Request as i32,
+                method_id: 1101,
+                timeout_ms: 1000,
+                body: Some(Body::Payload(vec![1, 2, 3])),
+            }
+            .encode_to_vec();
+            let len_offset = bytes.len() - 3 - 4;
+            bytes[len_offset..len_offset + 4].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+            bytes
+        },
     ] {
         assert!(decode_frame(&bytes, &limits).is_err());
     }
     let mut frame = IpcFrame {
-        version: 1,
+        version: IPC_VERSION - 1,
         generation: 1,
         id: 1,
         kind: Kind::Request as i32,
@@ -265,7 +293,7 @@ fn malformed_envelopes_and_wire_versions_fail_closed() {
             .code,
         IpcErrorCode::UnsupportedVersion
     );
-    frame.version = 2;
+    frame.version = IPC_VERSION;
     frame.kind = Kind::Accept as i32;
     assert_eq!(
         decode_frame(&frame.encode_to_vec(), &limits)
@@ -274,10 +302,12 @@ fn malformed_envelopes_and_wire_versions_fail_closed() {
         IpcErrorCode::InvalidFrame
     );
     frame.kind = Kind::Request as i32;
-    let mut duplicate = frame.encode_to_vec();
-    duplicate.extend([8, 2]);
+    // Trailing garbage appended after an otherwise well-formed frame must be
+    // rejected: the fixed layout has no tolerance for extra bytes.
+    let mut trailing = frame.encode_to_vec();
+    trailing.extend([8, 2]);
     assert_eq!(
-        decode_frame(&duplicate, &limits).unwrap_err().code,
+        decode_frame(&trailing, &limits).unwrap_err().code,
         IpcErrorCode::InvalidFrame
     );
     assert_eq!(
@@ -389,7 +419,7 @@ fn removed_transfer_paths_reject_without_disrupting_typed_ipc() {
 
 fn hello() -> Hello {
     Hello {
-        wire_version: 2,
+        wire_version: IPC_VERSION,
         contract_name: SCHEMA.name.into(),
         contract_major: SCHEMA.major,
         schema_hash: SCHEMA.hash.into(),
@@ -477,7 +507,7 @@ impl Peer {
     }
     fn invocation(&self, id: u64, method: u32, kind: Kind, item: Item) -> IpcFrame {
         IpcFrame {
-            version: 2,
+            version: IPC_VERSION,
             generation: self.info.generation,
             id,
             kind: kind as i32,
@@ -488,7 +518,7 @@ impl Peer {
     }
     fn response(&self, id: u64, kind: Kind, body: Option<Body>) -> IpcFrame {
         IpcFrame {
-            version: 2,
+            version: IPC_VERSION,
             generation: self.info.generation,
             id,
             kind: kind as i32,

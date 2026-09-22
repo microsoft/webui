@@ -94,11 +94,21 @@ export function resolveLinkNavigation(
   } catch {
     return null;
   }
-  if (url.origin !== current.origin) return null;
+  if (!sameNavigationOrigin(url, current)) return null;
   if (isExcluded(url.pathname, excludePaths)) return null;
   // Pure fragment changes stay with the browser so it can scroll.
   if (url.hash && url.pathname === current.pathname && url.search === current.search) return null;
   return url;
+}
+
+function sameNavigationOrigin(left: URL, right: URL): boolean {
+  if (left.protocol === right.protocol && left.origin !== 'null' && right.origin !== 'null') {
+    return left.origin === right.origin;
+  }
+  return left.protocol === right.protocol &&
+    left.username === right.username &&
+    left.password === right.password &&
+    left.host === right.host;
 }
 
 /** Resolve the anchor that owns a click, crossing shadow boundaries. */

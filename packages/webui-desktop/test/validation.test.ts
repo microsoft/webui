@@ -65,14 +65,27 @@ test('prototype-like Map keys and oneof conflicts validate on value and wire pat
 test('envelope rejects ambiguous body, illegal kind, groups and malformed lengths', () => {
   const valid = IpcFrame.encode(frame(1n, 1n, Kind.ACCEPT)).finish();
   assert.equal(decodeFrame(valid, defaultLimits).id, 1n);
+  const invalidBodyTag = IpcFrame.encode(frame(1n, 1n, Kind.ACCEPT)).finish();
+  invalidBodyTag[invalidBodyTag.length - 1] = 9;
+  const overlongPayloadLength = IpcFrame.encode({
+    ...frame(1n, 1n, Kind.REQUEST), methodId: 1, timeoutMs: 1,
+    body: { $case: 'payload', value: new Uint8Array([1, 2, 3]) },
+  }).finish();
+  const payloadLenOffset = overlongPayloadLength.length - 3 - 4;
+  new DataView(overlongPayloadLength.buffer).setUint32(payloadLenOffset, 0xffffffff, true);
   for (const invalid of [
     IpcFrame.encode({ ...frame(1n, 1n, Kind.ACCEPT), body: { $case: 'payload', value: new Uint8Array() } }).finish(),
     IpcFrame.encode(frame(1n, 1n, 99 as Kind)).finish(),
+    // Too short to hold the fixed 30-byte header.
     new Uint8Array([11, 12]),
-    new Uint8Array([58, 255]),
+    new Uint8Array(29),
+    invalidBodyTag,
+    overlongPayloadLength,
+    // Trailing garbage after an otherwise well-formed frame.
+    Uint8Array.from([...valid, 0]),
   ]) assert.throws(() => decodeFrame(invalid, defaultLimits));
   const maximum = IpcFrame.encode(frame(0xffffffffffffffffn, 0xffffffffffffffffn, Kind.ACCEPT)).finish();
-  assert.equal(Buffer.from(maximum).toString('hex'), '080211ffffffffffffffff19ffffffffffffffff2005');
+  assert.equal(Buffer.from(maximum).toString('hex'), '03000000ffffffffffffffffffffffffffffffff05000000000000000000');
   assert.equal(decodeFrame(maximum, defaultLimits).generation, 0xffffffffffffffffn);
 });
 

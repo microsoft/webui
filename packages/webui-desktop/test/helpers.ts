@@ -33,7 +33,7 @@ export const save: RpcDescriptor<Item, void, 'host'> = { id: 1101, kind: 'rpc', 
 export const selected: EventDescriptor<Item, 'host'> = { id: 1102, kind: 'notification', receiver: 'host', request: itemCodec };
 export const label: RpcDescriptor<Item, Item, 'renderer'> = { id: 2001, kind: 'rpc', receiver: 'renderer', request: itemCodec, response: itemCodec };
 export const changed: EventDescriptor<Item, 'renderer'> = { id: 2002, kind: 'notification', receiver: 'renderer', request: itemCodec };
-export const schema: IpcSchema = { wireVersion: 2, contractName: 'test', contractMajor: 1, schemaHash: 'a'.repeat(64), methods: [save, selected, label, changed] };
+export const schema: IpcSchema = { wireVersion: 3, contractName: 'test', contractMajor: 1, schemaHash: 'a'.repeat(64), methods: [save, selected, label, changed] };
 export const item: Item = { id: 0xffffffffffffffffn, signed: -0x8000000000000000n, data: new Uint8Array([0, 128, 255]) };
 
 export class FakeTransport implements IpcTransport {

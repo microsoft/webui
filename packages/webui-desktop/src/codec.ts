@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { IpcError, ipcError } from './errors.js';
-import { IpcFrame } from './generated/webui_desktop.js';
+import { IpcFrame } from './envelope.js';
 import type { ByteLedger } from './budget.js';
 import type { IpcLimits } from './limits.js';
 import type { MessageCodec } from './types.js';

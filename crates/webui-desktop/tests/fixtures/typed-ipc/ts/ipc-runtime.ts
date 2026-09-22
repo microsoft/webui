@@ -94,7 +94,7 @@ encode: () => codec_1.Empty.encode({}).finish(), decode: bytes => { codec_1.Empt
 validate: value => { if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); },
 validateBytes: (bytes, limits) => validateMessage(bytes, 9, messageShapes, limits),
 };
-export const schema: ConnectionSchema = { hello: { wireVersion: 2, contractName: "example.desktop", contractMajor: 1, schemaHash }, methods: [
+export const schema: ConnectionSchema = { hello: { wireVersion: 3, contractName: "example.desktop", contractMajor: 1, schemaHash }, methods: [
 { id: 1101, name: "example.desktop.Host.Save", receiver: "host", kind: "rpc", developmentOnly: false, request: message_0, response: message_9 },
 { id: 1102, name: "example.desktop.Host.Selected", receiver: "host", kind: "notification", developmentOnly: false, request: message_0 },
 { id: 2001, name: "example.desktop.Renderer.LabelFor", receiver: "renderer", kind: "rpc", developmentOnly: false, request: message_0, response: message_6 },

@@ -3,7 +3,6 @@
 
 //! Binary WebView2 ingress. COM streams and deferrals never leave the STA.
 
-use prost::Message;
 use std::{ffi::c_void, rc::Rc};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Environment, ICoreWebView2HttpRequestHeaders, ICoreWebView2WebResourceRequest,

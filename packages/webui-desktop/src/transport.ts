@@ -3,7 +3,7 @@
 
 import { IpcError, ipcError } from './errors.js';
 import { decodeFrame, fromWire, Kind } from './framing.js';
-import { WireError } from './generated/webui_desktop.js';
+import { WireError } from './envelope.js';
 import { validateLimits } from './limits.js';
 import { ByteLedger, hasLedger, type InputCredit } from './budget.js';
 import { projectHello } from './hello.js';

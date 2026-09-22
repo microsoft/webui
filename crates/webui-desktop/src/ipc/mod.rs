@@ -18,7 +18,7 @@ mod limits;
 mod registry;
 mod session;
 mod validation;
-/// Checked-in protobuf wire types.
+/// Fixed-layout envelope wire types (see `DESIGN.md` for the byte layout).
 pub mod wire;
 
 pub use admission::DocumentActivation;
@@ -32,8 +32,11 @@ pub use validation::*;
 use std::future::Future;
 use std::pin::Pin;
 
-/// Current application envelope version (no v1 fallback).
-pub const IPC_VERSION: u32 = 2;
+/// Current application envelope version (no v1 fallback). Bumped from `2` to
+/// `3` when the wire format switched from protobuf to a fixed byte layout;
+/// both ends of this transport ship in the same binary, so a hard version
+/// bump with no dual-format negotiation is the correct, intentional contract.
+pub const IPC_VERSION: u32 = 3;
 /// Default complete encoded frame bound.
 pub const DEFAULT_MAX_IPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// Owned asynchronous IPC completion; polling this never polls application code.

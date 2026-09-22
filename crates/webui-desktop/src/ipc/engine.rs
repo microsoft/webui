@@ -11,7 +11,6 @@ use super::{
 };
 use futures_channel::oneshot;
 use futures_util::future::AbortHandle;
-use prost::Message;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{

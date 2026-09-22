@@ -8,7 +8,7 @@ export interface Subscription { close(): void }
 export interface CallOptions { signal?: AbortSignal; timeoutMs?: number }
 export interface RequestContext { readonly signal: AbortSignal; readonly deadlineMs: number }
 export interface Hello {
-  wireVersion: 2;
+  wireVersion: 3;
   contractName: string;
   contractMajor: number;
   schemaHash: string;
