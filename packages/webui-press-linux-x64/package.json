@@ -1,0 +1,19 @@
+{
+  "cpu": [
+    "x64"
+  ],
+  "description": "WebUI Press platform-specific binary for Linux x64",
+  "files": [
+    "bin/webui-press"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-press-linux-x64",
+  "os": [
+    "linux"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "tag": "latest"
+  },
+  "version": "0.0.29"
+}

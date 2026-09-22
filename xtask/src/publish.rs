@@ -26,6 +26,7 @@ use std::process::ExitCode;
 struct PlatformEntry {
     triple: &'static str,
     npm_package: &'static str,
+    press_npm_package: &'static str,
     nuget_rid: &'static str,
     ffi_lib: &'static str,
     node_addon: &'static str,
@@ -40,6 +41,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "x86_64-unknown-linux-gnu",
         npm_package: "webui-linux-x64",
+        press_npm_package: "webui-press-linux-x64",
         nuget_rid: "linux-x64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
@@ -50,6 +52,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "aarch64-unknown-linux-gnu",
         npm_package: "webui-linux-arm64",
+        press_npm_package: "webui-press-linux-arm64",
         nuget_rid: "linux-arm64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
@@ -60,6 +63,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "x86_64-pc-windows-msvc",
         npm_package: "webui-win32-x64",
+        press_npm_package: "webui-press-win32-x64",
         nuget_rid: "win-x64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
@@ -70,6 +74,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "aarch64-pc-windows-msvc",
         npm_package: "webui-win32-arm64",
+        press_npm_package: "webui-press-win32-arm64",
         nuget_rid: "win-arm64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
@@ -80,6 +85,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "x86_64-apple-darwin",
         npm_package: "webui-darwin-x64",
+        press_npm_package: "webui-press-darwin-x64",
         nuget_rid: "osx-x64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
@@ -90,6 +96,7 @@ const PLATFORMS: &[PlatformEntry] = &[
     PlatformEntry {
         triple: "aarch64-apple-darwin",
         npm_package: "webui-darwin-arm64",
+        press_npm_package: "webui-press-darwin-arm64",
         nuget_rid: "osx-arm64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
@@ -804,7 +811,7 @@ fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), S
 }
 
 fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>, String> {
-    let mut args = Vec::with_capacity(13);
+    let mut args = Vec::with_capacity(15);
     args.push("build");
     match profile {
         "release" => args.push("--release"),
@@ -820,6 +827,8 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
         "microsoft-webui-ffi",
         "-p",
         "microsoft-webui-node",
+        "-p",
+        "microsoft-webui-press",
     ]);
     Ok(args)
 }
@@ -850,6 +859,12 @@ fn export_target(
             (
                 root.join("packages").join(platform.npm_package),
                 safe_output_root.join("packages").join(platform.npm_package),
+            ),
+            (
+                root.join("packages").join(platform.press_npm_package),
+                safe_output_root
+                    .join("packages")
+                    .join(platform.press_npm_package),
             ),
             (
                 root.join("dotnet")
@@ -1052,7 +1067,7 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         eprintln!(
             "  {} No build artifacts found. Build first:\n    {}",
             console::style("⚠").yellow(),
-            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli").dim(),
+            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli -p microsoft-webui-press").dim(),
         );
         return ExitCode::FAILURE;
     }
@@ -1126,6 +1141,17 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         label: "npm cli",
     });
 
+    let press_binary = press_cli_binary(platform);
+    ok &= stage_file(&CopySpec {
+        src: &build_dir.join(press_binary),
+        dest_dir: &root
+            .join("packages")
+            .join(platform.press_npm_package)
+            .join("bin"),
+        dest_name: press_binary,
+        label: "npm press cli",
+    });
+
     // npm: Node addon (renamed to webui.node)
     ok &= stage_file(&CopySpec {
         src: &build_dir.join(platform.node_addon),
@@ -1152,6 +1178,14 @@ fn native_binary_name(platform: &PlatformEntry) -> String {
         format!("webui-{}.exe", platform.platform_suffix)
     } else {
         format!("webui-{}", platform.platform_suffix)
+    }
+}
+
+fn press_cli_binary(platform: &PlatformEntry) -> &'static str {
+    if platform.cli_binary.ends_with(".exe") {
+        "webui-press.exe"
+    } else {
+        "webui-press"
     }
 }
 
@@ -1186,6 +1220,7 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         fs::read_dir(&packages_dir).map_err(|e| format!("failed to read packages/: {e}"))?;
 
     let mut count = 0u32;
+    let mut package_dirs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
@@ -1194,8 +1229,17 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         if !path.join("package.json").exists() {
             continue;
         }
+        package_dirs.push(path);
+    }
+    let press_dir = root.join("crates").join("webui-press");
+    if press_dir.join("package.json").exists() {
+        package_dirs.push(press_dir);
+    }
 
-        let pkg_name = entry.file_name().to_string_lossy().to_string();
+    for path in package_dirs {
+        let Some(pkg_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
 
         // Skip private packages — they must not be published
         if is_private_package(&path) {
@@ -2122,6 +2166,7 @@ mod tests {
         let p = PlatformEntry {
             triple: "aarch64-apple-darwin",
             npm_package: "webui-darwin-arm64",
+            press_npm_package: "webui-press-darwin-arm64",
             nuget_rid: "osx-arm64",
             ffi_lib: "libwebui_ffi.dylib",
             node_addon: "libwebui_node.dylib",
@@ -2130,6 +2175,7 @@ mod tests {
             python_platform_tag: "macosx_11_0_arm64",
         };
         assert_eq!(native_binary_name(&p), "webui-darwin-arm64");
+        assert_eq!(press_cli_binary(&p), "webui-press");
     }
 
     #[test]
@@ -2137,6 +2183,7 @@ mod tests {
         let p = PlatformEntry {
             triple: "x86_64-pc-windows-msvc",
             npm_package: "webui-win32-x64",
+            press_npm_package: "webui-press-win32-x64",
             nuget_rid: "win-x64",
             ffi_lib: "webui_ffi.dll",
             node_addon: "webui_node.dll",
@@ -2145,6 +2192,7 @@ mod tests {
             python_platform_tag: "win_amd64",
         };
         assert_eq!(native_binary_name(&p), "webui-win32-x64.exe");
+        assert_eq!(press_cli_binary(&p), "webui-press.exe");
     }
 
     #[test]
@@ -2629,6 +2677,8 @@ mod tests {
             .expect("native directory should be created");
         fs::create_dir_all(root.path().join("packages/webui-linux-x64"))
             .expect("package directory should be created");
+        fs::create_dir_all(root.path().join("packages/webui-press-linux-x64/bin"))
+            .expect("press package directory should be created");
         fs::create_dir_all(root.path().join("dotnet/runtimes/linux-x64/native"))
             .expect("runtime directory should be created");
         fs::write(root.path().join("publish/native/webui-linux-x64"), "cli")
@@ -2638,6 +2688,12 @@ mod tests {
             "{}",
         )
         .expect("package fixture should be written");
+        fs::write(
+            root.path()
+                .join("packages/webui-press-linux-x64/bin/webui-press"),
+            "press",
+        )
+        .expect("press package fixture should be written");
         fs::write(
             root.path()
                 .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so"),
@@ -2660,6 +2716,10 @@ mod tests {
         assert!(output
             .path()
             .join("packages/webui-linux-x64/package.json")
+            .is_file());
+        assert!(output
+            .path()
+            .join("packages/webui-press-linux-x64/bin/webui-press")
             .is_file());
         assert!(output
             .path()

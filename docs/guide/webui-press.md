@@ -1,5 +1,18 @@
 # WebUI Press
 
+## Installation
+
+Install the native CLI package:
+
+```bash
+npm install @microsoft/webui-press
+```
+
+The package installs the matching platform-specific binary automatically for
+Windows, macOS, or Linux on x64 and arm64. After installation, run
+`webui-press build` or `webui-press serve` directly without compiling the Rust
+crate locally.
+
 ## Dev-server shutdown
 
 `webui-press serve --shutdown-timeout 10` opts in to a ten-second shutdown grace

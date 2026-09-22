@@ -1,10 +1,34 @@
 {
-  "name": "@webui/webui-press",
-  "private": true,
+  "name": "@microsoft/webui-press",
+  "description": "WebUI Press static site generator native CLI",
+  "license": "MIT",
+  "version": "0.0.29",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "type": "module",
+  "bin": {
+    "webui-press": "bin/webui-press"
+  },
+  "files": [
+    "bin/",
+    "install.mjs",
+    "platform.mjs",
+    "README.md"
+  ],
   "scripts": {
-    "build": "esbuild \"**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=. --outdir=dist-test --out-extension:.js=.mjs",
-    "test": "pnpm --filter @webui/docs... build && pnpm run build && node --test dist-test/**/*.test.mjs"
+    "build": "node install.mjs",
+    "build:test": "esbuild \"**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=. --outdir=dist-test --out-extension:.js=.mjs",
+    "postinstall": "node install.mjs",
+    "test": "pnpm --filter @webui/docs... build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "@microsoft/webui-press-darwin-arm64": "workspace:*",
+    "@microsoft/webui-press-darwin-x64": "workspace:*",
+    "@microsoft/webui-press-linux-arm64": "workspace:*",
+    "@microsoft/webui-press-linux-x64": "workspace:*",
+    "@microsoft/webui-press-win32-arm64": "workspace:*",
+    "@microsoft/webui-press-win32-x64": "workspace:*"
   },
   "devDependencies": {
     "@microsoft/webui": "workspace:*",

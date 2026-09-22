@@ -10,6 +10,13 @@ Install via npm:
 npm install @microsoft/webui
 ```
 
+Install WebUI Press separately when you need the documentation/static-site
+generator CLI:
+
+```bash
+npm install @microsoft/webui-press
+```
+
 Or install via Cargo for standalone CLI use:
 
 ```bash
