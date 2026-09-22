@@ -5670,6 +5670,23 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   After configured lazy loaders run, document navigation is used only when
   neither authored code nor the compiler-owned host runtime registers the
   destination tag. Route chain JSON has no `client` capability flag.
+- Navigation interception has two mechanisms with identical semantics. The
+  Navigation API (`NavigateEvent.intercept()`) is used only when the document
+  has an HTTP-family origin (`http:` or `https:`); otherwise the router
+  intercepts capture-phase link clicks and `popstate`, driving the same
+  `handleNavigation` path through `history.pushState`. Desktop shells serve
+  applications from a custom scheme (`webui://app`), where WebKit refuses to
+  treat a navigation as same-document and reports `canIntercept: false` on
+  every real `NavigateEvent` even though `window.navigation` exists. The origin
+  scheme is the gate because probing with `history.replaceState` is misleading:
+  a same-document state change is interceptable on a custom scheme while an
+  actual navigation is not. Without this fallback every desktop route change
+  becomes a full document load and the web engine retains one document per
+  navigation. The same fallback serves browsers that lack the Navigation API.
+  Click interception resolves the anchor through `composedPath()` so links
+  inside shadow roots are honored, and declines modified clicks, non-primary
+  buttons, `download`, `target` other than `_self`, `rel=external`,
+  cross-origin destinations, excluded paths, and pure fragment changes.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
   that receive `e`, so the runtime installs listeners without regrouping or

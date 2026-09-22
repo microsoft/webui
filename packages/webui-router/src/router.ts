@@ -2,8 +2,10 @@
 // Licensed under the MIT license.
 
 /**
- * Core router orchestrator — uses the Navigation API to intercept
- * navigations and activates/deactivates `<webui-route>` elements.
+ * Core router orchestrator — intercepts navigations and activates/deactivates
+ * `<webui-route>` elements. The Navigation API is used when the host grants
+ * interception; otherwise `fallback-navigation.ts` reproduces the same contract
+ * with `history.pushState` and `popstate`.
  *
  * Heavy lifting is delegated to extracted modules:
  * - cache.ts      — NavigationCache (LRU + tag invalidation)
@@ -18,6 +20,11 @@
  */
 
 import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
+import {
+  canInterceptNavigations,
+  fallbackPush,
+  setupFallbackNavigation,
+} from './fallback-navigation.js';
 import { isStateful } from './types.js';
 import type { RouterConfig, NavigationEvent, CacheConfig } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
@@ -117,6 +124,8 @@ export class WebUIRouter {
   private loadPromises = new Map<string, Promise<void>>();
   private ssrPreloadsCleared = false;
   private documentNavigationUrl: string | null = null;
+  /** True when the host grants `NavigateEvent.intercept()`; see fallback-navigation.ts. */
+  private nativeInterception = false;
   private startupNavigation: Promise<void> | null = null;
 
   /** The component tag of the currently active leaf route. */
@@ -239,32 +248,45 @@ export class WebUIRouter {
     for (const href of meta.css) this.cssSet.add(href);
     delete meta.css;
 
-    const nav = window.navigation;
-    const handler = (event: NavigateEvent) => {
-      if (this.documentNavigationUrl === event.destination.url) {
-        this.documentNavigationUrl = null;
-        return;
-      }
-      if (!event.canIntercept || event.hashChange) return;
-      const url = new URL(event.destination.url);
-      if (url.origin !== location.origin) return;
-      const pathname = url.pathname;
-      for (let i = 0; i < this.excludePaths.length; i++) {
-        if (pathname.startsWith(this.excludePaths[i])) return;
-      }
-      event.intercept({
-        handler: async () => {
-          try {
-            await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') return;
-            console.error('[Router] Navigation error:', err);
-          }
-        },
-      });
-    };
-    nav.addEventListener('navigate', handler);
-    this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
+    // The Navigation API cannot intercept navigations on non-HTTP schemes,
+    // so desktop shells fall back to pushState/popstate interception.
+    this.nativeInterception = canInterceptNavigations();
+
+    if (this.nativeInterception) {
+      const nav = window.navigation;
+      const handler = (event: NavigateEvent) => {
+        if (this.documentNavigationUrl === event.destination.url) {
+          this.documentNavigationUrl = null;
+          return;
+        }
+        if (!event.canIntercept || event.hashChange) return;
+        const url = new URL(event.destination.url);
+        if (url.origin !== location.origin) return;
+        const pathname = url.pathname;
+        for (let i = 0; i < this.excludePaths.length; i++) {
+          if (pathname.startsWith(this.excludePaths[i])) return;
+        }
+        event.intercept({
+          handler: async () => {
+            try {
+              await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
+            } catch (err) {
+              if (err instanceof DOMException && err.name === 'AbortError') return;
+              console.error('[Router] Navigation error:', err);
+            }
+          },
+        });
+      };
+      nav.addEventListener('navigate', handler);
+      this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
+    } else {
+      const self = this;
+      this.cleanupFns.push(setupFallbackNavigation({
+        get excludePaths() { return self.excludePaths; },
+        navigate: (url, signal) =>
+          this.handleNavigation(buildNavigationTarget(url, this.basePath), signal),
+      }));
+    }
 
     if (config.preload) {
       const self = this;
@@ -316,12 +338,20 @@ export class WebUIRouter {
   /** Navigate to a new path. */
   navigate(path: string): void {
     const fullPath = prependBasePath(path, this.basePath);
-    window.navigation.navigate(fullPath);
+    if (this.nativeInterception) {
+      window.navigation.navigate(fullPath);
+    } else {
+      fallbackPush(fullPath);
+    }
   }
 
   /** Navigate back. */
   back(): void {
-    window.navigation.back();
+    if (this.nativeInterception) {
+      window.navigation.back();
+    } else {
+      history.back();
+    }
   }
 
   /** Invalidate all cache entries whose tags overlap with the given tags. */
@@ -404,6 +434,7 @@ export class WebUIRouter {
     this.started = false;
     this.ssrPreloadsCleared = false;
     this.documentNavigationUrl = null;
+    this.nativeInterception = false;
     this.startupNavigation = null;
     this.cssSet.clear();
 
