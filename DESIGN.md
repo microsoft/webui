@@ -6085,6 +6085,13 @@ and receivers, validation metadata, a normalized schema hash and an ID-evolution
 lock. Compiler/reflection dependencies are build-time only.
 The CLI's JSON diagnostics preserve the generator's stable `ipc-*` code,
 actionable help, and filesystem path when available through contextual wrappers.
+Compiler selection uses explicit configuration, then `PROTOC`, then PATH.
+Canonical paths remain the basis for filesystem containment; Windows verbatim
+drive paths are adapted only at the subprocess boundary. Windows batch plugins
+run through protoc's batch-capable search mode in an isolated child directory
+with verified lookup precedence. No process-global directory or environment is
+changed. Generated TypeScript excludes host compiler-version comments while
+the generator/runtime dependency versions remain pinned.
 
 Services declare a receiver (`HOST` or `RENDERER`); every method has a unique,
 explicit uint32 ID above 1023. An acknowledged RPC returning

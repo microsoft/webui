@@ -25,8 +25,11 @@ fn config(base: &Path) -> GenerateConfig {
         check: false,
         protoc: None,
         ts_proto_plugin: Some(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../packages/webui-desktop/node_modules/.bin/protoc-gen-ts_proto"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+                "../../packages/webui-desktop/node_modules/.bin/protoc-gen-ts_proto.cmd"
+            } else {
+                "../../packages/webui-desktop/node_modules/.bin/protoc-gen-ts_proto"
+            }),
         ),
     }
 }
@@ -72,6 +75,18 @@ fn comments_do_not_change_schema_hash() {
     let source = fs::read_to_string(path).unwrap();
     fs::write(path, format!("{source}\n// changed comment\n")).unwrap();
     assert_eq!(first.schema_hash, generate(&cfg).unwrap().schema_hash);
+}
+
+#[test]
+fn generated_typescript_excludes_host_compiler_version_metadata() {
+    let (_dir, cfg) = temporary();
+    let generated = generate(&cfg).unwrap();
+    for path in generated.typescript {
+        let source = fs::read_to_string(path).unwrap();
+        assert!(source.starts_with("// Copyright (c) Microsoft Corporation."));
+        assert!(!source.contains("// versions:"));
+        assert!(!source.contains("//   protoc"));
+    }
 }
 
 #[test]
@@ -213,6 +228,39 @@ fn paths_with_spaces_and_removed_codec_modules() {
     generate(&cfg).unwrap();
     assert!(!cfg.ts_out.join("application.ts").exists());
     assert!(cfg.ts_out.join("renamed.ts").exists());
+}
+
+#[test]
+fn canonical_inputs_outside_cwd_keep_cwd_and_output_containment() {
+    let (dir, mut cfg) = temporary();
+    let cwd = std::env::current_dir().unwrap();
+    let directory = dir.path().join("schema sources & spaces");
+    fs::create_dir(&directory).unwrap();
+    fs::rename(&cfg.roots[0], directory.join("application.proto")).unwrap();
+    fs::rename(
+        dir.path().join("types.proto"),
+        directory.join("types.proto"),
+    )
+    .unwrap();
+    cfg.roots[0] = fs::canonicalize(directory.join("application.proto")).unwrap();
+    cfg.includes = vec![fs::canonicalize(&directory).unwrap()];
+    cfg.rust_out = dir.path().join("output paths & spaces/rust");
+    cfg.ts_out = dir.path().join("output paths & spaces/ts");
+    let generated = generate(&cfg).unwrap();
+    assert_eq!(std::env::current_dir().unwrap(), cwd);
+    assert!(generated
+        .rust
+        .iter()
+        .all(|path| path.starts_with(&cfg.rust_out)));
+    assert!(generated
+        .typescript
+        .iter()
+        .all(|path| path.starts_with(&cfg.ts_out)));
+    assert!(!cfg.ts_out.join("google/protobuf/descriptor.ts").exists());
+    assert!(!cfg.ts_out.join("webui/ipc/options.ts").exists());
+    cfg.check = true;
+    assert_eq!(generate(&cfg).unwrap().schema_hash, generated.schema_hash);
+    assert_eq!(std::env::current_dir().unwrap(), cwd);
 }
 
 #[test]

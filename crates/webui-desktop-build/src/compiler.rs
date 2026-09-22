@@ -22,8 +22,14 @@ use crate::{
 };
 
 const DESCRIPTOR_LIMIT: u64 = 16 * 1024 * 1024;
-const TS_OPTIONS: &str = "forceLong=bigint,useMapType=true,outputServices=none,oneof=unions-value,useOptionals=messages,outputJsonMethods=false,outputPartialMethods=false,useExactTypes=true,esModuleInterop=true,importSuffix=.js,env=browser";
+const TS_OPTIONS: &str = "forceLong=bigint,useMapType=true,outputServices=none,oneof=unions-value,useOptionals=messages,outputJsonMethods=false,outputPartialMethods=false,useExactTypes=true,esModuleInterop=true,importSuffix=.js,env=browser,annotateFilesWithVersion=false";
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+mod tools;
+
+#[cfg(test)]
+#[path = "compiler_tests.rs"]
+mod tests;
 
 struct Scratch(PathBuf);
 impl Drop for Scratch {
@@ -94,12 +100,18 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
         }
     }
     let descriptor = scratch.0.join("descriptor.bin");
-    let protoc = config.protoc.as_deref().unwrap_or(Path::new("protoc"));
-    let mut cmd = proto_command(protoc, &includes);
-    cmd.arg("--include_imports")
-        .arg("--include_source_info")
-        .arg(format!("--descriptor_set_out={}", descriptor.display()))
-        .args(&roots);
+    let protoc = config
+        .protoc
+        .clone()
+        .or_else(|| std::env::var_os("PROTOC").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("protoc"));
+    let protoc = tools::program(&protoc)?;
+    let mut cmd = proto_command(&protoc, &includes)?;
+    cmd.arg("--include_imports").arg("--include_source_info");
+    tools::path_option(&mut cmd, "--descriptor_set_out=", &descriptor)?;
+    for root in &roots {
+        cmd.arg(tools::protoc_path(root)?);
+    }
     run(&mut cmd, "protoc", "install protoc and set GenerateConfig.protoc; check the schema file/line in the compiler diagnostic")?;
     let bytes = bounded_read(&descriptor)?;
     let pool = DescriptorPool::decode(bytes.as_slice()).map_err(|e| {
@@ -157,11 +169,15 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
     prost.compile_fds(fds).map_err(|e| io(&rust_stage, e))?;
     let plugin = find_plugin(config.ts_proto_plugin.as_deref())?;
     verify_plugin(&plugin)?;
-    let mut cmd = Command::new(protoc);
-    cmd.arg(format!("--descriptor_set_in={}", ts_descriptor.display()));
-    cmd.arg(format!("--plugin=protoc-gen-ts_proto={}", plugin.display()))
-        .arg(format!("--ts_proto_out={}", ts_stage.display()))
-        .arg(format!("--ts_proto_opt={TS_OPTIONS}"));
+    let mut cmd = Command::new(&protoc);
+    tools::path_option(&mut cmd, "--descriptor_set_in=", &ts_descriptor)?;
+    tools::configure_plugin(
+        &mut cmd,
+        &plugin,
+        &fs::canonicalize(&scratch.0).map_err(|e| io(&scratch.0, e))?,
+    )?;
+    tools::path_option(&mut cmd, "--ts_proto_out=", &ts_stage)?;
+    cmd.arg(format!("--ts_proto_opt={TS_OPTIONS}"));
     // Generate every application import, not just root files.
     for file in pool.files().filter(|f| model::application_file(f.name())) {
         cmd.arg(file.name());
@@ -227,12 +243,12 @@ fn canonical(paths: &[PathBuf]) -> Result<Vec<PathBuf>, GenerateError> {
         .collect()
 }
 
-fn proto_command(protoc: &Path, includes: &[PathBuf]) -> Command {
+fn proto_command(protoc: &Path, includes: &[PathBuf]) -> Result<Command, GenerateError> {
     let mut cmd = Command::new(protoc);
     for include in includes {
-        cmd.arg("-I").arg(include);
+        cmd.arg("-I").arg(tools::protoc_path(include)?);
     }
-    cmd
+    Ok(cmd)
 }
 
 fn run(cmd: &mut Command, tool: &str, help: &str) -> Result<(), GenerateError> {
@@ -368,10 +384,9 @@ fn collect(
                         "use disjoint generation directories",
                     )
                 })?;
-                if matches!(
-                    relative.to_str(),
-                    Some("google/protobuf/descriptor.ts" | "webui/ipc/options.ts")
-                ) {
+                if relative == Path::new("google/protobuf/descriptor.ts")
+                    || relative == Path::new("webui/ipc/options.ts")
+                {
                     continue;
                 }
                 let mut content = String::from("// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n\n");

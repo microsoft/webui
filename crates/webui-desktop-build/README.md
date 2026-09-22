@@ -20,7 +20,7 @@ let generated = generate(&GenerateConfig {
     ts_out: "client/generated".into(),
     lock_file: "schema/ipc-schema.lock.json".into(),
     check: false,
-    protoc: None, // protoc on PATH, or an explicit executable
+    protoc: None, // PROTOC, then PATH, or an explicit executable
     ts_proto_plugin: Some("node_modules/.bin/protoc-gen-ts_proto".into()),
 })?;
 # Ok::<(), webui_desktop_build::GenerateError>(())
@@ -29,6 +29,10 @@ let generated = generate(&GenerateConfig {
 Create the lock file's parent directory first. Relative paths are relative to
 the invoking process's working directory. Inputs and import directories are
 canonicalized, and command arguments preserve paths containing spaces.
+An explicit `protoc` path takes precedence over `PROTOC`, then PATH. Windows npm
+plugins use the pinned installation's `protoc-gen-ts_proto.cmd` shim. Windows
+compiler inputs and outputs must use local drive paths; unsupported UNC/device
+namespaces fail with `ipc-tool-path`.
 
 Application schemas import `webui/ipc/options.proto`, declare a positive
 `contract_major` and nonempty `contract_name`, and set each service's receiver
@@ -62,6 +66,9 @@ Commit the lock and generated outputs together. `check: true` recompiles and
 compares all artifacts without rewriting them. Missing, changed, or obsolete
 artifacts return `GenerateError::Drift`. Normal generation removes obsolete
 modules listed in the prior inventory, without deleting unrelated files.
+Generated TypeScript omits host compiler-version comments, so differing supported
+`protoc` versions do not create metadata-only drift. Generator/runtime package
+versions remain pinned and validated.
 
 Every current and obsolete artifact, including the lock, manifest, and
 inventory, is validated before publication. Output roots, artifact files, and

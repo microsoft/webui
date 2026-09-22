@@ -82,7 +82,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
             app.quit();
         }
     });
-    app.run();
+    let exit = run_application(&app);
     // Disconnect before dropping the session owner, even if GTK retains the app.
     app.disconnect(activation);
     let ipc = ipc_owner.borrow_mut().take();
@@ -95,7 +95,16 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     if let Some(error) = startup_error.borrow_mut().take() {
         return Err(error);
     }
+    if exit != glib::ExitCode::SUCCESS {
+        anyhow::bail!("GTK application exited with {exit:?}; check the native startup diagnostics");
+    }
     Ok(())
+}
+
+fn run_application(app: &impl IsA<gio::Application>) -> glib::ExitCode {
+    // The embedding host has already parsed its arguments. Passing them to
+    // GApplication makes positional arguments look like files to open.
+    app.run_with_args::<&str>(&[])
 }
 
 fn build_window(
@@ -669,6 +678,19 @@ fn is_allowed_navigation_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_activation_does_not_parse_the_host_command_line() {
+        let app = gio::Application::new(None, gio::ApplicationFlags::NON_UNIQUE);
+        let activated = Rc::new(std::cell::Cell::new(false));
+        let observed = Rc::clone(&activated);
+        app.connect_activate(move |app| {
+            observed.set(true);
+            app.quit();
+        });
+        assert_eq!(run_application(&app), glib::ExitCode::SUCCESS);
+        assert!(activated.get());
+    }
 
     #[test]
     fn navigation_allowlist_rejects_external_origins() {

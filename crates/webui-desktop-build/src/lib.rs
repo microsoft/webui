@@ -30,7 +30,7 @@ pub struct GenerateConfig {
     pub lock_file: PathBuf,
     /// Compare all artifacts without modifying existing files.
     pub check: bool,
-    /// Explicit protoc executable, or `protoc` on PATH.
+    /// Explicit protoc executable, otherwise `PROTOC`, then `protoc` on PATH.
     pub protoc: Option<PathBuf>,
     /// Explicit ts-proto 2.12.3 plugin, or `protoc-gen-ts_proto` on PATH.
     pub ts_proto_plugin: Option<PathBuf>,

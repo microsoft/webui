@@ -27,6 +27,10 @@ metadata. The harness verifies identical hashes for the source and packaged
 executable copies. Windows uses `.exe` executables and the `.cmd` protoc plugin;
 TypeScript runs through Node rather than a platform-specific shell shim.
 The bundle's separate original build input is removed before either native run.
+Keep this fixture's registry dependency versions aligned with the root
+`Cargo.lock` when updating dependencies, so native acceptance exercises the same
+versions as the product build. Use `cargo update --manifest-path` with
+`--precise` rather than editing either lockfile.
 
 The protocol asserts:
 

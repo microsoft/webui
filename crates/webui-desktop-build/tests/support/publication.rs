@@ -2,8 +2,10 @@
 // Licensed under the MIT license.
 
 use super::*;
+#[cfg(unix)]
 use std::collections::BTreeMap;
 
+#[cfg(unix)]
 fn snapshot(files: &webui_desktop_build::GeneratedFiles) -> BTreeMap<PathBuf, Vec<u8>> {
     files
         .rust

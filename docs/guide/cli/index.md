@@ -702,7 +702,9 @@ source/bundle app builder and customization APIs.
 one proto3 application contract. Keep its compatibility lock and generated
 outputs together. `--check` compares outputs without rewriting them.
 `--protoc` and `--ts-proto-plugin` select explicitly installed compiler tools;
-generation never downloads them silently. With `--format json`, generation
+without `--protoc`, the generator uses `PROTOC` and then PATH. Windows npm
+installations use `protoc-gen-ts_proto.cmd`; compiler inputs and outputs must use
+local drive paths. Generation never downloads tools silently. With `--format json`, generation
 failures preserve their stable `ipc-*` code and actionable `help`; filesystem
 errors also identify the affected `file`. See
 [message passing](../integrations/desktop.md#message-passing) for the schema,
