@@ -41,7 +41,6 @@ impl std::fmt::Debug for DocumentActivation {
 pub(super) struct PendingActivation {
     pub document: CommittedMainDocument,
     pub proof: DocumentActivation,
-    pub deadline: Instant,
 }
 pub(super) fn decimal<S: serde::Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&value.to_string())
@@ -49,7 +48,7 @@ pub(super) fn decimal<S: serde::Serializer>(value: &u64, serializer: S) -> Resul
 fn hex_bytes<S: serde::Serializer>(value: &[u8; 16], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&hex(value))
 }
-fn hex(value: &[u8; 16]) -> String {
+pub(super) fn hex(value: &[u8; 16]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(32);
     for byte in value {
@@ -59,7 +58,7 @@ fn hex(value: &[u8; 16]) -> String {
     text
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn random() -> Result<[u8; 16], IpcError> {
+pub(super) fn random() -> Result<[u8; 16], IpcError> {
     let mut value = [0; 16];
     getrandom::fill(&mut value).map_err(|_| {
         IpcError::new(
@@ -71,7 +70,7 @@ fn random() -> Result<[u8; 16], IpcError> {
     Ok(value)
 }
 #[cfg(target_arch = "wasm32")]
-fn random() -> Result<[u8; 16], IpcError> {
+pub(super) fn random() -> Result<[u8; 16], IpcError> {
     Err(IpcError::new(
         IpcErrorCode::Transport,
         "desktop IPC admission is unavailable on wasm32",
@@ -81,7 +80,8 @@ fn random() -> Result<[u8; 16], IpcError> {
 impl IpcBridge {
     /// Begin exactly one post-commit activation for the current navigation.
     /// Call only after a successful, navigation-guarded native bootstrap probe.
-    /// This does not start application workers or a timer.
+    /// Proof remains valid until admission or retirement. This does not start
+    /// application workers or a timer.
     pub fn begin_document(
         &self,
         document: CommittedMainDocument,
@@ -114,15 +114,15 @@ impl IpcBridge {
         state.activation = Some(PendingActivation {
             document,
             proof: proof.clone(),
-            deadline: Instant::now()
-                + Duration::from_millis(core.options.limits.handshake_timeout_ms as u64),
         });
         state.activation_started = true;
         Ok(proof)
     }
     /// Atomically consume valid proof and create one session. Invalid or stale
     /// proof never consumes a newer activation. The completion runs off-thread.
+    /// The handshake deadline starts here and includes worker queue time.
     pub fn admit(&self, admission: Admission) -> IpcFuture<SessionInfo> {
+        let started = Instant::now();
         let weak = self.core.clone();
         let setup = (|| {
             let core = self
@@ -130,6 +130,8 @@ impl IpcBridge {
                 .upgrade()
                 .ok_or_else(|| fail(IpcErrorCode::Closed))?;
             check_admission(&core, &admission)?;
+            let deadline =
+                started + Duration::from_millis(core.options.limits.handshake_timeout_ms as u64);
             let permit = core.budget.reserve(1, 0)?;
             core.workers()?;
             let (sender, receiver) = oneshot::channel();
@@ -140,22 +142,27 @@ impl IpcBridge {
                 if sender.is_canceled() {
                     return;
                 }
-                let result = admit(&worker_core, admission).map(|info| AdmissionDelivery {
-                    core: Arc::downgrade(&worker_core),
-                    info: Some(info),
-                });
+                let result =
+                    admit(&worker_core, admission, deadline).map(|info| AdmissionDelivery {
+                        core: Arc::downgrade(&worker_core),
+                        info: Some(info),
+                    });
                 let _ = sender.send(result);
             })?;
-            Ok(receiver)
+            Ok((receiver, deadline))
         })();
         Box::pin(async move {
-            let delivery = setup?.await.map_err(|_| fail(IpcErrorCode::Closed))??;
+            let (receiver, deadline) = setup?;
+            let delivery = receiver.await.map_err(|_| fail(IpcErrorCode::Closed))??;
             let info = delivery
                 .info
                 .as_ref()
                 .ok_or_else(|| fail(IpcErrorCode::Closed))?;
             let core = weak.upgrade().ok_or_else(|| fail(IpcErrorCode::Closed))?;
             Core::document(&mut lock(&core.state), info.generation)?;
+            if Instant::now() >= deadline {
+                return Err(fail(IpcErrorCode::DeadlineExceeded));
+            }
             delivery.into_info()
         })
     }
@@ -230,17 +237,21 @@ fn check_activation(
     if !(nonce_matches & challenge_matches & (pending.document.navigation == proof.navigation)) {
         return Err(fail(IpcErrorCode::PermissionDenied));
     }
-    if Instant::now() >= pending.deadline {
-        return Err(fail(IpcErrorCode::DeadlineExceeded));
-    }
     Ok(())
 }
-fn admit(core: &Arc<Core>, admission: Admission) -> Result<SessionInfo, IpcError> {
+fn admit(
+    core: &Arc<Core>,
+    admission: Admission,
+    deadline: Instant,
+) -> Result<SessionInfo, IpcError> {
     check_admission(core, &admission)?;
     let token = hex(&random()?);
     let (generation, waiters) = {
         let mut state = lock(&core.state);
         check_activation(core, &state, &admission.proof)?;
+        if Instant::now() >= deadline {
+            return Err(fail(IpcErrorCode::DeadlineExceeded));
+        }
         let generation = state
             .generation
             .checked_add(1)

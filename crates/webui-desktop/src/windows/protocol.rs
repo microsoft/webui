@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopResponseBody,
-    DesktopRuntime, DEFAULT_MAX_ASSET_BYTES,
+    DesktopRuntime, DEFAULT_MAX_REQUEST_BYTES,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Environment, ICoreWebView2HttpRequestHeaders,
     ICoreWebView2WebResourceRequest, ICoreWebView2WebResourceRequestedEventArgs,
@@ -23,12 +23,13 @@ use webview2_com::{CoTaskMemPWSTR, WebResourceRequestedEventHandler};
 use windows::core::{
     implement, Error as WindowsError, Interface, Result as WindowsResult, HRESULT, PWSTR,
 };
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, S_OK};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::{
     ISequentialStream_Impl, IStream, IStream as WinIStream, IStream_Impl, LOCKTYPE, STATFLAG,
     STATSTG, STGC, STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
 };
 
+#[cfg(feature = "application-ipc")]
 use super::ipc::WindowsIpc;
 use super::{APP_ORIGIN, APP_REQUEST_FILTER};
 
@@ -37,32 +38,39 @@ pub(super) fn register_runtime_handler(
     environment: &ICoreWebView2Environment,
     webview: &ICoreWebView2,
     runtime: Arc<DesktopRuntime>,
-    ipc: Weak<WindowsIpc>,
+    executor: Arc<crate::execution::ApplicationExecutor>,
+    tasks: Weak<super::tasks::ApplicationTasks>,
+    #[cfg(feature = "application-ipc")] ipc: Weak<WindowsIpc>,
 ) -> Result<ICoreWebView2WebResourceRequestedEventHandler> {
     register_web_resource_filter(webview)?;
     let environment = environment.clone();
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
-            // IPC must bypass the legacy runtime and fetch shim entirely.
-            // SAFETY: Request is retained by these live event args on this STA.
-            let request = unsafe { args.Request()? };
-            let uri = read_pwstr_bounded(8192, |out| unsafe { request.Uri(out) })?;
-            if let Some(path) = super::ipc_policy::reserved_path(&uri) {
-                if let Some(ipc) = ipc.upgrade() {
-                    super::ipc_http::handle(&ipc, &environment, &args, path)?;
-                } else {
-                    let response = create_webview_response(
-                        &environment,
-                        super::ipc_http::error_response(crate::ipc::IpcErrorCode::Closed),
-                    )?;
-                    // SAFETY: Live args, synchronous response on its owning STA.
-                    unsafe {
-                        args.SetResponse(&response)?;
+            #[cfg(feature = "application-ipc")]
+            {
+                // Typed IPC has its own authenticated dispatch.
+                // SAFETY: Request is retained by these live event args on this STA.
+                let request = unsafe { args.Request()? };
+                let uri = read_pwstr_bounded(8192, |out| unsafe { request.Uri(out) })?;
+                if let Some(path) = super::ipc_policy::reserved_path(&uri) {
+                    if let Some(ipc) = ipc.upgrade() {
+                        super::ipc_http::handle(&ipc, &environment, &args, path)?;
+                    } else {
+                        let response = create_webview_response(
+                            &environment,
+                            super::ipc_http::error_response(crate::ipc::IpcErrorCode::Closed),
+                        )?;
+                        // SAFETY: Live args, synchronous response on its owning STA.
+                        unsafe {
+                            args.SetResponse(&response)?;
+                        }
                     }
+                    return Ok(());
                 }
-                return Ok(());
             }
-            handle_web_resource_request(&environment, &runtime, &args)?;
+            if let Some(tasks) = tasks.upgrade() {
+                handle_web_resource_request(&environment, &runtime, &executor, &tasks, &args)?;
+            }
         }
         Ok(())
     }));
@@ -73,25 +81,31 @@ pub(super) fn register_runtime_handler(
     Ok(handler)
 }
 
-/// Subscribe to every request kind the installed runtime supports.
+/// Require the complete canonical app authority, not a host prefix.
+pub(super) fn app_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix(APP_ORIGIN) else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(['/', '?', '#'])
+}
+
+/// Require native interception for documents, frames, and workers.
 fn register_web_resource_filter(webview: &ICoreWebView2) -> Result<()> {
-    // SAFETY: `webview` is a live COM interface and both filter constants are
-    // static values valid for the duration of the call. The `ICoreWebView2_22`
-    // cast fails on older runtimes, which fall back to the base filter API.
+    // SDK 1.0.2365.46 introduced this interface (Runtime 122.0.2365.46).
+    // The deprecated base filter misses worker and cross-origin frame requests.
+    let webview = webview.cast::<ICoreWebView2_22>().context(
+        "WebUI requires WebView2 Runtime 122.0.2365.46 or later for native resource interception; update the Microsoft Edge WebView2 Runtime",
+    )?;
+    // SAFETY: The interface is live and the filter is static. Registration
+    // completes before startup navigation; there is no JavaScript fallback.
     unsafe {
-        if let Ok(webview) = webview.cast::<ICoreWebView2_22>() {
-            webview.AddWebResourceRequestedFilterWithRequestSourceKinds(
+        webview
+            .AddWebResourceRequestedFilterWithRequestSourceKinds(
                 APP_REQUEST_FILTER,
                 COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
                 COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-            )?;
-            return Ok(());
-        }
-
-        webview.AddWebResourceRequestedFilter(
-            APP_REQUEST_FILTER,
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        )?;
+            )
+            .context("Failed to register native WebUI resource interception")?;
     }
     Ok(())
 }
@@ -99,7 +113,9 @@ fn register_web_resource_filter(webview: &ICoreWebView2) -> Result<()> {
 /// Answer one intercepted request with a runtime response.
 fn handle_web_resource_request(
     environment: &ICoreWebView2Environment,
-    runtime: &DesktopRuntime,
+    runtime: &Arc<DesktopRuntime>,
+    executor: &crate::execution::ApplicationExecutor,
+    tasks: &super::tasks::ApplicationTasks,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
 ) -> WindowsResult<()> {
     // SAFETY: WebView2 keeps `args` and every interface reached through it
@@ -107,24 +123,60 @@ fn handle_web_resource_request(
     // before it returns.
     unsafe {
         let request = args.Request()?;
-        let uri = read_pwstr(|out| request.Uri(out))?;
-        let method = read_pwstr(|out| request.Method(out))?;
+        let uri = read_pwstr_bounded(8192, |out| request.Uri(out))?;
+        if !app_url(&uri) {
+            return Ok(());
+        }
+        let method = read_pwstr_bounded(32, |out| request.Method(out))?;
         let method = DesktopHttpMethod::parse(&method);
         let headers = request.Headers()?;
         let accept = read_header(&headers, "Accept").unwrap_or_default();
         let body = read_request_body(&request)?;
         let path = webui_path_from_uri(&uri);
-        let desktop_request = DesktopProtocolRequest {
-            method,
-            path: &path,
-            body: &body,
-            wants_json: accept.contains("json") || accept.contains("ndjson"),
+        let runtime = Arc::clone(runtime);
+        let work = executor.submit(move || {
+            runtime
+                .handle_request(&DesktopProtocolRequest {
+                    method,
+                    path: &path,
+                    body: &body,
+                    wants_json: accept.contains("json") || accept.contains("ndjson"),
+                })
+                .unwrap_or_else(|err| DesktopProtocolResponse::text(500, err.chain_message()))
+        });
+        let Ok(work) = work else {
+            args.SetResponse(&create_webview_response(
+                environment,
+                DesktopProtocolResponse::text(503, "Desktop application executor is unavailable"),
+            )?)?;
+            return Ok(());
         };
-        let response = runtime
-            .handle_request(&desktop_request)
-            .unwrap_or_else(|err| DesktopProtocolResponse::text(500, err.chain_message()));
-        let response = create_webview_response(environment, response)?;
-        args.SetResponse(&response)?;
+        let deferral = ResponseDeferral(args.GetDeferral()?);
+        let environment = environment.clone();
+        let args = args.clone();
+        tasks
+            .tasks
+            .spawn(async move {
+                let _deferral = deferral;
+                let response = work.await.unwrap_or_else(|_| {
+                    DesktopProtocolResponse::text(503, "Desktop application executor closed")
+                });
+                match create_webview_response(&environment, response)
+                    .and_then(|response| args.SetResponse(&response))
+                {
+                    Ok(()) => {}
+                    Err(error) => eprintln!("WebUI: native response delivery failed: {error}"),
+                }
+            })
+            .map_err(|_| WindowsError::from(E_FAIL))?;
+    }
+
+    struct ResponseDeferral(webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral);
+    impl Drop for ResponseDeferral {
+        fn drop(&mut self) {
+            // SAFETY: Deferrals are retained and completed only on their owning STA.
+            let _ = unsafe { self.0.Complete() };
+        }
     }
     Ok(())
 }
@@ -203,7 +255,7 @@ fn read_request_body(request: &ICoreWebView2WebResourceRequest) -> WindowsResult
 /// Drain a request stream, rejecting bodies over the runtime asset cap.
 fn read_request_stream(stream: WinIStream) -> WindowsResult<Vec<u8>> {
     let mut out = Vec::new();
-    let max = usize::try_from(DEFAULT_MAX_ASSET_BYTES).unwrap_or(usize::MAX);
+    let max = usize::try_from(DEFAULT_MAX_REQUEST_BYTES).unwrap_or(usize::MAX);
     let mut buffer = [0_u8; 16 * 1024];
     loop {
         let mut read = 0_u32;
@@ -285,16 +337,61 @@ fn status_reason(status: u16) -> &'static str {
 pub(super) struct MemoryStream {
     // Share the complete body, not just its bytes. COM stream clones retain the
     // outbound budget lease until the final native reader releases the buffer.
-    data: Arc<DesktopResponseBody>,
+    data: Arc<StreamData>,
     position: Mutex<usize>,
 }
 
 impl MemoryStream {
     /// Wrap an owned body in a stream positioned at its start.
-    pub(super) fn new(data: DesktopResponseBody) -> Self {
+    pub(super) fn new(data: impl Into<crate::DesktopResponseContent>) -> Self {
+        let data = match data.into() {
+            crate::DesktopResponseContent::Bytes(bytes) => StreamData::Bytes(bytes),
+            crate::DesktopResponseContent::File(file) => {
+                let length = file.len();
+                StreamData::File {
+                    file: Mutex::new(file),
+                    length,
+                }
+            }
+        };
         Self {
             data: Arc::new(data),
             position: Mutex::new(0),
+        }
+    }
+}
+
+enum StreamData {
+    Bytes(DesktopResponseBody),
+    File {
+        file: Mutex<crate::DesktopResponseFile>,
+        length: u64,
+    },
+}
+
+impl StreamData {
+    fn len(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::File { length, .. } => usize::try_from(*length).unwrap_or(usize::MAX),
+        }
+    }
+
+    fn read(&self, position: usize, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Read, Seek, SeekFrom};
+        match self {
+            Self::Bytes(bytes) => {
+                out.copy_from_slice(&bytes[position..position + out.len()]);
+                Ok(out.len())
+            }
+            Self::File { file, .. } => {
+                let mut file = file
+                    .lock()
+                    .map_err(|_| std::io::Error::other("desktop stream lock failed"))?;
+                file.seek(SeekFrom::Start(position as u64))?;
+                file.read_exact(out)?;
+                Ok(out.len())
+            }
         }
     }
 }
@@ -306,7 +403,7 @@ impl ISequentialStream_Impl for MemoryStream_Impl {
         };
         let remaining = self.data.len().saturating_sub(*position);
         let requested = usize::try_from(cb).unwrap_or(usize::MAX);
-        let count = remaining.min(requested);
+        let mut count = remaining.min(requested);
         if count != 0 && pv.is_null() {
             return E_POINTER;
         }
@@ -316,11 +413,11 @@ impl ISequentialStream_Impl for MemoryStream_Impl {
             // bytes remaining in `self.data`, and the buffers cannot overlap
             // because `self.data` is private to this stream.
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    self.data[*position..].as_ptr(),
-                    pv.cast::<u8>(),
-                    count,
-                );
+                let out = std::slice::from_raw_parts_mut(pv.cast::<u8>(), count);
+                match self.data.read(*position, out) {
+                    Ok(read) => count = read,
+                    Err(_) => return E_FAIL,
+                }
             }
             *position += count;
         }
@@ -331,7 +428,11 @@ impl ISequentialStream_Impl for MemoryStream_Impl {
                 *pcbread = u32::try_from(count).unwrap_or(u32::MAX);
             }
         }
-        S_OK
+        if count < requested {
+            S_FALSE
+        } else {
+            S_OK
+        }
     }
 
     fn Write(&self, _pv: *const c_void, _cb: u32, _pcbwritten: *mut u32) -> HRESULT {
@@ -425,9 +526,13 @@ impl IStream_Impl for MemoryStream_Impl {
     }
 
     fn Clone(&self) -> WindowsResult<IStream> {
+        let position = *self
+            .position
+            .lock()
+            .map_err(|_| WindowsError::from(E_FAIL))?;
         Ok(MemoryStream {
             data: Arc::clone(&self.data),
-            position: Mutex::new(0),
+            position: Mutex::new(position),
         }
         .into())
     }
@@ -455,7 +560,9 @@ mod tests {
             bytes,
             Released(Arc::clone(&released)),
         ));
-        assert_eq!(memory.data.as_slice().as_ptr(), pointer);
+        assert!(
+            matches!(memory.data.as_ref(), StreamData::Bytes(body) if body.as_slice().as_ptr() == pointer)
+        );
         let stream: IStream = memory.into();
         // SAFETY: Both are locally implemented, live COM streams. No WebView or
         // native window is needed to exercise their reference-counted lifetime.
@@ -481,5 +588,56 @@ mod tests {
             webui_path_from_uri("https://app.webui.localhost/contacts?view=all"),
             "/contacts?view=all"
         );
+    }
+
+    #[test]
+    fn native_file_stream_reads_at_independent_offsets_without_materialization() {
+        use std::io::{Seek, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"abcdef").unwrap();
+        file.rewind().unwrap();
+        let memory = MemoryStream::new(crate::DesktopResponseContent::File(
+            crate::DesktopResponseFile::new(file, 6),
+        ));
+        let mut bytes = [0; 3];
+        assert_eq!(memory.data.read(2, &mut bytes).unwrap(), 3);
+        assert_eq!(&bytes, b"cde");
+        assert_eq!(memory.data.read(0, &mut bytes).unwrap(), 3);
+        assert_eq!(&bytes, b"abc");
+    }
+
+    #[test]
+    fn stream_clone_preserves_cursor_and_reports_partial_eof() {
+        let stream: IStream = MemoryStream::new(b"abc".to_vec()).into();
+        let mut bytes = [0; 2];
+        let mut read = 0;
+        // SAFETY: Live locally implemented stream with a correctly-sized destination.
+        unsafe { stream.Read(bytes.as_mut_ptr().cast(), 2, Some(&mut read)) }
+            .ok()
+            .unwrap();
+        // SAFETY: Cloning this locally owned COM stream needs no WebView runtime.
+        let cloned = unsafe { stream.Clone() }.unwrap();
+        // SAFETY: Same valid two-byte destination and count storage.
+        assert_eq!(
+            unsafe { cloned.Read(bytes.as_mut_ptr().cast(), 2, Some(&mut read)) },
+            S_FALSE
+        );
+        assert_eq!(read, 1);
+        assert_eq!(bytes[0], b'c');
+    }
+
+    #[test]
+    fn resource_authority_excludes_external_and_lookalike_hosts() {
+        assert!(app_url("https://app.webui.localhost/"));
+        assert!(app_url("https://app.webui.localhost/resource?query=value"));
+        for uri in [
+            "https://example.com/",
+            "https://app.webui.localhost.example.com/",
+            "https://app.webui.localhost@other.example/",
+            "https://app.webui.localhost:444/",
+            "http://app.webui.localhost/",
+        ] {
+            assert!(!app_url(uri), "{uri}");
+        }
     }
 }

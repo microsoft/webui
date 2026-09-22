@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 // Use Cargo's exact artifacts rather than selecting a possibly stale glob.
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const result = spawnSync('cargo', [
-  'build', '-p', 'microsoft-webui-desktop', '--no-default-features', '--lib', '--message-format=json',
+  'build', '-p', 'microsoft-webui-desktop', '--no-default-features',
+  '--features', 'application-ipc', '--lib', '--message-format=json',
 ], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 if (result.error) throw result.error;
 const libraries = new Map();
@@ -32,4 +33,8 @@ execFileSync('rustc', [
   '--extern', `webui_desktop=${sdk}`, '--extern', `prost=${prost}`,
   '-L', `dependency=${dirname(prost)}`, '-o', binary,
 ], { cwd: root, stdio: 'inherit' });
+const tests = execFileSync(binary, ['--list', '--format=terse'], { cwd: root, encoding: 'utf8' });
+if (!tests.split('\n').some(line => line.endsWith(': test'))) {
+  throw new Error('Generated Rust compile check contains no tests');
+}
 execFileSync(binary, [], { cwd: root, stdio: 'inherit' });

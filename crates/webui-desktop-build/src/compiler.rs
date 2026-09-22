@@ -192,16 +192,22 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
     collect(&ts_stage, &config.ts_out, &mut artifacts)?;
     let rust_wrapper = config.rust_out.join("ipc.rs");
     let ts_wrapper = config.ts_out.join("ipc.ts");
-    if artifacts.contains_key(&rust_wrapper) || artifacts.contains_key(&ts_wrapper) {
+    let ts_runtime = config.ts_out.join("ipc-runtime.ts");
+    if [&rust_wrapper, &ts_wrapper, &ts_runtime]
+        .iter()
+        .any(|path| artifacts.contains_key(*path))
+    {
         return Err(schema(
             "ipc-output-collision",
             "ipc",
             "schema codec collides with the generated IPC wrapper",
-            "rename the ipc.proto file or ipc package",
+            "rename the ipc.proto or ipc-runtime.proto file, or ipc package",
         ));
     }
     artifacts.insert(rust_wrapper, emit::rust(&contract, &hash)?.into_bytes());
-    artifacts.insert(ts_wrapper, emit::typescript(&contract, &hash)?.into_bytes());
+    let (facade, runtime) = emit::typescript(&contract, &hash)?;
+    artifacts.insert(ts_wrapper, facade.into_bytes());
+    artifacts.insert(ts_runtime, runtime.into_bytes());
     let manifest = config.lock_file.with_file_name("ipc-schema.json");
     if config.lock_file == manifest
         || artifacts.contains_key(&manifest)

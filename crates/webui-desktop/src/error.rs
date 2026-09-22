@@ -12,6 +12,7 @@ pub type Result<T> = std::result::Result<T, DesktopError>;
 #[derive(Debug, Error)]
 pub enum DesktopError {
     /// Application IPC configuration or delivery failed.
+    #[cfg(feature = "application-ipc")]
     #[error("desktop application IPC failed")]
     Ipc(#[from] crate::ipc::IpcError),
 
@@ -157,17 +158,6 @@ pub enum DesktopError {
         source: serde_json::Error,
     },
 
-    /// A requested package target is not implemented by the Rust packager yet.
-    #[error("desktop package target '{target}' requires platform packaging tooling")]
-    PackageTargetRequiresTooling {
-        /// Requested package target.
-        target: String,
-        /// Tooling that must be available.
-        tooling: String,
-        /// Actionable help.
-        help: String,
-    },
-
     /// Platform runtime does not support a required desktop capability.
     #[error("unsupported desktop runtime: {message}")]
     UnsupportedRuntime {
@@ -202,7 +192,6 @@ impl DesktopError {
             DesktopError::OutputPathOverlap { .. } => {
                 Some("Choose an output directory outside the app, bundle, state, asset, and runner paths")
             }
-            DesktopError::PackageTargetRequiresTooling { help, .. } => Some(help.as_str()),
             DesktopError::UnsupportedRuntime { help, .. } => Some(help.as_str()),
             _ => None,
         }
@@ -223,7 +212,7 @@ impl DesktopError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "application-ipc"))]
 mod tests {
     use super::DesktopError;
     use crate::ipc::{IpcError, IpcErrorCode};

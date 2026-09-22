@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "application-ipc")]
 use std::sync::Arc;
 
-use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
@@ -14,12 +14,17 @@ use crate::error::{DesktopError, Result};
 use crate::hydration::handler_for_name;
 #[cfg(feature = "source")]
 use crate::hydration::handler_for_plugin;
+#[cfg(feature = "application-ipc")]
 use crate::ipc::IpcRegistry;
 use crate::path::resolve_safe_path;
+#[cfg(feature = "application-ipc")]
+use crate::protocol::IPC_ENDPOINT;
 use crate::protocol::{
     read_asset_response, read_known_asset_response, DesktopHttpMethod, DesktopProtocolRequest,
-    DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
+    DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES,
 };
+use crate::routes::route_path;
+use crate::routes::{ApiRouteRegistry, RouteStateRegistry};
 use crate::{apply_window_css, window_css_block, DesktopPlatform};
 
 /// Source-backed desktop runtime configuration.
@@ -33,9 +38,10 @@ pub struct DesktopSourceConfig {
     pub state: Option<Value>,
     /// Optional static asset root.
     pub asset_root: Option<PathBuf>,
-    /// Maximum asset bytes read into one protocol response.
+    /// Maximum file length delivered by one protocol response.
     pub max_asset_bytes: u64,
     /// Protobuf IPC registry.
+    #[cfg(feature = "application-ipc")]
     pub ipc_registry: IpcRegistry,
     /// Rust route state providers.
     pub route_state: RouteStateRegistry,
@@ -48,8 +54,8 @@ pub struct DesktopSourceConfig {
     /// Window configuration used to derive injected window CSS.
     ///
     /// Source-mode hosts must supply the same [`crate::WindowOptions`] they pass
-    /// to the native runner, otherwise development renders omit the titlebar
-    /// custom properties that packaged renders inject.
+    /// to the native runner. Frame construction rejects mismatched
+    /// titlebar/background styling.
     pub window: crate::WindowOptions,
 }
 
@@ -64,6 +70,7 @@ impl DesktopSourceConfig {
             state: None,
             asset_root: None,
             max_asset_bytes: DEFAULT_MAX_ASSET_BYTES,
+            #[cfg(feature = "application-ipc")]
             ipc_registry: IpcRegistry::default(),
             route_state: RouteStateRegistry::new(),
             api_routes: ApiRouteRegistry::new(),
@@ -84,9 +91,10 @@ pub struct DesktopBundleConfig {
     pub bundle_dir: PathBuf,
     /// Optional Rust-owned startup state. When omitted, bundled `state.json` is used.
     pub state: Option<Value>,
-    /// Maximum asset bytes read into one protocol response.
+    /// Maximum file length delivered by one protocol response.
     pub max_asset_bytes: u64,
     /// Protobuf IPC registry.
+    #[cfg(feature = "application-ipc")]
     pub ipc_registry: IpcRegistry,
     /// Rust route state providers.
     pub route_state: RouteStateRegistry,
@@ -104,6 +112,7 @@ impl DesktopBundleConfig {
             bundle_dir,
             state: None,
             max_asset_bytes: DEFAULT_MAX_ASSET_BYTES,
+            #[cfg(feature = "application-ipc")]
             ipc_registry: IpcRegistry::default(),
             route_state: RouteStateRegistry::new(),
             api_routes: ApiRouteRegistry::new(),
@@ -119,11 +128,13 @@ pub struct DesktopRuntime {
     state: Value,
     css_files: HashMap<String, String>,
     asset_root: Option<PathBuf>,
-    asset_index: HashMap<String, DesktopAssetEntry>,
+    asset_index: HashMap<PathBuf, DesktopAssetEntry>,
     max_asset_bytes: u64,
     startup_html: String,
     window_css: String,
+    #[cfg(feature = "application-ipc")]
     ipc_registry: Arc<IpcRegistry>,
+    #[cfg(feature = "application-ipc")]
     development: bool,
     handler: WebUIHandler,
     route_state: RouteStateRegistry,
@@ -131,242 +142,10 @@ pub struct DesktopRuntime {
     token_css: Option<HashMap<String, String>>,
 }
 
-type RouteStateHandler = dyn Fn(RouteContext<'_>) -> Result<Value> + Send + Sync;
-type ApiHandler = dyn Fn(ApiContext<'_>) -> Result<DesktopProtocolResponse> + Send + Sync;
-
-/// Registry of Rust route state providers.
-#[derive(Default)]
-pub struct RouteStateRegistry {
-    routes: Vec<RouteStateEntry>,
-}
-
-/// Registry of Rust custom-protocol API handlers.
-#[derive(Default)]
-pub struct ApiRouteRegistry {
-    routes: Vec<ApiRouteEntry>,
-}
-
-impl ApiRouteRegistry {
-    /// Create an empty API route registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { routes: Vec::new() }
-    }
-
-    /// Register an API handler for a URL path pattern.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DesktopError`] if `pattern` is invalid.
-    pub fn route<F>(&mut self, pattern: impl AsRef<str>, handler: F) -> Result<()>
-    where
-        F: Fn(ApiContext<'_>) -> Result<DesktopProtocolResponse> + Send + Sync + 'static,
-    {
-        self.routes.push(ApiRouteEntry {
-            pattern: RoutePattern::parse(pattern.as_ref())?,
-            handler: Arc::new(handler),
-        });
-        Ok(())
-    }
-
-    fn resolve(
-        &self,
-        request: &DesktopProtocolRequest<'_>,
-    ) -> Result<Option<DesktopProtocolResponse>> {
-        let path = route_path(request.path);
-        for entry in self.routes.iter() {
-            let Some(params) = entry.pattern.matches(path) else {
-                continue;
-            };
-            let context = ApiContext {
-                method: &request.method,
-                path,
-                params: &params,
-                body: request.body,
-            };
-            return (entry.handler)(context).map(Some);
-        }
-        Ok(None)
-    }
-}
-
-#[derive(Clone)]
-struct ApiRouteEntry {
-    pattern: RoutePattern,
-    handler: Arc<ApiHandler>,
-}
-
 struct DesktopAssetEntry {
     path: PathBuf,
     content_type: String,
     size_bytes: u64,
-}
-
-impl RouteStateRegistry {
-    /// Create an empty route state registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self { routes: Vec::new() }
-    }
-
-    /// Register a route state provider.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DesktopError`] if `pattern` is invalid.
-    pub fn route<F>(&mut self, pattern: impl AsRef<str>, handler: F) -> Result<()>
-    where
-        F: Fn(RouteContext<'_>) -> Result<Value> + Send + Sync + 'static,
-    {
-        self.routes.push(RouteStateEntry {
-            pattern: RoutePattern::parse(pattern.as_ref())?,
-            handler: Arc::new(handler),
-        });
-        Ok(())
-    }
-
-    fn resolve(&self, path: &str, base_state: &Value) -> Result<Option<Value>> {
-        for entry in self.routes.iter() {
-            let Some(params) = entry.pattern.matches(path) else {
-                continue;
-            };
-            let context = RouteContext {
-                path,
-                params: &params,
-                base_state,
-            };
-            return (entry.handler)(context)
-                .map(Some)
-                .map_err(|err| DesktopError::RouteProvider {
-                    path: path.to_string(),
-                    message: err.chain_message(),
-                });
-        }
-        Ok(None)
-    }
-}
-
-#[derive(Clone)]
-struct RouteStateEntry {
-    pattern: RoutePattern,
-    handler: Arc<RouteStateHandler>,
-}
-
-#[derive(Clone)]
-struct RoutePattern {
-    segments: Vec<RouteSegment>,
-}
-
-#[derive(Clone)]
-enum RouteSegment {
-    Literal(String),
-    Param(String),
-}
-
-/// Context passed to Rust route state providers.
-pub struct RouteContext<'a> {
-    /// Request path without query string.
-    pub path: &'a str,
-    params: &'a [(String, String)],
-    /// File-backed base state loaded by the desktop runtime.
-    pub base_state: &'a Value,
-}
-
-/// Context passed to Rust custom-protocol API handlers.
-pub struct ApiContext<'a> {
-    /// Request method.
-    pub method: &'a DesktopHttpMethod,
-    /// Request path without query string.
-    pub path: &'a str,
-    params: &'a [(String, String)],
-    /// Request body bytes.
-    pub body: &'a [u8],
-}
-
-impl<'a> ApiContext<'a> {
-    /// Return a route parameter by name.
-    #[must_use]
-    pub fn param(&self, name: &str) -> Option<&str> {
-        self.params
-            .iter()
-            .find_map(|(key, value)| (key == name).then_some(value.as_str()))
-    }
-}
-
-impl<'a> RouteContext<'a> {
-    /// Return a route parameter by name.
-    #[must_use]
-    pub fn param(&self, name: &str) -> Option<&str> {
-        self.params
-            .iter()
-            .find_map(|(key, value)| (key == name).then_some(value.as_str()))
-    }
-}
-
-impl RoutePattern {
-    fn parse(pattern: &str) -> Result<Self> {
-        if !pattern.starts_with('/') {
-            return Err(DesktopError::InvalidRoutePattern {
-                pattern: pattern.to_string(),
-                help: "desktop route patterns must start with '/', e.g. /contacts/:id".to_string(),
-            });
-        }
-
-        let trimmed = pattern.trim_matches('/');
-        let mut segments = Vec::new();
-        if !trimmed.is_empty() {
-            for segment in trimmed.split('/') {
-                if segment.is_empty() || segment == "." || segment == ".." {
-                    return Err(DesktopError::InvalidRoutePattern {
-                        pattern: pattern.to_string(),
-                        help: "route pattern segments cannot be empty, '.', or '..'".to_string(),
-                    });
-                }
-                if let Some(param) = segment.strip_prefix(':') {
-                    if param.is_empty() {
-                        return Err(DesktopError::InvalidRoutePattern {
-                            pattern: pattern.to_string(),
-                            help: "route parameter names cannot be empty".to_string(),
-                        });
-                    }
-                    segments.push(RouteSegment::Param(param.to_string()));
-                } else {
-                    segments.push(RouteSegment::Literal(segment.to_string()));
-                }
-            }
-        }
-        Ok(Self { segments })
-    }
-
-    fn matches(&self, path: &str) -> Option<Vec<(String, String)>> {
-        let path = path.split_once('?').map_or(path, |(path, _)| path);
-        let trimmed = path.trim_matches('/');
-        if trimmed.is_empty() {
-            return self.segments.is_empty().then(Vec::new);
-        }
-        if self.segments.is_empty() {
-            None
-        } else {
-            self.matches_non_empty(trimmed)
-        }
-    }
-
-    fn matches_non_empty(&self, path: &str) -> Option<Vec<(String, String)>> {
-        let segment_count = path.split('/').count();
-        if segment_count != self.segments.len() {
-            return None;
-        }
-        let mut params = Vec::new();
-        for (pattern, raw_segment) in self.segments.iter().zip(path.split('/')) {
-            let segment = decode_segment(raw_segment);
-            match pattern {
-                RouteSegment::Literal(expected) if expected == &segment => {}
-                RouteSegment::Literal(_) => return None,
-                RouteSegment::Param(name) => params.push((name.clone(), segment)),
-            }
-        }
-        Some(params)
-    }
 }
 
 impl DesktopRuntime {
@@ -422,7 +201,9 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
+            #[cfg(feature = "application-ipc")]
             ipc_registry: Arc::new(config.ipc_registry),
+            #[cfg(feature = "application-ipc")]
             development: true,
             handler,
             route_state: config.route_state,
@@ -524,7 +305,9 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
+            #[cfg(feature = "application-ipc")]
             ipc_registry: Arc::new(config.ipc_registry),
+            #[cfg(feature = "application-ipc")]
             development: false,
             handler,
             route_state: config.route_state,
@@ -543,11 +326,13 @@ impl DesktopRuntime {
         request: &DesktopProtocolRequest<'_>,
     ) -> Result<DesktopProtocolResponse> {
         let path = route_path(request.path);
+        #[cfg(feature = "application-ipc")]
         if matches!(request.method, DesktopHttpMethod::Get) {
             if let Some(response) = crate::ipc_assets::response(path) {
                 return Ok(response);
             }
         }
+        #[cfg(feature = "application-ipc")]
         if path == IPC_ENDPOINT || path == "/_webui/ipc/outbound" {
             return Err(DesktopError::UnsupportedRuntime {
                 message: "application IPC requires a frame-scoped document session".to_string(),
@@ -561,7 +346,7 @@ impl DesktopRuntime {
         }
 
         if matches!(request.method, DesktopHttpMethod::Get) {
-            let request_path = route_path(request.path);
+            let request_path = path;
             if let Some(css) = self.generated_css(request_path) {
                 return Ok(DesktopProtocolResponse::new(
                     200,
@@ -581,12 +366,25 @@ impl DesktopRuntime {
             }
 
             if request_path == "/" || request_path == "/index.html" {
+                if self.route_state.has_provider("/") {
+                    let html = apply_window_css(
+                        render_html(
+                            &self.protocol,
+                            &self.handler,
+                            &self.entry,
+                            "/",
+                            &self.state_for_request("/")?,
+                        )?,
+                        &self.window_css,
+                    );
+                    return Ok(DesktopProtocolResponse::html(html.into_bytes()));
+                }
                 return Ok(DesktopProtocolResponse::html(
                     self.startup_html.as_bytes().to_vec(),
                 ));
             }
 
-            if self.has_route_match(request_path)? {
+            if self.protocol.matches_route(&self.entry, request_path) {
                 let html = apply_window_css(
                     render_html(
                         &self.protocol,
@@ -604,16 +402,31 @@ impl DesktopRuntime {
         Ok(DesktopProtocolResponse::text(404, "Not Found"))
     }
 
-    /// Return the startup HTML rendered for `/`.
+    /// Return the construction-time HTML snapshot rendered for `/`.
+    ///
+    /// This does not invoke route providers again. Use [`Self::handle_request`]
+    /// for a fresh provider-backed root response.
     #[must_use]
     pub fn startup_html(&self) -> &str {
         &self.startup_html
     }
 
+    pub(crate) fn validate_window(&self, window: &crate::WindowOptions) -> Result<()> {
+        if window_css_block(window, DesktopPlatform::current()) != self.window_css {
+            return Err(DesktopError::UnsupportedRuntime {
+                message: "frame window styling differs from the rendered desktop document".into(),
+                help: "configure window options on DesktopAppBuilder before build, or use the same titlebar and background when constructing the runtime and frame".into(),
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "application-ipc")]
     pub(crate) fn ipc_registry(&self) -> Arc<IpcRegistry> {
         Arc::clone(&self.ipc_registry)
     }
 
+    #[cfg(feature = "application-ipc")]
     pub(crate) fn is_development(&self) -> bool {
         self.development
     }
@@ -629,14 +442,14 @@ impl DesktopRuntime {
         };
 
         if !self.asset_index.is_empty() {
-            if resolve_safe_path(root, request_path).is_none() {
+            let Some(path) = resolve_safe_path(root, request_path) else {
                 return Err(DesktopError::InvalidAssetPath {
                     path: request_path.to_string(),
                 });
-            }
-            let key = asset_index_key(request_path);
-            return match self.asset_index.get(key.as_str()) {
+            };
+            return match self.asset_index.get(&path) {
                 Some(asset) => read_known_asset_response(
+                    root,
                     &asset.path,
                     &asset.content_type,
                     asset.size_bytes,
@@ -659,19 +472,10 @@ impl DesktopRuntime {
     fn partial_response(&self, request_path: &str) -> Result<DesktopProtocolResponse> {
         let route_path = route_path(request_path);
         let state = self.state_for_request(route_path)?;
-        let partial_json =
+        let partial =
             self.protocol
-                .render_partial(state.clone(), &self.entry, route_path, "")?;
-        let mut partial: Value =
-            serde_json::from_str(&partial_json).map_err(|source| DesktopError::Serialization {
-                context: "deserializing desktop router partial".to_string(),
-                source,
-            })?;
-        if !partial
-            .get("chain")
-            .and_then(Value::as_array)
-            .is_some_and(|chain| json_route_chain_matches_request(chain, route_path))
-        {
+                .render_partial_full_state(state, &self.entry, route_path, "")?;
+        if !partial.is_match() {
             return Ok(DesktopProtocolResponse::text(404, "Not Found"));
         }
         // `render_partial` projects `state` down to the keys the matched
@@ -682,7 +486,6 @@ impl DesktopRuntime {
         // component's template references, so the desktop runtime always
         // ships the full per-request state it computed rather than trusting
         // the generic projection to preserve fields components never bind.
-        partial["state"] = state;
         let body = serde_json::to_vec(&partial).map_err(|source| DesktopError::Serialization {
             context: "serializing desktop router partial".to_string(),
             source,
@@ -700,34 +503,13 @@ impl DesktopRuntime {
             request_path,
         })
     }
-
-    /// Whether `request_path` matches a declared application route.
-    ///
-    /// This asks the handler's route chain (via a no-op partial render) rather
-    /// than re-implementing route matching here, so the desktop runtime never
-    /// drifts from the handler's own route-matching behavior.
-    fn has_route_match(&self, request_path: &str) -> Result<bool> {
-        let route_path = route_path(request_path);
-        let partial_json =
-            self.protocol
-                .render_partial(Value::Null, &self.entry, route_path, "")?;
-        let partial: Value =
-            serde_json::from_str(&partial_json).map_err(|source| DesktopError::Serialization {
-                context: "deserializing desktop router partial".to_string(),
-                source,
-            })?;
-        Ok(partial
-            .get("chain")
-            .and_then(Value::as_array)
-            .is_some_and(|chain| json_route_chain_matches_request(chain, route_path)))
-    }
 }
 
 fn build_asset_index(
     asset_root: &Path,
     assets: &[crate::BundleAsset],
     max_asset_bytes: u64,
-) -> Result<HashMap<String, DesktopAssetEntry>> {
+) -> Result<HashMap<PathBuf, DesktopAssetEntry>> {
     let mut index = HashMap::with_capacity(assets.len());
     for asset in assets {
         let Some(relative) = asset.path.strip_prefix("assets/") else {
@@ -735,12 +517,18 @@ fn build_asset_index(
                 path: asset.path.clone(),
             });
         };
-        let request_path = asset_index_key(relative);
-        let Some(path) = resolve_safe_path(asset_root, &request_path) else {
+        let relative = Path::new(relative);
+        validate_manifest_relative_path(relative, "asset")?;
+        let path = asset_root.join(relative);
+        let canonical = path.canonicalize().map_err(|source| DesktopError::Io {
+            context: format!("resolving indexed desktop asset {}", path.display()),
+            source,
+        })?;
+        if !canonical.starts_with(asset_root) {
             return Err(DesktopError::InvalidAssetPath {
                 path: asset.path.clone(),
             });
-        };
+        }
         if asset.size_bytes > max_asset_bytes {
             return Err(DesktopError::AssetTooLarge {
                 path,
@@ -752,7 +540,7 @@ fn build_asset_index(
             .first_or_octet_stream()
             .to_string();
         index.insert(
-            request_path,
+            path.clone(),
             DesktopAssetEntry {
                 path,
                 content_type,
@@ -761,36 +549,6 @@ fn build_asset_index(
         );
     }
     Ok(index)
-}
-
-fn asset_index_key(path: &str) -> String {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if path.starts_with('/') {
-        path.to_string()
-    } else {
-        let mut key = String::with_capacity(path.len() + 1);
-        key.push('/');
-        key.push_str(path);
-        key
-    }
-}
-
-fn route_path(request_path: &str) -> &str {
-    request_path
-        .split_once('?')
-        .map_or(request_path, |(path, _)| path)
-}
-
-fn json_route_chain_matches_request(chain: &[Value], request_path: &str) -> bool {
-    let path = route_path(request_path);
-    if path == "/" {
-        return !chain.is_empty();
-    }
-    match chain {
-        [] => false,
-        [only] => only.get("path").and_then(Value::as_str) != Some("/"),
-        _ => true,
-    }
 }
 
 struct StateRequestContext<'a> {
@@ -866,13 +624,6 @@ fn resolve_config_token_css(
             }
         })?;
     Ok(Some(resolved.css))
-}
-
-fn decode_segment(segment: &str) -> String {
-    percent_decode_str(segment)
-        .decode_utf8()
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| segment.to_string())
 }
 
 fn read_state(path: Option<&PathBuf>) -> Result<Value> {
@@ -1080,7 +831,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, 200);
-        let html = std::str::from_utf8(response.body.as_slice()).unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap().as_slice()).unwrap();
         // A full page load on a non-root route must carry the same titlebar
         // custom properties as the startup document, or a custom titlebar
         // collapses as soon as the user navigates.
@@ -1114,7 +865,7 @@ mod tests {
             .unwrap();
         assert_eq!(json_asset.status, 200);
         assert_eq!(json_asset.content_type, "application/json");
-        assert_eq!(json_asset.body, br#"{"ok":true}"#);
+        assert_eq!(json_asset.body.into_bytes().unwrap(), br#"{"ok":true}"#);
 
         let err = runtime
             .handle_request(&DesktopProtocolRequest::get("/%2e%2e/index.html"))
@@ -1123,6 +874,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "application-ipc")]
     fn dispatches_ipc_through_the_owning_frame() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), "index.html", "<main>Hello</main>");
@@ -1205,7 +957,7 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "application/json");
-        let json: Value = serde_json::from_slice(&response.body).unwrap();
+        let json: Value = serde_json::from_slice(response.body.as_bytes().unwrap()).unwrap();
         assert_eq!(json["path"], "/contacts/42");
         assert_eq!(json["state"]["title"], "Contact");
     }
@@ -1289,7 +1041,10 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "text/javascript");
-        assert_eq!(response.body, b"console.log('bundle');");
+        assert_eq!(
+            response.body.into_bytes().unwrap(),
+            b"console.log('bundle');"
+        );
 
         let err = runtime
             .handle_request(&DesktopProtocolRequest::get("/%2e%2e/protocol.bin"))
@@ -1533,7 +1288,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(response.status, 200);
-        let json: Value = serde_json::from_slice(&response.body).unwrap();
+        let json: Value = serde_json::from_slice(response.body.as_bytes().unwrap()).unwrap();
         assert_eq!(json["path"], "/favorites");
         assert_eq!(json["state"]["page"], "favorites");
     }
@@ -1564,7 +1319,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status, 200);
-        let html = std::str::from_utf8(response.body.as_slice()).unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap().as_slice()).unwrap();
         assert!(html.contains("<p>favorites</p>"));
     }
 
@@ -1577,7 +1332,7 @@ mod tests {
                 wants_json: true,
             })
             .unwrap();
-        let json: Value = serde_json::from_slice(&response.body).unwrap();
+        let json: Value = serde_json::from_slice(response.body.as_bytes().unwrap()).unwrap();
         json["state"].clone()
     }
 }

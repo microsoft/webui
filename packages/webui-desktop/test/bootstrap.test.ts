@@ -93,6 +93,22 @@ test('handshake deadline includes admission wait, removes native listener and ig
   assert.equal(native.listening(), false);
 });
 
+test('idle native activation does not spend the lazy first handshake timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = channel(false);
+  const bootstrap = createNativeBootstrap(native.channel);
+  bootstrap.activate(proof(bootstrap));
+  t.mock.timers.tick(defaultLimits.handshakeTimeoutMs * 2);
+  assert.equal(native.sent.length, 0);
+  assert.equal(native.listening(), true);
+  const admitted = bootstrap.hello(schema);
+  await turn();
+  t.mock.timers.tick(defaultLimits.handshakeTimeoutMs - 1);
+  native.push({ ...result, ...proof(bootstrap) });
+  assert.equal((await admitted).generation, '1');
+  bootstrap.disconnect('1', result.token);
+});
+
 test('native schema mismatch, rejection and malformed session fail explicitly', async () => {
   for (const reply of [
     { kind: 'helloResult', callId: '1', error: { code: 'schema-mismatch' } },

@@ -15,18 +15,31 @@ From the repository root:
 python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py
 ```
 
-The harness invokes the real CLI generator and its check mode, compiles the native
-Rust host with its committed lockfile offline, typechecks and bundles generated
-TypeScript against the SDK-reserved runtime asset,
-and runs the exact same copied binary with `DesktopApp::from_source` and
-`DesktopApp::from_bundle`. Every invocation receives fresh output directories.
+The harness checks committed bindings with the real CLI generator's read-only
+check mode before compiling, so stale fixtures fail rather than being silently
+regenerated. After intentional generator changes, refresh both IPC fixtures with
+`WEBUI_UPDATE_IPC_FIXTURE=1 cargo test -p microsoft-webui-desktop-build --test generate fixture_matches_generator`.
+The harness compiles two optimized native Rust hosts with its committed lockfile
+offline: a source-enabled tooling runner and a runtime-only release consumer
+with no default features. It typechecks and bundles generated TypeScript against
+the SDK-reserved runtime asset. Source mode uses `DesktopApp::from_source`;
+packaged mode uses the independently built consumer and `DesktopApp::from_bundle`.
+Every invocation receives fresh output directories.
 The SDK packager creates `macos-app`, `windows-portable`, or `linux-portable`
 according to `DesktopPlatform::current()`. The packaged executable discovers its
 resources through `find_packaged_resources_dir`, checked against SDK packaging
-metadata. The harness verifies identical hashes for the source and packaged
-executable copies. Windows uses `.exe` executables and the `.cmd` protoc plugin;
+metadata. The harness verifies the packaged executable matches the runtime-only
+consumer's SHA-256, records each runner's feature metadata, and rejects parser,
+source build, generator, Tokio, Rayon, and CLI dependencies in the consumer's
+normal/build dependency tree. Windows uses `.exe` executables and the `.cmd` protoc plugin;
 TypeScript runs through Node rather than a platform-specific shell shim.
 The bundle's separate original build input is removed before either native run.
+Before packaged execution, the source app, staging bundle, and both unpackaged
+runner copies are removed. Only package resources can supply the app. Both
+native flows run optimized release code; this is correctness evidence, not a
+performance measurement. A separate release no-IPC fixture exercises source and
+bundle modes without compiling `application-ipc`, checks that IPC assets,
+endpoints and bootstrap are absent, and verifies ordinary API and window closure.
 Keep this fixture's registry dependency versions aligned with the root
 `Cargo.lock` when updating dependencies, so native acceptance exercises the same
 versions as the product build. Use `cargo update --manifest-path` with
@@ -34,6 +47,10 @@ versions as the product build. Use `cargo update --manifest-path` with
 
 The protocol asserts:
 
+- Fetch-visible JavaScript and protobuf response MIME headers, including
+  `Cache-Control: no-store` on rejected IPC requests.
+- A first connection delayed beyond the default five-second handshake budget
+  still succeeds; waiting before hello does not expire the document proof.
 - JS typed Promise → Rust, including acknowledged `Empty`/`void` RPC completion.
 - Rust typed Future → registered async JS handler.
 - Rust notifications → JS subscriptions, including unsubscribe.
@@ -46,7 +63,9 @@ The protocol asserts:
   on the same connection. The fixture does not assume an aborted future resumes.
 - Full main-document navigation while a typed request is pending, cancellation
   of the retired Rust handler, fresh document generation, and rejection of a
-  request made through the old Rust session.
+  request made through the old Rust session. Where available, this transition
+  uses the Navigation API, including WKWebView's nil native navigation identity;
+  later transitions retain location and history traversal coverage.
 - Startup notification registration after navigation and a successful nested
   Rust-to-JS RPC in that new document.
 - Idempotent explicit JS connection close, settlement of an in-flight request
@@ -76,8 +95,8 @@ normal exit and the exact SHA-256 before and after each run. Failures/timeouts
 are not converted into passes; native assertion failures and unhandled JS errors
 override any pass-shaped output. Cleanup signals only the exact child PID.
 
-`--timeout 60` bounds each native run. `--skip-build` is for a host binary that
-has already been rebuilt; generated bindings are still checked. No sleep is used
+`--timeout 60` bounds each native run. Both runner variants are always rebuilt
+to prevent stale artifacts from passing acceptance. No sleep is used
 as readiness. GUI screenshot/foreground testing is deliberately not performed:
 the fixture tests native protocol behavior, records document visibility, and
 does not change a product interface. There are no automatic platform skips or
@@ -101,8 +120,9 @@ single fully asserted success report.
 Use the repository Rust toolchain, Node 22+, pnpm with the checked-in lockfile,
 Python 3.9+, `protoc` on PATH (including its standard protobuf imports), and the
 pinned `ts-proto`/protobuf dependencies already declared in the workspace.
-The root CLI must include `cli`; the standalone fixture compiles both `native`
-and `source`. Preparation from the repository root:
+The root CLI must include `cli`; the standalone fixture always enables `native`
+and `application-ipc`, and only its tooling runner enables `source`. Preparation
+from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -112,6 +132,11 @@ cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-
 
 The fetch seeds platform dependencies for the harness's offline locked build.
 Embedded SDK assets must already be current, as for the production SDK build.
+All three CI platforms run `python crates/webui-desktop/tests/acceptance.py`
+before example generation. This shared gate checks committed generated fixtures
+and embedded assets, generated Rust/TypeScript consumers, browser contracts in
+Chromium/Firefox/WebKit, and the isolated nonempty SDK feature matrix. It rejects
+`WEBUI_UPDATE_IPC_FIXTURE` so a regeneration environment cannot mask drift.
 
 macOS requires Xcode command-line tools and an ordinary logged-in GUI session:
 
@@ -119,12 +144,20 @@ macOS requires Xcode command-line tools and an ordinary logged-in GUI session:
 python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 ```
 
-Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime,
+Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime
+(122.0.2365.46 or later),
 `protoc.exe` on PATH and an interactive desktop-capable runner. In PowerShell:
 
 ```powershell
 python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 ```
+
+Before typed IPC checks, Windows verifies that `fetch` remains native, response
+metadata/cloning and HEAD semantics are intact, binary POST bodies round-trip,
+and abort before dispatch, immediately after dispatch, and before body consumption
+rejects with `AbortError`. A subsequent fetch must succeed. Dedicated and shared
+workers fetch a runtime-only resource to exercise the required native request-source
+filter. These checks run in both source and packaged modes.
 
 Linux requires GTK >= 4.10 and WebKitGTK 6.0 >= 2.42. Ubuntu 24.04 CI package
 dependencies are `build-essential`, `pkg-config`, `protobuf-compiler`,
@@ -163,10 +196,11 @@ python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --plan linux
 Actual WKWebView source and SDK-packaged `.app` executions have demonstrated
 explicit BFCache reconnection on both back and forward, with cached generations
 3/4 replaced by 5/6 and old connections/callbacks staying retired.
-The latest hardened run passed packaged mode but failed source mode: the outgoing
-`history-return` pending request rejected with `transport`, not the expected
-`navigated`/`closed`. That race remains a failing regression, not an accepted
-terminal-code fallback. An earlier pass-shaped report accompanied by an
-unhandled rejection is not clean evidence. The fixture does not alter production
-cache/admission behavior. Windows and Linux executable/layout planning has unit
+Optimized source and runtime-only packaged modes, plus both release no-IPC
+modes, pass on the available macOS host. Both IPC runs observed two persisted
+history restores. Unhandled rejections remain failures even alongside a
+pass-shaped report; no terminal-code fallback was added. The fixture does not
+alter production cache/admission behavior. Windows and Linux executable/layout planning has unit
 coverage, but native Windows/Linux execution has not been performed locally.
+Contact Book primary/error screenshots remain a separate product acceptance
+requirement; this protocol fixture does not provide them.

@@ -2,11 +2,17 @@
 // Licensed under the MIT license.
 
 mod backend;
+#[cfg(feature = "application-ipc")]
 mod ipc;
+#[cfg(feature = "application-ipc")]
 mod ipc_control;
+#[cfg(feature = "application-ipc")]
 mod ipc_input;
+#[cfg(feature = "application-ipc")]
 mod ipc_message;
+#[cfg(feature = "application-ipc")]
 mod ipc_scheme;
+#[cfg(feature = "application-ipc")]
 mod ipc_wake;
 mod protocol;
 mod response;

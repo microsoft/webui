@@ -275,6 +275,14 @@ pub struct IpcBridge {
     pub(super) core: Weak<Core>,
 }
 impl IpcBridge {
+    /// Native input cap for a reserved path. Apply before allocating body bytes.
+    pub fn max_request_body_bytes(&self, _path: &str) -> Result<usize, IpcError> {
+        let core = self
+            .core
+            .upgrade()
+            .ok_or_else(|| fail(IpcErrorCode::Closed))?;
+        Ok(core.options.limits.max_frame_bytes)
+    }
     /// Whether this live frame has an explicitly configured application schema.
     /// Disabled/default frames need no native bootstrap or wake-source setup.
     pub fn is_enabled(&self) -> bool {
@@ -446,65 +454,10 @@ fn submit(
     core: &Arc<Core>,
     mut request: OwnedIpcHttpRequest,
 ) -> Result<(DesktopProtocolResponse, Option<DrainGuard>), IpcError> {
-    if request.body.len() > core.options.limits.max_frame_bytes {
-        return Err(fail(IpcErrorCode::PayloadTooLarge));
-    }
-    if !Weak::ptr_eq(&request.input_permit.core, &Arc::downgrade(core))
-        || request.input_permit.input.bytes() < request.body.capacity()
-    {
-        return Err(fail(IpcErrorCode::InvalidFrame));
-    }
-    if request.path.len() > 64 || request.token.len() != 32 {
-        return Err(fail(IpcErrorCode::InvalidFrame));
-    }
-    let generation = {
-        let state = lock(&core.state);
-        if state.closed {
-            return Err(fail(IpcErrorCode::Closed));
-        }
-        let doc = state
-            .document
-            .as_ref()
-            .ok_or_else(|| fail(IpcErrorCode::NotReady))?;
-        if doc.navigation != request.navigation
-            || !constant_equal(doc.token.as_bytes(), request.token.as_bytes())
-        {
-            return Err(fail(IpcErrorCode::PermissionDenied));
-        }
-        doc.generation
-    };
+    let generation = authenticate(core, &request)?;
     match (&request.method, request.path.as_str()) {
         (DesktopHttpMethod::Get, "/_webui/ipc/outbound") if request.body.is_empty() => {
-            let mut state = lock(&core.state);
-            let doc = Core::document(&mut state, generation)?;
-            if doc.drain_inflight {
-                return Err(fail(IpcErrorCode::Overloaded));
-            }
-            doc.drain_inflight = true;
-            let drain = DrainGuard {
-                core: Arc::downgrade(core),
-                generation,
-            };
-            let Some(queued) = doc.queue.pop_front() else {
-                return Ok((empty(), Some(drain)));
-            };
-            if queued.control {
-                doc.control_slots -= 1;
-                if queued.bytes.len() > core.options.limits.max_error_text_bytes_total + 128 {
-                    doc.data_bytes -= queued.bytes.len();
-                }
-            } else {
-                doc.data_frames -= 1;
-                doc.data_bytes -= queued.bytes.len();
-            }
-            Ok((
-                DesktopProtocolResponse::new(
-                    200,
-                    "application/x-protobuf",
-                    DesktopResponseBody::with_guard(queued.bytes, queued._memory),
-                ),
-                Some(drain),
-            ))
+            drain(core, generation)
         }
         (DesktopHttpMethod::Post, "/_webui/ipc") => {
             let received = Instant::now();
@@ -537,6 +490,72 @@ fn submit(
         }
         _ => Err(fail(IpcErrorCode::InvalidFrame)),
     }
+}
+
+fn authenticate(core: &Arc<Core>, request: &OwnedIpcHttpRequest) -> Result<u64, IpcError> {
+    if request.body.len() > core.options.limits.max_frame_bytes {
+        return Err(fail(IpcErrorCode::PayloadTooLarge));
+    }
+    if !Weak::ptr_eq(&request.input_permit.core, &Arc::downgrade(core))
+        || request.input_permit.input.bytes() < request.body.capacity()
+    {
+        return Err(fail(IpcErrorCode::InvalidFrame));
+    }
+    if request.path.len() > 64 || request.token.len() != 32 {
+        return Err(fail(IpcErrorCode::InvalidFrame));
+    }
+    {
+        let state = lock(&core.state);
+        if state.closed {
+            return Err(fail(IpcErrorCode::Closed));
+        }
+        let doc = state
+            .document
+            .as_ref()
+            .ok_or_else(|| fail(IpcErrorCode::NotReady))?;
+        if doc.navigation != request.navigation
+            || !constant_equal(doc.token.as_bytes(), request.token.as_bytes())
+        {
+            return Err(fail(IpcErrorCode::PermissionDenied));
+        }
+        Ok(doc.generation)
+    }
+}
+
+fn drain(
+    core: &Arc<Core>,
+    generation: u64,
+) -> Result<(DesktopProtocolResponse, Option<DrainGuard>), IpcError> {
+    let mut state = lock(&core.state);
+    let doc = Core::document(&mut state, generation)?;
+    if doc.drain_inflight {
+        return Err(fail(IpcErrorCode::Overloaded));
+    }
+    doc.drain_inflight = true;
+    let drain = DrainGuard {
+        core: Arc::downgrade(core),
+        generation,
+    };
+    let Some(queued) = doc.queue.pop_front() else {
+        return Ok((empty(), Some(drain)));
+    };
+    if queued.control {
+        doc.control_slots -= 1;
+        if queued.bytes.len() > core.options.limits.max_error_text_bytes_total + 128 {
+            doc.data_bytes -= queued.bytes.len();
+        }
+    } else {
+        doc.data_frames -= 1;
+        doc.data_bytes -= queued.bytes.len();
+    }
+    Ok((
+        DesktopProtocolResponse::new(
+            200,
+            "application/x-protobuf",
+            DesktopResponseBody::with_guard(queued.bytes, queued._memory),
+        ),
+        Some(drain),
+    ))
 }
 fn empty() -> DesktopProtocolResponse {
     DesktopProtocolResponse::new(204, "application/x-protobuf", Vec::new())

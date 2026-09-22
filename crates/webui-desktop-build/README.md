@@ -2,6 +2,9 @@
 
 Build-time typed protobuf IPC generation for `microsoft-webui-desktop`.
 This crate is a build dependency, not part of the desktop runtime graph.
+Hosts using its generated Rust bindings must enable `application-ipc` on
+`microsoft-webui-desktop` and depend on `prost`. The SDK's `native`, `source`,
+and `cli` features do not enable application IPC.
 
 ## Generate
 
@@ -53,11 +56,16 @@ generates an acknowledged RPC returning Rust `()` / TypeScript `void`.
   Notification definitions are installed for each admitted document and count
   toward callback limits. Optional dynamic host event subscriptions remain in
   the service module, such as `host::subscribe_selected`.
-- TypeScript: `ipc.ts`, application codec modules, and the Empty codec when
-  needed. `ipc.ts` exports `connectDesktop`, `HostClient`, `RendererHandlers`,
-  `RendererEvents`, `AppConnection`, and schema metadata. Message types are
-  exported by their codec modules. Generated bindings import the browser-only
-  `@microsoft/webui-desktop` package; bundle them with the application.
+- TypeScript: `ipc.ts`, its private `ipc-runtime.ts` support module, application
+  codec modules, and the Empty codec when needed. Application code uses
+  `connectDesktop`, `HostClient`, `RendererHandlers`, `RendererEvents`,
+  `AppConnection`, and `schemaHash` from `ipc.ts`. Message types are exported by
+  their codec modules. The first explicit `connectDesktop()` loads the
+  browser-only `@microsoft/webui-desktop` runtime and protobuf codecs; importing
+  the bindings alone does not. Concurrent calls share loading, not connections.
+  Bundle with ESM code splitting and deploy all emitted chunks for deferred
+  transfer/parsing. Type-only imports require no runtime load. Load failures
+  reject the connection promise without transport activation or retries.
 - Beside the lock: `ipc-schema.json` (normalized semantic schema) and
   `ipc-generated-files.json` (owned artifact inventory).
 - `GeneratedFiles` returns the paths and common SHA-256 schema hash.

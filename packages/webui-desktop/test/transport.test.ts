@@ -26,6 +26,23 @@ function native() {
 }
 const session = { generation: '1', token: 'f'.repeat(32), limits: defaultLimits };
 
+test('native bootstrap errors preserve stable codes across separately bundled runtimes', async () => {
+  const host = native();
+  const transport = createDesktopTransport({ bootstrap: host.bootstrap });
+  const start = transport.start(schema, { async receive() {}, closed() {} });
+  // The injected native bootstrap has its own IpcError constructor.
+  host.admitted.reject(Object.assign(new Error('Native IPC admission timed out.'), {
+    name: 'IpcError', code: 'deadline-exceeded',
+  }));
+  await assert.rejects(start, { name: 'IpcError', code: 'deadline-exceeded' });
+});
+
+test('public runtime exposes typed transport without a raw-transfer facade', async () => {
+  const runtime = await import('../src/index.js');
+  assert.equal(typeof runtime.createDesktopTransport, 'function');
+  assert.equal('createRawTransfers' in runtime, false);
+});
+
 test('transport projects direct callers to the exact four-field bootstrap Hello', async () => {
   const host = native();
   const hello = host.bootstrap.hello.bind(host.bootstrap);
@@ -98,6 +115,29 @@ test('POST is binary and resolves on ingress acceptance only', async () => {
   await assert.rejects(transport.send(bytes), { code: 'overloaded' });
   accepted.resolve(new Response(null, { status: 204 }));
   await sending;
+  transport.close();
+});
+
+test('session credentials stay pinned to the application URL despite a hostile document base', async () => {
+  const host = native();
+  let requestUrl = '';
+  let requestInit: RequestInit | undefined;
+  const transport = createDesktopTransport({
+    bootstrap: host.bootstrap,
+    applicationUrl: 'https://application.webui.test/screens/current',
+    fetch: (async (url, init) => {
+      requestUrl = String(url);
+      requestInit = init;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
+  });
+  const starting = transport.start(schema, { async receive() {}, closed() {} });
+  host.admitted.resolve(session);
+  await starting;
+  await transport.send(new Uint8Array([1]));
+  assert.equal(requestUrl, 'https://application.webui.test/_webui/ipc');
+  assert.equal(requestInit?.mode, 'same-origin');
+  assert.equal(new Headers(requestInit?.headers).get('X-WebUI-Ipc-Session'), session.token);
   transport.close();
 });
 

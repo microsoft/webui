@@ -37,7 +37,8 @@ if (target === target.top) {
       },
     };
     if ('__webuiDesktopIpcReceiveV2' in target) throw new IpcError('invalid-frame', 'Conflicting native IPC control receiver.');
-    // WK/GTK use this native-only push hook; WebView2 uses its message event.
+    // All backends use this hook for nonce-bound retirement. Other WebView2
+    // controls use its message event; WK/GTK use the hook for those as well.
     Object.defineProperty(target, '__webuiDesktopIpcReceiveV2', {
       value: Object.freeze((message: unknown) => receiver?.(message)),
       writable: false,

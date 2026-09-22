@@ -804,6 +804,7 @@ dependencies = [
  "futures-util",
  "getrandom",
  "gtk4",
+ "libc",
  "microsoft-webui",
  "microsoft-webui-handler",
  "microsoft-webui-protocol",
@@ -823,6 +824,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-core",
+ "windows-sys",
 ]
 
 [[package]]

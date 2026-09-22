@@ -90,10 +90,6 @@ struct RunArgs {
     #[arg(long)]
     theme: Option<String>,
 
-    /// Rebuild and reload on source changes
-    #[arg(long)]
-    watch: bool,
-
     #[command(flatten)]
     window: WindowArgs,
 }
@@ -148,8 +144,8 @@ struct PackageArgs {
     /// Desktop bundle directory, or a WebUI app root with webuiDesktop config
     bundle: PathBuf,
 
-    /// Package target or `all`
-    #[arg(long, default_value = "macos-app")]
+    /// Package layout, or `all` layouts (does not cross-compile the runner)
+    #[arg(long, default_value = "macos-app", value_parser = ["macos-app", "windows-portable", "linux-portable", "all"])]
     target: String,
 
     /// Output directory for package artifacts
@@ -377,12 +373,6 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 fn run_desktop(args: RunArgs) -> Result<()> {
-    if args.watch {
-        return Err(anyhow::anyhow!(
-            "desktop --watch is not wired yet; the native reload worker is implemented in the HMR phase"
-        ));
-    }
-
     let app_dir = canonicalize_existing_dir(&args.app.app, "app")?;
     let state_file = optional_existing_file(args.state.as_ref(), "state")?;
     let asset_root = optional_existing_dir(args.servedir.as_ref(), "serve directory")?;
@@ -1096,12 +1086,12 @@ fn should_stage_asset(relative: &Path, generated_css: &[String]) -> bool {
     };
     if matches!(
         name,
-        "protocol.bin"
-            | "manifest.webui-desktop.json"
-            | "state.json"
-            | "index.html"
-            | "webui-desktop-ipc.js"
+        "protocol.bin" | "manifest.webui-desktop.json" | "state.json" | "index.html"
     ) {
+        return false;
+    }
+    #[cfg(feature = "application-ipc")]
+    if name == "webui-desktop-ipc.js" {
         return false;
     }
     let is_top_level = relative
@@ -1259,23 +1249,13 @@ fn parse_package_targets(raw: &str) -> Result<Vec<DesktopPackageTarget>> {
         "all" => Ok(vec![
             DesktopPackageTarget::MacosApp,
             DesktopPackageTarget::WindowsPortable,
-            DesktopPackageTarget::WindowsMsi,
-            DesktopPackageTarget::WindowsMsix,
             DesktopPackageTarget::LinuxPortable,
-            DesktopPackageTarget::LinuxAppImage,
-            DesktopPackageTarget::LinuxDeb,
-            DesktopPackageTarget::LinuxRpm,
         ]),
         "macos-app" => Ok(vec![DesktopPackageTarget::MacosApp]),
         "windows-portable" => Ok(vec![DesktopPackageTarget::WindowsPortable]),
-        "windows-msi" => Ok(vec![DesktopPackageTarget::WindowsMsi]),
-        "windows-msix" => Ok(vec![DesktopPackageTarget::WindowsMsix]),
         "linux-portable" => Ok(vec![DesktopPackageTarget::LinuxPortable]),
-        "linux-appimage" => Ok(vec![DesktopPackageTarget::LinuxAppImage]),
-        "linux-deb" => Ok(vec![DesktopPackageTarget::LinuxDeb]),
-        "linux-rpm" => Ok(vec![DesktopPackageTarget::LinuxRpm]),
         other => Err(anyhow::anyhow!(
-            "unknown desktop package target '{other}'; expected macos-app, windows-portable, windows-msi, windows-msix, linux-portable, linux-appimage, linux-deb, linux-rpm, or all"
+            "unknown desktop package target '{other}'; expected macos-app, windows-portable, linux-portable, or all"
         )),
     }
 }
@@ -1420,6 +1400,14 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn run_rejects_unimplemented_watch_instead_of_advertising_it() {
+        let error = Cli::try_parse_from(["webui-desktop", "run", ".", "--watch"])
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn parses_machine_readable_version_flag() {
         let cli = Cli::try_parse_from(["webui-desktop", "--webui-version"]);
         assert!(matches!(
@@ -1451,6 +1439,50 @@ mod tests {
         assert!(options.release);
         assert!(!options.default_features);
         assert!(options.features.is_empty());
+    }
+
+    #[test]
+    fn package_targets_include_only_implemented_layouts() {
+        let all = parse_package_targets(&package_args(&["--target", "all"]).target).unwrap();
+        assert_eq!(
+            all,
+            [
+                DesktopPackageTarget::MacosApp,
+                DesktopPackageTarget::WindowsPortable,
+                DesktopPackageTarget::LinuxPortable,
+            ]
+        );
+        for (name, target) in ["macos-app", "windows-portable", "linux-portable"]
+            .into_iter()
+            .zip(all)
+        {
+            assert_eq!(
+                parse_package_targets(&package_args(&["--target", name]).target).unwrap(),
+                [target]
+            );
+        }
+        for target in [
+            "windows-msi",
+            "windows-msix",
+            "linux-appimage",
+            "linux-deb",
+            "linux-rpm",
+        ] {
+            let error = Cli::try_parse_from([
+                "webui-desktop",
+                "package",
+                "app",
+                "--out",
+                "packages",
+                "--target",
+                target,
+            ])
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(error.to_string().contains("macos-app"));
+            assert!(parse_package_targets(target).is_err());
+        }
     }
 
     #[test]
@@ -1583,6 +1615,7 @@ version = "0.1.0"
         write_file(&assets, "global.css", "static");
         write_file(&assets, "nested/my-card.css", "static nested");
         write_file(&assets, "app.js", "console.log('ok');");
+        write_file(&assets, "webui-desktop-ipc.js", "application asset");
 
         let root = stage_app_assets(Some(&assets), &staged, &["my-card.css".to_string()])
             .unwrap()
@@ -1593,5 +1626,9 @@ version = "0.1.0"
         assert!(root.join("global.css").is_file());
         assert!(root.join("nested/my-card.css").is_file());
         assert!(root.join("app.js").is_file());
+        assert_eq!(
+            root.join("webui-desktop-ipc.js").is_file(),
+            !cfg!(feature = "application-ipc")
+        );
     }
 }

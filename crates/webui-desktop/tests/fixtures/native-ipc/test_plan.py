@@ -4,10 +4,21 @@
 """Pure planning tests only: these do not exercise any native adapter."""
 import unittest
 from pathlib import PureWindowsPath, PurePosixPath
-from run import assert_clean_native_log, platform_plan
+from run import assert_clean_native_log, assert_runtime_dependencies, platform_plan
 
 
 class PlatformPlanTests(unittest.TestCase):
+    def test_runtime_consumer_rejects_source_and_tooling_dependencies(self):
+        for package in ["microsoft-webui", "microsoft-webui-parser",
+                        "microsoft-webui-discovery", "microsoft-webui-desktop-build",
+                        "tokio", "rayon", "clap"]:
+            with self.subTest(package=package), self.assertRaisesRegex(RuntimeError, package):
+                assert_runtime_dependencies(["microsoft-webui-desktop", package])
+
+    def test_runtime_consumer_accepts_native_and_ipc_dependencies(self):
+        assert_runtime_dependencies(["microsoft-webui-desktop", "microsoft-webui-handler",
+                                     "prost", "futures-channel", "objc2", "webkit6", "webview2-com"])
+
     def test_windows_portable(self):
         plan = platform_plan("win32")
         self.assertEqual(plan["cli"], "webui-desktop.exe")

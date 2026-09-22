@@ -47,7 +47,9 @@ pub(super) struct SavedFrame {
 
 /// Per-window state owned by the native window procedure.
 pub(super) struct FrameState {
+    pub(super) application_tasks: std::rc::Rc<super::tasks::ApplicationTasks>,
     /// Native IPC adapter, with weak core facade and UI-local completions.
+    #[cfg(feature = "application-ipc")]
     pub(super) ipc: std::rc::Rc<super::ipc::WindowsIpc>,
     /// WebView2 controller that hosts the app content.
     pub(super) controller: ICoreWebView2Controller,

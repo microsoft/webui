@@ -4,9 +4,10 @@
 use super::response::finish_scheme_request;
 use crate::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime,
-    DEFAULT_MAX_ASSET_BYTES,
+    DEFAULT_MAX_REQUEST_BYTES,
 };
 use gtk4::gio;
+use std::sync::Arc;
 use webkit6::{prelude::*, URISchemeRequest};
 
 pub(super) fn startup_url() -> String {
@@ -22,7 +23,21 @@ pub(super) fn startup_url() -> String {
     url
 }
 
-pub(super) fn handle_scheme_request(request: &URISchemeRequest, runtime: &DesktopRuntime) {
+pub(super) fn handle_scheme_request(
+    request: &URISchemeRequest,
+    runtime: &Arc<DesktopRuntime>,
+    executor: &Arc<crate::execution::ApplicationExecutor>,
+) {
+    if request
+        .uri()
+        .is_none_or(|uri| !crate::is_allowed_navigation_url(uri.as_str(), super::APP_ORIGIN))
+    {
+        finish_scheme_request(
+            request,
+            DesktopProtocolResponse::text(403, "Untrusted desktop origin"),
+        );
+        return;
+    }
     let path = request
         .path()
         .map(|value| value.to_string())
@@ -45,16 +60,31 @@ pub(super) fn handle_scheme_request(request: &URISchemeRequest, runtime: &Deskto
             return;
         }
     };
-    let desktop_request = DesktopProtocolRequest {
-        method,
-        path: &path,
-        body: &body,
-        wants_json,
+    let runtime = Arc::clone(runtime);
+    let work = executor.submit(move || {
+        runtime
+            .handle_request(&DesktopProtocolRequest {
+                method,
+                path: &path,
+                body: &body,
+                wants_json,
+            })
+            .unwrap_or_else(|error| DesktopProtocolResponse::text(500, error.chain_message()))
+    });
+    let Ok(work) = work else {
+        finish_scheme_request(
+            request,
+            DesktopProtocolResponse::text(503, "Desktop application executor is unavailable"),
+        );
+        return;
     };
-    let response = runtime
-        .handle_request(&desktop_request)
-        .unwrap_or_else(|error| DesktopProtocolResponse::text(500, error.chain_message()));
-    finish_scheme_request(request, response);
+    let request = request.clone();
+    gtk4::glib::MainContext::default().spawn_local(async move {
+        let response = work.await.unwrap_or_else(|_| {
+            DesktopProtocolResponse::text(503, "Desktop application executor closed")
+        });
+        finish_scheme_request(&request, response);
+    });
 }
 
 fn read_body(request: &URISchemeRequest) -> std::result::Result<Vec<u8>, DesktopProtocolResponse> {
@@ -62,7 +92,7 @@ fn read_body(request: &URISchemeRequest) -> std::result::Result<Vec<u8>, Desktop
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    let max = usize::try_from(DEFAULT_MAX_ASSET_BYTES).unwrap_or(usize::MAX);
+    let max = usize::try_from(DEFAULT_MAX_REQUEST_BYTES).unwrap_or(usize::MAX);
     loop {
         match stream.read_bytes(16 * 1024, None::<&gio::Cancellable>) {
             Ok(bytes) if bytes.is_empty() => break,

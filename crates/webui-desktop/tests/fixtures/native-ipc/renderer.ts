@@ -5,6 +5,8 @@ import { createDesktopTransport, IpcError } from '@microsoft/webui-desktop';
 import { connectDesktop } from './generated/ts/ipc';
 import type { AppConnection } from './generated/ts/ipc';
 import type { Item } from './generated/ts/application';
+import { checkAdmissionDelivery } from './admission';
+import { checkWindowsResources } from './windows-resources';
 
 interface DocumentConnection {
   connection: AppConnection;
@@ -38,6 +40,8 @@ async function rejected(operation: () => Promise<unknown>, code: string): Promis
 }
 
 export async function run(restored = false): Promise<void> {
+  if (!restored && !location.search && !location.hash) await checkWindowsResources();
+  if (!restored && !location.search && !location.hash) await checkAdmissionDelivery();
   const retired = restored ? previousDocument : undefined;
   if (restored) {
     assert(retired, 'restored document lost its previous connection');
@@ -55,7 +59,8 @@ export async function run(restored = false): Promise<void> {
   const confirmed = deferred();
   const waiting = deferred();
   const secondaryFirst = deferred();
-  const connection = await connectDesktop(createDesktopTransport(), {
+  const transport = createDesktopTransport();
+  const connection = await connectDesktop(transport, {
     renderer: {
       async labelFor(value) {
         validate(value);
@@ -138,7 +143,13 @@ export async function run(restored = false): Promise<void> {
     assert(error instanceof IpcError && ['navigated', 'closed'].includes(error.code), 'navigation pending request error');
   });
   await navigationReady.promise;
-  location.replace('/?native-stage=after-navigation');
+  // WebKit supplies nil WKNavigation identities for Navigation API document
+  // loads. Keep this path distinct from the location.assign/history tests.
+  const navigation = (window as Window & {
+    navigation?: { navigate(url: string, options: { history: 'replace' }): unknown };
+  }).navigation;
+  if (navigation) navigation.navigate('/?native-stage=after-navigation', { history: 'replace' });
+  else location.replace('/?native-stage=after-navigation');
 }
 
 async function verifyHistoryConnection(

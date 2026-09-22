@@ -14,6 +14,17 @@ The crate is published as `microsoft-webui` on crates.io; the bare `webui` name 
 
 ## Examples
 
+### Owned partial-navigation responses
+
+`Protocol::render_partial(state, entry, path, inventory)` returns JSON with
+state projected to the active components. Hosts that deliberately publish their
+complete route-specific state can instead call
+`Protocol::render_partial_full_state(state, entry, path, inventory)`. It consumes
+the owned `serde_json::Value` and returns a serializable `PartialNavigation`;
+check `is_match()` before sending it and serialize it once with `serde_json`.
+Only pass data intended for the client: this variant does not filter state keys.
+Use `Protocol::matches_route(entry, path)` when only route existence is needed.
+
 <webui-press-tabs>
 <webui-press-tab slot="tab" active>Actix Web</webui-press-tab>
 <webui-press-tab slot="tab">Axum</webui-press-tab>

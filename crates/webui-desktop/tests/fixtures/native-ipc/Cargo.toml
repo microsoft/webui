@@ -6,9 +6,19 @@ publish = false
 
 [workspace]
 
+[features]
+default = []
+source = ["microsoft-webui-desktop/source"]
+
 [dependencies]
-microsoft-webui-desktop = { path = "../../..", features = ["native", "source"] }
+microsoft-webui-desktop = { path = "../../..", default-features = false, features = ["native", "application-ipc"] }
 microsoft-webui-test-utils = { path = "../../../../webui-test-utils" }
 prost = "0.14.4"
 serde_json = "1.0.151"
 futures-channel = "0.3.34"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

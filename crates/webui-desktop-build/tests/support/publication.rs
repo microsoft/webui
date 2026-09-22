@@ -5,6 +5,52 @@ use super::*;
 #[cfg(unix)]
 use std::collections::BTreeMap;
 
+#[test]
+fn obsolete_backend_outputs_are_removed_only_by_normal_publication() {
+    let (_dir, mut cfg) = temporary();
+    let files = generate(&cfg).unwrap();
+    let lock = fs::read(&files.lock_file).unwrap();
+    let inventory = fs::read(&files.inventory).unwrap();
+    let mut previous: serde_json::Value = serde_json::from_slice(&inventory).unwrap();
+    let obsolete = [
+        cfg.rust_out.join("ipc-binary.rs"),
+        cfg.ts_out.join("ipc-binary.ts"),
+    ];
+    for (kind, path) in ["rust", "typescript"].into_iter().zip(&obsolete) {
+        previous[kind]
+            .as_array_mut()
+            .unwrap()
+            .push(path.file_name().unwrap().to_str().unwrap().into());
+        fs::write(path, "// @generated\nobsolete backend\n").unwrap();
+    }
+    let old_inventory = serde_json::to_vec_pretty(&previous).unwrap();
+    fs::write(&files.inventory, &old_inventory).unwrap();
+    let unrelated = cfg.ts_out.join("application-notes.txt");
+    fs::write(&unrelated, "keep").unwrap();
+
+    cfg.check = true;
+    assert_eq!(generate(&cfg).unwrap_err().code(), "ipc-drift");
+    for path in &obsolete {
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "// @generated\nobsolete backend\n"
+        );
+    }
+    assert_eq!(fs::read(&files.inventory).unwrap(), old_inventory);
+    assert_eq!(fs::read(&files.lock_file).unwrap(), lock);
+
+    cfg.check = false;
+    generate(&cfg).unwrap();
+    for path in &obsolete {
+        assert!(!path.exists());
+    }
+    assert_eq!(fs::read(&files.inventory).unwrap(), inventory);
+    assert_eq!(fs::read(&files.lock_file).unwrap(), lock);
+    assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep");
+    cfg.check = true;
+    generate(&cfg).unwrap();
+}
+
 #[cfg(unix)]
 fn snapshot(files: &webui_desktop_build::GeneratedFiles) -> BTreeMap<PathBuf, Vec<u8>> {
     files

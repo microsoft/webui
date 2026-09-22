@@ -34,7 +34,7 @@ pub struct DesktopPackageResult {
 /// # Errors
 ///
 /// Returns [`DesktopError`] if the manifest cannot be read, package files
-/// cannot be written, or the target requires external platform tooling.
+/// cannot be written, or output paths overlap package inputs.
 pub fn package_desktop_bundle(options: DesktopPackageOptions) -> Result<DesktopPackageResult> {
     let manifest_path = options.bundle_dir.join("manifest.webui-desktop.json");
     let manifest = DesktopBundleManifest::load(&manifest_path)?;
@@ -44,32 +44,9 @@ pub fn package_desktop_bundle(options: DesktopPackageOptions) -> Result<DesktopP
         DesktopPackageTarget::WindowsPortable => {
             package_portable(&options, &manifest, "windows-portable")
         }
-        DesktopPackageTarget::LinuxPortable => package_portable(&options, &manifest, "linux-portable"),
-        DesktopPackageTarget::WindowsMsi => requires_tooling(
-            DesktopPackageTarget::WindowsMsi,
-            "WiX 3.11 and signtool.exe",
-            "run this target on a Windows runner with WiX 3.11 and a configured code-signing certificate",
-        ),
-        DesktopPackageTarget::WindowsMsix => requires_tooling(
-            DesktopPackageTarget::WindowsMsix,
-            "Windows SDK makeappx.exe and signtool.exe",
-            "run this target on a Windows runner with Windows SDK packaging tools and a certificate matching the MSIX publisher",
-        ),
-        DesktopPackageTarget::LinuxAppImage => requires_tooling(
-            DesktopPackageTarget::LinuxAppImage,
-            "appimagetool",
-            "run this target on a Linux runner with appimagetool and the target architecture runtime available",
-        ),
-        DesktopPackageTarget::LinuxDeb => requires_tooling(
-            DesktopPackageTarget::LinuxDeb,
-            "Debian package writer",
-            "enable the cargo-packager-backed deb implementation on a Linux runner",
-        ),
-        DesktopPackageTarget::LinuxRpm => requires_tooling(
-            DesktopPackageTarget::LinuxRpm,
-            "RPM package writer",
-            "enable the rpm crate-backed implementation on a Linux runner with package metadata configured",
-        ),
+        DesktopPackageTarget::LinuxPortable => {
+            package_portable(&options, &manifest, "linux-portable")
+        }
     }
 }
 
@@ -146,18 +123,6 @@ fn validate_package_output(output_path: &Path, options: &DesktopPackageOptions) 
     reject_path_overlap(&output, &lexical_runner, "runner")?;
     reject_path_overlap(&lexical_output, &lexical_runner, "runner")?;
     Ok(())
-}
-
-fn requires_tooling(
-    target: DesktopPackageTarget,
-    tooling: &str,
-    help: &str,
-) -> Result<DesktopPackageResult> {
-    Err(DesktopError::PackageTargetRequiresTooling {
-        target: target_name(target).to_string(),
-        tooling: tooling.to_string(),
-        help: help.to_string(),
-    })
 }
 
 fn prepare_output_dir(path: &Path) -> Result<()> {
@@ -361,19 +326,6 @@ fn safe_package_name(name: &str) -> String {
         "webui-app".to_string()
     } else {
         out
-    }
-}
-
-fn target_name(target: DesktopPackageTarget) -> &'static str {
-    match target {
-        DesktopPackageTarget::MacosApp => "macos-app",
-        DesktopPackageTarget::WindowsPortable => "windows-portable",
-        DesktopPackageTarget::WindowsMsi => "windows-msi",
-        DesktopPackageTarget::WindowsMsix => "windows-msix",
-        DesktopPackageTarget::LinuxPortable => "linux-portable",
-        DesktopPackageTarget::LinuxAppImage => "linux-appimage",
-        DesktopPackageTarget::LinuxDeb => "linux-deb",
-        DesktopPackageTarget::LinuxRpm => "linux-rpm",
     }
 }
 
@@ -581,25 +533,16 @@ mod tests {
     }
 
     #[test]
-    fn installer_targets_return_actionable_tooling_error() {
-        let dir = TempDir::new().unwrap();
-        let bundle = create_bundle(dir.path());
-        let runner = dir.path().join("webui-desktop");
-        write_file(dir.path(), "webui-desktop", "runner");
-
-        let err = package_desktop_bundle(DesktopPackageOptions {
-            bundle_dir: bundle,
-            out_dir: dir.path().join("out"),
-            target: DesktopPackageTarget::WindowsMsix,
-            runner_exe: runner,
-        })
-        .unwrap_err();
-
-        match err {
-            DesktopError::PackageTargetRequiresTooling { help, .. } => {
-                assert!(help.contains("Windows SDK"));
-            }
-            other => panic!("unexpected error: {other}"),
+    fn installer_targets_are_not_supported_manifest_values() {
+        for target in [
+            "windows-msi",
+            "windows-msix",
+            "linux-app-image",
+            "linux-appimage",
+            "linux-deb",
+            "linux-rpm",
+        ] {
+            assert!(serde_json::from_value::<DesktopPackageTarget>(target.into()).is_err());
         }
     }
 

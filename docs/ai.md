@@ -1339,6 +1339,8 @@ For a desktop app, start with zero Rust:
 webui desktop run ./src
 ```
 
+Restart desktop `run` after source changes; desktop `--watch` is not supported.
+
 Write a host crate only when you need dynamic route state or IPC. To generate a
 working progressive scaffold, use `webui desktop init ./my-app`; it creates the
 entry template, package metadata, and a packaged-vs-source Rust runner. Existing
@@ -1348,7 +1350,9 @@ feature to `microsoft-webui-desktop/source`. There is no separate runner or
 compiler dependency. `webui desktop package` builds
 optimized runners without default features automatically. Select optional app
 capabilities with `webuiDesktop.runnerFeatures`; use `--debug` only for a debug
-package. The
+package. Package targets are `macos-app`, `windows-portable`, and
+`linux-portable`; `all` writes all three layouts without cross-compiling the
+runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.

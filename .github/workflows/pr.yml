@@ -84,6 +84,18 @@ jobs:
       - uses: ./.github/actions/build
         with:
           shared-cache-key: ubuntu-build
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python3 crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
 
       - name: Install native IPC test display
         run: sudo apt-get install -y -qq apparmor dbus-x11 xvfb xauth
@@ -91,7 +103,7 @@ jobs:
       - name: Fetch native IPC fixture dependencies
         run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
-      - name: Test native IPC source and package
+      - name: Test release native IPC source/package and no-IPC
         run: |
           # Allow only fixture executables to create WebKitGTK sandbox namespaces.
           # Keep both AppArmor's global restriction and WebKit's sandbox enabled.
@@ -119,6 +131,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python3 crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
@@ -131,7 +156,7 @@ jobs:
       - name: Fetch native IPC fixture dependencies
         run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
-      - name: Test native IPC source and package
+      - name: Test release native IPC source/package and no-IPC
         run: python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 
       - name: Upload native IPC results
@@ -152,6 +177,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
@@ -162,7 +200,7 @@ jobs:
       - name: Fetch native IPC fixture dependencies
         run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
-      - name: Test native IPC source and package
+      - name: Test release native IPC source/package and no-IPC
         run: python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 
       - name: Upload native IPC results

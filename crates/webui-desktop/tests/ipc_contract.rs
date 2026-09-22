@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 #![allow(clippy::disallowed_methods)]
+#![cfg(feature = "application-ipc")]
 
 use futures_executor::block_on;
 use futures_util::FutureExt;
@@ -351,6 +352,41 @@ struct Peer {
     navigation: u64,
     wakes: mpsc::Receiver<()>,
 }
+#[test]
+fn removed_transfer_paths_reject_without_disrupting_typed_ipc() {
+    let mut registry = IpcRegistry::new(&SCHEMA);
+    registry
+        .register::<Echo, _, _>(|_, item| async move { Ok(item) })
+        .unwrap();
+    let peer = Peer::new(registry, IpcOptions::for_schema(&SCHEMA));
+    for path in [
+        "/_webui/ipc/raw/1/00000000000000000000000000000000/1/0",
+        "/_webui/ipc/raw/1/00000000000000000000000000000000/1/cancel",
+    ] {
+        assert_eq!(
+            peer.bridge.max_request_body_bytes(path).unwrap(),
+            peer.info.limits.max_frame_bytes
+        );
+        for method in [DesktopHttpMethod::Get, DesktopHttpMethod::Post] {
+            let response = peer.submit(method, path, Vec::new());
+            assert_eq!(response.status, 400);
+            let error = WireError::decode(response.body.as_bytes().unwrap().as_slice()).unwrap();
+            assert_eq!(error.code, "invalid-frame");
+        }
+    }
+    let item = Item {
+        id: 42,
+        bytes: vec![1, 2, 3],
+    };
+    assert_eq!(
+        peer.post(peer.invocation(1, Echo::ID, Kind::Request, item.clone())),
+        204
+    );
+    let response = peer.next_frame();
+    assert_eq!(response.kind, Kind::Result as i32);
+    assert_eq!(response.body, Some(Body::Payload(item.encode_to_vec())));
+}
+
 fn hello() -> Hello {
     Hello {
         wire_version: 2,
@@ -466,7 +502,7 @@ impl Peer {
         loop {
             let response = self.submit(DesktopHttpMethod::Get, "/_webui/ipc/outbound", Vec::new());
             if response.status == 200 {
-                return IpcFrame::decode(response.body.as_slice()).unwrap();
+                return IpcFrame::decode(response.body.as_bytes().unwrap().as_slice()).unwrap();
             }
             assert_eq!(response.status, 204);
             let mut ready = false;
@@ -1355,7 +1391,7 @@ fn outbound_drain_reserves_one_response_and_transfers_credit_through_native_body
     let response = block_on(drain).unwrap();
     assert_eq!(response.status, 200);
     assert_eq!(peer.owner.window().stats().retained_bytes, before);
-    let (bytes, lease) = response.body.into_parts();
+    let (bytes, lease) = response.body.into_bytes().unwrap().into_parts();
     assert!(lease.is_some());
     drop(bytes);
     assert_eq!(peer.owner.window().stats().retained_bytes, before);
@@ -1738,8 +1774,8 @@ fn native_owned_result_body_keeps_its_credit_after_navigation_and_close() {
     );
     eventually(|| peer.owner.window().stats().queued_bytes > 0);
     let response = peer.submit(DesktopHttpMethod::Get, "/_webui/ipc/outbound", Vec::new());
-    let encoded_size = response.body.len();
-    let frame = IpcFrame::decode(response.body.as_slice()).unwrap();
+    let encoded_size = response.body.as_bytes().unwrap().len();
+    let frame = IpcFrame::decode(response.body.as_bytes().unwrap().as_slice()).unwrap();
     assert_eq!(frame.kind, Kind::Result as i32);
     let Some(Body::Payload(payload)) = frame.body else {
         panic!("missing binary reply");
@@ -1749,7 +1785,7 @@ fn native_owned_result_body_keeps_its_credit_after_navigation_and_close() {
     assert_eq!(peer.owner.window().stats().admitted_input_bytes, 0);
     assert_eq!(peer.owner.window().stats().retained_bytes, encoded_size);
 
-    let (bytes, lease) = response.body.into_parts();
+    let (bytes, lease) = response.body.into_bytes().unwrap().into_parts();
     assert!(lease.is_some());
     peer.navigate();
     eventually(|| peer.owner.window().stats().worker_tasks == 0);
@@ -1942,6 +1978,102 @@ fn every_proof_secret_byte_and_cross_window_challenge_are_checked_without_consum
     .unwrap();
     assert!(!owner.window().current_session().unwrap().is_closed());
     assert!(!other_owner.window().current_session().unwrap().is_closed());
+}
+
+#[test]
+fn delayed_first_hello_keeps_document_proof_valid_until_retirement() {
+    let mut options = IpcOptions::for_schema(&SCHEMA);
+    options.limits.handshake_timeout_ms = 50;
+    let owner = IpcWindowOwner::new(
+        Arc::new(IpcRegistry::new(&SCHEMA)),
+        options,
+        IpcHost::Source {
+            origin: "webui://app".into(),
+        },
+    )
+    .unwrap();
+    let bridge = owner.bridge();
+    bridge.navigate(1);
+    let proof = bridge.begin_document(identity(1), [7; 16]).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!owner.window().stats().workers_started);
+    let session = block_on(bridge.admit(Admission {
+        hello: hello(),
+        proof: proof.clone(),
+    }))
+    .unwrap();
+    assert_eq!(session.generation, 1);
+    bridge.navigate(2);
+    assert!(block_on(bridge.admit(Admission {
+        hello: hello(),
+        proof,
+    }))
+    .is_err());
+}
+
+#[test]
+fn handshake_deadline_includes_time_queued_behind_retired_work() {
+    let (release, wait) = mpsc::channel::<()>();
+    let wait = Arc::new(Mutex::new(wait));
+    let (started, observed) = mpsc::channel();
+    let mut registry = IpcRegistry::new(&SCHEMA);
+    registry
+        .register::<Save, _, _>(move |_, _| {
+            started.send(()).unwrap();
+            wait.lock().unwrap().recv().unwrap();
+            async { Ok(()) }
+        })
+        .unwrap();
+    let mut options = IpcOptions::for_schema(&SCHEMA);
+    options.worker_threads = 1;
+    options.limits.handshake_timeout_ms = 100;
+    let peer = Peer::new(registry, options);
+    assert_eq!(
+        peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
+        204
+    );
+    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    peer.bridge.navigate(2);
+    let proof = peer.bridge.begin_document(identity(2), [8; 16]).unwrap();
+    let pending = peer.bridge.admit(Admission {
+        hello: hello(),
+        proof,
+    });
+    std::thread::sleep(Duration::from_millis(150));
+    release.send(()).unwrap();
+    assert_eq!(
+        block_on(pending).err().unwrap().code,
+        IpcErrorCode::DeadlineExceeded
+    );
+    assert!(peer.owner.window().current_session().is_err());
+}
+
+#[test]
+fn admitted_session_delivered_after_handshake_deadline_is_revoked() {
+    let mut options = IpcOptions::for_schema(&SCHEMA);
+    options.limits.handshake_timeout_ms = 100;
+    let owner = IpcWindowOwner::new(
+        Arc::new(IpcRegistry::new(&SCHEMA)),
+        options,
+        IpcHost::Source {
+            origin: "webui://app".into(),
+        },
+    )
+    .unwrap();
+    let bridge = owner.bridge();
+    bridge.navigate(1);
+    let proof = bridge.begin_document(identity(1), [7; 16]).unwrap();
+    let pending = bridge.admit(Admission {
+        hello: hello(),
+        proof,
+    });
+    eventually(|| owner.window().current_session().is_ok());
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        block_on(pending).err().unwrap().code,
+        IpcErrorCode::DeadlineExceeded
+    );
+    assert!(owner.window().current_session().is_err());
 }
 
 #[test]

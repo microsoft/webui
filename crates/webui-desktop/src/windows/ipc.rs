@@ -115,6 +115,13 @@ impl WindowsIpc {
     }
 
     fn start(&self, native_id: u64) {
+        let replaces_document = {
+            let document = self.document.borrow();
+            !document.epoch.closed && document.native_id != Some(native_id)
+        };
+        if replaces_document {
+            self.publish_retirement(IpcErrorCode::Navigated);
+        }
         let navigation = self.document.borrow_mut().start(native_id);
         if let Some(navigation) = navigation {
             self.cancel_hello_deadline();
@@ -126,7 +133,7 @@ impl WindowsIpc {
                 .tasks
                 .replace(Rc::new(NativeIpcTasks::new(wake, MAX_TASKS)));
             old.close();
-        } else if self.document.borrow().closed {
+        } else if self.document.borrow().epoch.closed {
             self.close();
         }
     }
@@ -150,11 +157,13 @@ impl WindowsIpc {
         }
         let navigation = {
             let mut document = self.document.borrow_mut();
-            if document.closed || document.committed || document.native_id != Some(native_id) {
+            if document.native_id != Some(native_id) {
                 return;
             }
-            document.committed = true;
-            document.navigation
+            let Some(navigation) = document.epoch.commit() else {
+                return;
+            };
+            navigation
         };
         let weak = Rc::downgrade(self);
         let completion = ExecuteScriptCompletedHandler::create(Box::new(move |result, value| {
@@ -230,17 +239,10 @@ impl WindowsIpc {
     }
 
     pub fn navigation(&self) -> u64 {
-        self.document.borrow().navigation
+        self.document.borrow().epoch.navigation
     }
     pub fn current(&self, navigation: u64) -> bool {
         self.document.borrow().current(navigation)
-    }
-
-    pub fn max_frame_bytes(&self) -> Result<usize, IpcError> {
-        self.document
-            .borrow()
-            .max_frame_bytes
-            .ok_or_else(|| ipc_policy::error(IpcErrorCode::NotReady))
     }
 
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static) -> Result<(), IpcError> {
@@ -249,7 +251,7 @@ impl WindowsIpc {
     }
 
     pub fn drain(&self, cookie: usize) {
-        if !self.wake.take(cookie) || self.document.borrow().closed {
+        if !self.wake.take(cookie) || self.document.borrow().epoch.closed {
             return;
         }
         let tasks = Rc::clone(&self.tasks.borrow());
@@ -293,11 +295,12 @@ impl WindowsIpc {
         let _ = self.wake.wake();
     }
 
-    pub fn transport_failed(&self, _code: IpcErrorCode) {
+    pub fn transport_failed(&self, code: IpcErrorCode) {
+        self.publish_retirement(code);
         self.cancel_hello_deadline();
         let credentials = {
             let mut document = self.document.borrow_mut();
-            document.committed = false;
+            document.epoch.committed = false;
             document.proof = None;
             document.max_frame_bytes = None;
             document.generation.take().zip(document.token.take())
@@ -314,11 +317,12 @@ impl WindowsIpc {
     }
 
     pub fn close(&self) {
+        self.publish_retirement(IpcErrorCode::Closed);
         self.cancel_hello_deadline();
         self.wake.close();
         {
             let mut document = self.document.borrow_mut();
-            document.closed = true;
+            document.epoch.closed = true;
             document.token = None;
             document.proof = None;
             document.max_frame_bytes = None;

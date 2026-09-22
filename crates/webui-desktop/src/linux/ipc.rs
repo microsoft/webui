@@ -24,15 +24,13 @@ pub(super) const HANDLER: &str = "webuiDesktopIpc";
 
 pub(super) struct GtkIpc {
     pub(super) bridge: IpcBridge,
-    pub(super) navigation: Cell<u64>,
+    epoch: Cell<crate::document::DocumentEpoch>,
     pub(super) proof: RefCell<Option<DocumentActivation>>,
     pub(super) session: RefCell<Option<SessionInfo>>,
     pub(super) hello_started: Cell<bool>,
     pub(super) tasks: RefCell<Rc<NativeIpcTasks>>,
     pub(super) wake: std::sync::Arc<GtkWake>,
     webview: glib::WeakRef<WebView>,
-    committed: Cell<bool>,
-    closed: Cell<bool>,
     pending_controls: RefCell<Vec<NativeControl>>,
 }
 
@@ -45,15 +43,13 @@ impl GtkIpc {
         let wake = GtkWake::new();
         let state = Rc::new(Self {
             bridge,
-            navigation: Cell::new(0),
+            epoch: Cell::default(),
             proof: RefCell::new(None),
             session: RefCell::new(None),
             hello_started: Cell::new(false),
             tasks: RefCell::new(Rc::new(NativeIpcTasks::new(wake.clone(), 128))),
             wake,
             webview: webview.downgrade(),
-            committed: Cell::new(false),
-            closed: Cell::new(false),
             pending_controls: RefCell::new(Vec::new()),
         });
         state.wake.attach(&state);
@@ -107,28 +103,29 @@ impl GtkIpc {
     }
 
     pub(super) fn is_current(&self, navigation: u64) -> bool {
-        !self.closed.get() && self.committed.get() && self.navigation.get() == navigation
+        self.epoch.get().current(navigation)
+    }
+
+    pub(super) fn navigation(&self) -> u64 {
+        self.epoch.get().navigation
     }
 
     pub(super) fn accepts_proof(&self, proof: &DocumentActivation) -> bool {
-        self.is_current(proof.navigation)
-            && self
-                .proof
-                .borrow()
-                .as_ref()
-                .is_some_and(|pending| crate::native_ipc::proof_matches(pending, proof))
+        self.epoch
+            .get()
+            .accepts(self.proof.borrow().as_ref(), proof)
     }
 
     pub(super) fn navigate(&self) {
-        if self.closed.get() {
+        let mut epoch = self.epoch.get();
+        if epoch.closed {
             return;
         }
-        let Some(next) = self.navigation.get().checked_add(1) else {
+        let Some(next) = epoch.advance() else {
             self.close();
             return;
         };
-        self.navigation.set(next);
-        self.committed.set(false);
+        self.epoch.set(epoch);
         self.proof.borrow_mut().take();
         self.session.borrow_mut().take();
         self.pending_controls.borrow_mut().clear();
@@ -175,14 +172,15 @@ impl GtkIpc {
     }
 
     fn committed(self: &Rc<Self>, webview: &WebView) {
-        if self.closed.get() || self.committed.replace(true) || self.navigation.get() == 0 {
+        let mut epoch = self.epoch.get();
+        let Some(navigation) = epoch.commit() else {
             return;
-        }
+        };
+        self.epoch.set(epoch);
         if !webview.uri().is_some_and(|uri| trusted_uri(uri.as_str())) {
             self.navigate();
             return;
         }
-        let navigation = self.navigation.get();
         let weak = Rc::downgrade(self);
         let view = webview.clone();
         let tasks = Rc::clone(&self.tasks.borrow());
@@ -314,9 +312,12 @@ impl GtkIpc {
     }
 
     pub(super) fn close(&self) {
-        if self.closed.replace(true) {
+        let mut epoch = self.epoch.get();
+        if epoch.closed {
             return;
         }
+        epoch.closed = true;
+        self.epoch.set(epoch);
         self.wake.close();
         self.bridge.close();
         let tasks = Rc::clone(&self.tasks.borrow());

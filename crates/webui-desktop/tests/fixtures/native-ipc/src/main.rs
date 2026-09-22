@@ -11,12 +11,14 @@ mod platform;
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
+#[cfg(feature = "source")]
 use webui_desktop::{
-    build_desktop_bundle, ipc::IpcOptions, BuildOptions, DesktopApp, DesktopBundleOptions,
-    DesktopEvent, DesktopShellConfig, DesktopSourceConfig, EventResponse, IpcRegistry,
-    WindowOptions,
+    build_desktop_bundle, BuildOptions, DesktopBundleOptions, DesktopShellConfig,
+    DesktopSourceConfig, WindowOptions,
 };
+use webui_desktop::{ipc::IpcOptions, DesktopApp, DesktopEvent, EventResponse, IpcRegistry};
 
+#[cfg(feature = "source")]
 fn build_options(root: PathBuf) -> BuildOptions {
     BuildOptions {
         app_dir: root,
@@ -32,12 +34,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let root = PathBuf::from(args.get(2).ok_or("expected app directory")?);
+    #[cfg(feature = "source")]
     if mode == "package" {
         return platform::package(
             &root,
             PathBuf::from(args.get(3).ok_or("expected package output")?),
+            PathBuf::from(args.get(4).ok_or("expected runtime-only runner")?),
         );
     }
+    #[cfg(feature = "source")]
     if mode == "build" {
         build_desktop_bundle(DesktopBundleOptions {
             build_options: build_options(root.clone()),
@@ -61,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = IpcRegistry::new(&generated::SCHEMA);
     generated::register_host(&mut registry, host.clone())?;
     let builder = match mode.as_str() {
+        #[cfg(feature = "source")]
         "source" => {
             let mut config = DesktopSourceConfig::new(build_options(root.clone()));
             config.asset_root = Some(root.join("assets"));
@@ -80,13 +86,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let disconnect_host = Arc::clone(&host);
     let frame = builder
         // This module exists only in the runtime, never in packaged assets.
-        // Its browser load bypasses the legacy fetch shim and proves that
-        // WebView2's native resource handler still owns packaged requests.
+        // Its browser and worker loads prove that WebView2's native resource
+        // handler owns source and packaged requests.
         .api_route("/fixture-runtime.js", |_| {
             Ok(webui_desktop::DesktopProtocolResponse::new(
                 200,
                 "text/javascript",
                 b"export const servedByRuntime = true;".to_vec(),
+            ))
+        })?
+        .api_route("/fixture-resource-echo", |context| {
+            Ok(webui_desktop::DesktopProtocolResponse::new(
+                if *context.method == webui_desktop::DesktopHttpMethod::Post {
+                    200
+                } else {
+                    405
+                },
+                "application/octet-stream",
+                context.body.to_vec(),
             ))
         })?
         .api_route("/fixture-disconnect-observation", move |_| {
@@ -121,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ipc_options(IpcOptions::for_schema(&generated::SCHEMA))
         .build()?;
     window
-        .set(frame.window_handle.clone())
+        .set(frame.window_handle().clone())
         .map_err(|_| "duplicate window")?;
     let mode = mode.clone();
     frame.on_event(move |event| {

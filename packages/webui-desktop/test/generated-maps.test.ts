@@ -27,7 +27,8 @@ function assertUnchangedPrototype(prototype: object, descriptors: object): void 
 
 async function loadFixture() {
   const result = await build({
-    entryPoints: [resolve(fixture, 'ts/ipc.ts')],
+    // Codec invariants exercise the private generated implementation, not the lazy application facade.
+    entryPoints: [resolve(fixture, 'ts/ipc-runtime.ts')],
     bundle: true, write: false, format: 'cjs', platform: 'node', target: 'es2022',
     alias: {
       '@microsoft/webui-desktop': resolve('src/index.ts'),

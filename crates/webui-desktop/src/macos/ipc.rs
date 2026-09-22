@@ -8,7 +8,7 @@ use block2::RcBlock;
 use objc2::rc::Weak;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadOnly;
-use objc2_foundation::{NSError, NSString, NSURL};
+use objc2_foundation::{NSError, NSString};
 use objc2_web_kit::{WKContentWorld, WKWebView};
 
 use crate::ipc::{
@@ -18,10 +18,11 @@ use crate::native_ipc::NativeIpcTasks;
 
 use super::ipc_control::{bounded_string, nonce};
 use super::ipc_wake::MainWake;
+pub(super) use super::navigation::trusted_app_url as trusted_url;
 
 pub(super) struct MacIpc {
     pub(super) bridge: IpcBridge,
-    pub(super) navigation: Cell<u64>,
+    epoch: Cell<crate::document::DocumentEpoch>,
     pub(super) tasks: RefCell<Rc<NativeIpcTasks>>,
     pub(super) wake: std::sync::Arc<MainWake>,
     pub(super) proof: RefCell<Option<DocumentActivation>>,
@@ -29,8 +30,6 @@ pub(super) struct MacIpc {
     pub(super) session: RefCell<Option<SessionInfo>>,
     pending_controls: RefCell<Vec<NativeControl>>,
     webview: RefCell<Weak<WKWebView>>,
-    committed: Cell<bool>,
-    closed: Cell<bool>,
 }
 
 impl MacIpc {
@@ -38,7 +37,7 @@ impl MacIpc {
         let wake = MainWake::new();
         let state = Rc::new(Self {
             bridge,
-            navigation: Cell::new(0),
+            epoch: Cell::default(),
             tasks: RefCell::new(Rc::new(NativeIpcTasks::new(wake.clone(), 128))),
             wake,
             proof: RefCell::new(None),
@@ -46,8 +45,6 @@ impl MacIpc {
             session: RefCell::new(None),
             pending_controls: RefCell::new(Vec::new()),
             webview: RefCell::new(Weak::default()),
-            committed: Cell::new(false),
-            closed: Cell::new(false),
         });
         state.wake.attach(&state);
         if state.bridge.attach_waker(state.wake.clone()).is_err() {
@@ -61,34 +58,37 @@ impl MacIpc {
     }
 
     pub(super) fn is_current(&self, navigation: u64) -> bool {
-        !self.closed.get() && self.committed.get() && self.navigation.get() == navigation
+        self.epoch.get().current(navigation)
+    }
+
+    pub(super) fn navigation(&self) -> u64 {
+        self.epoch.get().navigation
     }
 
     pub(super) fn accepts_proof(&self, proof: &DocumentActivation) -> bool {
-        self.is_current(proof.navigation)
-            && self
-                .proof
-                .borrow()
-                .as_ref()
-                .is_some_and(|pending| crate::native_ipc::proof_matches(pending, proof))
+        self.epoch
+            .get()
+            .accepts(self.proof.borrow().as_ref(), proof)
     }
 
     #[cfg(test)]
     pub(super) fn commit_for_test(&self) {
         self.navigate();
-        self.committed.set(true);
+        let mut epoch = self.epoch.get();
+        epoch.commit();
+        self.epoch.set(epoch);
     }
 
     pub(super) fn navigate(&self) {
-        if self.closed.get() {
+        let mut epoch = self.epoch.get();
+        if epoch.closed {
             return;
         }
-        let Some(next) = self.navigation.get().checked_add(1) else {
+        let Some(next) = epoch.advance() else {
             self.close();
             return;
         };
-        self.navigation.set(next);
-        self.committed.set(false);
+        self.epoch.set(epoch);
         self.proof.borrow_mut().take();
         self.hello_started.set(false);
         self.session.borrow_mut().take();
@@ -139,14 +139,15 @@ impl MacIpc {
     }
 
     pub(super) fn committed(self: &Rc<Self>, webview: &WKWebView) {
-        if self.closed.get() || self.committed.replace(true) || self.navigation.get() == 0 {
+        let mut epoch = self.epoch.get();
+        let Some(navigation) = epoch.commit() else {
             return;
-        }
+        };
+        self.epoch.set(epoch);
         if !webview_url_is_trusted(webview) {
             self.fail_document();
             return;
         }
-        let navigation = self.navigation.get();
         let weak = Rc::downgrade(self);
         let callback = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             let Some(state) = weak.upgrade().filter(|state| state.is_current(navigation)) else {
@@ -288,9 +289,12 @@ impl MacIpc {
     }
 
     pub(super) fn close(&self) {
-        if self.closed.replace(true) {
+        let mut epoch = self.epoch.get();
+        if epoch.closed {
             return;
         }
+        epoch.closed = true;
+        self.epoch.set(epoch);
         self.wake.close();
         self.bridge.close();
         let tasks = Rc::clone(&self.tasks.borrow());
@@ -305,14 +309,6 @@ impl Drop for MacIpc {
     fn drop(&mut self) {
         self.close();
     }
-}
-
-pub(super) fn trusted_url(url: &NSURL) -> bool {
-    url.scheme().and_then(|s| bounded_string(&s, 16)).as_deref() == Some("webui")
-        && url.host().and_then(|s| bounded_string(&s, 16)).as_deref() == Some("app")
-        && url.port().is_none()
-        && url.user().is_none()
-        && url.password().is_none()
 }
 
 fn webview_url_is_trusted(webview: &WKWebView) -> bool {

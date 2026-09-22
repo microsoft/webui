@@ -2,30 +2,51 @@
 // Licensed under the MIT license.
 
 use crate::DesktopProtocolResponse;
+use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use webkit6::{URISchemeRequest, URISchemeResponse};
 
 pub(super) fn finish_scheme_request(request: &URISchemeRequest, response: DesktopProtocolResponse) {
-    finish(request, response, false);
+    finish(
+        request,
+        response,
+        #[cfg(feature = "application-ipc")]
+        false,
+    );
 }
 
+#[cfg(feature = "application-ipc")]
 pub(super) fn finish_ipc_request(request: &URISchemeRequest, response: DesktopProtocolResponse) {
     finish(request, response, true);
 }
 
-fn finish(request: &URISchemeRequest, response: DesktopProtocolResponse, ipc: bool) {
+fn finish(
+    request: &URISchemeRequest,
+    response: DesktopProtocolResponse,
+    #[cfg(feature = "application-ipc")] ipc: bool,
+) {
     // GBytes owns the complete response, including any frame-ledger lease.
     // GIO/WebKit may retain this storage beyond finish_with_response.
-    let bytes = glib::Bytes::from_owned(response.body);
-    let stream = gio::MemoryInputStream::from_bytes(&bytes);
-    let length = i64::try_from(bytes.len()).unwrap_or(-1);
+    let (stream, length): (gio::InputStream, i64) = match response.body {
+        crate::DesktopResponseContent::Bytes(body) => {
+            let bytes = glib::Bytes::from_owned(body);
+            let length = i64::try_from(bytes.len()).unwrap_or(-1);
+            (gio::MemoryInputStream::from_bytes(&bytes).upcast(), length)
+        }
+        crate::DesktopResponseContent::File(file) => {
+            let length = i64::try_from(file.len()).unwrap_or(-1);
+            (gio::ReadInputStream::new_seekable(file).upcast(), length)
+        }
+    };
     let scheme_response = URISchemeResponse::new(&stream, length);
+    let headers = webkit6::soup::MessageHeaders::new(webkit6::soup::MessageHeadersType::Response);
+    // WebKit's MIME metadata does not populate Fetch-visible HTTP headers.
+    headers.append("Content-Type", &response.content_type);
+    #[cfg(feature = "application-ipc")]
     if ipc {
-        let headers =
-            webkit6::soup::MessageHeaders::new(webkit6::soup::MessageHeadersType::Response);
         headers.append("Cache-Control", "no-store");
-        scheme_response.set_http_headers(headers);
     }
+    scheme_response.set_http_headers(headers);
     scheme_response.set_content_type(&response.content_type);
     scheme_response.set_status(u32::from(response.status), None);
     request.finish_with_response(&scheme_response);

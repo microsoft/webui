@@ -29,10 +29,15 @@ mod commands;
 mod effects;
 mod geometry;
 mod host_message;
+#[cfg(feature = "application-ipc")]
 mod ipc;
+#[cfg(feature = "application-ipc")]
 mod ipc_control;
+#[cfg(feature = "application-ipc")]
 mod ipc_message;
+#[cfg(feature = "application-ipc")]
 mod ipc_scheme;
+#[cfg(feature = "application-ipc")]
 mod ipc_wake;
 mod launch;
 mod menu;
@@ -41,6 +46,7 @@ mod options;
 mod response;
 mod scheme;
 mod state;
+mod tasks;
 mod theme;
 mod tray;
 
@@ -55,15 +61,17 @@ mod window;
 #[path = "windows/wakeup.rs"]
 mod windows_wakeup_contract;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "application-ipc"))]
 #[path = "linux/ipc_input.rs"]
 mod gtk_input_contract;
 
 use app_delegate::DesktopAppDelegate;
-use scheme::set_runtime;
 
 /// Options threaded from a [`DesktopFrame`] into [`DesktopAppDelegate::new`].
 struct MacosLaunchOptions {
+    executor: Arc<crate::execution::ApplicationExecutor>,
+    runtime: Arc<DesktopRuntime>,
+    #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<ipc::MacIpc>>,
     title: Retained<NSString>,
     options: WindowOptions,
@@ -89,14 +97,13 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if AppKit cannot start on the main thread.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: crate::WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window)?)
+    crate::run_runtime(runtime, window).map_err(Into::into)
 }
 
 pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
     let state_store =
         WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
-    set_runtime(Arc::clone(&frame.runtime));
     run_app(mtm, frame, state_store)
 }
 
@@ -113,6 +120,9 @@ fn run_app(
             let delegate = DesktopAppDelegate::new(
                 mtm,
                 MacosLaunchOptions {
+                    executor: Arc::clone(&frame.executor),
+                    runtime: Arc::clone(&frame.runtime),
+                    #[cfg(feature = "application-ipc")]
                     ipc: frame
                         .ipc_bridge()
                         .is_enabled()
@@ -132,6 +142,7 @@ fn run_app(
         if let Some(wake) = delegate.ivars().command_wake.get() {
             wake.close();
         }
+        #[cfg(feature = "application-ipc")]
         if let Some(ipc) = &delegate.ivars().ipc {
             ipc.close();
         }

@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#[cfg(feature = "source")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "source")]
+use webui_desktop::{package_desktop_bundle, DesktopPackageOptions};
 use webui_desktop::{
-    package_desktop_bundle, DesktopFrameBackend, DesktopPackageOptions, DesktopPackageTarget,
-    DesktopPlatform, PlatformFrameBackend,
+    DesktopFrameBackend, DesktopPackageTarget, DesktopPlatform, PlatformFrameBackend,
 };
 
 pub fn metadata() -> (&'static str, &'static str, DesktopPackageTarget) {
@@ -25,12 +27,17 @@ pub fn print_metadata() {
             "application_ipc": capabilities.application_ipc,
             "window_controls": capabilities.window_controls,
             "events": capabilities.events,
+            "source": cfg!(feature = "source"),
         })
     );
 }
 
-pub fn package(bundle: &Path, output: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let runner = std::env::current_exe()?;
+#[cfg(feature = "source")]
+pub fn package(
+    bundle: &Path,
+    output: PathBuf,
+    runner: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (_, _, target) = metadata();
     let package = package_desktop_bundle(DesktopPackageOptions {
         bundle_dir: bundle.to_path_buf(),

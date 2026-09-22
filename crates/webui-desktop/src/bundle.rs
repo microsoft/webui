@@ -30,6 +30,7 @@ pub use crate::window::WindowOptions;
 
 /// Runtime-neutral shell extension points for native desktop hosts.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DesktopShellConfig {
     /// Optional app icon path relative to the bundle root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,15 +41,6 @@ pub struct DesktopShellConfig {
     /// Native menu declarations. Empty means platform default menu.
     #[serde(default)]
     pub menus: Vec<DesktopMenu>,
-    /// Windows jump-list declarations. Ignored on platforms that do not support them.
-    #[serde(default)]
-    pub jump_list: Vec<DesktopJumpListItem>,
-    /// Whether popup/popover child windows are allowed.
-    #[serde(default)]
-    pub popovers: DesktopPopoverPolicy,
-    /// File download policy for webview downloads.
-    #[serde(default)]
-    pub downloads: DesktopDownloadPolicy,
 }
 
 /// Tray icon configuration.
@@ -88,57 +80,16 @@ pub struct DesktopMenuItem {
     pub accelerator: Option<String>,
 }
 
-/// Windows jump-list item descriptor.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct DesktopJumpListItem {
-    /// Stable item identifier.
-    pub id: String,
-    /// Visible item label.
-    pub label: String,
-    /// App route or external URL.
-    pub target: String,
-}
-
-/// Popup/popover child window policy.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct DesktopPopoverPolicy {
-    /// Whether popover child windows are enabled.
-    pub enabled: bool,
-    /// Maximum simultaneously open popovers.
-    #[serde(default)]
-    pub max_open: u8,
-}
-
-/// Webview download handling policy.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct DesktopDownloadPolicy {
-    /// Whether downloads are enabled.
-    pub enabled: bool,
-    /// Optional IPC command that receives download requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-}
-
 /// Native package target supported by `webui desktop package`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopPackageTarget {
     /// macOS `.app` bundle.
     MacosApp,
-    /// Windows portable directory or zip.
+    /// Windows portable directory.
     WindowsPortable,
-    /// Windows MSI installer.
-    WindowsMsi,
-    /// Windows MSIX package.
-    WindowsMsix,
-    /// Linux portable directory or tar.gz.
+    /// Linux portable directory.
     LinuxPortable,
-    /// Linux AppImage.
-    LinuxAppImage,
-    /// Linux Debian package.
-    LinuxDeb,
-    /// Linux RPM package.
-    LinuxRpm,
 }
 
 /// One asset included in a desktop bundle.
@@ -284,6 +235,7 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
     let mut claimed_assets = HashSet::new();
     let mut assets =
         write_generated_css(&assets_dest, &mut claimed_assets, &build_result.css_files)?;
+    #[cfg(feature = "application-ipc")]
     write_ipc_assets(&assets_dest, &mut claimed_assets, &mut assets)?;
     let protocol = webui::Protocol::new(build_result.protocol);
     write_startup_html(StartupHtmlInput {
@@ -510,6 +462,7 @@ fn write_generated_css(
 }
 
 #[cfg(feature = "source")]
+#[cfg(feature = "application-ipc")]
 fn write_ipc_assets(
     assets_dest: &Path,
     claimed_assets: &mut HashSet<String>,
@@ -878,8 +831,23 @@ mod tests {
         assert!(bundle.join("assets/app.js").is_file());
         assert!(bundle.join("assets/my-card.css").is_file());
         assert!(bundle.join("assets/index.html").is_file());
-        assert!(bundle.join("assets/_webui/ipc/runtime.js").is_file());
-        assert!(bundle.join("assets/_webui/ipc/bootstrap.js").is_file());
+        for name in ["runtime.js", "bootstrap.js"] {
+            let path = format!("assets/_webui/ipc/{name}");
+            assert_eq!(
+                bundle.join(&path).is_file(),
+                cfg!(feature = "application-ipc"),
+                "{path}"
+            );
+            assert_eq!(
+                manifest
+                    .integrity
+                    .assets
+                    .iter()
+                    .any(|asset| asset.path == path),
+                cfg!(feature = "application-ipc"),
+                "{path}"
+            );
+        }
         assert!(fs::read_to_string(bundle.join("assets/index.html"))
             .unwrap()
             .contains(r#"<link rel="stylesheet" href="my-card.css""#));
@@ -890,21 +858,21 @@ mod tests {
             .assets
             .iter()
             .any(|asset| asset.path == "assets/app.js"));
-        assert!(manifest
-            .integrity
-            .assets
-            .iter()
-            .any(|asset| asset.path == "assets/_webui/ipc/runtime.js"));
     }
 
     #[test]
-    fn rejects_asset_collision_with_reserved_ipc_asset() {
+    fn ipc_asset_names_are_reserved_only_when_enabled() {
         let app = TempDir::new().unwrap();
         let out = TempDir::new().unwrap();
         write_file(app.path(), "index.html", "<main>Hello</main>");
         write_file(app.path(), "public/_webui/ipc/runtime.js", "collision");
+        write_file(
+            app.path(),
+            "public/_webui/ipc/bootstrap.js",
+            "application bootstrap",
+        );
 
-        let err = build_desktop_bundle(DesktopBundleOptions {
+        let result = build_desktop_bundle(DesktopBundleOptions {
             build_options: webui::BuildOptions {
                 app_dir: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
@@ -922,10 +890,32 @@ mod tests {
             icon_file: None,
             shell: DesktopShellConfig::default(),
             package_targets: Vec::new(),
-        })
-        .unwrap_err();
+        });
 
-        assert!(matches!(err, DesktopError::BundleAssetCollision { .. }));
+        #[cfg(feature = "application-ipc")]
+        assert!(matches!(
+            result.unwrap_err(),
+            DesktopError::BundleAssetCollision { .. }
+        ));
+        #[cfg(not(feature = "application-ipc"))]
+        {
+            let manifest = result.unwrap();
+            for (name, expected) in [
+                ("runtime.js", "collision"),
+                ("bootstrap.js", "application bootstrap"),
+            ] {
+                let path = format!("assets/_webui/ipc/{name}");
+                assert_eq!(
+                    fs::read_to_string(out.path().join("desktop").join(&path)).unwrap(),
+                    expected
+                );
+                assert!(manifest
+                    .integrity
+                    .assets
+                    .iter()
+                    .any(|asset| asset.path == path));
+            }
+        }
     }
 
     #[test]

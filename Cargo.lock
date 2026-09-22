@@ -2198,6 +2198,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "gtk4",
+ "libc",
  "microsoft-webui",
  "microsoft-webui-desktop-build",
  "microsoft-webui-handler",
@@ -2219,6 +2220,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

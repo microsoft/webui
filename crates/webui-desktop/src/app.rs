@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::error::{DesktopError, Result};
 use crate::frame::DesktopFrame;
+#[cfg(feature = "application-ipc")]
 use crate::ipc::{IpcOptions, IpcRegistry};
 #[cfg(feature = "source")]
 use crate::runtime::DesktopSourceConfig;
@@ -40,6 +41,7 @@ struct BundleApp {
 /// state participate in the first render, not only subsequent requests.
 pub struct DesktopAppBuilder {
     input: AppInput,
+    #[cfg(feature = "application-ipc")]
     ipc_options: IpcOptions,
 }
 
@@ -126,6 +128,7 @@ impl DesktopAppBuilder {
 
     /// Set the protobuf IPC registry.
     #[must_use]
+    #[cfg(feature = "application-ipc")]
     pub fn ipc_registry(mut self, registry: IpcRegistry) -> Self {
         match &mut self.input {
             #[cfg(feature = "source")]
@@ -140,6 +143,7 @@ impl DesktopAppBuilder {
     /// The default denies all application methods. Use
     /// [`IpcOptions::for_schema`] to explicitly grant a generated contract.
     #[must_use]
+    #[cfg(feature = "application-ipc")]
     pub fn ipc_options(mut self, options: IpcOptions) -> Self {
         self.ipc_options = options;
         self
@@ -155,7 +159,7 @@ impl DesktopAppBuilder {
     /// Returns [`DesktopError`] if the pattern is invalid.
     pub fn route<F>(mut self, pattern: impl AsRef<str>, handler: F) -> Result<Self>
     where
-        F: Fn(crate::runtime::RouteContext<'_>) -> Result<Value> + Send + Sync + 'static,
+        F: Fn(crate::RouteContext<'_>) -> Result<Value> + Send + Sync + 'static,
     {
         match &mut self.input {
             #[cfg(feature = "source")]
@@ -175,7 +179,7 @@ impl DesktopAppBuilder {
     /// Returns [`DesktopError`] if the pattern is invalid.
     pub fn api_route<F>(mut self, pattern: impl AsRef<str>, handler: F) -> Result<Self>
     where
-        F: Fn(crate::runtime::ApiContext<'_>) -> Result<crate::DesktopProtocolResponse>
+        F: Fn(crate::ApiContext<'_>) -> Result<crate::DesktopProtocolResponse>
             + Send
             + Sync
             + 'static,
@@ -205,9 +209,12 @@ impl DesktopAppBuilder {
                 } = *app;
                 let window = config.window.clone();
                 let runtime = DesktopRuntime::from_source(config)?;
-                let mut frame =
-                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?
-                        .with_shell(shell);
+                #[cfg(feature = "application-ipc")]
+                let frame =
+                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?;
+                #[cfg(not(feature = "application-ipc"))]
+                let frame = DesktopFrame::new(Arc::new(runtime), window)?;
+                let mut frame = frame.with_shell(shell);
                 frame.app_id = app_id;
                 Ok(frame)
             }
@@ -217,11 +224,12 @@ impl DesktopAppBuilder {
                 let shell = manifest.shell.clone();
                 let app_id = manifest.app_id.clone();
                 let runtime = DesktopRuntime::from_bundle_config_and_manifest(config, manifest)?;
-                Ok(
-                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?
-                        .with_shell(shell)
-                        .with_app_id(app_id),
-                )
+                #[cfg(feature = "application-ipc")]
+                let frame =
+                    DesktopFrame::with_ipc_options(Arc::new(runtime), window, self.ipc_options)?;
+                #[cfg(not(feature = "application-ipc"))]
+                let frame = DesktopFrame::new(Arc::new(runtime), window)?;
+                Ok(frame.with_shell(shell).with_app_id(app_id))
             }
         }
     }
@@ -239,6 +247,7 @@ impl DesktopApp {
     #[must_use]
     pub fn from_source(config: DesktopSourceConfig) -> DesktopAppBuilder {
         DesktopAppBuilder {
+            #[cfg(feature = "application-ipc")]
             ipc_options: IpcOptions::default(),
             input: AppInput::Source(Box::new(SourceApp {
                 config,
@@ -278,6 +287,7 @@ impl DesktopApp {
         manifest: DesktopBundleManifest,
     ) -> DesktopAppBuilder {
         DesktopAppBuilder {
+            #[cfg(feature = "application-ipc")]
             ipc_options: IpcOptions::default(),
             input: AppInput::Bundle(Box::new(BundleApp { config, manifest })),
         }
@@ -315,6 +325,10 @@ mod tests {
     }
 
     fn configure(builder: DesktopAppBuilder, calls: Arc<AtomicUsize>) -> Result<DesktopAppBuilder> {
+        #[cfg(feature = "application-ipc")]
+        let builder = builder
+            .ipc_registry(crate::ipc_test_support::registry())
+            .ipc_options(crate::ipc_test_support::options());
         builder
             .state(&Seed { label: "seed" })?
             .token_css(HashMap::from([(
@@ -333,8 +347,6 @@ mod tests {
                 icon_path: Some(PathBuf::from("assets/icon.png")),
                 ..DesktopShellConfig::default()
             })
-            .ipc_registry(crate::ipc_test_support::registry())
-            .ipc_options(crate::ipc_test_support::options())
             .route("/", move |ctx| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(ctx.base_state["label"], "seed");
@@ -367,6 +379,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.body, b"registered");
 
+        #[cfg(feature = "application-ipc")]
         crate::ipc_test_support::assert_echo(frame, b"registered");
     }
 

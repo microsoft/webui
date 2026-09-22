@@ -39,11 +39,11 @@ fn consumed_nested_wake_is_rescheduled_without_polling_successor_inline() {
     assert_eq!(signal.0.swap(0, Ordering::SeqCst), 1);
     driver.poll_ready();
     assert_eq!(ran.get(), 0);
-    assert_eq!(driver.count.get(), 1);
+    assert_eq!(driver.inner.count(), 1);
     assert_eq!(signal.0.swap(0, Ordering::SeqCst), 1);
     driver.poll_ready();
     assert_eq!(ran.get(), 1);
-    assert_eq!(driver.count.get(), 0);
+    assert_eq!(driver.inner.count(), 0);
     assert_eq!(signal.0.load(Ordering::SeqCst), 0);
     driver.poll_ready();
     assert_eq!(ran.get(), 1);
@@ -97,7 +97,7 @@ fn nested_drain_does_not_reschedule_after_close_or_without_ready_work() {
             .unwrap();
         signal.0.store(0, Ordering::SeqCst);
         driver.poll_ready();
-        assert_eq!(driver.count.get(), 0);
+        assert_eq!(driver.inner.count(), 0);
         assert_eq!(signal.0.load(Ordering::SeqCst), 0);
     }
 }

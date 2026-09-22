@@ -11,17 +11,24 @@
 //! * [`command`] executes queued window commands on the UI thread.
 //! * [`state`] stores per-window state and persisted geometry.
 //! * [`webview`] configures WebView2, navigation policy, and script bridges.
-//! * [`bridge`] and [`protocol`] serve app requests from the desktop runtime.
+//! * [`bridge`] receives window controls and typed application IPC.
+//! * [`protocol`] serves app resources through native request interception.
 
 mod bridge;
 mod command;
 mod create;
 mod event;
+#[cfg(feature = "application-ipc")]
 mod ipc;
+#[cfg(feature = "application-ipc")]
 mod ipc_body;
+#[cfg(feature = "application-ipc")]
 mod ipc_control;
+#[cfg(feature = "application-ipc")]
 mod ipc_deadline;
+#[cfg(feature = "application-ipc")]
 mod ipc_http;
+#[cfg(feature = "application-ipc")]
 mod ipc_policy;
 mod message;
 mod nonclient;
@@ -32,6 +39,7 @@ mod wakeup;
 mod webview;
 
 use std::cell::Cell;
+#[cfg(feature = "application-ipc")]
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -52,18 +60,17 @@ use state::FrameState;
 
 /// Origin served to web content by the resource interceptor.
 pub(super) const APP_ORIGIN: &str = "https://app.webui.localhost";
-/// Filter matching every request the WebView2 instance issues.
-pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("*");
+/// WebView2 normalizes HTTP URLs to include the authority's trailing slash.
+pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("https://app.webui.localhost/*");
 /// Private message used to wake the UI thread for queued commands.
 pub(super) const WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 1;
+pub(super) const APP_WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 3;
+mod tasks;
 /// Coalesced, payload-free native IPC completion/control wake.
+#[cfg(feature = "application-ipc")]
 pub(super) const IPC_WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 2;
 /// Identity of the single window owned by this backend.
 pub(super) const WINDOW_ID: WindowId = WindowId::PRIMARY;
-/// Discriminator for fetch-bridge requests.
-pub(super) const FETCH_BRIDGE_KIND: &str = "webui-desktop-fetch";
-/// Discriminator for fetch-bridge responses.
-pub(super) const FETCH_BRIDGE_RESPONSE_KIND: &str = "webui-desktop-fetch-response";
 
 /// Run a packaged WebUI desktop app on Windows using WebView2.
 ///
@@ -80,7 +87,7 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if WebView2 cannot initialize.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window)?)
+    crate::run_runtime(runtime, window).map_err(Into::into)
 }
 
 /// Run a desktop frame until the native window closes.
@@ -96,7 +103,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let saved = state::load_saved_state(store.as_ref());
     let window_frame = FrameWindow::new(&frame.window, saved.as_ref())?;
 
-    let environment = webview::create_environment().with_context(|| {
+    let profile = webview::browser_profile(frame.app_id.as_deref())?;
+    let environment = webview::create_environment(&profile.path).with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
     let controller = webview::create_controller(&environment, window_frame.hwnd)?;
@@ -105,23 +113,29 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window.devtools)?;
+    #[cfg(feature = "application-ipc")]
     let ipc = ipc::WindowsIpc::new(frame.ipc_bridge(), &webview, window_frame.hwnd)?;
+    #[cfg(feature = "application-ipc")]
     let _ipc_shutdown = ipc::Shutdown(Rc::clone(&ipc));
 
     let navigation_starting = webview::register_navigation_guard(&webview, frame.events.clone())?;
     let navigation_completed =
         webview::register_navigation_completed(&webview, frame.events.clone())?;
     webview::inject_drag_script(&webview)?;
-    let web_message_received = bridge::register_fetch_bridge(
+    let web_message_received = bridge::register_message_handler(
         &webview,
-        Arc::clone(&frame.runtime),
         window_frame.hwnd,
+        #[cfg(feature = "application-ipc")]
         Rc::downgrade(&ipc),
     )?;
+    let application_tasks = tasks::ApplicationTasks::new(window_frame.hwnd);
     let web_resource_requested = protocol::register_runtime_handler(
         &environment,
         &webview,
         Arc::clone(&frame.runtime),
+        Arc::clone(&frame.executor),
+        std::rc::Rc::downgrade(&application_tasks),
+        #[cfg(feature = "application-ipc")]
         Rc::downgrade(&ipc),
     )?;
     message::set_controller_bounds(&controller, window_frame.hwnd)?;
@@ -129,6 +143,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     unsafe { controller.SetIsVisible(true)? };
 
     let state = Box::new(FrameState {
+        application_tasks,
+        #[cfg(feature = "application-ipc")]
         ipc: Rc::clone(&ipc),
         controller,
         _navigation_starting: navigation_starting,
@@ -147,6 +163,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     // Installing a wakeup flushes an existing backlog. WebView2 initialization
     // pumps messages, so the native receiver must exist before attachment.
     install_wakeup(window_frame.hwnd)?;
+    #[cfg(feature = "application-ipc")]
     ipc.install(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT)?;
 
     if frame.window.fullscreen {

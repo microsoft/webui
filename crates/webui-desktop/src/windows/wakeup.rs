@@ -3,40 +3,46 @@
 
 //! Attach the Windows command wakeup only to an installed native receiver.
 
-#[cfg(all(test, not(windows)))]
+#[cfg(all(test, not(windows), feature = "application-ipc"))]
 #[path = "ipc_body.rs"]
 mod ipc_body_contract;
 
 use anyhow::{Context, Result};
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "application-ipc"))]
 use crate::ipc::IpcWake;
+#[cfg(feature = "application-ipc")]
 use crate::ipc::{IpcError, IpcErrorCode};
 use crate::WindowHandle;
+#[cfg(feature = "application-ipc")]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Mutex,
 };
-#[cfg(windows)]
+#[cfg(all(windows, feature = "application-ipc"))]
 use windows::Win32::{
     Foundation::{HWND, LPARAM, WPARAM},
     UI::WindowsAndMessaging::PostMessageW,
 };
 
+#[cfg(feature = "application-ipc")]
 static NEXT_COOKIE: AtomicUsize = AtomicUsize::new(1);
 
 /// Closing and posting serialize under one short lock. A queued wake also
 /// carries a non-reusable cookie so HWND reuse cannot drain another window.
+#[cfg(feature = "application-ipc")]
 pub(super) struct IpcWindowWake {
     target: Mutex<WakeTarget>,
     pub cookie: usize,
 }
 
+#[cfg(feature = "application-ipc")]
 struct WakeTarget {
     hwnd: Option<usize>,
     pending: bool,
 }
 
+#[cfg(feature = "application-ipc")]
 impl IpcWindowWake {
     #[cfg(windows)]
     pub fn new(hwnd: HWND) -> Result<Self, IpcError> {
@@ -95,7 +101,7 @@ impl IpcWindowWake {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "application-ipc"))]
 impl IpcWake for IpcWindowWake {
     fn wake(&self) -> Result<(), IpcError> {
         self.post(|handle, cookie| {
@@ -116,6 +122,7 @@ impl IpcWake for IpcWindowWake {
 
 #[cold]
 #[inline(never)]
+#[cfg(feature = "application-ipc")]
 fn wake_error(code: IpcErrorCode) -> IpcError {
     IpcError::new(
         code,
@@ -144,6 +151,7 @@ mod tests {
     use crate::{WindowCommand, WindowHandle};
 
     #[test]
+    #[cfg(feature = "application-ipc")]
     fn ipc_wake_coalesces_rejects_stale_cookie_and_stops_at_close() {
         let wake = super::IpcWindowWake::for_handle(0).unwrap();
         let count = AtomicUsize::new(0);

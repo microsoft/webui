@@ -36,6 +36,22 @@ changed.close();
 connection.close();
 ```
 
+Importing generated `ipc.ts` bindings does not load the desktop runtime or
+protobuf codecs. The first explicit `connectDesktop()` loads them; concurrent
+calls share the load but create independent connections. Type-only imports
+remain erased. No import connects, polls, retries, or grants native authority.
+Module-loading errors reject `connectDesktop()` unchanged, before transport
+activation; a failed module load is not retried by subsequent calls. Handshake
+failures affect only their own connection.
+
+Enable ESM code splitting and deploy all emitted chunks to retain the startup
+transfer/parse savings. A single-file bundle still defers activation, but not
+delivery of the runtime bytes. A direct value import from
+`@microsoft/webui-desktop`, such as the transport import above, loads that
+package normally. To defer it too, use
+`const { createDesktopTransport } = await import('@microsoft/webui-desktop')`
+inside the application's explicit connection action.
+
 `save()` waits for the remote handler's RESULT, including `Promise<void>`
 handlers. `selected()` waits only for bounded notification admission, not
 subscriber completion. Notifications run in receipt order for each subscriber;

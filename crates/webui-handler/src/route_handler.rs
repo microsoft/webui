@@ -306,7 +306,7 @@ impl Protocol {
     ) -> Result<String, HandlerError> {
         self.ensure_style_metadata()?;
         let mut index = self.request_index();
-        let (response, state_selection) = render_partial_indexed_with_state(
+        let (response, state_selection, _) = render_partial_indexed_with_state(
             self.protocol(),
             entry_id,
             request_path,
@@ -330,7 +330,7 @@ impl Protocol {
     ) -> Result<String, HandlerError> {
         self.ensure_style_metadata()?;
         let mut index = self.request_index();
-        let (response, state_selection) = render_partial_indexed_with_state(
+        let (response, state_selection, _) = render_partial_indexed_with_state(
             self.protocol(),
             entry_id,
             request_path,
@@ -338,6 +338,43 @@ impl Protocol {
             &mut index,
         )?;
         serialize_partial_value_response(&response, state, &state_selection)
+    }
+
+    /// Prepare navigation metadata with the caller's complete owned state.
+    ///
+    /// Unlike [`Self::render_partial`], this does not project state. Hosts that
+    /// supply canonical route data can serialize the result directly, without
+    /// a JSON round trip or cloning the state tree.
+    pub fn render_partial_full_state(
+        &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<PartialNavigation, HandlerError> {
+        self.ensure_style_metadata()?;
+        let mut index = self.request_index();
+        let (mut response, _, matched) = render_partial_indexed_with_state(
+            self.protocol(),
+            entry_id,
+            request_path,
+            inventory_hex,
+            &mut index,
+        )?;
+        response
+            .as_object_mut()
+            .ok_or_else(partial_response_not_object)?
+            .insert("state".into(), state);
+        Ok(PartialNavigation { response, matched })
+    }
+
+    /// Test route existence using the compiled route matcher, without rendering
+    /// component assets or serializing state.
+    #[must_use]
+    pub fn matches_route(&self, entry_id: &str, request_path: &str) -> bool {
+        let chain =
+            collect_route_chain_plan(self.protocol(), entry_id, request_path, self.route_index());
+        route_chain_matches(&chain.entries, request_path)
     }
 
     /// Render component template payloads for requested component tags.
@@ -2978,7 +3015,7 @@ fn render_partial(
 ) -> Result<Value, HandlerError> {
     let mut index = ProtocolIndex::new(protocol);
     let mut request_index = index.request_index();
-    let (mut response, state_selection) = render_partial_indexed_with_state(
+    let (mut response, state_selection, _) = render_partial_indexed_with_state(
         protocol,
         entry_id,
         request_path,
@@ -3001,7 +3038,7 @@ fn render_partial_indexed(
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
     render_partial_indexed_with_state(protocol, entry_id, request_path, inventory_hex, index)
-        .map(|(response, _)| response)
+        .map(|(response, _, _)| response)
 }
 
 fn render_partial_indexed_with_state<'a>(
@@ -3010,10 +3047,11 @@ fn render_partial_indexed_with_state<'a>(
     request_path: &str,
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
-) -> Result<(Value, StateSelection<'a>), HandlerError> {
+) -> Result<(Value, StateSelection<'a>, bool), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
+    let matched = route_chain_matches(&chain, request_path);
     let state_selection =
         crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
@@ -3057,7 +3095,40 @@ fn render_partial_indexed_with_state<'a>(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok((Value::Object(result), state_selection))
+    Ok((Value::Object(result), state_selection, matched))
+}
+
+/// A serializable navigation response with an explicit route-match result.
+/// Its JSON representation preserves the existing partial-navigation schema.
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+pub struct PartialNavigation {
+    response: Value,
+    #[serde(skip)]
+    matched: bool,
+}
+
+impl PartialNavigation {
+    /// Whether the request matched an application route rather than only its shell.
+    #[must_use]
+    pub fn is_match(&self) -> bool {
+        self.matched
+    }
+}
+
+fn route_chain_matches(chain: &[RouteChainEntry], request_path: &str) -> bool {
+    if request_path
+        .split_once('?')
+        .map_or(request_path, |(path, _)| path)
+        == "/"
+    {
+        return !chain.is_empty();
+    }
+    match chain {
+        [] => false,
+        [only] => only.path != "/",
+        _ => true,
+    }
 }
 
 fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
@@ -5873,6 +5944,47 @@ mod tests {
         .unwrap();
 
         assert_eq!(partial["state"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn typed_full_state_navigation_preserves_host_state_and_reports_matches() {
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/items".into(),
+                        fragment_id: "items-page".into(),
+                        exact: true,
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "items-page".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                    ..Default::default()
+                },
+            ),
+        ])));
+        let state = serde_json::json!({"serverDerived": [1, 2], "title": "Catalog"});
+        assert!(protocol.matches_route("index.html", "/items"));
+        assert!(!protocol.matches_route("index.html", "/missing"));
+        let partial = protocol
+            .render_partial_full_state(state.clone(), "index.html", "/items", "")
+            .unwrap();
+        assert!(partial.is_match());
+        let wire = serde_json::to_value(partial).unwrap();
+        assert_eq!(wire["state"], state);
+        assert_eq!(wire["path"], "/items");
+        assert_eq!(wire["chain"][0]["component"], "items-page");
+        assert!(wire.get("matched").is_none());
+        let missing = protocol
+            .render_partial_full_state(Value::Null, "index.html", "/missing", "")
+            .unwrap();
+        assert!(!missing.is_match());
     }
 
     #[test]

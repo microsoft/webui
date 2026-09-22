@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "application-ipc")]
 use crate::ipc::{IpcBridge, IpcHost, IpcOptions, IpcWindow, IpcWindowOwner};
 use crate::{
     DesktopError, DesktopEvent, DesktopRuntime, DesktopShellConfig, EventRegistrationError,
@@ -17,41 +18,92 @@ use crate::{
 /// returns. Use the optional native runner or a custom [`DesktopFrameBackend`];
 /// clone individual handles, not the owning frame.
 pub struct DesktopFrame {
+    #[cfg(feature = "native")]
+    pub(crate) executor: Arc<crate::execution::ApplicationExecutor>,
     /// Stable application identity from the bundle or Rust host.
-    pub app_id: Option<String>,
+    pub(crate) app_id: Option<String>,
     /// Runtime-neutral WebUI request dispatcher.
-    pub runtime: Arc<DesktopRuntime>,
+    pub(crate) runtime: Arc<DesktopRuntime>,
     /// Cross-platform window options.
-    pub window: WindowOptions,
+    pub(crate) window: WindowOptions,
     /// Cross-platform native shell options from the desktop manifest.
-    pub shell: DesktopShellConfig,
+    pub(crate) shell: DesktopShellConfig,
     /// UI-thread lifecycle event registry.
-    pub events: EventRegistry,
+    pub(crate) events: EventRegistry,
     /// Sendable command queue for native window control.
-    pub window_handle: WindowHandle,
+    pub(crate) window_handle: WindowHandle,
+    #[cfg(feature = "application-ipc")]
     ipc_owner: IpcWindowOwner,
 }
 
 impl DesktopFrame {
+    /// Borrow the immutable application identity.
+    #[must_use]
+    pub fn app_id(&self) -> Option<&str> {
+        self.app_id.as_deref()
+    }
+
+    /// Borrow the request dispatcher owned by this frame.
+    #[must_use]
+    pub fn runtime(&self) -> &Arc<DesktopRuntime> {
+        &self.runtime
+    }
+
+    /// Borrow the immutable window configuration.
+    #[must_use]
+    pub fn window(&self) -> &WindowOptions {
+        &self.window
+    }
+
+    /// Borrow the immutable native shell configuration.
+    #[must_use]
+    pub fn shell(&self) -> &DesktopShellConfig {
+        &self.shell
+    }
+
+    /// Borrow the frame's event registry for a custom backend.
+    #[must_use]
+    pub fn events(&self) -> &EventRegistry {
+        &self.events
+    }
+
+    /// Borrow the sendable window command handle.
+    #[must_use]
+    pub fn window_handle(&self) -> &WindowHandle {
+        &self.window_handle
+    }
+
     /// Create a desktop frame with default shell options and deny-all IPC permissions.
     ///
     /// # Errors
     ///
-    /// Returns an error if the configured IPC schema is invalid.
+    /// Returns an error if the IPC schema is invalid or window styling differs
+    /// from the already-rendered runtime.
     pub fn new(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<Self> {
-        Self::with_ipc_options(runtime, window, IpcOptions::default())
+        #[cfg(feature = "application-ipc")]
+        {
+            Self::with_ipc_options(runtime, window, IpcOptions::default())
+        }
+        #[cfg(not(feature = "application-ipc"))]
+        {
+            runtime.validate_window(&window)?;
+            Ok(Self::from_parts(runtime, window))
+        }
     }
 
     /// Create a frame with explicit application IPC permissions and resource limits.
     ///
     /// # Errors
     ///
-    /// Returns an error if the IPC schema or limits are invalid.
+    /// Returns an error if the IPC schema or limits are invalid, or window
+    /// styling differs from the already-rendered runtime.
+    #[cfg(feature = "application-ipc")]
     pub fn with_ipc_options(
         runtime: Arc<DesktopRuntime>,
         window: WindowOptions,
         options: IpcOptions,
     ) -> Result<Self> {
+        runtime.validate_window(&window)?;
         let origin = if cfg!(target_os = "windows") {
             "https://app.webui.localhost"
         } else {
@@ -64,19 +116,31 @@ impl DesktopFrame {
             IpcHost::Packaged { origin }
         };
         let ipc_owner = IpcWindowOwner::new(runtime.ipc_registry(), options, host)?;
-        Ok(Self {
+        Ok(Self::from_parts(runtime, window, ipc_owner))
+    }
+
+    fn from_parts(
+        runtime: Arc<DesktopRuntime>,
+        window: WindowOptions,
+        #[cfg(feature = "application-ipc")] ipc_owner: IpcWindowOwner,
+    ) -> Self {
+        Self {
+            #[cfg(feature = "native")]
+            executor: Arc::default(),
             app_id: None,
             runtime,
             window,
             shell: DesktopShellConfig::default(),
             events: EventRegistry::default(),
             window_handle: WindowHandle::default(),
+            #[cfg(feature = "application-ipc")]
             ipc_owner,
-        })
+        }
     }
 
     /// Return a weak handle to this window's document-scoped application IPC.
     #[must_use]
+    #[cfg(feature = "application-ipc")]
     pub fn ipc(&self) -> IpcWindow {
         self.ipc_owner.window()
     }
@@ -86,6 +150,7 @@ impl DesktopFrame {
     /// Adapters must supply trusted main-frame navigation and origin information
     /// and retain the owning frame until callbacks and the native loop finish.
     #[must_use]
+    #[cfg(feature = "application-ipc")]
     pub fn ipc_bridge(&self) -> IpcBridge {
         self.ipc_owner.bridge()
     }
@@ -134,8 +199,11 @@ impl DesktopFrame {
 
 impl Drop for DesktopFrame {
     fn drop(&mut self) {
+        #[cfg(feature = "native")]
+        self.executor.close();
         // Callback captures may own window handles. Stop commands before
         // releasing those captures so their destructors cannot enqueue work.
+        #[cfg(feature = "application-ipc")]
         self.ipc_owner.close();
         self.window_handle.close();
         self.events.close();
@@ -149,12 +217,6 @@ pub struct DesktopFrameCapabilities {
     pub application_ipc: bool,
     /// Backend can install an application menu.
     pub app_menu: bool,
-    /// Backend can expose Windows-style jump lists or an equivalent launcher menu.
-    pub jump_list: bool,
-    /// Backend can open native popover/popup windows.
-    pub popovers: bool,
-    /// Backend can broker app-controlled downloads.
-    pub downloads: bool,
     /// Backend supports non-native titlebar styles.
     pub titlebar_styles: bool,
     /// Platform window effects this backend actually applies.
@@ -226,6 +288,7 @@ impl DesktopFrameBackend for PlatformFrameBackend {
     }
 
     fn run_frame(&self, frame: DesktopFrame) -> Result<()> {
+        validate_frame(&frame, self.capabilities())?;
         platform_run_frame(frame)
     }
 }
@@ -264,8 +327,14 @@ pub fn run_frame_with<B: DesktopFrameBackend + ?Sized>(
     frame: DesktopFrame,
     backend: &B,
 ) -> Result<()> {
-    let capabilities = backend.capabilities();
+    validate_frame(&frame, backend.capabilities())?;
+    backend.run_frame(frame)
+}
+
+fn validate_frame(frame: &DesktopFrame, capabilities: DesktopFrameCapabilities) -> Result<()> {
+    frame.runtime.validate_window(&frame.window)?;
     validate_frame_capabilities(&frame.window, &frame.shell, capabilities)?;
+    #[cfg(feature = "application-ipc")]
     if frame.runtime.ipc_registry().is_enabled() && !capabilities.application_ipc {
         return Err(DesktopError::UnsupportedRuntime {
             message: "the selected backend does not support application IPC".to_string(),
@@ -273,7 +342,7 @@ pub fn run_frame_with<B: DesktopFrameBackend + ?Sized>(
                 .to_string(),
         });
     }
-    backend.run_frame(frame)
+    Ok(())
 }
 
 /// Validate requested window and shell features before the native shell starts.
@@ -306,21 +375,6 @@ pub fn validate_frame_capabilities(
             Some((
                 "application menu",
                 "Remove shell.menus or select a backend that advertises app_menu",
-            ))
-        } else if !shell.jump_list.is_empty() && !capabilities.jump_list {
-            Some((
-                "jump list",
-                "Remove shell.jump_list or select a backend that advertises jump_list",
-            ))
-        } else if shell.popovers.enabled && !capabilities.popovers {
-            Some((
-                "popovers",
-                "Disable shell.popovers or select a backend that advertises popovers",
-            ))
-        } else if shell.downloads.enabled && !capabilities.downloads {
-            Some((
-                "downloads",
-                "Disable shell.downloads or select a backend that advertises downloads",
             ))
         } else {
             None
@@ -378,21 +432,14 @@ fn platform_run_frame(_frame: DesktopFrame) -> Result<()> {
 
 /// Capabilities the macOS AppKit/WKWebView backend implements.
 ///
-/// Jump lists, popovers, and downloads have no macOS backend implementation, so
-/// they stay false and `validate_frame_capabilities` rejects them up front
-/// rather than letting them silently no-op.
-///
 /// All four effects are implemented: `macos::effects::resolve_effect` maps the
 /// three blur variants onto `NSVisualEffectView` vibrancy and `Tabbed` onto the
 /// native tabbed titlebar treatment.
 #[cfg(all(feature = "native", target_os = "macos"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
-        application_ipc: true,
+        application_ipc: cfg!(feature = "application-ipc"),
         app_menu: true,
-        jump_list: false,
-        popovers: false,
-        downloads: false,
         titlebar_styles: true,
         supported_effects: &[
             WindowEffect::Vibrancy,
@@ -415,11 +462,8 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 #[cfg(all(feature = "native", target_os = "windows"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
-        application_ipc: true,
+        application_ipc: cfg!(feature = "application-ipc"),
         app_menu: false,
-        jump_list: false,
-        popovers: false,
-        downloads: false,
         titlebar_styles: true,
         supported_effects: &[
             WindowEffect::Vibrancy,
@@ -439,11 +483,8 @@ fn platform_capabilities() -> DesktopFrameCapabilities {
 #[cfg(all(feature = "native", target_os = "linux"))]
 fn platform_capabilities() -> DesktopFrameCapabilities {
     DesktopFrameCapabilities {
-        application_ipc: true,
+        application_ipc: cfg!(feature = "application-ipc"),
         app_menu: false,
-        jump_list: false,
-        popovers: false,
-        downloads: false,
         titlebar_styles: true,
         supported_effects: &[],
         tray: false,
@@ -560,19 +601,47 @@ mod tests {
         let (_bundle, runtime) = test_support::runtime();
         let frame = DesktopFrame::new(runtime, window).unwrap();
 
-        assert_eq!(frame.window.title, "Frame Test");
-        assert!(frame.shell.icon_path.is_none());
-        assert!(frame.shell.menus.is_empty());
-        assert!(frame.shell.jump_list.is_empty());
+        assert_eq!(frame.window().title, "Frame Test");
+        assert!(frame.shell().icon_path.is_none());
+        assert!(frame.shell().menus.is_empty());
+        assert!(frame.shell().tray.is_none());
+        assert!(frame.app_id().is_none());
+        assert!(!frame.runtime().startup_html().is_empty());
+        let _ = frame.events();
+        let _ = frame.window_handle();
+    }
+
+    #[test]
+    fn frame_rejects_window_css_that_disagrees_with_rendered_document() {
+        let (_bundle, runtime) = test_support::runtime();
+        let window = WindowOptions {
+            titlebar: TitlebarStyle::HiddenInset,
+            ..WindowOptions::default()
+        };
+        assert!(DesktopFrame::new(runtime, window).is_err());
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn direct_platform_trait_entry_cannot_bypass_capability_validation() {
+        let (_bundle, runtime) = test_support::runtime();
+        let mut frame = DesktopFrame::new(runtime, WindowOptions::default()).unwrap();
+        // Internal mutation simulates an invalid frame; external hosts only have
+        // immutable accessors. Validation must happen before opening any window.
+        frame.window.titlebar = TitlebarStyle::HiddenInset;
+        assert!(PlatformFrameBackend::new().run_frame(frame).is_err());
     }
 
     #[test]
     fn frame_with_shell_replaces_shell() {
-        let mut shell = DesktopShellConfig {
+        let shell = DesktopShellConfig {
             icon_path: Some(PathBuf::from("assets/icon.png")),
+            tray: Some(crate::TrayConfig {
+                icon_path: PathBuf::from("assets/tray.png"),
+                tooltip: None,
+            }),
             ..DesktopShellConfig::default()
         };
-        shell.downloads.enabled = true;
 
         let (_bundle, runtime) = test_support::runtime();
         let frame = DesktopFrame::new(runtime, WindowOptions::default())
@@ -583,7 +652,7 @@ mod tests {
             frame.shell.icon_path.as_deref(),
             Some(std::path::Path::new("assets/icon.png"))
         );
-        assert!(frame.shell.downloads.enabled);
+        assert!(frame.shell.tray.is_some());
     }
 
     #[cfg(feature = "native")]
@@ -597,13 +666,13 @@ mod tests {
         // request instead of letting the feature silently no-op.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         {
+            assert_eq!(
+                capabilities.application_ipc,
+                cfg!(feature = "application-ipc")
+            );
             assert!(capabilities.events);
             assert!(capabilities.titlebar_styles);
             assert!(capabilities.window_controls);
-            // No backend implements these yet.
-            assert!(!capabilities.jump_list);
-            assert!(!capabilities.popovers);
-            assert!(!capabilities.downloads);
         }
         // `None` requests nothing, so every backend must accept it.
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

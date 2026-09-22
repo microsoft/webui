@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use std::cell::{Cell, RefCell};
 use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Wake, Waker};
+#[cfg(test)]
+use std::{
+    cell::{Cell, RefCell},
+    sync::atomic::Ordering,
+};
 
 use crate::ipc::{IpcError, IpcErrorCode, IpcWake};
 
@@ -15,19 +16,13 @@ use crate::ipc::{IpcError, IpcErrorCode, IpcWake};
 #[path = "native_ipc_reentrant_tests.rs"]
 mod reentrant_tests;
 
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
-pub(crate) fn proof_matches(
-    pending: &crate::ipc::DocumentActivation,
-    received: &crate::ipc::DocumentActivation,
-) -> bool {
-    let difference = pending
-        .document_nonce
-        .iter()
-        .chain(&pending.challenge)
-        .zip(received.document_nonce.iter().chain(&received.challenge))
-        .fold(0_u8, |difference, (a, b)| difference | (a ^ b));
-    pending.navigation == received.navigation && difference == 0
-}
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+#[path = "native_ipc_delivery_tests.rs"]
+mod delivery_tests;
+
+#[cfg(test)]
+use crate::document::proof_matches;
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub(crate) struct NativeHello {
@@ -81,7 +76,7 @@ pub(crate) fn activation_script(
     Ok(format!("(()=>{{'use strict';const p={proof};const b=window.__webuiDesktopIpcV2;if(!b||b.documentNonce!==p.documentNonce)return false;return b.activate(p);}})()"))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub(crate) fn control_script(
     proof: &crate::ipc::DocumentActivation,
     control: crate::ipc::NativeControl,
@@ -119,142 +114,34 @@ pub(crate) fn control_script(
 // This is a UI-local completion driver, not an application executor. Only
 // bridge completion futures and native delivery callbacks may be submitted.
 pub(crate) struct NativeIpcTasks {
-    tasks: RefCell<Vec<Task>>,
-    count: Cell<usize>,
-    polling: Cell<bool>,
-    deferred_drain: Cell<bool>,
-    alive: Arc<AtomicBool>,
-    wake: Arc<dyn IpcWake>,
-    max_tasks: usize,
-}
-
-struct Task {
-    future: Pin<Box<dyn Future<Output = ()>>>,
-    wake: Arc<TaskWake>,
-}
-
-struct TaskWake {
-    ready: AtomicBool,
-    active: AtomicBool,
-    alive: Arc<AtomicBool>,
-    native: Arc<dyn IpcWake>,
-}
-
-impl Wake for TaskWake {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        if self.alive.load(Ordering::Acquire)
-            && self.active.load(Ordering::Acquire)
-            && !self.ready.swap(true, Ordering::AcqRel)
-        {
-            let _ = self.native.wake();
-        }
-    }
+    inner: crate::native_tasks::NativeTasks,
 }
 
 impl NativeIpcTasks {
     pub(crate) fn new(wake: Arc<dyn IpcWake>, max_tasks: usize) -> Self {
         Self {
-            tasks: RefCell::new(Vec::new()),
-            count: Cell::new(0),
-            polling: Cell::new(false),
-            deferred_drain: Cell::new(false),
-            alive: Arc::new(AtomicBool::new(true)),
-            wake,
-            max_tasks,
+            inner: crate::native_tasks::NativeTasks::new(
+                Arc::new(move || wake.wake().is_ok()),
+                max_tasks,
+            ),
         }
     }
 
     pub(crate) fn spawn(&self, future: impl Future<Output = ()> + 'static) -> Result<(), IpcError> {
-        if !self.alive.load(Ordering::Acquire) {
-            return Err(task_error(IpcErrorCode::Closed));
-        }
-        if self.count.get() >= self.max_tasks {
-            return Err(task_error(IpcErrorCode::Overloaded));
-        }
-        self.count.set(self.count.get() + 1);
-        self.tasks.borrow_mut().push(Task {
-            future: Box::pin(future),
-            wake: Arc::new(TaskWake {
-                ready: AtomicBool::new(true),
-                active: AtomicBool::new(true),
-                alive: Arc::clone(&self.alive),
-                native: Arc::clone(&self.wake),
-            }),
-        });
-        if let Err(error) = self.wake.wake() {
-            self.close();
-            return Err(error);
-        }
-        Ok(())
+        self.inner.spawn(future).map_err(|error| {
+            task_error(match error {
+                crate::execution::WorkError::Closed => IpcErrorCode::Closed,
+                crate::execution::WorkError::Overloaded => IpcErrorCode::Overloaded,
+            })
+        })
     }
 
     pub(crate) fn poll_ready(&self) {
-        if !self.alive.load(Ordering::Acquire) {
-            return;
-        }
-        if self.polling.replace(true) {
-            self.deferred_drain.set(true);
-            return;
-        }
-        // Move the batch out before polling: callbacks may enqueue, close, or
-        // destroy native objects that reenter the driver.
-        let batch = std::mem::take(&mut *self.tasks.borrow_mut());
-        for mut task in batch {
-            if !self.alive.load(Ordering::Acquire) {
-                self.count.set(self.count.get() - 1);
-                continue;
-            }
-            let complete = if task.wake.ready.swap(false, Ordering::AcqRel) {
-                let waker = Waker::from(Arc::clone(&task.wake));
-                task.future
-                    .as_mut()
-                    .poll(&mut Context::from_waker(&waker))
-                    .is_ready()
-            } else {
-                false
-            };
-            if complete || !self.alive.load(Ordering::Acquire) {
-                self.count.set(self.count.get() - 1);
-                // Drop the completion outside every RefCell borrow.
-            } else {
-                self.tasks.borrow_mut().push(task);
-            }
-        }
-        self.polling.set(false);
-        // A nested native event loop can consume a queued wake while this
-        // batch is out of the registry. Replace that wake after leaving poll,
-        // rather than recursively polling or leaving new/self-woken work idle.
-        if self.deferred_drain.replace(false) && self.alive.load(Ordering::Acquire) {
-            let ready = self
-                .tasks
-                .borrow()
-                .iter()
-                .any(|task| task.wake.ready.load(Ordering::Acquire));
-            if ready {
-                if let Err(error) = self.wake.wake() {
-                    eprintln!("WebUI: native IPC completion reschedule failed: {error}");
-                    self.close();
-                }
-            }
-        }
+        self.inner.poll_ready();
     }
 
     pub(crate) fn close(&self) {
-        self.alive.store(false, Ordering::Release);
-        self.deferred_drain.set(false);
-        let tasks = std::mem::take(&mut *self.tasks.borrow_mut());
-        self.count.set(self.count.get() - tasks.len());
-        drop(tasks);
-    }
-}
-
-impl Drop for Task {
-    fn drop(&mut self) {
-        self.wake.active.store(false, Ordering::Release);
+        self.inner.close();
     }
 }
 
@@ -382,7 +269,7 @@ mod tests {
             .unwrap();
         driver.poll_ready();
         assert!(!polled.get());
-        assert_eq!(driver.count.get(), 0);
+        assert_eq!(driver.inner.count(), 0);
     }
 
     #[test]
@@ -395,8 +282,8 @@ mod tests {
             })
             .unwrap();
         driver.poll_ready();
-        assert_eq!(driver.count.get(), 1);
+        assert_eq!(driver.inner.count(), 1);
         driver.poll_ready();
-        assert_eq!(driver.count.get(), 0);
+        assert_eq!(driver.inner.count(), 0);
     }
 }

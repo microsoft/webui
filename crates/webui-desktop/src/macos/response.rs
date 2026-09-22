@@ -4,14 +4,14 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use crate::{DesktopProtocolResponse, DesktopResponseBody};
+use crate::{DesktopProtocolResponse, DesktopResponseBody, DesktopResponseContent};
 use block2::RcBlock;
 use objc2::ffi::NSInteger;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2::{extern_class, extern_conformance, extern_methods, AnyThread};
 use objc2_foundation::{
-    ns_string, NSData, NSDictionary, NSObjectProtocol, NSString, NSURLResponse, NSURL,
+    ns_string, NSData, NSDictionary, NSError, NSObjectProtocol, NSString, NSURLResponse, NSURL,
 };
 use objc2_web_kit::WKURLSchemeTask;
 
@@ -56,14 +56,39 @@ pub(super) fn send_response_cancellable(
     response: DesktopProtocolResponse,
     is_live: impl Fn() -> bool,
 ) {
+    let DesktopResponseContent::Bytes(body) = response.body else {
+        fail_response(task, &is_live);
+        return;
+    };
+    if !begin_response(task, url, response.status, &response.content_type, &is_live) {
+        return;
+    }
+    // SAFETY: Only live tasks on their main thread reach these callbacks.
+    unsafe {
+        if is_live() && !body.is_empty() {
+            task.didReceiveData(&native_data(body));
+        }
+        if is_live() {
+            task.didFinish();
+        }
+    }
+}
+
+fn begin_response(
+    task: &ProtocolObject<dyn WKURLSchemeTask>,
+    url: Option<&NSURL>,
+    status: u16,
+    content_type: &str,
+    is_live: &impl Fn() -> bool,
+) -> bool {
     let fallback_url = url
         .is_none()
         .then(|| NSURL::URLWithString(ns_string!("webui://app/")))
         .flatten();
     let Some(url) = url.or(fallback_url.as_deref()) else {
-        return;
+        return false;
     };
-    let content_type = NSString::from_str(&response.content_type);
+    let content_type = NSString::from_str(content_type);
     let headers = NSDictionary::from_slices(
         &[
             ns_string!("Content-Type"),
@@ -81,7 +106,7 @@ pub(super) fn send_response_cancellable(
     let http_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         url,
-        NSInteger::try_from(u32::from(response.status)).unwrap_or(500),
+        NSInteger::try_from(status).unwrap_or(500),
         Some(ns_string!("HTTP/1.1")),
         Some(&headers),
     );
@@ -89,18 +114,96 @@ pub(super) fn send_response_cancellable(
     // optional data, then completion, and may retain the data beyond this call.
     unsafe {
         if !is_live() {
-            return;
+            return false;
         }
         task.didReceiveResponse(&http_response);
+    }
+    is_live()
+}
+
+pub(super) async fn send_application_response(
+    task: &ProtocolObject<dyn WKURLSchemeTask>,
+    url: &NSURL,
+    response: DesktopProtocolResponse,
+    executor: &crate::execution::ApplicationExecutor,
+    is_live: impl Fn() -> bool,
+) {
+    let mut file = match response.body {
+        DesktopResponseContent::Bytes(body) => {
+            send_response_cancellable(
+                task,
+                Some(url),
+                DesktopProtocolResponse::new(response.status, response.content_type, body),
+                is_live,
+            );
+            return;
+        }
+        DesktopResponseContent::File(file) => file,
+    };
+    if !begin_response(
+        task,
+        Some(url),
+        response.status,
+        &response.content_type,
+        &is_live,
+    ) {
+        return;
+    }
+    loop {
         if !is_live() {
             return;
         }
-        if !response.body.is_empty() {
-            let data = native_data(response.body);
-            task.didReceiveData(&data);
+        let work = executor.submit(move || {
+            use std::io::Read;
+            let mut bytes = vec![0; 64 * 1024];
+            let result = file.read(&mut bytes);
+            if let Ok(count) = result {
+                bytes.truncate(count);
+            }
+            (file, bytes, result)
+        });
+        let Ok(work) = work else {
+            fail_response(task, &is_live);
+            return;
+        };
+        let Ok((next, bytes, result)) = work.await else {
+            fail_response(task, &is_live);
+            return;
+        };
+        file = next;
+        if !is_live() {
+            return;
         }
-        if is_live() {
-            task.didFinish();
+        match result {
+            Ok(0) => {
+                // SAFETY: UI-local future, with liveness rechecked after every await.
+                unsafe {
+                    task.didFinish();
+                }
+                return;
+            }
+            Ok(_) => {
+                // SAFETY: Native NSData owns this chunk for as long as WebKit needs it.
+                unsafe {
+                    task.didReceiveData(&native_data(bytes.into()));
+                }
+            }
+            Err(_) => {
+                fail_response(task, &is_live);
+                return;
+            }
+        }
+    }
+}
+
+fn fail_response(task: &ProtocolObject<dyn WKURLSchemeTask>, is_live: &impl Fn() -> bool) {
+    if is_live() {
+        // SAFETY: Static domain, ordinary integer code, and no user-info pointers.
+        let error =
+            unsafe { NSError::errorWithDomain_code_userInfo(ns_string!("WebUIDesktop"), 1, None) };
+        // SAFETY: The caller retains the task on its owning UI thread.
+        unsafe {
+            task.didFailWithError(&error);
         }
     }
 }
@@ -151,6 +254,8 @@ mod tests {
         response: RefCell<Option<Retained<NSURLResponse>>>,
         data: RefCell<Option<Retained<NSData>>>,
         calls: RefCell<Vec<&'static str>>,
+        total_bytes: std::cell::Cell<usize>,
+        largest_chunk: std::cell::Cell<usize>,
     }
 
     define_class!(
@@ -178,6 +283,12 @@ mod tests {
 
             #[unsafe(method(didReceiveData:))]
             fn did_receive_data(&self, data: &NSData) {
+                self.ivars()
+                    .total_bytes
+                    .set(self.ivars().total_bytes.get() + data.length());
+                self.ivars()
+                    .largest_chunk
+                    .set(self.ivars().largest_chunk.get().max(data.length()));
                 *self.ivars().data.borrow_mut() = Some(data.retain());
                 self.ivars().calls.borrow_mut().push("data");
             }
@@ -203,6 +314,56 @@ mod tests {
     }
 
     struct ReleaseCount(Arc<AtomicUsize>);
+
+    #[test]
+    fn application_files_stream_worker_chunks_and_stop_without_late_delivery() {
+        use std::future::Future;
+        use std::io::{Seek, Write};
+        use std::task::{Context, Waker};
+        use std::time::{Duration, Instant};
+        for stop_after_first_chunk in [false, true] {
+            autoreleasepool(|_| {
+                let task = TestSchemeTask::new();
+                let mut file = tempfile::tempfile().unwrap();
+                file.write_all(&vec![7; 256 * 1024 + 3]).unwrap();
+                file.rewind().unwrap();
+                let response = DesktopProtocolResponse::new(
+                    200,
+                    "application/octet-stream",
+                    DesktopResponseContent::File(crate::DesktopResponseFile::new(
+                        file,
+                        256 * 1024 + 3,
+                    )),
+                );
+                let executor = crate::execution::ApplicationExecutor::default();
+                let url = NSURL::URLWithString(ns_string!("webui://app/asset")).unwrap();
+                let mut delivery = std::pin::pin!(send_application_response(
+                    ProtocolObject::from_ref(&*task),
+                    &url,
+                    response,
+                    &executor,
+                    || !stop_after_first_chunk || task.ivars().total_bytes.get() == 0,
+                ));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while delivery
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+                {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(task.ivars().largest_chunk.get() <= 64 * 1024);
+                if stop_after_first_chunk {
+                    assert_eq!(task.ivars().total_bytes.get(), 64 * 1024);
+                    assert_eq!(*task.ivars().calls.borrow(), ["response", "data"]);
+                } else {
+                    assert_eq!(task.ivars().total_bytes.get(), 256 * 1024 + 3);
+                    assert_eq!(task.ivars().calls.borrow().last(), Some(&"finish"));
+                }
+            });
+        }
+    }
 
     impl Drop for ReleaseCount {
         fn drop(&mut self) {

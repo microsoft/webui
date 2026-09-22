@@ -27,5 +27,13 @@ export function errorCode(value: unknown): IpcErrorCode {
 }
 
 export function ipcError(value: unknown, fallback: IpcErrorCode = 'transport'): IpcError {
-  return value instanceof IpcError ? value : new IpcError(fallback);
+  if (value instanceof IpcError) return value;
+  // The injected bootstrap and lazy ESM runtime have separate constructors.
+  // Project only the bounded error code, never a foreign stack or message.
+  if (value && typeof value === 'object') {
+    const name = Object.getOwnPropertyDescriptor(value, 'name')?.value;
+    const code = Object.getOwnPropertyDescriptor(value, 'code')?.value;
+    if (name === 'IpcError' && errorCodes.includes(code)) return new IpcError(code);
+  }
+  return new IpcError(fallback);
 }

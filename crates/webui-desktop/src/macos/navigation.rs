@@ -9,7 +9,7 @@ use crate::{DesktopEvent, EventRegistry, EventResponse, WindowId};
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSURL};
+use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
 };
@@ -18,8 +18,12 @@ use super::dispatch_event;
 
 pub(super) struct NavigationDelegateIvars {
     pub(super) events: EventRegistry,
+    #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
-    ipc_navigation: std::cell::RefCell<Option<Retained<WKNavigation>>>,
+    #[cfg(feature = "application-ipc")]
+    // Outer None: no pending navigation. Inner None: WebKit supplied a nil
+    // identity (as it does for cross-document Navigation API navigations).
+    ipc_navigation: std::cell::RefCell<Option<Option<Retained<WKNavigation>>>>,
 }
 
 define_class!(
@@ -35,6 +39,7 @@ define_class!(
     // SAFETY: Method signatures match WKNavigationDelegate.
     #[allow(non_snake_case)]
     unsafe impl WKNavigationDelegate for DesktopNavigationDelegate {
+        #[cfg(feature = "application-ipc")]
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         unsafe fn started(&self, _web_view: &WKWebView, navigation: Option<&WKNavigation>) {
             if let Some(ipc) = &self.ivars().ipc {
@@ -42,18 +47,25 @@ define_class!(
                 let previous = self
                     .ivars()
                     .ipc_navigation
-                    .replace(navigation.map(objc2::Message::retain));
+                    .replace(Some(navigation.map(objc2::Message::retain)));
                 drop(previous);
             }
         }
 
+        #[cfg(feature = "application-ipc")]
         #[unsafe(method(webView:didCommitNavigation:))]
         unsafe fn committed(&self, web_view: &WKWebView, navigation: Option<&WKNavigation>) {
             if let Some(ipc) = &self.ivars().ipc {
-                let matches = navigation
-                    .zip(self.ivars().ipc_navigation.borrow().as_deref())
-                    .is_some_and(|(commit, started)| std::ptr::eq(commit, started));
+                let matches = committed_navigation_matches(
+                    self.ivars()
+                        .ipc_navigation
+                        .borrow()
+                        .as_ref()
+                        .map(|value| value.as_deref()),
+                    navigation,
+                );
                 if matches {
+                    self.ivars().ipc_navigation.borrow_mut().take();
                     ipc.committed(web_view);
                 }
             }
@@ -111,15 +123,30 @@ define_class!(
     }
 );
 
+#[cfg(feature = "application-ipc")]
+fn committed_navigation_matches<T>(started: Option<Option<&T>>, committed: Option<&T>) -> bool {
+    match (started, committed) {
+        (Some(Some(started)), Some(committed)) => std::ptr::eq(started, committed),
+        // Both notifications are native main-document callbacks. A nil commit
+        // is valid only after an observed nil start, never without a start or
+        // after a pointer-identified start. Epoch checks still guard every
+        // asynchronous nonce probe and activation against later navigations.
+        (Some(None), None) => true,
+        _ => false,
+    }
+}
+
 impl DesktopNavigationDelegate {
     pub(super) fn new(
         mtm: MainThreadMarker,
         events: EventRegistry,
-        ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
+        #[cfg(feature = "application-ipc")] ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars {
             events,
+            #[cfg(feature = "application-ipc")]
             ipc,
+            #[cfg(feature = "application-ipc")]
             ipc_navigation: std::cell::RefCell::new(None),
         });
         // SAFETY: NSObject init has the expected signature for this subclass.
@@ -138,16 +165,60 @@ fn is_allowed_navigation_url(url: &NSURL) -> bool {
     })
 }
 
+pub(super) fn trusted_app_url(url: &NSURL) -> bool {
+    url.scheme()
+        .is_some_and(|scheme| scheme.isEqualToString(ns_string!("webui")))
+        && url
+            .host()
+            .is_some_and(|host| host.isEqualToString(ns_string!("app")))
+        && url.port().is_none()
+        && url.user().is_none()
+        && url.password().is_none()
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "application-ipc")]
+    #[test]
+    fn nil_navigation_api_identity_requires_an_observed_matching_start() {
+        let first = 1;
+        let second = 2;
+        assert!(committed_navigation_matches::<u8>(Some(None), None));
+        assert!(!committed_navigation_matches::<u8>(None, None));
+        assert!(!committed_navigation_matches(Some(Some(&first)), None));
+        assert!(!committed_navigation_matches(Some(None), Some(&first)));
+        assert!(!committed_navigation_matches(
+            Some(Some(&first)),
+            Some(&second)
+        ));
+        assert!(committed_navigation_matches(
+            Some(Some(&first)),
+            Some(&first)
+        ));
+    }
 
     #[test]
     fn rejects_about_scheme_urls_other_than_blank() {
         let srcdoc =
             NSURL::URLWithString(&objc2_foundation::NSString::from_str("about:srcdoc")).unwrap();
         assert!(!is_allowed_navigation_url(&srcdoc));
+    }
+
+    #[test]
+    fn resource_and_ipc_origin_exclude_blank_credentials_and_lookalikes() {
+        for (value, trusted) in [
+            ("webui://app/asset", true),
+            ("webui://app.evil/asset", false),
+            ("webui://user@app/asset", false),
+            ("webui://app:80/asset", false),
+            ("about:blank", false),
+        ] {
+            let url = NSURL::URLWithString(&objc2_foundation::NSString::from_str(value)).unwrap();
+            assert_eq!(trusted_app_url(&url), trusted);
+        }
     }
 
     #[test]

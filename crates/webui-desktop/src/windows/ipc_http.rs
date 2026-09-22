@@ -128,8 +128,8 @@ fn prepare(
     if !ipc.current(ipc.navigation()) {
         return Err(error(IpcErrorCode::NotReady));
     }
-    let max_bytes = ipc.max_frame_bytes()?;
-    if path.len() > 64 || path.contains(['?', '#']) {
+    let max_bytes = ipc.bridge.max_request_body_bytes(path)?;
+    if path.len() > 128 || path.contains(['?', '#']) {
         return Err(error(IpcErrorCode::InvalidFrame));
     }
     // SAFETY: This function is synchronous within the native request callback.

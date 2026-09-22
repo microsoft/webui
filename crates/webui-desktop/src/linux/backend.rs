@@ -48,7 +48,7 @@ pub fn run_packaged_app() -> Result<()> {
 ///
 /// Returns an error if GTK cannot initialize.
 pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: crate::WindowOptions) -> Result<()> {
-    run_frame(DesktopFrame::new(runtime, window)?)
+    crate::run_runtime(runtime, window).map_err(Into::into)
 }
 
 pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
@@ -66,7 +66,9 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     };
     let frame = Rc::new(frame);
     let app = application.build();
+    #[cfg(feature = "application-ipc")]
     let ipc_owner = Rc::new(RefCell::new(None));
+    #[cfg(feature = "application-ipc")]
     let ipc_for_activation = Rc::clone(&ipc_owner);
     let startup_error = Rc::new(RefCell::new(None));
     let error_for_activation = Rc::clone(&startup_error);
@@ -76,6 +78,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
             app,
             &activation_frame,
             state_store.clone(),
+            #[cfg(feature = "application-ipc")]
             &ipc_for_activation,
         ) {
             *error_for_activation.borrow_mut() = Some(error);
@@ -85,9 +88,12 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let exit = run_application(&app);
     // Disconnect before dropping the session owner, even if GTK retains the app.
     app.disconnect(activation);
-    let ipc = ipc_owner.borrow_mut().take();
-    if let Some(ipc) = ipc {
-        ipc.close();
+    #[cfg(feature = "application-ipc")]
+    {
+        let ipc = ipc_owner.borrow_mut().take();
+        if let Some(ipc) = ipc {
+            ipc.close();
+        }
     }
     let context = COMMAND_CONTEXT.with(|slot| slot.borrow_mut().take());
     drop(context);
@@ -111,28 +117,35 @@ fn build_window(
     app: &Application,
     frame: &DesktopFrame,
     state_store: Option<WindowStateStore>,
-    ipc_owner: &Rc<RefCell<Option<Rc<super::ipc::GtkIpc>>>>,
+    #[cfg(feature = "application-ipc")] ipc_owner: &Rc<RefCell<Option<Rc<super::ipc::GtkIpc>>>>,
 ) -> Result<()> {
+    #[cfg(feature = "application-ipc")]
     if ipc_owner.borrow().is_some() {
         return Ok(());
     }
     let context = WebContext::new();
     let runtime = Arc::clone(&frame.runtime);
+    let executor = Arc::clone(&frame.executor);
+    #[cfg(feature = "application-ipc")]
     let ipc_enabled = frame.ipc_bridge().is_enabled();
+    #[cfg(feature = "application-ipc")]
     let ipc_for_scheme = Rc::downgrade(ipc_owner);
     context.register_uri_scheme("webui", move |request| {
-        let ipc = ipc_for_scheme
-            .upgrade()
-            .and_then(|slot| slot.borrow().clone());
-        let handled = match ipc {
-            Some(ipc) => super::ipc_scheme::handle(&ipc, request),
-            None if ipc_enabled => super::ipc_scheme::reject_unavailable(request),
-            None => false,
-        };
-        if handled {
-            return;
+        #[cfg(feature = "application-ipc")]
+        {
+            let ipc = ipc_for_scheme
+                .upgrade()
+                .and_then(|slot| slot.borrow().clone());
+            let handled = match ipc {
+                Some(ipc) => super::ipc_scheme::handle(&ipc, request),
+                None if ipc_enabled => super::ipc_scheme::reject_unavailable(request),
+                None => false,
+            };
+            if handled {
+                return;
+            }
         }
-        handle_scheme_request(request, &runtime);
+        handle_scheme_request(request, &runtime, &executor);
     });
 
     let manager = UserContentManager::new();
@@ -153,6 +166,7 @@ fn build_window(
         .web_context(&context)
         .user_content_manager(&manager)
         .build();
+    #[cfg(feature = "application-ipc")]
     let ipc = if frame.ipc_bridge().is_enabled() {
         Some(super::ipc::GtkIpc::install(
             frame.ipc_bridge(),
@@ -162,7 +176,10 @@ fn build_window(
     } else {
         None
     };
-    *ipc_owner.borrow_mut() = ipc.clone();
+    #[cfg(feature = "application-ipc")]
+    {
+        *ipc_owner.borrow_mut() = ipc.clone();
+    }
     if let Some(color) = frame.window.background {
         webview.set_background_color(&to_gdk_rgba(color));
     } else if frame.window.effect != WindowEffect::None {
@@ -189,6 +206,7 @@ fn build_window(
 
     restore_state(&window, state_store.as_ref());
     install_events(&window, &webview, &manager, frame, state_store);
+    #[cfg(feature = "application-ipc")]
     if let Some(ipc) = ipc {
         let weak = Rc::downgrade(&ipc);
         // GTK stops this signal at the earlier handler if the application

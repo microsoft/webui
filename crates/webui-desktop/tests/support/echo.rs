@@ -172,7 +172,7 @@ pub fn assert_echo(frame: &DesktopFrame, payload: &[u8]) {
             Vec::new(),
         );
         if response.status == 200 {
-            let reply = IpcFrame::decode(response.body.as_slice()).unwrap();
+            let reply = IpcFrame::decode(response.body.as_bytes().unwrap().as_slice()).unwrap();
             assert_eq!(reply.id, 7);
             assert_eq!(reply.kind, Kind::Result as i32);
             let Some(Body::Payload(bytes)) = reply.body else {

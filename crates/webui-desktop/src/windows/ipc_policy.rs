@@ -6,17 +6,10 @@
 use crate::ipc::{DocumentActivation, Hello, IpcError, IpcErrorCode};
 use serde::Deserialize;
 
+pub(super) use super::protocol::app_url;
+
 pub(super) const MAX_CONTROL_UNITS: usize = 4096;
 pub(super) const MAX_TASKS: usize = 128;
-
-/// WebView2 supplies canonical URLs. Require the whole authority, not a host
-/// prefix. Noncanonical spellings fail closed instead of being reinterpreted.
-pub(super) fn app_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix(super::APP_ORIGIN) else {
-        return false;
-    };
-    rest.is_empty() || rest.starts_with(['/', '?', '#'])
-}
 
 pub(super) fn reserved_path(uri: &str) -> Option<&str> {
     if !app_url(uri) {
@@ -121,10 +114,8 @@ impl Control {
 
 #[derive(Default)]
 pub(super) struct Document {
-    pub navigation: u64,
+    pub epoch: crate::document::DocumentEpoch,
     pub native_id: Option<u64>,
-    pub committed: bool,
-    pub closed: bool,
     pub hello_pending: bool,
     pub generation: Option<u64>,
     pub token: Option<String>,
@@ -135,15 +126,12 @@ pub(super) struct Document {
 impl Document {
     /// NavigationStarting excludes same-document changes; redirects retain ID.
     pub fn start(&mut self, native_id: u64) -> Option<u64> {
-        if self.closed || self.native_id == Some(native_id) {
+        if self.epoch.closed || self.native_id == Some(native_id) {
             return None;
         }
-        let Some(next) = self.navigation.checked_add(1) else {
-            self.closed = true;
-            return None;
-        };
+        let next = self.epoch.advance()?;
         *self = Self {
-            navigation: next,
+            epoch: self.epoch,
             native_id: Some(native_id),
             ..Self::default()
         };
@@ -151,22 +139,11 @@ impl Document {
     }
 
     pub fn current(&self, navigation: u64) -> bool {
-        !self.closed && self.committed && self.navigation == navigation
+        self.epoch.current(navigation)
     }
 
     pub fn accepts(&self, proof: &DocumentActivation) -> bool {
-        self.current(proof.navigation)
-            && self.proof.as_ref().is_some_and(|expected| {
-                let difference = expected
-                    .document_nonce
-                    .iter()
-                    .chain(&expected.challenge)
-                    .zip(proof.document_nonce.iter().chain(&proof.challenge))
-                    .fold(0_u8, |difference, (left, right)| {
-                        difference | (left ^ right)
-                    });
-                expected.navigation == proof.navigation && difference == 0
-            })
+        self.epoch.accepts(self.proof.as_ref(), proof)
     }
 
     pub fn begin_hello(&mut self, proof: &DocumentActivation) -> bool {
@@ -220,7 +197,7 @@ mod tests {
     fn duplicate_hello_cannot_replace_the_pending_call() {
         let mut document = Document::default();
         let navigation = document.start(1).unwrap();
-        document.committed = true;
+        document.epoch.commit();
         let proof = DocumentActivation {
             navigation,
             document_nonce: [1; 16],
@@ -317,7 +294,7 @@ assert.equal(current.calls[0].challenge, '02'.repeat(16));
     fn old_same_url_proof_cannot_match_new_document_or_reply() {
         let mut document = Document::default();
         let old = document.start(10).unwrap();
-        document.committed = true;
+        document.epoch.commit();
         let proof = DocumentActivation {
             navigation: old,
             document_nonce: [1; 16],
@@ -328,7 +305,7 @@ assert.equal(current.calls[0].challenge, '02'.repeat(16));
         assert_eq!(document.start(10), None); // Redirect, not a new document.
         assert!(document.accepts(&proof));
         let new = document.start(11).unwrap();
-        document.committed = true;
+        document.epoch.commit();
         document.proof = Some(DocumentActivation {
             navigation: new,
             document_nonce: [3; 16],
@@ -339,7 +316,7 @@ assert.equal(current.calls[0].challenge, '02'.repeat(16));
         let mut forged = proof;
         forged.navigation = new;
         assert!(!document.accepts(&forged));
-        document.closed = true;
+        document.epoch.closed = true;
         assert!(!document.current(new));
     }
 

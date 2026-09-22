@@ -3,32 +3,57 @@
 
 //! Native desktop SDK for WebUI applications.
 //!
-//! Bundle loading, rendering, IPC, and frame configuration are available without
-//! native dependencies. Enable `native` for the platform webview, `source` for
+//! Bundle loading, rendering, and frame configuration are available without
+//! native dependencies. Enable `application-ipc` for application IPC,
+//! `native` for the platform webview, `source` for
 //! development compilation, and `cli` for the `webui-desktop` tooling binary.
 
 #[cfg(test)]
 extern crate self as webui_desktop;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "application-ipc"))]
 #[path = "../tests/support/echo.rs"]
 mod ipc_test_support;
 
+#[cfg(all(test, feature = "application-ipc"))]
+#[path = "../tests/ipc_contract.rs"]
+mod ipc_contract_tests;
+
 mod app;
+mod asset_file;
+#[cfg(any(all(windows, feature = "native"), test))]
+mod browser_profile;
 mod bundle;
+#[cfg(all(feature = "native", feature = "application-ipc"))]
+mod document;
 mod error;
 mod event;
+#[cfg(any(feature = "native", test))]
+mod execution;
 mod frame;
 mod hydration;
+#[cfg(feature = "application-ipc")]
 pub mod ipc;
+#[cfg(feature = "application-ipc")]
 mod ipc_assets;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "application-ipc"))]
 mod native_ipc;
+#[cfg(all(
+    feature = "native",
+    any(
+        feature = "application-ipc",
+        target_os = "macos",
+        target_os = "windows"
+    )
+))]
+mod native_tasks;
 mod navigation;
 #[cfg(feature = "source")]
 mod package;
 mod path;
 mod protocol;
+mod response_content;
+mod routes;
 mod runtime;
 mod window;
 mod window_state;
@@ -49,9 +74,8 @@ pub use app::{DesktopApp, DesktopAppBuilder};
 #[cfg(feature = "source")]
 pub use bundle::{build_desktop_bundle, DesktopBundleOptions};
 pub use bundle::{
-    BundleAsset, BundleIntegrity, DesktopBundleManifest, DesktopDownloadPolicy,
-    DesktopJumpListItem, DesktopMenu, DesktopMenuItem, DesktopPackageTarget, DesktopPopoverPolicy,
-    DesktopShellConfig, TrayConfig,
+    BundleAsset, BundleIntegrity, DesktopBundleManifest, DesktopMenu, DesktopMenuItem,
+    DesktopPackageTarget, DesktopShellConfig, TrayConfig,
 };
 pub use error::{DesktopError, Result};
 pub use event::{
@@ -67,18 +91,22 @@ pub use frame::{
 };
 #[cfg(feature = "native")]
 pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
+#[cfg(feature = "application-ipc")]
 pub use ipc::{IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION};
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};
+#[cfg(feature = "application-ipc")]
+pub use protocol::IPC_ENDPOINT;
 pub use protocol::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopResponseBody,
-    DesktopResponseLease, DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
+    DesktopResponseLease, DEFAULT_MAX_ASSET_BYTES, DEFAULT_MAX_REQUEST_BYTES,
 };
+pub use response_content::{DesktopResponseContent, DesktopResponseFile};
+pub use routes::{ApiContext, ApiRouteRegistry, RouteContext, RouteStateRegistry};
 #[cfg(feature = "source")]
 pub use runtime::DesktopSourceConfig;
-pub use runtime::{ApiContext, ApiRouteRegistry, DesktopBundleConfig, DesktopRuntime};
-pub use runtime::{RouteContext, RouteStateRegistry};
+pub use runtime::{DesktopBundleConfig, DesktopRuntime};
 pub use window::{
     apply_window_css, window_css_block, DesktopPlatform, Rgba, RgbaParseError, TitlebarStyle,
     WindowEffect, WindowInsets, WindowOptions,

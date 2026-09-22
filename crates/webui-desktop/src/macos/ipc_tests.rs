@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 use super::*;
+use objc2_foundation::NSURL;
 
 fn owner() -> crate::ipc::IpcWindowOwner {
     crate::ipc::IpcWindowOwner::new(
@@ -38,7 +39,7 @@ fn late_same_url_probes_and_proofs_cannot_activate_a_replacement() {
     let state = MacIpc::new(owner.bridge());
     state.commit_for_test();
     let old = DocumentActivation {
-        navigation: state.navigation.get(),
+        navigation: state.navigation(),
         document_nonce: [1; 16],
         challenge: [2; 16],
     };
@@ -48,7 +49,7 @@ fn late_same_url_probes_and_proofs_cannot_activate_a_replacement() {
     assert!(!state.is_current(old.navigation));
     assert!(!state.accepts_proof(&old));
     let new = DocumentActivation {
-        navigation: state.navigation.get(),
+        navigation: state.navigation(),
         document_nonce: [3; 16],
         challenge: [4; 16],
     };
@@ -78,7 +79,7 @@ fn trusted_navigation_publishes_outgoing_retirement_before_cancelling_responses(
     let state = MacIpc::new(owner.bridge());
     state.commit_for_test();
     let proof = DocumentActivation {
-        navigation: state.navigation.get(),
+        navigation: state.navigation(),
         document_nonce: [1; 16],
         challenge: [2; 16],
     };

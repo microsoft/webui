@@ -2,20 +2,35 @@
 // Licensed under the MIT license.
 
 use super::{error::fail, Endpoint, IpcError, IpcErrorCode, IpcSchema};
+use std::time::Duration;
 
 macro_rules! limits {
     ($($field:ident = $value:expr),+ $(,)?) => {
-        /// Numeric transport and execution budgets. Values are safety defaults,
-        /// not measured performance thresholds.
-        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        pub struct IpcLimits { $(#[doc = stringify!($field)] pub $field: usize),+ }
+        /// Bounded application IPC policy.
+        ///
+        /// Start with [`Default`] and optionally tune the encoded frame size or
+        /// renderer's default RPC timeout. Queue, memory, callback, worker-task,
+        /// and control-reservation budgets are SDK-owned, not independent knobs.
+        /// Serialization is for native admission metadata, not configuration input.
+        ///
+        /// ```compile_fail
+        /// use webui_desktop::ipc::IpcLimits;
+        /// let mut limits = IpcLimits::default();
+        /// limits.reserved_control_frames_per_direction = 0;
+        /// ```
+        ///
+        /// ```compile_fail
+        /// use webui_desktop::ipc::IpcLimits;
+        /// let limits: IpcLimits = serde_json::from_str("{}").unwrap();
+        /// ```
+        #[derive(Clone, Debug, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct IpcLimits { $(pub(crate) $field: usize),+ }
         impl Default for IpcLimits {
             fn default() -> Self { Self { $($field: $value),+ } }
         }
         impl IpcLimits {
-            /// Reject zero, excessive, or inconsistent capacities before startup.
-            pub fn validate(&self) -> Result<(), IpcError> {
+            pub(crate) fn validate(&self) -> Result<(), IpcError> {
                 if $(self.$field == 0 ||)+ false { return Err(fail(IpcErrorCode::InvalidPayload)); }
                 self.validate_ceiling()
             }
@@ -47,6 +62,63 @@ limits! {
 }
 
 impl IpcLimits {
+    /// Set the complete encoded frame limit (default: 1 MiB).
+    ///
+    /// # Errors
+    ///
+    /// Rejects values outside 2,176 bytes through 8 MiB. This preserves room for
+    /// bounded error responses and never enlarges the SDK's memory budgets.
+    pub fn with_max_frame_bytes(mut self, bytes: usize) -> Result<Self, IpcError> {
+        if !(2176..=8 * 1024 * 1024).contains(&bytes) {
+            return Err(IpcError::new(
+                IpcErrorCode::InvalidPayload,
+                "IPC frame size is outside the supported range",
+                "choose an encoded frame limit from 2176 bytes through 8 MiB",
+            ));
+        }
+        self.max_frame_bytes = bytes;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Set the renderer's default RPC timeout (default: 30 seconds).
+    ///
+    /// Rust calls use [`super::CallOptions`]. Per-call overrides remain bounded
+    /// by the SDK's five-minute maximum; admission and notification deadlines
+    /// are unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Rejects durations outside 1 ms through 5 minutes or fractional milliseconds.
+    pub fn with_default_timeout(mut self, timeout: Duration) -> Result<Self, IpcError> {
+        if timeout.is_zero()
+            || timeout > Duration::from_secs(300)
+            || !timeout.subsec_nanos().is_multiple_of(1_000_000)
+        {
+            return Err(IpcError::new(
+                IpcErrorCode::InvalidPayload,
+                "IPC default timeout is outside the supported range or precision",
+                "choose a whole number of milliseconds from 1 through 300000",
+            ));
+        }
+        self.default_timeout_ms =
+            usize::try_from(timeout.as_millis()).map_err(|_| fail(IpcErrorCode::InvalidPayload))?;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Maximum bytes in one complete encoded frame.
+    #[must_use]
+    pub const fn max_frame_bytes(&self) -> usize {
+        self.max_frame_bytes
+    }
+
+    /// Default renderer RPC timeout.
+    #[must_use]
+    pub fn default_timeout(&self) -> Duration {
+        Duration::from_millis(self.default_timeout_ms as u64)
+    }
+
     fn validate_ceiling(&self) -> Result<(), IpcError> {
         if self.max_frame_bytes > 16 * 1024 * 1024
             || self.max_frame_bytes < self.max_error_text_bytes_total.saturating_add(128)
@@ -125,5 +197,38 @@ impl IpcOptions {
             return Err(fail(IpcErrorCode::InvalidPayload));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_builders_preserve_all_private_wire_budgets() {
+        let baseline = serde_json::to_value(IpcLimits::default()).unwrap();
+        assert_eq!(baseline.as_object().unwrap().len(), 21);
+        for bytes in [2176, 256 * 1024, 8 * 1024 * 1024] {
+            for timeout_ms in [1, 10_000, 300_000] {
+                let limits = IpcLimits::default()
+                    .with_max_frame_bytes(bytes)
+                    .unwrap()
+                    .with_default_timeout(Duration::from_millis(timeout_ms))
+                    .unwrap();
+                limits.validate().unwrap();
+                let actual = serde_json::to_value(&limits).unwrap();
+                let mut expected = baseline.clone();
+                expected["maxFrameBytes"] = bytes.into();
+                expected["defaultTimeoutMs"] = timeout_ms.into();
+                assert_eq!(actual, expected);
+                assert_eq!(limits.max_queued_bytes_per_direction, 8 * 1024 * 1024);
+                assert_eq!(limits.max_admitted_input_bytes_per_frame, 8 * 1024 * 1024);
+                assert_eq!(limits.max_retained_bytes_per_frame, 16 * 1024 * 1024);
+                assert_eq!(limits.reserved_control_frames_per_direction, 128);
+                assert_eq!(limits.max_callbacks_per_event, 16);
+                assert_eq!(limits.max_callbacks_per_document, 128);
+            }
+        }
     }
 }

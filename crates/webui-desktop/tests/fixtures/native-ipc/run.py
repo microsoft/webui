@@ -66,6 +66,46 @@ def assert_clean_native_log(mode, stderr):
         raise RuntimeError(f"{mode}: {errors[0]}")
 
 
+def assert_runtime_dependencies(packages):
+    forbidden = {
+        "microsoft-webui", "microsoft-webui-parser", "microsoft-webui-discovery",
+        "microsoft-webui-desktop-build", "tokio", "rayon", "clap",
+    }
+    unexpected = set(packages) & forbidden
+    if unexpected:
+        raise RuntimeError("runtime-only consumer includes: " + ", ".join(sorted(unexpected)))
+
+
+def check_runtime_dependencies():
+    tree = subprocess.check_output([
+        "cargo", "tree", "--offline", "--locked", "--manifest-path", str(FIXTURE / "Cargo.toml"),
+        "--no-default-features", "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
+    ], cwd=ROOT, text=True)
+    assert_runtime_dependencies(line.split()[0] for line in tree.splitlines() if line)
+    return tree
+
+
+def no_ipc_run(artifacts, plan, timeout):
+    execute([
+        "cargo", "build", "--locked", "--release", "-p", "microsoft-webui-desktop",
+        "--example", "no-ipc-native", "--no-default-features", "--features", "native,source",
+    ], timeout=900)
+    directory = artifacts / "no-ipc"
+    directory.mkdir()
+    binary = directory / plan["executable"]
+    suffix = ".exe" if sys.platform == "win32" else ""
+    shutil.copy2(ROOT / "target/release/examples" / ("no-ipc-native" + suffix), binary)
+    for mode in ["source", "bundle"]:
+        result = subprocess.run([str(binary), mode], cwd=directory, timeout=timeout,
+                                capture_output=True, text=True)
+        (directory / f"{mode}.stdout.log").write_text(result.stdout)
+        (directory / f"{mode}.stderr.log").write_text(result.stderr)
+        if (result.returncode or result.stdout.count(f"NO_IPC_NATIVE_PASS mode={mode}") != 1
+                or "NO_IPC_NATIVE_FAILURE" in result.stderr):
+            raise RuntimeError(f"no-IPC {mode} failed: {result.stdout}\n{result.stderr}")
+    return {"profile": "release", "modes": ["source", "bundle"], "status": "pass"}
+
+
 def native_run(binary, mode, app, artifacts, timeout, digest, metadata):
     env = dict(os.environ, NATIVE_IPC_BINARY_SHA256=digest)
     process = subprocess.Popen(
@@ -128,7 +168,6 @@ def native_run(binary, mode, app, artifacts, timeout, digest, metadata):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=int, default=60)
-    parser.add_argument("--skip-build", action="store_true", help="use an already rebuilt native fixture binary")
     parser.add_argument("--fail-fast", action="store_true", help="stop immediately after the first failed native mode")
     parser.add_argument("--plan", choices=["darwin", "win32", "linux"],
                         help="print pure path planning only; does not claim a native run")
@@ -150,20 +189,31 @@ def main():
         "--rust-out", FIXTURE / "generated/rust", "--ts-out", FIXTURE / "generated/ts",
         "--lock", FIXTURE / "ipc-schema.lock.json", "--ts-proto-plugin", plugin,
     ]
-    execute(command)
     execute([*command, "--check"])
     execute(["node", ROOT / "packages/webui-desktop/node_modules/typescript/bin/tsc",
              "-p", FIXTURE / "tsconfig.json"])
-    if not args.skip_build:
-        execute(["cargo", "build", "--offline", "--locked", "--manifest-path", FIXTURE / "Cargo.toml",
-                 "--target-dir", ROOT / "target"], timeout=300)
-    binary = artifacts / plan["executable"]
-    shutil.copy2(ROOT / "target/debug" / plan["executable"], binary)
+    (artifacts / "runtime-dependencies.log").write_text(check_runtime_dependencies())
+    build = ["cargo", "build", "--offline", "--locked", "--release", "--no-default-features",
+             "--manifest-path", FIXTURE / "Cargo.toml", "--target-dir", ROOT / "target"]
+    execute([*build, "--features", "source"], timeout=900)
+    source_runner = artifacts / "source-runner"
+    source_runner.mkdir()
+    binary = source_runner / plan["executable"]
+    shutil.copy2(ROOT / "target/release" / plan["executable"], binary)
     digest = sha256(binary)
     metadata = capture([binary, "metadata"], "NATIVE_METADATA ")
     for key in ["platform", "native_backend", "package_target"]:
         assert metadata[key] == plan[key], f"SDK {key} differs from platform plan"
     assert all(metadata[key] for key in ["application_ipc", "events", "window_controls"])
+    assert metadata["source"] is True
+    execute(build, timeout=900)
+    runtime_runner = artifacts / "runtime-runner"
+    runtime_runner.mkdir()
+    runtime_binary = runtime_runner / plan["executable"]
+    shutil.copy2(ROOT / "target/release" / plan["executable"], runtime_binary)
+    runtime_digest = sha256(runtime_binary)
+    runtime_metadata = capture([runtime_binary, "metadata"], "NATIVE_METADATA ")
+    assert runtime_metadata == dict(metadata, source=False)
     source = artifacts / "source"
     shutil.copytree(FIXTURE / "web", source)
     execute(["node", FIXTURE / "build.mjs", source])
@@ -172,29 +222,49 @@ def main():
     shutil.copytree(source, bundle_input)
     bundle = artifacts / "bundle"
     execute([binary, "build", bundle_input, bundle])
-    package = capture([binary, "package", bundle, artifacts / "packages"], "NATIVE_PACKAGE ")
+    package = capture([binary, "package", bundle, artifacts / "packages", runtime_binary], "NATIVE_PACKAGE ")
     package_root = Path(package["root"])
     packaged_binary = Path(package["binary"])
     resources = Path(package["resources"])
     assert package["target"] == plan["package_target"]
     assert packaged_binary == package_root / plan["executable_dir"] / plan["executable"]
     assert resources == package_root / plan["resources"]
-    assert sha256(packaged_binary) == digest
+    assert sha256(packaged_binary) == runtime_digest
     assert (resources / "manifest.webui-desktop.json").is_file()
     shutil.rmtree(bundle_input)
     assert not bundle_input.exists()
     results = []
     failures = []
+    no_ipc = {"status": "not-run"}
     for mode, executable, app in [("source", binary, source), ("packaged", packaged_binary, resources)]:
         try:
-            results.append(native_run(executable, mode, app, artifacts, args.timeout, digest, metadata))
+            if mode == "packaged":
+                # Only the package survives: no original web input, staging
+                # bundle, or unbundled runner can satisfy resource lookup.
+                shutil.rmtree(source)
+                shutil.rmtree(bundle)
+                shutil.rmtree(source_runner)
+                shutil.rmtree(runtime_runner)
+            results.append(native_run(
+                executable, mode, app, artifacts, args.timeout,
+                digest if mode == "source" else runtime_digest,
+                metadata if mode == "source" else runtime_metadata,
+            ))
         except (RuntimeError, AssertionError) as error:
             failures.append(str(error))
             if args.fail_fast:
                 break
+    try:
+        no_ipc = no_ipc_run(artifacts, plan, args.timeout)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        failures.append(str(error))
     summary = {
         "scope": "native-ipc-four-flow", "status": "fail" if failures else "pass",
-        "binary_sha256": digest, "bundle_input_removed": not bundle_input.exists(),
+        "profile": "release", "source_binary_sha256": digest,
+        "packaged_binary_sha256": runtime_digest,
+        "bundle_input_removed": not bundle_input.exists(),
+        "source_and_staging_removed": not source.exists() and not bundle.exists(),
+        "packaged_source_feature": runtime_metadata["source"], "no_ipc": no_ipc,
         "reports": results, "failures": failures, "artifacts": str(artifacts),
         "sdk_metadata": metadata, "package": package,
         "screenshots": "not applicable: internal protocol fixture, no changed product UI",

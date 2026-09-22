@@ -5872,10 +5872,10 @@ App-specific runners construct a runtime-neutral `DesktopFrame` and call
 target-gated `PlatformFrameBackend` that implements the shared
 `DesktopFrameBackend` trait. Application code must not branch on
 `cfg(target_os)` to choose `macos`, `windows`, or `linux`; platform differences
-belong in backend modules. New cross-platform shell APIs (menus, jump lists,
-popovers, downloads, file dialogs, and similar features) must first be expressed
-on the frame/backend contract, then implemented per backend with capability
-reporting and actionable unsupported-feature errors.
+belong in backend modules. Public shell APIs require a working backend
+implementation, capability reporting, and actionable unsupported-feature errors
+on other backends. Unimplemented capabilities must not reserve public types,
+manifest fields, or capability flags.
 
 The shell registers a custom app protocol and loads the initial page from that
 origin instead of starting a localhost HTTP server. Platform engines expose
@@ -5890,6 +5890,27 @@ setup must install the platform WebKitGTK/GTK packages explicitly; the xtask
 helpers may auto-install Rust tooling, but must not auto-install system
 packages.
 
+Windows requires WebView2 Runtime 122.0.2365.46 or later, the stable runtime for
+SDK 1.0.2365.46's `ICoreWebView2_22` request-source filter. Startup requires that
+interface and registers `WebResourceRequested` for all resource contexts and
+request sources before navigation; unsupported runtimes fail with an update
+hint, never a reduced filter or JavaScript fallback. The filter targets only
+`https://app.webui.localhost/*`. Application resources, including document and
+worker fetches, use the same native request body and response `IStream` path in
+source and packaged apps. WebUI does not replace `fetch` or encode resource
+bodies into web messages, and owns no JavaScript pending-resource map.
+Browser `Request`, `Response`, body consumption, and `AbortSignal` semantics
+remain native. Cancellation stops browser delivery but does not roll back a
+synchronous Rust API handler that already ran. Typed application IPC retains
+its separate authenticated dispatch and cancellation contract.
+
+WebView2 browser storage is scoped by the frame's validated `app_id`, not by
+the executable name. Exact byte encoding avoids case-folding, device-name and
+sanitization collisions on Windows. Missing identity allocates a fresh,
+exclusively created profile for that frame; anonymous profiles are never reused
+and are removed on shutdown when native file locks permit. Hosts that need
+persistent localStorage or IndexedDB must supply a stable application identity.
+
 Backend dependencies are target-specific so the default `webui` CLI and
 non-desktop platforms stay lean. macOS links only the objc2 WebKit/AppKit stack.
 Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
@@ -5901,11 +5922,27 @@ to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
 layouts remain behind one API.
 
 The `microsoft-webui-desktop` SDK has no default features. Its base API includes
-bundle loading, frame configuration, lifecycle ownership, rendering, and IPC,
-without native GUI dependencies. `native` enables the current platform's stock
+bundle loading, frame configuration, lifecycle ownership, rendering, routes, and
+custom-protocol APIs, without native GUI or application IPC dependencies.
+`application-ipc` explicitly enables the IPC APIs, frame-owned sessions, async
+workers, embedded assets, and native admission/transport integration. Without it,
+the SDK does not compile those modules, generate or reserve IPC bundle assets,
+serve embedded IPC assets, or install native IPC bootstrap/control handlers.
+The direct `prost`, futures, and randomness dependencies belong to this feature;
+the rendering protocol still uses `prost` transitively, independently of IPC.
+`native` enables the current platform's stock
 backend; `source` enables `BuildOptions`, `DesktopSourceConfig`,
 `DesktopRuntime::from_source`, bundle construction, and packaging APIs.
 `cli` enables the sidecar binary and implies both `native` and `source`.
+Neither `native`, `source`, nor `cli` implies `application-ipc`.
+The test gate exercises the `native`/`source`/`application-ipc` combinations
+in package-local Cargo invocations, independently of workspace feature
+unification, plus a no-IPC `cli` build. Each selected
+unit/integration suite must execute passing tests; IPC contract targets declare
+their required features instead of succeeding with zero tests when disabled.
+Generated Rust consumer checks explicitly enable `application-ipc`.
+Committed typed/native fixture bindings and embedded browser assets are
+checked for generation parity without first rewriting them.
 Application manifests enable `native` on their SDK dependency and forward
 `source` through an opt-in local feature, so source compilation is absent from
 normal production builds. Runtime-only builds preserve bundle manifest types and
@@ -5923,8 +5960,8 @@ command-line dependencies. The binary declares
 compile development tools.
 
 Portable modules inherit the workspace's `unsafe_code = "deny"` policy.
-Only the target-gated native adapter modules allow unsafe code for their FFI
-boundaries. Physical package consolidation does not change the IPC wire format,
+Only target-gated native adapters and the opened-asset path verification helpers
+allow unsafe code for their OS FFI boundaries. Physical package consolidation does not change the IPC wire format,
 bundle layout, or process isolation provided by the system webview.
 Native and custom backend errors cross the public API as
 `DesktopError::Backend`, retaining their source error.
@@ -5941,14 +5978,34 @@ native frame, and preserve shell configuration and stable app identity.
 `DesktopAppBuilder::build` returns an owning `DesktopFrame`, not a runtime.
 `run_frame_with(frame, &backend)` validates capabilities before invoking a custom
 `DesktopFrameBackend`, and is available without stock native dependencies.
+Frame configuration is private and exposed through immutable `app_id()`,
+`runtime()`, `window()`, `shell()`, `events()`, and `window_handle()` accessors.
+Consuming construction methods may set identity/shell options before launch.
+Frame construction rejects titlebar/background CSS that disagrees with the
+already-rendered runtime; configure these options on the app builder before
+building. Platform-specific `run_runtime` entry points and direct
+`PlatformFrameBackend::run_frame` calls use the same validation boundary.
+On macOS the frame/delegate/scheme handler own their runtime references; there
+is no process-global runtime slot.
 
 When callers need manifest metadata, they should load
 `DesktopBundleManifest` once and call
 `DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. This avoids
 double manifest I/O during cold start. Bundle-backed runtimes also build an
 in-memory index from manifest integrity metadata, so immutable asset requests
-avoid per-request canonicalization and metadata reads while preserving lexical
-traversal validation and the configured response-size cap.
+avoid per-request canonicalization while preserving lexical traversal validation
+and the configured response-size cap. Manifest asset names are literal filesystem
+paths; request segments are percent-decoded exactly once before index lookup.
+Indexed paths are checked against the canonical asset root at load time.
+Every asset's opened handle is checked for root containment, regular file type
+and actual length before delivery, including indexed assets. This handle check
+rejects symlink substitution between path validation and opening. Linux requires
+accessible `/proc/self/fd` for this check; unavailable handle-path verification
+fails closed. The response owns that checked handle and never reopens its name.
+
+Startup HTML is a construction-time snapshot. Full `/` and `/index.html`
+requests rerender when a Rust provider matches `/`, including propagating provider
+errors; immutable provider-free root documents may reuse startup HTML.
 Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
 `PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
 something xtask may install. The Windows WebView2 dependency and Win32
@@ -5959,17 +6016,15 @@ Windows developer machine with the WebView2 Runtime installed.
 #### Desktop command surface
 
 ```bash
-webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--watch] [shared build flags] [window flags]
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [shared build flags] [window flags]
 webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags]
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [signing/package flags]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--ts-proto-plugin <PATH>] [--check]
 ```
 
 `run` builds from source paths, renders the startup HTML in process, creates the
-native window, and loads the app protocol URL. With `--watch`, it rebuilds and
-rerenders changed templates, component sources, state, and static assets, then
-reloads the webview through native reload or script-evaluation APIs. It must not
-start an HTTP server or browser polling loop.
+native window, and loads the app protocol URL. Desktop watch/reload is not
+implemented; `--watch` is not a supported option. Restart `run` after changes.
 
 `build` creates an immutable desktop bundle containing:
 
@@ -6040,37 +6095,32 @@ The desktop bundle manifest carries a runtime-neutral `shell` object. It is the
 stable extension point for native shell features without coupling app code to a
 particular OS API:
 
-- `iconPath` - bundle-relative app icon path. macOS uses `.icns` as
+- `icon_path` - bundle-relative app icon path. macOS uses `.icns` as
   `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
 - `menus` - declarative native menu groups and menu items. Items dispatch to
   allowlisted desktop IPC commands.
-- `jumpList` - Windows jump-list entries targeting app routes or external URLs.
-- `popovers` - policy for child popup windows used by popovers/tool windows.
-- `downloads` - download policy and optional IPC command for app-controlled
-  downloads.
+- `tray` - optional native tray icon and tooltip.
 
 Backends must expose only capabilities they can implement safely. Unsupported
-shell features are ignored or rejected with actionable diagnostics at build or
-launch time. Shell extensions must not add background servers, global mutable
+shell features are rejected with actionable diagnostics before launch.
+Unknown shell fields fail manifest deserialization rather than being silently
+ignored. Jump-list, popover, and download declarations are not part of the
+public API. Shell extensions must not add background servers, global mutable
 state, or persistent caches to the render hot path.
 
 - `macos-app`
 - `windows-portable`
-- `windows-msi`
-- `windows-msix`
 - `linux-portable`
-- `linux-appimage`
-- `linux-deb`
-- `linux-rpm`
-- `all`
+- `all` (CLI selection of all three implemented layouts)
 
 Packaging is Rust-first and build-time only. The current Rust implementation
 writes macOS `.app` and portable folder layouts directly, validates that output
 paths do not overlap app/bundle/state/asset/runner inputs before deleting
-anything, and returns actionable diagnostics for installer targets that still
-require platform packagers. Missing system tools must produce actionable errors;
-system packages, signing certificates, and secrets are never auto-installed or
-logged.
+anything. Installer/archive generation and signing are not supported targets.
+`all` copies the supplied runner into each layout; it does not cross-compile
+executables. Removed installer names fail CLI argument or manifest validation,
+not a misleading missing-tooling error. There is no
+`DesktopError::PackageTargetRequiresTooling` variant.
 
 #### Desktop IPC
 
@@ -6092,6 +6142,17 @@ run through protoc's batch-capable search mode in an isolated child directory
 with verified lookup precedence. No process-global directory or environment is
 changed. Generated TypeScript excludes host compiler-version comments while
 the generator/runtime dependency versions remain pinned.
+
+Generated `ipc.ts` is a runtime-free application facade: its type imports are
+erased, and only an explicit `connectDesktop()` dynamically loads the private
+`ipc-runtime.ts` implementation, schema codecs, and browser runtime. The
+bindings cache the module-loading promise, including rejection, not a
+connection. Concurrent and subsequent calls each perform their own handshake
+and retain independent handlers, subscriptions, closure, and call IDs.
+Import failures reject before transport activation without retries. The
+supported typed client/receiver API is unchanged; synchronous schema codecs
+and validation metadata live only in the private implementation. ESM code
+splitting is required to defer transfer and parsing in bundled applications.
 
 Services declare a receiver (`HOST` or `RENDERER`); every method has a unique,
 explicit uint32 ID above 1023. An acknowledged RPC returning
@@ -6134,6 +6195,22 @@ bootstrap, which checks again. Hello echoes the proof; admission atomically
 consumes the matching live activation and verifies wire version, contract
 name/major and exact schema hash. Secret comparisons do not stop at the first
 different byte.
+
+WKWebView may supply nil navigation identities for Navigation API document
+loads. A nil commit is admitted only after an observed nil native start, and
+consumes that pending start once. Pointer-identified starts require the identical
+native commit object. All asynchronous probes remain guarded by the frame's
+document epoch; neither a URL nor renderer-supplied identity authorizes admission.
+
+The unconsumed document proof remains valid until its document retires, so a
+lazy application's first connection need not happen during startup. The
+handshake deadline begins at `IpcBridge::admit`, includes worker queue time, and
+is checked again before delivering the admitted session. Native retirement
+publication is nonce-bound and precedes generation reset and response
+cancellation; a delayed publication cannot close a replacement document.
+Renderer error normalization preserves allowlisted `IpcError` codes across the
+separately bundled bootstrap and runtime; foreign stacks and messages are not
+copied. An admission timeout remains `deadline-exceeded`, not `transport`.
 
 The authenticated principal is possession of the native-authorized
 main-document capability, not a fabricated physical sender-frame identity.
@@ -6199,6 +6276,18 @@ dropped callers, navigation and shutdown settle waiters once, but cannot roll
 back completed side effects or forcibly terminate arbitrary blocking Rust code.
 Retired tasks retain their permits until actual completion.
 
+`IpcLimits` is an opaque Rust policy initialized with `Default`.
+`with_max_frame_bytes` accepts 2,176 bytes through 8 MiB and
+`with_default_timeout` accepts whole milliseconds from 1 through 300,000;
+both return `Result` and preserve private safety budgets. The corresponding
+`max_frame_bytes()` and `default_timeout()` accessors expose these choices.
+The default timeout applies to renderer RPCs; Rust callers continue to use
+`CallOptions`. Admission and notification deadlines are not changed by it.
+Queue, callback, worker-task, control-reservation, collection, and aggregate
+memory limits remain crate-private. No deserialization API can bypass policy
+construction. Native admission serialization retains the existing numeric wire
+fields; this is transport metadata, not an author-configurable object.
+
 Default limits include 1 MiB frames, 4 KiB native controls, 64 pending calls per
 direction, 128 queued frames, 8 MiB queued bytes per direction, 8 MiB admitted
 input, and 16 MiB retained bytes per frame. Limits also cap callbacks, worker
@@ -6210,6 +6299,15 @@ Reservations precede SDK buffer growth and survive queue removal, cancellation,
 navigation and native transfer. `DesktopResponseBody` owns bytes and an opaque
 lease; native NSData, GBytes and IStream owners must retain that lease until the
 last view releases the buffer. A response body is not freely cloneable.
+`DesktopProtocolResponse::body` is `DesktopResponseContent`, with `Bytes` and
+`File` variants. `as_bytes()` borrows only buffered content; `into_bytes()`
+explicitly materializes a file for a non-native consumer and can fail.
+`DesktopResponseFile` owns an open handle and implements bounded `Read`/`Seek`:
+growth after opening is excluded and premature EOF is an error. File responses
+do not eagerly allocate an asset-sized Rust buffer. macOS reads at most 64 KiB
+per worker job, rechecks cancellation after each completion, and transfers each
+chunk to native storage. GTK and Windows hand owned file readers to their
+native stream interfaces; stream clones retain the same backing ownership.
 Limits bound SDK-owned transport resources, not arbitrary application
 allocations or uncooperative application work.
 
@@ -6240,6 +6338,11 @@ Route providers run inside the Rust desktop host for full HTML renders and
 route parameters, and seed state, and return route-scoped JSON state. This keeps
 state ownership in Rust, avoids duplicated static route HTML, and lets router
 navigation use the same protocol path as browser/server deployments.
+`Protocol::render_partial_full_state` consumes the route state once and returns
+a serializable `PartialNavigation` with `is_match()`. Its wire schema matches the
+existing partial response, but state is deliberately not projected. Desktop uses
+this result rather than serializing, reparsing and replacing projected state.
+`Protocol::matches_route` uses the compiled route chain without rendering assets.
 
 If a route provider returns an error, the desktop runtime surfaces that error;
 it must not silently fall back to seed state. Valid route paths may contain `.`
@@ -6250,6 +6353,24 @@ Rust desktop hosts may also register custom-protocol API handlers for paths such
 as `/api/contacts/:id`. This lets existing browser code keep using `fetch("./api")`
 while the packaged app services create/update/delete/favorite mutations against
 Rust-owned in-memory state.
+
+Native ordinary resource/API callbacks copy bounded transport input and submit
+routes, providers, rendering and file opening to one frame-owned lazy
+application/I/O executor. It starts two workers on first use, admits at most 16
+queued/running/completed jobs together, and rejects overload with HTTP 503.
+Ordinary native request bodies are capped at 1 MiB
+(`DEFAULT_MAX_REQUEST_BYTES`); file response lengths default to 32 MiB
+(`DEFAULT_MAX_ASSET_BYTES`). Typed IPC retains its separate authenticated async
+admission, scheduling and byte-credit contract. There are no route-specific or
+file-specific worker pools. Direct `DesktopRuntime::handle_request` remains a
+synchronous API for non-native hosts; startup rendering runs during construction.
+Frame shutdown closes admission without joining arbitrary host callbacks.
+Cancellation suppresses delivery and queued work when its completion is dropped,
+but cannot preempt or roll back a synchronous callback already executing.
+Native UI completion drivers only poll completion/delivery futures. All adapters
+share document epoch advancement, one-shot commit, proof comparison and stale
+generation policy; native navigation IDs, FFI ownership, timers and session
+storage remain in their platform adapters.
 
 #### Desktop performance and memory constraints
 
@@ -6584,4 +6705,4 @@ and rejects subsequent submissions with `WindowCommandError::Closed`.
 Wakeups are coalesced until a drain, installed callbacks wake any existing
 backlog, and wakeup invocation/destruction occurs outside channel locks.
 
-When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, effect, jump-list, popover, and download features before native startup rather than silently ignoring them.
+When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, and effect features before native startup rather than silently ignoring them.

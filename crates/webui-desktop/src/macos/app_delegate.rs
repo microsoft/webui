@@ -36,7 +36,10 @@ use super::window::DesktopWindow;
 use super::{dispatch_event, MacosLaunchOptions};
 
 pub(super) struct AppDelegateIvars {
+    pub(in crate::macos) executor: std::sync::Arc<crate::execution::ApplicationExecutor>,
+    pub(in crate::macos) runtime: std::sync::Arc<crate::DesktopRuntime>,
     pub(in crate::macos) command_wake: OnceCell<super::commands::CommandWake>,
+    #[cfg(feature = "application-ipc")]
     pub(in crate::macos) ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     pub(in crate::macos) window: OnceCell<Retained<DesktopWindow>>,
     pub(in crate::macos) webview: OnceCell<Retained<WKWebView>>,
@@ -223,9 +226,15 @@ define_class!(
         }
         #[unsafe(method(windowWillClose:))]
         fn windowWillClose(&self, _notification: &NSNotification) {
+            // AppKit termination can reenter this notification while closing
+            // the same window. Claim teardown before any native call or callback.
+            if self.ivars().exiting.replace(true) {
+                return;
+            }
             if let Some(wake) = self.ivars().command_wake.get() {
                 wake.close();
             }
+            #[cfg(feature = "application-ipc")]
             if let Some(ipc) = &self.ivars().ipc {
                 ipc.close();
             }
@@ -236,9 +245,7 @@ define_class!(
                     window_id: WindowId::PRIMARY,
                 },
             );
-            if !self.ivars().exiting.replace(true) {
-                dispatch_for_delegate(self, DesktopEvent::Exiting);
-            }
+            dispatch_for_delegate(self, DesktopEvent::Exiting);
             // SAFETY: Called on the main thread by AppKit while the shared app exists.
             NSApplication::sharedApplication(self.mtm()).terminate(None);
         }
@@ -260,7 +267,10 @@ impl DesktopAppDelegate {
     pub(super) fn new(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Retained<Self> {
         let maximized = options.options.maximized;
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
+            executor: options.executor,
+            runtime: options.runtime,
             command_wake: OnceCell::new(),
+            #[cfg(feature = "application-ipc")]
             ipc: options.ipc,
             window: OnceCell::new(),
             webview: OnceCell::new(),

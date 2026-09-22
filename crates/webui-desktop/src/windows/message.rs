@@ -17,7 +17,9 @@ use super::event::{logical_dimension, physical_to_logical, size_event_transition
 use super::nonclient::{non_client_calc_size, non_client_hit_test, redraw_frame};
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
-use super::{IPC_WAKE_MESSAGE, WAKE_MESSAGE, WINDOW_ID};
+#[cfg(feature = "application-ipc")]
+use super::IPC_WAKE_MESSAGE;
+use super::{WAKE_MESSAGE, WINDOW_ID};
 
 /// Pump native messages until the window closes.
 pub(super) fn message_loop() -> Result<()> {
@@ -45,6 +47,16 @@ pub(super) extern "system" fn window_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     match msg {
+        super::APP_WAKE_MESSAGE => {
+            let tasks = super::state::with_window_state_result(hwnd, |state| {
+                state.application_tasks.clone()
+            });
+            if let Some(tasks) = tasks {
+                tasks.drain(w_param.0);
+            }
+            LRESULT(0)
+        }
+        #[cfg(feature = "application-ipc")]
         IPC_WAKE_MESSAGE => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
             // Release the native state borrow before polling COM completions.
@@ -53,6 +65,7 @@ pub(super) extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        #[cfg(feature = "application-ipc")]
         WindowsAndMessaging::WM_TIMER => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
             if let Some(ipc) = ipc {
@@ -295,9 +308,12 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
 
 /// Publish the final close event and release the frame state.
 fn destroy_window(hwnd: HWND) {
-    let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
-    if let Some(ipc) = ipc {
-        ipc.close();
+    #[cfg(feature = "application-ipc")]
+    {
+        let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
+        if let Some(ipc) = ipc {
+            ipc.close();
+        }
     }
     with_window_state(hwnd, |state| {
         emit(

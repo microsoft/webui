@@ -100,7 +100,9 @@ pub(super) fn fail(code: IpcErrorCode) -> IpcError {
         code,
         code.as_str(),
         match code {
-            IpcErrorCode::Overloaded => "reduce concurrent IPC work or raise bounded host limits",
+            IpcErrorCode::Overloaded => {
+                "reduce concurrent IPC work and wait for capacity before sending again"
+            }
             IpcErrorCode::SchemaMismatch | IpcErrorCode::UnsupportedVersion => {
                 "regenerate and deploy matching host and renderer bindings together"
             }

@@ -8,6 +8,7 @@
   "typescript": [
     "application.ts",
     "google/protobuf/empty.ts",
+    "ipc-runtime.ts",
     "ipc.ts",
     "types.ts"
   ]

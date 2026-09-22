@@ -60,9 +60,19 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         window.center();
     }
 
-    let scheme_handler = DesktopSchemeHandler::new(mtm, ivars.ipc.clone());
-    let navigation_delegate =
-        DesktopNavigationDelegate::new(mtm, ivars.events.clone(), ivars.ipc.clone());
+    let scheme_handler = DesktopSchemeHandler::new(
+        mtm,
+        std::sync::Arc::clone(&ivars.runtime),
+        std::sync::Arc::clone(&ivars.executor),
+        #[cfg(feature = "application-ipc")]
+        ivars.ipc.clone(),
+    );
+    let navigation_delegate = DesktopNavigationDelegate::new(
+        mtm,
+        ivars.events.clone(),
+        #[cfg(feature = "application-ipc")]
+        ivars.ipc.clone(),
+    );
     let host_message_handler = DesktopHostMessageHandler::new(mtm);
     let webview = build_webview(
         mtm,
@@ -71,6 +81,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         &host_message_handler,
         rect,
     );
+    #[cfg(feature = "application-ipc")]
     if let Some(ipc) = &ivars.ipc {
         ipc.attach(&webview);
     }
@@ -198,6 +209,7 @@ fn build_webview(
             ProtocolObject::from_ref(&**host_message_handler),
             &NSString::from_str("webuiHost"),
         );
+        #[cfg(feature = "application-ipc")]
         if let Some(ipc) = scheme_handler.ipc_state() {
             let handler = super::ipc_message::DesktopIpcMessageHandler::new(mtm, ipc);
             content.addScriptMessageHandlerWithReply_contentWorld_name(

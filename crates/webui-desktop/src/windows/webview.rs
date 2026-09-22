@@ -47,8 +47,9 @@ const HOST_BRIDGE_SCRIPT: &str = "(()=>{if(!window.chrome?.webview)return;\
 window.webuiHostPostMessage=m=>window.chrome.webview.postMessage(String(m));})();";
 
 /// Create the shared WebView2 environment backed by a per-app data folder.
-pub(super) fn create_environment() -> Result<ICoreWebView2Environment> {
-    let user_data_folder = webview_user_data_folder()?;
+pub(super) fn create_environment(
+    user_data_folder: &std::path::Path,
+) -> Result<ICoreWebView2Environment> {
     let user_data_folder = user_data_folder.to_string_lossy();
     let user_data_folder = CoTaskMemPWSTR::from(user_data_folder.as_ref());
     let options = webview_environment_options();
@@ -107,29 +108,19 @@ fn webview_environment_options() -> ICoreWebView2EnvironmentOptions {
 }
 
 /// Locate (and create) the per-app WebView2 user data folder.
-fn webview_user_data_folder() -> Result<PathBuf> {
+pub(super) fn browser_profile(
+    app_id: Option<&str>,
+) -> Result<crate::browser_profile::BrowserProfile> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let app_name = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.file_stem().map(|stem| stem.to_os_string()))
-        .and_then(|stem| stem.into_string().ok())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| "webui-desktop".to_string());
-    let dir = base
-        .join("Microsoft")
-        .join("WebUI")
-        .join("Desktop")
-        .join(app_name)
-        .join("WebView2");
-    std::fs::create_dir_all(&dir).with_context(|| {
+    let dir = base.join("Microsoft").join("WebUI").join("Desktop");
+    crate::browser_profile::BrowserProfile::create(&dir, app_id).with_context(|| {
         format!(
             "Failed to create WebView2 user data folder {}",
             dir.display()
         )
-    })?;
-    Ok(dir)
+    })
 }
 
 /// Create the WebView2 controller hosted inside the native window.
@@ -313,8 +304,7 @@ pub(super) fn mirror_event(webview: &ICoreWebView2, event: &DesktopEvent) {
 
 /// Handle a window-control message posted by web content.
 ///
-/// Returns `true` when the message was a host command and must not be forwarded
-/// to the fetch bridge.
+/// Returns `true` when the message was a host command.
 pub(super) fn handle_host_message(
     hwnd: HWND,
     args: &ICoreWebView2WebMessageReceivedEventArgs,
@@ -334,8 +324,8 @@ pub(super) fn handle_host_message(
 /// Decode a `WebMessageAsJson` payload into a host command.
 ///
 /// Host commands are posted as strings, so WebView2 reports them as a JSON
-/// string wrapping the message's own JSON text. Fetch-bridge messages are
-/// objects and fail the first decode, which hands them back to the bridge.
+/// string wrapping the message's own JSON text. Typed IPC records are objects
+/// and fail the first decode.
 fn decode_host_message(raw: &str) -> Option<DesktopHostMessage> {
     let payload = serde_json::from_str::<String>(raw).ok()?;
     DesktopHostMessage::from_json(&payload).ok()
@@ -426,11 +416,8 @@ mod tests {
             decode_host_message("\"\\\"toggle-maximize\\\"\""),
             Some(DesktopHostMessage::ToggleMaximize)
         );
-        // Fetch-bridge payloads are objects and must fall through to the bridge.
-        assert_eq!(
-            decode_host_message("{\"kind\":\"webui-desktop-fetch\"}"),
-            None
-        );
+        // Typed application IPC must not be decoded as a window control.
+        assert_eq!(decode_host_message("{\"kind\":\"hello\"}"), None);
         assert_eq!(decode_host_message("\"\\\"nope\\\"\""), None);
     }
 

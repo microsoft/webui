@@ -3,6 +3,7 @@
 
 mod build_examples;
 mod build_wasm;
+mod desktop_tests;
 mod dev;
 mod e2e;
 mod e2e_approve;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
         Some("clippy") => run_steps(&[Step::CLIPPY]),
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => run_steps(&[Step::TEST]),
+        Some("test-desktop") => run_steps(&[Step::TEST_DESKTOP]),
         Some("build") => run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES]),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
@@ -135,6 +137,7 @@ fn usage() -> ExitCode {
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
+           test-desktop  Run isolated desktop SDK feature combinations\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \
@@ -734,7 +737,8 @@ struct Step {
     run: fn() -> Result<(), String>,
 }
 
-const DESKTOP_DEV_FEATURES: &str = "microsoft-webui-desktop/cli,contact-book-desktop/source";
+const DESKTOP_DEV_FEATURES: &str =
+    "microsoft-webui-desktop/cli,microsoft-webui-desktop/application-ipc,contact-book-desktop/source";
 
 impl Step {
     const LICENSE_HEADERS: Self = Self {
@@ -786,28 +790,7 @@ impl Step {
                 &["test", "--workspace", "--features", DESKTOP_DEV_FEATURES],
                 None,
             )?;
-            run_command_quiet(
-                "cargo",
-                &[
-                    "test",
-                    "-p",
-                    "microsoft-webui-desktop",
-                    "--no-default-features",
-                ],
-                None,
-            )?;
-            run_command_quiet(
-                "cargo",
-                &[
-                    "test",
-                    "-p",
-                    "microsoft-webui-desktop",
-                    "--no-default-features",
-                    "--features",
-                    "native",
-                ],
-                None,
-            )?;
+            desktop_tests::run()?;
             run_command_quiet(
                 "pnpm",
                 &["--filter", "@microsoft/webui-desktop", "test"],
@@ -833,6 +816,10 @@ impl Step {
                 None,
             )
         },
+    };
+    const TEST_DESKTOP: Self = Self {
+        name: "test (desktop feature matrix)",
+        run: desktop_tests::run,
     };
     const BUILD: Self = Self {
         name: "build",

@@ -587,6 +587,9 @@ The runner is a standalone Cargo workspace with an optimized release profile.
 It depends on one desktop SDK and enables source compilation only when run with
 `--features source`.
 
+`desktop run` builds once. Restart it after source changes; desktop `--watch`
+is not supported.
+
 **Arguments:**
 
 | Argument | Description | Default |
@@ -665,9 +668,10 @@ webui desktop package ./desktop-bundle --target macos-app --out ./packages \
 The current Rust packager writes runnable macOS `.app` bundles and portable
 folder layouts. Omitting `--runner` for an existing bundle packages the generic
 sidecar and is appropriate only for file-backed/static seed-state bundles.
-Installer targets (`windows-msi`, `windows-msix`, `linux-appimage`, `linux-deb`,
-`linux-rpm`) return actionable tooling diagnostics until their platform packagers
-are enabled.
+Supported targets are `macos-app`, `windows-portable`, and `linux-portable`.
+`--target all` writes all three layouts with the supplied runner; it does not
+cross-compile that executable. Installer generation, archives, and signing are
+not supported.
 
 For an app-specific Rust runner, enable the native SDK and keep source
 compilation opt-in:

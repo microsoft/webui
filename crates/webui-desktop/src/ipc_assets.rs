@@ -27,10 +27,10 @@ mod tests {
     fn reserved_assets_use_the_embedded_sdk_bytes() {
         let bootstrap = response("/_webui/ipc/bootstrap.js");
         assert!(bootstrap.is_some_and(|response| {
-            response.status == 200 && response.body.as_slice() == NATIVE_BOOTSTRAP_SCRIPT.as_bytes()
+            response.status == 200 && response.body == NATIVE_BOOTSTRAP_SCRIPT.as_bytes()
         }));
         let runtime = response("/_webui/ipc/runtime.js");
-        assert!(runtime.is_some_and(|response| response.body.as_slice() == BROWSER_RUNTIME));
+        assert!(runtime.is_some_and(|response| response.body == BROWSER_RUNTIME));
         assert!(response("/application.js").is_none());
     }
 }

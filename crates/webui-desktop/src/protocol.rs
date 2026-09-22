@@ -2,16 +2,20 @@
 // Licensed under the MIT license.
 
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::error::{DesktopError, Result};
+use crate::{DesktopResponseContent, DesktopResponseFile};
 
 /// Reserved custom-protocol path for protobuf desktop IPC.
+#[cfg(feature = "application-ipc")]
 pub const IPC_ENDPOINT: &str = "/_webui/ipc";
 
-/// Default maximum asset size read into one custom-protocol response.
+/// Default maximum file length delivered by a custom-protocol response.
 pub const DEFAULT_MAX_ASSET_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Maximum ordinary native API request body size. Typed IPC has its own limits.
+pub const DEFAULT_MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 
 /// HTTP method for a desktop custom-protocol request.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,14 +77,14 @@ impl<'a> DesktopProtocolRequest<'a> {
 }
 
 /// Runtime-neutral representation of a custom-protocol response.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct DesktopProtocolResponse {
     /// HTTP status code.
     pub status: u16,
     /// Content type header value.
     pub content_type: String,
-    /// Response body bytes.
-    pub body: DesktopResponseBody,
+    /// Owned bytes or an already-opened file for bounded streaming delivery.
+    pub body: DesktopResponseContent,
 }
 
 /// Owned response bytes and any resource reservation backing their lifetime.
@@ -169,7 +173,7 @@ impl DesktopProtocolResponse {
     pub fn new(
         status: u16,
         content_type: impl Into<String>,
-        body: impl Into<DesktopResponseBody>,
+        body: impl Into<DesktopResponseContent>,
     ) -> Self {
         Self {
             status,
@@ -191,7 +195,7 @@ impl DesktopProtocolResponse {
     /// Create a protobuf response.
     #[must_use]
     pub fn protobuf(body: impl Into<DesktopResponseBody>) -> Self {
-        Self::new(200, "application/x-protobuf", body)
+        Self::new(200, "application/x-protobuf", body.into())
     }
 
     /// Create an HTML response.
@@ -241,18 +245,16 @@ pub(crate) fn read_asset_response(
         });
     }
 
-    let body = fs::read(&canonical).map_err(|source| DesktopError::Io {
-        context: format!("reading desktop asset {}", canonical.display()),
-        source,
-    })?;
     let content_type = mime_guess::from_path(&canonical)
         .first_or_octet_stream()
         .to_string();
 
-    Ok(Some(DesktopProtocolResponse::new(200, content_type, body)))
+    read_known_asset_response(asset_root, &canonical, &content_type, size, max_asset_bytes)
+        .map(Some)
 }
 
 pub(crate) fn read_known_asset_response(
+    asset_root: &Path,
     asset_path: &Path,
     content_type: &str,
     size_bytes: u64,
@@ -266,33 +268,20 @@ pub(crate) fn read_known_asset_response(
         });
     }
 
-    let mut file = fs::File::open(asset_path).map_err(|source| DesktopError::Io {
-        context: format!("reading desktop asset {}", asset_path.display()),
+    let file = crate::asset_file::open(asset_root, asset_path)?;
+    let metadata = file.metadata().map_err(|source| DesktopError::Io {
+        context: format!("checking opened desktop asset {}", asset_path.display()),
         source,
     })?;
-    let capacity = usize::try_from(size_bytes).map_err(|_| DesktopError::AssetTooLarge {
-        path: asset_path.to_path_buf(),
-        size: size_bytes,
-        max_bytes: max_asset_bytes,
-    })?;
-    let mut body = Vec::with_capacity(capacity);
-    let limit = max_asset_bytes.saturating_add(1);
-    file.by_ref()
-        .take(limit)
-        .read_to_end(&mut body)
-        .map_err(|source| DesktopError::Io {
-            context: format!("reading desktop asset {}", asset_path.display()),
-            source,
-        })?;
-    let read_size = u64::try_from(body.len()).map_err(|_| DesktopError::AssetTooLarge {
-        path: asset_path.to_path_buf(),
-        size: size_bytes,
-        max_bytes: max_asset_bytes,
-    })?;
-    if read_size > max_asset_bytes {
+    if !metadata.is_file() {
+        return Err(DesktopError::InvalidAssetPath {
+            path: asset_path.display().to_string(),
+        });
+    }
+    if metadata.len() > max_asset_bytes {
         return Err(DesktopError::AssetTooLarge {
             path: asset_path.to_path_buf(),
-            size: read_size,
+            size: metadata.len(),
             max_bytes: max_asset_bytes,
         });
     }
@@ -300,11 +289,12 @@ pub(crate) fn read_known_asset_response(
     Ok(DesktopProtocolResponse::new(
         200,
         content_type.to_string(),
-        body,
+        DesktopResponseContent::File(DesktopResponseFile::new(file, metadata.len())),
     ))
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod response_body_tests {
     use super::*;
     use std::sync::{
@@ -342,7 +332,7 @@ mod response_body_tests {
             bytes,
             ReleaseCount(Arc::clone(&released)),
         ));
-        let (bytes, lease) = response.body.into_parts();
+        let (bytes, lease) = response.body.into_bytes().unwrap().into_parts();
         assert_eq!(bytes.as_ptr(), address);
         assert_eq!(released.load(Ordering::SeqCst), 0);
         drop(bytes);
@@ -355,7 +345,7 @@ mod response_body_tests {
     fn ordinary_responses_do_not_need_a_reservation() {
         let response = DesktopProtocolResponse::new(201, "text/plain", b"created".to_vec());
         assert_eq!(response.body, b"created");
-        let (bytes, lease) = response.body.into_parts();
+        let (bytes, lease) = response.body.into_bytes().unwrap().into_parts();
         assert_eq!(bytes, b"created");
         assert!(lease.is_none());
     }

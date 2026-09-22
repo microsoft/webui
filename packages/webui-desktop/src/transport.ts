@@ -15,6 +15,7 @@ export interface DesktopTransportOptions {
   /** Injection seams for non-GUI contract tests and custom embedders. */
   bootstrap?: NativeIpcBootstrap;
   fetch?: typeof globalThis.fetch;
+  applicationUrl?: string;
 }
 
 /** Native admission plus authenticated, binary-only custom-protocol requests. */
@@ -22,6 +23,7 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
   const bootstrap = options.bootstrap ?? globalThis.window?.__webuiDesktopIpcV2;
   const documentNonce = bootstrap?.documentNonce;
   const fetcher = options.fetch ?? globalThis.fetch;
+  const applicationUrl = options.applicationUrl ?? globalThis.location?.href;
   let session: SessionInfo | undefined;
   let receiver: BinaryReceiver | undefined;
   let listener: Subscription | undefined;
@@ -33,6 +35,10 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
   let rejectStart: ((error: IpcError) => void) | undefined;
   let ledger: ByteLedger | undefined;
   const abort = new AbortController();
+
+  function endpoint(path: string): string {
+    return applicationUrl ? new URL(path, applicationUrl).href : path;
+  }
 
   function close(error = new IpcError('closed')): void {
     if (failure) return;
@@ -111,12 +117,20 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
     if (!current) throw new IpcError('not-ready');
     const headers: Record<string, string> = { 'X-WebUI-Ipc-Session': current.token };
     if (body) headers['Content-Type'] = 'application/x-protobuf';
-    const init: RequestInit = { method: body ? 'POST' : 'GET', headers, cache: 'no-store', credentials: 'omit', redirect: 'error', signal: abort.signal };
+    const init: RequestInit = {
+      method: body ? 'POST' : 'GET',
+      headers,
+      cache: 'no-store',
+      credentials: 'omit',
+      mode: 'same-origin',
+      redirect: 'error',
+      signal: abort.signal,
+    };
     if (body) init.body = body as Uint8Array<ArrayBuffer>;
     // WebKit can cancel pulls before pagehide; keep them owned by our abort
     // signal. Payload POSTs must not enter the browser's 64 KiB keepalive quota.
     else init.keepalive = true;
-    const response = await fetcher(path, init);
+    const response = await fetcher(endpoint(path), init);
     if (failure) throw failure;
     if (response.status === 204) return undefined;
     if (!response.ok && ![400, 401, 409, 413, 429, 503].includes(response.status)) {
@@ -165,7 +179,7 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
     }
   }
 
-  return {
+  const transport: IpcTransport = {
     async start(hello: Hello, target: BinaryReceiver): Promise<SessionInfo> {
       if (started || failure) throw failure ?? new IpcError('not-ready');
       started = true;
@@ -220,4 +234,5 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
     },
     close: () => close(),
   };
+  return transport;
 }

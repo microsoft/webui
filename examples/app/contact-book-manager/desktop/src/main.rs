@@ -727,10 +727,10 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status, status, "{path}");
             if status == 204 {
-                assert!(response.body.is_empty());
+                assert!(response.body.as_bytes().unwrap().is_empty());
                 Value::Null
             } else {
-                serde_json::from_slice::<Value>(&response.body).unwrap()
+                serde_json::from_slice::<Value>(response.body.as_bytes().unwrap()).unwrap()
             }
         };
 
@@ -771,7 +771,7 @@ mod tests {
                 wants_json: false,
             })
             .unwrap();
-        let html = std::str::from_utf8(&response.body).unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap()).unwrap();
         let head = html.split("</head>").next().unwrap();
         assert!(head.contains("--desktop-test-light:1;"));
         assert!(head.contains("--desktop-test-dark:1;"));

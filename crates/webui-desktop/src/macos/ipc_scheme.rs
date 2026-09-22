@@ -65,7 +65,7 @@ impl IpcScheme {
         if !reserved_path(&native_path) {
             return false;
         }
-        let Some(path) = bounded_string(&native_path, 64) else {
+        let Some(path) = bounded_string(&native_path, 128) else {
             send_response(
                 task,
                 Some(&url),
@@ -168,7 +168,7 @@ fn prepare(
     }
     if !super::ipc::trusted_url(url)
         || url.query().is_some()
-        || !state.is_current(state.navigation.get())
+        || !state.is_current(state.navigation())
     {
         return Err(error(IpcErrorCode::PermissionDenied));
     }
@@ -185,6 +185,9 @@ fn prepare(
     }
     let data = request.HTTPBody();
     let length = data.as_ref().map_or(0, |body| body.length());
+    if length > state.bridge.max_request_body_bytes(&path)? {
+        return Err(error(IpcErrorCode::PayloadTooLarge));
+    }
     if let Some(header) = request.valueForHTTPHeaderField(&NSString::from_str("Content-Length")) {
         let declared = bounded_string(&header, 20).and_then(|text| text.parse::<usize>().ok());
         if declared != Some(length) {
@@ -202,7 +205,7 @@ fn prepare(
         body.extend_from_slice(unsafe { data.as_bytes_unchecked() });
     }
     Ok(OwnedIpcHttpRequest {
-        navigation: state.navigation.get(),
+        navigation: state.navigation(),
         method: DesktopHttpMethod::parse(&method),
         path,
         token,

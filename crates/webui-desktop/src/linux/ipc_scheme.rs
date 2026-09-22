@@ -100,7 +100,7 @@ fn prepare(
     request: &URISchemeRequest,
     path: &str,
 ) -> Result<(OwnedIpcHttpRequest, ReadLimits), IpcError> {
-    if path.len() > 64 || !state.is_current(state.navigation.get()) {
+    if path.len() > 128 || !state.is_current(state.navigation()) {
         return Err(error(IpcErrorCode::NotReady));
     }
     // SAFETY: WebKit's borrowed NUL-terminated URI remains live with request.
@@ -133,17 +133,13 @@ fn prepare(
                 .map_err(|_| error(IpcErrorCode::InvalidFrame))
         })
         .transpose()?;
-    let (maximum, control) = state
+    let control = state
         .session
         .borrow()
         .as_ref()
-        .map(|session| {
-            (
-                session.limits.max_frame_bytes,
-                session.limits.max_error_text_bytes_total + 128,
-            )
-        })
+        .map(|session| session.limits.max_error_text_bytes_total + 128)
         .ok_or_else(|| error(IpcErrorCode::NotReady))?;
+    let maximum = state.bridge.max_request_body_bytes(path)?;
     if declared.is_some_and(|length| length > maximum) {
         return Err(error(IpcErrorCode::PayloadTooLarge));
     }
@@ -156,7 +152,7 @@ fn prepare(
     }?;
     Ok((
         OwnedIpcHttpRequest {
-            navigation: state.navigation.get(),
+            navigation: state.navigation(),
             method: method.map_or(DesktopHttpMethod::Get, |method| {
                 DesktopHttpMethod::parse(&method)
             }),
@@ -192,7 +188,7 @@ fn request_path(request: &URISchemeRequest) -> Result<Option<String>, IpcError> 
         if next != 0 && next != b'/' {
             return Ok(None);
         }
-        bounded_text(pointer, 64)
+        bounded_text(pointer, 128)
     }
 }
 

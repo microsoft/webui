@@ -4,7 +4,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Item, Status } from '../../webui-desktop/tests/fixtures/typed-ipc/ts/application.js';
-import { connectDesktop, schema, type RendererHandlers } from '../../webui-desktop/tests/fixtures/typed-ipc/ts/ipc.js';
+import { connectDesktop, type RendererHandlers } from '../../webui-desktop/tests/fixtures/typed-ipc/ts/ipc.js';
+// Deliberate private test surface for codec/golden validation, not an application API.
+import { schema } from '../../webui-desktop/tests/fixtures/typed-ipc/ts/ipc-runtime.js';
 import { defaultLimits, type IpcTransport } from '@microsoft/webui-desktop';
 
 const item: Item = {

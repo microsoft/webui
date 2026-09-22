@@ -15,8 +15,28 @@ desktop runtime.
 
 Linux builds require GTK4 and WebKitGTK 6 development packages on the target
 system or a configured cross-compilation sysroot. Windows support uses the
-WebView2 Runtime and the target-gated Win32 backend; validate runtime behavior
+WebView2 Runtime **122.0.2365.46 or later** and the target-gated Win32 backend;
+older runtimes fail at startup with an update hint. Use the current Evergreen
+Runtime for security updates. This minimum corresponds to
+[WebView2 SDK 1.0.2365.46's worker request support](https://learn.microsoft.com/en-us/microsoft-edge/webview2/release-notes/sdk/1-0-2365-46).
+Validate runtime behavior
 on Windows CI or a Windows developer machine with WebView2 installed.
+
+Windows application resources use the system browser's native request handling
+in both source and packaged apps, including fetches from workers. WebUI does not
+replace `window.fetch`: standard `Request`, `Response`, and `AbortSignal` behavior
+is preserved. Aborting a resource fetch cancels browser delivery, not side effects
+of a Rust API handler that has already run. Typed application IPC has its own
+request cancellation contract.
+
+On Windows, set a stable `DesktopAppBuilder::app_id` (or
+`DesktopFrame::with_app_id`) to persist browser storage for your application.
+Bundle-backed apps use their manifest identity automatically. Identities accept
+1–255 ASCII letters, digits, dots, underscores, and hyphens, with no trailing
+dot; invalid identities fail at startup. Different identities have isolated
+localStorage and IndexedDB, even when they use the same runner executable.
+Without an identity, each frame uses a fresh profile with best-effort shutdown
+cleanup, not persistent browser storage.
 
 Rust hosts use one SDK, `microsoft-webui-desktop`, imported as `webui_desktop`.
 Construct an app with `DesktopApp`, register its Rust handlers, then pass the
@@ -49,7 +69,9 @@ Start with no Rust at all:
 webui desktop run ./src
 ```
 
-This builds the entry template and opens it in the native system webview. Add a
+This builds the entry template and opens it in the native system webview.
+Restart the command after source changes; desktop `--watch` is not supported.
+Add a
 Rust host only when the app needs dynamic route state, native IPC, or direct
 window control. To create the progressive starting point, run:
 
@@ -86,8 +108,9 @@ source = ["webui-desktop/source"]
 
 | SDK features | Available APIs |
 | --- | --- |
-| None, the default | Bundle loading, rendering, route/API/IPC handlers, frame configuration, and custom backend integration |
+| None, the default | Bundle loading, rendering, route/API handlers, frame configuration, and custom backend integration |
 | `native` | Built-in platform backend and `run_frame` |
+| `application-ipc` | Typed application IPC, sessions, workers, and browser assets |
 | `source` | Source compilation, `DesktopSourceConfig`, compiler options, and build/package APIs |
 | `native, source` | Native source development |
 | `cli` | The `webui-desktop` sidecar binary; includes `native`, `source`, and command-line tooling |
@@ -95,6 +118,10 @@ source = ["webui-desktop/source"]
 Application runners normally enable `native`, not `cli`. The generated
 application's local `source` feature forwards to the SDK; selecting Cargo's
 debug or release profile does not enable source compilation.
+Neither `native`, `source`, nor `cli` enables application IPC. Without
+`application-ipc`, the SDK does not reserve IPC paths or install application IPC
+assets or transport handlers. Native window controls and lifecycle events do
+not require application IPC.
 
 For bundled execution:
 
@@ -165,9 +192,6 @@ The built-in backends advertise these feature groups:
 | Window effects | Yes (all four) | Yes (except `tabbed`) | No |
 | Application menu | Yes | No | No |
 | Tray icon | Yes | No | No |
-| Jump list | No | No | No |
-| Popovers | No | No | No |
-| Downloads | No | No | No |
 
 Effects can use a documented native equivalent rather than the same material on
 every OS:
@@ -272,7 +296,7 @@ for delivery limits and payloads.
 The Linux backend does not emit `WindowMoved`/`webui:window-moved`. Do not make
 portable application behavior depend on receiving position changes.
 
-`DesktopFrame::window_handle` exposes a `Send + Sync` `WindowHandle` that queues
+`DesktopFrame::window_handle()` exposes a `Send + Sync` `WindowHandle` that queues
 UI-thread commands: `set_title`, `set_size`, `minimize`, `maximize`,
 `unmaximize`, `fullscreen`, `center`, `focus`, `request_close`, `start_drag`, and
 `set_always_on_top`. Clone the handle to send commands from application workers;
@@ -407,16 +431,9 @@ The Rust packager currently writes:
 | `windows-portable` | Portable folder layout for a Windows runner and bundled resources |
 | `linux-portable` | Portable folder layout for a Linux runner and bundled resources |
 
-Installer targets return actionable diagnostics for the required platform
-tooling:
-
-| Target | Required tooling |
-|--------|------------------|
-| `windows-msi` | WiX 3.11 and `signtool.exe` |
-| `windows-msix` | Windows SDK `makeappx.exe` and `signtool.exe` |
-| `linux-appimage` | `appimagetool` |
-| `linux-deb` | Debian package writer |
-| `linux-rpm` | RPM package writer |
+`--target all` writes these three layouts using the same runner. It does not
+cross-compile the executable; supply a runner built for the intended platform.
+Installer generation, archives, and signing are not supported.
 
 ## Message passing
 
@@ -509,6 +526,21 @@ instead call `webui_desktop_build::generate`.
 
 Bundle the generated `ipc.ts` with the application:
 
+The generated bindings load the desktop runtime and protobuf codecs only when
+`connectDesktop()` is explicitly called. Concurrent calls share loading but
+create independent connections; importing types or bindings never connects.
+Enable ESM code splitting and deploy all emitted chunks to defer their transfer
+and parsing. Module-loading failures reject the returned promise without
+transport activation or automatic retries.
+
+The first connection can be deferred until the user needs IPC. Its handshake
+timeout starts when connection admission begins, not when the document loads.
+Navigating away invalidates that document's unused admission proof.
+
+The direct runtime import below loads the package normally. If the application
+does not need IPC at startup, move that import into its explicit connection
+action using `await import('@microsoft/webui-desktop')`.
+
 ```typescript
 import { createDesktopTransport } from '@microsoft/webui-desktop';
 import { connectDesktop } from './generated/ipc.js';
@@ -538,6 +570,17 @@ receiver. `labelFor` handles Rust-initiated requests. `onChanged` receives
 Rust-initiated notifications. `updateView` is application code.
 
 ### Rust receivers and messages to JavaScript
+
+Enable application IPC explicitly on the host dependency:
+
+```toml
+[dependencies]
+webui-desktop = { package = "microsoft-webui-desktop", version = "0.0.29", default-features = false, features = ["native", "application-ipc"] }
+prost = "0.14.4"
+```
+
+The generated messages use `prost`; generator/compiler dependencies belong in
+the build tool, not the runtime host.
 
 ```rust
 use std::sync::Arc;
@@ -605,6 +648,27 @@ There are no automatic retries. Notifications preserve order per subscriber,
 and subscription disposal prevents queued callbacks from starting. Expensive
 browser work still belongs in Web Workers; blocking Rust work must cooperate
 with cancellation or remain within its bounded application workers.
+
+Rust hosts configure IPC with `IpcOptions`. Its `limits` policy defaults to
+1 MiB encoded frames and a 30-second renderer RPC timeout:
+
+```rust
+use std::time::Duration;
+use webui_desktop::ipc::IpcLimits;
+
+let limits = IpcLimits::default()
+    .with_max_frame_bytes(256 * 1024)?
+    .with_default_timeout(Duration::from_secs(10))?;
+```
+
+Assign the policy to `IpcOptions::limits` before calling
+`DesktopAppBuilder::ipc_options(...)`. `max_frame_bytes()` and
+`default_timeout()` read the configured choices. The checked builders accept
+frame sizes from 2,176 bytes through 8 MiB and whole-millisecond timeouts from
+1 ms through 5 minutes. Rust calls select their timeout with `CallOptions`;
+changing the renderer default does not change admission or notification
+deadlines. Queue, callback, control, and aggregate memory budgets are managed
+by the SDK, not independently configurable.
 
 IPC capacity is bounded by frames, retained bytes, calls, and callback fanout.
 Overload rejects explicitly. Native metadata carries admission and availability
@@ -741,8 +805,15 @@ webui_desktop::run_frame(frame)?;
 
 The same registration methods apply to `DesktopApp::from_source(config)`.
 Providers run during startup rendering as well as subsequent HTML renders and
-WebUI router partial requests. Provider errors are surfaced instead of falling
+WebUI router partial requests, including full reloads of `/` and its
+`/index.html` alias. `DesktopRuntime::startup_html()` is only the construction-time
+snapshot, not a live view. Provider errors are surfaced instead of falling
 back silently. The CLI `--state` path remains a simple seed-state fallback.
+Startup providers run while `build()` constructs the frame. Once the native
+window is running, routes, API handlers and rendering execute on bounded
+application workers rather than the UI thread. These handlers can run
+concurrently; synchronize shared mutable application state. Lifecycle event
+callbacks still run on the UI thread and must not block.
 
 For route-backed apps, keep mutable collections in shared Rust storage and
 borrow them while preparing a route's view model. Use the render seed for
@@ -752,12 +823,19 @@ store into every route. Return only the collections the current page needs.
 Desktop hosts can also register custom-protocol API handlers, for example
 `/api/contacts/:id`, so existing browser code can keep using `fetch("./api")`
 while packaged apps mutate Rust-owned state in memory.
+Native API request bodies are limited to 1 MiB. At most 16 ordinary application
+jobs are admitted at once; overload returns HTTP 503 rather than waiting in an
+unbounded queue. Handle failures explicitly. Do not automatically retry mutations
+unless the application defines an idempotency contract. Cancellation stops
+delivery but does not undo a Rust callback that already started.
 
 ## Security and performance defaults
 
 - The runtime loads from a custom app origin.
 - Navigation outside the app origin is denied unless explicitly allowed.
 - Packaged assets are immutable and served from the bundle resource root.
+- Asset URLs may percent-encode filenames. Indexed assets retain the same
+  root confinement as source assets, including symlink checks on opened files.
 - Build/package output paths are rejected when they overlap input directories.
 - Protocol data, CSS maps, and asset metadata are shared by reference.
 - Generated runners default to bundle-only execution. Keep source support and
@@ -771,8 +849,8 @@ Rust host.
 
 ## Shell extension points
 
-Desktop manifests include a `shell` object for native features such as app icons,
-menus, jump lists, popovers, and app-controlled downloads. A configuration type
+Desktop manifests include a `shell` object for app icons, menus, and tray icons.
+Unknown shell fields are rejected. A configuration type
 does not imply backend support: check the capability table above before enabling
 an optional feature. Configure shell defaults in the manifest or explicitly
 replace them with `DesktopAppBuilder::shell(...)`.
@@ -787,6 +865,20 @@ requested window and shell features against the backend's capabilities before
 invoking it. It is available without the SDK's `native` feature. A custom backend
 must retain the owning frame until its loop and callbacks finish; dropping it
 ends event registration and command submission.
+
+Read configuration through `frame.app_id()`, `frame.runtime()`, `frame.window()`,
+and `frame.shell()`; configuration fields are not publicly mutable. Configure
+window styling on `DesktopAppBuilder` before `build()`. A frame constructed
+directly from an existing runtime must use the same titlebar/background styling
+as that runtime. Clone `frame.window_handle()` for runtime window commands.
+
+Custom protocol consumers must match `DesktopProtocolResponse::body` as
+`DesktopResponseContent::Bytes` or `File`. Keep buffered response ownership,
+including any reservation, until the native consumer releases it. File responses
+own an open, length-bounded reader and should be streamed, not reopened by path.
+`body.as_bytes()` returns `None` for files; `body.into_bytes()` is an explicit,
+fallible materialization option for non-native consumers. The default asset
+length limit remains 32 MiB, without requiring an asset-sized Rust buffer.
 
 ## Web inspector
 

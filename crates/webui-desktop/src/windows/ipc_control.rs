@@ -9,13 +9,14 @@ use super::{
     protocol::read_pwstr_bounded,
 };
 use crate::{
-    ipc::{Admission, IpcError, IpcErrorCode, SessionInfo},
+    ipc::{Admission, IpcError, IpcErrorCode, NativeControl, SessionInfo},
     native_ipc::hello_reply_json,
 };
 use serde_json::Value;
 use std::rc::Rc;
 use webview2_com::{
-    CoTaskMemPWSTR, Microsoft::Web::WebView2::Win32::ICoreWebView2WebMessageReceivedEventArgs,
+    CoTaskMemPWSTR, ExecuteScriptCompletedHandler,
+    Microsoft::Web::WebView2::Win32::ICoreWebView2WebMessageReceivedEventArgs,
 };
 use windows::{
     core::{Error as WindowsError, Result as WindowsResult},
@@ -23,6 +24,44 @@ use windows::{
 };
 
 impl WindowsIpc {
+    pub(super) fn publish_retirement(&self, code: IpcErrorCode) {
+        let outgoing = {
+            let document = self.document.borrow();
+            document
+                .proof
+                .as_ref()
+                .filter(|proof| document.accepts(proof))
+                .cloned()
+                .zip(document.generation)
+        };
+        let Some((proof, generation)) = outgoing else {
+            return;
+        };
+        let control = NativeControl::Closed { generation, code };
+        let script = match crate::native_ipc::control_script(&proof, control) {
+            Ok(script) => CoTaskMemPWSTR::from(script.as_str()),
+            Err(error) => {
+                eprintln!("WebUI: could not encode document retirement control: {error}");
+                return;
+            }
+        };
+        let completion = ExecuteScriptCompletedHandler::create(Box::new(|result, _| {
+            if let Err(error) = result {
+                eprintln!("WebUI: document retirement delivery failed: {error}");
+            }
+            Ok(())
+        }));
+        // Queue the nonce-bound control before resetting generation or aborting
+        // responses. A late evaluation cannot close a replacement document.
+        // SAFETY: Bounded native metadata, evaluated on the owning WebView2 STA.
+        if let Err(error) = unsafe {
+            self.webview
+                .ExecuteScript(*script.as_ref().as_pcwstr(), &completion)
+        } {
+            eprintln!("WebUI: could not queue document retirement: {error}");
+        }
+    }
+
     /// ICoreWebView2.WebMessageReceived receives top-level messages only.
     /// Deliberately do not subscribe to ICoreWebView2Frame.WebMessageReceived.
     pub fn message(

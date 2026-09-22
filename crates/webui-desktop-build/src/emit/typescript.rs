@@ -14,9 +14,9 @@ use crate::{
     GenerateError,
 };
 
-pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<String, GenerateError> {
-    let mut out = String::from(HEADER);
-    out.push_str("import { connect, validateMessage, validateValue, IpcError, type MessageShape, type MessageCodec, type ConnectionSchema, type RuntimeConnection, type IpcTransport, type CallOptions, type RequestContext, type Subscription, type DesktopConnection } from '@microsoft/webui-desktop';\n");
+const CONNECT_SIGNATURE: &str = "export async function connectDesktop(transport: IpcTransport, options?: { renderer?: RendererHandlers; onError?: (error: IpcError) => void }): Promise<AppConnection>";
+
+pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<(String, String), GenerateError> {
     let files: BTreeSet<_> = contract
         .messages
         .iter()
@@ -24,6 +24,11 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<String, GenerateEr
         .map(|m| m.file.as_str())
         .collect();
     let files: BTreeMap<_, _> = files.into_iter().enumerate().map(|(i, f)| (f, i)).collect();
+    let facade = emit_facade(contract, hash, &files)?;
+    let mut out = String::from(HEADER);
+    out.push_str("// Private implementation: application code imports ./ipc.js instead.\n");
+    out.push_str("import type { AppConnection, RendererHandlers } from './ipc.js';\n");
+    out.push_str("import { connect, validateMessage, validateValue, IpcError, type MessageShape, type MessageCodec, type ConnectionSchema, type RuntimeConnection, type IpcTransport, type RequestContext } from '@microsoft/webui-desktop';\n");
     for (file, i) in &files {
         let base = file.strip_suffix(".proto").unwrap_or(file);
         writeln!(
@@ -64,8 +69,31 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<String, GenerateEr
         writeln!(out, "{{ id: {}, name: {:?}, receiver: {:?}, kind: {:?}, developmentOnly: {}, request: message_{}{response} }},", method.id, method.name, method.receiver, method.kind, method.development_only, message(contract, &method.input)?.0).ok();
     }
     out.push_str("] };\n");
-    emit_interfaces(&mut out, contract, &files)?;
     emit_connection(&mut out, contract)?;
+    Ok((facade, out))
+}
+
+fn emit_facade(
+    contract: &Contract,
+    hash: &str,
+    files: &BTreeMap<&str, usize>,
+) -> Result<String, GenerateError> {
+    let mut out = String::from(HEADER);
+    out.push_str("import type { IpcError, IpcTransport, CallOptions, RequestContext, Subscription, DesktopConnection } from '@microsoft/webui-desktop';\n");
+    for (file, i) in files {
+        let base = file.strip_suffix(".proto").unwrap_or(file);
+        writeln!(
+            out,
+            "import type * as codec_{i} from {:?};",
+            format!("./{base}.js")
+        )
+        .ok();
+    }
+    writeln!(out, "export const schemaHash = {hash:?};").ok();
+    emit_interfaces(&mut out, contract, files)?;
+    out.push_str("let runtime: Promise<typeof import('./ipc-runtime.js')> | undefined;\n");
+    writeln!(out, "{CONNECT_SIGNATURE} {{").ok();
+    out.push_str("const implementation = await (runtime ??= import('./ipc-runtime.js'));\nreturn implementation.connectDesktop(transport, options);\n}\n");
     Ok(out)
 }
 
@@ -210,7 +238,8 @@ fn emit_connection(out: &mut String, contract: &Contract) -> Result<(), Generate
         .ok();
     }
     out.push_str("]);\n}\n");
-    out.push_str("export async function connectDesktop(transport: IpcTransport, options?: { renderer?: RendererHandlers; onError?: (error: IpcError) => void }): Promise<AppConnection> {\nconst connection: RuntimeConnection = await connect(transport, schema, { ...(options?.renderer ? { handlers: handlersMap(options.renderer) } : {}), ...(options?.onError ? { onError: options.onError } : {}) });\nreturn { close: () => connection.close(), closed: connection.closed, setRenderer: handlers => connection.register(handlersMap(handlers)), host: {\n");
+    writeln!(out, "{CONNECT_SIGNATURE} {{").ok();
+    out.push_str("const connection: RuntimeConnection = await connect(transport, schema, { ...(options?.renderer ? { handlers: handlersMap(options.renderer) } : {}), ...(options?.onError ? { onError: options.onError } : {}) });\nreturn { close: () => connection.close(), closed: connection.closed, setRenderer: handlers => connection.register(handlersMap(handlers)), host: {\n");
     for method in contract.methods.iter().filter(|m| m.receiver == "host") {
         let name = camel(short(&method.name));
         if method.kind == "rpc" {

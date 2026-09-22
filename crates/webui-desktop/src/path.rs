@@ -11,8 +11,8 @@ use percent_encoding::percent_decode_str;
 /// segment at a time and rejects traversal, empty segments, current-directory
 /// segments, backslashes, NUL bytes, absolute markers, and Windows drive
 /// prefixes. The returned path is not canonicalized because the target may not
-/// exist; callers that read from disk must canonicalize the final file and
-/// verify it still starts with the canonical asset root.
+/// exist; callers that read from disk must verify that the opened file remains
+/// within the canonical asset root before delivering any bytes.
 #[must_use]
 pub fn resolve_safe_path(root: &Path, request_path: &str) -> Option<PathBuf> {
     let path = request_path
@@ -44,7 +44,7 @@ fn is_safe_segment(segment: &str) -> bool {
     if segment.is_empty() || segment == "." || segment == ".." {
         return false;
     }
-    if segment.contains('\\') || segment.contains('\0') || segment.starts_with('/') {
+    if segment.contains('\\') || segment.contains('\0') || segment.contains('/') {
         return false;
     }
     !has_drive_letter_prefix(segment)
@@ -95,5 +95,7 @@ mod tests {
         assert_eq!(resolve_safe_path(root, "/a\\b"), None);
         assert_eq!(resolve_safe_path(root, "/C:/Windows"), None);
         assert_eq!(resolve_safe_path(root, "/C%3A/Windows"), None);
+        assert_eq!(resolve_safe_path(root, "/a%2Fb"), None);
+        assert_eq!(resolve_safe_path(root, "/a%2f..%2fsecret"), None);
     }
 }
