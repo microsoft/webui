@@ -136,28 +136,14 @@ fn decimal(value: &str) -> Option<u64> {
 }
 
 fn hex(value: &str) -> Option<[u8; 16]> {
-    if value.len() != 32 {
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return None;
     }
-    let mut result = [0; 16];
-    for (pair, byte) in value
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .zip(result.iter_mut())
-    {
-        *byte = digit(pair[0])? * 16 + digit(pair[1])?;
-    }
-    Some(result)
-}
-
-fn digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        _ => None,
-    }
+    u128::from_str_radix(value, 16).ok().map(u128::to_be_bytes)
 }
 
 pub(super) fn error(code: IpcErrorCode) -> IpcError {
@@ -172,6 +158,28 @@ pub(super) fn error(code: IpcErrorCode) -> IpcError {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonce_decoding_preserves_every_byte_and_requires_canonical_hex() {
+        assert_eq!(
+            hex("00112233445566778899aabbccddeeff"),
+            Some([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ])
+        );
+        for invalid in [
+            "",
+            "00112233445566778899aabbccddee",
+            "00112233445566778899aabbccddeeff00",
+            "00112233445566778899AABBCCDDEEFF",
+            "+0112233445566778899aabbccddeeff",
+            "00112233445566778899aabbccddeefg",
+            "00112233445566778899aabbccddeeé",
+        ] {
+            assert_eq!(hex(invalid), None, "{invalid}");
+        }
+    }
 
     #[test]
     fn disconnect_requires_canonical_generation_and_secret() {

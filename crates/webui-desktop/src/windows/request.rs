@@ -88,8 +88,7 @@ mod tests {
 
     #[test]
     fn present_body_keeps_its_owned_stream_reference() {
-        let stream: IStream =
-            super::super::protocol::MemoryStream::new(vec![1, 2, 3].into()).into();
+        let stream: IStream = super::super::protocol::MemoryStream::new(vec![1, 2, 3]).into();
         let request: ICoreWebView2WebResourceRequest = Request(Ok(stream.clone())).into();
         let body = content(&request).unwrap().unwrap();
         drop(request);
