@@ -24,6 +24,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
+    "ts-proto": "2.12.3",
     "typescript": "catalog:"
   },
   "publishConfig": {
