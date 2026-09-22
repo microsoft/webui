@@ -6208,6 +6208,13 @@ handshake deadline begins at `IpcBridge::admit`, includes worker queue time, and
 is checked again before delivering the admitted session. Native retirement
 publication is nonce-bound and precedes generation reset and response
 cancellation; a delayed publication cannot close a replacement document.
+For WKWebView main-document back/forward policy decisions, native retirement is
+queued before revocation and navigation is allowed only after the outgoing
+realm has evaluated the terminal control. This prevents browser Fetch
+cancellation from winning the terminal reason race before provisional-start or
+`pagehide`. A failed control evaluation cancels that traversal with a native
+diagnostic; the revoked connection remains terminal. Same-document history
+traversals bypass this document-navigation policy and preserve their session.
 Renderer error normalization preserves allowlisted `IpcError` codes across the
 separately bundled bootstrap and runtime; foreign stacks and messages are not
 copied. An admission timeout remains `deadline-exceeded`, not `transport`.

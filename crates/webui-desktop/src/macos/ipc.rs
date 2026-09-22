@@ -120,6 +120,61 @@ impl MacIpc {
         });
     }
 
+    pub(super) fn retire_before_history_navigation(
+        self: &Rc<Self>,
+        webview: &WKWebView,
+        decision: &block2::DynBlock<dyn Fn(objc2_web_kit::WKNavigationActionPolicy)>,
+    ) -> bool {
+        let outgoing = self.proof.borrow().clone().zip(
+            self.session
+                .borrow()
+                .as_ref()
+                .map(|session| session.generation),
+        );
+        let Some((proof, generation)) =
+            outgoing.filter(|(proof, _)| self.is_current(proof.navigation))
+        else {
+            return false;
+        };
+        let script = match crate::native_ipc::control_script(
+            &proof,
+            NativeControl::Closed {
+                generation,
+                code: IpcErrorCode::Navigated,
+            },
+        ) {
+            Ok(script) => script,
+            Err(error) => {
+                eprintln!("WebUI: could not encode history retirement control: {error}");
+                return false;
+            }
+        };
+        // History traversal can abort Fetch before didStartProvisionalNavigation
+        // or pagehide. Queue the outgoing realm's terminal control and revoke
+        // native ownership before yielding to its asynchronous completion.
+        // WebKit may traverse only after that control has been evaluated.
+        // Same-document traversals do not enter this native history policy path.
+        let decision = decision.copy();
+        let weak = Rc::downgrade(self);
+        let retired_epoch = proof.navigation.checked_add(1);
+        let callback = RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
+            let current = weak.upgrade().is_some_and(|state| {
+                let epoch = state.epoch.get();
+                !epoch.closed && Some(epoch.navigation) == retired_epoch
+            });
+            let policy = if error.is_null() && current {
+                objc2_web_kit::WKNavigationActionPolicy::Allow
+            } else {
+                eprintln!("WebUI: could not deliver history retirement; navigation cancelled");
+                objc2_web_kit::WKNavigationActionPolicy::Cancel
+            };
+            decision.call((policy,));
+        });
+        evaluate(webview, &script, Some(&callback));
+        self.navigate();
+        true
+    }
+
     fn navigation_started_with(&self, publish: impl FnOnce(DocumentActivation, u64)) {
         let outgoing = self.proof.borrow().clone().zip(
             self.session

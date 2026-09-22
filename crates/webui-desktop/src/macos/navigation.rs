@@ -98,6 +98,19 @@ define_class!(
                         WKNavigationActionPolicy::Cancel
                     }
                 });
+            #[cfg(feature = "application-ipc")]
+            if policy == WKNavigationActionPolicy::Allow
+                && navigation_action.navigationType()
+                    == objc2_web_kit::WKNavigationType::BackForward
+                && navigation_action
+                    .targetFrame()
+                    .is_some_and(|frame| frame.isMainFrame())
+                && self.ivars().ipc.as_ref().is_some_and(|ipc| {
+                    ipc.retire_before_history_navigation(web_view, decision_handler)
+                })
+            {
+                return;
+            }
             decision_handler.call((policy,));
         }
 

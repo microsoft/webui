@@ -144,7 +144,10 @@ impl Lifecycle {
             .map_err(|_| error("same document state poisoned"))
             .and_then(|mut phases| {
                 if request.value != context.session.generation()
-                    || ["hash", "spa"].get(phases.len()).copied() != Some(request.phase.as_str())
+                    || ["hash", "spa", "spa-back", "spa-forward"]
+                        .get(phases.len())
+                        .copied()
+                        != Some(request.phase.as_str())
                 {
                     return Err(error(
                         "same-document navigation changed generation or phase order",
@@ -159,7 +162,7 @@ impl Lifecycle {
     pub fn same_document_complete(&self) -> bool {
         self.same_document
             .lock()
-            .is_ok_and(|phases| phases.as_slice() == ["hash", "spa"])
+            .is_ok_and(|phases| phases.as_slice() == ["hash", "spa", "spa-back", "spa-forward"])
     }
 
     pub fn observe_disconnect(&self) -> bool {

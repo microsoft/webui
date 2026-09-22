@@ -236,6 +236,18 @@ async function checkSameDocument(connection: AppConnection): Promise<void> {
   await connection.host.sameDocument({ value: generation.value, phase: 'hash' });
   history.pushState({ fixture: true }, '', '/?spa-route=one#native-same-document');
   await connection.host.sameDocument({ value: generation.value, phase: 'spa' });
+  const back = new Promise<void>(resolve => {
+    window.addEventListener('popstate', () => resolve(), { once: true });
+  });
+  history.back();
+  await back;
+  await connection.host.sameDocument({ value: generation.value, phase: 'spa-back' });
+  const forward = new Promise<void>(resolve => {
+    window.addEventListener('popstate', () => resolve(), { once: true });
+  });
+  history.forward();
+  await forward;
+  await connection.host.sameDocument({ value: generation.value, phase: 'spa-forward' });
   history.replaceState(null, '', original);
 }
 

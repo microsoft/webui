@@ -71,8 +71,8 @@ The protocol asserts:
 - Idempotent explicit JS connection close, settlement of an in-flight request
   with `closed`, rejection of new requests, and recovery after a second full
   document load.
-- Hash navigation and History API SPA state changes preserving the exact Rust
-  session generation through generated typed RPCs.
+- Hash navigation, History API SPA state changes, and same-document back/forward
+  traversal preserving the exact Rust session generation through typed RPCs.
 - Native disconnect observed before the next navigation: a one-shot
   `/fixture-disconnect-observation` custom-protocol request checks `is_closed()`
   on the typed host session previously captured by `LifecycleHold`. JS awaits a

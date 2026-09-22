@@ -682,6 +682,13 @@ principal is the committed main-document capability. Cross-origin documents
 without that capability are denied; same-origin parent delegation is within
 the trusted application boundary.
 
+WKWebView back/forward document navigation waits for the outgoing renderer to
+observe retirement before proceeding, so interrupted calls retain `navigated`
+rather than an incidental browser Fetch error. If delivering that control fails,
+the native shell cancels the traversal and reports a diagnostic; the old
+connection stays closed. Same-document History API traversal preserves the
+connection.
+
 WebKit may restore a document from its back/forward cache without rerunning
 application modules. The SDK retires its old connections on `pagehide` and
 prepares a fresh inactive bootstrap epoch before a cache-eligible page freezes.
