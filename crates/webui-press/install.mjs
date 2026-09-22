@@ -15,16 +15,25 @@ try {
   const srcBin = resolveBinary();
   if (srcBin && fs.existsSync(srcBin)) {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.copyFileSync(srcBin, npmBinDest);
+    if (path.resolve(srcBin) !== path.resolve(npmBinDest)) {
+      fs.copyFileSync(srcBin, npmBinDest);
+    }
     fs.chmodSync(npmBinDest, 0o755);
     if (nativeBinDest !== npmBinDest) {
-      fs.copyFileSync(srcBin, nativeBinDest);
+      if (path.resolve(srcBin) !== path.resolve(nativeBinDest)) {
+        fs.copyFileSync(srcBin, nativeBinDest);
+      }
       fs.chmodSync(nativeBinDest, 0o755);
     }
     process.exit(0);
   }
-} catch {
-  // Fall through to warning.
+} catch (error) {
+  console.warn(
+    `[webui-press] Warning: Failed to copy the native binary: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+  // Fall through to package guidance.
 }
 
 if (

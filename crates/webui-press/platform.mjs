@@ -47,7 +47,7 @@ export function resolveBinaryFrom({
   env = process.env,
   platform = process.platform,
   arch = os.arch(),
-  packageBase,
+  packageBase = __dirname,
   workspaceRoot = path.resolve(__dirname, "..", ".."),
 } = {}) {
   if (env.WEBUI_PRESS_BINARY_PATH) {

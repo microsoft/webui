@@ -42,7 +42,7 @@ test('webui-press package resolves overrides, platform packages, and local build
   fs.mkdirSync(path.dirname(localBin), { recursive: true });
   fs.writeFileSync(localBin, '');
   assert.equal(
-    resolveBinaryFrom({ env: {}, platform: 'win32', arch: 'x64', workspaceRoot: root }),
+    resolveBinaryFrom({ env: {}, platform: 'win32', arch: 'x64', packageBase: null, workspaceRoot: root }),
     localBin,
   );
 });

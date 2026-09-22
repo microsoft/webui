@@ -8,13 +8,14 @@
   },
   "type": "module",
   "bin": {
-    "webui-press": "bin/webui-press"
+    "webui-press": "webui-press.mjs"
   },
   "files": [
     "bin/",
     "install.mjs",
     "platform.mjs",
-    "README.md"
+    "README.md",
+    "webui-press.mjs"
   ],
   "scripts": {
     "build": "node install.mjs",
