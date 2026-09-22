@@ -121,6 +121,7 @@ pub(super) struct Document {
     pub token: Option<String>,
     pub max_frame_bytes: Option<usize>,
     pub proof: Option<DocumentActivation>,
+    pub unavailable_code: Option<IpcErrorCode>,
 }
 
 impl Document {
@@ -133,6 +134,7 @@ impl Document {
         *self = Self {
             epoch: self.epoch,
             native_id: Some(native_id),
+            unavailable_code: self.native_id.map(|_| IpcErrorCode::Navigated),
             ..Self::default()
         };
         Some(next)
@@ -140,6 +142,16 @@ impl Document {
 
     pub fn current(&self, navigation: u64) -> bool {
         self.epoch.current(navigation)
+    }
+
+    pub fn request_error(&self) -> Option<IpcErrorCode> {
+        if self.epoch.closed {
+            Some(IpcErrorCode::Closed)
+        } else if self.current(self.epoch.navigation) {
+            None
+        } else {
+            Some(self.unavailable_code.unwrap_or(IpcErrorCode::NotReady))
+        }
     }
 
     pub fn accepts(&self, proof: &DocumentActivation) -> bool {
@@ -288,6 +300,34 @@ assert.equal(current.calls[0].challenge, '02'.repeat(16));
         assert!(reserved_path("https://app.webui.localhost/_webui/ipc-other").is_none());
         assert!(reserved_path("https://app.webui.localhost/_webui/ipc/runtime.js").is_none());
         assert!(reserved_path("https://app.webui.localhost/_webui/ipc/bootstrap.js?v=2").is_none());
+    }
+
+    #[test]
+    fn late_resource_requests_preserve_native_retirement_reason() {
+        let mut document = Document::default();
+        assert_eq!(document.request_error(), Some(IpcErrorCode::NotReady));
+        document.start(10).unwrap();
+        assert_eq!(document.request_error(), Some(IpcErrorCode::NotReady));
+        document.epoch.commit();
+        assert_eq!(document.request_error(), None);
+        assert_eq!(document.start(10), None);
+        assert_eq!(document.request_error(), None);
+
+        document.start(11).unwrap();
+        // An outgoing GET/POST may arrive before its queued JS close control.
+        assert_eq!(document.request_error(), Some(IpcErrorCode::Navigated));
+        assert_eq!(document.start(11), None);
+        assert_eq!(document.request_error(), Some(IpcErrorCode::Navigated));
+        document.epoch.commit();
+        assert_eq!(document.request_error(), None);
+
+        for code in [IpcErrorCode::Closed, IpcErrorCode::Transport] {
+            document.epoch.committed = false;
+            document.unavailable_code = Some(code);
+            assert_eq!(document.request_error(), Some(code));
+        }
+        document.epoch.closed = true;
+        assert_eq!(document.request_error(), Some(IpcErrorCode::Closed));
     }
 
     #[test]

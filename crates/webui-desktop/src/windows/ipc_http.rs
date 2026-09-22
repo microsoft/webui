@@ -125,8 +125,11 @@ fn prepare(
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     path: &str,
 ) -> Result<OwnedIpcHttpRequest, IpcError> {
-    if !ipc.current(ipc.navigation()) {
-        return Err(error(IpcErrorCode::NotReady));
+    // Resource callbacks can overtake ExecuteScript retirement delivery. The
+    // native document state already knows why admission is unavailable; do not
+    // turn that terminal reason back into an initial-handshake NotReady.
+    if let Some(code) = ipc.document.borrow().request_error() {
+        return Err(error(code));
     }
     let max_bytes = ipc.bridge.max_request_body_bytes(path)?;
     if path.len() > 128 || path.contains(['?', '#']) {

@@ -6221,6 +6221,11 @@ cancellation from winning the terminal reason race before provisional-start or
 `pagehide`. A failed control evaluation cancels that traversal with a native
 diagnostic; the revoked connection remains terminal. Same-document history
 traversals bypass this document-navigation policy and preserve their session.
+WebView2 retains the native document's unavailability reason while a replacement
+is provisional. IPC resource callbacks arriving before queued renderer closure
+receive `navigated` after native navigation, or the recorded closure/failure
+code, rather than a fresh-handshake `not-ready`. This is native state, not
+renderer inference from a Fetch failure, and does not relax admission.
 Renderer error normalization preserves allowlisted `IpcError` codes across the
 separately bundled bootstrap and runtime; foreign stacks and messages are not
 copied. An admission timeout remains `deadline-exceeded`, not `transport`.

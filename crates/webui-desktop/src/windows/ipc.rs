@@ -301,6 +301,7 @@ impl WindowsIpc {
         let credentials = {
             let mut document = self.document.borrow_mut();
             document.epoch.committed = false;
+            document.unavailable_code = Some(code);
             document.proof = None;
             document.max_frame_bytes = None;
             document.generation.take().zip(document.token.take())

@@ -694,6 +694,11 @@ the native shell cancels the traversal and reports a diagnostic; the old
 connection stays closed. Same-document History API traversal preserves the
 connection.
 
+During WebView2 document replacement, late IPC requests retain the native
+`navigated` terminal reason even if they reach the host before its queued
+renderer-close notification. Initial, uncommitted startup remains `not-ready`;
+native closure and transport failure keep their own codes.
+
 WebKit may restore a document from its back/forward cache without rerunning
 application modules. The SDK retires its old connections on `pagehide` and
 prepares a fresh inactive bootstrap epoch before a cache-eligible page freezes.
