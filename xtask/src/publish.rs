@@ -1215,6 +1215,21 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         .map_err(|e| format!("pnpm build @microsoft/{pkg_name} failed: {e}"))?;
     }
 
+    let press_dir = root.join("crates").join("webui-press");
+    if press_dir.join("package.json").exists() {
+        eprintln!(
+            "  {} Building {}",
+            console::style("·").dim(),
+            console::style("@microsoft/webui-press").bold(),
+        );
+        run_command_quiet(
+            "pnpm",
+            &["--filter", "@microsoft/webui-press", "build"],
+            None,
+        )
+        .map_err(|e| format!("pnpm build @microsoft/webui-press failed: {e}"))?;
+    }
+
     // Pack each package
     let entries =
         fs::read_dir(&packages_dir).map_err(|e| format!("failed to read packages/: {e}"))?;
@@ -1231,7 +1246,6 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         }
         package_dirs.push(path);
     }
-    let press_dir = root.join("crates").join("webui-press");
     if press_dir.join("package.json").exists() {
         package_dirs.push(press_dir);
     }
