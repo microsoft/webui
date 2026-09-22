@@ -5900,7 +5900,11 @@ worker fetches, use the same native request body and response `IStream` path in
 source and packaged apps. WebUI does not replace `fetch` or encode resource
 bodies into web messages, and owns no JavaScript pending-resource map.
 Browser `Request`, `Response`, body consumption, and `AbortSignal` semantics
-remain native. Cancellation stops browser delivery but does not roll back a
+remain native. The WebView2 adapter removes response bodies for HEAD requests
+before creating the intercepted response, including handler-error and executor
+failure responses, while retaining status and content type. HEAD still reaches
+the application handler as authored; the adapter does not substitute GET.
+Cancellation stops browser delivery but does not roll back a
 synchronous Rust API handler that already ran. Typed application IPC retains
 its separate authenticated dispatch and cancellation contract.
 

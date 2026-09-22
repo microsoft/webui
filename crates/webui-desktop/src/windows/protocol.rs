@@ -128,6 +128,7 @@ fn handle_web_resource_request(
             return Ok(());
         }
         let method = read_pwstr_bounded(32, |out| request.Method(out))?;
+        let head = method.eq_ignore_ascii_case("HEAD");
         let method = DesktopHttpMethod::parse(&method);
         let headers = request.Headers()?;
         let accept = read_header(&headers, "Accept").unwrap_or_default();
@@ -147,7 +148,13 @@ fn handle_web_resource_request(
         let Ok(work) = work else {
             args.SetResponse(&create_webview_response(
                 environment,
-                DesktopProtocolResponse::text(503, "Desktop application executor is unavailable"),
+                response_for_head(
+                    DesktopProtocolResponse::text(
+                        503,
+                        "Desktop application executor is unavailable",
+                    ),
+                    head,
+                ),
             )?)?;
             return Ok(());
         };
@@ -161,7 +168,7 @@ fn handle_web_resource_request(
                 let response = work.await.unwrap_or_else(|_| {
                     DesktopProtocolResponse::text(503, "Desktop application executor closed")
                 });
-                match create_webview_response(&environment, response)
+                match create_webview_response(&environment, response_for_head(response, head))
                     .and_then(|response| args.SetResponse(&response))
                 {
                     Ok(()) => {}
@@ -179,6 +186,16 @@ fn handle_web_resource_request(
         }
     }
     Ok(())
+}
+
+fn response_for_head(mut response: DesktopProtocolResponse, head: bool) -> DesktopProtocolResponse {
+    // WebView2 exposes intercepted response streams verbatim, unlike an HTTP
+    // server's HEAD framing. Preserve status and MIME metadata but never hand
+    // the browser a body, including handler errors and executor overload.
+    if head {
+        response.body = Vec::new().into();
+    }
+    response
 }
 
 /// Read one request header, returning `None` when it is absent.
@@ -549,6 +566,40 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn head_omits_success_and_error_bodies_but_preserves_metadata() {
+        for status in [200, 405, 500, 503] {
+            let released = Arc::new(AtomicUsize::new(0));
+            let response = response_for_head(
+                DesktopProtocolResponse::new(
+                    status,
+                    "application/octet-stream",
+                    DesktopResponseBody::with_guard(vec![1, 2, 3], Released(Arc::clone(&released))),
+                ),
+                true,
+            );
+            assert_eq!(response.status, status);
+            assert_eq!(response.content_type, "application/octet-stream");
+            assert!(response.body.as_bytes().unwrap().is_empty());
+            assert_eq!(released.load(Ordering::SeqCst), 1);
+        }
+        let response = response_for_head(DesktopProtocolResponse::text(200, "keep"), false);
+        assert_eq!(response.body, b"keep");
+        let response = response_for_head(
+            DesktopProtocolResponse::new(
+                200,
+                "application/octet-stream",
+                crate::DesktopResponseContent::File(crate::DesktopResponseFile::new(
+                    tempfile::tempfile().unwrap(),
+                    10,
+                )),
+            ),
+            true,
+        );
+        // An empty file with a declared length would fail if HEAD materialized it.
+        assert!(response.body.as_bytes().unwrap().is_empty());
     }
 
     #[test]

@@ -21,6 +21,9 @@ Runtime for security updates. This minimum corresponds to
 [WebView2 SDK 1.0.2365.46's worker request support](https://learn.microsoft.com/en-us/microsoft-edge/webview2/release-notes/sdk/1-0-2365-46).
 Validate runtime behavior
 on Windows CI or a Windows developer machine with WebView2 installed.
+Intercepted HEAD responses retain the handler's status and content type but
+never expose its body, including error responses. The handler still receives
+HEAD rather than an implicit GET.
 
 Windows application resources use the system browser's native request handling
 in both source and packaged apps, including fetches from workers. WebUI does not
