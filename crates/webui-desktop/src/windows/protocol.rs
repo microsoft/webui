@@ -326,8 +326,7 @@ fn response_headers(content_type: &str) -> String {
     let mut headers = String::with_capacity(content_type.len() + 96);
     headers.push_str("Content-Type: ");
     headers.push_str(content_type);
-    headers
-        .push_str("\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\n");
+    headers.push_str("\r\nCache-Control: no-store\r\nPragma: no-cache\r\n");
     headers
 }
 
@@ -566,6 +565,14 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn intercepted_responses_publish_the_canonical_no_store_policy() {
+        assert_eq!(
+            response_headers("application/x-protobuf"),
+            "Content-Type: application/x-protobuf\r\nCache-Control: no-store\r\nPragma: no-cache\r\n"
+        );
     }
 
     #[test]

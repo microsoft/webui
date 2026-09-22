@@ -24,6 +24,8 @@ on Windows CI or a Windows developer machine with WebView2 installed.
 Intercepted HEAD responses retain the handler's status and content type but
 never expose its body, including error responses. The handler still receives
 HEAD rather than an implicit GET.
+WebView2 responses carry `Cache-Control: no-store`, including rejected IPC
+requests; native interception does not permit browser caching of these bodies.
 
 Windows application resources use the system browser's native request handling
 in both source and packaged apps, including fetches from workers. WebUI does not

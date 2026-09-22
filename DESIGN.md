@@ -5904,6 +5904,8 @@ remain native. The WebView2 adapter removes response bodies for HEAD requests
 before creating the intercepted response, including handler-error and executor
 failure responses, while retaining status and content type. HEAD still reaches
 the application handler as authored; the adapter does not substitute GET.
+Intercepted WebView2 responses publish `Cache-Control: no-store`, matching the
+canonical IPC response policy on the other native backends.
 Cancellation stops browser delivery but does not roll back a
 synchronous Rust API handler that already ran. Typed application IPC retains
 its separate authenticated dispatch and cancellation contract.
