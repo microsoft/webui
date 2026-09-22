@@ -140,10 +140,16 @@ fn has_header(path: &Path) -> Result<bool, String> {
     };
 
     let mut lines = content.lines();
-    let first = match lines.next() {
+    let mut first = match lines.next() {
         Some(line) => line,
         None => return Ok(false),
     };
+    if first.starts_with("#!") {
+        first = match lines.next() {
+            Some(line) => line,
+            None => return Ok(false),
+        };
+    }
     let second = match lines.next() {
         Some(line) => line,
         None => return Ok(false),
@@ -159,19 +165,27 @@ fn prepend_header(path: &Path) -> Result<(), String> {
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let (header_line_1, header_line_2) = expected_header(path);
 
+    let shebang_len = content
+        .strip_prefix("#!")
+        .and_then(|rest| rest.find('\n').map(|line_len| line_len + 3))
+        .unwrap_or(0);
     let mut new_content =
         String::with_capacity(header_line_1.len() + header_line_2.len() + 3 + content.len());
+    if shebang_len > 0 {
+        new_content.push_str(&content[..shebang_len]);
+    }
     new_content.push_str(header_line_1);
     new_content.push('\n');
     new_content.push_str(header_line_2);
     new_content.push('\n');
 
     // Add a blank separator line unless the file already starts with one.
-    if !content.is_empty() && !content.starts_with('\n') {
+    let remaining = &content[shebang_len..];
+    if !remaining.is_empty() && !remaining.starts_with('\n') {
         new_content.push('\n');
     }
 
-    new_content.push_str(&content);
+    new_content.push_str(remaining);
 
     fs::write(path, new_content).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(())
@@ -215,6 +229,19 @@ mod tests {
     }
 
     #[test]
+    fn detects_present_header_after_shebang() {
+        let dir = temp_dir();
+        let file = dir.join("runner.mjs");
+        let content = format!(
+            "#!/usr/bin/env node\n{}\n{}\n\nconsole.log('ok');\n",
+            SLASH_HEADER.0, SLASH_HEADER.1
+        );
+        fs::write(&file, content).expect("write");
+
+        assert!(has_header(&file).expect("has_header"));
+    }
+
+    #[test]
     fn detects_present_python_header() {
         let dir = temp_dir();
         let file = dir.join("present.py");
@@ -250,6 +277,21 @@ mod tests {
         assert!(result.starts_with(HASH_HEADER.0));
         assert!(result.contains(HASH_HEADER.1));
         assert!(result.contains("\n\nprint('ok')"));
+    }
+
+    #[test]
+    fn prepend_preserves_shebang_first() {
+        let dir = temp_dir();
+        let file = dir.join("fix_me.mjs");
+        fs::write(&file, "#!/usr/bin/env node\nconsole.log('ok');\n").expect("write");
+
+        prepend_header(&file).expect("prepend");
+
+        let result = fs::read_to_string(&file).expect("read");
+        assert!(result.starts_with("#!/usr/bin/env node\n"));
+        assert!(result.contains(SLASH_HEADER.0));
+        assert!(result.contains(SLASH_HEADER.1));
+        assert!(result.contains("\n\nconsole.log('ok')"));
     }
 
     #[test]
