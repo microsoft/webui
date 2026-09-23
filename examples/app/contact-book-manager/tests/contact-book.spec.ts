@@ -51,7 +51,8 @@ test.describe('SSR pages', () => {
     const response = await page.goto('/');
     if (!response) throw new Error('dashboard navigation returned no response');
     const bootstrapState = bootstrapStateFromHtml(await response.text());
-    expect(Object.keys(bootstrapState).sort()).toEqual(['totalFavorites']);
+    expect(Object.keys(bootstrapState).sort()).toEqual(['mode', 'totalFavorites']);
+    expect(bootstrapState['mode']).toBe('web');
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
     // Stat cards
     await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();
@@ -316,7 +317,7 @@ test.describe('client-side navigation', () => {
 test.describe('contact edit does not corrupt sidebar groups', () => {
   test('editing a contact group from Work to Friends keeps sidebar labels stable', async ({ page, request }) => {
     // Ensure contact #1 starts in group "Work" (reset from any prior test run)
-    await request.put('http://127.0.0.1:3013/api/contacts/1', { data: { group: 'Work' } });
+    await request.put('/api/contacts/1', { data: { group: 'Work' } });
 
     // Navigate to contact #1 (Sarah Chen, group: Work)
     await page.goto('/contacts/1');

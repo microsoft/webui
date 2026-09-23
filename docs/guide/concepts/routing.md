@@ -790,6 +790,13 @@ without serializing and reparsing the complete tree. Serialized host boundaries
 use `Protocol::render_partial_json()`; raw input is validated in full while
 unneeded values are skipped without constructing a duplicate JSON tree.
 
+Rust hosts that need response bytes or a writer can call
+`Protocol::prepare_partial()` instead. It returns a serializable response with
+`is_match()` for status handling, using the same projection policy as the string
+APIs. Desktop and web hosts retain declared and template-required fields, with
+full client-safe state as the correctness fallback when requirements are
+unknown. The reserved host-injection object is never navigation state.
+
 After storing new template metadata, the router dispatches
 `webui:templates-registered`. Optional runtimes may synchronously add resource
 promises with the event detail's `waitUntil()` function. The router awaits those

@@ -548,13 +548,19 @@ Neither `ready` nor `finished` delays route notification or queues subsequent
 navigations. Both observers share one rejection handler, without per-navigation
 closures or retained transition state.
 
-**Partial response:** `Protocol::render_partial()` accepts owned
-`serde_json::Value` state and returns the complete response with projected
-top-level `state`, moving selected values without a serialize/reparse cycle.
+**Partial response:** `Protocol::prepare_partial()` accepts owned
+`serde_json::Value` state and returns a serializable `PartialNavigation` with
+projected top-level `state` and an out-of-band `is_match()` result. Selected
+values move into the response without cloning their trees. Desktop and the web
+CLI serialize this response directly into their byte buffers. The compatible
+`Protocol::render_partial()` string API wraps the same preparation path.
 `Protocol::render_partial_json()` accepts raw state and validates it with a
 streaming serde visitor that enforces `serde_json::Value` numeric limits, skips
 unselected values without materializing them, and borrows selected raw values
-into the response. FFI, Node, WASM, and .NET expose only the complete
+into the same response serializer. Unknown component surfaces retain full state
+for correctness; both input paths exclude the reserved top-level `$webui` key,
+including that fallback. Inventory filtering never narrows state selection:
+resident templates still receive their required data. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
@@ -5700,6 +5706,23 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   After configured lazy loaders run, document navigation is used only when
   neither authored code nor the compiler-owned host runtime registers the
   destination tag. Route chain JSON has no `client` capability flag.
+- Navigation interception has two mechanisms with identical semantics. The
+  Navigation API (`NavigateEvent.intercept()`) is used only when the document
+  has an HTTP-family origin (`http:` or `https:`); otherwise the router
+  intercepts capture-phase link clicks and `popstate`, driving the same
+  `handleNavigation` path through `history.pushState`. Desktop shells serve
+  applications from a custom scheme (`webui://app`), where WebKit refuses to
+  treat a navigation as same-document and reports `canIntercept: false` on
+  every real `NavigateEvent` even though `window.navigation` exists. The origin
+  scheme is the gate because probing with `history.replaceState` is misleading:
+  a same-document state change is interceptable on a custom scheme while an
+  actual navigation is not. Without this fallback every desktop route change
+  becomes a full document load and the web engine retains one document per
+  navigation. The same fallback serves browsers that lack the Navigation API.
+  Click interception resolves the anchor through `composedPath()` so links
+  inside shadow roots are honored, and declines modified clicks, non-primary
+  buttons, `download`, `target` other than `_self`, `rel=external`,
+  cross-origin destinations, excluded paths, and pure fragment changes.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
   that receive `e`, so the runtime installs listeners without regrouping or
@@ -5734,6 +5757,7 @@ webui/
 │   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
+│   ├── webui-desktop/        # Desktop SDK with optional native backends and tooling (binary: "webui-desktop")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
@@ -5784,6 +5808,13 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-handler         ├── webui-protocol
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
+
+webui-cli ──────► webui-desktop (sidecar process, enabled by the cli feature)
+                       │
+                       ├── webui-handler
+                       ├── webui-protocol
+                       ├── webui (source feature only)
+                       └── system webview (native feature only)
 
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
      └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
@@ -5886,6 +5917,610 @@ silently replaced with latest-version guidance. Framework contributors read
 `docs/ai.md` directly. The loader and package reference do not require runtime
 network requests or install-time changes to consumers' agent configuration.
 
+### Desktop Distribution
+
+The `webui desktop` command runs and packages WebUI applications in a
+Rust-native desktop shell without Electron, Node, or a bundled JavaScript
+runtime. `webui` is the only public CLI. Desktop work is implemented by a
+separate `webui-desktop` sidecar backend so the default `webui` CLI does not
+link webview dependencies. The base CLI exposes `webui desktop ...`, resolves
+and executes the sidecar backend, and returns a typed CLI error with an install
+hint if desktop support is unavailable.
+
+#### Runtime backend
+
+Desktop runtime uses direct platform backends:
+
+- Windows: WebView2.
+- macOS: WKWebView.
+- Linux: GTK4 with WebKitGTK 6.
+
+Native shells are hidden behind the `webui_desktop` frame abstraction.
+App-specific runners construct a runtime-neutral `DesktopFrame` and call
+`webui_desktop::run_frame(frame)` or
+`webui_desktop::run_runtime(runtime, window)`. The crate dispatches to a
+target-gated `PlatformFrameBackend` that implements the shared
+`DesktopFrameBackend` trait. Application code must not branch on
+`cfg(target_os)` to choose `macos`, `windows`, or `linux`; platform differences
+belong in backend modules. Public shell APIs require a working backend
+implementation, capability reporting, and actionable unsupported-feature errors
+on other backends. Unimplemented capabilities must not reserve public types,
+manifest fields, or capability flags.
+
+The shell registers a custom app protocol and loads the initial page from that
+origin instead of starting a localhost HTTP server. Platform engines expose
+custom origins differently, so desktop client code must use relative URLs and
+`location.origin` rather than hard-coded `webui://app` URLs. Navigation is
+denied by default unless the target stays inside the allowed app origin or is
+explicitly allowed by a registered capability.
+
+Linux builds require GTK4 and WebKitGTK 6 so protobuf IPC POST bodies are
+available without depending on unmaintained GTK3 Rust bindings. CI and developer
+setup must install the platform WebKitGTK/GTK packages explicitly; the xtask
+helpers may auto-install Rust tooling, but must not auto-install system
+packages.
+
+The native window-control bridge (`webuiHost`, used for drag/minimize/
+maximize/close from web content) is frame-scoped on macOS via
+`WKScriptMessage.frameInfo().isMainFrame()` and on Windows because
+`ICoreWebView2::add_WebMessageReceived` only delivers top-level messages
+(the backend deliberately never subscribes to
+`ICoreWebView2Frame::add_WebMessageReceived`). WebKitGTK 6 has no equivalent:
+`UserContentManager::register_script_message_handler` exposes the handler to
+every frame, and `script-message-received` reports no sending-frame identity.
+The Linux backend restricts script injection to
+`UserContentInjectedFrames::TopFrame` to keep the convenience
+`window.webuiHostPostMessage` alias out of subframes, but this is a partial
+mitigation: a subframe can still call
+`window.webkit.messageHandlers.webuiHost.postMessage(...)` directly. Apps that
+embed untrusted third-party iframe content must not rely on this bridge being
+frame-scoped on Linux.
+
+Windows requires WebView2 Runtime 122.0.2365.46 or later, the stable runtime for
+SDK 1.0.2365.46's `ICoreWebView2_22` request-source filter. Startup requires that
+interface and registers `WebResourceRequested` for all resource contexts and
+request sources before navigation; unsupported runtimes fail with an update
+hint, never a reduced filter or JavaScript fallback. The filter targets only
+`https://app.webui.localhost/*`. Application resources, including document and
+worker fetches, use the same native request body and response `IStream` path in
+source and packaged apps. WebUI does not replace `fetch` or encode resource
+bodies into web messages, and owns no JavaScript pending-resource map.
+Browser `Request`, `Response`, body consumption, and `AbortSignal` semantics
+remain native. The WebView2 adapter removes response bodies for HEAD requests
+before creating the intercepted response, including handler-error and executor
+failure responses, while retaining status and content type. HEAD still reaches
+the application handler as authored; the adapter does not substitute GET.
+Intercepted WebView2 responses publish `Cache-Control: no-store`, matching the
+canonical IPC response policy on the other native backends.
+Cancellation stops browser delivery but does not roll back a
+synchronous Rust API handler that already ran. Typed application IPC retains
+its separate authenticated dispatch and cancellation contract.
+
+WebView2 browser storage is scoped by the frame's validated `app_id`, not by
+the executable name. Exact byte encoding avoids case-folding, device-name and
+sanitization collisions on Windows. Missing identity allocates a fresh,
+exclusively created profile for that frame; anonymous profiles are never reused
+and are removed on shutdown when native file locks permit. Hosts that need
+persistent localStorage or IndexedDB must supply a stable application identity.
+
+Backend dependencies are target-specific so the default `webui` CLI and
+non-desktop platforms stay lean. macOS links only the objc2 WebKit/AppKit stack.
+Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
+Windows. The runtime still uses the same `DesktopRuntime` dispatcher on every
+platform: no localhost server, one shared protocol/state/asset graph, bounded
+asset reads, and route/API/IPC dispatch through the custom app origin.
+Packaged app runners use `webui_desktop::find_packaged_resources_dir()`
+to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
+layouts remain behind one API.
+
+The `microsoft-webui-desktop` SDK has no default features. Its base API includes
+bundle loading, frame configuration, lifecycle ownership, rendering, routes, and
+custom-protocol APIs, without native GUI or application IPC dependencies.
+`application-ipc` explicitly enables the IPC APIs, frame-owned sessions, async
+workers, embedded assets, and native admission/transport integration. Without it,
+the SDK does not compile those modules, generate or reserve IPC bundle assets,
+serve embedded IPC assets, or install native IPC bootstrap/control handlers.
+The direct `prost`, futures, and randomness dependencies belong to this feature;
+the rendering protocol still uses `prost` transitively, independently of IPC.
+`native` enables the current platform's stock
+backend; `source` enables `BuildOptions`, `DesktopSourceConfig`,
+`DesktopRuntime::from_source`, bundle construction, and packaging APIs.
+`cli` enables the sidecar binary and implies both `native` and `source`.
+Neither `native`, `source`, nor `cli` implies `application-ipc`.
+The test gate exercises the `native`/`source`/`application-ipc` combinations
+in package-local Cargo invocations, independently of workspace feature
+unification, plus a no-IPC `cli` build. Each selected
+unit/integration suite must execute passing tests; IPC contract targets declare
+their required features instead of succeeding with zero tests when disabled.
+Generated Rust consumer checks explicitly enable `application-ipc`.
+Committed typed/native fixture bindings and embedded browser assets are
+checked for generation parity without first rewriting them.
+Application manifests enable `native` on their SDK dependency and forward
+`source` through an opt-in local feature, so source compilation is absent from
+normal production builds. Runtime-only builds preserve bundle manifest types and
+`DesktopRuntime::from_bundle`, `from_bundle_config`, and
+`from_bundle_config_and_manifest`. The compiler dependency is optional, not
+merely unreachable: runtime-only builds use `webui-handler`'s `Protocol`,
+`RenderOptions`, and `WebUIHandler` directly, and do not depend on the parser,
+discovery, Tokio, Rayon, or CLI argument parsing. The stateless handler factory
+is selected once when a runtime loads and shared across renders.
+The `DesktopError::Build` variant is available only with `source`.
+
+The SDK's `cli` feature enables the `webui-desktop` binary and its
+command-line dependencies. The binary declares
+`required-features = ["cli"]` so runtime-only crate checks do not accidentally
+compile development tools.
+
+Portable modules inherit the workspace's `unsafe_code = "deny"` policy.
+Only target-gated native adapters, Windows atomic state replacement, and the opened-asset path verification helpers
+allow unsafe code for their OS FFI boundaries. Physical package consolidation does not change the IPC wire format,
+bundle layout, or process isolation provided by the system webview.
+Native and custom backend errors cross the public API as
+`DesktopError::Backend`, retaining their source error.
+Missing bundle resources report `DesktopError::PackagedResourcesNotFound`
+with a development-or-packaging hint rather than falling back to compilation.
+
+`DesktopApp::from_bundle` and `from_bundle_config` return a
+`DesktopAppBuilder` after loading the manifest once. The
+`from_bundle_config_and_manifest` constructor accepts an already-loaded manifest
+without additional manifest I/O. With `source`, `DesktopApp::from_source`
+accepts `DesktopSourceConfig`. Both paths register host state/routes/API/IPC
+before startup SSR, apply a single resolved window configuration to renderer and
+native frame, and preserve shell configuration and stable app identity.
+`DesktopAppBuilder::build` returns an owning `DesktopFrame`, not a runtime.
+`run_frame_with(frame, &backend)` validates capabilities before invoking a custom
+`DesktopFrameBackend`, and is available without stock native dependencies.
+Frame configuration is private and exposed through immutable `app_id()`,
+`runtime()`, `window()`, `shell()`, `events()`, and `window_handle()` accessors.
+Consuming construction methods may set identity/shell options before launch.
+Frame construction rejects titlebar/background CSS that disagrees with the
+already-rendered runtime; configure these options on the app builder before
+building. Platform-specific `run_runtime` entry points and direct
+`PlatformFrameBackend::run_frame` calls use the same validation boundary.
+On macOS the frame/delegate/scheme handler own their runtime references; there
+is no process-global runtime slot.
+
+When callers need manifest metadata, they should load
+`DesktopBundleManifest` once and call
+`DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. This avoids
+double manifest I/O during cold start. Bundle-backed runtimes also build an
+in-memory index from manifest integrity metadata, so immutable asset requests
+avoid per-request canonicalization while preserving lexical traversal validation
+and the configured response-size cap. Manifest asset names are literal filesystem
+paths; request segments are percent-decoded exactly once before index lookup.
+Indexed paths are checked against the canonical asset root at load time.
+Every asset's opened handle is checked for root containment, regular file type
+and actual length before delivery, including indexed assets. This handle check
+rejects symlink substitution between path validation and opening. Linux requires
+accessible `/proc/self/fd` for this check; unavailable handle-path verification
+fails closed. The response owns that checked handle and never reopens its name.
+
+Startup HTML is a construction-time snapshot. Full `/` and `/index.html`
+requests rerender when a Rust provider matches `/`, including propagating provider
+errors; immutable provider-free root documents may reuse startup HTML.
+Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
+`PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
+something xtask may install. The Windows WebView2 dependency and Win32
+controller/message-loop backend are target-gated and share the same
+`DesktopRuntime` dispatcher; runtime validation still belongs on Windows CI or a
+Windows developer machine with the WebView2 Runtime installed.
+
+#### Desktop command surface
+
+```bash
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window flags]
+webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window/package flags]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
+```
+
+`run` builds from source paths, renders the startup HTML in process, creates the
+native window, and loads the app protocol URL. Desktop watch/reload is not
+implemented; `--watch` is not a supported option. Restart `run` after changes.
+
+`build` creates an immutable desktop bundle containing:
+
+- `protocol.bin`, generated CSS, copied static assets, and the desktop IPC
+  helper under `assets/`.
+- Optional seed `state.json`. Dynamic desktop apps should treat this as seed
+  data only; route-scoped data comes from Rust route providers.
+- A desktop manifest with app id, app name, version, publisher, window defaults,
+  WebUI build options, asset roots, capabilities, and package
+  metadata.
+- The shared browser IPC runtime and native admission bootstrap. Application
+  interfaces and codecs are generated separately from proto3 contracts through
+  `webui desktop ipc generate` and bundled with application code.
+- Integrity hashes for packaged protocol and assets.
+
+`package` is the one-command Rust-first packaging entry point. When the input is
+a WebUI app root, the sidecar reads `webuiDesktop` metadata from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate,
+stages non-generated static assets, builds the desktop bundle, and emits native
+artifacts with that runner. When the input is an existing desktop bundle, the
+command remains a lower-level packager and accepts `--runner <PATH>` for the
+app-specific executable. The generic sidecar runner is only for file-backed or
+static seed-state bundles.
+
+App-root packaging builds the runner with `--release --no-default-features`
+by default. `--debug` explicitly selects the debug profile; `--release` remains
+accepted for existing commands. Production capabilities can be enabled through
+`webuiDesktop.runnerFeatures` (an array of Cargo feature names) and additional
+`--runner-features` values. `webuiDesktop.runnerDefaultFeatures: true` or
+`--runner-default-features` explicitly restores defaults for custom runners.
+These options affect a Cargo-built runner, not an executable supplied with
+`--runner`.
+
+Example app metadata:
+
+```json
+{
+  "webuiDesktop": {
+    "app": "src",
+    "state": "data/state.json",
+    "assets": "dist",
+    "theme": "@microsoft/webui-examples-theme",
+    "icon": "desktop/app.icns",
+    "plugin": "webui",
+    "runnerCrate": "contact-book-desktop",
+    "buildScripts": ["build:deps", "build:client"],
+    "appId": "com.microsoft.webui.contactbook",
+    "appName": "Contact Book Manager",
+    "appVersion": "1.0.0",
+    "title": "Contact Book Manager",
+    "width": 1200,
+    "height": 800,
+    "devtools": true
+  }
+}
+```
+
+If `runnerCrate` is omitted, the sidecar tries to infer it from
+`<APP_ROOT>/desktop/Cargo.toml`. App-root packaging copies non-generated assets
+from `assets` into an internal staging directory and excludes generated CSS,
+`protocol.bin`, generated startup HTML, manifest, seed state, and IPC helper
+files so WebUI-owned outputs cannot collide with static assets.
+The CLI `--theme` flag overrides `webuiDesktop.theme` for one-off packaging.
+
+#### Shell extension model
+
+The desktop bundle manifest carries a runtime-neutral `shell` object. It is the
+stable extension point for native shell features without coupling app code to a
+particular OS API:
+
+- `icon_path` - bundle-relative app icon path. macOS uses `.icns` as
+  `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
+- `menus` - declarative native menu groups and menu items. Items dispatch to
+  allowlisted desktop IPC commands.
+- `tray` - optional native tray icon and tooltip.
+
+Backends must expose only capabilities they can implement safely. Unsupported
+shell features are rejected with actionable diagnostics before launch.
+Unknown shell fields fail manifest deserialization rather than being silently
+ignored. Jump-list, popover, and download declarations are not part of the
+public API. Shell extensions must not add background servers, global mutable
+state, or persistent caches to the render hot path.
+
+- `macos-app`
+- `windows-portable`
+- `linux-portable`
+- `all` (CLI selection of all three implemented layouts)
+
+Packaging is Rust-first and build-time only. The current Rust implementation
+writes macOS `.app` and portable folder layouts directly, validates that output
+paths do not overlap app/bundle/state/asset/runner inputs before deleting
+anything. Installer/archive generation and signing are not supported targets.
+`all` copies the supplied runner into each layout; it does not cross-compile
+executables. Removed installer names fail CLI argument or manifest validation,
+not a misleading missing-tooling error. There is no
+`DesktopError::PackageTargetRequiresTooling` variant.
+
+#### Desktop IPC
+
+Application IPC uses generated Rust/TypeScript interfaces over bounded binary
+transport. It does not embed Chromium's Mojo runtime. The separate lifecycle
+and window-control channels remain closed sets, not application message buses.
+
+`microsoft-webui-desktop-build` compiles proto3 descriptors with protoc and
+build-time descriptor reflection. It emits WebUI-owned Rust and TypeScript
+payload codecs, role markers, host handler registration, renderer clients,
+TypeScript clients and receivers, validation metadata, a normalized schema hash
+and an ID-evolution lock. Rust owns the capability registry and policy; generated
+payload codecs are synchronous and monomorphic; JavaScript/TypeScript remains a
+thin facade over the platform-native transport. Compiler/reflection dependencies
+are build-time only.
+The CLI's JSON diagnostics preserve the generator's stable `ipc-*` code,
+actionable help, and filesystem path when available through contextual wrappers.
+Compiler selection uses explicit `protoc` configuration, then `PROTOC`, then PATH.
+Canonical paths remain the basis for filesystem containment; Windows verbatim
+drive paths are adapted only at the subprocess boundary. No process-global
+directory or environment is changed. Generated TypeScript excludes host
+compiler-version comments.
+
+Generated `ipc.ts` is a runtime-free application facade: its type imports are
+erased, and only an explicit `connectDesktop()` dynamically loads the private
+`ipc-runtime.ts` implementation, schema codecs, and browser runtime. The
+bindings cache the module-loading promise, including rejection, not a
+connection. Concurrent and subsequent calls each perform their own handshake
+and retain independent handlers, subscriptions, closure, and call IDs.
+Import failures reject before transport activation without retries. The
+supported typed client/receiver API is unchanged; synchronous schema codecs
+and validation metadata live only in the private implementation. ESM code
+splitting is required to defer transfer and parsing in bundled applications.
+
+Services declare a receiver (`HOST` or `RENDERER`); every method has a unique,
+explicit uint32 ID above 1023. An acknowledged RPC returning
+`google.protobuf.Empty` is distinct from a notification marked with
+`webui.ipc.Notification` and `notification = true`. Removed IDs are retired,
+never reused. Protobuf fields and enum values preserve reservation history.
+Generation rejects unsupported streaming, recursive message graphs, proto2 and
+unsupported well-known types rather than silently omitting them.
+
+Application 64-bit integers map to Rust `i64`/`u64` and TypeScript `bigint`.
+Bytes map to `Vec<u8>`/`Uint8Array`; maps use native Rust map types and
+TypeScript `Map<K,V>` without key coercion. Generated value and iterative wire
+validation enforce ranges, oneofs, collection counts and depth before decoding.
+Protobuf field ordering is not a canonical application-byte representation;
+compatibility hashing uses the normalized descriptor, not incidental encoding
+order.
+
+`IpcRegistry::new(&schema)` owns immutable host RPC and startup notification
+definitions. `IpcRegistry::default()` disables application IPC. Registration
+alone grants no renderer authority: `IpcOptions` deny methods by default;
+`IpcOptions::for_schema` explicitly grants the declared IDs, with host/renderer
+allowlists available for narrowing. Development-only methods require both an
+explicit development grant and an actual source-backed host; packaged hosts
+deny them even when the executable was compiled with source support.
+
+`DesktopRuntime` shares immutable registry definitions with rendering state.
+The non-cloneable `DesktopFrame` owns mutable IPC state. Its `ipc()` handle and
+native `ipc_bridge()` facade are weak; they cannot keep a closed frame accepting
+work. Frame construction validates registry/options and can fail.
+`DesktopAppBuilder::ipc_options` supplies the frame's policy. Custom backends
+must advertise `application_ipc` and implement the bridge contract.
+`DesktopError::Ipc` retains the structured `IpcError` as its source; wire-v2
+payload and codec failures use `IpcErrorCode`, not the removed v1 codec variants.
+
+Each committed document receives a new session. Native lifecycle tracking
+supplies `CommittedMainDocument`, probes the current main document's random
+nonce, verifies that navigation did not change, and issues a fresh random
+challenge. The evaluated activation wrapper checks that nonce before invoking
+bootstrap, which checks again. Hello echoes the proof; admission atomically
+consumes the matching live activation and verifies wire version, contract
+name/major and exact schema hash. Secret comparisons do not stop at the first
+different byte.
+
+WKWebView may supply nil navigation identities for Navigation API document
+loads. A nil commit is admitted only after an observed nil native start, and
+consumes that pending start once. Pointer-identified starts require the identical
+native commit object. All asynchronous probes remain guarded by the frame's
+document epoch; neither a URL nor renderer-supplied identity authorizes admission.
+
+The unconsumed document proof remains valid until its document retires, so a
+lazy application's first connection need not happen during startup. The
+handshake deadline begins at `IpcBridge::admit`, includes worker queue time, and
+is checked again before delivering the admitted session. Native retirement
+publication is nonce-bound and precedes generation reset and response
+cancellation; a delayed publication cannot close a replacement document.
+For WKWebView main-document back/forward policy decisions, native retirement is
+queued before revocation and navigation is allowed only after the outgoing
+realm has evaluated the terminal control. This prevents browser Fetch
+cancellation from winning the terminal reason race before provisional-start or
+`pagehide`. A failed control evaluation cancels that traversal with a native
+diagnostic; the revoked connection remains terminal. Same-document history
+traversals bypass this document-navigation policy and preserve their session.
+WebView2 retains the native document's unavailability reason while a replacement
+is provisional. IPC resource callbacks arriving before queued renderer closure
+receive `navigated` after native navigation, or the recorded closure/failure
+code, rather than a fresh-handshake `not-ready`. This is native state, not
+renderer inference from a Fetch failure, and does not relax admission.
+Renderer error normalization preserves allowlisted `IpcError` codes across the
+separately bundled bootstrap and runtime; foreign stacks and messages are not
+copied. An admission timeout remains `deadline-exceeded`, not `transport`.
+
+The authenticated principal is possession of the native-authorized
+main-document capability, not a fabricated physical sender-frame identity.
+Cross-origin callers cannot read the capability under SOP. Same-origin parent
+delegation is within the trusted application boundary. This permits GTK's
+provenance-free reply signal without broadening CORS or trusting renderer
+origin/counter claims. GTK IPC views disable page-cache until restoration can
+prove fresh admission. Full navigation revokes old sessions; cancelled revoked
+navigation remains disconnected. Same-document routing preserves the session.
+
+For browser back/forward-cache restoration, trusted `pagehide` retires the
+current connection and pending hello. A cache-eligible document prepares a new
+cryptographic nonce and inactive bootstrap epoch before freezing. The frozen
+bootstrap exposes the current nonce through a read-only getter. On restored
+`pageshow`, application code must explicitly reconnect and await the existing
+trusted native commit/probe/activation sequence. Old transports, callbacks,
+proofs and credentials cannot retarget this epoch. There is no reload
+workaround, automatic RPC replay, automatic application reconnect, or second
+activation from JavaScript lifecycle events.
+
+Native control metadata contains only bounded admission, availability and
+closure information. WKWebView and WebKitGTK use reply-capable handlers;
+WebView2 correlates web messages. `disconnect_authenticated` requires generation
+and session token; generation alone grants no authority. Failed or late hello
+delivery retires only its authenticated session, never a replacement.
+Tokens remain closure-held and header-only, not in URLs, logs or user events.
+
+Wire version 2 replaces the unmerged string-method envelope. Its protobuf
+`IpcFrame` contains version, document generation, sender-local ID, kind,
+method ID, remaining timeout, and payload/error oneof. Kinds are `REQUEST`,
+`RESULT`, `ERROR`, `NOTIFY`, `ACCEPT`, and `CANCEL`. Caller IDs increase without
+reuse, with independent spaces for each direction. Duplicate invocations never
+reexecute; unknown kinds, mismatched roles, stale versions and schemas fail
+closed. No heuristic legacy fallback or automatic retry exists.
+
+Binary frames POST to `/_webui/ipc` using the session header. A `204` is bounded
+ingress acceptance, not handler completion. Rust results and Rust-initiated
+requests/notifications enter the bounded outbound queue; native code signals
+availability and JavaScript drains `/_webui/ipc/outbound` until `204`, with no
+idle polling. Dirty/draining coordination prevents a wake racing the final
+empty response from being lost. Application bytes never become base64 or
+per-byte native objects. The SDK injects one generated bootstrap and serves the
+same reserved runtime assets in source and packaged modes.
+Bodyless outbound GETs use Fetch keepalive so browser history traversal cannot
+cancel them before document retirement is observed. The document's abort
+controller still cancels them on native closure or trusted pagehide; no read
+continues into a replacement session. Payload POSTs do not use keepalive, which
+would impose the browser's separate 64 KiB request-body quota.
+
+RPC APIs return typed promises or `IpcCall<T>` futures. `RESULT`/`ERROR` settle
+RPCs; notifications use `ACCEPT`/`ERROR` to acknowledge capacity reservation,
+not callback completion. Notifications run in receipt order per subscription;
+invalid or cancelled intermediate work cannot let successors overtake their
+predecessors. Scoped subscription disposal prevents queued callbacks from
+starting; an already-running callback may finish. Startup Rust notification
+handlers are bound before readiness and reinstalled for replacement documents.
+
+Application handlers, decoding and user future polling run on bounded SDK
+workers, never native UI/protocol callback threads. Execution resources are
+lazy; disabled or unused IPC does not start workers or deadline threads.
+Deadlines include local queue time and use monotonic timing. Cancellation,
+dropped callers, navigation and shutdown settle waiters once, but cannot roll
+back completed side effects or forcibly terminate arbitrary blocking Rust code.
+Retired tasks retain their permits until actual completion.
+
+`IpcLimits` is an opaque Rust policy initialized with `Default`.
+`with_max_frame_bytes` accepts 2,176 bytes through 8 MiB and
+`with_default_timeout` accepts whole milliseconds from 1 through 300,000;
+both return `Result` and preserve private safety budgets. The corresponding
+`max_frame_bytes()` and `default_timeout()` accessors expose these choices.
+The default timeout applies to renderer RPCs; Rust callers continue to use
+`CallOptions`. Admission and notification deadlines are not changed by it.
+Queue, callback, worker-task, control-reservation, collection, and aggregate
+memory limits remain crate-private. No deserialization API can bypass policy
+construction. Native admission serialization retains the existing numeric wire
+fields; this is transport metadata, not an author-configurable object.
+
+Default limits include 1 MiB frames, 4 KiB native controls, 64 pending calls per
+direction, 128 queued frames, 8 MiB queued bytes per direction, 8 MiB admitted
+input, and 16 MiB retained bytes per frame. Limits also cap callbacks, worker
+tasks, readiness waiters, collection entries and depth. Overload fails promptly;
+separate bounded control reserves keep cancellation/completion deliverable under
+payload saturation. Raw varints are bounded before narrowing into codec types.
+
+Reservations precede SDK buffer growth and survive queue removal, cancellation,
+navigation and native transfer. `DesktopResponseBody` owns bytes and an opaque
+lease; native NSData, GBytes and IStream owners must retain that lease until the
+last view releases the buffer. A response body is not freely cloneable.
+`DesktopProtocolResponse::body` is `DesktopResponseContent`, with `Bytes` and
+`File` variants. `as_bytes()` borrows only buffered content; `into_bytes()`
+explicitly materializes a file for a non-native consumer and can fail.
+`DesktopResponseFile` owns an open handle and implements bounded `Read`/`Seek`:
+growth after opening is excluded and premature EOF is an error. File responses
+do not eagerly allocate an asset-sized Rust buffer. macOS reads at most 64 KiB
+per worker job, rechecks cancellation after each completion, and transfers each
+chunk to native storage. GTK and Windows hand owned file readers to their
+native stream interfaces; stream clones retain the same backing ownership.
+Limits bound SDK-owned transport resources, not arbitrary application
+allocations or uncooperative application work.
+
+#### Rust route/state providers
+
+Desktop applications that need dynamic route data should use the Rust host API
+instead of baking route data into static files. Developers register route state
+providers in their desktop host:
+
+```rust
+let mut config = webui_desktop::DesktopSourceConfig::new(build_options);
+config.asset_root = Some("./dist".into());
+let frame = webui_desktop::DesktopApp::from_source(config)
+    .state_value(seed_state)
+    .route("/", |ctx| {
+        Ok(json!({ "page": "dashboard", "recentContacts": recent_contacts() }))
+    })?
+    .route("/contacts/:id", |ctx| {
+        let id = ctx.param("id").ok_or_else(|| missing_id())?;
+        Ok(contact_detail_state(id))
+    })?
+    .build()?;
+webui_desktop::run_frame(frame)?;
+```
+
+Route providers run inside the Rust desktop host for full HTML renders and
+`@microsoft/webui-router` partial requests. They receive the request path,
+route parameters, and seed state, and return route-scoped JSON state. This keeps
+state ownership in Rust, avoids duplicated static route HTML, and lets router
+navigation use the same protocol path as browser/server deployments.
+`Protocol::prepare_partial` consumes the route state once and returns
+a serializable `PartialNavigation` with `is_match()`. Desktop uses the same
+navigation projection and reserved-state filtering as web hosts, rather than
+replacing projected state with the original view model. Declared and
+template-derived requirements are retained; unknown surfaces use the common
+correctness fallback, not a desktop-specific bypass.
+`Protocol::matches_route` uses the compiled route chain without rendering assets.
+
+Desktop `run`/`build` accept repeatable `--projection-manifest` inputs.
+App-root packaging accepts the same flag or the `webuiDesktop.projectionManifests`
+array, resolving configuration paths against the app root and CLI paths against
+the working directory. CLI inputs replace configured inputs. Manifests pass
+through the compiler's existing schema, freshness and coverage checks and are
+excluded from both staged assets and direct bundle asset copying. Disk and
+inline manifest locations participate in output-overlap validation before
+cleanup, so bundling cannot erase its projection inputs. Filesystem resolution
+precedes lexical reduction of `..` segments, matching compiler file identity.
+Existing bundles already contain compiled
+projection metadata and reject new manifest arguments. The Contact Book runner
+passes its client build manifest in source mode and configures it for packaging.
+
+If a route provider returns an error, the desktop runtime surfaces that error;
+it must not silently fall back to seed state. Valid route paths may contain `.`
+segments, so asset lookup happens before protocol route-chain matching rather
+than using filename heuristics.
+
+Rust desktop hosts may also register custom-protocol API handlers for paths such
+as `/api/contacts/:id`. This lets existing browser code keep using `fetch("./api")`
+while the packaged app services create/update/delete/favorite mutations against
+Rust-owned in-memory state.
+
+Native ordinary resource/API callbacks copy bounded transport input and submit
+routes, providers, rendering and file opening to one frame-owned lazy
+application/I/O executor. It starts two workers on first use, admits at most 16
+queued/running/completed jobs together, and rejects overload with HTTP 503.
+Ordinary native request bodies are capped at 1 MiB
+(`DEFAULT_MAX_REQUEST_BYTES`); file response lengths default to 32 MiB
+(`DEFAULT_MAX_ASSET_BYTES`). Typed IPC retains its separate authenticated async
+admission, scheduling and byte-credit contract. There are no route-specific or
+file-specific worker pools. Direct `DesktopRuntime::handle_request` remains a
+synchronous API for non-native hosts; startup rendering runs during construction.
+Frame shutdown closes admission without joining arbitrary host callbacks.
+Cancellation suppresses delivery and queued work when its completion is dropped,
+but cannot preempt or roll back a synchronous callback already executing.
+Native UI completion drivers only poll completion/delivery futures. All adapters
+share document epoch advancement, one-shot commit, proof comparison and stale
+generation policy; native navigation IDs, FFI ownership, timers and session
+storage remain in their platform adapters.
+
+#### Desktop performance and memory constraints
+
+- No localhost HTTP server in desktop mode.
+- No Electron, Node, or bundled Chromium.
+- No per-navigation template rebuild.
+- Share protocol, route indexes, CSS maps, and immutable asset metadata by
+  reference.
+- Route-backed hosts should retain canonical application collections once,
+  borrow them for read-only route preparation, and keep global render seeds
+  separate from route-owned data. Browser-only derived collections should not
+  be materialized when a desktop host recomputes them from canonical data.
+- The macOS response bridge transfers owned response buffers to `NSData`
+  without another body-sized allocation. Buffer ownership must remain valid
+  if WebKit retains the data after the scheme callback returns, including the
+  original Rust allocation's capacity and deallocator.
+- macOS initialization and scheme callbacks use bounded autorelease scopes;
+  windows, delegates, and webviews retain explicit ownership across those
+  scopes and the application event loop.
+- Serve packaged assets from the bundle/resource root only; cap or stream large
+  static reads.
+- Packaged builds must not include watchers, HMR scripts, devtools, or debug IPC
+  methods unless explicitly built as a development bundle.
+- Measure cold startup phases, first paint where automatable, packaged app
+  startup, steady-state RSS after first paint, binary size, and bundle size.
+  Distinguish cold filesystem caches from fresh-process launches with warm
+  caches. On macOS, report physical footprint for the host and WebKit helper
+  processes separately; host-only RSS or its stabilization is not a measure of
+  total application memory or page readiness.
+
 ### .NET / NuGet Distribution
 
 The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It targets `net8.0` and `net9.0`, packs `dotnet/src/Microsoft.WebUI/README.md`, and publishes XML documentation generated from public API comments.
@@ -5907,7 +6542,7 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 `dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, the SPDX `MIT` license expression with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and exact `hotfix/*` release branches and can also be queued manually. `PrepareRelease` runs one explicit source-only Component Detection scan before any release jobs, so policy-compliant dependency registration does not rescan restored Cargo caches in every matrix leg. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. The container uses an ephemeral Cargo target directory so it cannot reuse host objects linked against a newer glibc or leave root-owned state in Azure's target cache. Its artifact-staging bind mount keeps mode-aware wheel exports after the container exits without disturbing the natives the host run staged. The macOS and Windows legs install the same pinned `maturin` version before building their wheels. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Production stable builds require `refs/heads/main`; production hotfix builds require the exact `refs/heads/hotfix/v<version>` branch. Other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. Before any hotfix artifact build, `ValidateHotfix` runs the complete `cargo xtask check` gate against the backported release line. `BuildArtifacts` then runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. A seventh job builds the release WASM variants concurrently with those native legs. The assembly job merges all seven outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only --prebuilt-wasm`, because that directory contains versioned release archives rather than incremental build inputs. The packer consumes the downloaded WASM output, generates npm, crate, NuGet, Python, and standalone artifacts, and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Hotfix builds must instead be selected by a manually authorized CD run, so pushing an unprotected hotfix branch cannot publish production packages by itself. The CD pipeline independently verifies that a hotfix release commit descends from its corresponding stable tag before signing. Its `SignArtifacts` stage validates release metadata and signs NuGet packages in one job while two parallel jobs stage the npm/crate and Python/standalone outputs. Splitting the outputs lets 1ES analyze and generate SBOMs for independent artifact groups concurrently. For production runs, `TagRelease` creates or verifies the annotated Git tag only after every signed or staged output passes its 1ES checks. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 61 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and exact `hotfix/*` release branches and can also be queued manually. `PrepareRelease` runs one explicit source-only Component Detection scan before any release jobs, so policy-compliant dependency registration does not rescan restored Cargo caches in every matrix leg. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. The container uses an ephemeral Cargo target directory so it cannot reuse host objects linked against a newer glibc or leave root-owned state in Azure's target cache. Its artifact-staging bind mount keeps mode-aware wheel exports after the container exits without disturbing the natives the host run staged. The macOS and Windows legs install the same pinned `maturin` version before building their wheels. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Production stable builds require `refs/heads/main`; production hotfix builds require the exact `refs/heads/hotfix/v<version>` branch. Other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. Before any hotfix artifact build, `ValidateHotfix` runs the complete `cargo xtask check` gate against the backported release line. `BuildArtifacts` then runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. A seventh job builds the release WASM variants concurrently with those native legs. The assembly job merges all seven outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only --prebuilt-wasm`, because that directory contains versioned release archives rather than incremental build inputs. The packer consumes the downloaded WASM output, generates npm, crate, NuGet, Python, and standalone artifacts, and validates the exact 10 npm, 17 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Hotfix builds must instead be selected by a manually authorized CD run, so pushing an unprotected hotfix branch cannot publish production packages by itself. The CD pipeline independently verifies that a hotfix release commit descends from its corresponding stable tag before signing. Its `SignArtifacts` stage validates release metadata and signs NuGet packages in one job while two parallel jobs stage the npm/crate and Python/standalone outputs. Splitting the outputs lets 1ES analyze and generate SBOMs for independent artifact groups concurrently. For production runs, `TagRelease` creates or verifies the annotated Git tag only after every signed or staged output passes its 1ES checks. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 64 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
 
 Hotfix automation extends the stable-release rules above. `cargo xtask hotfix
 <commit> <oldest-tag>` fetches release refs, selects every stable `v`-prefixed
@@ -6145,3 +6780,69 @@ The CLI specification and usage details are maintained in [crates/webui-cli/READ
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
+
+## Desktop CLI Scaffolding
+
+The public `webui desktop init [APP_ROOT] [--force]` command is a progressive
+scaffold. It creates `src/index.html`, `package.json` with a `webuiDesktop`
+block, and `desktop/Cargo.toml` plus `desktop/src/main.rs`. The generated runner
+uses one SDK dependency with `native` enabled and an opt-in local `source`
+feature. `find_packaged_resources_dir()` selects the immutable packaged bundle;
+only a build with `source` may fall back to source compilation. Without packaged
+resources or source support, launch fails before native startup with an
+actionable error. Source and bundle construction preserve window, shell, and app
+identity together rather than discarding manifest shell configuration.
+The generated Cargo manifest declares its own workspace boundary and an
+optimized release profile; it never modifies an enclosing workspace. Init
+checks all generated paths before writing
+and returns an actionable error unless `--force` is supplied.
+
+## Desktop Window Contract
+
+`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
+
+For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` once into startup HTML. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
+
+Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
+
+`DesktopFrame` is a non-cloneable session owner. Dropping it closes registrations
+and the command channel, including validation failures and native launch errors.
+`on_event` registers a session-lifetime callback and returns a registration
+result; `subscribe` returns a `#[must_use] EventSubscription` whose drop removes
+that callback. Registration is limited to 256 handlers and fails after shutdown.
+Tokens hold weak registry references. Dispatch clones one immutable handler
+snapshot; registration/removal affects later snapshots, while an in-progress
+dispatch may finish. Neither callbacks nor destruction of callback captures run
+under registry locks.
+
+`WindowHandle` is `Send + Sync`; it queues bounded `WindowCommand`s and invokes a backend-installed wakeup callback. Backends drain it only on their UI thread. They install `DRAG_REGION_SCRIPT`, expose `window.webuiHostPostMessage`, and parse payloads through `DesktopHostMessage::from_json`. The only valid JSON string payloads are `"start-drag"`, `"minimize"`, `"toggle-maximize"`, and `"close"`; payloads over 256 bytes are rejected.
+
+Command submission returns acceptance, not confirmation that the operation was
+applied. Queues allocate lazily and cap 256 commands, 16 KiB per title, and
+64 KiB aggregate queued title bytes. `request_close()` requests native close;
+session shutdown closes the sender, drops pending commands and wakeup captures,
+and rejects subsequent submissions with `WindowCommandError::Closed`.
+Wakeups are coalesced until a drain, installed callbacks wake any existing
+backlog, and wakeup invocation/destruction occurs outside channel locks.
+
+`TitlebarStyle::None` removes system-drawn chrome, not native window capabilities.
+On macOS its style mask retains close/minimize capabilities and the configured
+resizability without `Titled`. The window subclass handles frameless
+`performClose:` by consulting `windowShouldClose:` before closing, since AppKit's
+implementation requires a native close button. Both host messages and queued
+close commands therefore preserve `WindowCloseRequested` cancellation and the
+normal `WindowClosed` teardown. Titled windows retain AppKit's close behavior.
+
+When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, and effect features before native startup rather than silently ignoring them.
+
+Window-state writes publish complete sibling temporary files atomically.
+Windows uses `SetFileInformationByHandle(FileRenameInfoEx)` with replacement and
+POSIX semantics directly, rather than first attempting `MoveFileExW`. Existing
+reader handles retain the old snapshot while new opens see the replacement;
+concurrent readers must not encounter a delete-pending target. State storage
+therefore requires Windows 10 version 1607 or later and a filesystem supporting
+that operation, such as local NTFS. Unsupported replacement reports an
+actionable I/O error; there is no weaker rename fallback or permission-error
+suppression. Read-only targets remain protected, failed writes clean up only
+their own temporary file, and successful saves guarantee visibility rather
+than power-loss durability.

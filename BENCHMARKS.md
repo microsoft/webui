@@ -27,6 +27,30 @@ WebUI itself.
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench lazy-hydration` | Playwright + CDP | ~1 min | hydration, heap, rendering, and trace metrics at 10/100/1000 rows | validating offscreen work reduction |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
+| `cargo bench -p microsoft-webui-desktop --bench navigation` | criterion micro | ~15 s after build | desktop partial-navigation serialization with owned route state | typed handler result and state-copy changes |
+
+### Desktop navigation serialization reference
+
+The `navigation` benchmark compares the previous serialize/project/reparse/
+replace-state pipeline against `Protocol::render_partial_full_state` in the
+same optimized binary. Each receives identical owned contact view models;
+setup cloning is outside the timed operation. Response bytes must match exactly.
+This isolates serialization and ownership costs, not native startup, page
+readiness, worker scheduling, or whole-application memory.
+
+Reference measurement: Apple M4 Pro, 48 GiB RAM, macOS 26.7, Rust 1.98.0,
+`cargo bench -p microsoft-webui-desktop --bench navigation -- --noplot`.
+Thirty samples per case, one-second warmup and two-second measurement;
+the table uses Criterion median estimates and 95% bootstrap intervals from a
+repeat run without concurrent native integration tests.
+
+| Contact rows | Identical output bytes | Previous pipeline P50 (95% CI) | Typed pipeline P50 (95% CI) |
+|---|---:|---:|---:|
+| 25 | 4,919 | 29.67 µs (29.58–29.79) | 8.36 µs (8.31–8.52) |
+| 1,000 | 187,669 | 1.080 ms (1.078–1.082) | 0.264 ms (0.263–0.265) |
+
+Allocation counts, process RSS/footprint and cold-start latency were not measured
+by this benchmark. Do not extrapolate these results to native application startup.
 
 ## The before/after workflow
 

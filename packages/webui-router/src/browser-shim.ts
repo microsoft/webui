@@ -37,7 +37,14 @@ interface BrowserGlobals {
     href: string;
     origin: string;
     pathname: string;
+    protocol: string;
     reload(): void;
+  };
+  history: {
+    state: unknown;
+    pushState(): void;
+    replaceState(): void;
+    back(): void;
   };
 }
 
@@ -112,6 +119,15 @@ if (typeof location === 'undefined') {
     href: 'http://localhost/',
     origin: 'http://localhost',
     pathname: '/',
+    protocol: 'http:',
     reload() {},
+  };
+}
+if (typeof history === 'undefined') {
+  g.history = {
+    state: null,
+    pushState() {},
+    replaceState() {},
+    back() {},
   };
 }

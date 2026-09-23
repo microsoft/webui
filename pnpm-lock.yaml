@@ -571,6 +571,18 @@ importers:
 
   packages/webui-darwin-x64: {}
 
+  packages/webui-desktop:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.5.1
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.2
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
   packages/webui-examples-theme: {}
 
   packages/webui-framework:
@@ -1392,7 +1404,7 @@ packages:
     engines: {node: '>= 18'}
 
   typescript@6.0.3:
-    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    resolution: {integrity: sha1-kCUdwAeRbpcnhsuU100VsYVXfSE=}
     engines: {node: '>=14.17'}
     hasBin: true
 

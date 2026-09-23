@@ -8,19 +8,25 @@
   @form-save="{onFormSaveEvent(e)}"
   @form-cancel="{onFormCancel()}"
 >
-  <cb-header search-query="{{searchQuery}}"></cb-header>
+  <div class="app-shell" data-mode="{{mode}}">
+    <a class="skip-link" href="#main-content" @click="{onSkipToContent(e)}">Skip to content</a>
+    <cb-header mode="{{mode}}" search-query="{{searchQuery}}"></cb-header>
 
-  <div class="layout">
-    <cb-sidebar
-      page="{{page}}"
-      active-group="{{activeGroup}}"
-      total-contacts="{{totalContacts}}"
-      total-favorites="{{totalFavorites}}"
-      :groups="{{groups}}"
-    ></cb-sidebar>
+    <div class="layout">
+      <cb-sidebar
+        role="navigation"
+        aria-label="Contacts"
+        ?data-desktop="{{mode == 'desktop'}}"
+        page="{{page}}"
+        active-group="{{activeGroup}}"
+        total-contacts="{{totalContacts}}"
+        total-favorites="{{totalFavorites}}"
+        :groups="{{groups}}"
+      ></cb-sidebar>
 
-    <main class="content">
-      <outlet />
-    </main>
+      <main class="content" id="main-content" tabindex="-1" w-ref="{contentEl}">
+        <outlet />
+      </main>
+    </div>
   </div>
 </template>

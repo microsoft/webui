@@ -29,7 +29,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --features microsoft-webui-desktop/cli,contact-book-desktop/source -- -D warnings
 
       - name: Deny (licenses & advisories)
         run: |
@@ -48,7 +48,31 @@ jobs:
           skip-build: 'true'
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo xtask test
+
+      - name: Check packaged desktop dependencies
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          forbidden = {
+              "microsoft-webui", "microsoft-webui-parser",
+              "microsoft-webui-discovery", "tokio", "rayon", "clap",
+          }
+          native = {"gtk4", "webkit6", "objc2", "webview2-com", "windows"}
+          for package, excluded in [
+              ("contact-book-desktop", forbidden),
+              ("microsoft-webui-desktop", forbidden | native),
+          ]:
+              tree = subprocess.check_output([
+                  "cargo", "tree", "-p", package,
+                  "--no-default-features", "--edges", "normal,build",
+                  "--prefix", "none", "--format", "{p}",
+              ], text=True)
+              packages = {line.split()[0] for line in tree.splitlines() if line}
+              unexpected = packages & excluded
+              if unexpected:
+                  raise SystemExit(f"{package} includes unwanted dependencies: " + ", ".join(sorted(unexpected)))
+          PY
 
   # ── Phase 2: Build (Linux + macOS + Windows) ────────────────────────
   build-linux:
@@ -60,6 +84,45 @@ jobs:
       - uses: ./.github/actions/build
         with:
           shared-cache-key: ubuntu-build
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python3 crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
+
+      - name: Install native IPC test display
+        run: sudo apt-get install -y -qq apparmor dbus-x11 xvfb xauth
+
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test release native IPC source/package and no-IPC
+        run: |
+          # Allow only fixture executables to create WebKitGTK sandbox namespaces.
+          # Keep both AppArmor's global restriction and WebKit's sandbox enabled.
+          profile=crates/webui-desktop/tests/fixtures/native-ipc/linux-apparmor
+          sudo apparmor_parser -r "$profile"
+          trap 'sudo apparmor_parser -R "$profile"' EXIT
+          GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+            python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-linux
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
 
   build-macos:
     name: Build (macOS)
@@ -68,9 +131,44 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python3 crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
+
+      - name: Test native desktop SDK
+        run: |
+          cargo test -p microsoft-webui-desktop --no-default-features --features native
+          cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
+
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test release native IPC source/package and no-IPC
+        run: python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-macos
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
 
   build-windows:
     name: Build (Windows)
@@ -79,9 +177,42 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+
+      - name: Install desktop contract browsers
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+
+      - name: Desktop release-consumer contracts (before example generation)
+        run: python crates/webui-desktop/tests/acceptance.py
+
+      - name: Build workspace and examples
+        run: |
+          cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
+          cargo xtask build-examples
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
+
+      - name: Test native desktop SDK
+        run: cargo test -p microsoft-webui-desktop --no-default-features --features native
+
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+
+      - name: Test release native IPC source/package and no-IPC
+        run: python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+
+      - name: Upload native IPC results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-ipc-windows
+          path: |
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/result.json
+            crates/webui-desktop/tests/fixtures/native-ipc/.runs/**/*.log
+          include-hidden-files: true
+          retention-days: 7
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

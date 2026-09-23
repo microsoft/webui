@@ -3,6 +3,7 @@
 
 mod build_examples;
 mod build_wasm;
+mod desktop_tests;
 mod dev;
 mod e2e;
 mod e2e_approve;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
         Some("clippy") => run_steps(&[Step::CLIPPY]),
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => run_steps(&[Step::TEST]),
+        Some("test-desktop") => run_steps(&[Step::TEST_DESKTOP]),
         Some("build") => run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES]),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
@@ -135,6 +137,7 @@ fn usage() -> ExitCode {
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
+           test-desktop  Run isolated desktop SDK feature combinations\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \
@@ -734,6 +737,9 @@ struct Step {
     run: fn() -> Result<(), String>,
 }
 
+const DESKTOP_DEV_FEATURES: &str =
+    "microsoft-webui-desktop/cli,microsoft-webui-desktop/application-ipc,contact-book-desktop/source";
+
 impl Step {
     const LICENSE_HEADERS: Self = Self {
         name: "license-headers",
@@ -752,7 +758,15 @@ impl Step {
             ensure_rustup_component("clippy")?;
             run_command_quiet(
                 "cargo",
-                &["clippy", "--workspace", "--", "-D", "warnings"],
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--features",
+                    DESKTOP_DEV_FEATURES,
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
                 None,
             )
         },
@@ -770,14 +784,56 @@ impl Step {
     };
     const TEST: Self = Self {
         name: "test",
-        run: || run_command_quiet("cargo", &["test", "--workspace"], None),
+        run: || {
+            run_command_quiet(
+                "cargo",
+                &["test", "--workspace", "--features", DESKTOP_DEV_FEATURES],
+                None,
+            )?;
+            desktop_tests::run()?;
+            run_command_quiet(
+                "pnpm",
+                &["--filter", "@microsoft/webui-desktop", "test"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &["crates/webui-desktop-build/tests/run-rust.mjs"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &["crates/webui-desktop-build/tests/run-typescript.mjs"],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
+                &[
+                    "packages/webui-desktop/scripts/sync-bootstrap.mjs",
+                    "--check",
+                    "crates/webui-desktop/src/generated/ipc",
+                ],
+                None,
+            )
+        },
+    };
+    const TEST_DESKTOP: Self = Self {
+        name: "test (desktop feature matrix)",
+        run: desktop_tests::run,
     };
     const BUILD: Self = Self {
         name: "build",
         run: || {
             run_command_quiet(
                 "cargo",
-                &["build", "--workspace", "--exclude", "xtask"],
+                &[
+                    "build",
+                    "--workspace",
+                    "--exclude",
+                    "xtask",
+                    "--features",
+                    DESKTOP_DEV_FEATURES,
+                ],
                 None,
             )
         },
@@ -931,45 +987,63 @@ fn run_parallel(steps: &[Step]) -> ExitCode {
 fn print_failure_output(output: &str) {
     let separator = console::style("─".repeat(60)).dim();
     eprintln!("    {separator}");
-    for line in output.lines().take(30) {
-        eprintln!("    {line}");
-    }
-    let total = output.lines().count();
-    if total > 30 {
-        eprintln!(
-            "    {} ({} more lines)",
-            console::style("...").dim(),
-            total - 30,
-        );
+    if let Err(error) = write_failure_lines(std::io::stderr().lock(), output) {
+        eprintln!("    Failed to write command diagnostics: {error}");
     }
     eprintln!("    {separator}");
 }
 
 fn print_failure_output_with_name(name: &str, output: &str) {
-    let separator = console::style("─".repeat(60)).dim();
     eprintln!(
         "\n    {} {} output:",
         console::style("✘").red().bold(),
         name,
     );
-    eprintln!("    {separator}");
-    for line in output.lines().take(30) {
-        eprintln!("    {line}");
+    print_failure_output(output);
+}
+
+fn write_failure_lines(mut writer: impl std::io::Write, output: &str) -> std::io::Result<()> {
+    for line in output.lines() {
+        writeln!(writer, "    {line}")?;
     }
-    let total = output.lines().count();
-    if total > 30 {
-        eprintln!(
-            "    {} ({} more lines)",
-            console::style("...").dim(),
-            total - 30,
-        );
-    }
-    eprintln!("    {separator}");
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{criterion_bench_args, CRITERION_BENCHES};
+    use super::{criterion_bench_args, write_failure_lines, CRITERION_BENCHES};
+
+    #[test]
+    fn command_failure_output_preserves_errors_after_successful_test_lines() {
+        let mut output = "test passed\n".repeat(80);
+        output.push_str("test failing_case ... FAILED\nthread panicked: exact diagnostic\n");
+        let mut rendered = Vec::new();
+        write_failure_lines(&mut rendered, &output).expect("diagnostics should be writable");
+        let rendered = String::from_utf8(rendered).expect("diagnostics remain UTF-8");
+        assert_eq!(rendered.lines().count(), 82);
+        assert!(rendered.ends_with(
+            "    test failing_case ... FAILED\n    thread panicked: exact diagnostic\n"
+        ));
+    }
+
+    #[test]
+    fn command_failure_output_reports_sink_errors() {
+        struct Unavailable;
+        impl std::io::Write for Unavailable {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            write_failure_lines(Unavailable, "failed")
+                .expect_err("must report failure")
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+    }
 
     #[test]
     fn criterion_bench_args_target_one_bench_binary() {

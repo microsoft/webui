@@ -1,11 +1,17 @@
 :host {
   display: block;
   width: 260px;
-  min-height: calc(100vh - 65px);
+  min-height: 0;
   background: var(--color-white);
   border-right: 1px solid var(--color-neutral-200);
   padding: var(--spacing-l) var(--spacing-m);
   overflow-y: auto;
+}
+
+:host([data-desktop]) {
+  box-sizing: border-box;
+  flex: 0 0 260px;
+  min-width: 0;
 }
 
 .nav-section {
@@ -45,6 +51,11 @@
 
 .nav-item:hover {
   background: var(--color-neutral-150);
+}
+
+.nav-item:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: -2px;
 }
 
 .nav-item[data-active] {
@@ -92,4 +103,55 @@
   :host {
     display: none;
   }
+
+  :host([data-desktop]) {
+    display: block;
+    flex: 0 1 auto;
+    width: auto;
+    max-height: 40%;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-neutral-200);
+    padding: var(--spacing-s) var(--spacing-m);
+  }
+
+  :host([data-desktop]) .nav-section {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--spacing-xs);
+  }
+
+  :host([data-desktop]) .nav-item {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 44px;
+    gap: var(--spacing-xs);
+    padding: var(--spacing-s);
+  }
+
+  :host([data-desktop]) .nav-icon {
+    display: none;
+  }
+
+  :host([data-desktop]) .nav-label {
+    min-width: 0;
+    font-size: var(--font-size-s);
+    overflow-wrap: anywhere;
+  }
+
+  :host([data-desktop]) .nav-heading {
+    grid-column: 1 / -1;
+    padding: var(--spacing-xs) var(--spacing-s);
+  }
+
+  :host([data-desktop]) .nav-divider {
+    margin-block: var(--spacing-s);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-item { transition: none; }
+}
+
+@media (forced-colors: active) {
+  .nav-item:focus-visible { outline-color: Highlight; }
 }

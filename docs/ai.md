@@ -1335,6 +1335,47 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
+For a desktop app, start with zero Rust:
+
+```bash
+webui desktop run ./src
+```
+
+Restart desktop `run` after source changes; desktop `--watch` is not supported.
+
+Write a host crate only when you need dynamic route state or IPC. To generate a
+working progressive scaffold, use `webui desktop init ./my-app`; it creates the
+entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+files are protected unless `--force` is passed. Rust apps depend on
+`microsoft-webui-desktop` with `native` enabled and forward an opt-in `source`
+feature to `microsoft-webui-desktop/source`. There is no separate runner or
+compiler dependency. `webui desktop package` builds
+optimized runners without default features automatically. Select optional app
+capabilities with `webuiDesktop.runnerFeatures`; use `--debug` only for a debug
+package. Package targets are `macos-app`, `windows-portable`, and
+`linux-portable`; `all` writes all three layouts without cross-compiling the
+runner. Installer generation and signing are not supported. The
+runtime-only build continues to support all `DesktopRuntime::from_bundle*`
+entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
+source/bundle construction, window customization, and scoped event subscriptions.
+
+Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
+or set `webuiDesktop.projectionManifests` for app-root packaging. Rust source
+hosts set `BuildOptions::projection_manifests`. Desktop and web share navigation
+state projection; unknown requirements keep the correctness-safe full-state
+fallback. Supplied manifests must be current and complete.
+
+For application messages, define one proto3 contract and run
+`webui desktop ipc generate` to produce Rust/TypeScript APIs. Use generated
+host calls, renderer request handlers and notification subscriptions, not raw
+method strings or manual byte encoding. JavaScript 64-bit values are `bigint`,
+bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
+explicit `IpcOptions` before building the frame. Requests return typed
+promises/futures; notification completion acknowledges admission rather than
+subscriber completion. Dispose subscriptions and honor cancellation.
+See the [IPC guide](./guide/integrations/desktop.md#message-passing) for the
+complete shared-schema example.
+
 ```bash
 # Install the native CLIs
 npm install @microsoft/webui @microsoft/webui-press

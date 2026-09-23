@@ -167,6 +167,10 @@
             "link": "/guide/integrations/python"
           },
           {
+            "text": "Desktop",
+            "link": "/guide/integrations/desktop"
+          },
+          {
             "text": "Electron",
             "link": "/guide/integrations/electron"
           },

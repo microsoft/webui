@@ -570,6 +570,165 @@ successful rebuild clears the error and reloads connected browsers.
 | Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
+### `webui desktop`
+
+Run desktop tooling through `webui`, the only public CLI. Desktop support is
+implemented by a separate `webui-desktop` sidecar backend so normal
+build/serve/inspect installs stay lean and do not link native webview
+dependencies. The sidecar is resolved automatically from the installed desktop
+support package, next to the `webui` binary, or from the workspace during local
+development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
+
+```bash
+webui desktop init [APP_ROOT] [--force]
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
+webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]...
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]...
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
+```
+
+`webui desktop init` creates a minimal `src/index.html`, `package.json`, and
+`desktop/` Rust runner. It refuses to replace existing generated files; pass
+`--force` when regenerating a scaffold.
+The runner is a standalone Cargo workspace with an optimized release profile.
+It depends on one desktop SDK and enables source compilation only when run with
+`--features source`.
+
+`desktop run` builds once. Restart it after source changes; desktop `--watch`
+is not supported.
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `APP` | Path to the app folder | `.` |
+| `--out <BUNDLE_DIR>` | Output desktop bundle directory | *(required)* |
+| `--state <FILE>` | Startup state JSON copied into the bundle | *(optional)* |
+| `--servedir <DIR>` | Static assets copied into the bundle | *(optional)* |
+| `--theme <VALUE>` | Design token theme, as a file path or npm package name | *(optional)* |
+| `--app-id <ID>` | Reverse-DNS app identifier | `com.microsoft.webui.app` |
+| `--app-name <NAME>` | Human-readable app name | `WebUI App` |
+| `--app-version <VERSION>` | App version stored in the bundle manifest | `0.0.0` |
+| `--publisher <NAME>` | Publisher stored in the bundle manifest | `Microsoft` |
+| `--title <TITLE>` | Default desktop window title | `WebUI` |
+| `--width <PX>` | Default desktop window width | `1200` |
+| `--height <PX>` | Default desktop window height | `800` |
+| `--devtools` | Enable web inspector/devtools for the packaged desktop webview | `false` |
+| `--theme <VALUE>` | Theme override for app-root packaging | `webuiDesktop.theme` |
+| `--icon <FILE>` | App icon override for app-root packaging | `webuiDesktop.icon` |
+| `--runner <PATH>` | App-specific runner executable for existing bundle packaging | sidecar runner |
+| `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
+| `--release` | Explicitly select the default optimized runner build | optimized by default |
+| `--debug` | Build a debug runner instead of an optimized release runner | `false` |
+| `--runner-features <FEATURES>` | Additional comma-separated Cargo features for the app-specific runner | `webuiDesktop.runnerFeatures` |
+| `--runner-default-features` | Include the runner's default Cargo features | `webuiDesktop.runnerDefaultFeatures`, otherwise `false` |
+| `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
+| `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
+| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | `webuiDesktop.projectionManifests` for app-root packaging, otherwise none |
+
+Package configuration manifest paths are relative to the app root; CLI paths are
+relative to the working directory. Explicit CLI manifests replace the configured
+list. Run the client build first: missing, stale, or incomplete metadata is a
+build error, not a silent fallback. Without supplied manifests, unknown component
+requirements retain full state for correctness. Existing bundles must be rebuilt
+to change their projection metadata; manifest flags cannot modify them during
+packaging.
+
+The bundle contains `protocol.bin`, generated CSS, copied static assets under
+`assets/`, optional `state.json`, `manifest.webui-desktop.json`, and SHA-256
+integrity hashes. Native window backends use system webviews only: WebView2 on
+Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux. Electron, Node,
+bundled Chromium, and localhost HTTP servers are not part of desktop mode.
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin webui \
+  --theme @my-org/brand-tokens \
+  --devtools \
+  --app-id com.example.todo \
+  --app-name "Todo Desktop"
+```
+
+On macOS, inspect the app from Safari's Develop menu. Enable it with Safari >
+Settings > Advanced > Show features for web developers.
+
+Package a Rust-first desktop app root in one command:
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+```
+
+For app roots, `webui desktop package` reads `webuiDesktop` from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate
+with `--release --no-default-features`,
+stages non-generated assets, builds the bundle, and packages the runner-backed
+app. Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
+Use `--debug` for a debug package. To include optional application capabilities,
+set `webuiDesktop.runnerFeatures` to an array of Cargo feature names, or add
+`--runner-features tray,native-dialogs` if your runner declares those features.
+Use `runnerDefaultFeatures: true` or `--runner-default-features` only when the
+runner intentionally needs its default features in production. These build
+options do not change a prebuilt executable supplied with `--runner`.
+Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
+as `CFBundleIconFile`, and portable layouts copy the icon into resources.
+Existing bundle packaging remains available:
+
+```bash
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+The current Rust packager writes runnable macOS `.app` bundles and portable
+folder layouts. Omitting `--runner` for an existing bundle packages the generic
+sidecar and is appropriate only for file-backed/static seed-state bundles.
+Supported targets are `macos-app`, `windows-portable`, and `linux-portable`.
+`--target all` writes all three layouts with the supplied runner; it does not
+cross-compile that executable. Installer generation, archives, and signing are
+not supported.
+
+For an app-specific Rust runner, enable the native SDK and keep source
+compilation opt-in:
+
+```toml
+[features]
+default = []
+source = ["microsoft-webui-desktop/source"]
+
+[dependencies]
+microsoft-webui-desktop = { version = "0.0.29", features = ["native"] }
+```
+
+`webui desktop package` builds this lean configuration automatically. For a
+manual runner build:
+
+```bash
+cargo build --release -p my-desktop-runner --no-default-features
+```
+
+The lean runner still supports `DesktopRuntime::from_bundle`,
+`DesktopRuntime::from_bundle_config`, and
+`DesktopRuntime::from_bundle_config_and_manifest`. It does not expose source,
+bundle-building, or package-building APIs. Run unpackaged development builds
+with `cargo run --features source`. Build options are reexported by
+`webui_desktop` when `source` is enabled; applications need no separate compiler
+or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
+app code. See the [desktop SDK guide](../integrations/desktop.md) for the shared
+source/bundle app builder and customization APIs.
+
+`webui desktop ipc generate` creates typed Rust and TypeScript bindings from
+one proto3 application contract. Keep its compatibility lock and generated
+outputs together. `--check` compares outputs without rewriting them.
+`--protoc` selects an explicitly installed protobuf compiler; without it, the
+generator uses `PROTOC` and then PATH. Compiler inputs and outputs must use
+local drive paths on Windows. Generation never downloads tools silently. With `--format json`, generation
+failures preserve their stable `ipc-*` code and actionable `help`; filesystem
+errors also identify the affected `file`. See
+[message passing](../integrations/desktop.md#message-passing) for the schema,
+four communication flows, permissions and lifetime rules.
+
 ## Error output and exit codes
 
 When a template has an authoring mistake, the CLI prints a structured diagnostic with a stable error code, the source location, the offending snippet, and an actionable `help:` line:

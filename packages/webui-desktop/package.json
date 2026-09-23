@@ -1,0 +1,30 @@
+{
+  "name": "@microsoft/webui-desktop",
+  "version": "0.0.29",
+  "description": "Typed browser IPC runtime for the WebUI desktop SDK",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  },
+  "publishConfig": {
+    "tag": "latest"
+  }
+}

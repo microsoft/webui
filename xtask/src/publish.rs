@@ -1197,7 +1197,7 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
     let npm_out = root.join("publish").join("npm");
 
     // Build packages that have build scripts first
-    for pkg_name in &["webui", "webui-framework", "webui-router"] {
+    for pkg_name in &["webui", "webui-framework", "webui-router", "webui-desktop"] {
         let pkg_dir = packages_dir.join(pkg_name);
         if !pkg_dir.join("package.json").exists() {
             continue;
@@ -1853,12 +1853,12 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
         .python_version();
     validate_artifact_count(
         count_files_with_extension(&publish.join("npm"), "tgz"),
-        9,
+        10,
         "npm packages",
     )?;
     validate_artifact_count(
         count_files_with_extension(&publish.join("crates"), "crate"),
-        15,
+        17,
         "crate packages",
     )?;
     validate_artifact_count(
@@ -2400,8 +2400,8 @@ mod tests {
         let root = tempfile::TempDir::new().expect("root should be created");
         let publish = root.path().join("publish");
         for (directory, extension, count) in [
-            ("npm", "tgz", 9),
-            ("crates", "crate", 15),
+            ("npm", "tgz", 10),
+            ("crates", "crate", 17),
             ("nuget", "nupkg", 8),
             ("nuget", "snupkg", 2),
             ("standalone", "bin", 20),
@@ -2575,8 +2575,8 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
-        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/npm"), 10, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 17, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
@@ -2592,8 +2592,8 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 8, "tgz");
-        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 17, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
@@ -2601,7 +2601,7 @@ mod tests {
         let error = validate_release_artifact_counts(root.path(), "1.2.3")
             .expect_err("missing npm package should fail validation");
 
-        assert!(error.contains("expected 9 npm packages, found 8"));
+        assert!(error.contains("expected 10 npm packages, found 9"));
     }
 
     fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
