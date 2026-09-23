@@ -5740,7 +5740,7 @@ webui/
 │   ├── webui-handler/        # Protocol handler implementation
 │   ├── webui-node/           # Node.js native addon (napi-rs)
 │   ├── webui-parser/         # HTML/CSS/template parser
-│   ├── webui-press/          # Markdown-driven docs site generator + dev server
+│   ├── webui-press/          # Markdown-driven docs site generator, dev server, and @microsoft/webui-press npm package
 │   ├── webui-protocol/       # Protocol definition
 │   ├── webui-python/         # Python native extension (PyO3 + maturin)
 │   ├── webui-state/          # State management
@@ -5754,7 +5754,13 @@ webui/
 │   │   ├── webui-linux-x64/      # Platform binary (Linux x64)
 │   │   ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
 │   │   ├── webui-win32-x64/      # Platform binary (Windows x64)
-│   │   └── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   │   ├── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   │   ├── webui-press-darwin-arm64/ # Press platform binary (macOS ARM64)
+│   │   ├── webui-press-darwin-x64/   # Press platform binary (macOS x64)
+│   │   ├── webui-press-linux-x64/    # Press platform binary (Linux x64)
+│   │   ├── webui-press-linux-arm64/  # Press platform binary (Linux ARM64)
+│   │   ├── webui-press-win32-x64/    # Press platform binary (Windows x64)
+│   │   └── webui-press-win32-arm64/  # Press platform binary (Windows ARM64)
 │   ├── webui-framework/      # WebUI Framework client runtime (@microsoft/webui-framework)
 │   ├── webui-router/         # SPA router for WebUI Framework (@microsoft/webui-router)
 │   └── webui-test-support/   # Private shared JS test metadata helpers (@microsoft/webui-test-support)
@@ -5848,6 +5854,16 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
   `start`, `resume`, `advance`, and `update`; native steps carry `Buffer`,
   `done`, and an optional camel-case descriptor
 - render currently requires the native addon; no WASM render fallback is wired
+
+The `@microsoft/webui-press` npm package is a native CLI package:
+- `bin: { "webui-press": "bin/webui-press" }` exposes the static-site generator
+  without requiring consumers to compile the Rust crate
+- platform-specific optional dependencies
+  (`@microsoft/webui-press-{darwin|linux|win32}-{arm64|x64}`) carry only the
+  native `webui-press` or `webui-press.exe` binary for their OS/architecture
+- `postinstall` copies the selected platform binary into `bin/`; workspace
+  builds can set `WEBUI_PRESS_BINARY_PATH` or use the local Cargo
+  `target/{release,debug}` fallback
 
 #### Versioned AI reference
 

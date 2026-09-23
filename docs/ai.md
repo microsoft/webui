@@ -1336,8 +1336,14 @@ Before emitting WebUI code, confirm:
 ## Build and run
 
 ```bash
+# Install the native CLIs
+npm install @microsoft/webui @microsoft/webui-press
+
 # Dev server with live reload
 webui serve ./src --state ./data/state.json --plugin=webui --watch
+
+# Static documentation site
+webui-press build
 
 # Production build
 webui build ./src --out ./dist --plugin=webui

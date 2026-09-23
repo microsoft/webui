@@ -1,0 +1,19 @@
+{
+  "cpu": [
+    "x64"
+  ],
+  "description": "WebUI Press platform-specific binary for macOS x64",
+  "files": [
+    "bin/webui-press"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-press-darwin-x64",
+  "os": [
+    "darwin"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "tag": "latest"
+  },
+  "version": "0.0.29"
+}
