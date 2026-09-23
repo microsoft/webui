@@ -815,7 +815,6 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "percent-encoding",
- "prost",
  "serde",
  "serde_json",
  "sha2",
