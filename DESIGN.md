@@ -3847,6 +3847,13 @@ terminal record, all queued records, definition waiters, ancestor barriers, and
 generated spans settle successfully. `hydratedCallback()` is latched before
 author code runs and is never retried after reconnect or exception.
 
+The terminal record is emitted at the structural `body_end` hook, after
+host-supplied `body_inject` / `$webui.bodyEnd` content and before the parser
+writes the raw `</body>` / `</html>` tail. Keeping the final
+`data-webui-boundary` script and `<webui-hydrate>` sentinel inside `<body>`
+avoids relying on intermediary-safe preservation of bytes after `</html>` while
+retaining the single-terminal completion contract.
+
 #### Commit observability
 
 Every commit is recorded twice, for two different consumers:
@@ -3907,8 +3914,11 @@ rejected at the streaming-render entry point rather than silently buffering.
 When `resume` completes a checkpoint, it finishes all child markup, emits
 template/state deltas and the sentinel, then calls `flush()` and returns
 immediately: the parent bytes that follow belong to the next `advance` step, so
-one checkpoint is exactly one host write. Span completion, update, and terminal
-records also flush. This sequence is atomic from the host's perspective.
+one checkpoint is exactly one host write. Span completion and update records
+also flush immediately. The terminal record is followed only by the raw
+`</body>` / `</html>` tail, so the final `advance` coalesces that tail with the
+terminal record in one flush instead of adding a separate tiny transport write.
+This sequence is atomic from the host's perspective.
 "Flush" means bytes were handed to the HTTP transport; intermediary proxies may
 still coalesce them, so production guidance must document disabling
 reverse-proxy response buffering where applicable (this is a deployment note,
