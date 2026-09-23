@@ -20,10 +20,16 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = { workspace = true }
 
 [[bench]]
 name = "desktop_state"
 harness = false
+
+[[bench]]
+name = "desktop_startup"
+harness = false
+required-features = ["source"]
 
 [lints]
 workspace = true
