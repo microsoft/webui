@@ -152,9 +152,13 @@ fn build_window(
     let mut source = String::with_capacity(HOST_BRIDGE_SCRIPT.len() + DRAG_REGION_SCRIPT.len());
     source.push_str(HOST_BRIDGE_SCRIPT);
     source.push_str(DRAG_REGION_SCRIPT);
+    // TopFrame keeps the `webuiHostPostMessage` convenience alias out of
+    // embedded iframes. This is a partial mitigation, not a structural one:
+    // see the SECURITY note on `connect_message_handler` below for why
+    // WebKitGTK cannot fully close this off the way macOS and Windows do.
     let script = UserScript::new(
         &source,
-        UserContentInjectedFrames::AllFrames,
+        UserContentInjectedFrames::TopFrame,
         UserScriptInjectionTime::Start,
         &[],
         &[],
@@ -513,6 +517,22 @@ fn connect_webview_events(webview: &WebView, events: &crate::EventRegistry) {
     });
 }
 
+/// SECURITY: WebKitGTK 6 (webkit6 0.6.1) exposes a registered message handler
+/// as `window.webkit.messageHandlers.<name>` to every frame on the page,
+/// including cross-origin iframes, regardless of the `UserContentInjectedFrames`
+/// setting used above. `UserContentManager::register_script_message_handler`
+/// has no `forMainFrameOnly` equivalent, and `script-message-received` does
+/// not report the sending frame, unlike WKWebView's `WKScriptMessage.frameInfo`
+/// (`macos/ipc_message.rs::trusted_message`) or WebView2's top-level-only
+/// `WebMessageReceived` (`windows/ipc_control.rs`, which deliberately avoids
+/// `ICoreWebView2Frame::add_WebMessageReceived`). Restricting script
+/// injection to `TopFrame` (above) stops the convenience
+/// `window.webuiHostPostMessage` alias from being defined in subframes, but a
+/// subframe can still reach the handler directly via
+/// `window.webkit.messageHandlers.webuiHost.postMessage(...)`. Apps that
+/// embed untrusted third-party iframe content on Linux must not rely on this
+/// bridge being frame-scoped until the webkit6 crate exposes per-message
+/// frame identity.
 fn connect_message_handler(
     manager: &UserContentManager,
     window: &ApplicationWindow,

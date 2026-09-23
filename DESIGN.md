@@ -5953,6 +5953,22 @@ setup must install the platform WebKitGTK/GTK packages explicitly; the xtask
 helpers may auto-install Rust tooling, but must not auto-install system
 packages.
 
+The native window-control bridge (`webuiHost`, used for drag/minimize/
+maximize/close from web content) is frame-scoped on macOS via
+`WKScriptMessage.frameInfo().isMainFrame()` and on Windows because
+`ICoreWebView2::add_WebMessageReceived` only delivers top-level messages
+(the backend deliberately never subscribes to
+`ICoreWebView2Frame::add_WebMessageReceived`). WebKitGTK 6 has no equivalent:
+`UserContentManager::register_script_message_handler` exposes the handler to
+every frame, and `script-message-received` reports no sending-frame identity.
+The Linux backend restricts script injection to
+`UserContentInjectedFrames::TopFrame` to keep the convenience
+`window.webuiHostPostMessage` alias out of subframes, but this is a partial
+mitigation: a subframe can still call
+`window.webkit.messageHandlers.webuiHost.postMessage(...)` directly. Apps that
+embed untrusted third-party iframe content must not rely on this bridge being
+frame-scoped on Linux.
+
 Windows requires WebView2 Runtime 122.0.2365.46 or later, the stable runtime for
 SDK 1.0.2365.46's `ICoreWebView2_22` request-source filter. Startup requires that
 interface and registers `WebResourceRequested` for all resource contexts and
