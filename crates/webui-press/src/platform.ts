@@ -54,6 +54,10 @@ export function binaryNameFor(platform: NodeJS.Platform | string = process.platf
   return platform === "win32" ? "webui-press.exe" : "webui-press";
 }
 
+export function workspaceRootForPackage(packageRoot: string = PACKAGE_ROOT): string {
+  return path.resolve(packageRoot, "..", "..");
+}
+
 export function resolveBinary(options?: ResolveBinaryOptions): string | null {
   return resolveBinaryFrom(options);
 }
@@ -63,7 +67,7 @@ export function resolveBinaryFrom({
   platform = process.platform,
   arch = os.arch(),
   packageBase,
-  workspaceRoot = path.resolve(__dirname, "..", ".."),
+  workspaceRoot = workspaceRootForPackage(),
 }: ResolveBinaryOptions = {}): string | null {
   if (env.WEBUI_PRESS_BINARY_PATH) {
     return env.WEBUI_PRESS_BINARY_PATH;

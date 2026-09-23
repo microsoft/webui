@@ -11,6 +11,7 @@ import {
   packageNameFor,
   platformKey,
   resolveBinaryFrom,
+  workspaceRootForPackage,
 } from '../dist/platform.js';
 
 test('webui-press package maps supported platforms to native packages', () => {
@@ -20,6 +21,13 @@ test('webui-press package maps supported platforms to native packages', () => {
   assert.equal(packageNameFor('win32', 'arm64'), '@microsoft/webui-press-win32-arm64');
   assert.equal(binaryNameFor('linux'), 'webui-press');
   assert.equal(binaryNameFor('win32'), 'webui-press.exe');
+});
+
+test('webui-press package derives workspace root from package root', () => {
+  assert.equal(
+    workspaceRootForPackage(path.join('/repo', 'crates', 'webui-press')),
+    path.join('/repo'),
+  );
 });
 
 test('webui-press package resolves overrides, platform packages, and local builds', (t) => {

@@ -1,18 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { binaryNameFor, packageNameFor, platformKey, resolveBinary } from "./platform.js";
+import {
+  binaryNameFor,
+  packageNameFor,
+  platformKey,
+  resolveBinary,
+  workspaceRootForPackage,
+} from "./platform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const binDir = path.join(packageRoot, "bin");
 const npmBinDest = path.join(binDir, "webui-press");
 const nativeBinDest = path.join(binDir, binaryNameFor());
+const workspaceCargoToml = path.join(packageRoot, "Cargo.toml");
 
-try {
+function installResolvedBinary(): boolean {
   const srcBin = resolveBinary();
   if (srcBin && fs.existsSync(srcBin)) {
     fs.mkdirSync(binDir, { recursive: true });
@@ -26,6 +34,13 @@ try {
       }
       fs.chmodSync(nativeBinDest, 0o755);
     }
+    return true;
+  }
+  return false;
+}
+
+try {
+  if (installResolvedBinary()) {
     process.exit(0);
   }
 } catch (error) {
@@ -36,7 +51,37 @@ try {
   );
 }
 
-if (process.env.npm_lifecycle_event === "postinstall" && fs.existsSync(path.join(packageRoot, "Cargo.toml"))) {
+if (process.env.npm_lifecycle_event === "build" && fs.existsSync(workspaceCargoToml)) {
+  const workspaceRoot = workspaceRootForPackage(packageRoot);
+  const result = spawnSync("cargo", ["build", "-p", "microsoft-webui-press"], {
+    cwd: workspaceRoot,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    console.error(
+      `[webui-press] Failed to build the workspace binary: ${
+        result.error instanceof Error ? result.error.message : String(result.error)
+      }`,
+    );
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+  try {
+    if (installResolvedBinary()) {
+      process.exit(0);
+    }
+  } catch (error) {
+    console.warn(
+      `[webui-press] Warning: Failed to copy the workspace binary: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+if (process.env.npm_lifecycle_event === "postinstall" && fs.existsSync(workspaceCargoToml)) {
   process.exit(0);
 }
 
