@@ -164,7 +164,7 @@ const SUITES: &[PlaywrightSuite] = &[
     },
     PlaywrightSuite {
         name: "webui-press",
-        dir: "crates/webui-press",
+        dir: "packages/webui-press",
         ports: &[],
         scripts: &[],
         build_client: false,

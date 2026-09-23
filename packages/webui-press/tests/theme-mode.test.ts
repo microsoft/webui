@@ -10,7 +10,7 @@ import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
-import { build, fixture, write } from './native-fixture.js';
+import { build, fixture, removeFixtureRoot, write } from './native-fixture.js';
 
 async function themedSite(t: TestContext, mode: 'all' | 'content') {
   const f = fixture();
@@ -22,7 +22,7 @@ async function themedSite(t: TestContext, mode: 'all' | 'content') {
       running.closeAllConnections();
       await new Promise<void>(resolve => running.close(() => resolve()));
     }
-    fs.rmSync(f.root, { recursive: true, force: true });
+    removeFixtureRoot(f.root);
   });
   write(path.join(f.site, 'content/local/theme-probe/theme-probe.html'),
     '<p class="probe">Readable native theme tokens</p><label>Native field <input value="System-aware control"></label>');
@@ -32,7 +32,10 @@ async function themedSite(t: TestContext, mode: 'all' | 'content') {
     input { color: var(--fixture-text); background: var(--fixture-surface); font: inherit; max-width: 100%; }
   `);
   write(path.join(f.site, 'content/theme.md'), '# Theme fixture\n\n<theme-probe></theme-probe>');
-  const css = fs.readFileSync(path.resolve(import.meta.dirname, '../../template/docs.css'), 'utf8');
+  const css = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../../../crates/webui-press/template/docs.css'),
+    'utf8',
+  );
   const darkStart = css.indexOf('[data-theme="dark"]');
   assert.ok(darkStart > 0);
   const declarations = (source: string) => Object.fromEntries(

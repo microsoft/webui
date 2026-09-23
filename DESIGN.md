@@ -5764,7 +5764,7 @@ webui/
 │   ├── webui-handler/        # Protocol handler implementation
 │   ├── webui-node/           # Node.js native addon (napi-rs)
 │   ├── webui-parser/         # HTML/CSS/template parser
-│   ├── webui-press/          # Markdown-driven docs site generator, dev server, and @microsoft/webui-press npm package
+│   ├── webui-press/          # Markdown-driven docs site generator and dev server
 │   ├── webui-protocol/       # Protocol definition
 │   ├── webui-python/         # Python native extension (PyO3 + maturin)
 │   ├── webui-state/          # State management
@@ -5779,6 +5779,7 @@ webui/
 │   │   ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
 │   │   ├── webui-win32-x64/      # Platform binary (Windows x64)
 │   │   ├── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   │   ├── webui-press/              # npm package for the WebUI Press CLI wrapper
 │   │   ├── webui-press-darwin-arm64/ # Press platform binary (macOS ARM64)
 │   │   ├── webui-press-darwin-x64/   # Press platform binary (macOS x64)
 │   │   ├── webui-press-linux-x64/    # Press platform binary (Linux x64)

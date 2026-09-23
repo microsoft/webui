@@ -1215,7 +1215,7 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         .map_err(|e| format!("pnpm build @microsoft/{pkg_name} failed: {e}"))?;
     }
 
-    let press_dir = root.join("crates").join("webui-press");
+    let press_dir = packages_dir.join("webui-press");
     if press_dir.join("package.json").exists() {
         eprintln!(
             "  {} Building {}",
@@ -1246,10 +1246,6 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         }
         package_dirs.push(path);
     }
-    if press_dir.join("package.json").exists() {
-        package_dirs.push(press_dir);
-    }
-
     for path in package_dirs {
         let Some(pkg_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;

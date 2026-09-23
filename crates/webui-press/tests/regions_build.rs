@@ -38,6 +38,23 @@ fn builds_layout_scoped_regions_for_pages_and_404() -> TestResult {
     ] {
         fs::create_dir_all(path)?;
     }
+    copy_projection_package(&root, &workspace.join("packages").join("webui"))?;
+    copy_esbuild_package(
+        &root,
+        &workspace
+            .join("packages")
+            .join("webui-press")
+            .join("node_modules")
+            .join("esbuild"),
+    )?;
+    copy_typescript_package(
+        &root,
+        &workspace
+            .join("packages")
+            .join("webui-press")
+            .join("node_modules")
+            .join("typescript"),
+    )?;
 
     fs::write(
         template_dir.join("index.html"),
@@ -173,6 +190,88 @@ fn ensure_projection_package(workspace: &Path) -> TestResult {
         .status()?;
     if !status.success() {
         return Err("failed to build @microsoft/webui projection package".into());
+    }
+    Ok(())
+}
+
+fn copy_projection_package(root: &Path, package: &Path) -> TestResult {
+    let webui = root.join("node_modules").join("@microsoft").join("webui");
+    fs::create_dir_all(webui.join("dist"))?;
+    fs::copy(package.join("package.json"), webui.join("package.json"))?;
+    copy_dir(
+        &package.join("dist").join("projection"),
+        &webui.join("dist").join("projection"),
+    )
+}
+
+fn copy_esbuild_package(root: &Path, package: &Path) -> TestResult {
+    if !package.join("package.json").is_file() {
+        return Err(format!(
+            "{} is missing. Run `pnpm install` before running webui-press bundled-script tests.",
+            package.display()
+        )
+        .into());
+    }
+    copy_dir(package, &root.join("node_modules").join("esbuild"))?;
+
+    let package = package.canonicalize()?;
+    let native_scope = package
+        .parent()
+        .ok_or("esbuild package parent is missing")?
+        .join("@esbuild");
+    if !native_scope.is_dir() {
+        return Err(format!(
+            "{} is missing. Run `pnpm install` with optional dependencies enabled.",
+            native_scope.display()
+        )
+        .into());
+    }
+    copy_dir(&native_scope, &root.join("node_modules").join("@esbuild"))
+}
+
+fn copy_node_package(root: &Path, name: &str, package: &Path) -> TestResult {
+    if !package.join("package.json").is_file() {
+        return Err(format!(
+            "{} is missing. Run `pnpm install` before running webui-press bundled-script tests.",
+            package.display()
+        )
+        .into());
+    }
+    copy_dir(package, &root.join("node_modules").join(name))
+}
+
+fn copy_typescript_package(root: &Path, package: &Path) -> TestResult {
+    copy_node_package(root, "typescript", package)?;
+
+    let package = package.canonicalize()?;
+    let native_scope = package
+        .parent()
+        .ok_or("typescript package parent is missing")?
+        .join("@typescript");
+    if !native_scope.is_dir() {
+        return Err(format!(
+            "{} is missing. Run `pnpm install` with optional dependencies enabled.",
+            native_scope.display()
+        )
+        .into());
+    }
+    copy_dir(
+        &native_scope,
+        &root.join("node_modules").join("@typescript"),
+    )
+}
+
+fn copy_dir(source: &Path, destination: &Path) -> TestResult {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir(&path, &target)?;
+        } else {
+            fs::copy(path, target)?;
+        }
     }
     Ok(())
 }
