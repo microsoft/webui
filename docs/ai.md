@@ -1359,6 +1359,12 @@ runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
 
+Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
+or set `webuiDesktop.projectionManifests` for app-root packaging. Rust source
+hosts set `BuildOptions::projection_manifests`. Desktop and web share navigation
+state projection; unknown requirements keep the correctness-safe full-state
+fallback. Supplied manifests must be current and complete.
+
 For application messages, define one proto3 contract and run
 `webui desktop ipc generate` to produce Rust/TypeScript APIs. Use generated
 host calls, renderer request handlers and notification subscriptions, not raw

@@ -191,6 +191,10 @@ struct PackageArgs {
     /// Skip configured web build scripts before building the desktop bundle
     #[arg(long)]
     no_web_build: bool,
+
+    /// Client projection manifests (repeatable; overrides package configuration)
+    #[arg(long = "projection-manifest", value_name = "PATH")]
+    projection_manifests: Vec<PathBuf>,
 }
 
 #[derive(Args, Clone)]
@@ -218,6 +222,10 @@ struct AppArgs {
     /// Additional component sources
     #[arg(long, value_name = "SOURCE")]
     components: Vec<String>,
+
+    /// Projection manifests emitted by the client bundler (repeatable)
+    #[arg(long = "projection-manifest", value_name = "PATH")]
+    projection_manifests: Vec<PathBuf>,
 
     /// Link-mode CSS filename template using [name], [hash], [ext]
     #[arg(long, default_value = DEFAULT_CSS_FILE_NAME_TEMPLATE)]
@@ -248,7 +256,12 @@ impl AppArgs {
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
             theme: None,
-            projection_manifests: Vec::new(),
+            projection_manifests: self
+                .projection_manifests
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
         }
     }
 }
@@ -278,6 +291,7 @@ struct DesktopAppPackageConfig {
     source: Option<PathBuf>,
     state: Option<PathBuf>,
     assets: Option<PathBuf>,
+    projection_manifests: Vec<PathBuf>,
     icon: Option<PathBuf>,
     theme: Option<String>,
     runner_crate: Option<String>,
@@ -303,6 +317,7 @@ struct AppPackagePlan {
     entry: String,
     state_file: Option<PathBuf>,
     staged_assets: Option<PathBuf>,
+    projection_manifests: Vec<PathBuf>,
     icon_file: Option<PathBuf>,
     bundle_dir: PathBuf,
     runner_exe: PathBuf,
@@ -547,6 +562,11 @@ fn load_theme(theme: &str, app_dir: &Path) -> Result<webui_tokens::TokenFile> {
 fn package_bundle(args: PackageArgs) -> Result<()> {
     let input = expand_path(&args.bundle, "bundle or app")?;
     if input.join("manifest.webui-desktop.json").is_file() {
+        if !args.projection_manifests.is_empty() {
+            return Err(anyhow::anyhow!(
+                "--projection-manifest applies when compiling an app root; rebuild the desktop bundle with these manifests before packaging it"
+            ));
+        }
         let bundle_dir = canonicalize_existing_dir(&args.bundle, "bundle")?;
         package_existing_bundle(args, bundle_dir)
     } else {
@@ -610,6 +630,11 @@ fn package_app_root(args: PackageArgs, app_root: PathBuf) -> Result<()> {
             dom: webui::DomStrategy::Shadow,
             plugin: plan.plugin,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+            projection_manifests: plan
+                .projection_manifests
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             ..webui::BuildOptions::default()
         },
         out_dir: plan.bundle_dir.clone(),
@@ -651,6 +676,7 @@ fn create_app_package_plan(
     temp_root: &Path,
 ) -> Result<AppPackagePlan> {
     let source_dir = config_existing_dir(&app_root, config.source.as_ref(), "src", "app source")?;
+    let projection_manifests = resolve_package_projection_manifests(args, &config, &app_root)?;
     let state_file =
         config_optional_file(&app_root, config.state.as_ref(), "data/state.json", "state")?;
     let assets = config_optional_dir(&app_root, config.assets.as_ref(), "dist", "assets")?;
@@ -672,6 +698,7 @@ fn create_app_package_plan(
         assets.as_ref(),
         &temp_root.join("assets"),
         generated_css.as_slice(),
+        &projection_manifests,
     )?;
     let theme = args.theme.as_deref().or(config.theme.as_deref());
     let token_css = match theme {
@@ -710,6 +737,7 @@ fn create_app_package_plan(
         entry,
         state_file,
         staged_assets,
+        projection_manifests,
         icon_file,
         bundle_dir,
         runner_exe,
@@ -750,6 +778,12 @@ fn read_desktop_app_config(app_root: &Path) -> Result<DesktopAppPackageConfig> {
     config.source = path_field(desktop, "app").or_else(|| path_field(desktop, "source"));
     config.state = path_field(desktop, "state");
     config.assets = path_field(desktop, "assets");
+    config.projection_manifests = desktop
+        .get("projectionManifests")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .with_context(|| "webuiDesktop.projectionManifests must be an array of file paths")?
+        .unwrap_or_default();
     config.icon = path_field(desktop, "icon");
     config.theme = string_field_in(desktop, "theme");
     config.runner_crate = string_field_in(desktop, "runnerCrate");
@@ -787,6 +821,31 @@ fn read_desktop_app_config(app_root: &Path) -> Result<DesktopAppPackageConfig> {
         .map(|raw| parse_plugin_value(&raw))
         .transpose()?;
     Ok(config)
+}
+
+fn resolve_package_projection_manifests(
+    args: &PackageArgs,
+    config: &DesktopAppPackageConfig,
+    app_root: &Path,
+) -> Result<Vec<PathBuf>> {
+    let from_cli = !args.projection_manifests.is_empty();
+    let paths = if from_cli {
+        &args.projection_manifests
+    } else {
+        &config.projection_manifests
+    };
+    paths
+        .iter()
+        .map(|path| {
+            let path = if from_cli {
+                path.clone()
+            } else {
+                app_root.join(path)
+            };
+            optional_existing_file(Some(&path), "projection manifest")?
+                .ok_or_else(|| anyhow::anyhow!("projection manifest path is required"))
+        })
+        .collect()
 }
 
 fn run_web_build_scripts(app_root: &Path, config: &DesktopAppPackageConfig) -> Result<()> {
@@ -1029,6 +1088,7 @@ fn stage_app_assets(
     asset_root: Option<&PathBuf>,
     dest_root: &Path,
     generated_css: &[String],
+    build_inputs: &[PathBuf],
 ) -> Result<Option<PathBuf>> {
     let Some(asset_root) = asset_root else {
         return Ok(None);
@@ -1048,6 +1108,9 @@ fn stage_app_assets(
             if ty.is_dir() {
                 stack.push(path);
             } else if ty.is_file() {
+                if build_inputs.contains(&path) {
+                    continue;
+                }
                 let relative = path.strip_prefix(asset_root).with_context(|| {
                     format!(
                         "Failed to compute asset path {} relative to {}",
@@ -1536,6 +1599,7 @@ mod tests {
                 "app": "src",
                 "state": "data/state.json",
                 "assets": "dist",
+                "projectionManifests": ["dist/webui-projection.json"],
                 "theme": "@microsoft/webui-examples-theme",
                 "plugin": "webui",
                 "runnerCrate": "contact-book-desktop",
@@ -1557,6 +1621,10 @@ mod tests {
 
         assert_eq!(config.runner_crate.as_deref(), Some("contact-book-desktop"));
         assert_eq!(config.runner_features, ["tray"]);
+        assert_eq!(
+            config.projection_manifests,
+            [PathBuf::from("dist/webui-projection.json")]
+        );
         assert!(!config.runner_default_features);
         assert_eq!(
             config.theme.as_deref(),
@@ -1590,6 +1658,104 @@ mod tests {
     }
 
     #[test]
+    fn desktop_build_passes_projection_manifests_to_the_compiler() {
+        let cli = Cli::try_parse_from([
+            "webui-desktop",
+            "build",
+            "src",
+            "--out",
+            "bundle",
+            "--plugin",
+            "webui",
+            "--projection-manifest",
+            "dist/app.json",
+            "--projection-manifest",
+            "dist/shared.json",
+        ])
+        .unwrap();
+        let Some(Commands::Build(args)) = cli.command else {
+            panic!("expected build command");
+        };
+        let options = args.app.build_options(PathBuf::from("src"));
+        assert_eq!(options.projection_manifests.len(), 2);
+        assert!(matches!(
+            &options.projection_manifests[0],
+            webui::ProjectionManifestSource::Path(path) if path == Path::new("dist/app.json")
+        ));
+        assert!(matches!(
+            &options.projection_manifests[1],
+            webui::ProjectionManifestSource::Path(path) if path == Path::new("dist/shared.json")
+        ));
+    }
+
+    #[test]
+    fn package_projection_paths_are_relative_to_the_app_unless_overridden() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "dist/app.json", "{}");
+        write_file(dir.path(), "override.json", "{}");
+        let root = dir.path().canonicalize().unwrap();
+        let config = DesktopAppPackageConfig {
+            projection_manifests: vec![PathBuf::from("dist/app.json")],
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_package_projection_manifests(&package_args(&[]), &config, &root).unwrap(),
+            [root.join("dist/app.json")]
+        );
+        let override_path = root.join("override.json");
+        let args = package_args(&["--projection-manifest", override_path.to_str().unwrap()]);
+        assert_eq!(
+            resolve_package_projection_manifests(&args, &config, &root).unwrap(),
+            [override_path]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_missing_projection_manifest_configuration() {
+        let dir = TempDir::new().unwrap();
+        for content in [
+            r#"{"webuiDesktop":{"projectionManifests":"dist/app.json"}}"#,
+            r#"{"webuiDesktop":{"projectionManifests":[1]}}"#,
+        ] {
+            write_file(dir.path(), "package.json", content);
+            assert!(read_desktop_app_config(dir.path()).is_err());
+        }
+        let config = DesktopAppPackageConfig {
+            projection_manifests: vec![PathBuf::from("missing.json")],
+            ..Default::default()
+        };
+        assert!(
+            resolve_package_projection_manifests(&package_args(&[]), &config, dir.path()).is_err()
+        );
+    }
+
+    #[test]
+    fn existing_bundles_reject_new_projection_inputs() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "manifest.webui-desktop.json", "{}");
+        let mut args = package_args(&["--projection-manifest", "new-input.json"]);
+        args.bundle = dir.path().to_path_buf();
+        let error = package_bundle(args).unwrap_err();
+        assert!(error.to_string().contains("--projection-manifest"));
+    }
+
+    #[test]
+    fn projection_manifests_are_not_staged_as_runtime_assets() {
+        let dir = TempDir::new().unwrap();
+        let assets = dir.path().join("dist");
+        write_file(&assets, "custom-projection.json", "{}");
+        write_file(&assets, "data.json", r#"{"client":"data"}"#);
+        write_file(&assets, "app.js", "export {};");
+        let assets = assets.canonicalize().unwrap();
+        let staged = dir.path().join("staged");
+        let inputs = [assets.join("custom-projection.json")];
+        stage_app_assets(Some(&assets), &staged, &[], &inputs).unwrap();
+        assert!(!staged.join("custom-projection.json").exists());
+        assert!(staged.join("data.json").is_file());
+        assert!(staged.join("app.js").is_file());
+    }
+
+    #[test]
     fn infers_runner_crate_from_desktop_cargo_toml() {
         let dir = TempDir::new().unwrap();
         write_file(
@@ -1617,7 +1783,7 @@ version = "0.1.0"
         write_file(&assets, "app.js", "console.log('ok');");
         write_file(&assets, "webui-desktop-ipc.js", "application asset");
 
-        let root = stage_app_assets(Some(&assets), &staged, &["my-card.css".to_string()])
+        let root = stage_app_assets(Some(&assets), &staged, &["my-card.css".to_string()], &[])
             .unwrap()
             .unwrap();
 

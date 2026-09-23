@@ -317,7 +317,7 @@ test.describe('client-side navigation', () => {
 test.describe('contact edit does not corrupt sidebar groups', () => {
   test('editing a contact group from Work to Friends keeps sidebar labels stable', async ({ page, request }) => {
     // Ensure contact #1 starts in group "Work" (reset from any prior test run)
-    await request.put('http://127.0.0.1:3013/api/contacts/1', { data: { group: 'Work' } });
+    await request.put('/api/contacts/1', { data: { group: 'Work' } });
 
     // Navigate to contact #1 (Sarah Chen, group: Work)
     await page.goto('/contacts/1');

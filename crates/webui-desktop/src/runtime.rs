@@ -472,20 +472,12 @@ impl DesktopRuntime {
     fn partial_response(&self, request_path: &str) -> Result<DesktopProtocolResponse> {
         let route_path = route_path(request_path);
         let state = self.state_for_request(route_path)?;
-        let partial =
-            self.protocol
-                .render_partial_full_state(state, &self.entry, route_path, "")?;
+        let partial = self
+            .protocol
+            .prepare_partial(state, &self.entry, route_path, "")?;
         if !partial.is_match() {
             return Ok(DesktopProtocolResponse::text(404, "Not Found"));
         }
-        // `render_partial` projects `state` down to the keys the matched
-        // components statically declare as needed for navigation (the
-        // bundler-neutral state projection compiler). Desktop route
-        // providers and seed state (route params, `basePath`, design
-        // tokens, computed data) are a superset of what any single
-        // component's template references, so the desktop runtime always
-        // ships the full per-request state it computed rather than trusting
-        // the generic projection to preserve fields components never bind.
         let body = serde_json::to_vec(&partial).map_err(|source| DesktopError::Serialization {
             context: "serializing desktop router partial".to_string(),
             source,
@@ -754,12 +746,8 @@ mod tests {
         webui::BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
-            // Desktop apps build with `--plugin=webui` (see the
-            // contact-book-manager example), which is required for the
-            // bundler-neutral state projection compiler to populate
-            // per-component navigation keys. Without it, `navigation_mode`
-            // stays `StateProjectionMode::None` and partial responses ship
-            // no state at all.
+            // Scriptless WebUI fixtures provide exact template-derived
+            // navigation keys without requiring a client bundle.
             plugin: Some(webui::Plugin::WebUI),
             ..webui::BuildOptions::default()
         }
@@ -1118,9 +1106,10 @@ mod tests {
         config.state_file = Some(dir.path().join("state.json"));
         let runtime = DesktopRuntime::from_source(config).unwrap();
 
-        let favorites = partial_state(&runtime, "/favorites");
+        let favorites = runtime.state_for_request("/favorites").unwrap();
         assert!(favorites.get("page").is_none());
         assert_eq!(favorites["contacts"].as_array().map(Vec::len), Some(2));
+        assert_eq!(partial_state(&runtime, "/favorites"), serde_json::json!({}));
     }
 
     #[test]
@@ -1131,7 +1120,11 @@ mod tests {
             "index.html",
             "<route path=\"/\" component=\"my-page\"><route path=\"contacts/:id\" component=\"my-page\" exact /></route>",
         );
-        write_file(dir.path(), "my-page.html", "<p>{{name}}</p>");
+        write_file(
+            dir.path(),
+            "my-page.html",
+            "<p>{{name}} {{id}}</p><a href=\"{{basePath}}\">Home</a>",
+        );
         write_file(dir.path(), "state.json", r#"{"name":"base"}"#);
 
         let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
@@ -1159,7 +1152,9 @@ mod tests {
         write_file(
             dir.path(),
             "index.html",
-            "<route path=\"/\" component=\"my-page\"><route path=\"contacts\" component=\"my-page\" exact /></route>",
+            "<html><head><style>:root{/*{{{tokens.light}}}*/}</style></head><body>\
+             <route path=\"/\" component=\"my-page\"><route path=\"contacts\" component=\"my-page\" exact /></route>\
+             </body></html>",
         );
         write_file(dir.path(), "my-page.html", "<p>{{page}}</p>");
         write_file(
@@ -1180,12 +1175,130 @@ mod tests {
             .unwrap();
         let runtime = DesktopRuntime::from_source(config).unwrap();
 
-        let state = partial_state(&runtime, "/contacts");
+        let state = runtime.state_for_request("/contacts").unwrap();
 
         assert_eq!(
             state["tokens"]["light"],
             Value::String("--font-family-base: system-ui;".to_string())
         );
+        assert!(partial_state(&runtime, "/contacts").get("tokens").is_none());
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest::get("/contacts"))
+            .unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap()).unwrap();
+        assert!(html.contains(":root{--font-family-base: system-ui;}"));
+    }
+
+    #[test]
+    fn source_and_bundle_partials_match_web_projection() {
+        let dir = TempDir::new().unwrap();
+        let app = dir.path().join("app");
+        write_file(
+            &app,
+            "index.html",
+            "<route path=\"/\" component=\"app-shell\">\
+             <route path=\"contacts/:id\" component=\"contact-page\" exact />\
+             <route path=\"reports\" component=\"report-page\" exact />\
+             </route>",
+        );
+        write_file(
+            &app,
+            "app-shell.html",
+            "<header>{{mode}}</header><outlet />",
+        );
+        write_file(
+            &app,
+            "contact-page.html",
+            "<p>{{name}} {{id}}</p><if condition=\"expanded\"><p>{{details}}</p></if>",
+        );
+        write_file(&app, "report-page.html", "<p>{{unusedReports.length}}</p>");
+        let state_file = dir.path().join("state.json");
+        let seed = serde_json::json!({
+            "mode": "desktop", "name": "Ada", "expanded": false, "details": "Ready on demand",
+            "unusedReports": ["not needed by this route"],
+            "$webui": {"bodyEnd": "<script>host-only</script>"}
+        });
+        fs::write(&state_file, serde_json::to_vec(&seed).unwrap()).unwrap();
+
+        for bundled in [false, true] {
+            let runtime = if bundled {
+                let bundle = dir.path().join("bundle");
+                crate::build_desktop_bundle(crate::DesktopBundleOptions {
+                    build_options: build_options(app.clone()),
+                    out_dir: bundle.clone(),
+                    state_file: Some(state_file.clone()),
+                    asset_root: None,
+                    token_css: None,
+                    app_id: "webui.test.projection".into(),
+                    app_name: "Projection".into(),
+                    version: "0.0.0".into(),
+                    publisher: "Microsoft".into(),
+                    window: crate::WindowOptions::default(),
+                    icon_file: None,
+                    shell: crate::DesktopShellConfig::default(),
+                    package_targets: Vec::new(),
+                })
+                .unwrap();
+                DesktopRuntime::from_bundle(bundle).unwrap()
+            } else {
+                let mut config = DesktopSourceConfig::new(build_options(app.clone()));
+                config.state_file = Some(state_file.clone());
+                DesktopRuntime::from_source(config).unwrap()
+            };
+            let path = "/contacts/42";
+            let response = runtime
+                .handle_request(&DesktopProtocolRequest {
+                    method: DesktopHttpMethod::Get,
+                    path,
+                    body: &[],
+                    wants_json: true,
+                })
+                .unwrap();
+            assert_eq!(response.status, 200);
+            let bytes = response.body.as_bytes().unwrap();
+            let web = runtime
+                .protocol
+                .render_partial_json(
+                    &runtime.state_for_request(path).unwrap().to_string(),
+                    &runtime.entry,
+                    path,
+                    "",
+                )
+                .unwrap();
+            assert_eq!(bytes, web.as_bytes());
+            let wire: Value = serde_json::from_slice(bytes).unwrap();
+            assert_eq!(
+                wire["state"],
+                serde_json::json!({
+                    "mode": "desktop", "name": "Ada", "id": "42",
+                    "expanded": false, "details": "Ready on demand"
+                })
+            );
+            assert_eq!(wire["chain"][1]["params"]["id"], "42");
+            assert!(wire.get("matched").is_none());
+        }
+    }
+
+    #[test]
+    fn missing_script_metadata_keeps_dynamic_fields_but_not_host_injection() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "index.html",
+            "<route path=\"/\" component=\"my-page\" />",
+        );
+        write_file(dir.path(), "my-page.html", "<p>{{name}}</p>");
+        write_file(dir.path(), "my-page.ts", "export {};");
+        let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
+        config.state = Some(serde_json::json!({
+            "name": "Ada", "dynamicField": [1, 2],
+            "$webui": {"bodyEnd": "<script>host-only</script>"}
+        }));
+        let runtime = DesktopRuntime::from_source(config).unwrap();
+        let state = partial_state(&runtime, "/");
+        assert_eq!(state["name"], "Ada");
+        assert_eq!(state["dynamicField"], serde_json::json!([1, 2]));
+        assert!(state.get("$webui").is_none());
     }
 
     #[test]

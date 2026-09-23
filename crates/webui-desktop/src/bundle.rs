@@ -215,6 +215,9 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
 
     let build_options = options.build_options.clone();
     let build_result = webui::build(build_options.clone())?;
+    let projection_inputs = projection_manifest_paths(&build_options)
+        .map(normalized_absolute_path)
+        .collect::<Result<Vec<_>>>()?;
     let protocol_path = PathBuf::from("protocol.bin");
     let protocol_dest = options.out_dir.join(&protocol_path);
     fs::write(&protocol_dest, &build_result.protocol_bytes).map_err(|source| DesktopError::Io {
@@ -249,7 +252,13 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
         token_css: options.token_css.as_ref(),
     })?;
     if let Some(asset_root) = &options.asset_root {
-        copy_static_assets(asset_root, &assets_dest, &mut claimed_assets, &mut assets)?;
+        copy_static_assets(
+            asset_root,
+            &assets_dest,
+            &mut claimed_assets,
+            &mut assets,
+            &projection_inputs,
+        )?;
     }
     let mut shell = options.shell;
     if let Some(icon_file) = &options.icon_file {
@@ -339,7 +348,31 @@ fn validate_bundle_output(options: &DesktopBundleOptions) -> Result<()> {
         reject_path_overlap(&output, &lexical_assets, "asset")?;
         reject_path_overlap(&lexical_output, &lexical_assets, "asset")?;
     }
+    for path in projection_manifest_paths(&options.build_options) {
+        let input = normalized_absolute_path(path)?;
+        let lexical_input = lexical_absolute_path(path)?;
+        reject_path_overlap(&output, &input, "projection manifest")?;
+        reject_path_overlap(&lexical_output, &input, "projection manifest")?;
+        reject_path_overlap(&output, &lexical_input, "projection manifest")?;
+        reject_path_overlap(&lexical_output, &lexical_input, "projection manifest")?;
+    }
     Ok(())
+}
+
+#[cfg(feature = "source")]
+fn projection_manifest_paths(options: &webui::BuildOptions) -> impl Iterator<Item = &Path> {
+    options
+        .projection_manifests
+        .iter()
+        .filter_map(|source| match source {
+            webui::ProjectionManifestSource::Path(path)
+            | webui::ProjectionManifestSource::Inline {
+                manifest_path: path,
+                ..
+            } => Some(path.as_path()),
+            webui::ProjectionManifestSource::Prepared(_)
+            | webui::ProjectionManifestSource::Pending(_) => None,
+        })
 }
 
 #[cfg(feature = "source")]
@@ -358,13 +391,19 @@ fn prepare_out_dir(out_dir: &Path) -> Result<()> {
 
 #[cfg(feature = "source")]
 pub(crate) fn normalized_absolute_path(path: &Path) -> Result<PathBuf> {
-    let absolute = lexical_absolute_path(path)?;
+    // A symlink followed by `..` must resolve through its filesystem target.
+    let absolute = absolute_path(path)?;
     let base = resolve_existing_ancestor(&absolute)?;
     Ok(normalize_components(&base))
 }
 
 #[cfg(feature = "source")]
 pub(crate) fn lexical_absolute_path(path: &Path) -> Result<PathBuf> {
+    Ok(normalize_components(&absolute_path(path)?))
+}
+
+#[cfg(feature = "source")]
+fn absolute_path(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -375,7 +414,7 @@ pub(crate) fn lexical_absolute_path(path: &Path) -> Result<PathBuf> {
             })?
             .join(path)
     };
-    Ok(normalize_components(&absolute))
+    Ok(absolute)
 }
 
 #[cfg(feature = "source")]
@@ -629,6 +668,7 @@ fn copy_static_assets(
     assets_dest: &Path,
     claimed_assets: &mut HashSet<String>,
     assets: &mut Vec<BundleAsset>,
+    build_inputs: &[PathBuf],
 ) -> Result<()> {
     let canonical_root = asset_root
         .canonicalize()
@@ -668,6 +708,9 @@ fn copy_static_assets(
                 return Err(DesktopError::InvalidAssetPath {
                     path: canonical.display().to_string(),
                 });
+            }
+            if build_inputs.contains(&canonical) {
+                continue;
             }
             let relative = canonical.strip_prefix(&canonical_root).map_err(|_| {
                 DesktopError::InvalidAssetPath {
@@ -858,6 +901,141 @@ mod tests {
             .assets
             .iter()
             .any(|asset| asset.path == "assets/app.js"));
+    }
+
+    fn projection_bundle_options(app: PathBuf, out: PathBuf) -> DesktopBundleOptions {
+        DesktopBundleOptions {
+            build_options: build_options(app),
+            out_dir: out,
+            state_file: None,
+            asset_root: None,
+            token_css: None,
+            app_id: "webui.test.projection".into(),
+            app_name: "Projection".into(),
+            version: "0.0.0".into(),
+            publisher: "Microsoft".into(),
+            window: WindowOptions::default(),
+            icon_file: None,
+            shell: DesktopShellConfig::default(),
+            package_targets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn direct_bundles_exclude_projection_inputs_from_files_and_integrity() {
+        use webui_protocol::projection_manifest::{
+            ProjectionAdapter, ProjectionManifest, ProjectionProducer, PRODUCER_NAME, SCHEMA_ID,
+        };
+
+        let root = TempDir::new().unwrap();
+        let app = root.path().join("app");
+        let assets = root.path().join("dist");
+        write_file(&app, "index.html", "<main>Projection</main>");
+        write_file(&assets, "app.js", "export {};");
+        let mut proof = ProjectionManifest {
+            schema: SCHEMA_ID.into(),
+            producer: ProjectionProducer {
+                name: PRODUCER_NAME.into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            },
+            adapter: ProjectionAdapter {
+                name: "test".into(),
+                bundler: "test@1.0.0".into(),
+            },
+            root: ".".into(),
+            analysis_hash: format!("sha256:{}", "1".repeat(64)),
+            build_id: String::new(),
+            inputs: Default::default(),
+            outputs: Default::default(),
+            components: Default::default(),
+            entry_closures: Default::default(),
+        };
+        proof.build_id = proof.compute_build_id();
+        let json = serde_json::to_string(&proof).unwrap();
+        let input = assets.join("custom-input.json");
+        fs::write(&input, &json).unwrap();
+        let sources = vec![
+            input.clone().into(),
+            webui::ProjectionManifestSource::Inline {
+                manifest_path: input.clone(),
+                json: json.clone(),
+            },
+        ];
+        #[cfg(unix)]
+        let sources = {
+            let nested = assets.join("nested");
+            fs::create_dir(&nested).unwrap();
+            let alias = root.path().join("alias");
+            std::os::unix::fs::symlink(nested, &alias).unwrap();
+            let linked_input = alias.join("../custom-input.json");
+            let mut sources = sources;
+            sources.push(linked_input.clone().into());
+            sources.push(webui::ProjectionManifestSource::Inline {
+                manifest_path: linked_input,
+                json,
+            });
+            sources
+        };
+        for (index, source) in sources.into_iter().enumerate() {
+            let out = root.path().join(format!("bundle-{index}"));
+            let mut options = projection_bundle_options(app.clone(), out.clone());
+            options.asset_root = Some(assets.clone());
+            options.build_options.projection_manifests = vec![source];
+            let manifest = build_desktop_bundle(options).unwrap();
+            assert!(out.join("assets/app.js").is_file());
+            assert!(!out.join("assets/custom-input.json").exists());
+            assert!(!manifest
+                .integrity
+                .assets
+                .iter()
+                .any(|asset| asset.path == "assets/custom-input.json"));
+        }
+    }
+
+    #[test]
+    fn bundle_output_must_not_delete_projection_inputs() {
+        let root = TempDir::new().unwrap();
+        let app = root.path().join("app");
+        let out = root.path().join("bundle");
+        write_file(&app, "index.html", "<main>Projection</main>");
+        write_file(&out, "input.json", "preserve input");
+        let input = out.join("input.json");
+        let mut options = projection_bundle_options(app, out);
+        options.build_options.projection_manifests = vec![input.clone().into()];
+        let error = build_desktop_bundle(options).unwrap_err();
+        assert!(matches!(error, DesktopError::OutputPathOverlap { .. }));
+        assert_eq!(fs::read_to_string(input).unwrap(), "preserve input");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn projection_inputs_follow_symlink_parent_traversal_before_cleanup() {
+        let root = TempDir::new().unwrap();
+        let app = root.path().join("app");
+        let out = root.path().join("bundle");
+        write_file(&app, "index.html", "<main>Projection</main>");
+        write_file(&out, "input.json", "preserve input");
+        let nested = out.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(nested, &alias).unwrap();
+        let sources = [
+            alias.join("../input.json").into(),
+            webui::ProjectionManifestSource::Inline {
+                manifest_path: alias.join("../not-written.json"),
+                json: "{}".into(),
+            },
+        ];
+        for source in sources {
+            let mut options = projection_bundle_options(app.clone(), out.clone());
+            options.build_options.projection_manifests = vec![source];
+            let error = build_desktop_bundle(options).unwrap_err();
+            assert!(matches!(error, DesktopError::OutputPathOverlap { .. }));
+            assert_eq!(
+                fs::read_to_string(out.join("input.json")).unwrap(),
+                "preserve input"
+            );
+        }
     }
 
     #[test]

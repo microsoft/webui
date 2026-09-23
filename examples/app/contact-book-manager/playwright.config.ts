@@ -9,7 +9,7 @@ export default defineConfig({
     '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}{ext}',
   timeout: 30_000,
   use: {
-    baseURL: 'http://127.0.0.1:3003',
+    baseURL: process.env['CONTACT_BOOK_TEST_URL'] ?? 'http://127.0.0.1:3003',
     screenshot: 'only-on-failure',
   },
   projects: [

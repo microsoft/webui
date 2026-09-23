@@ -17,12 +17,13 @@ The crate is published as `microsoft-webui` on crates.io; the bare `webui` name 
 ### Owned partial-navigation responses
 
 `Protocol::render_partial(state, entry, path, inventory)` returns JSON with
-state projected to the active components. Hosts that deliberately publish their
-complete route-specific state can instead call
-`Protocol::render_partial_full_state(state, entry, path, inventory)`. It consumes
-the owned `serde_json::Value` and returns a serializable `PartialNavigation`;
-check `is_match()` before sending it and serialize it once with `serde_json`.
-Only pass data intended for the client: this variant does not filter state keys.
+state projected to the active components. For direct serialization to response
+bytes or a writer, call `Protocol::prepare_partial(state, entry, path, inventory)`.
+It consumes the owned `serde_json::Value` and returns a serializable
+`PartialNavigation` with the same projection policy. Check `is_match()` when
+choosing a response status, then serialize it once with `serde_json::to_vec` or
+`serde_json::to_writer`. Unknown component requirements retain full state for
+correctness, so render state must contain only client-safe data.
 Use `Protocol::matches_route(entry, path)` when only route existence is needed.
 
 <webui-press-tabs>
@@ -542,6 +543,7 @@ component.
 | `ServeRequest::new(render_options, accept_json, inventory_hex)` | Store the complete borrowed render configuration and the client's partial-navigation metadata without a heap allocation |
 | `serve_request(protocol, handler, state, request)` | Inject route parameters, then return either a full `ServeResponse::Html` document rendered with the supplied options or a `ServeResponse::Json` partial |
 | `Protocol::render_partial(state, entry_id, request_path, inventory_hex)` | Consume parsed Rust state and move its selected values into a complete JSON partial without a serialize/reparse cycle |
+| `Protocol::prepare_partial(state, entry_id, request_path, inventory_hex)` | Prepare the same projected response for direct serialization; inspect `is_match()` before sending |
 | `Protocol::render_partial_json(state_json, entry_id, request_path, inventory_hex)` | Validate and project serialized state without materializing a duplicate state tree |
 
 ### Host-driven streaming

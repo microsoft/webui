@@ -582,9 +582,9 @@ development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 ```bash
 webui desktop init [APP_ROOT] [--force]
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
-webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>]
-webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
+webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]...
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]...
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
 ```
 
 `webui desktop init` creates a minimal `src/index.html`, `package.json`, and
@@ -624,6 +624,15 @@ is not supported.
 | `--runner-default-features` | Include the runner's default Cargo features | `webuiDesktop.runnerDefaultFeatures`, otherwise `false` |
 | `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
 | `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
+| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | `webuiDesktop.projectionManifests` for app-root packaging, otherwise none |
+
+Package configuration manifest paths are relative to the app root; CLI paths are
+relative to the working directory. Explicit CLI manifests replace the configured
+list. Run the client build first: missing, stale, or incomplete metadata is a
+build error, not a silent fallback. Without supplied manifests, unknown component
+requirements retain full state for correctness. Existing bundles must be rebuilt
+to change their projection metadata; manifest flags cannot modify them during
+packaging.
 
 The bundle contains `protocol.bin`, generated CSS, copied static assets under
 `assets/`, optional `state.json`, `manifest.webui-desktop.json`, and SHA-256

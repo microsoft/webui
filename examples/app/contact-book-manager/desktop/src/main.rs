@@ -110,6 +110,7 @@ fn workspace_root() -> PathBuf {
 
 #[cfg(feature = "source")]
 fn contact_book_build_options(app_dir: PathBuf) -> webui_desktop::BuildOptions {
+    let projection_manifest = app_dir.join("../dist/webui-projection.json");
     webui_desktop::BuildOptions {
         app_dir,
         entry: "index.html".to_string(),
@@ -117,6 +118,7 @@ fn contact_book_build_options(app_dir: PathBuf) -> webui_desktop::BuildOptions {
         dom: webui_desktop::DomStrategy::Shadow,
         plugin: Some(webui_desktop::Plugin::WebUI),
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+        projection_manifests: vec![projection_manifest.into()],
         ..webui_desktop::BuildOptions::default()
     }
 }
@@ -804,7 +806,7 @@ mod tests {
         let edit = request_json(DesktopHttpMethod::Get, &edit_path, &[], 200);
         assert_eq!(edit["state"]["firstName"], "Updated");
         assert_eq!(edit["state"]["selectedGroup"], "Systems");
-        assert_eq!(edit["state"]["tokens"], initial["tokens"]);
+        assert!(edit["state"].get("tokens").is_none());
         assert_eq!(edit["state"]["mode"], "desktop");
 
         let group = request_json(DesktopHttpMethod::Get, "/groups/Systems", &[], 200);

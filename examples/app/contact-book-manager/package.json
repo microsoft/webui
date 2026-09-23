@@ -19,6 +19,7 @@
     "app": "src",
     "state": "data/state.json",
     "assets": "dist",
+    "projectionManifests": ["dist/webui-projection.json"],
     "theme": "@microsoft/webui-examples-theme",
     "plugin": "webui",
     "runnerCrate": "contact-book-desktop",

@@ -7,6 +7,7 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
 import { Protocol } from '@microsoft/webui';
 
 const require = createRequire(import.meta.url);
+const apiOrigin = process.env['CONTACT_BOOK_TEST_API_URL'] ?? 'http://127.0.0.1:3013';
 const theme = JSON.parse(
   readFileSync(require.resolve('@microsoft/webui-examples-theme'), 'utf8'),
 ) as { themes: Record<string, Record<string, string>> };
@@ -55,7 +56,7 @@ async function renderDesktopMode(
       return;
     }
     const response = await request.get(
-      `http://127.0.0.1:3013${url.pathname}${url.search}`,
+      `${apiOrigin}${url.pathname}${url.search}`,
       { headers: { Accept: 'application/json' } },
     );
     expect(response.ok()).toBe(true);

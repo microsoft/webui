@@ -548,13 +548,19 @@ Neither `ready` nor `finished` delays route notification or queues subsequent
 navigations. Both observers share one rejection handler, without per-navigation
 closures or retained transition state.
 
-**Partial response:** `Protocol::render_partial()` accepts owned
-`serde_json::Value` state and returns the complete response with projected
-top-level `state`, moving selected values without a serialize/reparse cycle.
+**Partial response:** `Protocol::prepare_partial()` accepts owned
+`serde_json::Value` state and returns a serializable `PartialNavigation` with
+projected top-level `state` and an out-of-band `is_match()` result. Selected
+values move into the response without cloning their trees. Desktop and the web
+CLI serialize this response directly into their byte buffers. The compatible
+`Protocol::render_partial()` string API wraps the same preparation path.
 `Protocol::render_partial_json()` accepts raw state and validates it with a
 streaming serde visitor that enforces `serde_json::Value` numeric limits, skips
 unselected values without materializing them, and borrows selected raw values
-into the response. FFI, Node, WASM, and .NET expose only the complete
+into the same response serializer. Unknown component surfaces retain full state
+for correctness; both input paths exclude the reserved top-level `$webui` key,
+including that fallback. Inventory filtering never narrows state selection:
+resident templates still receive their required data. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
@@ -6101,9 +6107,9 @@ Windows developer machine with the WebView2 Runtime installed.
 #### Desktop command surface
 
 ```bash
-webui desktop run [APP] --state <FILE> [--servedir <DIR>] [shared build flags] [window flags]
-webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags]
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window flags]
+webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window/package flags]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
 ```
 
@@ -6436,11 +6442,26 @@ Route providers run inside the Rust desktop host for full HTML renders and
 route parameters, and seed state, and return route-scoped JSON state. This keeps
 state ownership in Rust, avoids duplicated static route HTML, and lets router
 navigation use the same protocol path as browser/server deployments.
-`Protocol::render_partial_full_state` consumes the route state once and returns
-a serializable `PartialNavigation` with `is_match()`. Its wire schema matches the
-existing partial response, but state is deliberately not projected. Desktop uses
-this result rather than serializing, reparsing and replacing projected state.
+`Protocol::prepare_partial` consumes the route state once and returns
+a serializable `PartialNavigation` with `is_match()`. Desktop uses the same
+navigation projection and reserved-state filtering as web hosts, rather than
+replacing projected state with the original view model. Declared and
+template-derived requirements are retained; unknown surfaces use the common
+correctness fallback, not a desktop-specific bypass.
 `Protocol::matches_route` uses the compiled route chain without rendering assets.
+
+Desktop `run`/`build` accept repeatable `--projection-manifest` inputs.
+App-root packaging accepts the same flag or the `webuiDesktop.projectionManifests`
+array, resolving configuration paths against the app root and CLI paths against
+the working directory. CLI inputs replace configured inputs. Manifests pass
+through the compiler's existing schema, freshness and coverage checks and are
+excluded from both staged assets and direct bundle asset copying. Disk and
+inline manifest locations participate in output-overlap validation before
+cleanup, so bundling cannot erase its projection inputs. Filesystem resolution
+precedes lexical reduction of `..` segments, matching compiler file identity.
+Existing bundles already contain compiled
+projection metadata and reject new manifest arguments. The Contact Book runner
+passes its client build manifest in source mode and configures it for packaging.
 
 If a route provider returns an error, the desktop runtime surfaces that error;
 it must not silently fall back to seed state. Valid route paths may contain `.`

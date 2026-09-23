@@ -59,6 +59,13 @@ and group lists for each route. Browser seed fields `filteredContacts`,
 `favoriteContacts`, and `recentContacts` are ignored on desktop; global settings
 and theme tokens remain available to the renderer.
 
+Both desktop build paths consume `dist/webui-projection.json` from
+`build:client`. Source mode supplies it through Rust build options; packaging
+uses `webuiDesktop.projectionManifests`. Keep the client build current before
+launching or packaging. Navigation sends the fields required by the active
+components, just as the browser host does; theme CSS remains available for full
+document rendering without being repeated as unused navigation state.
+
 ## Desktop package smoke test
 
 Build and launch a Contact Book desktop app in one command:

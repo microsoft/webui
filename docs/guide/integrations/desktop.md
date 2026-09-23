@@ -387,6 +387,7 @@ as `CFBundleIconFile`, and portable layouts copy the icon into resources.
     "app": "src",
     "state": "data/state.json",
     "assets": "dist",
+    "projectionManifests": ["dist/webui-projection.json"],
     "theme": "@microsoft/webui-examples-theme",
     "icon": "desktop/app.icns",
     "plugin": "webui",
@@ -402,6 +403,16 @@ as `CFBundleIconFile`, and portable layouts copy the icon into resources.
   }
 }
 ```
+
+`projectionManifests` supplies the client bundler's metadata to the desktop
+compiler. Paths are relative to the app root; repeatable
+`--projection-manifest <PATH>` arguments override the list with paths relative
+to the working directory. These are build inputs, not packaged runtime assets.
+Build the client first so the manifests match the current source. Desktop
+navigation uses the same state projection as web navigation; unknown component
+requirements retain full state for correctness. Do not put secrets in render
+state. Rust source hosts supply the equivalent
+`BuildOptions::projection_manifests` entries.
 
 Existing bundle packaging remains available for lower-level flows:
 

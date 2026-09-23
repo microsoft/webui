@@ -1277,21 +1277,30 @@ async fn handle_json_partial(
 
     // Build the complete partial response (componentStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        match proto.render_partial(state_data, &entry, &paths.route_path, &client_inv_hex) {
-            Ok(value) => value,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(r#"{{"error":"{}"}}"#, e));
-            }
+        let response =
+            match proto.prepare_partial(state_data, &entry, &paths.route_path, &client_inv_hex) {
+                Ok(value) => value,
+                Err(error) => return partial_error_response(error),
+            };
+        match serde_json::to_vec(&response) {
+            Ok(body) => body,
+            Err(error) => return partial_error_response(error),
         }
     } else {
-        "{}".to_string()
+        b"{}".to_vec()
     };
 
     HttpResponse::Ok()
         .content_type("application/json")
         .body(partial)
+}
+
+#[cold]
+#[inline(never)]
+fn partial_error_response(error: impl std::fmt::Display) -> HttpResponse {
+    let mut body = serde_json::Map::with_capacity(1);
+    body.insert("error".into(), serde_json::Value::String(error.to_string()));
+    HttpResponse::InternalServerError().json(body)
 }
 
 #[cfg(test)]
@@ -2572,6 +2581,59 @@ mod tests {
         assert!(body.contains("EventSource"), "body: {body}");
         assert!(body.contains(HMR_ENDPOINT), "body: {body}");
         assert!(!body.contains("stale ok"), "body: {body}");
+    }
+
+    #[actix_web::test]
+    async fn json_partial_http_response_matches_projected_string_api() {
+        let dir = create_app_dir(&[
+            ("index.html", "<route path=\"/\" component=\"home-page\" />"),
+            ("home-page.html", "<p>{{name}}</p>"),
+        ]);
+        let built = webui::build(webui::BuildOptions {
+            app_dir: dir.path().to_path_buf(),
+            plugin: Some(webui::Plugin::WebUI),
+            ..Default::default()
+        })
+        .unwrap();
+        let protocol = Arc::new(Protocol::new(built.protocol));
+        let state = serde_json::json!({
+            "name": "Ada",
+            "unused": ["not client state"],
+            "$webui": {"bodyEnd": "<script>host-only</script>"}
+        });
+        let expected = protocol
+            .render_partial(state.clone(), "index.html", "/", "")
+            .unwrap();
+        let context = test_route_context(protocol);
+        context.state.lock().unwrap().state_data = Some(state);
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/", web::get().to(handle_index)),
+        )
+        .await;
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/")
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = actix_test::read_body(response).await;
+        assert_eq!(body.as_ref(), expected.as_bytes());
+        let wire: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(wire["state"], serde_json::json!({"name": "Ada"}));
+    }
+
+    #[actix_web::test]
+    async fn partial_serialization_errors_are_valid_json() {
+        let response = partial_error_response("invalid \"metadata\"\n");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body()).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "invalid \"metadata\"\n");
     }
 
     #[actix_web::test]
