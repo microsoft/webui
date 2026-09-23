@@ -24,9 +24,10 @@ test('webui-press package maps supported platforms to native packages', () => {
 });
 
 test('webui-press package derives workspace root from package root', () => {
+  const workspace = path.resolve('/repo');
   assert.equal(
-    workspaceRootForPackage(path.join('/repo', 'crates', 'webui-press')),
-    path.join('/repo'),
+    workspaceRootForPackage(path.join(workspace, 'packages', 'webui-press')),
+    workspace,
   );
 });
 

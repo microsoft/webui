@@ -1,5 +1,4 @@
 packages:
-  - crates/webui-press
   - docs
   - examples/**
   - packages/*
