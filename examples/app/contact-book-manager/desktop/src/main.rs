@@ -74,7 +74,7 @@ fn source_frame() -> Result<DesktopFrame> {
         width: 1200,
         height: 800,
         devtools: true,
-        titlebar: TitlebarStyle::HiddenInset,
+        titlebar: TitlebarStyle::None,
         background: Some("#f8fafc".parse()?),
         remember_state: true,
         ..WindowOptions::default()
@@ -386,6 +386,7 @@ fn sidebar_state(contacts: &[Value], groups: &[Value]) -> Map<String, Value> {
         .filter(|contact| contact.get("favorite").and_then(Value::as_bool) == Some(true))
         .count();
     let mut out = Map::new();
+    out.insert("mode".to_string(), Value::String("desktop".to_string()));
     out.insert("totalContacts".to_string(), Value::from(contacts.len()));
     out.insert("totalFavorites".to_string(), Value::from(favorite_count));
     out.insert("totalGroups".to_string(), Value::from(groups.len()));
@@ -701,6 +702,57 @@ mod tests {
 
     #[cfg(feature = "source")]
     #[test]
+    fn source_and_packaged_frames_render_app_owned_chrome() {
+        use webui_desktop::{build_desktop_bundle, DesktopBundleOptions, DesktopShellConfig};
+
+        let source = source_frame().unwrap();
+        assert_eq!(source.window().titlebar, TitlebarStyle::None);
+        assert!(source.runtime().startup_html().contains("mode=\"desktop\""));
+
+        let package: Value = serde_json::from_str(include_str!("../../package.json")).unwrap();
+        let window: WindowOptions =
+            serde_json::from_value(package["webuiDesktop"].clone()).unwrap();
+        assert_eq!(window.titlebar, TitlebarStyle::None);
+        let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let bundle = tempfile::tempdir().unwrap();
+        build_desktop_bundle(DesktopBundleOptions {
+            build_options: contact_book_build_options(app_root.join("src")),
+            out_dir: bundle.path().to_path_buf(),
+            state_file: Some(app_root.join("data/state.json")),
+            asset_root: None,
+            token_css: None,
+            app_id: "com.microsoft.webui.contactbook.test".to_string(),
+            app_name: "Contact Book Manager".to_string(),
+            version: "0.0.0".to_string(),
+            publisher: "Microsoft".to_string(),
+            window,
+            icon_file: None,
+            shell: DesktopShellConfig::default(),
+            package_targets: Vec::new(),
+        })
+        .unwrap();
+
+        let packaged = packaged_frame(bundle.path()).unwrap();
+        assert_eq!(packaged.window().titlebar, TitlebarStyle::None);
+        assert!(packaged
+            .runtime()
+            .startup_html()
+            .contains("mode=\"desktop\""));
+        let response = packaged
+            .runtime()
+            .handle_request(&webui_desktop::DesktopProtocolRequest {
+                method: DesktopHttpMethod::Get,
+                path: "/contacts",
+                body: &[],
+                wants_json: true,
+            })
+            .unwrap();
+        let partial: Value = serde_json::from_slice(response.body.as_bytes().unwrap()).unwrap();
+        assert_eq!(partial["state"]["mode"], "desktop");
+    }
+
+    #[cfg(feature = "source")]
+    #[test]
     fn registered_api_mutations_reach_parameterized_routes_and_preserve_tokens() {
         use webui_desktop::DesktopProtocolRequest;
 
@@ -753,11 +805,14 @@ mod tests {
         assert_eq!(edit["state"]["firstName"], "Updated");
         assert_eq!(edit["state"]["selectedGroup"], "Systems");
         assert_eq!(edit["state"]["tokens"], initial["tokens"]);
+        assert_eq!(edit["state"]["mode"], "desktop");
 
         let group = request_json(DesktopHttpMethod::Get, "/groups/Systems", &[], 200);
+        assert_eq!(group["state"]["mode"], "desktop");
         assert_eq!(group["state"]["contacts"].as_array().unwrap().len(), 1);
         assert_eq!(group["state"]["contacts"][0]["id"], id);
         let favorites = request_json(DesktopHttpMethod::Get, "/favorites", &[], 200);
+        assert_eq!(favorites["state"]["mode"], "desktop");
         assert_eq!(favorites["state"]["contacts"].as_array().unwrap().len(), 2);
         let stats = request_json(DesktopHttpMethod::Get, "/api/stats", &[], 200);
         assert_eq!(stats["totalContacts"], 3);

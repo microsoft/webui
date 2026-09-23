@@ -4,16 +4,17 @@
 //! Actual-native no-IPC smoke test (requires a usable desktop session).
 //! Run with `cargo run -p microsoft-webui-desktop --example no-ipc-native
 //! --no-default-features --features native,source -- source` (or `bundle`).
+//! The `frameless-source` and `frameless-bundle` modes also verify close vetoes.
 //! Application IPC must not be enabled by workspace feature unification.
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, OnceLock,
 };
 use webui_desktop::{
     build_desktop_bundle, BuildOptions, DesktopApp, DesktopBundleOptions, DesktopEvent,
-    DesktopProtocolResponse, DesktopShellConfig, DesktopSourceConfig, EventResponse, WindowHandle,
-    WindowOptions,
+    DesktopProtocolResponse, DesktopShellConfig, DesktopSourceConfig, EventResponse, TitlebarStyle,
+    WindowHandle, WindowOptions,
 };
 
 const SCRIPT: &str = r#"
@@ -41,7 +42,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(feature = "application-ipc") {
         return Err("run this fixture without application-ipc".into());
     }
-    let mode = std::env::args().nth(1).ok_or("expected source or bundle")?;
+    let mode = std::env::args()
+        .nth(1)
+        .ok_or("expected source, bundle, frameless-source, or frameless-bundle")?;
+    let frameless = mode.starts_with("frameless-");
+    let input_mode = mode.strip_prefix("frameless-").unwrap_or(&mode);
     let root = tempfile::tempdir()?;
     let app = root.path().join("app");
     std::fs::create_dir(&app)?;
@@ -54,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_dir: app,
         ..BuildOptions::default()
     };
-    let builder = match mode.as_str() {
+    let builder = match input_mode {
         "source" => DesktopApp::from_source(DesktopSourceConfig::new(options)),
         "bundle" => {
             let bundle = root.path().join("bundle");
@@ -84,7 +89,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             DesktopApp::from_bundle(bundle)?
         }
-        _ => return Err("expected source or bundle".into()),
+        _ => return Err("expected source, bundle, frameless-source, or frameless-bundle".into()),
+    };
+    let builder = if frameless {
+        builder.window(WindowOptions {
+            titlebar: TitlebarStyle::None,
+            ..WindowOptions::default()
+        })
+    } else {
+        builder
     };
     let window = Arc::new(OnceLock::<WindowHandle>::new());
     let passed = Arc::new(AtomicBool::new(false));
@@ -136,8 +149,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "duplicate window")?;
     let closed_event = Arc::clone(&closed);
     let passed_event = Arc::clone(&passed);
+    let close_requests = AtomicUsize::new(0);
+    let close_handle = frame.window_handle().clone();
     let closed_mode = mode;
     frame.on_event(move |event| {
+        if frameless && matches!(event, DesktopEvent::WindowCloseRequested { .. }) {
+            if close_requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                if let Err(error) = close_handle.request_close() {
+                    eprintln!("NO_IPC_NATIVE_FAILURE could not retry vetoed close: {error}");
+                    std::process::exit(1);
+                }
+                return EventResponse::PreventDefault;
+            }
+        }
         if matches!(event, DesktopEvent::WindowClosed { .. }) {
             if closed_event.swap(true, Ordering::SeqCst) {
                 eprintln!("NO_IPC_NATIVE_FAILURE duplicate native close");
@@ -147,6 +171,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Report only after the real close event, and fail closed on errors.
             if !passed_event.load(Ordering::SeqCst) {
                 eprintln!("NO_IPC_NATIVE_FAILURE no successful renderer result");
+                std::process::exit(1);
+            }
+            if frameless && close_requests.load(Ordering::SeqCst) != 2 {
+                eprintln!("NO_IPC_NATIVE_FAILURE frameless close did not honor its first veto");
                 std::process::exit(1);
             }
             println!("NO_IPC_NATIVE_PASS mode={closed_mode}");

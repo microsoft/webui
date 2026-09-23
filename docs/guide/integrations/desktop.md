@@ -245,6 +245,15 @@ not use Chromium's `-webkit-app-region: drag`: WKWebView and WebKitGTK do not
 implement that Chromium-specific property, and WebView2 apps should use the
 WebUI drag contract for cross-platform behavior.
 
+Use `titlebar: { "style": "none" }` when web content owns the entire window,
+including its caption buttons. Frameless windows still honor `resizable` and
+close-request cancellation through `EventResponse::PreventDefault`.
+The Contact Book Manager example shares its
+templates between browser and desktop using application state
+`mode: "web" | "desktop"`. Its Rust host supplies `"desktop"` before the first
+render and preserves it during route navigation; browser mode omits the native
+window controls. `mode` is example-owned state, not a reserved framework field.
+
 ## Lifecycle and native window control
 
 Choose the lifetime of each Rust event handler:
@@ -787,8 +796,8 @@ Custom titlebars need to drag, minimize, maximize, and close the native window.
 That path is deliberately not general-purpose IPC: the injected drag script
 translates `webui-drag` regions into one of exactly four host messages
 (`start-drag`, `minimize`, `toggle-maximize`, `close`), each capped at 256
-bytes and rejected if it is anything else. Mark regions declaratively rather
-than sending these yourself:
+bytes and rejected if it is anything else. Mark drag regions declaratively
+rather than implementing pointer gestures yourself:
 
 ```html
 <header webui-drag>
@@ -796,6 +805,25 @@ than sending these yourself:
   <button webui-no-drag @click="{onSettings()}">Settings</button>
 </header>
 ```
+
+Application-drawn caption buttons use the same injected window bridge from
+their component event handlers:
+
+```typescript
+type WindowAction = 'minimize' | 'toggle-maximize' | 'close';
+
+function windowAction(action: WindowAction): void {
+  const host = window as Window & {
+    webuiHostPostMessage?: (payload: string) => void;
+  };
+  host.webuiHostPostMessage?.(JSON.stringify(action));
+}
+```
+
+Put the caption buttons inside a `webui-no-drag` region and give each an
+accessible name. Render them only in your desktop layout; a normal browser has
+no native bridge. These fixed window actions do not require `application-ipc`
+or the application messaging runtime.
 
 See [Window options](#window-options) for the drag-region contract.
 

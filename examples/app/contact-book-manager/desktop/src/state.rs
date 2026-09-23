@@ -27,7 +27,9 @@ struct InitialState {
 }
 
 impl InitialState {
-    fn into_runtime_state(self) -> (Value, SharedState) {
+    fn into_runtime_state(mut self) -> (Value, SharedState) {
+        self.seed
+            .insert("mode".to_string(), Value::String("desktop".to_string()));
         let store = Map::from_iter([
             ("contacts".to_string(), Value::Array(self.contacts)),
             ("groups".to_string(), Value::Array(self.groups)),
@@ -73,6 +75,7 @@ mod tests {
         use serde_json::json;
 
         let initial: InitialState = serde_json::from_value(json!({
+            "mode": "web",
             "contacts": [{"id": "1", "firstName": "Ada"}],
             "groups": ["Work"],
             "filteredContacts": [{"id": "stale"}],
@@ -107,6 +110,7 @@ mod tests {
             );
         }
         assert_eq!(seed["searchQuery"], "");
+        assert_eq!(seed["mode"], "desktop");
         assert_eq!(seed["tokens"]["light"], "--background:white;");
         assert_eq!(seed["tokens"]["dark"], "--background:black;");
         assert_eq!(seed["extension"]["enabled"], true);
@@ -118,11 +122,37 @@ mod tests {
         use serde_json::json;
 
         let (seed, store) = parse_state(br#"{"contacts":[],"groups":[]}"#).unwrap();
-        assert_eq!(seed, json!({}));
+        assert_eq!(seed, json!({"mode": "desktop"}));
         assert_eq!(
             *read_state(&store).unwrap(),
             json!({"contacts": [], "groups": []})
         );
+    }
+
+    #[test]
+    fn desktop_host_owns_the_mode_in_browser_and_packaged_seeds() {
+        use super::{load_state, read_state};
+        use serde_json::json;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        for mode in ["web", "desktop"] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&json!({
+                    "mode": mode,
+                    "contacts": [],
+                    "groups": [],
+                    "searchQuery": ""
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let (seed, store) = load_state(&path).unwrap();
+            assert_eq!(seed["mode"], "desktop");
+            assert_eq!(seed["searchQuery"], "");
+            assert!(read_state(&store).unwrap().get("mode").is_none());
+        }
     }
 
     #[test]

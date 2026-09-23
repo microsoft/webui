@@ -136,6 +136,7 @@ ssr.use((req: Request, res: Response, next) => {
 /** Lightweight state needed by the sidebar shell during SSR. */
 function sidebarState() {
   return {
+    mode: stateData.mode === 'desktop' ? 'desktop' : 'web',
     totalContacts: contacts.length,
     totalFavorites: favoriteContacts().length,
     totalGroups: uniqueGroups().length,

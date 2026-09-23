@@ -6803,4 +6803,12 @@ and rejects subsequent submissions with `WindowCommandError::Closed`.
 Wakeups are coalesced until a drain, installed callbacks wake any existing
 backlog, and wakeup invocation/destruction occurs outside channel locks.
 
+`TitlebarStyle::None` removes system-drawn chrome, not native window capabilities.
+On macOS its style mask retains close/minimize capabilities and the configured
+resizability without `Titled`. The window subclass handles frameless
+`performClose:` by consulting `windowShouldClose:` before closing, since AppKit's
+implementation requires a native close button. Both host messages and queued
+close commands therefore preserve `WindowCloseRequested` cancellation and the
+normal `WindowClosed` teardown. Titled windows retain AppKit's close behavior.
+
 When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, and effect features before native startup rather than silently ignoring them.

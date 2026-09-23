@@ -39,10 +39,21 @@ pnpm --dir examples/app/contact-book-manager run build:client
 cargo run -p contact-book-desktop --features source
 ```
 
-The desktop example uses a hidden-inset titlebar with a declarative `webui-drag`
-region, a themed pre-paint background, persisted window geometry, and a close
-request lifecycle handler. Its browser entry point also listens for the
-`webui:window-resized` event. The desktop seed requires `contacts` and `groups` arrays. The host keeps these
+The desktop example uses a frameless window (`titlebar: { "style": "none" }`).
+WebUI owns the edge-to-edge header, drag region, and minimize, maximize/restore,
+and close buttons. Search, navigation, and caption buttons remain interactive
+inside the draggable header through `webui-no-drag`. Window actions use the
+SDK's native window bridge, without enabling application IPC.
+
+The shared `data/state.json` defaults to `"mode": "web"`. Both source and packaged
+Rust launches supply `"mode": "desktop"` before rendering, including subsequent
+route requests. Desktop mode keeps the app header in place while route content
+scrolls; web mode has no caption buttons or reserved native titlebar space.
+There is no user-agent detection or client-side mode switch after first paint.
+
+The host also provides a themed pre-paint background, persisted window geometry,
+and a close-request lifecycle handler. The desktop seed requires `contacts` and
+`groups` arrays. The host keeps these
 canonical collections in shared Rust storage and derives dashboard, favorites,
 and group lists for each route. Browser seed fields `filteredContacts`,
 `favoriteContacts`, and `recentContacts` are ignored on desktop; global settings

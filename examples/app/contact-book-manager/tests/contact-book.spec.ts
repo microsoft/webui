@@ -51,7 +51,8 @@ test.describe('SSR pages', () => {
     const response = await page.goto('/');
     if (!response) throw new Error('dashboard navigation returned no response');
     const bootstrapState = bootstrapStateFromHtml(await response.text());
-    expect(Object.keys(bootstrapState).sort()).toEqual(['totalFavorites']);
+    expect(Object.keys(bootstrapState).sort()).toEqual(['mode', 'totalFavorites']);
+    expect(bootstrapState['mode']).toBe('web');
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
     // Stat cards
     await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();

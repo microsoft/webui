@@ -29,96 +29,20 @@
       color: var(--color-neutral-800);
       margin: 0;
       padding: 0;
-      min-height: 100vh;
-    }
-
-    /*
-     * The desktop runtime injects --webui-titlebar-* custom properties into
-     * :root before this stylesheet runs (see crates/webui-desktop/src/window.rs).
-     * In a plain browser those properties are never defined, so every
-     * fallback below resolves to 0 and the titlebar collapses to nothing -
-     * no reserved space, no visible content, no accessible name. This is a
-     * deliberate fallback-based approach rather than a feature query: CSS
-     * style() container queries could detect the custom properties directly,
-     * but they are too new to rely on as load-bearing layout (not yet
-     * Baseline widely-available across this project's supported browsers),
-     * so the conservative `var(x, 0px)` fallback is used instead.
-     */
-    .desktop-titlebar {
-      align-items: center;
-      background: var(--color-neutral-50);
-      color: var(--color-neutral-950);
-      display: flex;
-      height: var(--webui-titlebar-height, 0px);
-      overflow: hidden;
-      padding-inline: calc(var(--webui-titlebar-inset-start, 0px) + var(--spacing-l)) calc(var(--webui-titlebar-inset-end, 0px) + var(--spacing-l));
-      user-select: none;
-    }
-
-    .desktop-titlebar .app-title {
-      font-weight: 700;
-      white-space: nowrap;
-    }
-
-    /*
-     * cb-app sizes itself to 100vh. On desktop the titlebar sits above it, so
-     * the two together would exceed the window by exactly the titlebar height
-     * and produce a spurious scrollbar. Subtracting the inset keeps the app
-     * exactly one window tall. In a browser the fallback is 0px, so this
-     * resolves to plain 100vh and nothing changes.
-     */
-    cb-app {
-      min-height: calc(100vh - var(--webui-titlebar-height, 0px));
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .desktop-titlebar { background: var(--color-neutral-950); color: var(--color-neutral-50); }
-    }
-
-    /* Standard visually-hidden-until-focused skip link. */
-    .skip-link {
-      position: absolute;
-      top: 0;
-      left: var(--spacing-m);
-      transform: translateY(-100%);
-      z-index: 100;
-      padding: var(--spacing-s) var(--spacing-m);
-      background: var(--color-brand-primary);
-      color: var(--color-white);
-      border-radius: var(--border-radius-m);
-      font-weight: 600;
-      text-decoration: none;
-      transition: transform 150ms ease;
-    }
-
-    .skip-link:focus-visible {
-      transform: translateY(0);
-      outline: 2px solid var(--color-neutral-950);
-      outline-offset: 2px;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .skip-link { transition: none; }
     }
   </style>
 </head>
 
 <body>
-  <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="desktop-titlebar" webui-drag>
-    <span class="app-title" aria-hidden="true">Contact Book Manager</span>
-  </header>
-  <main id="main-content" tabindex="-1">
-    <route path="/" component="cb-app">
-      <route path="" component="cb-page-dashboard" exact />
-      <route path="contacts" component="cb-page-contacts" exact keep-alive />
-      <route path="contacts/add" component="cb-contact-form" exact />
-      <route path="contacts/:id" component="cb-contact-detail" exact />
-      <route path="contacts/:id/edit" component="cb-contact-form" exact />
-      <route path="favorites" component="cb-page-favorites" exact keep-alive />
-      <route path="groups/:group" component="cb-page-group" exact keep-alive />
-    </route>
-  </main>
+  <route path="/" component="cb-app">
+    <route path="" component="cb-page-dashboard" exact />
+    <route path="contacts" component="cb-page-contacts" exact keep-alive />
+    <route path="contacts/add" component="cb-contact-form" exact />
+    <route path="contacts/:id" component="cb-contact-detail" exact />
+    <route path="contacts/:id/edit" component="cb-contact-form" exact />
+    <route path="favorites" component="cb-page-favorites" exact keep-alive />
+    <route path="groups/:group" component="cb-page-group" exact keep-alive />
+  </route>
 
   <script type="module" src="./index.js"></script>
 </body>

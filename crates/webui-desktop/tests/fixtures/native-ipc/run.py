@@ -14,6 +14,7 @@ import tempfile
 
 FIXTURE = Path(__file__).resolve().parent
 ROOT = FIXTURE.parents[4]
+NO_IPC_MODES = ["source", "bundle", "frameless-source", "frameless-bundle"]
 
 
 def platform_plan(platform):
@@ -95,7 +96,7 @@ def no_ipc_run(artifacts, plan, timeout):
     binary = directory / plan["executable"]
     suffix = ".exe" if sys.platform == "win32" else ""
     shutil.copy2(ROOT / "target/release/examples" / ("no-ipc-native" + suffix), binary)
-    for mode in ["source", "bundle"]:
+    for mode in NO_IPC_MODES:
         result = subprocess.run([str(binary), mode], cwd=directory, timeout=timeout,
                                 capture_output=True, text=True)
         (directory / f"{mode}.stdout.log").write_text(result.stdout)
@@ -103,7 +104,7 @@ def no_ipc_run(artifacts, plan, timeout):
         if (result.returncode or result.stdout.count(f"NO_IPC_NATIVE_PASS mode={mode}") != 1
                 or "NO_IPC_NATIVE_FAILURE" in result.stderr):
             raise RuntimeError(f"no-IPC {mode} failed: {result.stdout}\n{result.stderr}")
-    return {"profile": "release", "modes": ["source", "bundle"], "status": "pass"}
+    return {"profile": "release", "modes": NO_IPC_MODES, "status": "pass"}
 
 
 def native_run(binary, mode, app, artifacts, timeout, digest, metadata):

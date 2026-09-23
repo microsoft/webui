@@ -16,6 +16,27 @@ export class CbApp extends WebUIElement {
   @observable searchQuery = '';
   @observable totalFavorites = '0';
 
+  contentEl!: HTMLElement;
+
+  private readonly onRouteNavigated = (): void => {
+    this.contentEl?.scrollTo(0, 0);
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener('webui:route:navigated', this.onRouteNavigated);
+  }
+
+  disconnectedCallback(): void {
+    window.removeEventListener('webui:route:navigated', this.onRouteNavigated);
+    super.disconnectedCallback();
+  }
+
+  onSkipToContent(e: Event): void {
+    e.preventDefault();
+    this.contentEl.focus();
+  }
+
   onSearch(e: SearchChangeEvent): void {
     this.searchQuery = e.detail.value;
   }

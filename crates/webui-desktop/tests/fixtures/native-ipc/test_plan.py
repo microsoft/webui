@@ -4,10 +4,13 @@
 """Pure planning tests only: these do not exercise any native adapter."""
 import unittest
 from pathlib import PureWindowsPath, PurePosixPath
-from run import assert_clean_native_log, assert_runtime_dependencies, platform_plan
+from run import NO_IPC_MODES, assert_clean_native_log, assert_runtime_dependencies, platform_plan
 
 
 class PlatformPlanTests(unittest.TestCase):
+    def test_no_ipc_modes_cover_native_and_frameless_source_and_bundle(self):
+        self.assertEqual(NO_IPC_MODES, ["source", "bundle", "frameless-source", "frameless-bundle"])
+
     def test_runtime_consumer_rejects_source_and_tooling_dependencies(self):
         for package in ["microsoft-webui", "microsoft-webui-parser",
                         "microsoft-webui-discovery", "microsoft-webui-desktop-build",

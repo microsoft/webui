@@ -32,7 +32,7 @@ pub(super) fn native_window_style(options: &WindowOptions) -> NativeWindowStyle 
             frameless: false,
         },
         TitlebarStyle::None => NativeWindowStyle {
-            mask: NSWindowStyleMask::Borderless,
+            mask: mask & !NSWindowStyleMask::Titled,
             transparent_titlebar: false,
             hidden_title: true,
             frameless: true,
@@ -62,8 +62,24 @@ mod tests {
             titlebar: TitlebarStyle::None,
             ..WindowOptions::default()
         });
-        assert_eq!(style.mask, NSWindowStyleMask::Borderless);
+        assert!(!style.mask.contains(NSWindowStyleMask::Titled));
+        assert!(style.mask.contains(NSWindowStyleMask::Closable));
+        assert!(style.mask.contains(NSWindowStyleMask::Miniaturizable));
+        assert!(style.mask.contains(NSWindowStyleMask::Resizable));
         assert!(style.frameless);
+    }
+
+    #[test]
+    fn non_resizable_frameless_window_preserves_close_and_minimize() {
+        let style = native_window_style(&WindowOptions {
+            titlebar: TitlebarStyle::None,
+            resizable: false,
+            ..WindowOptions::default()
+        });
+        assert!(!style.mask.contains(NSWindowStyleMask::Titled));
+        assert!(!style.mask.contains(NSWindowStyleMask::Resizable));
+        assert!(style.mask.contains(NSWindowStyleMask::Closable));
+        assert!(style.mask.contains(NSWindowStyleMask::Miniaturizable));
     }
 
     #[test]
