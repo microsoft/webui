@@ -1,0 +1,636 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="color-scheme" content="light dark"/><script>
+    /* Apply theme synchronously before first paint to prevent
+       flash-of-wrong-theme on cross-document navigation. */
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script><base href="&#x2F;webui&#x2F;"/><meta name="base" content="&#x2F;webui&#x2F;"/><title>WebUI Desktop | WebUI Framework</title><meta name="description" content="SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."/><meta property="og:title" content="WebUI Desktop | WebUI Framework"/><meta property="og:description" content="SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary"/><link rel="icon" href="&#x2F;webui&#x2F;logo.svg"/><style>
+    :root {
+      
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        
+      }
+    }
+
+    @media not (forced-colors: active) {
+      :root[data-theme="light"] {
+        color-scheme: light;
+        
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        
+      }
+    }
+  </style><!--w0--><link rel="stylesheet" href="/webui/docs.css">
+  <link rel="stylesheet" href="/webui/theme.css">
+  <link href="/webui/favicon.ico" rel="icon">
+  <script type="text/javascript">(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window, document, "clarity", "script", "w8ppn3zr79");</script><!--/w0--><script>
+    /* Preserve sidebar scroll across cross-document navigations.
+       The page itself is not scrollable; sidebar and main-content own their
+       own scrollbars. Runs BEFORE pagereveal fires (and before first paint)
+       so restored positions are what view transitions animate to,
+       eliminating the end-of-transition jump. */
+    (function () {
+      var SIDEBAR_KEY = 'webui-press:sidebar-scroll';
+      var MAIN_KEY_PREFIX = 'webui-press:main-scroll:';
+      function sidebar() { return document.querySelector('.sidebar'); }
+      function main() { return document.querySelector('.main-content'); }
+      function mainKey() { return MAIN_KEY_PREFIX + location.pathname + location.search; }
+      function save() {
+        var s = sidebar();
+        if (s) sessionStorage.setItem(SIDEBAR_KEY, s.scrollTop);
+        var m = main();
+        if (m) sessionStorage.setItem(mainKey(), m.scrollTop);
+      }
+      function restore() {
+        var s = sidebar();
+        var v = sessionStorage.getItem(SIDEBAR_KEY);
+        if (s && v !== null) s.scrollTop = +v;
+        var m = main();
+        if (!m) return;
+        if (!location.hash) {
+          var mv = sessionStorage.getItem(mainKey());
+          if (mv !== null) m.scrollTop = +mv;
+        }
+        if (document.activeElement === document.body) {
+          m.focus({ preventScroll: true });
+        }
+      }
+      window.addEventListener('pageswap', save);
+      window.addEventListener('pagehide', save);
+      if ('onpagereveal' in window) {
+        window.addEventListener('pagereveal', restore);
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore, { once: true });
+      } else {
+        restore();
+      }
+    })();
+  </script><link rel="preload" as="style" href="docs-site-navigation.css"><link rel="preload" as="style" href="docs-search.css"><link rel="preload" as="style" href="docs-theme-toggle.css"><link rel="preload" as="style" href="docs-sidebar-navigation.css"><link rel="preload" as="style" href="code-block.css"><link rel="modulepreload" href="/webui/assets/chunk-W2T3YOUI.js?v=b31df38bf1c84976"><link rel="modulepreload" href="/webui/assets/chunk-YNUCAYZP.js?v=e32d7135e1018163"><link rel="modulepreload" href="/webui/assets/chunk-F6SH3YFS.js?v=30d592a490a9b049"></head><body data-layout="doc"><a class="skip-link" href="#main-content">Skip to content</a><header class="nav-bar"><a href="&#x2F;webui&#x2F;" class="logo"><img src="&#x2F;webui&#x2F;logo.svg" alt="WebUI Framework"/><span>WebUI Framework</span></a><docs-site-navigation section="guide"><template shadowrootmode="open"><link rel="stylesheet" href="docs-site-navigation.css" data-webui-resource="docs-site-navigation" data-webui-strategy="link"><nav class="nav-links" aria-label="Primary navigation"><!--wr--><!--wi--><a href="&#x2F;webui&#x2F;guide&#x2F;" class="nav-link" active>Guide</a><!--wi--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world&#x2F;" class="nav-link">Tutorials</a><!--wi--><a href="&#x2F;webui&#x2F;playground&#x2F;" class="nav-link">Playground</a><!--wi--><a href="&#x2F;webui&#x2F;ai" class="nav-link">AI</a><!--wi--><a href="https:&#x2F;&#x2F;github.com&#x2F;microsoft&#x2F;webui" class="nav-link">GitHub</a><!--/wr--><docs-search><template shadowrootmode="open"><link rel="stylesheet" href="docs-search.css" data-webui-resource="docs-search" data-webui-strategy="link"><button class="trigger" aria-label="Search">
+  🔍 <span class="label">Search</span> <kbd>⌘K</kbd></button><dialog w-ref={dialog}><div class="box"><div class="input-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input id="docs-search-input" name="q" w-ref={searchInput} type="text" placeholder="Search documentation..." autocomplete="off"/></div><div class="results"><!--wc--><!--/wc--><!--wc--><!--/wc--></div><div class="hint">↑↓ Navigate · Enter Select · Esc Close</div></div></dialog></template></docs-search><docs-theme-toggle><template shadowrootmode="open"><link rel="stylesheet" href="docs-theme-toggle.css" data-webui-resource="docs-theme-toggle" data-webui-strategy="link"><button aria-label="Toggle dark mode">🌙</button></template></docs-theme-toggle><button class="mobile-menu-btn" type="button" aria-label="Open navigation" aria-controls="mobile-navigation" aria-expanded="false"><span aria-hidden="true">☰</span></button></nav><dialog class="mobile-navigation" id="mobile-navigation" aria-labelledby="mobile-navigation-title" w-ref="{dialog}"><div class="mobile-navigation-panel"><div class="mobile-navigation-header"><strong id="mobile-navigation-title">Browse WebUI</strong><button class="mobile-navigation-close" type="button" aria-label="Close navigation"><span aria-hidden="true">×</span></button></div><nav class="mobile-primary-nav" aria-label="Primary navigation"><!--wr--><!--wi--><a href="&#x2F;webui&#x2F;guide&#x2F;" active>Guide</a><!--wi--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world&#x2F;">Tutorials</a><!--wi--><a href="&#x2F;webui&#x2F;playground&#x2F;">Playground</a><!--wi--><a href="&#x2F;webui&#x2F;ai">AI</a><!--wi--><a href="https:&#x2F;&#x2F;github.com&#x2F;microsoft&#x2F;webui">GitHub</a><!--/wr--></nav><!--wc--><div class="mobile-section-nav"><docs-sidebar-navigation variant="mobile"><template shadowrootmode="open"><link rel="stylesheet" href="docs-sidebar-navigation.css" data-webui-resource="docs-sidebar-navigation" data-webui-strategy="link"><nav class="sidebar-navigation" aria-label="Documentation sections"><!--wr--><!--wi--><div class="sidebar-group"><div class="sidebar-title">Getting Started</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide" class="sidebar-link">What is WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;why" class="sidebar-link">Why WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;installation" class="sidebar-link">Installation</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world" class="sidebar-link">Quick Start</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Core Foundations</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;how-it-works" class="sidebar-link">How It Works</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;components" class="sidebar-link">Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><details class="sidebar-branch"><summary class="sidebar-summary"><span>Template Syntax</span></summary><ul class="sidebar-children"><!--wc--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives" class="sidebar-link">Overview</a><!--/wc--></li><!--/wc--><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;signals" class="sidebar-link">Signals {{}}</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;if" class="sidebar-link">Conditionals &lt;if&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;for" class="sidebar-link">Loops &lt;for&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;attributes" class="sidebar-link">Attributes</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;lazy" class="sidebar-link">Lazy policy</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;route" class="sidebar-link">Routes &lt;route&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;boundary" class="sidebar-link">Streaming &lt;boundary&gt;</a><!--/wc--></li><!--/wr--></ul></details><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;interactivity" class="sidebar-link">Interactivity</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Application Architecture</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;state-management" class="sidebar-link">State Management</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;routing" class="sidebar-link">Routing</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;performance" class="sidebar-link">Performance</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Language Integrations</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations" class="sidebar-link">Overview</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;rust" class="sidebar-link">Rust</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;node" class="sidebar-link">Node &#x2F; Bun &#x2F; Deno</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;python" class="sidebar-link">Python</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;desktop" class="sidebar-link sidebar-link-active">Desktop</a><!--/wc--><!--wc--><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;electron" class="sidebar-link">Electron</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;dotnet" class="sidebar-link">.NET</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;ffi" class="sidebar-link">C &#x2F; FFI</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;wasm" class="sidebar-link">WebAssembly</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Guides</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;webui-press" class="sidebar-link">WebUI Press</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><details class="sidebar-branch"><summary class="sidebar-summary"><span>CLI Reference</span></summary><ul class="sidebar-children"><!--wc--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli" class="sidebar-link">Overview</a><!--/wc--></li><!--/wc--><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-build" class="sidebar-link">webui build</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-serve" class="sidebar-link">webui serve</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-inspect" class="sidebar-link">webui inspect</a><!--/wc--></li><!--/wr--></ul></details><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;react-comparison" class="sidebar-link">React vs Web Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;best-practices" class="sidebar-link">Best Practices</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;css-tokens" class="sidebar-link">CSS Token Hoisting</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;serverless-architecture" class="sidebar-link">Serverless Architecture</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;plugins" class="sidebar-link">Plugins</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--/wr--></nav></template></docs-sidebar-navigation></div><!--/wc--></div></dialog></template></docs-site-navigation></header><!--wc--><!--/wc--><!--wc--><div class="layout"><aside class="sidebar" aria-label="Documentation sections"><docs-sidebar-navigation><template shadowrootmode="open"><link rel="stylesheet" href="docs-sidebar-navigation.css" data-webui-resource="docs-sidebar-navigation" data-webui-strategy="link"><nav class="sidebar-navigation" aria-label="Documentation sections"><!--wr--><!--wi--><div class="sidebar-group"><div class="sidebar-title">Getting Started</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide" class="sidebar-link">What is WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;why" class="sidebar-link">Why WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;installation" class="sidebar-link">Installation</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world" class="sidebar-link">Quick Start</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Core Foundations</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;how-it-works" class="sidebar-link">How It Works</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;components" class="sidebar-link">Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><details class="sidebar-branch"><summary class="sidebar-summary"><span>Template Syntax</span></summary><ul class="sidebar-children"><!--wc--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives" class="sidebar-link">Overview</a><!--/wc--></li><!--/wc--><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;signals" class="sidebar-link">Signals {{}}</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;if" class="sidebar-link">Conditionals &lt;if&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;for" class="sidebar-link">Loops &lt;for&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;attributes" class="sidebar-link">Attributes</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;lazy" class="sidebar-link">Lazy policy</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;route" class="sidebar-link">Routes &lt;route&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;boundary" class="sidebar-link">Streaming &lt;boundary&gt;</a><!--/wc--></li><!--/wr--></ul></details><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;interactivity" class="sidebar-link">Interactivity</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Application Architecture</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;state-management" class="sidebar-link">State Management</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;routing" class="sidebar-link">Routing</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;performance" class="sidebar-link">Performance</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Language Integrations</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations" class="sidebar-link">Overview</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;rust" class="sidebar-link">Rust</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;node" class="sidebar-link">Node &#x2F; Bun &#x2F; Deno</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;python" class="sidebar-link">Python</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;desktop" class="sidebar-link sidebar-link-active">Desktop</a><!--/wc--><!--wc--><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;electron" class="sidebar-link">Electron</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;dotnet" class="sidebar-link">.NET</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;ffi" class="sidebar-link">C &#x2F; FFI</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;wasm" class="sidebar-link">WebAssembly</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><div class="sidebar-title">Guides</div><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;webui-press" class="sidebar-link">WebUI Press</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><details class="sidebar-branch"><summary class="sidebar-summary"><span>CLI Reference</span></summary><ul class="sidebar-children"><!--wc--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli" class="sidebar-link">Overview</a><!--/wc--></li><!--/wc--><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-build" class="sidebar-link">webui build</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-serve" class="sidebar-link">webui serve</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-inspect" class="sidebar-link">webui inspect</a><!--/wc--></li><!--/wr--></ul></details><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;react-comparison" class="sidebar-link">React vs Web Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;best-practices" class="sidebar-link">Best Practices</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;css-tokens" class="sidebar-link">CSS Token Hoisting</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;serverless-architecture" class="sidebar-link">Serverless Architecture</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;plugins" class="sidebar-link">Plugins</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--/wr--></nav></template></docs-sidebar-navigation></aside><main class="main-content" id="main-content" tabindex="-1"><!--wc--><div class="mobile-page-context" aria-label="Current location"><span>Language Integrations</span><span aria-hidden="true">/</span><strong>WebUI Desktop</strong></div><!--/wc--><article class="doc-content"><h1 id="webui-desktop">WebUI Desktop <a class="header-anchor" href="/webui/guide/integrations/desktop/#webui-desktop" aria-label="Link to WebUI Desktop">#</a></h1><p>WebUI desktop apps use the same build-time protocol and server-side rendering
+pipeline as browser apps, then run in a lightweight Rust desktop shell. The
+shell uses system webviews only:</p><table><thead><tr><th>Platform</th><th>Webview</th></tr></thead><tbody><tr><td>Windows</td><td>WebView2</td></tr><tr><td>macOS</td><td>WKWebView</td></tr><tr><td>Linux</td><td>GTK4/WebKitGTK 6</td></tr></tbody></table><p>Electron, Node, bundled Chromium, and localhost HTTP servers are not part of the
+desktop runtime.</p><p>Linux builds require GTK4 and WebKitGTK 6 development packages on the target
+system or a configured cross-compilation sysroot. Windows support uses the
+WebView2 Runtime <strong>122.0.2365.46 or later</strong> and the target-gated Win32 backend;
+older runtimes fail at startup with an update hint. Use the current Evergreen
+Runtime for security updates. This minimum corresponds to
+<a href="https://learn.microsoft.com/en-us/microsoft-edge/webview2/release-notes/sdk/1-0-2365-46">WebView2 SDK 1.0.2365.46's worker request support</a>.
+Validate runtime behavior
+on Windows CI or a Windows developer machine with WebView2 installed.
+Intercepted HEAD responses retain the handler's status and content type but
+never expose its body, including error responses. The handler still receives
+HEAD rather than an implicit GET.
+WebView2 responses carry <code>Cache-Control: no-store</code>, including rejected IPC
+requests; native interception does not permit browser caching of these bodies.</p><p>Windows application resources use the system browser's native request handling
+in both source and packaged apps, including fetches from workers. WebUI does not
+replace <code>window.fetch</code>: standard <code>Request</code>, <code>Response</code>, and <code>AbortSignal</code> behavior
+is preserved. Aborting a resource fetch cancels browser delivery, not side effects
+of a Rust API handler that has already run. Typed application IPC has its own
+request cancellation contract.</p><p>On Windows, set a stable <code>DesktopAppBuilder::app_id</code> (or
+<code>DesktopFrame::with_app_id</code>) to persist browser storage for your application.
+Bundle-backed apps use their manifest identity automatically. Identities accept
+1–255 ASCII letters, digits, dots, underscores, and hyphens, with no trailing
+dot; invalid identities fail at startup. Different identities have isolated
+localStorage and IndexedDB, even when they use the same runner executable.
+Without an identity, each frame uses a fresh profile with best-effort shutdown
+cleanup, not persistent browser storage.</p><p>Rust hosts use one SDK, <code>microsoft-webui-desktop</code>, imported as <code>webui_desktop</code>.
+Construct an app with <code>DesktopApp</code>, register its Rust handlers, then pass the
+resulting <code>DesktopFrame</code> to <code>webui_desktop::run_frame</code>. The native runner selects
+the platform backend; application code does not need OS-specific launch paths.
+Window features and event availability still depend on the platform.</p><h2 id="command-shape">Command shape <a class="header-anchor" href="/webui/guide/integrations/desktop/#command-shape" aria-label="Link to Command shape">#</a></h2><p>Use <code>webui desktop ...</code> for desktop commands. <code>webui</code> is the only public CLI;
+desktop support is implemented by a separate <code>webui-desktop</code> sidecar backend so
+normal build/serve/inspect installs stay lean. The sidecar is resolved
+automatically when desktop support is installed; set <code>WEBUI_DESKTOP_BINARY</code> only
+to override discovery.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin<span class="hl-keyword">=</span>webui \
+  --devtools
+</code></pre></code-block><h2 id="minimum-desktop-app">Minimum desktop app <a class="header-anchor" href="/webui/guide/integrations/desktop/#minimum-desktop-app" aria-label="Link to Minimum desktop app">#</a></h2><p>Start with no Rust at all:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop run ./src
+</code></pre></code-block><p>This builds the entry template and opens it in the native system webview.
+Restart the command after source changes; desktop <code>--watch</code> is not supported.
+Add a
+Rust host only when the app needs dynamic route state, native IPC, or direct
+window control. To create the progressive starting point, run:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop init ./my-app
+cd ./my-app
+cargo run --manifest-path desktop/Cargo.toml --features source
+</code></pre></code-block><p>The command creates <code>src/index.html</code>, <code>package.json</code>, and a <code>desktop/</code> runner
+crate. It never overwrites those generated files unless <code>--force</code> is passed.
+The runner is a standalone Cargo workspace, even when created inside another
+workspace, and includes an optimized release profile. Init does not modify an
+enclosing workspace. To join one deliberately, add the member yourself, remove
+the generated standalone workspace declaration, and use the enclosing root's
+release profile.</p><p>The generated runner defaults to bundled execution. Source development is an
+explicit <code>source</code> feature; without it, missing packaged resources produce an
+error before a window opens.</p><h2 id="one-sdk-for-source-and-bundled-apps">One SDK for source and bundled apps <a class="header-anchor" href="/webui/guide/integrations/desktop/#one-sdk-for-source-and-bundled-apps" aria-label="Link to One SDK for source and bundled apps">#</a></h2><p>A native application needs one WebUI SDK dependency:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>[dependencies]
+webui-desktop = &#123; package = "microsoft-webui-desktop", version = "0.0.29", default-features = false, features = ["native"] &#125;
+
+[features]
+default = []
+source = ["webui-desktop/source"]
+</code></pre></code-block><table><thead><tr><th>SDK features</th><th>Available APIs</th></tr></thead><tbody><tr><td>None, the default</td><td>Bundle loading, rendering, route/API handlers, frame configuration, and custom backend integration</td></tr><tr><td><code>native</code></td><td>Built-in platform backend and <code>run_frame</code></td></tr><tr><td><code>application-ipc</code></td><td>Typed application IPC, sessions, workers, and browser assets</td></tr><tr><td><code>source</code></td><td>Source compilation, <code>DesktopSourceConfig</code>, compiler options, and build/package APIs</td></tr><tr><td><code>native, source</code></td><td>Native source development</td></tr><tr><td><code>cli</code></td><td>The <code>webui-desktop</code> sidecar binary; includes <code>native</code>, <code>source</code>, and command-line tooling</td></tr></tbody></table><p>Application runners normally enable <code>native</code>, not <code>cli</code>. The generated
+application's local <code>source</code> feature forwards to the SDK; selecting Cargo's
+debug or release profile does not enable source compilation.
+Neither <code>native</code>, <code>source</code>, nor <code>cli</code> enables application IPC. Without
+<code>application-ipc</code>, the SDK does not reserve IPC paths or install application IPC
+assets or transport handlers. Native window controls and lifecycle events do
+not require application IPC.</p><p>For bundled execution:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopApp, DesktopAppBuilder, <span class="hl-property">Result</span>&#125;;
+
+<span class="hl-keyword">fn</span> <span class="hl-attr">configure</span>(app: DesktopAppBuilder) -&gt; Result&lt;DesktopAppBuilder&gt; &#123;
+    app.route(<span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>, |_| &#123;
+        <span class="hl-property">Ok</span>(serde_json::json<span class="hl-keyword">!</span>(&#123; <span class="hl-string">"</span><span class="hl-string">page</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">dashboard</span><span class="hl-string">"</span> &#125;))
+    &#125;)
+&#125;
+
+<span class="hl-keyword">fn</span> <span class="hl-attr">main</span>() -&gt; Result&lt;()&gt; &#123;
+    <span class="hl-keyword">let</span> app <span class="hl-keyword">=</span> DesktopApp::from_bundle(<span class="hl-string">"</span><span class="hl-string">./desktop-bundle</span><span class="hl-string">"</span>)<span class="hl-keyword">?</span>;
+    <span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> configure(app)<span class="hl-keyword">?</span>.build()<span class="hl-keyword">?</span>;
+    webui_desktop::run_frame(frame)
+&#125;
+</code></pre></code-block><p>The route-state examples use <code>serde_json</code> in the application. For source
+development, choose a source input and reuse the same <code>configure</code> function:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>#[cfg(feature <span class="hl-keyword">=</span> <span class="hl-string">"</span><span class="hl-string">source</span><span class="hl-string">"</span>)]
+<span class="hl-keyword">fn</span> <span class="hl-attr">source_app</span>() -&gt; webui_desktop::DesktopAppBuilder &#123;
+    <span class="hl-keyword">use</span> webui_desktop::&#123;BuildOptions, DesktopApp, DesktopSourceConfig&#125;;
+
+    <span class="hl-keyword">let</span> config <span class="hl-keyword">=</span> DesktopSourceConfig::new(BuildOptions &#123;
+        app_dir: std::path::Path::new(env!(<span class="hl-string">"</span><span class="hl-string">CARGO_MANIFEST_DIR</span><span class="hl-string">"</span>)).join(<span class="hl-string">"</span><span class="hl-string">../src</span><span class="hl-string">"</span>),
+        <span class="hl-keyword">..</span><span class="hl-property">Default</span>::default()
+    &#125;);
+    DesktopApp::from_source(config).app_id(<span class="hl-string">"</span><span class="hl-string">com.example.myapp</span><span class="hl-string">"</span>)
+&#125;
+</code></pre></code-block><p>Set source-only asset and theme options on <code>DesktopSourceConfig</code>. The shared
+builder accepts startup state, route/API/IPC handlers, pre-resolved token CSS,
+asset-size limits, window options, shell configuration, and application identity.
+Register handlers before <code>.build()</code>: that call performs startup rendering and
+returns a frame, not just a runtime.</p><p>Bundle construction preserves the manifest's window, shell, and app ID.
+Explicit <code>.window(...)</code> and <code>.shell(...)</code> calls replace those defaults.
+Configure render-related window options on the builder so the startup HTML and
+native frame use the same values. Source hosts can supply a stable identity with
+<code>.app_id(...)</code>; the completed frame exposes it as <code>app_id</code>.</p><h2 id="window-options">Window options <a class="header-anchor" href="/webui/guide/integrations/desktop/#window-options" aria-label="Link to Window options">#</a></h2><p><code>webuiDesktop</code> and <code>WindowOptions</code> support <code>title</code>, <code>width</code>, <code>height</code>,
+<code>min_width</code>, <code>min_height</code>, <code>max_width</code>, <code>max_height</code>, <code>resizable</code>, <code>maximized</code>,
+<code>fullscreen</code>, <code>always_on_top</code>, <code>center</code>, <code>background</code>, <code>titlebar</code>, <code>effect</code>,
+<code>remember_state</code>, and <code>devtools</code>. <code>background</code> is <code>#rrggbb</code> or <code>#rrggbbaa</code> and
+is painted before the first web content paint.</p><p><code>titlebar</code> is one of <code>native</code>, <code>hidden-inset</code>, <code>overlay</code> with a <code>height</code>, or
+<code>none</code>. <code>effect</code> is one of <code>none</code>, <code>vibrancy</code>, <code>acrylic</code>, <code>mica</code>, or <code>tabbed</code>.
+The launcher validates requested titlebar, effect, and shell capabilities before
+native startup. Requests the selected backend does not advertise return an
+error. Capabilities describe implemented features, not identical behavior on
+every OS, OS version, or desktop environment.</p><p>The built-in backends advertise these feature groups:</p><table><thead><tr><th>Capability</th><th>macOS</th><th>Windows</th><th>Linux</th></tr></thead><tbody><tr><td>Titlebar styles (<code>hidden-inset</code>, <code>overlay</code>, <code>none</code>)</td><td>Yes</td><td>Yes</td><td>Yes</td></tr><tr><td>Window effects</td><td>Yes (all four)</td><td>Yes (except <code>tabbed</code>)</td><td>No</td></tr><tr><td>Application menu</td><td>Yes</td><td>No</td><td>No</td></tr><tr><td>Tray icon</td><td>Yes</td><td>No</td><td>No</td></tr></tbody></table><p>Effects can use a documented native equivalent rather than the same material on
+every OS:</p><table><thead><tr><th><code>effect</code></th><th>macOS</th><th>Windows</th><th>Linux</th></tr></thead><tbody><tr><td><code>none</code></td><td>Yes</td><td>Yes</td><td>Yes</td></tr><tr><td><code>vibrancy</code></td><td>Yes</td><td>Yes, as acrylic</td><td>No</td></tr><tr><td><code>acrylic</code></td><td>Yes, as vibrancy</td><td>Yes</td><td>No</td></tr><tr><td><code>mica</code></td><td>Yes, as vibrancy</td><td>Yes</td><td>No</td></tr><tr><td><code>tabbed</code></td><td>Yes</td><td>No</td><td>No</td></tr></tbody></table><p>Where a platform has no exact analogue but a close one, it maps rather than
+fails: <code>vibrancy</code> on Windows renders through the acrylic system backdrop.
+Where it has no analogue at all, it does not advertise the effect, so the
+mismatch surfaces as a validation error. Linux advertises no window effects or
+tray support. On Windows, <code>overlay</code> removes the native caption buttons, so web
+content must draw its own.</p><p>Query <code>PlatformFrameBackend::capabilities()</code> when choosing optional features:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopFrameBackend, PlatformFrameBackend, WindowEffect&#125;;
+
+<span class="hl-keyword">let</span> capabilities <span class="hl-keyword">=</span> PlatformFrameBackend::new().capabilities();
+<span class="hl-keyword">let</span> effect <span class="hl-keyword">=</span> <span class="hl-keyword">if</span> capabilities.supports_effect(WindowEffect::Mica) &#123;
+    WindowEffect::Mica
+&#125; <span class="hl-keyword">else</span> &#123;
+    WindowEffect::None
+&#125;;
+</code></pre></code-block><p>Apply the chosen effect to your window options. Placement, focus, and stacking
+remain subject to OS policy: a Linux compositor may ignore <code>always_on_top</code>, and
+Wayland controls window placement, so <code>center</code> is advisory there.</p><p>For non-native titlebars, the runtime injects these CSS custom properties:
+<code>--webui-titlebar-inset-start</code>, <code>--webui-titlebar-inset-end</code>,
+<code>--webui-titlebar-height</code>, and, when <code>background</code> is set,
+<code>--webui-window-background</code>. Use them in layout rather than hardcoding
+platform offsets.</p><p>Mark an application-drawn drag area with <code>webui-drag</code>; add <code>webui-no-drag</code> to a
+nested interactive element. Double-clicking a drag area toggles maximize. Do
+not use Chromium's <code>-webkit-app-region: drag</code>: WKWebView and WebKitGTK do not
+implement that Chromium-specific property, and WebView2 apps should use the
+WebUI drag contract for cross-platform behavior.</p><p>Use <code>titlebar: &#123; "style": "none" &#125;</code> when web content owns the entire window,
+including its caption buttons. Frameless windows still honor <code>resizable</code> and
+close-request cancellation through <code>EventResponse::PreventDefault</code>.
+The Contact Book Manager example shares its
+templates between browser and desktop using application state
+<code>mode: "web" | "desktop"</code>. Its Rust host supplies <code>"desktop"</code> before the first
+render and preserves it during route navigation; browser mode omits the native
+window controls. <code>mode</code> is example-owned state, not a reserved framework field.</p><h2 id="lifecycle-and-native-window-control">Lifecycle and native window control <a class="header-anchor" href="/webui/guide/integrations/desktop/#lifecycle-and-native-window-control" aria-label="Link to Lifecycle and native window control">#</a></h2><p>Choose the lifetime of each Rust event handler:</p><ul><li><code>frame.on_event(handler)?</code> registers a persistent handler for the frame's
+lifetime and returns <code>Result&lt;(), EventRegistrationError&gt;</code>.</li><li><code>frame.subscribe(handler)?</code> returns an <code>EventSubscription</code>. Keep the guard
+alive for as long as you need the handler; dropping it unregisters the
+callback from subsequent dispatches. A dispatch already in progress may
+still finish calling it.</li></ul><p>For example:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopApp, EventResponse&#125;;
+
+<span class="hl-keyword">fn</span> <span class="hl-attr">main</span>() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; &#123;
+    <span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> DesktopApp::from_bundle(<span class="hl-string">"</span><span class="hl-string">./desktop-bundle</span><span class="hl-string">"</span>)<span class="hl-keyword">?</span>.build()<span class="hl-keyword">?</span>;
+
+    <span class="hl-comment">//</span><span class="hl-comment"> Add non-blocking observer or cancellation logic inside these callbacks.
+</span>    frame.on_event(|_event| EventResponse::Continue)<span class="hl-keyword">?</span>;
+    <span class="hl-keyword">let</span> _subscription <span class="hl-keyword">=</span> frame.subscribe(|_event| EventResponse::Continue)<span class="hl-keyword">?</span>;
+
+    <span class="hl-comment">//</span><span class="hl-comment"> The named guard stays alive until run_frame returns.
+</span>    webui_desktop::run_frame(frame)<span class="hl-keyword">?</span>;
+    <span class="hl-property">Ok</span>(())
+&#125;
+</code></pre></code-block><p>Do not use <code>let _ = frame.subscribe(...)?</code>: that drops the guard immediately.
+Both registration methods are fallible. The combined limit is 256 handlers;
+<code>EventRegistrationError::Capacity</code> means unused subscriptions should be dropped,
+and registration after frame shutdown returns <code>Closed</code>.</p><p>Callbacks run synchronously on the backend UI thread and must not block it.
+Return <code>EventResponse::Continue</code> to allow normal behavior.
+<code>EventResponse::PreventDefault</code> can cancel <code>WindowCloseRequested</code> and
+<code>NavigationRequested</code>; it does not cancel other event types. The event vocabulary
+is <code>Ready</code>, <code>WindowResized</code>,
+<code>WindowMoved</code>, <code>WindowMaximized</code>, <code>WindowUnmaximized</code>, <code>WindowMinimized</code>,
+<code>WindowRestored</code>, <code>WindowEnteredFullscreen</code>, <code>WindowLeftFullscreen</code>,
+<code>WindowFocused</code>, <code>WindowBlurred</code>, <code>WindowCloseRequested</code>, <code>WindowClosed</code>,
+<code>ThemeChanged</code>, <code>ScaleFactorChanged</code>, <code>NavigationRequested</code>,
+<code>NavigationCompleted</code>, and <code>Exiting</code>. A backend need not emit every event on
+every platform. <code>Ready</code> means native initialization, not document or component
+readiness.</p><p>While a document is available, backends also send best-effort <code>CustomEvent</code>
+notifications named <code>webui:</code> plus the kebab-case event name. These are
+asynchronous observations, not another cancellation mechanism. See
+<a href="/webui/guide/integrations/desktop/#rust-to-javascript-lifecycle-events">Rust to JavaScript: lifecycle events</a>
+for delivery limits and payloads.</p><p>The Linux backend does not emit <code>WindowMoved</code>/<code>webui:window-moved</code>. Do not make
+portable application behavior depend on receiving position changes.</p><p><code>DesktopFrame::window_handle()</code> exposes a <code>Send + Sync</code> <code>WindowHandle</code> that queues
+UI-thread commands: <code>set_title</code>, <code>set_size</code>, <code>minimize</code>, <code>maximize</code>,
+<code>unmaximize</code>, <code>fullscreen</code>, <code>center</code>, <code>focus</code>, <code>request_close</code>, <code>start_drag</code>, and
+<code>set_always_on_top</code>. Clone the handle to send commands from application workers;
+the frame itself is not cloneable.</p><p>A successful command call means <strong>accepted for dispatch</strong>, not that the OS has
+applied it. In particular, <code>request_close()</code> queues a close request that a Rust
+handler may still veto. Queues are bounded to 256 commands, titles to 16 KiB of
+UTF-8 each, and buffered title payloads to 64 KiB in total. Handle <code>QueueFull</code>,
+<code>TitleQueueFull</code>, and <code>TitleTooLarge</code> rather than assuming a command was accepted.
+Do not spin or block the UI thread retrying a full queue.</p><p>Dropping the frame closes its command channel and releases its event
+registrations. Retained handles return <code>WindowCommandError::Closed</code> after
+shutdown; stop sending rather than retrying that error. Retaining a subscription
+does not keep the native frame alive. Pending commands are discarded during
+teardown, not flushed as a shutdown guarantee.</p><p>Set <code>remember_state: true</code> to request restoration of available window geometry.
+Position and placement remain platform-dependent. Invalid or off-screen saved
+geometry is not applied.</p><p>On Windows, saving window state requires Windows 10 version 1607 or later and a
+filesystem supporting atomic replacement, such as local NTFS. Use the normal
+local app-data location when overriding the state directory is unnecessary.
+Unsupported storage returns an error rather than risking an unreadable state
+file during concurrent saves.</p><h2 id="bundle-contents">Bundle contents <a class="header-anchor" href="/webui/guide/integrations/desktop/#bundle-contents" aria-label="Link to Bundle contents">#</a></h2><p><code>webui desktop build</code> writes an immutable bundle:</p><table><thead><tr><th>Path</th><th>Description</th></tr></thead><tbody><tr><td><code>protocol.bin</code></td><td>Compiled protobuf protocol</td></tr><tr><td><code>assets/</code></td><td>Generated CSS, copied static assets, and the desktop IPC helper</td></tr><tr><td><code>state.json</code></td><td>Optional startup state</td></tr><tr><td><code>manifest.webui-desktop.json</code></td><td>App metadata, window defaults, package targets, and SHA-256 hashes</td></tr></tbody></table><p>Static assets are copied with traversal protection. Link CSS remains the default
+desktop CSS strategy for startup performance; use <code>--theme</code> when the app relies
+on design tokens.</p><h2 id="packaging">Packaging <a class="header-anchor" href="/webui/guide/integrations/desktop/#packaging" aria-label="Link to Packaging">#</a></h2><p>Package a Rust-first desktop app root in one command:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./my-app --target macos-app --out ./packages
+webui desktop package ./my-app --target macos-app --out ./packages \
+  --theme @microsoft/webui-examples-theme
+</code></pre></code-block><p>Packaging builds an optimized release runner with its default Cargo features
+disabled. This matches the generated app's runtime-only configuration. Use
+<code>--debug</code> to choose a development build; it does not enable source compilation.
+For example:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./my-app --target macos-app --out ./packages --debug
+</code></pre></code-block><p>Apps needing additional Cargo features can opt in with
+<code>--runner-features feature-a,feature-b</code> or a <code>webuiDesktop.runnerFeatures</code> array.
+<code>--runner-default-features</code> or <code>webuiDesktop.runnerDefaultFeatures: true</code>
+restores the runner's defaults. These are explicit overrides: enabling <code>source</code>
+can reintroduce the compiler into the runner. Keep source support off for normal
+distribution.</p><p>For app roots, the sidecar reads <code>webuiDesktop</code> from <code>package.json</code>, runs the
+configured web build scripts, builds the app-specific Cargo runner crate, stages
+non-generated assets, builds the bundle, and packages that runner. Example:
+Pass <code>--theme</code> to override <code>webuiDesktop.theme</code> for a one-off package.
+Pass <code>--icon</code> to override <code>webuiDesktop.icon</code>; macOS packages use <code>.icns</code> icons
+as <code>CFBundleIconFile</code>, and portable layouts copy the icon into resources.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&#123;
+  <span class="hl-string">"</span><span class="hl-string">webuiDesktop</span><span class="hl-string">"</span>: &#123;
+    <span class="hl-string">"</span><span class="hl-string">app</span><span class="hl-string">"</span>: "src",
+    <span class="hl-string">"</span><span class="hl-string">state</span><span class="hl-string">"</span>: "data/state.json",
+    <span class="hl-string">"</span><span class="hl-string">assets</span><span class="hl-string">"</span>: "dist",
+    <span class="hl-string">"</span><span class="hl-string">projectionManifests</span><span class="hl-string">"</span>: ["dist/webui-projection.json"],
+    <span class="hl-string">"</span><span class="hl-string">theme</span><span class="hl-string">"</span>: "@microsoft/webui-examples-theme",
+    <span class="hl-string">"</span><span class="hl-string">icon</span><span class="hl-string">"</span>: "desktop/app.icns",
+    <span class="hl-string">"</span><span class="hl-string">plugin</span><span class="hl-string">"</span>: "webui",
+    <span class="hl-string">"</span><span class="hl-string">runnerCrate</span><span class="hl-string">"</span>: "contact-book-desktop",
+    <span class="hl-string">"</span><span class="hl-string">buildScripts</span><span class="hl-string">"</span>: ["build:deps", "build:client"],
+    <span class="hl-string">"</span><span class="hl-string">appId</span><span class="hl-string">"</span>: "com.microsoft.webui.contactbook",
+    <span class="hl-string">"</span><span class="hl-string">appName</span><span class="hl-string">"</span>: "Contact Book Manager",
+    <span class="hl-string">"</span><span class="hl-string">appVersion</span><span class="hl-string">"</span>: "1.0.0",
+    <span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: "Contact Book Manager",
+    <span class="hl-string">"</span><span class="hl-string">width</span><span class="hl-string">"</span>: <span class="hl-property">1200</span>,
+    <span class="hl-string">"</span><span class="hl-string">height</span><span class="hl-string">"</span>: <span class="hl-property">800</span>,
+    <span class="hl-string">"</span><span class="hl-string">devtools</span><span class="hl-string">"</span>: <span class="hl-property">true</span>
+  &#125;
+&#125;
+</code></pre></code-block><p><code>projectionManifests</code> supplies the client bundler's metadata to the desktop
+compiler. Paths are relative to the app root; repeatable
+<code>--projection-manifest &lt;PATH&gt;</code> arguments override the list with paths relative
+to the working directory. These are build inputs, not packaged runtime assets.
+Build the client first so the manifests match the current source. Desktop
+navigation uses the same state projection as web navigation; unknown component
+requirements retain full state for correctness. Do not put secrets in render
+state. Rust source hosts supply the equivalent
+<code>BuildOptions::projection_manifests</code> entries.</p><p>Existing bundle packaging remains available for lower-level flows:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+</code></pre></code-block><p>Use <code>--runner</code> for existing bundles with route providers or IPC commands. The
+runner is your app-specific Rust executable; it registers routes/commands and
+loads the packaged bundle through <code>DesktopApp</code>. Omitting
+<code>--runner</code> packages the generic sidecar and is appropriate only for
+file-backed/static seed-state bundles.</p><p>App-specific runners can use the shared resource helper instead of OS-specific
+bundle paths:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopApp, DesktopError, <span class="hl-property">Result</span>&#125;;
+
+<span class="hl-keyword">fn</span> <span class="hl-attr">main</span>() -&gt; Result&lt;()&gt; &#123;
+    <span class="hl-keyword">let</span> resources <span class="hl-keyword">=</span> webui_desktop::find_packaged_resources_dir()
+        .ok_or(DesktopError::PackagedResourcesNotFound)<span class="hl-keyword">?</span>;
+    <span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> DesktopApp::from_bundle(resources)<span class="hl-keyword">?</span>.build()<span class="hl-keyword">?</span>;
+    webui_desktop::run_frame(frame)
+&#125;
+</code></pre></code-block><p>When application setup already loaded a <code>DesktopBundleManifest</code>, use
+<code>DesktopApp::from_bundle_config_and_manifest(config, manifest)</code>, where <code>config</code>
+is a <code>DesktopBundleConfig</code>. This constructor returns the builder directly; add
+handlers and call <code>.build()?</code> without reloading the manifest. The generated
+runner already selects packaged resources first and only offers a source
+fallback when built with its local <code>source</code> feature.</p><p>The Rust packager currently writes:</p><table><thead><tr><th>Target</th><th>Output</th></tr></thead><tbody><tr><td><code>macos-app</code></td><td>Runnable <code>&lt;AppName&gt;.app</code> with a WKWebView launcher and bundled resources</td></tr><tr><td><code>windows-portable</code></td><td>Portable folder layout for a Windows runner and bundled resources</td></tr><tr><td><code>linux-portable</code></td><td>Portable folder layout for a Linux runner and bundled resources</td></tr></tbody></table><p><code>--target all</code> writes these three layouts using the same runner. It does not
+cross-compile the executable; supply a runner built for the intended platform.
+Installer generation, archives, and signing are not supported.</p><h2 id="message-passing">Message passing <a class="header-anchor" href="/webui/guide/integrations/desktop/#message-passing" aria-label="Link to Message passing">#</a></h2><p>Application messages use generated Rust and TypeScript interfaces from one
+proto3 contract. This is a Mojo-style authoring model over supported system
+WebView APIs, not Chromium's internal Mojo runtime.</p><table><thead><tr><th>Direction</th><th>Use</th><th>Transport</th><th>Extensible</th></tr></thead><tbody><tr><td>JavaScript → Rust request</td><td>Generated host method returning <code>Promise&lt;T&gt;</code></td><td>bounded protobuf</td><td>Yes, shared schema</td></tr><tr><td>Rust → JavaScript request</td><td>Generated renderer method returning <code>IpcCall&lt;T&gt;</code></td><td>bounded protobuf</td><td>Yes, shared schema</td></tr><tr><td>Rust → JavaScript notification</td><td>Generated renderer emitter and JS subscription</td><td>bounded protobuf</td><td>Yes, shared schema</td></tr><tr><td>JavaScript → Rust notification</td><td>Generated host emitter and Rust handler</td><td>bounded protobuf</td><td>Yes, shared schema</td></tr><tr><td>Native lifecycle → JavaScript</td><td><code>webui:*</code> events on <code>window</code></td><td>injected <code>CustomEvent</code></td><td>No, fixed event set</td></tr><tr><td>JavaScript → Rust window control</td><td><code>webui-drag</code> regions</td><td>bounded host message</td><td>No, closed command set</td></tr><tr><td>Rust → native window</td><td><code>WindowHandle</code></td><td>UI-thread command queue</td><td>No, fixed command set</td></tr></tbody></table><p>Lifecycle notifications and window controls remain separate from application
+data. A native lifecycle event is not an application RPC response.</p><h3 id="define-and-generate-the-contract">Define and generate the contract <a class="header-anchor" href="/webui/guide/integrations/desktop/#define-and-generate-the-contract" aria-label="Link to Define and generate the contract">#</a></h3><p>Install the browser runtime. The host also needs <code>protoc</code>; the generator reports
+a missing compiler rather than downloading it silently.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>pnpm add @microsoft/webui-desktop
+</code></pre></code-block><p>A minimal <code>schema/application.proto</code> can declare both directions:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>syntax = "proto3";
+package example.desktop;
+import "webui/ipc/options.proto";
+import "google/protobuf/empty.proto";
+
+option (webui.ipc.contract_name) = "example.desktop";
+option (webui.ipc.contract_major) = 1;
+
+message Item &#123; uint64 id = 1; bytes image = 2; &#125;
+message Label &#123; string text = 1; &#125;
+
+service Host &#123;
+  option (webui.ipc.receiver) = HOST;
+  rpc Save(Item) returns (google.protobuf.Empty) &#123;
+    option (webui.ipc.id) = 1101;
+  &#125;
+  rpc Selected(Item) returns (webui.ipc.Notification) &#123;
+    option (webui.ipc.id) = 1102;
+    option (webui.ipc.notification) = true;
+  &#125;
+&#125;
+
+service Renderer &#123;
+  option (webui.ipc.receiver) = RENDERER;
+  rpc LabelFor(Item) returns (Label) &#123;
+    option (webui.ipc.id) = 2001;
+  &#125;
+  rpc Changed(Item) returns (webui.ipc.Notification) &#123;
+    option (webui.ipc.id) = 2002;
+    option (webui.ipc.notification) = true;
+  &#125;
+&#125;
+</code></pre></code-block><p>IDs above 1023 are application-owned and must remain unique and stable. An
+<code>Empty</code> response is an acknowledged RPC: its promise resolves when the handler
+finishes. An explicit <code>Notification</code> is different: its emitter waits for
+bounded admission, not subscriber completion.</p><p>Generate the bindings and commit the generated files and compatibility lock:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop ipc generate schema/application.proto \
+  --include schema \
+  --rust-out desktop/src/generated \
+  --ts-out src/generated \
+  --lock schema/ipc-schema.lock.json
+</code></pre></code-block><p>Use the same command with <code>--check</code> in CI to detect drift without rewriting
+files. The SDK options schema is included automatically. Rust build scripts can
+instead call <code>webui_desktop_build::generate</code>.</p><h3 id="javascript-requests-and-receivers">JavaScript requests and receivers <a class="header-anchor" href="/webui/guide/integrations/desktop/#javascript-requests-and-receivers" aria-label="Link to JavaScript requests and receivers">#</a></h3><p>Bundle the generated <code>ipc.ts</code> with the application:</p><p>The generated bindings load the desktop runtime and WebUI-owned payload codecs
+only when <code>connectDesktop()</code> is explicitly called. Concurrent calls share loading but
+create independent connections; importing types or bindings never connects.
+Enable ESM code splitting and deploy all emitted chunks to defer their transfer
+and parsing. Module-loading failures reject the returned promise without
+transport activation or automatic retries.</p><p>The first connection can be deferred until the user needs IPC. Its handshake
+timeout starts when connection admission begins, not when the document loads.
+Navigating away invalidates that document's unused admission proof.</p><p>The direct runtime import below loads the package normally. If the application
+does not need IPC at startup, move that import into its explicit connection
+action using <code>await import('@microsoft/webui-desktop')</code>.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> &#123; createDesktopTransport &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-desktop</span><span class="hl-string">'</span>;
+<span class="hl-keyword">import</span> &#123; connectDesktop &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">./generated/ipc.js</span><span class="hl-string">'</span>;
+
+<span class="hl-keyword">const</span> connection <span class="hl-keyword">=</span> await connectDesktop(createDesktopTransport(), &#123;
+  renderer: &#123;
+    <span class="hl-attr">async</span> <span class="hl-attr">labelFor</span>(item, context) &#123;
+      context.signal.throwIfAborted();
+      <span class="hl-keyword">return</span> &#123; text: <span class="hl-string">`</span><span class="hl-string">Item </span>$&#123;item.id&#125;<span class="hl-string">`</span> &#125;;
+    &#125;,
+  &#125;,
+  <span class="hl-attr">onError</span>: error <span class="hl-keyword">=&gt;</span> <span class="hl-attr">console</span>.<span class="hl-property">error</span>(error.code, error.message),
+&#125;);
+
+<span class="hl-keyword">const</span> changed <span class="hl-keyword">=</span> connection.renderer.onChanged(item <span class="hl-keyword">=&gt;</span> updateView(item));
+<span class="hl-keyword">const</span> item <span class="hl-keyword">=</span> &#123; id: <span class="hl-property">42</span>n, image: <span class="hl-keyword">new</span> Uint8Array([<span class="hl-property">1</span>, <span class="hl-property">2</span>, <span class="hl-property">3</span>]) &#125;;
+
+<span class="hl-keyword">await</span> connection.host.save(item, &#123; timeoutMs: <span class="hl-property">5</span>_000 &#125;);
+<span class="hl-keyword">await</span> connection.host.selected(item);
+
+changed.<span class="hl-property">close</span>();
+connection.<span class="hl-property">close</span>();
+</code></pre></code-block><p><code>save</code> is JS-to-Rust request/reply; <code>selected</code> is a notification to the Rust
+receiver. <code>labelFor</code> handles Rust-initiated requests. <code>onChanged</code> receives
+Rust-initiated notifications. <code>updateView</code> is application code.</p><h3 id="rust-receivers-and-messages-to-javascript">Rust receivers and messages to JavaScript <a class="header-anchor" href="/webui/guide/integrations/desktop/#rust-receivers-and-messages-to-javascript" aria-label="Link to Rust receivers and messages to JavaScript">#</a></h3><p>Enable application IPC explicitly on the host dependency:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>[dependencies]
+webui-desktop = &#123; package = "microsoft-webui-desktop", version = "0.0.29", default-features = false, features = ["native", "application-ipc"] &#125;
+prost = "0.14.4"
+</code></pre></code-block><p>The generated messages use <code>prost</code>; generator/compiler dependencies belong in
+the build tool, not the runtime host.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> std::sync::Arc;
+<span class="hl-keyword">use</span> webui_desktop::&#123;
+    ipc::&#123;CallOptions, IpcFuture, IpcOptions, IpcRegistry, NotificationContext, RequestContext&#125;,
+    DesktopApp,
+&#125;;
+
+#[path <span class="hl-keyword">=</span> <span class="hl-string">"</span><span class="hl-string">generated/ipc.rs</span><span class="hl-string">"</span>]
+<span class="hl-keyword">mod</span> generated;
+<span class="hl-keyword">use</span> generated::&#123;messages::example::desktop::Item, HostHandler, RendererClient&#125;;
+
+<span class="hl-keyword">struct</span> Host;
+
+<span class="hl-keyword">impl</span> HostHandler <span class="hl-keyword">for</span> Host &#123;
+    <span class="hl-keyword">fn</span> <span class="hl-attr">save</span>(<span class="hl-keyword">&amp;</span>self, context: RequestContext, item: Item) -&gt; IpcFuture&lt;()&gt; &#123;
+        <span class="hl-property">Box</span>::pin(async <span class="hl-keyword">move</span> &#123;
+            <span class="hl-keyword">let</span> page <span class="hl-keyword">=</span> RendererClient::new(context.session);
+            <span class="hl-keyword">let</span> label <span class="hl-keyword">=</span> page.label_for(item.clone(), CallOptions::default()).await<span class="hl-keyword">?</span>;
+            println!(<span class="hl-string">"</span><span class="hl-property">&#123;&#125;</span><span class="hl-string">"</span>, label.text);
+            page.changed(item).await<span class="hl-keyword">?</span>;
+            <span class="hl-property">Ok</span>(())
+        &#125;)
+    &#125;
+
+    <span class="hl-keyword">fn</span> <span class="hl-attr">selected</span>(<span class="hl-keyword">&amp;</span>self, _context: NotificationContext, item: Item) -&gt; IpcFuture&lt;()&gt; &#123;
+        <span class="hl-property">Box</span>::pin(async <span class="hl-keyword">move</span> &#123;
+            println!(<span class="hl-string">"</span><span class="hl-string">Selected </span><span class="hl-property">&#123;&#125;</span><span class="hl-string">"</span>, item.id);
+            <span class="hl-property">Ok</span>(())
+        &#125;)
+    &#125;
+&#125;
+
+<span class="hl-keyword">let</span> <span class="hl-keyword">mut</span> registry <span class="hl-keyword">=</span> IpcRegistry::new(<span class="hl-keyword">&amp;</span>generated::<span class="hl-property">SCHEMA</span>);
+generated::register_host(<span class="hl-keyword">&amp;</span><span class="hl-keyword">mut</span> registry, Arc::new(Host))<span class="hl-keyword">?</span>;
+<span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> DesktopApp::from_bundle(resources)<span class="hl-keyword">?</span>
+    .ipc_registry(registry)
+    .ipc_options(IpcOptions::for_schema(<span class="hl-keyword">&amp;</span>generated::<span class="hl-property">SCHEMA</span>))
+    .build()<span class="hl-keyword">?</span>;
+webui_desktop::run_frame(frame)<span class="hl-keyword">?</span>;
+</code></pre></code-block><p>Startup registration installs both Rust RPC and notification handlers before
+the document becomes ready. The SDK executes Rust application handlers away
+from the native UI thread; application code does not need Tokio just to bind
+handlers. Source hosts use the same registry and options with
+<code>DesktopApp::from_source(config)</code>.</p><h3 id="types-permissions-and-lifetime">Types, permissions, and lifetime <a class="header-anchor" href="/webui/guide/integrations/desktop/#types-permissions-and-lifetime" aria-label="Link to Types, permissions, and lifetime">#</a></h3><p>Application code uses generated objects rather than method strings or manual
+byte encoding. JavaScript 64-bit integers are <code>bigint</code>; bytes are <code>Uint8Array</code>;
+protobuf maps are <code>Map&lt;K,V&gt;</code>. Invalid types and out-of-range values are rejected,
+not silently coerced.</p><p>The default denies application methods. <code>IpcOptions::for_schema</code> explicitly
+grants the generated contract; hosts may narrow its ID allowlists. Both ends
+must use the same schema hash and major version. The native bootstrap and
+reserved runtime assets are identical in source and packaged modes.</p><p>Requests return typed promises/futures and structured <code>IpcError</code>s. Timeouts
+include queue time. <code>AbortSignal</code>, dropped Rust calls, navigation and shutdown
+settle callers once; cancellation does not roll back completed side effects.
+There are no automatic retries. Notifications preserve order per subscriber,
+and subscription disposal prevents queued callbacks from starting. Expensive
+browser work still belongs in Web Workers; blocking Rust work must cooperate
+with cancellation or remain within its bounded application workers.</p><p>Rust hosts configure IPC with <code>IpcOptions</code>. Its <code>limits</code> policy defaults to
+1 MiB encoded frames and a 30-second renderer RPC timeout:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> std::time::Duration;
+<span class="hl-keyword">use</span> webui_desktop::ipc::IpcLimits;
+
+<span class="hl-keyword">let</span> limits <span class="hl-keyword">=</span> IpcLimits::default()
+    .with_max_frame_bytes(<span class="hl-property">256</span> <span class="hl-keyword">*</span> <span class="hl-property">1024</span>)<span class="hl-keyword">?</span>
+    .with_default_timeout(Duration::from_secs(<span class="hl-property">10</span>))<span class="hl-keyword">?</span>;
+</code></pre></code-block><p>Assign the policy to <code>IpcOptions::limits</code> before calling
+<code>DesktopAppBuilder::ipc_options(...)</code>. <code>max_frame_bytes()</code> and
+<code>default_timeout()</code> read the configured choices. The checked builders accept
+frame sizes from 2,176 bytes through 8 MiB and whole-millisecond timeouts from
+1 ms through 5 minutes. Rust calls select their timeout with <code>CallOptions</code>;
+changing the renderer default does not change admission or notification
+deadlines. Queue, callback, control, and aggregate memory budgets are managed
+by the SDK, not independently configurable.</p><p>IPC capacity is bounded by frames, retained bytes, calls, and callback fanout.
+Overload rejects explicitly. Native metadata carries admission and availability
+signals; application payloads remain protobuf binary, without base64 or
+per-byte object arrays. No idle polling or localhost server is introduced.</p><p>Connections belong to an admitted document, not just a URL. Full navigation
+revokes old credentials and callbacks; reacquire a connection in the replacement
+document. Ordinary same-document routing preserves it. The authenticated
+principal is the committed main-document capability. Cross-origin documents
+without that capability are denied; same-origin parent delegation is within
+the trusted application boundary.</p><p>WKWebView back/forward document navigation waits for the outgoing renderer to
+observe retirement before proceeding, so interrupted calls retain <code>navigated</code>
+rather than an incidental browser Fetch error. If delivering that control fails,
+the native shell cancels the traversal and reports a diagnostic; the old
+connection stays closed. Same-document History API traversal preserves the
+connection.</p><p>During WebView2 document replacement, late IPC requests retain the native
+<code>navigated</code> terminal reason even if they reach the host before its queued
+renderer-close notification. Initial, uncommitted startup remains <code>not-ready</code>;
+native closure and transport failure keep their own codes.</p><p>WebKit may restore a document from its back/forward cache without rerunning
+application modules. The SDK retires its old connections on <code>pagehide</code> and
+prepares a fresh inactive bootstrap epoch before a cache-eligible page freezes.
+Reconnect explicitly on restored <code>pageshow</code>; this waits for normal native
+admission and does not replay calls or revive old subscriptions:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-property">window</span>.addEventListener(<span class="hl-string">'</span><span class="hl-string">pageshow</span><span class="hl-string">'</span>, event <span class="hl-keyword">=&gt;</span> &#123;
+  <span class="hl-keyword">if</span> (event.persisted) &#123;
+    reconnectAndBindHandlers().catch(reportError);
+  &#125;
+&#125;);
+</code></pre></code-block><p><code>reconnectAndBindHandlers</code> is application code that creates a new transport,
+calls the generated <code>connectDesktop</code>, and retains its new subscriptions. The
+old connection remains closed, even after a successful restoration.</p><h3 id="rust-to-javascript-lifecycle-events">Rust to JavaScript: lifecycle events <a class="header-anchor" href="/webui/guide/integrations/desktop/#rust-to-javascript-lifecycle-events" aria-label="Link to Rust to JavaScript: lifecycle events">#</a></h3><p>Backends send lifecycle notifications to the current web document as
+<code>CustomEvent</code>s on <code>window</code>, named <code>webui:</code> plus the kebab-case event name.
+Delivery is asynchronous and best-effort: a page may not exist yet, may be
+navigating, or may already have been destroyed. Events are not replayed for
+listeners attached later.</p><p>When delivered, event data is on <code>detail</code>, with a <code>type</code> field matching the event
+name:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-property">window</span>.addEventListener(<span class="hl-string">'</span><span class="hl-string">webui:window-resized</span><span class="hl-string">'</span>, (e) <span class="hl-keyword">=&gt;</span> &#123;
+  <span class="hl-comment">//</span><span class="hl-comment"> e.detail === &#123; type: 'window-resized', window_id: 1, width: 1200, height: 800 &#125;
+</span>  <span class="hl-attr">console</span>.<span class="hl-property">log</span>(e.detail.width, e.detail.height);
+&#125;);
+
+<span class="hl-property">window</span>.addEventListener(<span class="hl-string">'</span><span class="hl-string">webui:theme-changed</span><span class="hl-string">'</span>, (e) <span class="hl-keyword">=&gt;</span> &#123;
+  <span class="hl-comment">//</span><span class="hl-comment"> e.detail === &#123; type: 'theme-changed', dark: true &#125;
+</span>&#125;);
+</code></pre></code-block><p>The event vocabulary below does not imply every backend or document observes
+every event:</p><table><thead><tr><th>Event</th><th><code>detail</code> fields beyond <code>type</code></th></tr></thead><tbody><tr><td><code>webui:ready</code></td><td>none</td></tr><tr><td><code>webui:window-resized</code></td><td><code>window_id</code>, <code>width</code>, <code>height</code></td></tr><tr><td><code>webui:window-moved</code></td><td><code>window_id</code>, <code>x</code>, <code>y</code></td></tr><tr><td><code>webui:window-maximized</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-unmaximized</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-minimized</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-restored</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-entered-fullscreen</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-left-fullscreen</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-focused</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-blurred</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-close-requested</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:window-closed</code></td><td><code>window_id</code></td></tr><tr><td><code>webui:theme-changed</code></td><td><code>dark</code></td></tr><tr><td><code>webui:scale-factor-changed</code></td><td><code>scale</code></td></tr><tr><td><code>webui:navigation-requested</code></td><td><code>window_id</code>, <code>url</code></td></tr><tr><td><code>webui:navigation-completed</code></td><td><code>window_id</code>, <code>url</code></td></tr><tr><td><code>webui:exiting</code></td><td>none</td></tr></tbody></table><p><code>theme-changed</code> and <code>scale-factor-changed</code> are application-wide and carry no
+<code>window_id</code>. Sizes and positions are logical pixels on every platform; use
+<code>scale</code> from <code>webui:scale-factor-changed</code> to convert to device pixels.</p><p>These are notifications, not decisions. Calling <code>preventDefault()</code> on
+<code>webui:window-close-requested</code> or <code>webui:navigation-requested</code> does nothing:
+the native decision is already made by then, and the Rust handler is the only
+authority that can cancel it. See
+<a href="/webui/guide/integrations/desktop/#lifecycle-and-native-window-control">Lifecycle and native window control</a> for
+the Rust side.</p><p>Keep listeners cheap. <code>webui:ready</code> describes native readiness; it may precede
+page loading or listener registration. Use <code>DOMContentLoaded</code> and component
+lifecycle hooks for page initialization instead. <code>NavigationCompleted</code> also
+does not guarantee that application components have finished their own work.</p><p>Do not use <code>webui:exiting</code> or <code>webui:window-closed</code> for required cleanup,
+persistence, or delivery acknowledgements. The document can be gone before
+those notifications could run. Keep native cleanup in Rust and persist
+important application data before teardown.</p><h3 id="javascript-to-rust-window-control">JavaScript to Rust: window control <a class="header-anchor" href="/webui/guide/integrations/desktop/#javascript-to-rust-window-control" aria-label="Link to JavaScript to Rust: window control">#</a></h3><p>Custom titlebars need to drag, minimize, maximize, and close the native window.
+That path is deliberately not general-purpose IPC: the injected drag script
+translates <code>webui-drag</code> regions into one of exactly four host messages
+(<code>start-drag</code>, <code>minimize</code>, <code>toggle-maximize</code>, <code>close</code>), each capped at 256
+bytes and rejected if it is anything else. Mark drag regions declaratively
+rather than implementing pointer gestures yourself:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">header</span> <span class="hl-attr">webui-drag</span>&gt;
+  My App
+  &lt;<span class="hl-tag">button</span> <span class="hl-attr">webui-no-drag</span> @click="&#123;onSettings()&#125;"&gt;Settings&lt;/<span class="hl-tag">button</span>&gt;
+&lt;/<span class="hl-tag">header</span>&gt;
+</code></pre></code-block><p>Application-drawn caption buttons use the same injected window bridge from
+their component event handlers:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>type WindowAction <span class="hl-keyword">=</span> <span class="hl-string">'</span><span class="hl-string">minimize</span><span class="hl-string">'</span> <span class="hl-keyword">|</span> <span class="hl-string">'</span><span class="hl-string">toggle-maximize</span><span class="hl-string">'</span> <span class="hl-keyword">|</span> <span class="hl-string">'</span><span class="hl-string">close</span><span class="hl-string">'</span>;
+
+<span class="hl-keyword">function</span> <span class="hl-attr">windowAction</span>(action: WindowAction): <span class="hl-keyword">void</span> &#123;
+  const host = window as Window &amp; &#123;
+    webuiHostPostMessage?: (payload: string) <span class="hl-keyword">=&gt;</span> <span class="hl-keyword">void</span>;
+  &#125;;
+  host.webuiHostPostMessage<span class="hl-keyword">?</span>.(JSON.stringify(action));
+&#125;
+</code></pre></code-block><p>Put the caption buttons inside a <code>webui-no-drag</code> region and give each an
+accessible name. Render them only in your desktop layout; a normal browser has
+no native bridge. These fixed window actions do not require <code>application-ipc</code>
+or the application messaging runtime.</p><p>See <a href="/webui/guide/integrations/desktop/#window-options">Window options</a> for the drag-region contract.</p><h2 id="rust-route-state">Rust route state <a class="header-anchor" href="/webui/guide/integrations/desktop/#rust-route-state" aria-label="Link to Rust route state">#</a></h2><p>Desktop apps that need dynamic state write route data in Rust. Register route
+providers on the desktop host:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> webui_desktop::DesktopApp::from_bundle(resources)<span class="hl-keyword">?</span>
+    .state_value(seed_state)
+    .route(<span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>, |_ctx| &#123;
+        <span class="hl-property">Ok</span>(serde_json::json<span class="hl-keyword">!</span>(&#123; <span class="hl-string">"</span><span class="hl-string">page</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">dashboard</span><span class="hl-string">"</span> &#125;))
+    &#125;)<span class="hl-keyword">?</span>
+    .route(<span class="hl-string">"</span><span class="hl-string">/contacts/:id</span><span class="hl-string">"</span>, |ctx| &#123;
+        <span class="hl-property">Ok</span>(serde_json::json<span class="hl-keyword">!</span>(&#123; <span class="hl-string">"</span><span class="hl-string">contactId</span><span class="hl-string">"</span>: ctx.param(<span class="hl-string">"</span><span class="hl-string">id</span><span class="hl-string">"</span>) &#125;))
+    &#125;)<span class="hl-keyword">?</span>
+    .build()<span class="hl-keyword">?</span>;
+webui_desktop::run_frame(frame)<span class="hl-keyword">?</span>;
+</code></pre></code-block><p>The same registration methods apply to <code>DesktopApp::from_source(config)</code>.
+Providers run during startup rendering as well as subsequent HTML renders and
+WebUI router partial requests, including full reloads of <code>/</code> and its
+<code>/index.html</code> alias. <code>DesktopRuntime::startup_html()</code> is only the construction-time
+snapshot, not a live view. Provider errors are surfaced instead of falling
+back silently. The CLI <code>--state</code> path remains a simple seed-state fallback.
+Startup providers run while <code>build()</code> constructs the frame. Once the native
+window is running, routes, API handlers and rendering execute on bounded
+application workers rather than the UI thread. These handlers can run
+concurrently; synchronize shared mutable application state. Lifecycle event
+callbacks still run on the UI thread and must not block.</p><p>For route-backed apps, keep mutable collections in shared Rust storage and
+borrow them while preparing a route's view model. Use the render seed for
+global settings and theme tokens rather than copying the complete application
+store into every route. Return only the collections the current page needs.</p><p>Desktop hosts can also register custom-protocol API handlers, for example
+<code>/api/contacts/:id</code>, so existing browser code can keep using <code>fetch("./api")</code>
+while packaged apps mutate Rust-owned state in memory.
+Native API request bodies are limited to 1 MiB. At most 16 ordinary application
+jobs are admitted at once; overload returns HTTP 503 rather than waiting in an
+unbounded queue. Handle failures explicitly. Do not automatically retry mutations
+unless the application defines an idempotency contract. Cancellation stops
+delivery but does not undo a Rust callback that already started.</p><h2 id="security-and-performance-defaults">Security and performance defaults <a class="header-anchor" href="/webui/guide/integrations/desktop/#security-and-performance-defaults" aria-label="Link to Security and performance defaults">#</a></h2><ul><li>The runtime loads from a custom app origin.</li><li>Navigation outside the app origin is denied unless explicitly allowed.</li><li>Packaged assets are immutable and served from the bundle resource root.</li><li>Asset URLs may percent-encode filenames. Indexed assets retain the same
+root confinement as source assets, including symlink checks on opened files.</li><li>Build/package output paths are rejected when they overlap input directories.</li><li>Protocol data, CSS maps, and asset metadata are shared by reference.</li><li>Generated runners default to bundle-only execution. Keep source support and
+development inspection disabled for distribution unless explicitly needed.</li></ul><p>Measure the packaged release app with representative data. Time page readiness,
+not just process creation, and distinguish warm-cache launches from cold-cache
+launches. On macOS, physical footprint is more useful than raw RSS; include the
+WebKit content, networking, and GPU processes instead of reporting only the
+Rust host.</p><h2 id="shell-extension-points">Shell extension points <a class="header-anchor" href="/webui/guide/integrations/desktop/#shell-extension-points" aria-label="Link to Shell extension points">#</a></h2><p>Desktop manifests include a <code>shell</code> object for app icons, menus, and tray icons.
+Unknown shell fields are rejected. A configuration type
+does not imply backend support: check the capability table above before enabling
+an optional feature. Configure shell defaults in the manifest or explicitly
+replace them with <code>DesktopAppBuilder::shell(...)</code>.</p><p>Compose application services through Rust route/API/IPC handlers and lifecycle
+subscriptions. A reusable service can return its subscription guard so its
+caller controls the lifetime.</p><p>For a custom host or native embedding, implement <code>DesktopFrameBackend</code> and call
+<code>run_frame_with(frame, &amp;backend)</code>. This entry point validates the frame's
+requested window and shell features against the backend's capabilities before
+invoking it. It is available without the SDK's <code>native</code> feature. A custom backend
+must retain the owning frame until its loop and callbacks finish; dropping it
+ends event registration and command submission.</p><p>Read configuration through <code>frame.app_id()</code>, <code>frame.runtime()</code>, <code>frame.window()</code>,
+and <code>frame.shell()</code>; configuration fields are not publicly mutable. Configure
+window styling on <code>DesktopAppBuilder</code> before <code>build()</code>. A frame constructed
+directly from an existing runtime must use the same titlebar/background styling
+as that runtime. Clone <code>frame.window_handle()</code> for runtime window commands.</p><p>Custom protocol consumers must match <code>DesktopProtocolResponse::body</code> as
+<code>DesktopResponseContent::Bytes</code> or <code>File</code>. Keep buffered response ownership,
+including any reservation, until the native consumer releases it. File responses
+own an open, length-bounded reader and should be streamed, not reopened by path.
+<code>body.as_bytes()</code> returns <code>None</code> for files; <code>body.into_bytes()</code> is an explicit,
+fallible materialization option for non-native consumers. The default asset
+length limit remains 32 MiB, without requiring an asset-sized Rust buffer.</p><h2 id="web-inspector">Web inspector <a class="header-anchor" href="/webui/guide/integrations/desktop/#web-inspector" aria-label="Link to Web inspector">#</a></h2><p>Pass <code>--devtools</code> to <code>webui desktop build</code> or <code>webui desktop run</code> to mark the
+desktop webview as inspectable. On macOS, open Safari and enable Safari &gt;
+Settings &gt; Advanced &gt; Show features for web developers, then use Safari's
+Develop menu to inspect the running app.</p></article><nav class="page-nav"><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;python">← Python</a><!--/wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;electron">Electron →</a><!--/wc--></nav><!--wc--><footer class="site-footer"><!--w1-->Released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. Built with <a href="https://github.com/microsoft/webui/blob/main/crates/webui-press/README.md">WebUI Framework Static Site Generator</a>.<!--/w1--></footer><!--/wc--></main></div><!--/wc--><script type="application/json" id="webui-data">{"componentStyles":{"closures":{"code-block":["code-block"],"docs-search":["docs-search"],"docs-sidebar-navigation":["docs-sidebar-navigation"],"docs-site-navigation":["docs-site-navigation"],"docs-theme-toggle":["docs-theme-toggle"],"index.html":[]},"resources":{"code-block":{"href":"code-block.css","kind":"link"},"docs-search":{"href":"docs-search.css","kind":"link"},"docs-sidebar-navigation":{"href":"docs-sidebar-navigation.css","kind":"link"},"docs-site-navigation":{"href":"docs-site-navigation.css","kind":"link"},"docs-theme-toggle":{"href":"docs-theme-toggle.css","kind":"link"}},"strategy":"link","version":1},"css":["docs-site-navigation.css","docs-search.css","docs-theme-toggle.css","docs-sidebar-navigation.css","code-block.css"],"inventory":"f8","state":{"icon":"🌙","label":"Copy","navigation":[{"fullLayout":false,"link":"/webui/guide/","section":"guide","text":"Guide"},{"fullLayout":false,"link":"/webui/tutorials/hello-world/","section":"tutorials","text":"Tutorials"},{"fullLayout":true,"link":"/webui/playground/","section":"playground","text":"Playground"},{"fullLayout":false,"link":"/webui/ai","section":"ai","text":"AI"},{"fullLayout":false,"link":"https://github.com/microsoft/webui","section":"https://github.com/microsoft/webui","text":"GitHub"}]},"templates":{"docs-site-navigation":{"h":"<nav class=\"nav-links\" aria-label=\"Primary navigation\">\n  \n  <docs-search><\/docs-search>\n  <docs-theme-toggle><\/docs-theme-toggle>\n  <button class=\"mobile-menu-btn\" type=\"button\" aria-label=\"Open navigation\" aria-controls=\"mobile-navigation\"><span aria-hidden=\"true\">☰<\/span><\/button>\n<\/nav>\n\n<dialog class=\"mobile-navigation\" id=\"mobile-navigation\" aria-labelledby=\"mobile-navigation-title\" w-ref=\"{dialog}\">\n  <div class=\"mobile-navigation-panel\">\n    <div class=\"mobile-navigation-header\">\n      <strong id=\"mobile-navigation-title\">Browse WebUI<\/strong>\n      <button class=\"mobile-navigation-close\" type=\"button\" aria-label=\"Close navigation\"><span aria-hidden=\"true\">×<\/span><\/button>\n    <\/div>\n    <nav class=\"mobile-primary-nav\" aria-label=\"Primary navigation\">\n      \n    <\/nav>\n    \n  <\/div>\n<\/dialog>","a":[["aria-expanded",0,"open"]],"ag":[[4,0,1]],"c":[[[0,["home"]],2,[7,5]]],"r":[["navigation","link",0,[1,1]],["navigation","link",1,[12,1]]],"eg":[["click",[["openMenu",[],4],["onDialogClick",[["e"]],6,1],["closeMenu",[],10]]],["close",[["onDialogClose",[],6]]]],"sd":1,"tr":["open","home","navigation","section","sections"],"ta":["open","home","navigation","section","sections"],"b":[{"h":"<a class=\"nav-link\"><\/a>","tx":[[[1,0],[["link.text"]]]],"a":[["href",0,"link.link"],["active",2,[1,["link.section","section"]]]],"ag":[[1,0,2]],"eg":[["click",[["onNavigate",[["p","link.fullLayout"],["e"]],1,1]]]]},{"h":"<a><\/a>","tx":[[[1,0],[["link.text"]]]],"a":[["href",0,"link.link"],["active",2,[2,["link.section","section"]]]],"ag":[[1,0,2]],"eg":[["click",[["onNavigate",[["p","link.fullLayout"],["e"]],1,1]]]]},{"h":"<div class=\"mobile-section-nav\">\n        <docs-sidebar-navigation variant=\"mobile\"><\/docs-sidebar-navigation>\n      <\/div>","a":[["sections",1,"sections"]],"ag":[[2,0,1]]}]},"docs-search":{"h":"<button class=\"trigger\" aria-label=\"Search\">\n  🔍 <span class=\"label\">Search<\/span> <kbd>⌘K<\/kbd>\n<\/button>\n\n<dialog w-ref=\"{dialog}\">\n  <div class=\"box\">\n    <div class=\"input-wrap\">\n      <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"11\" cy=\"11\" r=\"8\" /><path d=\"m21 21-4.35-4.35\" /><\/svg>\n      <input id=\"docs-search-input\" name=\"q\" w-ref=\"{searchInput}\" type=\"text\" placeholder=\"Search documentation...\" autocomplete=\"off\" />\n    <\/div>\n    <div class=\"results\">\n      \n      \n    <\/div>\n    <div class=\"hint\">↑↓ Navigate · Enter Select · Esc Close<\/div>\n  <\/div>\n<\/dialog>","c":[[[0,["emptyMessage"]],0,[11,1]],[[1,["hasResults"]],1,[11,1,1]]],"eg":[["click",[["openSearch",[],1]]],["input",[["onInput",[],10]]]],"sd":1,"tr":["emptyMessage","hasResults","resultItems"],"ta":["empty-message","has-results","result-items"],"b":[{"h":"<div class=\"empty\"><\/div>","tx":[[[1,0],[["emptyMessage"]]]]},{"h":"","r":[["resultItems","result",2,[0,0]]]},{"h":"<a>\n            <div class=\"result-title\">\n              \n            <\/div>\n            <div class=\"result-snippet\">\n              \n            <\/div>\n          <\/a>","a":[["class",0,"result.className"],["href",0,"result.path"]],"ag":[[1,0,2]],"r":[["result.titleSegments","segment",3,[2,1]],["result.snippetSegments","segment",10,[3,1]]]},{"h":"\n                ","c":[[[2,["segment.code"]],4,[0,0]],[[3,["segment.code"]],7,[0,1]]]},{"h":"\n                  ","c":[[[4,["segment.mark"]],5,[0,0]],[[5,["segment.mark"]],6,[0,1]]]},{"h":"<code class=\"result-segment\"><mark><\/mark><\/code>","tx":[[[2,0],[["segment.text"]]]]},{"h":"<code class=\"result-segment\"><\/code>","tx":[[[1,0],[["segment.text"]]]]},{"h":"\n                  ","c":[[[6,["segment.mark"]],8,[0,0]],[[7,["segment.mark"]],9,[0,1]]]},{"h":"<mark><\/mark>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"<span><\/span>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"\n                ","c":[[[8,["segment.mark"]],11,[0,0]],[[9,["segment.mark"]],12,[0,1]]]},{"h":"<mark><\/mark>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"<span><\/span>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]}]},"docs-theme-toggle":{"h":"<button aria-label=\"Toggle dark mode\"><\/button>","tx":[[[1,0],[["icon"]]]],"eg":[["click",[["toggle",[],1]]]],"sd":1,"tr":["icon"],"ta":["icon"]},"docs-sidebar-navigation":{"h":"<nav class=\"sidebar-navigation\" aria-label=\"Documentation sections\">\n  \n<\/nav>","r":[["sections","section",0,[1,1]]],"sd":1,"th":1,"tr":["sections"],"ta":["sections"],"b":[{"h":"<div class=\"sidebar-group\">\n      <div class=\"sidebar-title\"><\/div>\n      <ul class=\"sidebar-items\">\n        \n      <\/ul>\n    <\/div>","tx":[[[2,0],[["section.title"]]]],"r":[["section.items","item",1,[3,1]]]},{"h":"<li>\n            \n            \n          <\/li>","c":[[[0,["item.hasChildren"]],2,[1,1]],[[1,["item.hasChildren"]],9,[1,1,1]]]},{"h":"<details class=\"sidebar-branch\">\n                <summary class=\"sidebar-summary\">\n                  <span><\/span>\n                <\/summary>\n                <ul class=\"sidebar-children\">\n                  \n                  \n                <\/ul>\n              <\/details>","tx":[[[3,0],[["item.text"]]]],"a":[["open",2,[2,["item.expanded"]]],["active",2,[3,["item.active"]]]],"ag":[[1,0,1],[2,1,1]],"c":[[[4,["item.link"]],3,[4,1]]],"r":[["item.children","child",6,[4,1,1]]]},{"h":"<li>\n                      \n                      \n                    <\/li>","c":[[[5,["item.active"]],4,[1,1]],[[6,["item.active"]],5,[1,1,1]]]},{"h":"<a class=\"sidebar-link sidebar-link-active\">Overview<\/a>","a":[["href",0,"item.link"]],"ag":[[1,0,1]]},{"h":"<a class=\"sidebar-link\">Overview<\/a>","a":[["href",0,"item.link"]],"ag":[[1,0,1]]},{"h":"<li>\n                      \n                      \n                    <\/li>","c":[[[7,["child.active"]],7,[1,1]],[[8,["child.active"]],8,[1,1,1]]]},{"h":"<a class=\"sidebar-link sidebar-link-active\"><\/a>","tx":[[[1,0],[["child.text"]]]],"a":[["href",0,"child.link"]],"ag":[[1,0,1]]},{"h":"<a class=\"sidebar-link\"><\/a>","tx":[[[1,0],[["child.text"]]]],"a":[["href",0,"child.link"]],"ag":[[1,0,1]]},{"h":"\n              ","c":[[[9,["item.active"]],10,[0,0]],[[10,["item.active"]],11,[0,1]]]},{"h":"<a class=\"sidebar-link sidebar-link-active\"><\/a>","tx":[[[1,0],[["item.text"]]]],"a":[["href",0,"item.link"]],"ag":[[1,0,1]]},{"h":"<a class=\"sidebar-link\"><\/a>","tx":[[[1,0],[["item.text"]]]],"a":[["href",0,"item.link"]],"ag":[[1,0,1]]}]},"code-block":{"h":"\n  <div class=\"wrapper\">\n    <button class=\"copy-btn\" aria-label=\"Copy code\"><\/button>\n    <slot><\/slot>\n  <\/div>\n","tx":[[[2,0],[["label"]]]],"eg":[["click",[["copy",[],2]]]],"sd":1,"tr":["label"],"ta":["label"]}}}</script>
+<script>(function(){var w=window.__webui||(window.__webui={});var f=w.templateFns||(w.templateFns={});f["docs-site-navigation"]=[function(v,s){return !(!!v("home",s))},function(v,s){return v("link.section",s)==v("section",s)},function(v,s){return v("link.section",s)==v("section",s)}];f["docs-search"]=[function(v,s){return !!v("emptyMessage",s)},function(v,s){return !!v("hasResults",s)},function(v,s){return !!v("segment.code",s)},function(v,s){return !(!!v("segment.code",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))}];f["docs-sidebar-navigation"]=[function(v,s){return !!v("item.hasChildren",s)},function(v,s){return !(!!v("item.hasChildren",s))},function(v,s){return !!v("item.expanded",s)},function(v,s){return !!v("item.active",s)},function(v,s){return !!v("item.link",s)},function(v,s){return !!v("item.active",s)},function(v,s){return !(!!v("item.active",s))},function(v,s){return !!v("child.active",s)},function(v,s){return !(!!v("child.active",s))},function(v,s){return !!v("item.active",s)},function(v,s){return !(!!v("item.active",s))}];})();</script>
+
+<script type="module" src="/webui/index.js?v=55db6ab5945b5294"></script>
+<script type="module" src="/webui/assets/chunk-YNUCAYZP.js?v=e32d7135e1018163"></script></body></html>

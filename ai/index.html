@@ -749,7 +749,35 @@ fetch, or public API - not by default.</li><li>[ ] Every <code>@observable</code
 public API. Otherwise it moved to the state JSON.</li><li>[ ] No observable mirrors an expression the template can evaluate.</li><li>[ ] Every <code>&#123;&#123;binding&#125;&#125;</code>, <code>&lt;if&gt;</code>, and <code>&lt;for&gt;</code> path exists in the state JSON.</li><li>[ ] Every <code>w-ref</code> uses braces.</li><li>[ ] A built-in element was considered before a hand-built one
 (<code>&lt;dialog&gt;</code>, <code>popover</code>, <code>&lt;details&gt;</code>).</li><li>[ ] <code>::view-transition-*</code> rules are in the entry template, not component CSS.</li><li>[ ] <code>prefers-reduced-motion</code> is honored wherever motion is used.</li><li>[ ] No conditions mix <code>&amp;&amp;</code> with <code>||</code>, use parentheses, or use a ternary.</li><li>[ ] Every native <code>&lt;slot&gt;</code> resolves to Shadow DOM; in a <code>--dom light</code> build its
 component authors a sole top-level <code>&lt;template shadowrootmode="open"&gt;</code>.</li><li>[ ] A sole bare top-level <code>&lt;template&gt;</code> is an explicit Light wrapper and is
-unwrapped even when the build fallback is Shadow.</li></ul><h2 id="build-and-run">Build and run <a class="header-anchor" href="/webui/ai/#build-and-run" aria-label="Link to Build and run">#</a></h2><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> Install the native CLIs</span><span class="hl-comment">
+unwrapped even when the build fallback is Shadow.</li></ul><h2 id="build-and-run">Build and run <a class="header-anchor" href="/webui/ai/#build-and-run" aria-label="Link to Build and run">#</a></h2><p>For a desktop app, start with zero Rust:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop run ./src
+</code></pre></code-block><p>Restart desktop <code>run</code> after source changes; desktop <code>--watch</code> is not supported.</p><p>Write a host crate only when you need dynamic route state or IPC. To generate a
+working progressive scaffold, use <code>webui desktop init ./my-app</code>; it creates the
+entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+files are protected unless <code>--force</code> is passed. Rust apps depend on
+<code>microsoft-webui-desktop</code> with <code>native</code> enabled and forward an opt-in <code>source</code>
+feature to <code>microsoft-webui-desktop/source</code>. There is no separate runner or
+compiler dependency. <code>webui desktop package</code> builds
+optimized runners without default features automatically. Select optional app
+capabilities with <code>webuiDesktop.runnerFeatures</code>; use <code>--debug</code> only for a debug
+package. Package targets are <code>macos-app</code>, <code>windows-portable</code>, and
+<code>linux-portable</code>; <code>all</code> writes all three layouts without cross-compiling the
+runner. Installer generation and signing are not supported. The
+runtime-only build continues to support all <code>DesktopRuntime::from_bundle*</code>
+entry points. See the <a href="/webui/guide/integrations/desktop.md">desktop SDK guide</a> for
+source/bundle construction, window customization, and scoped event subscriptions.</p><p>Pass the client bundler's <code>--projection-manifest &lt;PATH&gt;</code> to desktop <code>run</code>/<code>build</code>,
+or set <code>webuiDesktop.projectionManifests</code> for app-root packaging. Rust source
+hosts set <code>BuildOptions::projection_manifests</code>. Desktop and web share navigation
+state projection; unknown requirements keep the correctness-safe full-state
+fallback. Supplied manifests must be current and complete.</p><p>For application messages, define one proto3 contract and run
+<code>webui desktop ipc generate</code> to produce Rust/TypeScript APIs. Use generated
+host calls, renderer request handlers and notification subscriptions, not raw
+method strings or manual byte encoding. JavaScript 64-bit values are <code>bigint</code>,
+bytes are <code>Uint8Array</code>, and maps are <code>Map&lt;K,V&gt;</code>. Register Rust handlers and
+explicit <code>IpcOptions</code> before building the frame. Requests return typed
+promises/futures; notification completion acknowledges admission rather than
+subscriber completion. Dispose subscriptions and honor cancellation.
+See the <a href="/webui/guide/integrations/desktop.md#message-passing">IPC guide</a> for the
+complete shared-schema example.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> Install the native CLIs</span><span class="hl-comment">
 </span>npm install @microsoft/webui @microsoft/webui-press
 
 <span class="hl-comment">#</span><span class="hl-comment"> Dev server with live reload</span><span class="hl-comment">
