@@ -297,6 +297,15 @@ pub fn build_docs_with_cache(
     // at `<basePath>`, so the same flat layout works.
     let site_dir = out_dir.to_path_buf();
 
+    // Per-page and 404 scratch directories follow the output volume so a whole
+    // Press build never spans two filesystem roots.
+    let scratch_root = crate::scratch::scratch_base(out_dir, config_dir).map_err(|e| {
+        Error::Io(format!(
+            "Cannot prepare the Press scratch directory for {}: {e}",
+            out_dir.display()
+        ))
+    })?;
+
     // Read custom CSS
     let custom_css = config
         .css
@@ -673,7 +682,7 @@ pub fn build_docs_with_cache(
         // builds (and successive rebuilds) can never collide and wipe
         // each other's in-progress files.
         let nonce = REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let page_tmp = std::env::temp_dir().join(format!(
+        let page_tmp = scratch_root.join(format!(
             "webui-press-page-{}-{:x}-{nonce:x}",
             std::process::id(),
             fxhash(&page.path),
@@ -819,7 +828,7 @@ pub fn build_docs_with_cache(
     let not_found_html = regions
         .render("doc")
         .replace("{{{page.content}}}", &protected_not_found);
-    let nf_tmp = std::env::temp_dir().join(format!(
+    let nf_tmp = scratch_root.join(format!(
         "webui-press-404-{}-{:x}",
         std::process::id(),
         REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),

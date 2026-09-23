@@ -402,7 +402,9 @@ find the element that was hit.
 ```
 
 `<outlet></outlet>` is also valid, but outlets are empty directives and the
-self-closing form is preferred.
+self-closing form is preferred. Use one outlet at each route level, including
+outlets inside nested layout components and directives; extra outlets produce a
+`multiple-outlets` build warning. Child routes have their own outlet level.
 
 ### Entry template
 
@@ -1369,8 +1371,14 @@ See the [IPC guide](./guide/integrations/desktop.md#message-passing) for the
 complete shared-schema example.
 
 ```bash
+# Install the native CLIs
+npm install @microsoft/webui @microsoft/webui-press
+
 # Dev server with live reload
 webui serve ./src --state ./data/state.json --plugin=webui --watch
+
+# Static documentation site
+webui-press build
 
 # Production build
 webui build ./src --out ./dist --plugin=webui

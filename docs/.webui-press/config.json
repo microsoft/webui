@@ -192,6 +192,10 @@
         "title": "Guides",
         "items": [
           {
+            "text": "WebUI Press",
+            "link": "/guide/webui-press"
+          },
+          {
             "text": "CLI Reference",
             "link": "/guide/cli/",
             "items": [

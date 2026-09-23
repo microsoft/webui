@@ -17,6 +17,7 @@ mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod outlet_warnings;
 pub mod plugin;
 mod route_parser;
 mod scoped_visits;
@@ -788,6 +789,9 @@ pub struct HtmlParser {
     /// Map of fragment IDs to their fragments
     fragment_records: WebUIFragmentRecords,
 
+    /// Non-fatal parser advisories collected while parsing templates.
+    warnings: Vec<Diagnostic>,
+
     /// Buffer for accumulating raw content
     raw_buffer: String,
 
@@ -1529,6 +1533,7 @@ impl HtmlParser {
             handlebars_parser: HandlebarsParser::new(),
             raw_buffer: String::new(),
             fragment_records: WebUIFragmentRecords::new(),
+            warnings: Vec::new(),
             options,
             plugin: None,
             component_processing: ComponentProcessing::default(),
@@ -1588,6 +1593,12 @@ impl HtmlParser {
 
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
         std::mem::take(&mut self.fragment_records)
+    }
+
+    /// Take non-fatal parser warnings collected so far.
+    #[must_use]
+    pub fn take_warnings(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.warnings)
     }
 
     /// Check if a fragment ID has been parsed (exists in the fragment records).
@@ -2463,6 +2474,9 @@ impl HtmlParser {
         let mut result = self.parse_inner(fragment_id, html_content);
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
+            if result.is_ok() {
+                self.finalize_outlet_warnings();
+            }
         }
 
         self.in_boundary = previous_in_boundary;
@@ -2579,6 +2593,7 @@ impl HtmlParser {
         depth: usize,
     ) -> Result<()> {
         let mut ops = vec![ParseOp::Parse { range, depth }];
+        let mut outlet_seen = false;
 
         while let Some(op) = ops.pop() {
             match op {
@@ -2713,6 +2728,10 @@ impl HtmlParser {
                                 }
                                 "outlet" => {
                                     self.flush_raw_buffer(fragments);
+                                    if outlet_seen {
+                                        self.warnings.push(self.multiple_outlets_warning(&element));
+                                    }
+                                    outlet_seen = true;
                                     fragments.push(WebUIFragment::outlet());
                                 }
                                 "boundary" => {
@@ -3077,6 +3096,14 @@ impl HtmlParser {
         offset: usize,
     ) -> Diagnostic {
         self.authoring_error(code, title).at_offset(source, offset)
+    }
+
+    /// Build the warning for a second `<outlet>` at one parsed route level.
+    #[cold]
+    #[inline(never)]
+    fn multiple_outlets_warning(&self, element: &Element<'_>) -> Diagnostic {
+        outlet_warnings::multiple_outlets_warning(&self.current_fragment_id)
+            .at_offset(element.source(), element.start)
     }
 
     /// Build the `help:` line for an unknown component `<name>`.
@@ -11543,6 +11570,35 @@ mod tests {
                 !outlet_in_for,
                 "outlet should NOT be inside for-loop body: {for_frags:?}"
             );
+        }
+    }
+
+    #[test]
+    fn multiple_outlets_in_one_fragment_warn() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<main><outlet /></main><aside><outlet /></aside>"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let warnings = parser.take_warnings();
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert_eq!(warnings[0].severity(), Severity::Warning);
+        assert_eq!(warnings[0].error_code(), Some(codes::MULTIPLE_OUTLETS));
+        assert_eq!(warnings[0].component_name(), Some("test.html"));
+        assert!(warnings[0].help_text().is_some());
+    }
+
+    #[test]
+    fn multiple_outlets_across_nested_directives_warn() {
+        for html in [
+            r#"<if condition="show"><outlet /></if><outlet />"#,
+            r#"<for each="item in items"><outlet /></for><outlet />"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            parser.parse("test.html", html).expect("parse failed");
+
+            let warnings = parser.take_warnings();
+            assert_eq!(warnings.len(), 1, "warnings for {html}: {warnings:?}");
+            assert_eq!(warnings[0].error_code(), Some(codes::MULTIPLE_OUTLETS));
         }
     }
 

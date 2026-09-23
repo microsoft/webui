@@ -377,10 +377,9 @@ pub struct BuildResult {
     pub component_templates: Vec<ComponentTemplateArtifact>,
     /// Non-fatal build advisories as warning-severity [`Diagnostic`]s.
     ///
-    /// Currently surfaces CSS tokens that are referenced only with a literal
-    /// `var()` fallback and defined in no theme — often typos. Empty when no
-    /// theme is supplied. Carries the same structured location/snippet/`help:`
-    /// data as errors; the entry point decides how to present (and color) them.
+    /// Includes parser advisories and CSS token warnings. Carries the same
+    /// structured location/snippet/`help:` data as errors; the entry point
+    /// decides how to present (and color) them.
     pub warnings: Vec<Diagnostic>,
     /// Build statistics.
     pub stats: BuildStats,
@@ -667,7 +666,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
 
     // Collect CSS token analysis before consuming the parser.
     let token_analysis = parser.token_analysis();
-    let mut warnings: Vec<Diagnostic> = Vec::new();
+    let mut warnings: Vec<Diagnostic> = parser.take_warnings();
     if let Some(theme) = options.theme.as_ref() {
         token_analysis
             .validate_theme_tokens(theme)
@@ -679,7 +678,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         // every theme is often a misspelling. The literal keeps the build green,
         // so this is a warning (with a "did you mean …?" suggestion), not an
         // error.
-        warnings = token_analysis.theme_token_warnings(theme);
+        warnings.extend(token_analysis.theme_token_warnings(theme));
     }
     let token_count = token_analysis.protocol_tokens.len();
 
@@ -3939,6 +3938,59 @@ mod tests {
         ]);
         let result = build(default_options(app.path())).unwrap();
         assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_build_warns_for_multiple_outlets_in_route_component() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                r#"<route path="/" component="app-shell"><route path="child" component="child-page" exact /></route>"#,
+            ),
+            (
+                "app-shell.html",
+                r#"<main><outlet /></main><aside><outlet /></aside>"#,
+            ),
+            ("child-page.html", "<p>Child</p>"),
+        ]);
+
+        let result = build(default_options(app.path())).unwrap();
+        assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+        let warning = &result.warnings[0];
+        assert_eq!(warning.severity(), Severity::Warning);
+        assert_eq!(
+            warning.error_code(),
+            Some(webui_parser::codes::MULTIPLE_OUTLETS)
+        );
+        assert_eq!(warning.component_name(), Some("app-shell"));
+        assert!(warning.help_text().is_some());
+    }
+
+    #[test]
+    fn test_build_warns_for_outlets_across_component_templates() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                r#"<route path="/" component="app-shell"><route path="child" component="child-page" exact /></route>"#,
+            ),
+            (
+                "app-shell.html",
+                r#"<nested-layout></nested-layout><aside><outlet /></aside>"#,
+            ),
+            ("nested-layout.html", "<main><outlet /></main>"),
+            ("child-page.html", "<p>Matched child</p>"),
+        ]);
+
+        let result = build(default_options(app.path())).unwrap();
+        let html = render_html(&result.protocol, "/child");
+        assert_eq!(html.matches("<p>Matched child</p>").count(), 1, "{html}");
+        assert!(html.contains("<aside></aside>"), "{html}");
+        assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+        assert_eq!(
+            result.warnings[0].error_code(),
+            Some(webui_parser::codes::MULTIPLE_OUTLETS)
+        );
+        assert_eq!(result.warnings[0].component_name(), Some("app-shell"));
     }
 
     #[test]

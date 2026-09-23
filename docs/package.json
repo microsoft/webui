@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "cargo run -p microsoft-webui-press -- build",
-    "start": "cargo run -p microsoft-webui-press -- serve"
+    "build": "webui-press build",
+    "start": "webui-press serve"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",
@@ -19,6 +19,7 @@
     "@codemirror/view": "catalog:",
     "@microsoft/webui": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
+    "@microsoft/webui-press": "workspace:*",
     "esbuild": "catalog:"
   }
 }

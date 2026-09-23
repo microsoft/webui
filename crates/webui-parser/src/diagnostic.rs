@@ -186,6 +186,9 @@ pub mod codes {
     /// than emitted or escaped.
     /// Severity: warning.
     pub const UNSAFE_MODULE_PRELOAD: &str = "unsafe-module-preload";
+    /// More than one `<outlet>` appears in the same parsed route level.
+    /// Severity: warning.
+    pub const MULTIPLE_OUTLETS: &str = "multiple-outlets";
     /// Static component assets were requested for a graph containing `<route>`.
     pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
     /// A component's root rendering or hydration policy is malformed.

@@ -19,6 +19,7 @@ mod error;
 mod extraction_tests;
 mod markdown;
 mod regions;
+mod scratch;
 mod serve;
 mod state;
 mod types;
@@ -141,7 +142,7 @@ fn load_config(
 
     let template = match template_dir {
         Some(template_dir) => Path::new(template_dir).to_path_buf(),
-        None => extract_embedded_assets()?,
+        None => extract_embedded_assets(Path::new(&docs_config.out_dir), &config_dir)?,
     };
 
     Ok((docs_config, config_dir, template))
@@ -156,8 +157,19 @@ fn load_config(
 /// and published with a single atomic `rename`, so an interrupted run (Ctrl-C,
 /// crash) never leaves a half-written cache: the next run sees no `.complete`
 /// sentinel and re-extracts.
-fn extract_embedded_assets() -> Result<PathBuf> {
-    extract_embedded_assets_in(&std::env::temp_dir())
+///
+/// The cache is placed on the volume that holds the build output (see
+/// [`scratch::scratch_base`]): the extracted tree contains TypeScript sources
+/// that become bundler inputs, and a bundle cannot span two volumes because
+/// projection manifest keys are relative to a single build root.
+fn extract_embedded_assets(build_dir: &Path, project_dir: &Path) -> Result<PathBuf> {
+    let base = scratch::scratch_base(build_dir, project_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "Cannot prepare the Press cache directory for {}: {e}",
+            build_dir.display()
+        )
+    })?;
+    extract_embedded_assets_in(&base)
 }
 
 fn extract_embedded_assets_in(tmp: &Path) -> Result<PathBuf> {
@@ -348,7 +360,11 @@ mod tests {
 
     #[test]
     fn embedded_assets_extract_template_and_components() -> Result<()> {
-        let template = extract_embedded_assets()?;
+        // The system temp directory shares this test process's volume, so the
+        // resolved cache base is the shared one.
+        let build = std::env::temp_dir();
+        let project = std::env::temp_dir();
+        let template = extract_embedded_assets(&build, &project)?;
         let root = template
             .parent()
             .ok_or_else(|| anyhow::anyhow!("template has no parent"))?;
@@ -359,7 +375,7 @@ mod tests {
         // The published cache must satisfy the completeness contract, and a
         // second call must reuse the same content-addressed directory.
         assert!(is_complete_cache(root));
-        assert_eq!(extract_embedded_assets()?, template);
+        assert_eq!(extract_embedded_assets(&build, &project)?, template);
         Ok(())
     }
 
