@@ -4,14 +4,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
 import { defaultLimits, type MessageCodec } from '../src/index.js';
 
 const fixture = resolve('../../crates/webui-desktop/tests/fixtures/typed-ipc');
-const require = createRequire(import.meta.url);
 type FixtureCodec = MessageCodec<Record<string, unknown>>;
 
 function assertUnchangedPrototype(prototype: object, descriptors: object): void {
@@ -32,12 +30,11 @@ async function loadFixture() {
     bundle: true, write: false, format: 'cjs', platform: 'node', target: 'es2022',
     alias: {
       '@microsoft/webui-desktop': resolve('src/index.ts'),
-      '@bufbuild/protobuf/wire': require.resolve('@bufbuild/protobuf/wire'),
     },
   });
   const module: { exports: unknown } = { exports: {} };
   runInNewContext(result.outputFiles[0]!.text, {
-    module, exports: module.exports, require, Map, TextEncoder, TextDecoder,
+    module, exports: module.exports, Map, TextEncoder, TextDecoder,
     Uint8Array, DataView, ArrayBuffer,
   });
   const { schema } = module.exports as { schema: { methods: { id: number; request: FixtureCodec }[] } };

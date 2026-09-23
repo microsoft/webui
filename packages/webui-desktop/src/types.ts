@@ -38,7 +38,7 @@ declare global {
   interface Window { readonly __webuiDesktopIpcV2?: NativeIpcBootstrap }
 }
 
-/** Codecs wrap generated protobuf encode/decode and generated validation. */
+/** Codecs wrap generated payload encode/decode and generated validation. */
 export interface MessageCodec<T> {
   encode(value: T): Uint8Array;
   decode(bytes: Uint8Array): T;

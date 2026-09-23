@@ -7,23 +7,42 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use futures_executor::block_on;
-use prost::Message;
 use webui_desktop::{
     ipc::{
         validate_message,
         wire::{ipc_frame::Body, IpcFrame, Kind},
         Admission, CommittedMainDocument, Endpoint, FieldKind, FieldShape, Hello, Host, IpcBridge,
-        IpcError, IpcErrorCode, IpcLimits, IpcOptions, IpcRegistry, IpcSchema, IpcWake,
-        MessageShape, MethodDescriptor, MethodKind, NativeControl, OwnedIpcHttpRequest, Rpc,
-        SessionInfo, IPC_VERSION,
+        IpcCodec, IpcError, IpcErrorCode, IpcLimits, IpcOptions, IpcRegistry, IpcSchema, IpcWake,
+        MessageShape, MethodDescriptor, MethodKind, NativeControl, OwnedIpcHttpRequest,
+        PayloadWriter, Rpc, SessionInfo, WireReader, IPC_VERSION,
     },
     DesktopFrame, DesktopHttpMethod,
 };
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, Default, PartialEq)]
 struct EchoPayload {
-    #[prost(bytes = "vec", tag = "1")]
     bytes: Vec<u8>,
+}
+
+impl IpcCodec for EchoPayload {
+    fn encode_ipc(&self) -> Vec<u8> {
+        let mut writer = PayloadWriter::with_capacity(self.bytes.len() + 8);
+        if !self.bytes.is_empty() {
+            writer.bytes(1, &self.bytes);
+        }
+        writer.finish()
+    }
+
+    fn decode_ipc(bytes: &[u8]) -> Result<Self, IpcError> {
+        let mut result = Self::default();
+        let mut reader = WireReader::new(bytes);
+        while let Some(field) = reader.next_field()? {
+            if field.number == 1 {
+                result.bytes = field.bytes()?.to_vec();
+            }
+        }
+        Ok(result)
+    }
 }
 
 struct Echo;
@@ -41,6 +60,7 @@ fn validate(bytes: &[u8], limits: &IpcLimits) -> Result<(), IpcError> {
             number: 1,
             kind: FieldKind::Bytes,
             repeated: false,
+            packed: false,
             oneof: None,
             map_key: false,
         }],
@@ -148,7 +168,7 @@ pub fn assert_echo(frame: &DesktopFrame, payload: &[u8]) {
             EchoPayload {
                 bytes: payload.to_vec(),
             }
-            .encode_to_vec(),
+            .encode_ipc(),
         )),
     };
     assert_eq!(
@@ -179,7 +199,7 @@ pub fn assert_echo(frame: &DesktopFrame, payload: &[u8]) {
                 panic!("expected typed echo response");
             };
             assert_eq!(
-                EchoPayload::decode(bytes.as_slice()).unwrap().bytes,
+                EchoPayload::decode_ipc(bytes.as_slice()).unwrap().bytes,
                 payload
             );
             break;

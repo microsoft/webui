@@ -1,17 +1,16 @@
 # WebUI Desktop Build
 
-Build-time typed protobuf IPC generation for `microsoft-webui-desktop`.
-This crate is a build dependency, not part of the desktop runtime graph.
-Hosts using its generated Rust bindings must enable `application-ipc` on
-`microsoft-webui-desktop` and depend on `prost`. The SDK's `native`, `source`,
-and `cli` features do not enable application IPC.
+Build-time typed IPC generation for `microsoft-webui-desktop`. This crate is a
+build dependency, not part of the desktop runtime graph. Hosts using its
+generated Rust bindings must enable `application-ipc` on
+`microsoft-webui-desktop`. The SDK's `native`, `source`, and `cli` features do
+not enable application IPC.
 
 ## Generate
 
-Install `protoc`, `ts-proto@2.12.3`, and `@bufbuild/protobuf@2.15.0` explicitly.
-The generator checks the installed ts-proto/runtime pair and never downloads
-tools. The SDK options schema is embedded in this crate and automatically
-included; installed CLI consumers do not need the crate's source directory.
+Install `protoc` explicitly. The generator never downloads tools. The SDK
+options schema is embedded in this crate and automatically included; installed
+CLI consumers do not need the crate's source directory.
 
 ```rust,no_run
 use webui_desktop_build::{generate, GenerateConfig};
@@ -24,7 +23,6 @@ let generated = generate(&GenerateConfig {
     lock_file: "schema/ipc-schema.lock.json".into(),
     check: false,
     protoc: None, // PROTOC, then PATH, or an explicit executable
-    ts_proto_plugin: Some("node_modules/.bin/protoc-gen-ts_proto".into()),
 })?;
 # Ok::<(), webui_desktop_build::GenerateError>(())
 ```
@@ -32,8 +30,7 @@ let generated = generate(&GenerateConfig {
 Create the lock file's parent directory first. Relative paths are relative to
 the invoking process's working directory. Inputs and import directories are
 canonicalized, and command arguments preserve paths containing spaces.
-An explicit `protoc` path takes precedence over `PROTOC`, then PATH. Windows npm
-plugins use the pinned installation's `protoc-gen-ts_proto.cmd` shim. Windows
+An explicit `protoc` path takes precedence over `PROTOC`, then PATH. Windows
 compiler inputs and outputs must use local drive paths; unsupported UNC/device
 namespaces fail with `ipc-tool-path`.
 
@@ -46,7 +43,7 @@ generates an acknowledged RPC returning Rust `()` / TypeScript `void`.
 
 ## Outputs
 
-- Rust: `ipc.rs`, `ipc_messages.rs`, and prost's package modules.
+- Rust: `ipc.rs`, `ipc_messages.rs`, and generated payload codec modules.
   Include `ipc.rs` in an application module. `messages` contains the package
   tree; service-named modules contain `Rpc` / `Event` markers.
   `HostHandler` / `register_host` and `RendererClient` are generated from
@@ -56,12 +53,12 @@ generates an acknowledged RPC returning Rust `()` / TypeScript `void`.
   Notification definitions are installed for each admitted document and count
   toward callback limits. Optional dynamic host event subscriptions remain in
   the service module, such as `host::subscribe_selected`.
-- TypeScript: `ipc.ts`, its private `ipc-runtime.ts` support module, application
-  codec modules, and the Empty codec when needed. Application code uses
+- TypeScript: `ipc.ts`, its private `ipc-runtime.ts` support module, and
+  application codec modules. Application code uses
   `connectDesktop`, `HostClient`, `RendererHandlers`, `RendererEvents`,
   `AppConnection`, and `schemaHash` from `ipc.ts`. Message types are exported by
   their codec modules. The first explicit `connectDesktop()` loads the
-  browser-only `@microsoft/webui-desktop` runtime and protobuf codecs; importing
+  browser-only `@microsoft/webui-desktop` runtime and WebUI payload codecs; importing
   the bindings alone does not. Concurrent calls share loading, not connections.
   Bundle with ESM code splitting and deploy all emitted chunks for deferred
   transfer/parsing. Type-only imports require no runtime load. Load failures
@@ -75,8 +72,7 @@ compares all artifacts without rewriting them. Missing, changed, or obsolete
 artifacts return `GenerateError::Drift`. Normal generation removes obsolete
 modules listed in the prior inventory, without deleting unrelated files.
 Generated TypeScript omits host compiler-version comments, so differing supported
-`protoc` versions do not create metadata-only drift. Generator/runtime package
-versions remain pinned and validated.
+`protoc` versions do not create metadata-only drift.
 
 Every current and obsolete artifact, including the lock, manifest, and
 inventory, is validated before publication. Output roots, artifact files, and
@@ -109,8 +105,8 @@ bindings.
 
 ## Types and bounds
 
-Prost and ts-proto produce the binary codecs. Integers retain their full
-protobuf ranges; JavaScript 64-bit fields are `bigint`, bytes are `Uint8Array`,
+WebUI codegen produces the Rust and TypeScript binary payload codecs. Integers
+retain their full protobuf-compatible ranges; JavaScript 64-bit fields are `bigint`, bytes are `Uint8Array`,
 unknown enum numbers are retained, optional presence is preserved, and oneof
 values use discriminated unions. Repeated fields and acyclic nested messages
 are supported. Generated metadata drives the runtime's iterative object and
@@ -121,7 +117,7 @@ dictionaries. String keys stay strings, bool keys stay booleans, 32-bit integer
 keys are numbers, and all 64-bit integer keys are lossless bigints. Validators
 check native key types and integer ranges without string coercion. Strings
 such as `__proto__`, `constructor`, and `prototype` are ordinary safe Map keys.
-Rust uses prost's `BTreeMap<K, V>` with the corresponding native key types.
+Rust uses `BTreeMap<K, V>` with the corresponding native key types.
 
 Generation rejects proto2, application extensions, unrecognized custom options,
 streaming, recursive message graphs, groups, and well-known types other than

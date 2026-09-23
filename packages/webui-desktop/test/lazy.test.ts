@@ -13,7 +13,6 @@ import { FakeTransport, deferred, frame, Kind, turn } from './helpers.js';
 const fixture = resolve('../../crates/webui-desktop/tests/fixtures/typed-ipc');
 const alias = {
   '@microsoft/webui-desktop': resolve('src/index.ts'),
-  '@bufbuild/protobuf/wire': resolve('node_modules/@bufbuild/protobuf/dist/esm/wire/index.js'),
 };
 type Item = Record<string, unknown>;
 type Handlers = { labelFor(value: Item, context: RequestContext): { text: string } };

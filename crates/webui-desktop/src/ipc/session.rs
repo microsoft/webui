@@ -7,11 +7,11 @@ use super::{
     error::fail,
     executor::{lock, TimerKey},
     wire::{ipc_frame::Body, Kind},
-    Endpoint, Event, Host, IpcError, IpcErrorCode, IpcFuture, IpcLimits, MethodKind, Renderer, Rpc,
+    Endpoint, Event, Host, IpcCodec, IpcError, IpcErrorCode, IpcFuture, IpcLimits, MethodKind,
+    Renderer, Rpc,
 };
 use futures_channel::oneshot;
 use futures_util::future::{AbortHandle, Abortable};
-use prost::Message;
 use std::{
     future::Future,
     pin::Pin,
@@ -243,8 +243,8 @@ impl IpcSession {
         options: CallOptions,
     ) -> IpcCall<Resp>
     where
-        Req: Message + Send + 'static,
-        Resp: Message + Default + Send + 'static,
+        Req: IpcCodec,
+        Resp: IpcCodec,
     {
         let (sender, receiver) = oneshot::channel();
         let output = Arc::new(Mutex::new(Some(sender)));
@@ -301,8 +301,7 @@ impl IpcSession {
                             if let Some(validate) = method.validate_response {
                                 validate(bytes, &work.core.options.limits)?;
                             }
-                            Resp::decode(bytes.as_slice())
-                                .map_err(|_| fail(IpcErrorCode::InvalidPayload))
+                            Resp::decode_ipc(bytes.as_slice())
                         },
                         abort,
                     )
@@ -481,7 +480,7 @@ struct LocalWork {
     next: oneshot::Sender<()>,
     permit: super::executor::Permit,
 }
-fn send_request<Req: Message>(
+fn send_request<Req: IpcCodec>(
     core: &Core,
     address: (u64, u64),
     method_id: u32,
@@ -489,10 +488,10 @@ fn send_request<Req: Message>(
     request: Req,
 ) -> Result<(), IpcError> {
     let (generation, id) = address;
-    if request.encoded_len() > core.options.limits.max_frame_bytes.saturating_sub(64) {
+    let bytes = request.encode_ipc();
+    if bytes.len() > core.options.limits.max_frame_bytes.saturating_sub(64) {
         return Err(fail(IpcErrorCode::PayloadTooLarge));
     }
-    let bytes = request.encode_to_vec();
     let method = core.allowed(method_id, Endpoint::Renderer, kind)?;
     (method.validate_request)(&bytes, &core.options.limits)?;
     {
@@ -616,8 +615,7 @@ where
         let callback = Arc::clone(&callback);
         Box::pin(async move {
             (method.validate_request)(&bytes, &limits)?;
-            let payload = E::Payload::decode(bytes.as_slice())
-                .map_err(|_| fail(IpcErrorCode::InvalidPayload))?;
+            let payload = E::Payload::decode_ipc(bytes.as_slice())?;
             callback(ctx, payload).await
         })
     })

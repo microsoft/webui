@@ -9,8 +9,7 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@microsoft/webui-desktop": ["../../../packages/webui-desktop/src/index.ts"],
-      "@bufbuild/protobuf/wire": ["../../../packages/webui-desktop/node_modules/@bufbuild/protobuf/dist/esm/wire/index.d.ts"]
+      "@microsoft/webui-desktop": ["../../../packages/webui-desktop/src/index.ts"]
     },
     "typeRoots": ["../../../node_modules/@types", "../../../packages/webui-desktop/node_modules/@types"]
   },

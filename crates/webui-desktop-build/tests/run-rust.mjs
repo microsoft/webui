@@ -25,13 +25,14 @@ for (const line of result.stdout.split('\n')) {
 }
 if (result.status !== 0) process.exit(result.status ?? 1);
 const sdk = libraries.get('webui_desktop');
-const prost = libraries.get('prost');
-if (!sdk || !prost) throw new Error('Cargo did not emit the SDK and prost library artifacts');
+if (!sdk) throw new Error('Cargo did not emit the SDK library artifact');
 const binary = join(root, 'target', process.platform === 'win32' ? 'typed-ipc-compile-test.exe' : 'typed-ipc-compile-test');
 execFileSync('rustc', [
   '--test', '--edition=2021', fileURLToPath(new URL('support/runtime.rs', import.meta.url)),
-  '--extern', `webui_desktop=${sdk}`, '--extern', `prost=${prost}`,
-  '-L', `dependency=${dirname(prost)}`, '-o', binary,
+  '--extern', `webui_desktop=${sdk}`,
+  '-L', `dependency=${dirname(sdk)}`,
+  '-L', `dependency=${join(dirname(sdk), 'deps')}`,
+  '-o', binary,
 ], { cwd: root, stdio: 'inherit' });
 const tests = execFileSync(binary, ['--list', '--format=terse'], { cwd: root, encoding: 'utf8' });
 if (!tests.split('\n').some(line => line.endsWith(': test'))) {

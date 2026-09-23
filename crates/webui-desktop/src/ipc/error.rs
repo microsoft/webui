@@ -110,7 +110,7 @@ pub(super) fn fail(code: IpcErrorCode) -> IpcError {
                 "use the admitted main document and explicitly grant this method on the host"
             }
             IpcErrorCode::InvalidFrame | IpcErrorCode::InvalidPayload => {
-                "send the generated protobuf type and wire-v2 envelope"
+                "send the generated payload type and supported desktop IPC envelope"
             }
             IpcErrorCode::PayloadTooLarge => {
                 "send a smaller message within the configured frame and collection limits"

@@ -118,8 +118,7 @@ single fully asserted success report.
 ## CI preparation and commands
 
 Use the repository Rust toolchain, Node 22+, pnpm with the checked-in lockfile,
-Python 3.9+, `protoc` on PATH (including its standard protobuf imports), and the
-pinned `ts-proto`/protobuf dependencies already declared in the workspace.
+Python 3.9+, and `protoc` on PATH, including its standard protobuf imports.
 The root CLI must include `cli`; the standalone fixture always enables `native`
 and `application-ipc`, and only its tooling runner enables `source`. Preparation
 from the repository root:

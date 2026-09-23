@@ -16,7 +16,6 @@ const result = await build({
   tsconfig: fileURLToPath(new URL('tsconfig.json', testRoot)),
   alias: {
     '@microsoft/webui-desktop': fileURLToPath(new URL('../../../packages/webui-desktop/src/index.ts', import.meta.url)),
-    '@bufbuild/protobuf/wire': fileURLToPath(new URL('../../../packages/webui-desktop/node_modules/@bufbuild/protobuf/dist/esm/wire/index.js', import.meta.url)),
   },
   define: { 'import.meta.url': JSON.stringify(new URL('typescript.ts', testRoot).href) },
 });

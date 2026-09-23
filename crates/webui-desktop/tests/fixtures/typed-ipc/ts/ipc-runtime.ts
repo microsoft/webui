@@ -6,91 +6,90 @@
 import type { AppConnection, RendererHandlers } from './ipc.js';
 import { connect, validateMessage, validateValue, IpcError, type MessageShape, type MessageCodec, type ConnectionSchema, type RuntimeConnection, type IpcTransport, type RequestContext } from '@microsoft/webui-desktop';
 import * as codec_0 from "./application.js";
-import * as codec_1 from "./google/protobuf/empty.js";
-import * as codec_2 from "./types.js";
+import * as codec_1 from "./types.js";
 export const schemaHash = "92ed62d2af279faa6246ab76b7a6290e22b17cbd9364725af433373599a6837b";
 export const messageShapes: readonly MessageShape[] = [
 { fields: [
-{ number: 1, name: "id", kind: "uint64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 2, name: "image", kind: "bytes", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 3, name: "title", kind: "string", repeated: false, optional: true, mapKey: false, map: false },
-{ number: 4, name: "minimum", kind: "int64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 5, name: "status", kind: "enum", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 6, name: "scores", kind: "sint32", repeated: true, optional: false, mapKey: false, map: false },
-{ number: 7, name: "labels", kind: "message", message: 3, repeated: true, optional: false, mapKey: false, map: true },
-{ number: 8, name: "text", kind: "string", repeated: false, optional: true, mapKey: false, map: false, oneof: "choice" },
-{ number: 9, name: "number", kind: "int64", repeated: false, optional: true, mapKey: false, map: false, oneof: "choice" },
-{ number: 11, name: "enabled", kind: "bool", repeated: false, optional: true, mapKey: false, map: false },
-{ number: 12, name: "chunks", kind: "message", message: 1, repeated: true, optional: false, mapKey: false, map: true },
-{ number: 13, name: "metrics", kind: "message", message: 7, repeated: false, optional: true, mapKey: false, map: false },
-{ number: 14, name: "flags", kind: "message", message: 2, repeated: true, optional: false, mapKey: false, map: true },
-{ number: 15, name: "unsignedKeys", kind: "message", message: 5, repeated: true, optional: false, mapKey: false, map: true },
-{ number: 16, name: "signedKeys", kind: "message", message: 4, repeated: true, optional: false, mapKey: false, map: true },
+{ number: 1, name: "id", kind: "uint64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 2, name: "image", kind: "bytes", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 3, name: "title", kind: "string", repeated: false, packed: false, optional: true, mapKey: false, map: false },
+{ number: 4, name: "minimum", kind: "int64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 5, name: "status", kind: "enum", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 6, name: "scores", kind: "sint32", repeated: true, packed: true, optional: false, mapKey: false, map: false },
+{ number: 7, name: "labels", kind: "message", message: 3, repeated: true, packed: false, optional: false, mapKey: false, map: true },
+{ number: 8, name: "text", kind: "string", repeated: false, packed: false, optional: true, mapKey: false, map: false, oneof: "choice" },
+{ number: 9, name: "number", kind: "int64", repeated: false, packed: false, optional: true, mapKey: false, map: false, oneof: "choice" },
+{ number: 11, name: "enabled", kind: "bool", repeated: false, packed: false, optional: true, mapKey: false, map: false },
+{ number: 12, name: "chunks", kind: "message", message: 1, repeated: true, packed: false, optional: false, mapKey: false, map: true },
+{ number: 13, name: "metrics", kind: "message", message: 7, repeated: false, packed: false, optional: true, mapKey: false, map: false },
+{ number: 14, name: "flags", kind: "message", message: 2, repeated: true, packed: false, optional: false, mapKey: false, map: true },
+{ number: 15, name: "unsignedKeys", kind: "message", message: 5, repeated: true, packed: false, optional: false, mapKey: false, map: true },
+{ number: 16, name: "signedKeys", kind: "message", message: 4, repeated: true, packed: false, optional: false, mapKey: false, map: true },
 ] },
 { fields: [
-{ number: 1, name: "key", kind: "int32", repeated: false, optional: false, mapKey: true, map: false },
-{ number: 2, name: "value", kind: "bytes", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "key", kind: "int32", repeated: false, packed: false, optional: false, mapKey: true, map: false },
+{ number: 2, name: "value", kind: "bytes", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "key", kind: "bool", repeated: false, optional: false, mapKey: true, map: false },
-{ number: 2, name: "value", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "key", kind: "bool", repeated: false, packed: false, optional: false, mapKey: true, map: false },
+{ number: 2, name: "value", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "key", kind: "string", repeated: false, optional: false, mapKey: true, map: false },
-{ number: 2, name: "value", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "key", kind: "string", repeated: false, packed: false, optional: false, mapKey: true, map: false },
+{ number: 2, name: "value", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "key", kind: "int64", repeated: false, optional: false, mapKey: true, map: false },
-{ number: 2, name: "value", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "key", kind: "int64", repeated: false, packed: false, optional: false, mapKey: true, map: false },
+{ number: 2, name: "value", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "key", kind: "uint64", repeated: false, optional: false, mapKey: true, map: false },
-{ number: 2, name: "value", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "key", kind: "uint64", repeated: false, packed: false, optional: false, mapKey: true, map: false },
+{ number: 2, name: "value", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "text", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "text", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "infinity", kind: "double", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 2, name: "notANumber", kind: "float", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 3, name: "maximumFixed", kind: "fixed64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 4, name: "minimumFixed", kind: "sfixed64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 5, name: "minimumZigzag", kind: "sint64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 6, name: "maximumFixed32", kind: "fixed32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 7, name: "minimumFixed32", kind: "sfixed32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 8, name: "maximumUnsigned", kind: "uint32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 9, name: "minimumSigned", kind: "int32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 10, name: "truth", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 11, name: "details", kind: "message", message: 8, repeated: true, optional: false, mapKey: false, map: false },
+{ number: 1, name: "infinity", kind: "double", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 2, name: "notANumber", kind: "float", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 3, name: "maximumFixed", kind: "fixed64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 4, name: "minimumFixed", kind: "sfixed64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 5, name: "minimumZigzag", kind: "sint64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 6, name: "maximumFixed32", kind: "fixed32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 7, name: "minimumFixed32", kind: "sfixed32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 8, name: "maximumUnsigned", kind: "uint32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 9, name: "minimumSigned", kind: "int32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 10, name: "truth", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 11, name: "details", kind: "message", message: 8, repeated: true, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "URLValue", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "URLValue", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
 ] },
 ];
 const message_0: MessageCodec<codec_0.Item> = {
-encode: value => codec_0.Item.encode(value).finish(), decode: bytes => codec_0.Item.decode(bytes),
+encode: value => codec_0.Item.encode(value), decode: bytes => codec_0.Item.decode(bytes),
 validate: (value, limits) => validateValue(value, 0, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 0, messageShapes, limits),
 };
 const message_6: MessageCodec<codec_0.Label> = {
-encode: value => codec_0.Label.encode(value).finish(), decode: bytes => codec_0.Label.decode(bytes),
+encode: value => codec_0.Label.encode(value), decode: bytes => codec_0.Label.decode(bytes),
 validate: (value, limits) => validateValue(value, 6, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 6, messageShapes, limits),
 };
-const message_7: MessageCodec<codec_2.Metrics> = {
-encode: value => codec_2.Metrics.encode(value).finish(), decode: bytes => codec_2.Metrics.decode(bytes),
+const message_7: MessageCodec<codec_1.Metrics> = {
+encode: value => codec_1.Metrics.encode(value), decode: bytes => codec_1.Metrics.decode(bytes),
 validate: (value, limits) => validateValue(value, 7, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 7, messageShapes, limits),
 };
-const message_8: MessageCodec<codec_2.Metrics_Detail> = {
-encode: value => codec_2.Metrics_Detail.encode(value).finish(), decode: bytes => codec_2.Metrics_Detail.decode(bytes),
+const message_8: MessageCodec<codec_1.Metrics_Detail> = {
+encode: value => codec_1.Metrics_Detail.encode(value), decode: bytes => codec_1.Metrics_Detail.decode(bytes),
 validate: (value, limits) => validateValue(value, 8, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 8, messageShapes, limits),
 };
 const message_9: MessageCodec<void> = {
-encode: () => codec_1.Empty.encode({}).finish(), decode: bytes => { codec_1.Empty.decode(bytes); },
+encode: () => new Uint8Array(0), decode: bytes => { if (bytes.byteLength !== 0) throw new IpcError('invalid-payload', 'Empty requires empty bytes'); },
 validate: value => { if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); },
 validateBytes: (bytes, limits) => validateMessage(bytes, 9, messageShapes, limits),
 };

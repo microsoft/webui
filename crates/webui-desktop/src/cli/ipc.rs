@@ -48,10 +48,6 @@ struct GenerateArgs {
     /// Protobuf compiler executable, if it is not on PATH
     #[arg(long)]
     protoc: Option<PathBuf>,
-
-    /// Pinned protoc-gen-ts_proto executable, if it is not on PATH
-    #[arg(long = "ts-proto-plugin")]
-    ts_proto_plugin: Option<PathBuf>,
 }
 
 pub(super) fn execute(args: IpcArgs) -> Result<()> {
@@ -69,7 +65,6 @@ fn generate(args: GenerateArgs) -> Result<()> {
         lock_file: args.lock_file,
         check: args.check,
         protoc: args.protoc,
-        ts_proto_plugin: args.ts_proto_plugin,
     };
     webui_desktop_build::generate(&config)
         .with_context(|| "Desktop IPC binding generation failed")?;

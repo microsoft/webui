@@ -22,9 +22,9 @@ pub struct GenerateConfig {
     pub roots: Vec<PathBuf>,
     /// Protobuf import search directories.
     pub includes: Vec<PathBuf>,
-    /// Destination for `ipc.rs`, `ipc_messages.rs`, and prost modules.
+    /// Destination for `ipc.rs`, `ipc_messages.rs`, and generated payload codecs.
     pub rust_out: PathBuf,
-    /// Destination for `ipc.ts` and ts-proto modules.
+    /// Destination for `ipc.ts`, `ipc-runtime.ts`, and generated payload codecs.
     pub ts_out: PathBuf,
     /// Checked-in compatibility history, conventionally `ipc-schema.lock.json`.
     pub lock_file: PathBuf,
@@ -32,8 +32,6 @@ pub struct GenerateConfig {
     pub check: bool,
     /// Explicit protoc executable, otherwise `PROTOC`, then `protoc` on PATH.
     pub protoc: Option<PathBuf>,
-    /// Explicit ts-proto 2.12.3 plugin, or `protoc-gen-ts_proto` on PATH.
-    pub ts_proto_plugin: Option<PathBuf>,
 }
 
 /// Successfully generated (or verified) artifact destinations.
@@ -55,7 +53,7 @@ pub struct GeneratedFiles {
 
 /// Compile, validate, and generate one coherent Rust/TypeScript IPC contract.
 ///
-/// Requires installed protoc and ts-proto 2.12.3. No tools are downloaded.
+/// Requires installed protoc. No tools are downloaded.
 /// `check` reports drift without rewriting output or compatibility history.
 pub fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, GenerateError> {
     compiler::generate(config)

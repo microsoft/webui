@@ -6,7 +6,6 @@
 
 use futures_executor::block_on;
 use futures_util::FutureExt;
-use prost::Message;
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -22,12 +21,35 @@ use webui_desktop::{
     DesktopHttpMethod,
 };
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Item {
-    #[prost(uint64, tag = "1")]
     id: u64,
-    #[prost(bytes = "vec", tag = "2")]
     bytes: Vec<u8>,
+}
+impl IpcCodec for Item {
+    fn encode_ipc(&self) -> Vec<u8> {
+        let mut writer = PayloadWriter::with_capacity(self.bytes.len() + 16);
+        if self.id != 0 {
+            writer.uint64(1, self.id);
+        }
+        if !self.bytes.is_empty() {
+            writer.bytes(2, &self.bytes);
+        }
+        writer.finish()
+    }
+
+    fn decode_ipc(bytes: &[u8]) -> Result<Self, IpcError> {
+        let mut item = Self::default();
+        let mut reader = WireReader::new(bytes);
+        while let Some(field) = reader.next_field()? {
+            match field.number {
+                1 => item.id = field.uint64()?,
+                2 => item.bytes = field.bytes()?.to_vec(),
+                _ => {}
+            }
+        }
+        Ok(item)
+    }
 }
 static SHAPES: &[MessageShape] = &[
     MessageShape {
@@ -36,6 +58,7 @@ static SHAPES: &[MessageShape] = &[
                 number: 1,
                 kind: FieldKind::Uint64,
                 repeated: false,
+                packed: false,
                 oneof: None,
                 map_key: false,
             },
@@ -43,6 +66,7 @@ static SHAPES: &[MessageShape] = &[
                 number: 2,
                 kind: FieldKind::Bytes,
                 repeated: false,
+                packed: false,
                 oneof: None,
                 map_key: false,
             },
@@ -63,7 +87,7 @@ struct ValidationGate {
 static OUTBOUND_VALIDATION_GATE: Mutex<Option<ValidationGate>> = Mutex::new(None);
 fn sequencing_guard(bytes: &[u8], limits: &IpcLimits) -> Result<(), IpcError> {
     item_guard(bytes, limits)?;
-    let item = Item::decode(bytes).unwrap();
+    let item = Item::decode_ipc(bytes).unwrap();
     if item.id == 9999 {
         let gate = OUTBOUND_VALIDATION_GATE.lock().unwrap().take().unwrap();
         gate.started.send(()).unwrap();
@@ -326,6 +350,7 @@ fn generated_validation_checks_collections_oneofs_map_keys_and_numeric_ranges() 
                 number: 1,
                 kind: FieldKind::Uint32,
                 repeated: true,
+                packed: true,
                 oneof: None,
                 map_key: false,
             },
@@ -333,6 +358,7 @@ fn generated_validation_checks_collections_oneofs_map_keys_and_numeric_ranges() 
                 number: 2,
                 kind: FieldKind::String,
                 repeated: false,
+                packed: false,
                 oneof: Some(0),
                 map_key: true,
             },
@@ -340,6 +366,7 @@ fn generated_validation_checks_collections_oneofs_map_keys_and_numeric_ranges() 
                 number: 3,
                 kind: FieldKind::String,
                 repeated: false,
+                packed: false,
                 oneof: Some(0),
                 map_key: false,
             },
@@ -359,8 +386,11 @@ fn generated_validation_checks_collections_oneofs_map_keys_and_numeric_ranges() 
         id: u64::MAX,
         bytes: vec![0xaa; 256 * 1024],
     };
-    item_guard(&item.encode_to_vec(), &IpcLimits::default()).unwrap();
-    assert_eq!(Item::decode(item.encode_to_vec().as_slice()).unwrap(), item);
+    item_guard(&item.encode_ipc(), &IpcLimits::default()).unwrap();
+    assert_eq!(
+        Item::decode_ipc(item.encode_ipc().as_slice()).unwrap(),
+        item
+    );
 }
 
 struct Wake(mpsc::Sender<()>);
@@ -414,7 +444,7 @@ fn removed_transfer_paths_reject_without_disrupting_typed_ipc() {
     );
     let response = peer.next_frame();
     assert_eq!(response.kind, Kind::Result as i32);
-    assert_eq!(response.body, Some(Body::Payload(item.encode_to_vec())));
+    assert_eq!(response.body, Some(Body::Payload(item.encode_ipc())));
 }
 
 fn hello() -> Hello {
@@ -513,7 +543,7 @@ impl Peer {
             kind: kind as i32,
             method_id: method,
             timeout_ms: if kind == Kind::Request { 30_000 } else { 0 },
-            body: Some(Body::Payload(item.encode_to_vec())),
+            body: Some(Body::Payload(item.encode_ipc())),
         }
     }
     fn response(&self, id: u64, kind: Kind, body: Option<Body>) -> IpcFrame {
@@ -708,7 +738,7 @@ fn acknowledged_void_rpc_waits_for_handler_while_notification_waits_only_for_acc
     let Some(Body::Payload(bytes)) = outgoing.body else {
         panic!("missing notification bytes");
     };
-    assert_eq!(Item::decode(bytes.as_slice()).unwrap(), payload);
+    assert_eq!(Item::decode_ipc(bytes.as_slice()).unwrap(), payload);
     assert_eq!(
         peer.post(peer.response(outgoing.id, Kind::Accept, None)),
         204
@@ -733,7 +763,7 @@ fn renderer_rpc_decodes_on_worker_and_unknown_error_codes_map_to_transport() {
         peer.post(peer.response(
             request.id,
             Kind::Result,
-            Some(Body::Payload(item.encode_to_vec()))
+            Some(Body::Payload(item.encode_ipc()))
         )),
         204
     );
@@ -954,7 +984,7 @@ fn nested_rpc_reenters_single_worker_and_opposite_direction_ids_do_not_collide()
                         id: 3,
                         bytes: Vec::new()
                     }
-                    .encode_to_vec()
+                    .encode_ipc()
                 ))
             )
         ),
@@ -1810,7 +1840,7 @@ fn native_owned_result_body_keeps_its_credit_after_navigation_and_close() {
     let Some(Body::Payload(payload)) = frame.body else {
         panic!("missing binary reply");
     };
-    assert_eq!(Item::decode(payload.as_slice()).unwrap(), item);
+    assert_eq!(Item::decode_ipc(payload.as_slice()).unwrap(), item);
     eventually(|| peer.owner.window().stats().worker_tasks == 0);
     assert_eq!(peer.owner.window().stats().admitted_input_bytes, 0);
     assert_eq!(peer.owner.window().stats().retained_bytes, encoded_size);

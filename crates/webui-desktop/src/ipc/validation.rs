@@ -50,7 +50,7 @@ pub struct MessageShape {
     /// Schema fields, including map-entry messages.
     pub fields: &'static [FieldShape],
 }
-/// Generated validation metadata. Packed numeric fields use `repeated = true`.
+/// Generated validation metadata.
 pub struct FieldShape {
     /// Protobuf field tag.
     pub number: u32,
@@ -58,6 +58,8 @@ pub struct FieldShape {
     pub kind: FieldKind,
     /// Whether collection entries must be counted, including packed values.
     pub repeated: bool,
+    /// Whether a repeated scalar field accepts packed wire encoding.
+    pub packed: bool,
     /// Local oneof group index.
     pub oneof: Option<u32>,
     /// True for the key field in a map-entry message.
@@ -100,7 +102,7 @@ pub fn validate_message(
             }
         }
         let scalar_wire = expected(rule.kind);
-        if rule.repeated && wire == 2 && scalar_wire != 2 {
+        if rule.repeated && rule.packed && wire == 2 && scalar_wire != 2 {
             let mut packed = data;
             while !packed.is_empty() {
                 let value = field(&mut packed, scalar_wire)?;
@@ -246,6 +248,47 @@ pub fn decode_frame(bytes: &[u8], limits: &IpcLimits) -> Result<IpcFrame, IpcErr
     validate_frame(&frame, limits)?;
     Ok(frame)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_message, FieldKind, FieldShape, MessageShape};
+    use crate::ipc::IpcLimits;
+
+    const REPEATED_INT32: [FieldShape; 1] = [FieldShape {
+        number: 1,
+        kind: FieldKind::Int32,
+        repeated: true,
+        packed: false,
+        oneof: None,
+        map_key: false,
+    }];
+    const PACKED_INT32: [FieldShape; 1] = [FieldShape {
+        packed: true,
+        ..REPEATED_INT32[0]
+    }];
+    const NON_PACKED_MESSAGES: [MessageShape; 1] = [MessageShape {
+        fields: &REPEATED_INT32,
+    }];
+    const PACKED_MESSAGES: [MessageShape; 1] = [MessageShape {
+        fields: &PACKED_INT32,
+    }];
+
+    #[test]
+    fn repeated_scalar_respects_packed_metadata() {
+        let packed_bytes = [0x0a, 0x02, 0x01, 0x02];
+        assert!(
+            validate_message(&packed_bytes, 0, &PACKED_MESSAGES, &IpcLimits::default()).is_ok()
+        );
+        assert!(validate_message(
+            &packed_bytes,
+            0,
+            &NON_PACKED_MESSAGES,
+            &IpcLimits::default()
+        )
+        .is_err());
+    }
+}
+
 fn validate_frame(frame: &IpcFrame, limits: &IpcLimits) -> Result<(), IpcError> {
     if frame.version != IPC_VERSION {
         return Err(fail(IpcErrorCode::UnsupportedVersion));

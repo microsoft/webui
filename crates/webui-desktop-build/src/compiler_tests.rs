@@ -28,54 +28,6 @@ fn only_windows_drive_verbatim_prefixes_are_adapted() {
 }
 
 #[test]
-fn windows_batch_plugin_uses_isolated_search_without_process_mutation() {
-    let dir = tempfile::Builder::new()
-        .prefix("tool paths & spaces ")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
-        .unwrap();
-    let plugin = dir.path().join("protoc-gen-ts_proto.cmd");
-    fs::write(&plugin, b"not executed by this argument-level test").unwrap();
-    let cwd = std::env::current_dir().unwrap();
-    let path = std::env::var_os("PATH");
-    let mut command = Command::new("protoc");
-    let workdir = dir.path().join("isolated working directory");
-    fs::create_dir(&workdir).unwrap();
-    tools::windows_shim(&mut command, &plugin, &workdir).unwrap();
-    assert_eq!(command.get_current_dir(), Some(workdir.as_path()));
-    assert!(!command
-        .get_args()
-        .any(|arg| arg.to_string_lossy().starts_with("--plugin=")));
-    let child_path = command
-        .get_envs()
-        .find(|(key, _)| *key == "PATH")
-        .unwrap()
-        .1
-        .unwrap();
-    assert_eq!(
-        std::env::split_paths(child_path).next().unwrap(),
-        tools::protoc_path(dir.path()).unwrap()
-    );
-    assert_eq!(
-        command
-            .get_envs()
-            .find(|(key, _)| *key == "PATHEXT")
-            .unwrap()
-            .1
-            .unwrap(),
-        ".COM;.EXE;.BAT;.CMD"
-    );
-    assert_eq!(std::env::current_dir().unwrap(), cwd);
-    assert_eq!(std::env::var_os("PATH"), path);
-    fs::write(dir.path().join("protoc-gen-ts_proto.exe"), b"shadow").unwrap();
-    assert_eq!(
-        tools::windows_shim(&mut Command::new("protoc"), &plugin, &workdir)
-            .unwrap_err()
-            .code(),
-        "ipc-plugin-shadow"
-    );
-}
-
-#[test]
 fn compiler_options_keep_paths_with_spaces_in_one_argument() {
     let dir = tempfile::Builder::new()
         .prefix("output paths & spaces ")

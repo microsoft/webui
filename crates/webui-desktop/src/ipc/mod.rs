@@ -10,6 +10,7 @@
 
 mod admission;
 mod bridge;
+mod codec;
 mod credentials;
 mod engine;
 mod error;
@@ -23,6 +24,7 @@ pub mod wire;
 
 pub use admission::DocumentActivation;
 pub use bridge::*;
+pub use codec::*;
 pub use error::*;
 pub use limits::*;
 pub use registry::*;

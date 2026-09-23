@@ -85,14 +85,17 @@ fn current_artifact_symlink_never_overwrites_external_data() {
 fn current_parent_symlink_is_rejected_even_when_bytes_match() {
     let (dir, mut cfg) = temporary();
     generate(&cfg).unwrap();
-    let parent = cfg.ts_out.join("google/protobuf");
+    let parent = cfg.ts_out.clone();
     let elsewhere = dir.path().join("unrelated-directory");
     fs::rename(&parent, &elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &parent).unwrap();
-    let original = fs::read(elsewhere.join("empty.ts")).unwrap();
+    let original = fs::read(elsewhere.join("application.ts")).unwrap();
     cfg.check = true;
     let result = generate(&cfg);
-    assert_eq!(fs::read(elsewhere.join("empty.ts")).unwrap(), original);
+    assert_eq!(
+        fs::read(elsewhere.join("application.ts")).unwrap(),
+        original
+    );
     assert_eq!(result.unwrap_err().code(), "ipc-output-path");
 }
 

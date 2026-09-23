@@ -2227,8 +2227,8 @@ dependencies = [
 name = "microsoft-webui-desktop-build"
 version = "0.0.29"
 dependencies = [
+ "microsoft-webui-desktop",
  "prost",
- "prost-build",
  "prost-reflect",
  "prost-types",
  "serde",

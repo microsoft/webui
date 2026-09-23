@@ -20,7 +20,7 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<(String, String), 
     let files: BTreeSet<_> = contract
         .messages
         .iter()
-        .filter(|m| !m.map_entry)
+        .filter(|m| !m.map_entry && m.name != EMPTY)
         .map(|m| m.file.as_str())
         .collect();
     let files: BTreeMap<_, _> = files.into_iter().enumerate().map(|(i, f)| (f, i)).collect();
@@ -46,13 +46,13 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<(String, String), 
         .enumerate()
         .filter(|(_, m)| !m.map_entry)
     {
-        let codec = format!("codec_{}.{}", files[msg.file.as_str()], msg.ts);
         let ty = ts_type(msg, &files);
         writeln!(out, "const message_{i}: MessageCodec<{ty}> = {{").ok();
         if msg.name == EMPTY {
-            writeln!(out, "encode: () => {codec}.encode({{}}).finish(), decode: bytes => {{ {codec}.decode(bytes); }},\nvalidate: value => {{ if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); }},").ok();
+            writeln!(out, "encode: () => new Uint8Array(0), decode: bytes => {{ if (bytes.byteLength !== 0) throw new IpcError('invalid-payload', 'Empty requires empty bytes'); }},\nvalidate: value => {{ if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); }},").ok();
         } else {
-            writeln!(out, "encode: value => {codec}.encode(value).finish(), decode: bytes => {codec}.decode(bytes),\nvalidate: (value, limits) => validateValue(value, {i}, messageShapes, limits),").ok();
+            let codec = format!("codec_{}.{}", files[msg.file.as_str()], msg.ts);
+            writeln!(out, "encode: value => {codec}.encode(value), decode: bytes => {codec}.decode(bytes),\nvalidate: (value, limits) => validateValue(value, {i}, messageShapes, limits),").ok();
         }
         writeln!(out, "validateBytes: (bytes, limits) => validateMessage(bytes, {i}, messageShapes, limits),\n}};").ok();
     }
@@ -126,7 +126,7 @@ fn emit_shapes(out: &mut String, contract: &Contract) -> Result<(), GenerateErro
                 .as_ref()
                 .map(|n| format!(", oneof: {:?}", ts_field(n)))
                 .unwrap_or_default();
-            writeln!(out, "{{ number: {}, name: {:?}, kind: {:?}{child}, repeated: {}, optional: {}, mapKey: {}, map: {}{oneof} }},", field.number, ts_field(&field.name), field.kind, field.repeated, field.optional, field.map_key, field.map).ok();
+            writeln!(out, "{{ number: {}, name: {:?}, kind: {:?}{child}, repeated: {}, packed: {}, optional: {}, mapKey: {}, map: {}{oneof} }},", field.number, ts_field(&field.name), field.kind, field.repeated, field.packed, field.optional, field.map_key, field.map).ok();
         }
         out.push_str("] },\n");
     }

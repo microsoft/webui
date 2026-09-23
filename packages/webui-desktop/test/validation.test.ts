@@ -3,10 +3,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BinaryWriter } from '@bufbuild/protobuf/wire';
 import { defaultLimits, validateValue, validateMessage, type MessageShape } from '../src/index.js';
 import { decodeFrame } from '../src/framing.js';
-import { BoundaryReader, readDelimited, readUint32, readUint64, skipField } from '../src/boundary.js';
+import { BoundaryReader, PayloadWriter, readDelimited, readUint32, readUint64, skipField } from '../src/boundary.js';
 import { item, itemCodec, shapes, frame, IpcFrame, Kind } from './helpers.js';
 
 test('generated codecs preserve extreme integers and 256 KiB bytes exactly', () => {
@@ -31,10 +30,19 @@ test('early scalar validation rejects narrowing, wrong bytes, and out-of-range b
 test('wire guard rejects groups, malformed fields and bounded collections before decode', () => {
   assert.throws(() => validateMessage(new Uint8Array([11, 12]), 0, shapes, defaultLimits));
   assert.throws(() => validateMessage(new Uint8Array([26, 50, 1]), 0, shapes, defaultLimits));
-  const many = new BinaryWriter();
-  for (let i = 0; i < 5; i++) many.uint32(8).uint64(1n);
+  const many = new PayloadWriter();
+  for (let i = 0; i < 5; i++) many.uint64(1, 1n);
   const repeated: MessageShape[] = [{ fields: [{ ...shapes[0]!.fields[0]!, repeated: true }] }];
   assert.throws(() => validateMessage(many.finish(), 0, repeated, { ...defaultLimits, maxCollectionEntriesPerMessage: 4 }));
+});
+
+test('wire guard accepts packed scalars only when schema marks the field packed', () => {
+  const packed = new PayloadWriter().bytesField(1, rawVarints(1n, 2n)).finish();
+  const unpacked = new PayloadWriter().int32(1, 1).int32(1, 2).finish();
+  const field = { number: 1, name: 'values', kind: 'int32', repeated: true, optional: false, mapKey: false };
+  validateMessage(unpacked, 0, [{ fields: [field] }], defaultLimits);
+  validateMessage(packed, 0, [{ fields: [{ ...field, packed: true }] }], defaultLimits);
+  assert.throws(() => validateMessage(packed, 0, [{ fields: [field] }], defaultLimits), { code: 'invalid-payload' });
 });
 
 test('prototype-like Map keys and oneof conflicts validate on value and wire paths', () => {
@@ -51,7 +59,11 @@ test('prototype-like Map keys and oneof conflicts validate on value and wire pat
   assert.throws(() => validateValue({ values: new Map([['large', 1n]]) }, 0, messages, {
     ...defaultLimits, maxFrameBytes: 4,
   }), { code: 'payload-too-large' });
-  const bytes = new BinaryWriter().uint32(10).fork().uint32(10).string('constructor').uint32(16).uint64(1n).join().finish();
+  const entry = new PayloadWriter();
+  entry.string(1, 'constructor').uint64(2, 1n);
+  const mapBytes = new PayloadWriter();
+  mapBytes.bytesField(1, entry.finish());
+  const bytes = mapBytes.finish();
   validateMessage(bytes, 0, messages, defaultLimits);
   const oneof: MessageShape[] = [{ fields: [
     { number: 1, name: 'a', kind: 'string', oneof: 'choice', repeated: false, optional: false, mapKey: false },
@@ -59,7 +71,7 @@ test('prototype-like Map keys and oneof conflicts validate on value and wire pat
   ] }];
   validateValue({ choice: { $case: 'a', value: 'ok' } }, 0, oneof, defaultLimits);
   assert.throws(() => validateValue({ choice: { $case: 'missing', value: 'bad' } }, 0, oneof, defaultLimits));
-  assert.throws(() => validateMessage(new BinaryWriter().uint32(10).string('a').uint32(18).string('b').finish(), 0, oneof, defaultLimits));
+  assert.throws(() => validateMessage(new PayloadWriter().string(1, 'a').string(2, 'b').finish(), 0, oneof, defaultLimits));
 });
 
 test('envelope rejects ambiguous body, illegal kind, groups and malformed lengths', () => {
@@ -93,8 +105,8 @@ test('wire guard prevents uint32 and length-prefix narrowing before generated de
   const messages: MessageShape[] = [{ fields: [
     { number: 1, name: 'value', kind: 'uint32', repeated: false, optional: false, mapKey: false },
   ] }];
-  assert.throws(() => validateMessage(new BinaryWriter().uint32(8).uint64(0x100000001n).finish(), 0, messages, defaultLimits));
-  assert.throws(() => validateMessage(new BinaryWriter().uint32(18).uint64(0x100000000n).finish(), 0, messages, defaultLimits));
+  assert.throws(() => validateMessage(new PayloadWriter().uint64(1, 0x100000001n).finish(), 0, messages, defaultLimits));
+  assert.throws(() => validateMessage(rawVarints(18n, 0x100000000n), 0, messages, defaultLimits));
 });
 
 test('bigint Map keys, recursive values and schema depth limits', () => {
@@ -141,7 +153,7 @@ test('Map keys preserve scalar types and full integer ranges without coercion', 
 });
 
 test('raw varints reject u64 overflow, excess bytes and truncation before codec narrowing', () => {
-  const maximum = new BinaryWriter().uint64(0xffffffffffffffffn).finish();
+  const maximum = rawVarints(0xffffffffffffffffn);
   assert.equal(readUint64(new BoundaryReader(maximum)), 0xffffffffffffffffn);
   const overflow = new Uint8Array(10).fill(128);
   overflow[9] = 2; // 2^64, which the unguarded codec truncates to zero.
@@ -166,7 +178,20 @@ test('raw varints reject u64 overflow, excess bytes and truncation before codec 
     bytes[0] = 26; // Length-delimited payload length uses the same raw guard.
     assert.throws(() => validateMessage(bytes, 0, shapes, defaultLimits), { code: 'invalid-payload' });
   }
-  const valid = new BinaryWriter().uint32(8).uint64(0xffffffffffffffffn).finish();
+  const valid = new PayloadWriter().uint64(1, 0xffffffffffffffffn).finish();
   itemCodec.validateBytes(valid, defaultLimits);
   assert.equal(itemCodec.decode(valid).id, 0xffffffffffffffffn);
 });
+
+function rawVarints(...values: bigint[]): Uint8Array {
+  const bytes: number[] = [];
+  for (const value of values) {
+    let current = BigInt.asUintN(64, value);
+    while (current >= 0x80n) {
+      bytes.push(Number(current & 0x7fn) | 0x80);
+      current >>= 7n;
+    }
+    bytes.push(Number(current));
+  }
+  return new Uint8Array(bytes);
+}

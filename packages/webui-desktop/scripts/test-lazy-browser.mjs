@@ -19,7 +19,6 @@ const result = await build({
   target: 'es2022', minify: true, metafile: true,
   alias: {
     '@microsoft/webui-desktop': fileURLToPath(new URL('src/index.ts', root)),
-    '@bufbuild/protobuf/wire': fileURLToPath(new URL('node_modules/@bufbuild/protobuf/dist/esm/wire/index.js', root)),
   },
 });
 const files = new Map(result.outputFiles.map(file => [`/${basename(file.path)}`, file.contents]));

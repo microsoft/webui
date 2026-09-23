@@ -4,9 +4,8 @@
 use super::{
     error::fail,
     session::{notification_callback, Callback},
-    IpcError, IpcErrorCode, IpcFuture, IpcLimits, NotificationContext, RequestContext,
+    IpcCodec, IpcError, IpcErrorCode, IpcFuture, IpcLimits, NotificationContext, RequestContext,
 };
-use prost::Message;
 use std::{collections::HashMap, future::Future, sync::Arc};
 
 /// Rust receiver marker.
@@ -45,10 +44,10 @@ pub struct Renderer;
 /// fn invalid(session: &IpcSession) { session.call::<Label>("not a request", CallOptions::default()); }
 /// ```
 pub trait Rpc: Send + Sync + 'static {
-    /// Generated request protobuf type.
-    type Request: Message + Default + Send + 'static;
-    /// Generated response protobuf type.
-    type Response: Message + Default + Send + 'static;
+    /// Generated request payload type.
+    type Request: IpcCodec;
+    /// Generated response payload type.
+    type Response: IpcCodec;
     /// Endpoint implementing this method.
     type Receiver: Send + Sync + 'static;
     /// Stable application method ID.
@@ -56,8 +55,8 @@ pub trait Rpc: Send + Sync + 'static {
 }
 /// A generated notification, never an RPC.
 pub trait Event: Send + Sync + 'static {
-    /// Generated event protobuf type.
-    type Payload: Message + Default + Clone + Send + 'static;
+    /// Generated event payload type.
+    type Payload: IpcCodec + Clone;
     /// Endpoint receiving this event.
     type Receiver: Send + Sync + 'static;
     /// Stable application event ID.
@@ -186,13 +185,12 @@ impl IpcRegistry {
                 let handler = Arc::clone(&handler);
                 Box::pin(async move {
                     (method.validate_request)(&bytes, &limits)?;
-                    let request = M::Request::decode(bytes.as_slice())
-                        .map_err(|_| fail(IpcErrorCode::InvalidPayload))?;
+                    let request = M::Request::decode_ipc(bytes.as_slice())?;
                     let response = handler(ctx, request).await?;
-                    if response.encoded_len() > limits.max_frame_bytes.saturating_sub(64) {
+                    let payload = response.encode_ipc();
+                    if payload.len() > limits.max_frame_bytes.saturating_sub(64) {
                         return Err(fail(IpcErrorCode::PayloadTooLarge));
                     }
-                    let payload = response.encode_to_vec();
                     let validate = method
                         .validate_response
                         .ok_or_else(|| fail(IpcErrorCode::InvalidPayload))?;

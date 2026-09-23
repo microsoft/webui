@@ -6,59 +6,58 @@
 import type { AppConnection, RendererHandlers } from './ipc.js';
 import { connect, validateMessage, validateValue, IpcError, type MessageShape, type MessageCodec, type ConnectionSchema, type RuntimeConnection, type IpcTransport, type RequestContext } from '@microsoft/webui-desktop';
 import * as codec_0 from "./application.js";
-import * as codec_1 from "./google/protobuf/empty.js";
 export const schemaHash = "ab014d39db1e9865769dbb911c250bee14c6bc4cc9d93d67324c39099b13342d";
 export const messageShapes: readonly MessageShape[] = [
 { fields: [
-{ number: 1, name: "value", kind: "uint64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 2, name: "phase", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "value", kind: "uint64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 2, name: "phase", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "id", kind: "uint64", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 2, name: "image", kind: "bytes", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 3, name: "phase", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "id", kind: "uint64", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 2, name: "image", kind: "bytes", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 3, name: "phase", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "text", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "text", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
-{ number: 1, name: "labels", kind: "uint32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 2, name: "changes", kind: "uint32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 3, name: "confirmations", kind: "uint32", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 4, name: "invalidRejected", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 5, name: "cancelled", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 6, name: "unsubscribed", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 7, name: "voidCompleted", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 8, name: "notificationAccepted", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 9, name: "handlerRejected", kind: "bool", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 10, name: "visibility", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
-{ number: 11, name: "userAgent", kind: "string", repeated: false, optional: false, mapKey: false, map: false },
+{ number: 1, name: "labels", kind: "uint32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 2, name: "changes", kind: "uint32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 3, name: "confirmations", kind: "uint32", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 4, name: "invalidRejected", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 5, name: "cancelled", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 6, name: "unsubscribed", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 7, name: "voidCompleted", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 8, name: "notificationAccepted", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 9, name: "handlerRejected", kind: "bool", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 10, name: "visibility", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
+{ number: 11, name: "userAgent", kind: "string", repeated: false, packed: false, optional: false, mapKey: false, map: false },
 ] },
 { fields: [
 ] },
 ];
 const message_0: MessageCodec<codec_0.Generation> = {
-encode: value => codec_0.Generation.encode(value).finish(), decode: bytes => codec_0.Generation.decode(bytes),
+encode: value => codec_0.Generation.encode(value), decode: bytes => codec_0.Generation.decode(bytes),
 validate: (value, limits) => validateValue(value, 0, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 0, messageShapes, limits),
 };
 const message_1: MessageCodec<codec_0.Item> = {
-encode: value => codec_0.Item.encode(value).finish(), decode: bytes => codec_0.Item.decode(bytes),
+encode: value => codec_0.Item.encode(value), decode: bytes => codec_0.Item.decode(bytes),
 validate: (value, limits) => validateValue(value, 1, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 1, messageShapes, limits),
 };
 const message_2: MessageCodec<codec_0.Label> = {
-encode: value => codec_0.Label.encode(value).finish(), decode: bytes => codec_0.Label.decode(bytes),
+encode: value => codec_0.Label.encode(value), decode: bytes => codec_0.Label.decode(bytes),
 validate: (value, limits) => validateValue(value, 2, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 2, messageShapes, limits),
 };
 const message_3: MessageCodec<codec_0.Report> = {
-encode: value => codec_0.Report.encode(value).finish(), decode: bytes => codec_0.Report.decode(bytes),
+encode: value => codec_0.Report.encode(value), decode: bytes => codec_0.Report.decode(bytes),
 validate: (value, limits) => validateValue(value, 3, messageShapes, limits),
 validateBytes: (bytes, limits) => validateMessage(bytes, 3, messageShapes, limits),
 };
 const message_4: MessageCodec<void> = {
-encode: () => codec_1.Empty.encode({}).finish(), decode: bytes => { codec_1.Empty.decode(bytes); },
+encode: () => new Uint8Array(0), decode: bytes => { if (bytes.byteLength !== 0) throw new IpcError('invalid-payload', 'Empty requires empty bytes'); },
 validate: value => { if (value !== undefined) throw new IpcError('invalid-payload', 'Empty requires undefined'); },
 validateBytes: (bytes, limits) => validateMessage(bytes, 4, messageShapes, limits),
 };

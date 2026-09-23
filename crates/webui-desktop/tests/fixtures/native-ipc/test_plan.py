@@ -22,7 +22,6 @@ class PlatformPlanTests(unittest.TestCase):
     def test_windows_portable(self):
         plan = platform_plan("win32")
         self.assertEqual(plan["cli"], "webui-desktop.exe")
-        self.assertEqual(plan["plugin"], "protoc-gen-ts_proto.cmd")
         self.assertEqual(plan["native_backend"], "WebView2")
         self.assertEqual(plan["package_target"], "windows-portable")
         self.assertEqual(PureWindowsPath("C:/package") / plan["resources"],

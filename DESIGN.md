@@ -6042,7 +6042,7 @@ Windows developer machine with the WebView2 Runtime installed.
 webui desktop run [APP] --state <FILE> [--servedir <DIR>] [shared build flags] [window flags]
 webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags]
 webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build]
-webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--ts-proto-plugin <PATH>] [--check]
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
 ```
 
 `run` builds from source paths, renders the startup HTML in process, creates the
@@ -6151,20 +6151,21 @@ Application IPC uses generated Rust/TypeScript interfaces over bounded binary
 transport. It does not embed Chromium's Mojo runtime. The separate lifecycle
 and window-control channels remain closed sets, not application message buses.
 
-`microsoft-webui-desktop-build` compiles proto3 descriptors with protoc,
-prost-build, prost-reflect and pinned ts-proto tooling. It emits Rust messages,
-role markers, host handler registration, renderer clients, TypeScript clients
-and receivers, validation metadata, a normalized schema hash and an ID-evolution
-lock. Compiler/reflection dependencies are build-time only.
+`microsoft-webui-desktop-build` compiles proto3 descriptors with protoc and
+build-time descriptor reflection. It emits WebUI-owned Rust and TypeScript
+payload codecs, role markers, host handler registration, renderer clients,
+TypeScript clients and receivers, validation metadata, a normalized schema hash
+and an ID-evolution lock. Rust owns the capability registry and policy; generated
+payload codecs are synchronous and monomorphic; JavaScript/TypeScript remains a
+thin facade over the platform-native transport. Compiler/reflection dependencies
+are build-time only.
 The CLI's JSON diagnostics preserve the generator's stable `ipc-*` code,
 actionable help, and filesystem path when available through contextual wrappers.
-Compiler selection uses explicit configuration, then `PROTOC`, then PATH.
+Compiler selection uses explicit `protoc` configuration, then `PROTOC`, then PATH.
 Canonical paths remain the basis for filesystem containment; Windows verbatim
-drive paths are adapted only at the subprocess boundary. Windows batch plugins
-run through protoc's batch-capable search mode in an isolated child directory
-with verified lookup precedence. No process-global directory or environment is
-changed. Generated TypeScript excludes host compiler-version comments while
-the generator/runtime dependency versions remain pinned.
+drive paths are adapted only at the subprocess boundary. No process-global
+directory or environment is changed. Generated TypeScript excludes host
+compiler-version comments.
 
 Generated `ipc.ts` is a runtime-free application facade: its type imports are
 erased, and only an explicit `connectDesktop()` dynamically loads the private

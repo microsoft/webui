@@ -11,7 +11,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use prost::Message as _;
 use prost_reflect::DescriptorPool;
 use sha2::{Digest, Sha256};
 
@@ -22,7 +21,6 @@ use crate::{
 };
 
 const DESCRIPTOR_LIMIT: u64 = 16 * 1024 * 1024;
-const TS_OPTIONS: &str = "forceLong=bigint,useMapType=true,outputServices=none,oneof=unions-value,useOptionals=messages,outputJsonMethods=false,outputPartialMethods=false,useExactTypes=true,esModuleInterop=true,importSuffix=.js,env=browser,annotateFilesWithVersion=false";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 mod tools;
@@ -67,10 +65,6 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
         NEXT.fetch_add(1, Ordering::Relaxed)
     )));
     fs::create_dir(&scratch.0).map_err(|e| io(&scratch.0, e))?;
-    let rust_stage = scratch.0.join("rust");
-    let ts_stage = scratch.0.join("ts");
-    fs::create_dir(&rust_stage).map_err(|e| io(&rust_stage, e))?;
-    fs::create_dir(&ts_stage).map_err(|e| io(&ts_stage, e))?;
     let roots = canonical(&config.roots)?;
     let sdk_include = scratch.0.join("include");
     let sdk_options = sdk_include.join("webui/ipc/options.proto");
@@ -146,50 +140,9 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
         Err(e) => return Err(e),
     };
     let lock = evolution::update(&contract, &hash, old.as_deref())?;
-    let mut fds = prost_types::FileDescriptorSet::decode(bytes.as_slice()).map_err(|e| {
-        schema(
-            "ipc-descriptor",
-            "protoc output",
-            e.to_string(),
-            "regenerate the descriptor set",
-        )
-    })?;
-    for file in &mut fds.file {
-        file.source_code_info = None;
-    }
-    fds.file.sort_by(|a, b| a.name.cmp(&b.name));
-    let ts_descriptor = scratch.0.join("normalized.bin");
-    fs::write(&ts_descriptor, fds.encode_to_vec()).map_err(|e| io(&ts_descriptor, e))?;
-    fds.file.retain(|f| model::application_file(f.name()));
-    let mut prost = prost_build::Config::new();
-    prost
-        .out_dir(&rust_stage)
-        .include_file("ipc_messages.rs")
-        .btree_map(["."]);
-    prost.compile_fds(fds).map_err(|e| io(&rust_stage, e))?;
-    let plugin = find_plugin(config.ts_proto_plugin.as_deref())?;
-    verify_plugin(&plugin)?;
-    let mut cmd = Command::new(&protoc);
-    tools::path_option(&mut cmd, "--descriptor_set_in=", &ts_descriptor)?;
-    tools::configure_plugin(
-        &mut cmd,
-        &plugin,
-        &fs::canonicalize(&scratch.0).map_err(|e| io(&scratch.0, e))?,
-    )?;
-    tools::path_option(&mut cmd, "--ts_proto_out=", &ts_stage)?;
-    cmd.arg(format!("--ts_proto_opt={TS_OPTIONS}"));
-    // Generate every application import, not just root files.
-    for file in pool.files().filter(|f| model::application_file(f.name())) {
-        cmd.arg(file.name());
-    }
-    // Explicit Empty generation is needed even when only imported.
-    if contract.messages.iter().any(|m| m.name == model::EMPTY) {
-        cmd.arg("google/protobuf/empty.proto");
-    }
-    run(&mut cmd, "ts-proto", "install ts-proto@2.12.3 and @bufbuild/protobuf@2.15.0; set GenerateConfig.ts_proto_plugin to its protoc-gen-ts_proto executable")?;
     let mut artifacts = BTreeMap::new();
-    collect(&rust_stage, &config.rust_out, &mut artifacts)?;
-    collect(&ts_stage, &config.ts_out, &mut artifacts)?;
+    artifacts.extend(emit::rust_payload(&contract, &config.rust_out));
+    artifacts.extend(emit::typescript_payload(&contract, &config.ts_out));
     let rust_wrapper = config.rust_out.join("ipc.rs");
     let ts_wrapper = config.ts_out.join("ipc.ts");
     let ts_runtime = config.ts_out.join("ipc-runtime.ts");
@@ -299,109 +252,6 @@ fn bounded_read(path: &Path) -> Result<Vec<u8>, GenerateError> {
         ));
     }
     fs::read(path).map_err(|e| io(path, e))
-}
-
-fn find_plugin(explicit: Option<&Path>) -> Result<PathBuf, GenerateError> {
-    if let Some(path) = explicit {
-        return fs::canonicalize(path).map_err(|e| io(path, e));
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(if cfg!(windows) {
-                "protoc-gen-ts_proto.cmd"
-            } else {
-                "protoc-gen-ts_proto"
-            });
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(GenerateError::Tool { tool: "ts-proto".into(), message: "protoc-gen-ts_proto is not on PATH".into(), help: "install ts-proto@2.12.3 and pass GenerateConfig.ts_proto_plugin (for pnpm: node_modules/.bin/protoc-gen-ts_proto)".into() })
-}
-
-fn verify_plugin(plugin: &Path) -> Result<(), GenerateError> {
-    for parent in plugin.ancestors().take(5) {
-        for path in [
-            parent.join("package.json"),
-            parent.join("ts-proto/package.json"),
-            parent.join("node_modules/ts-proto/package.json"),
-        ] {
-            let Ok(bytes) = fs::read(path) else { continue };
-            let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            if package["name"] == "ts-proto" {
-                if package["version"] == "2.12.3" {
-                    return verify_runtime(plugin);
-                }
-                return Err(schema("ipc-codegen-version", plugin.display().to_string(), "ts-proto version must be 2.12.3", "install the pinned compiler ts-proto@2.12.3 and runtime @bufbuild/protobuf@2.15.0"));
-            }
-        }
-    }
-    Err(schema(
-        "ipc-codegen-version",
-        plugin.display().to_string(),
-        "cannot verify ts-proto package version",
-        "point ts_proto_plugin at the installed ts-proto executable, not an opaque wrapper",
-    ))
-}
-
-fn verify_runtime(plugin: &Path) -> Result<(), GenerateError> {
-    for parent in plugin.ancestors().take(7) {
-        for path in [
-            parent.join("@bufbuild/protobuf/package.json"),
-            parent.join("node_modules/@bufbuild/protobuf/package.json"),
-        ] {
-            let Ok(bytes) = fs::read(path) else { continue };
-            let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            if package["name"] == "@bufbuild/protobuf" && package["version"] == "2.15.0" {
-                return Ok(());
-            }
-        }
-    }
-    Err(schema(
-        "ipc-runtime-version",
-        plugin.display().to_string(),
-        "cannot verify @bufbuild/protobuf 2.15.0 alongside ts-proto",
-        "install @bufbuild/protobuf@2.15.0 in the application containing the ts-proto plugin",
-    ))
-}
-
-fn collect(
-    stage: &Path,
-    destination: &Path,
-    files: &mut BTreeMap<PathBuf, Vec<u8>>,
-) -> Result<(), GenerateError> {
-    let mut dirs = vec![stage.to_owned()];
-    while let Some(dir) = dirs.pop() {
-        for entry in fs::read_dir(&dir).map_err(|e| io(&dir, e))? {
-            let path = entry.map_err(|e| io(&dir, e))?.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                let relative = path.strip_prefix(stage).map_err(|e| {
-                    schema(
-                        "ipc-output",
-                        path.display().to_string(),
-                        e.to_string(),
-                        "use disjoint generation directories",
-                    )
-                })?;
-                if relative == Path::new("google/protobuf/descriptor.ts")
-                    || relative == Path::new("webui/ipc/options.ts")
-                {
-                    continue;
-                }
-                let mut content = String::from("// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n\n");
-                content.push_str(&fs::read_to_string(&path).map_err(|e| io(&path, e))?);
-                files.insert(destination.join(relative), content.into_bytes());
-            }
-        }
-    }
-    Ok(())
 }
 
 fn json(value: &impl serde::Serialize) -> Result<Vec<u8>, GenerateError> {

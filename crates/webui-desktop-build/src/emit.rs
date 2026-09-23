@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod payload;
 mod rust;
 mod typescript;
 
@@ -10,6 +11,7 @@ use crate::{
     GenerateError,
 };
 
+pub(crate) use payload::{rust as rust_payload, typescript as typescript_payload};
 pub(crate) use rust::emit as rust;
 pub(crate) use typescript::emit as typescript;
 

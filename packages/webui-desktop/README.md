@@ -6,7 +6,7 @@ import Web Components, the framework, the router, or the Node addon.
 ## Application use
 
 Generate an application contract with `webui-desktop-build`, then bundle its
-`ipc.ts` and generated protobuf codecs with this package:
+`ipc.ts` and generated WebUI payload codecs with this package:
 
 ```ts
 import { createDesktopTransport } from '@microsoft/webui-desktop';
@@ -37,7 +37,7 @@ connection.close();
 ```
 
 Importing generated `ipc.ts` bindings does not load the desktop runtime or
-protobuf codecs. The first explicit `connectDesktop()` loads them; concurrent
+payload codecs. The first explicit `connectDesktop()` loads them; concurrent
 calls share the load but create independent connections. Type-only imports
 remain erased. No import connects, polls, retries, or grants native authority.
 Module-loading errors reject `connectDesktop()` unchanged, before transport
@@ -264,10 +264,11 @@ The TypeScript build emits normal ESM and declarations under `dist/`.
 - `dist/desktop-runtime.js`: self-contained ESM runtime for a reserved SDK asset.
 
 The canonical envelope source is
-`crates/webui-desktop/proto/webui_desktop.proto`. `generate-wire.mjs` runs installed
-`protoc` with pinned `ts-proto@2.12.3`; generated codecs use
-`@bufbuild/protobuf@2.15.0/wire`. No proto parser, compiler, Node API, base64 codec,
-or JSON application DTO code ships in the runtime.
+`crates/webui-desktop/proto/webui_desktop.proto`. `generate-wire.mjs` updates the
+fixed framework envelope helpers. Application payload codecs are emitted by
+`webui-desktop-build` and import only this package's WebUI-owned reader and
+writer helpers. No proto parser, compiler, Node API, base64 codec, third-party
+protobuf runtime, or JSON application DTO code ships in the runtime.
 
 Native embedding is an **explicit separate operation**, never a side effect of
 the package build:
@@ -283,6 +284,6 @@ and bundle modes. `--check` compares bytes without rewriting them. The parent
 workspace build should run `tsc && node scripts/build.mjs`; package manifest,
 publish wiring and native embedding are integration-owned.
 
-Tests use real `node:test`, generated protobuf codecs, bounded fake transports,
+Tests use real `node:test`, generated WebUI payload codecs, bounded fake transports,
 fake native channels, compile-time negative assertions, and the actual built
 IIFE in an isolated JavaScript realm. They do not launch or automate a GUI.

@@ -36,7 +36,7 @@ assert.deepEqual(save.request.decode(bytes), item);
 // and canonical re-encoding with the originating mature codec.
 const golden = new Uint8Array(readFileSync(new URL('../../webui-desktop/tests/fixtures/typed-ipc/golden.bin', import.meta.url)));
 assert.deepEqual(Item.decode(golden), item);
-assert.deepEqual(Item.encode(Item.decode(bytes)).finish(), bytes);
+assert.deepEqual(Item.encode(Item.decode(bytes)), bytes);
 assert.equal(save.response!.decode(new Uint8Array()), undefined);
 assert.deepEqual(save.response!.encode(undefined), new Uint8Array());
 assert.throws(() => save.request.validate({ ...item, id: 1 }, defaultLimits));

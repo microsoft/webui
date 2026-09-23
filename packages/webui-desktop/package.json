@@ -18,13 +18,10 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
   },
-  "dependencies": {
-    "@bufbuild/protobuf": "2.15.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
-    "ts-proto": "2.12.3",
     "typescript": "catalog:"
   },
   "publishConfig": {

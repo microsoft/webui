@@ -461,16 +461,14 @@ data. A native lifecycle event is not an application RPC response.
 
 ### Define and generate the contract
 
-Install the browser runtime and pinned generator tooling:
+Install the browser runtime. The host also needs `protoc`; the generator reports
+a missing compiler rather than downloading it silently.
 
 ```sh
 pnpm add @microsoft/webui-desktop
-pnpm add -D ts-proto@2.12.3 @bufbuild/protobuf@2.15.0
 ```
 
-The host also needs `protoc`. The generator reports a missing tool rather than
-downloading it silently. A minimal `schema/application.proto` can declare both
-directions:
+A minimal `schema/application.proto` can declare both directions:
 
 ```proto
 syntax = "proto3";
@@ -519,8 +517,7 @@ webui desktop ipc generate schema/application.proto \
   --include schema \
   --rust-out desktop/src/generated \
   --ts-out src/generated \
-  --lock schema/ipc-schema.lock.json \
-  --ts-proto-plugin node_modules/.bin/protoc-gen-ts_proto
+  --lock schema/ipc-schema.lock.json
 ```
 
 Use the same command with `--check` in CI to detect drift without rewriting
@@ -531,8 +528,8 @@ instead call `webui_desktop_build::generate`.
 
 Bundle the generated `ipc.ts` with the application:
 
-The generated bindings load the desktop runtime and protobuf codecs only when
-`connectDesktop()` is explicitly called. Concurrent calls share loading but
+The generated bindings load the desktop runtime and WebUI-owned payload codecs
+only when `connectDesktop()` is explicitly called. Concurrent calls share loading but
 create independent connections; importing types or bindings never connects.
 Enable ESM code splitting and deploy all emitted chunks to defer their transfer
 and parsing. Module-loading failures reject the returned promise without

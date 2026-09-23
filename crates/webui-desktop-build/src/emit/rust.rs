@@ -36,7 +36,7 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<String, GenerateEr
                 .oneof
                 .as_deref()
                 .and_then(|name| oneofs.iter().position(|n| *n == name));
-            writeln!(out, "FieldShape {{ number: {}, kind: {kind}, repeated: {}, oneof: {oneof:?}, map_key: {} }},", field.number, field.repeated, field.map_key).ok();
+            writeln!(out, "FieldShape {{ number: {}, kind: {kind}, repeated: {}, packed: {}, oneof: {oneof:?}, map_key: {} }},", field.number, field.repeated, field.packed, field.map_key).ok();
         }
         out.push_str("] },\n");
     }

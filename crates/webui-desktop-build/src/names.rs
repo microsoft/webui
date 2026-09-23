@@ -39,7 +39,7 @@ pub(crate) fn pascal(name: &str) -> String {
 }
 
 pub(crate) fn camel(name: &str) -> String {
-    // ts-proto's snakeToCamel preserves existing capitalization.
+    // Preserve existing capitalization after underscores for stable generated APIs.
     let mut out = String::new();
     let mut upper = false;
     for c in name.chars() {

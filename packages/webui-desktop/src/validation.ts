@@ -13,6 +13,7 @@ export interface FieldShape {
   readonly kind: string;
   readonly message?: number;
   readonly repeated: boolean;
+  readonly packed?: boolean;
   readonly optional: boolean;
   readonly oneof?: string;
   readonly mapKey: boolean;
@@ -150,7 +151,7 @@ function readScalar(reader: BoundaryReader, field: FieldShape): void {
   }
 }
 
-/** Iterative bounded wire guard before generated protobuf decoding. */
+/** Iterative bounded wire guard before generated payload decoding. */
 export function validateMessage(bytes: Uint8Array, root: number, messages: readonly MessageShape[], limits: IpcLimits): void {
   if (bytes.byteLength > limits.maxFrameBytes) throw new IpcError('payload-too-large');
   const stack = [{ bytes, shape: shapeAt(messages, root), depth: 1 }];
@@ -173,7 +174,7 @@ export function validateMessage(bytes: Uint8Array, root: number, messages: reado
           if (field.repeated && ++entries > limits.maxCollectionEntriesPerMessage) invalid();
           if (type !== 2 || current.depth >= limits.maxSchemaDepth) invalid();
           stack.push({ bytes: readDelimited(reader), shape: shapeAt(messages, field.message), depth: current.depth + 1 });
-        } else if (type === 2 && field.repeated && wireType(field.kind) !== 2) {
+        } else if (type === 2 && field.repeated && field.packed === true && wireType(field.kind) !== 2) {
           const packed = new BoundaryReader(readDelimited(reader));
           while (packed.pos < packed.len) {
             if (++entries > limits.maxCollectionEntriesPerMessage) invalid();

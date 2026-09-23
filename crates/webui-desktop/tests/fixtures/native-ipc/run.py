@@ -18,16 +18,16 @@ ROOT = FIXTURE.parents[4]
 
 def platform_plan(platform):
     plans = {
-        "darwin": ("", "", "WKWebView", "macos-app", "Contents/MacOS", "Contents/Resources/webui"),
-        "win32": (".exe", ".cmd", "WebView2", "windows-portable", "", "resources/webui"),
-        "linux": ("", "", "WebKitGTK", "linux-portable", "", "resources/webui"),
+        "darwin": ("", "WKWebView", "macos-app", "Contents/MacOS", "Contents/Resources/webui"),
+        "win32": (".exe", "WebView2", "windows-portable", "", "resources/webui"),
+        "linux": ("", "WebKitGTK", "linux-portable", "", "resources/webui"),
     }
     if platform not in plans:
         raise RuntimeError(f"unsupported native platform: {platform}")
-    suffix, shim, backend, target, executable_dir, resources = plans[platform]
+    suffix, backend, target, executable_dir, resources = plans[platform]
     return {
         "platform": platform, "executable": "webui-native-ipc-fixture" + suffix,
-        "cli": "webui-desktop" + suffix, "plugin": "protoc-gen-ts_proto" + shim,
+        "cli": "webui-desktop" + suffix,
         "native_backend": backend, "package_target": target,
         "executable_dir": executable_dir, "resources": resources,
     }
@@ -183,11 +183,10 @@ def main():
     artifacts = Path(tempfile.mkdtemp(prefix="native-", dir=runs))
     print(f"Artifacts: {artifacts}", flush=True)
     cli = ROOT / "target/debug" / plan["cli"]
-    plugin = ROOT / "packages/webui-desktop/node_modules/.bin" / plan["plugin"]
     command = [
         cli, "ipc", "generate", FIXTURE / "application.proto",
         "--rust-out", FIXTURE / "generated/rust", "--ts-out", FIXTURE / "generated/ts",
-        "--lock", FIXTURE / "ipc-schema.lock.json", "--ts-proto-plugin", plugin,
+        "--lock", FIXTURE / "ipc-schema.lock.json",
     ]
     execute([*command, "--check"])
     execute(["node", ROOT / "packages/webui-desktop/node_modules/typescript/bin/tsc",
