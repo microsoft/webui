@@ -6052,7 +6052,7 @@ command-line dependencies. The binary declares
 compile development tools.
 
 Portable modules inherit the workspace's `unsafe_code = "deny"` policy.
-Only target-gated native adapters and the opened-asset path verification helpers
+Only target-gated native adapters, Windows atomic state replacement, and the opened-asset path verification helpers
 allow unsafe code for their OS FFI boundaries. Physical package consolidation does not change the IPC wire format,
 bundle layout, or process isolation provided by the system webview.
 Native and custom backend errors cross the public API as
@@ -6834,3 +6834,15 @@ close commands therefore preserve `WindowCloseRequested` cancellation and the
 normal `WindowClosed` teardown. Titled windows retain AppKit's close behavior.
 
 When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, and effect features before native startup rather than silently ignoring them.
+
+Window-state writes publish complete sibling temporary files atomically.
+Windows uses `SetFileInformationByHandle(FileRenameInfoEx)` with replacement and
+POSIX semantics directly, rather than first attempting `MoveFileExW`. Existing
+reader handles retain the old snapshot while new opens see the replacement;
+concurrent readers must not encounter a delete-pending target. State storage
+therefore requires Windows 10 version 1607 or later and a filesystem supporting
+that operation, such as local NTFS. Unsupported replacement reports an
+actionable I/O error; there is no weaker rename fallback or permission-error
+suppression. Read-only targets remain protected, failed writes clean up only
+their own temporary file, and successful saves guarantee visibility rather
+than power-loss durability.

@@ -333,6 +333,12 @@ Set `remember_state: true` to request restoration of available window geometry.
 Position and placement remain platform-dependent. Invalid or off-screen saved
 geometry is not applied.
 
+On Windows, saving window state requires Windows 10 version 1607 or later and a
+filesystem supporting atomic replacement, such as local NTFS. Use the normal
+local app-data location when overriding the state directory is unnecessary.
+Unsupported storage returns an error rather than risking an unreadable state
+file during concurrent saves.
+
 ## Bundle contents
 
 `webui desktop build` writes an immutable bundle:

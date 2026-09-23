@@ -186,13 +186,15 @@ pub(super) fn save_window_state(hwnd: HWND, state: &FrameState) {
     ) else {
         return;
     };
-    let _ = store.save(&WindowState {
+    if let Err(error) = store.save(&WindowState {
         x: rect.left,
         y: rect.top,
         width,
         height,
         maximized,
-    });
+    }) {
+        eprintln!("WebUI: failed to persist window state: {error}");
+    }
 }
 
 /// Install the frame state pointer, returning any previously installed state.

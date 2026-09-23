@@ -132,8 +132,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let web_resource_requested = protocol::register_runtime_handler(
         &environment,
         &webview,
-        Arc::clone(&frame.runtime),
-        Arc::clone(&frame.executor),
+        &frame,
         std::rc::Rc::downgrade(&application_tasks),
         #[cfg(feature = "application-ipc")]
         Rc::downgrade(&ipc),

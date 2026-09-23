@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
+
 const MAX_STATE_BYTES: u16 = 4096;
 const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +100,10 @@ impl WindowStateStore {
     ///
     /// Readers see either complete version. This guarantees atomic visibility,
     /// not durability across power loss.
+    ///
+    /// On Windows, the state directory must support POSIX-style atomic rename
+    /// (Windows 10 version 1607 or later on a supported filesystem such as NTFS).
+    /// Unsupported filesystems return an error rather than weaken this guarantee.
     pub fn save(&self, state: &WindowState) -> Result<(), WindowStateError> {
         if let Some(parent) = self
             .path
@@ -111,8 +119,7 @@ impl WindowStateStore {
         // Close before rename or failure cleanup, including on Windows.
         drop(file);
         result.map_err(|source| io_error("writing", &temporary.path, source))?;
-        fs::rename(&temporary.path, &self.path)
-            .map_err(|source| io_error("replacing", &self.path, source))?;
+        replace_state(&temporary.path, &self.path)?;
         temporary.committed = true;
         Ok(())
     }
@@ -137,6 +144,14 @@ impl WindowStateStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn replace_state(source: &Path, destination: &Path) -> Result<(), WindowStateError> {
+    #[cfg(windows)]
+    let result = windows::replace(source, destination);
+    #[cfg(not(windows))]
+    let result = fs::rename(source, destination);
+    result.map_err(|source| io_error("replacing", destination, source))
 }
 
 struct TemporaryState {
@@ -349,6 +364,33 @@ mod tests {
                 assert_eq!(saved.height, state.height);
             }
         });
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn replacement_keeps_existing_readers_and_new_opens_valid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = WindowStateStore::new(dir.path().join("state.json"));
+        let previous = WindowState {
+            x: 10,
+            y: 20,
+            width: 800,
+            height: 600,
+            maximized: false,
+        };
+        store.save(&previous).unwrap();
+        let reader = File::open(store.path()).unwrap();
+        let replacement = WindowState {
+            width: 1200,
+            maximized: true,
+            ..previous
+        };
+        store.save(&replacement).unwrap();
+        let visible: WindowState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(visible, replacement);
+        let original: WindowState = serde_json::from_reader(reader).unwrap();
+        assert_eq!(original, previous);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 

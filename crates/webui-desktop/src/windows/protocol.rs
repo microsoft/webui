@@ -8,8 +8,8 @@ use std::rc::Weak;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopResponseBody,
-    DesktopRuntime, DEFAULT_MAX_REQUEST_BYTES,
+    DesktopFrame, DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse,
+    DesktopResponseBody, DesktopRuntime, DEFAULT_MAX_REQUEST_BYTES,
 };
 use anyhow::{Context, Result};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -37,13 +37,14 @@ use super::{APP_ORIGIN, APP_REQUEST_FILTER};
 pub(super) fn register_runtime_handler(
     environment: &ICoreWebView2Environment,
     webview: &ICoreWebView2,
-    runtime: Arc<DesktopRuntime>,
-    executor: Arc<crate::execution::ApplicationExecutor>,
+    frame: &DesktopFrame,
     tasks: Weak<super::tasks::ApplicationTasks>,
     #[cfg(feature = "application-ipc")] ipc: Weak<WindowsIpc>,
 ) -> Result<ICoreWebView2WebResourceRequestedEventHandler> {
     register_web_resource_filter(webview)?;
     let environment = environment.clone();
+    let runtime = Arc::clone(&frame.runtime);
+    let executor = Arc::clone(&frame.executor);
     let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             #[cfg(feature = "application-ipc")]
