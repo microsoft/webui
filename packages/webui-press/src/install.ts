@@ -18,7 +18,8 @@ const packageRoot = path.resolve(__dirname, "..");
 const binDir = path.join(packageRoot, "bin");
 const npmBinDest = path.join(binDir, "webui-press");
 const nativeBinDest = path.join(binDir, binaryNameFor());
-const workspaceCargoToml = path.join(packageRoot, "Cargo.toml");
+const workspaceRoot = workspaceRootForPackage(packageRoot);
+const workspaceCargoToml = path.join(workspaceRoot, "Cargo.toml");
 
 function installResolvedBinary(): boolean {
   const srcBin = resolveBinary();
@@ -52,7 +53,6 @@ try {
 }
 
 if (process.env.npm_lifecycle_event === "build" && fs.existsSync(workspaceCargoToml)) {
-  const workspaceRoot = workspaceRootForPackage(packageRoot);
   const result = spawnSync("cargo", ["build", "-p", "microsoft-webui-press"], {
     cwd: workspaceRoot,
     stdio: "inherit",

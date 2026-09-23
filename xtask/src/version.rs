@@ -623,30 +623,29 @@ fn find_package_jsons(root: &Path) -> Vec<PathBuf> {
     let packages_dir = root.join("packages");
     let mut results = Vec::new();
 
-    if !packages_dir.exists() {
-        return results;
-    }
-
-    let mut stack = vec![packages_dir];
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name();
-                if name == "node_modules" || name == ".git" {
-                    continue;
+    if packages_dir.exists() {
+        let mut stack = vec![packages_dir];
+        while let Some(dir) = stack.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = entry.file_name();
+                    if name == "node_modules" || name == ".git" {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if path.file_name().is_some_and(|n| n == "package.json") {
+                    results.push(path);
                 }
-                stack.push(path);
-            } else if path.file_name().is_some_and(|n| n == "package.json") {
-                results.push(path);
             }
         }
     }
 
+    results.sort();
     results
 }
 
@@ -1204,8 +1203,10 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
     fn test_update_workspace_maps_python_hotfix_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let python_root = dir.path().join("crates").join("webui-python");
+        let press_root = dir.path().join("packages").join("webui-press");
         let npm_root = dir.path().join("packages").join("webui-router");
         fs::create_dir_all(python_root.join("src")).unwrap();
+        fs::create_dir_all(&press_root).unwrap();
         fs::create_dir_all(&npm_root).unwrap();
         fs::write(
             dir.path().join("Cargo.toml"),
@@ -1229,6 +1230,11 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         )
         .unwrap();
         fs::write(
+            press_root.join("package.json"),
+            r#"{"name":"@microsoft/webui-press","version":"1.2.3","publishConfig":{"tag":"latest"}}"#,
+        )
+        .unwrap();
+        fs::write(
             npm_root.join("package.json"),
             r#"{"name":"@microsoft/webui-router","version":"1.2.3","publishConfig":{"tag":"latest"}}"#,
         )
@@ -1236,7 +1242,7 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
 
         let updated = update_workspace(dir.path(), "1.2.3-hotfix.4").unwrap();
 
-        assert_eq!(updated.len(), 5);
+        assert_eq!(updated.len(), 6);
         assert!(fs::read_to_string(dir.path().join("Cargo.toml"))
             .unwrap()
             .contains("version = \"1.2.3-hotfix.4\""));
@@ -1256,6 +1262,11 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
                 .unwrap();
         assert_eq!(npm["version"], "1.2.3-hotfix.4");
         assert_eq!(npm["publishConfig"]["tag"], "hotfix-1.2.3");
+        let press_npm: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(press_root.join("package.json")).unwrap())
+                .unwrap();
+        assert_eq!(press_npm["version"], "1.2.3-hotfix.4");
+        assert_eq!(press_npm["publishConfig"]["tag"], "hotfix-1.2.3");
         assert_eq!(
             python_package_version(dir.path(), "1.2.3-hotfix.4"),
             Ok("1.2.3.post4".to_string())

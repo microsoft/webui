@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const workspace = path.resolve(import.meta.dirname, '../../../..');
+const workspace = path.resolve(import.meta.dirname, '../../..');
 export const binary = process.env.WEBUI_PRESS_BINARY ??
   path.join(workspace, 'target/debug', process.platform === 'win32' ? 'webui-press.exe' : 'webui-press');
 
@@ -15,8 +15,20 @@ export function write(file: string, content: string): void {
   fs.writeFileSync(file, content);
 }
 
+export function removeFixtureRoot(root: string): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+      return;
+    } catch (error) {
+      if (attempt === 19) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+  }
+}
+
 export function fixture() {
-  const parent = path.join(workspace, 'crates/webui-press/dist-test/sites');
+  const parent = path.join(workspace, 'packages/webui-press/dist-test/sites');
   fs.mkdirSync(parent, { recursive: true });
   const root = fs.mkdtempSync(path.join(parent, 'show-mode-'));
   const site = path.join(root, 'site');

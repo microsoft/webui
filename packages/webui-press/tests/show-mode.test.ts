@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
-import { binary, build, fixture, write } from './native-fixture.js';
+import { binary, build, fixture, removeFixtureRoot, write } from './native-fixture.js';
 
 const shell = '.nav-bar, docs-site-navigation, docs-sidebar-navigation, docs-search, ' +
   'docs-theme-toggle, .sidebar, .mobile-page-context, .page-nav, .site-footer, .home-hero';
@@ -57,7 +57,7 @@ test('native builds retain the actionable parser error beneath page context', ()
     assert.match(nesting.stderr, /index.html:\d+:\d+/);
     assert.match(nesting.stderr, /help:/);
   } finally {
-    fs.rmSync(f.root, { recursive: true, force: true });
+    removeFixtureRoot(f.root);
   }
 });
 
@@ -118,7 +118,7 @@ test('native content builds preserve all page layouts and npm/local authored con
       pageSnapshot(implicit),
     );
   } finally {
-    fs.rmSync(f.root, { recursive: true, force: true });
+    removeFixtureRoot(f.root);
   }
 });
 
@@ -137,7 +137,7 @@ test('native content serve hydrates SSR nodes and keeps the override after confi
     await browser?.close();
     child.kill('SIGINT');
     await exited;
-    fs.rmSync(f.root, { recursive: true, force: true });
+    removeFixtureRoot(f.root);
   });
   const origin = `http://127.0.0.1:${port}/fixture/`;
   await expect.poll(async () => {
