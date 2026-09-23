@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
+microsoft-webui-protocol = { path = "../../../../crates/webui-protocol" }
 
 [[bench]]
 name = "desktop_state"

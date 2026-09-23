@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     #[cfg(feature = "source")]
     let frame = match packaged_resources_dir() {
         Some(resources) => packaged_frame(&resources)?,
-        None => source_frame()?,
+        None => source_frame(workspace_root().join("examples/app/contact-book-manager"))?,
     };
     #[cfg(not(feature = "source"))]
     let frame = {
@@ -55,12 +55,10 @@ fn main() -> Result<()> {
 }
 
 #[cfg(feature = "source")]
-fn source_frame() -> Result<DesktopFrame> {
-    let root = workspace_root();
-    let app_root = root.join("examples/app/contact-book-manager");
-    let app_dir = root.join("examples/app/contact-book-manager/src");
-    let state_path = root.join("examples/app/contact-book-manager/data/state.json");
-    let assets = root.join("examples/app/contact-book-manager/dist");
+fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
+    let app_dir = app_root.join("src");
+    let state_path = app_root.join("data/state.json");
+    let assets = app_root.join("dist");
 
     let (seed, state) = load_state(&state_path)?;
     let mut config = DesktopSourceConfig::new(contact_book_build_options(app_dir));
@@ -671,6 +669,84 @@ mod tests {
         value.as_bytes().to_vec()
     }
 
+    #[cfg(feature = "source")]
+    fn source_fixture(initial: &Value) -> tempfile::TempDir {
+        use webui_protocol::projection_manifest::{
+            ProjectionAdapter, ProjectionManifest, ProjectionProducer, PRODUCER_NAME, SCHEMA_ID,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        for (path, content) in [
+            (
+                "src/index.html",
+                "<!doctype html><html><head><style>\
+                 :root{/*{{{tokens.light}}}*/}\
+                 @media (prefers-color-scheme:dark){:root{/*{{{tokens.dark}}}*/}}\
+                 </style></head><body>\
+                 <route path=\"/\" component=\"contact-shell\">\
+                 <route path=\"\" component=\"contact-view\" exact />\
+                 <route path=\"contacts\" component=\"contact-view\" exact />\
+                 <route path=\"contacts/add\" component=\"contact-view\" exact />\
+                 <route path=\"contacts/:id\" component=\"contact-view\" exact />\
+                 <route path=\"contacts/:id/edit\" component=\"contact-view\" exact />\
+                 <route path=\"favorites\" component=\"contact-view\" exact />\
+                 <route path=\"groups/:group\" component=\"contact-view\" exact />\
+                 </route><script type=\"module\" src=\"/app.js\"></script></body></html>",
+            ),
+            (
+                "src/contact-shell.html",
+                "<header data-mode=\"{{mode}}\" webui-drag>Contact Book</header><outlet />",
+            ),
+            (
+                "src/contact-view.html",
+                "<h1>{{firstName}}</h1><p>{{selectedGroup}}</p>\
+                 <for each=\"contact in contacts\"><p>{{contact.firstName}}</p></for>",
+            ),
+            ("dist/app.js", "export {};"),
+            (
+                "node_modules/@microsoft/webui-examples-theme/tokens.json",
+                r#"{"themes":{"light":{},"dark":{}}}"#,
+            ),
+        ] {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(
+            root.path().join("data/state.json"),
+            serde_json::to_vec(initial).unwrap(),
+        )
+        .unwrap();
+        // These scriptless fixture components use exact template-derived state
+        // keys. Validate a real manifest without requiring a frontend bundler.
+        let mut manifest = ProjectionManifest {
+            schema: SCHEMA_ID.into(),
+            producer: ProjectionProducer {
+                name: PRODUCER_NAME.into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            },
+            adapter: ProjectionAdapter {
+                name: "test".into(),
+                bundler: "test@1.0.0".into(),
+            },
+            root: ".".into(),
+            analysis_hash: format!("sha256:{}", "1".repeat(64)),
+            build_id: String::new(),
+            inputs: Default::default(),
+            outputs: Default::default(),
+            components: Default::default(),
+            entry_closures: Default::default(),
+        };
+        manifest.build_id = manifest.compute_build_id();
+        std::fs::write(
+            root.path().join("dist/webui-projection.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
     #[test]
     fn route_state_is_unchanged_when_the_store_is_borrowed() {
         let original = test_state();
@@ -707,21 +783,31 @@ mod tests {
     fn source_and_packaged_frames_render_app_owned_chrome() {
         use webui_desktop::{build_desktop_bundle, DesktopBundleOptions, DesktopShellConfig};
 
-        let source = source_frame().unwrap();
+        let fixture = source_fixture(&test_state());
+        let app_root = fixture.path();
+        let source = source_frame(app_root.to_path_buf()).unwrap();
         assert_eq!(source.window().titlebar, TitlebarStyle::None);
         assert!(source.runtime().startup_html().contains("mode=\"desktop\""));
+        let response = source
+            .runtime()
+            .handle_request(&webui_desktop::DesktopProtocolRequest::get("/app.js"))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body.into_bytes().unwrap().as_slice(),
+            b"export {};"
+        );
 
         let package: Value = serde_json::from_str(include_str!("../../package.json")).unwrap();
         let window: WindowOptions =
             serde_json::from_value(package["webuiDesktop"].clone()).unwrap();
         assert_eq!(window.titlebar, TitlebarStyle::None);
-        let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let bundle = tempfile::tempdir().unwrap();
         build_desktop_bundle(DesktopBundleOptions {
             build_options: contact_book_build_options(app_root.join("src")),
             out_dir: bundle.path().to_path_buf(),
             state_file: Some(app_root.join("data/state.json")),
-            asset_root: None,
+            asset_root: Some(app_root.join("dist")),
             token_css: None,
             app_id: "com.microsoft.webui.contactbook.test".to_string(),
             app_name: "Contact Book Manager".to_string(),
@@ -742,6 +828,15 @@ mod tests {
             .contains("mode=\"desktop\""));
         let response = packaged
             .runtime()
+            .handle_request(&webui_desktop::DesktopProtocolRequest::get("/app.js"))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.body.into_bytes().unwrap().as_slice(),
+            b"export {};"
+        );
+        let response = packaged
+            .runtime()
             .handle_request(&webui_desktop::DesktopProtocolRequest {
                 method: DesktopHttpMethod::Get,
                 path: "/contacts",
@@ -755,6 +850,18 @@ mod tests {
 
     #[cfg(feature = "source")]
     #[test]
+    fn source_launch_still_requires_completed_projection_metadata() {
+        let fixture = source_fixture(&test_state());
+        std::fs::remove_file(fixture.path().join("dist/webui-projection.json")).unwrap();
+        let error = match source_frame(fixture.path().to_path_buf()) {
+            Ok(_) => panic!("missing projection metadata must not silently disable projection"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("PROJ-M001"));
+    }
+
+    #[cfg(feature = "source")]
+    #[test]
     fn registered_api_mutations_reach_parameterized_routes_and_preserve_tokens() {
         use webui_desktop::DesktopProtocolRequest;
 
@@ -764,7 +871,8 @@ mod tests {
             "dark": "--desktop-test-dark:1;"
         });
         let (seed, store) = state::parse_state(&serde_json::to_vec(&initial).unwrap()).unwrap();
-        let app = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src");
+        let fixture = source_fixture(&initial);
+        let app = fixture.path().join("src");
         let mut config = DesktopSourceConfig::new(contact_book_build_options(app));
         config.state = Some(seed);
         register_routes(&mut config.route_state, Arc::clone(&store)).unwrap();

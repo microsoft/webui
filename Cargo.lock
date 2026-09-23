@@ -758,6 +758,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "microsoft-webui-desktop",
+ "microsoft-webui-protocol",
  "serde",
  "serde_json",
  "tempfile",
