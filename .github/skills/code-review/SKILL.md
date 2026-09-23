@@ -284,7 +284,7 @@ When the change touches `.proto` files, serialization, or the binary protocol:
 | **Measure payload size** | Before/after byte counts for representative inputs. Extra fields add decode overhead even when empty. |
 | **Prioritize decode speed** | Breaking field changes are allowed when they improve performance measurably. Remove unused fields and message shapes that add decode overhead. |
 | **Cascade all layers** | Schema changes affect the whole stack: protocol -> handler -> FFI -> CLI. Update all in the same change. Run `cargo xtask build && cargo xtask test` to validate. |
-| **Update DESIGN.md** | Protocol behavior changes must update the protocol sections of `DESIGN.md` in the same commit. |
+| **Update DESIGN.md** | Protocol behavior changes must update the architecture/spec sections of `DESIGN.md` in the same commit, at durable contract level only. |
 
 ---
 
@@ -310,7 +310,7 @@ Every behavioral change must include corresponding documentation updates. Missin
 
 | Check | Why |
 |-------|-----|
-| **DESIGN.md updated** | If the change modifies public APIs, protocol fields, behavioral contracts, error variants, or SSR markers, `DESIGN.md` must be updated in the same commit. |
+| **DESIGN.md updated** | If the change modifies public APIs, protocol fields, behavioral contracts, error categories, or SSR markers, `DESIGN.md` must be updated in the same commit with high-level architecture/spec language, not regression notes or private implementation details. |
 | **User-facing docs updated** | If the change affects CLI flags, template syntax, component authoring, routing, or integration behavior, `docs/` must be updated. |
 | **AI reference updated** | If the change affects anything a code-generation AI would need to know, `docs/ai.md` must be updated. |
 | **README links to docs portal** | Package READMEs should defer to the docs portal, not duplicate content. |

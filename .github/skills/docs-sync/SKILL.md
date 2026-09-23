@@ -28,16 +28,23 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 
 ## DESIGN.md rules
 
-`DESIGN.md` is the living technical specification. Update it in the same commit when modifying:
+`DESIGN.md` is the high-level architecture and behavioral specification. Update it in the same commit when modifying durable contracts such as:
 
 - Public APIs or type signatures
 - Protocol fields or fragment types
 - Behavioral contracts (matching semantics, expression evaluation, state resolution)
-- Error variants
+- Error categories or externally observable error contracts
 - SSR marker formats
 - Metadata object format
 
 If `DESIGN.md` and the code disagree, that is a bug - fix both.
+
+Keep `DESIGN.md` rewrite-level, not implementation-level:
+
+- Describe the system invariant, data shape, or architectural decision a future implementation must preserve.
+- Avoid regression-fix notes, private helper names, local sequencing details, test-only behavior, dependency-specific workarounds, benchmark anecdotes, and code-review rationale.
+- Prefer concise tables or contracts over code listings. Include code only when it is the public API or wire shape itself.
+- Put local implementation rationale in source comments, user-facing behavior in `docs/`, and historical context in PR descriptions.
 
 ## docs/ rules
 
@@ -62,9 +69,9 @@ point:
 
 Do not document private or `pub(crate)` items, internal callbacks, intermediate
 representations, cache algorithms, implementation sequencing, regression-test
-details, or dependency-specific workarounds in developer docs. Put architecture
-and implementation invariants in `DESIGN.md`; keep local rationale in succinct
-ordinary source comments.
+details, or dependency-specific workarounds in developer docs. Put durable
+architecture and contract invariants in `DESIGN.md`; keep local rationale in
+succinct ordinary source comments.
 
 Rust `///` documentation comments are for exported public APIs only. Use `//`
 sparingly for non-public implementation rationale. Before finishing, audit the

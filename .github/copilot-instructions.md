@@ -10,7 +10,7 @@ Read and internalize these instructions at the start of every session. They are 
 
 Before suggesting or applying **any** change, read these files - they are the ground truth:
 
-1. **`DESIGN.md`** - The living technical specification. Architecture, protocol schema, module contracts, and behavioral rules all live here. Treat every constraint in it as mandatory unless the user explicitly asks to change one.
+1. **`DESIGN.md`** - The high-level architecture and behavioral specification. Durable contracts, protocol shapes, module responsibilities, and rewrite-level decisions live here. Treat every constraint in it as mandatory unless the user explicitly asks to change one.
 2. **`Cargo.toml`** (workspace root) - Workspace members, dependency versions, and release profile.
 3. **`clippy.toml`** - Lint policy (bans `unwrap`/`expect`, caps cognitive complexity at 20, limits function arguments to 5).
 4. **`deny.toml`** - Allowed licenses and advisory ignore-list.
@@ -135,13 +135,15 @@ Every code change ships with tests. No exceptions.
 
 ---
 
-## DESIGN.md is the living specification
+## DESIGN.md is the architecture specification
 
-`DESIGN.md` is not documentation - it **is** the specification. Code implements what `DESIGN.md` describes.
+`DESIGN.md` is not a bug diary, implementation tour, or release note - it is the high-level architecture and behavioral specification. Code implements the durable contracts `DESIGN.md` describes.
 
 - **Read it** before any architectural or API change.
-- **Update it** in the same commit whenever you add, remove, or modify a public API, protocol field, fragment type, error variant, or behavioral contract.
-- Keep its Rust code examples conceptually compilable and in sync with real code.
+- **Update it** in the same commit whenever you add, remove, or modify a public API, protocol field, fragment type, error category, SSR marker format, or durable behavioral contract.
+- Keep updates at architecture/spec level: describe what future implementers must preserve and why it matters for the system.
+- Do **not** add regression-fix notes, local implementation sequencing, private helper details, test-only behavior, dependency workarounds, or code-review rationale. Put those in PR descriptions, tests, source comments, or public docs as appropriate.
+- Use examples only when they define a contract; keep them minimal and conceptually compilable.
 - If `DESIGN.md` and the code disagree, that is a bug - fix both.
 
 ---
