@@ -204,6 +204,7 @@ pub enum TitlebarStyle {
     /// System caption buttons with an application-drawn bar.
     Overlay {
         /// Height of the overlay titlebar in CSS pixels.
+        /// Windows uses a 32- or 48-DIP native caption and reserves at least this height.
         height: u32,
     },
     /// Fully frameless window. The application draws all chrome.

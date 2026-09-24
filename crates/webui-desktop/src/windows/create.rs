@@ -8,15 +8,14 @@ use anyhow::{Context, Result};
 use webview2_com::CoTaskMemPWSTR;
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND};
-use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows::Win32::System::LibraryLoader;
-use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    self, WNDCLASSW, WS_CAPTION, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
+    self, WNDCLASSW, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
 };
 
 use super::command::center_window;
 use super::message::window_proc;
+use super::nonclient::CUSTOM_FRAME_BYTES;
 
 /// Owner of the native top-level window handle.
 pub(super) struct FrameWindow {
@@ -29,12 +28,17 @@ impl FrameWindow {
     pub(super) fn new(window: &WindowOptions, saved: Option<&WindowState>) -> Result<Self> {
         let title = CoTaskMemPWSTR::from(window.title.as_str());
         let (x, y, width, height) = initial_geometry(window, saved)?;
+        let mut style = window_style(window);
+        if window.maximized || saved.is_some_and(|state| state.maximized) {
+            style |= WindowsAndMessaging::WS_MAXIMIZE;
+        }
         // SAFETY: The class name, window title, and module handle are valid for
         // this call, and `window_proc` has the required `WNDPROC` signature.
         let hwnd = unsafe {
             let class = WNDCLASSW {
                 lpfnWndProc: Some(window_proc),
                 lpszClassName: w!("WebUIDesktopWindow"),
+                cbWndExtra: CUSTOM_FRAME_BYTES,
                 hCursor: WindowsAndMessaging::LoadCursorW(None, WindowsAndMessaging::IDC_ARROW)
                     .unwrap_or_default(),
                 ..Default::default()
@@ -44,7 +48,7 @@ impl FrameWindow {
                 Default::default(),
                 w!("WebUIDesktopWindow"),
                 *title.as_ref().as_pcwstr(),
-                window_style(window),
+                style,
                 x,
                 y,
                 width,
@@ -54,34 +58,50 @@ impl FrameWindow {
                 LibraryLoader::GetModuleHandleW(None)
                     .ok()
                     .map(|handle| HINSTANCE(handle.0)),
-                None,
+                Some(std::ptr::from_ref(window).cast()),
             )?
         };
         let frame = Self { hwnd };
         frame.apply_custom_frame(window);
-        frame.apply_initial_state(window, saved);
+        frame.apply_initial_placement(window, saved);
         Ok(frame)
     }
 
-    /// Ask DWM to draw the system shadow and caption buttons over the client
-    /// area for window styles that keep native controls.
+    pub(super) fn show(&self) -> Result<()> {
+        // The first ShowWindow call can restore a maximized window according to
+        // the launcher's STARTUPINFO. Publish the configured frame unchanged.
+        // SAFETY: The window is live; only visibility and frame layout change.
+        unsafe {
+            WindowsAndMessaging::SetWindowPos(
+                self.hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                WindowsAndMessaging::SWP_NOMOVE
+                    | WindowsAndMessaging::SWP_NOSIZE
+                    | WindowsAndMessaging::SWP_NOZORDER
+                    | WindowsAndMessaging::SWP_SHOWWINDOW
+                    | WindowsAndMessaging::SWP_FRAMECHANGED,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Keep DWM's shadow and system-managed corners for custom frames.
     fn apply_custom_frame(&self, window: &WindowOptions) {
-        if matches!(window.titlebar, TitlebarStyle::Native | TitlebarStyle::None) {
+        if !matches!(window.titlebar, TitlebarStyle::None) {
             return;
         }
-        let margins = MARGINS {
-            cxLeftWidth: 0,
-            cxRightWidth: 0,
-            cyTopHeight: 1,
-            cyBottomHeight: 0,
-        };
-        // SAFETY: `self.hwnd` is the live window just created and `margins` is
-        // an initialized value read only for the duration of this call.
-        let _ = unsafe { DwmExtendFrameIntoClientArea(self.hwnd, &margins) };
+        if let Err(error) = extend_frameless_frame(self.hwnd) {
+            eprintln!("WebUI: failed to extend the desktop frame: {error}");
+        }
+
         // SAFETY: The window is live; the reposition only forces the frame to
         // be recalculated so `WM_NCCALCSIZE` runs with the new styles.
         unsafe {
-            let _ = WindowsAndMessaging::SetWindowPos(
+            if let Err(error) = WindowsAndMessaging::SetWindowPos(
                 self.hwnd,
                 None,
                 0,
@@ -92,13 +112,15 @@ impl FrameWindow {
                     | WindowsAndMessaging::SWP_NOSIZE
                     | WindowsAndMessaging::SWP_NOZORDER
                     | WindowsAndMessaging::SWP_FRAMECHANGED,
-            );
+            ) {
+                eprintln!("WebUI: failed to refresh the desktop frame: {error}");
+            }
         }
     }
 
-    /// Apply centering, always-on-top, and the maximized start state.
-    fn apply_initial_state(&self, window: &WindowOptions, saved: Option<&WindowState>) {
-        if saved.is_none() && window.center {
+    /// Apply initial placement without making the window visible.
+    fn apply_initial_placement(&self, window: &WindowOptions, saved: Option<&WindowState>) {
+        if saved.is_none() && window.center && !window.maximized {
             center_window(self.hwnd);
         }
         if window.always_on_top {
@@ -115,13 +137,36 @@ impl FrameWindow {
                 );
             }
         }
-        if window.maximized || saved.is_some_and(|state| state.maximized) {
-            // SAFETY: The window is live and the command only changes its state.
-            unsafe {
-                let _ =
-                    WindowsAndMessaging::ShowWindow(self.hwnd, WindowsAndMessaging::SW_MAXIMIZE);
+    }
+}
+
+impl Drop for FrameWindow {
+    fn drop(&mut self) {
+        // SAFETY: This owner is dropped on the creating thread before runtime
+        // shutdown, including when setup fails before the window is shown.
+        unsafe {
+            if WindowsAndMessaging::IsWindow(Some(self.hwnd)).as_bool() {
+                if let Err(error) = WindowsAndMessaging::DestroyWindow(self.hwnd) {
+                    eprintln!("WebUI: failed to destroy the desktop window: {error}");
+                }
             }
         }
+    }
+}
+
+pub(super) fn extend_frameless_frame(hwnd: HWND) -> windows::core::Result<()> {
+    // SAFETY: A one-pixel DWM margin preserves the live frameless HWND's
+    // shadow/corners without taking ownership of AppWindow overlay frames.
+    unsafe {
+        windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(
+            hwnd,
+            &windows::Win32::UI::Controls::MARGINS {
+                cxLeftWidth: 1,
+                cxRightWidth: 1,
+                cyTopHeight: 1,
+                cyBottomHeight: 1,
+            },
+        )
     }
 }
 
@@ -153,11 +198,7 @@ pub(super) fn window_style(window: &WindowOptions) -> WindowsAndMessaging::WINDO
         style &= !WS_THICKFRAME;
         style &= !WS_MAXIMIZEBOX;
     }
-    if matches!(window.titlebar, TitlebarStyle::None) {
-        // Keep WS_THICKFRAME for resizable frameless windows: the caption is
-        // removed but the resize frame drives WM_NCHITTEST borders.
-        style &= !WS_CAPTION;
-    }
+    // Hide the caption in WM_NCCALCSIZE, not in the native capability bits.
     style
 }
 
@@ -165,15 +206,195 @@ pub(super) fn window_style(window: &WindowOptions) -> WindowsAndMessaging::WINDO
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::WS_CAPTION;
+
+    struct TestFrame(FrameWindow);
+
+    impl Drop for TestFrame {
+        fn drop(&mut self) {
+            // SAFETY: The test owns this window and destroys it on its UI thread.
+            if let Err(error) = unsafe { WindowsAndMessaging::DestroyWindow(self.0.hwnd) } {
+                eprintln!("Failed to destroy test window: {error}");
+            }
+        }
+    }
+
+    fn frame_rectangles(frame: &TestFrame) -> (RECT, RECT) {
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        // SAFETY: The test window is live and both rectangles are writable.
+        unsafe {
+            WindowsAndMessaging::GetWindowRect(frame.0.hwnd, &mut outer).unwrap();
+            WindowsAndMessaging::GetClientRect(frame.0.hwnd, &mut client).unwrap();
+        }
+        (outer, client)
+    }
 
     #[test]
-    fn frameless_style_keeps_resize_frame_without_caption() {
+    fn startup_custom_frame_reserves_only_native_resize_borders() {
+        {
+            let titlebar = TitlebarStyle::None;
+            let options = WindowOptions {
+                titlebar,
+                center: false,
+                width: 600,
+                height: 400,
+                ..WindowOptions::default()
+            };
+            let frame = TestFrame(FrameWindow::new(&options, None).unwrap());
+            let (outer, client) = frame_rectangles(&frame);
+            let (border_x, border_y) = if matches!(options.titlebar, TitlebarStyle::None) {
+                // SAFETY: These calls only read the test window's DPI and metrics.
+                unsafe {
+                    let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(frame.0.hwnd);
+                    let metric =
+                        |index| windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(index, dpi);
+                    let padded = metric(WindowsAndMessaging::SM_CXPADDEDBORDER);
+                    (
+                        metric(WindowsAndMessaging::SM_CXFRAME) + padded,
+                        metric(WindowsAndMessaging::SM_CYFRAME) + padded,
+                    )
+                }
+            } else {
+                (0, 0)
+            };
+
+            assert_eq!(
+                (client.right - client.left, client.bottom - client.top),
+                (
+                    outer.right - outer.left - 2 * border_x,
+                    outer.bottom - outer.top - 2 * border_y
+                ),
+                "hide the caption without letting WebView2 cover resize borders: {:?}",
+                options.titlebar
+            );
+            // SAFETY: The test window is live; this only reads visibility.
+            assert!(!unsafe { WindowsAndMessaging::IsWindowVisible(frame.0.hwnd) }.as_bool());
+        }
+    }
+
+    #[test]
+    fn startup_native_frame_retains_system_chrome() {
+        let frame = TestFrame(
+            FrameWindow::new(
+                &WindowOptions {
+                    center: false,
+                    ..WindowOptions::default()
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        let (outer, client) = frame_rectangles(&frame);
+
+        assert!(client.bottom - client.top < outer.bottom - outer.top);
+    }
+
+    #[test]
+    fn startup_custom_frame_handles_both_non_client_geometry_messages() {
+        let frame = TestFrame(
+            FrameWindow::new(
+                &WindowOptions {
+                    titlebar: TitlebarStyle::None,
+                    resizable: false,
+                    center: false,
+                    ..WindowOptions::default()
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        let expected = RECT {
+            left: 10,
+            top: 20,
+            right: 610,
+            bottom: 420,
+        };
+        let mut rect = expected;
+        let mut params = WindowsAndMessaging::NCCALCSIZE_PARAMS {
+            rgrc: [expected; 3],
+            ..Default::default()
+        };
+        // SAFETY: Both messages synchronously borrow the corresponding writable
+        // Win32 geometry type. No pointer escapes SendMessageW.
+        unsafe {
+            WindowsAndMessaging::SendMessageW(
+                frame.0.hwnd,
+                WindowsAndMessaging::WM_NCCALCSIZE,
+                Some(WPARAM(0)),
+                Some(LPARAM(std::ptr::from_mut(&mut rect) as isize)),
+            );
+            WindowsAndMessaging::SendMessageW(
+                frame.0.hwnd,
+                WindowsAndMessaging::WM_NCCALCSIZE,
+                Some(WPARAM(1)),
+                Some(LPARAM(std::ptr::from_mut(&mut params) as isize)),
+            );
+        }
+        assert_eq!(rect, expected);
+        assert_eq!(params.rgrc[0], expected);
+    }
+
+    #[test]
+    fn startup_maximized_frame_stays_hidden_until_ready() {
+        let saved = WindowState {
+            x: 30,
+            y: 40,
+            width: 900,
+            height: 700,
+            maximized: true,
+        };
+        for (maximized, saved) in [(true, None), (false, Some(&saved))] {
+            let frame = TestFrame(
+                FrameWindow::new(
+                    &WindowOptions {
+                        titlebar: TitlebarStyle::None,
+                        maximized,
+                        center: false,
+                        ..WindowOptions::default()
+                    },
+                    saved,
+                )
+                .unwrap(),
+            );
+
+            // SAFETY: The test window is live; these only read native state.
+            unsafe {
+                assert!(WindowsAndMessaging::IsZoomed(frame.0.hwnd).as_bool());
+                assert!(
+                    !WindowsAndMessaging::IsWindowVisible(frame.0.hwnd).as_bool(),
+                    "restoring maximized geometry must not show an uninitialized window"
+                );
+            }
+            let (_, client) = frame_rectangles(&frame);
+            let work_area = super::super::command::monitor_rect(frame.0.hwnd, true).unwrap();
+            assert_eq!(
+                (client.right - client.left, client.bottom - client.top),
+                (
+                    work_area.right - work_area.left,
+                    work_area.bottom - work_area.top
+                ),
+                "maximized custom content must fill, but not exceed, the monitor work area"
+            );
+            frame.0.show().unwrap();
+            // SAFETY: The test owns the live window; these calls only read state.
+            unsafe {
+                assert!(WindowsAndMessaging::IsWindowVisible(frame.0.hwnd).as_bool());
+                assert!(WindowsAndMessaging::IsZoomed(frame.0.hwnd).as_bool());
+            }
+            assert_eq!(frame_rectangles(&frame).1, client);
+        }
+    }
+
+    #[test]
+    fn frameless_style_preserves_native_frame_capabilities() {
         let style = window_style(&WindowOptions {
             titlebar: TitlebarStyle::None,
             ..WindowOptions::default()
         });
 
-        assert_eq!(style & WS_CAPTION, WindowsAndMessaging::WINDOW_STYLE(0));
+        assert_eq!(style & WS_CAPTION, WS_CAPTION);
         assert_eq!(style & WS_THICKFRAME, WS_THICKFRAME);
     }
 

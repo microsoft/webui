@@ -43,6 +43,7 @@ native = [
     "dep:webview2-com",
     "dep:windows",
     "dep:windows-core",
+    "dep:windows-future",
     "dep:gtk4",
     "dep:webkit6",
 ]
@@ -83,8 +84,9 @@ block2 = { workspace = true, optional = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 webview2-com = { workspace = true, optional = true }
-windows = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, optional = true, features = ["Foundation", "Graphics", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-core = { workspace = true, optional = true }
+windows-future = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = { workspace = true, optional = true, features = ["v4_10"] }
@@ -99,6 +101,11 @@ criterion = { workspace = true }
 name = "ipc_contract"
 path = "tests/public_api/ipc.rs"
 required-features = ["application-ipc"]
+
+[[test]]
+name = "windows_portable_package"
+path = "tests/windows_portable_package.rs"
+required-features = ["source"]
 
 [[bench]]
 name = "navigation"

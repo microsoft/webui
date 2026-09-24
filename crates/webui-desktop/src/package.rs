@@ -10,6 +10,9 @@ use crate::bundle::{
 };
 use crate::error::{DesktopError, Result};
 
+#[path = "package_windows.rs"]
+mod windows;
+
 /// Options for packaging a desktop bundle.
 pub struct DesktopPackageOptions {
     /// Desktop bundle directory created by `webui desktop build`.
@@ -19,6 +22,11 @@ pub struct DesktopPackageOptions {
     /// Package target.
     pub target: DesktopPackageTarget,
     /// Desktop runner executable to include in portable layouts.
+    ///
+    /// Windows portable packages require the bootstrap DLL and all three
+    /// `Microsoft.WindowsAppSDK` license, notice, and provenance files beside
+    /// this executable, including for custom runners. Keep the target
+    /// architecture's files staged by a Windows `native` build together.
     pub runner_exe: PathBuf,
 }
 
@@ -34,7 +42,8 @@ pub struct DesktopPackageResult {
 /// # Errors
 ///
 /// Returns [`DesktopError`] if the manifest cannot be read, package files
-/// cannot be written, or output paths overlap package inputs.
+/// cannot be written, output paths overlap package inputs, or a Windows
+/// runner's required bootstrap deployment files are missing.
 pub fn package_desktop_bundle(options: DesktopPackageOptions) -> Result<DesktopPackageResult> {
     let manifest_path = options.bundle_dir.join("manifest.webui-desktop.json");
     let manifest = DesktopBundleManifest::load(&manifest_path)?;
@@ -58,9 +67,17 @@ fn package_portable(
     let safe_name = safe_package_name(&manifest.app_name);
     let output_path = options.out_dir.join(format!("{safe_name}-{suffix}"));
     validate_package_output(&output_path, options)?;
+    let runtime_files = if options.target == DesktopPackageTarget::WindowsPortable {
+        windows::validate_inputs(&options.runner_exe, &output_path)?
+    } else {
+        Vec::new()
+    };
     prepare_output_dir(&output_path)?;
 
     copy_runner(&options.runner_exe, &output_path)?;
+    for source in runtime_files {
+        copy_runner(&source, &output_path)?;
+    }
     copy_bundle_dir(
         &options.bundle_dir,
         &output_path.join("resources").join("webui"),
@@ -108,20 +125,19 @@ fn package_macos_app(
 }
 
 fn validate_package_output(output_path: &Path, options: &DesktopPackageOptions) -> Result<()> {
+    validate_input_overlap(output_path, &options.bundle_dir, "bundle")?;
+    validate_input_overlap(output_path, &options.runner_exe, "runner")
+}
+
+fn validate_input_overlap(output_path: &Path, input: &Path, label: &'static str) -> Result<()> {
     let output = normalized_absolute_path(output_path)?;
     let lexical_output = lexical_absolute_path(output_path)?;
-    let bundle = normalized_absolute_path(&options.bundle_dir)?;
-    let lexical_bundle = lexical_absolute_path(&options.bundle_dir)?;
-    let runner = normalized_absolute_path(&options.runner_exe)?;
-    let lexical_runner = lexical_absolute_path(&options.runner_exe)?;
-    reject_path_overlap(&output, &bundle, "bundle")?;
-    reject_path_overlap(&lexical_output, &bundle, "bundle")?;
-    reject_path_overlap(&output, &lexical_bundle, "bundle")?;
-    reject_path_overlap(&lexical_output, &lexical_bundle, "bundle")?;
-    reject_path_overlap(&output, &runner, "runner")?;
-    reject_path_overlap(&lexical_output, &runner, "runner")?;
-    reject_path_overlap(&output, &lexical_runner, "runner")?;
-    reject_path_overlap(&lexical_output, &lexical_runner, "runner")?;
+    let canonical_input = normalized_absolute_path(input)?;
+    let lexical_input = lexical_absolute_path(input)?;
+    reject_path_overlap(&output, &canonical_input, label)?;
+    reject_path_overlap(&lexical_output, &canonical_input, label)?;
+    reject_path_overlap(&output, &lexical_input, label)?;
+    reject_path_overlap(&lexical_output, &lexical_input, label)?;
     Ok(())
 }
 

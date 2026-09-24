@@ -8,9 +8,9 @@ use webview2_com::CoTaskMemPWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi;
 use windows::Win32::UI::Input::KeyboardAndMouse;
-use windows::Win32::UI::WindowsAndMessaging::{self, WINDOW_EX_STYLE, WINDOW_STYLE};
+use windows::Win32::UI::WindowsAndMessaging;
 
-use super::state::{with_window_state, FrameState, SavedFrame};
+use super::state::{with_window_state, FrameState};
 use super::{message, WINDOW_ID};
 
 /// Execute one queued command on the UI thread.
@@ -69,119 +69,28 @@ pub(super) fn toggle_maximize(hwnd: HWND) {
 
 /// Enter or leave fullscreen, saving and restoring the previous frame.
 pub(super) fn set_fullscreen(hwnd: HWND, state: &FrameState, enable: bool) {
-    if enable {
-        if enter_fullscreen(hwnd, state) {
-            message::emit(
-                state,
-                &DesktopEvent::WindowEnteredFullscreen {
-                    window_id: WINDOW_ID,
-                },
-            );
+    if state.fullscreen.get() == enable {
+        return;
+    }
+    // Presenter changes synchronously dispatch size messages; suppress saving
+    // fullscreen geometry before entering the native call.
+    let previous = state.fullscreen.replace(enable);
+    if let Err(error) = state.app_window.set_fullscreen(enable) {
+        state.fullscreen.set(previous);
+        eprintln!("WebUI: failed to change the native fullscreen presenter: {error}");
+        return;
+    }
+    message::refresh_frame(hwnd);
+    let event = if enable {
+        DesktopEvent::WindowEnteredFullscreen {
+            window_id: WINDOW_ID,
         }
-    } else if leave_fullscreen(hwnd, state) {
-        message::emit(
-            state,
-            &DesktopEvent::WindowLeftFullscreen {
-                window_id: WINDOW_ID,
-            },
-        );
-    }
-}
-
-/// Save the current frame, strip the border styles, and fill the monitor.
-fn enter_fullscreen(hwnd: HWND, state: &FrameState) -> bool {
-    if state.fullscreen.get().is_some() {
-        return false;
-    }
-    let style = WINDOW_STYLE(super::state::window_style_bits(
-        hwnd,
-        WindowsAndMessaging::GWL_STYLE,
-    ));
-    let ex_style = WINDOW_EX_STYLE(super::state::window_style_bits(
-        hwnd,
-        WindowsAndMessaging::GWL_EXSTYLE,
-    ));
-    let mut rect = RECT::default();
-    // SAFETY: `hwnd` is a live window and `rect` is valid writable storage.
-    if unsafe { WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) }.is_err() {
-        return false;
-    }
-    // SAFETY: `hwnd` is a live window and `IsZoomed` only reads window state.
-    let maximized = unsafe { WindowsAndMessaging::IsZoomed(hwnd) }.as_bool();
-    let Some(monitor) = monitor_rect(hwnd, false) else {
-        return false;
-    };
-    state.fullscreen.set(Some(SavedFrame {
-        style,
-        ex_style,
-        rect,
-        maximized,
-    }));
-    let fullscreen_style = style
-        & !WindowsAndMessaging::WS_OVERLAPPEDWINDOW
-        & !WindowsAndMessaging::WS_CAPTION
-        & !WindowsAndMessaging::WS_THICKFRAME;
-    set_style(hwnd, fullscreen_style);
-    apply_rect(hwnd, monitor);
-    true
-}
-
-/// Restore the styles and rectangle captured before fullscreen.
-fn leave_fullscreen(hwnd: HWND, state: &FrameState) -> bool {
-    let Some(saved) = state.fullscreen.take() else {
-        return false;
-    };
-    set_style(hwnd, saved.style);
-    set_ex_style(hwnd, saved.ex_style);
-    if saved.maximized {
-        show_window(hwnd, WindowsAndMessaging::SW_MAXIMIZE);
     } else {
-        apply_rect(hwnd, saved.rect);
-    }
-    true
-}
-
-/// Replace the window style and request a non-client frame recalculation.
-fn set_style(hwnd: HWND, style: WINDOW_STYLE) {
-    // SAFETY: `hwnd` is a live window and `GWL_STYLE` stores the style bits.
-    unsafe {
-        WindowsAndMessaging::SetWindowLongW(
-            hwnd,
-            WindowsAndMessaging::GWL_STYLE,
-            style.0.cast_signed(),
-        );
-    }
-}
-
-/// Replace the extended window style.
-fn set_ex_style(hwnd: HWND, style: WINDOW_EX_STYLE) {
-    // SAFETY: `hwnd` is a live window and `GWL_EXSTYLE` stores the extended bits.
-    unsafe {
-        WindowsAndMessaging::SetWindowLongW(
-            hwnd,
-            WindowsAndMessaging::GWL_EXSTYLE,
-            style.0.cast_signed(),
-        );
-    }
-}
-
-/// Move and size the window to an absolute screen rectangle.
-fn apply_rect(hwnd: HWND, rect: RECT) {
-    // SAFETY: `hwnd` is a live window; the call only repositions it and forces
-    // the frame to be recomputed after a style change.
-    unsafe {
-        let _ = WindowsAndMessaging::SetWindowPos(
-            hwnd,
-            None,
-            rect.left,
-            rect.top,
-            rect.right.saturating_sub(rect.left),
-            rect.bottom.saturating_sub(rect.top),
-            WindowsAndMessaging::SWP_NOZORDER
-                | WindowsAndMessaging::SWP_NOACTIVATE
-                | WindowsAndMessaging::SWP_FRAMECHANGED,
-        );
-    }
+        DesktopEvent::WindowLeftFullscreen {
+            window_id: WINDOW_ID,
+        }
+    };
+    message::emit(state, &event);
 }
 
 /// Return the full or work-area rectangle of the window's nearest monitor.

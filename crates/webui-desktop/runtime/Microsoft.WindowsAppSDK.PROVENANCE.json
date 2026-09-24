@@ -1,0 +1,32 @@
+{
+  "package": "Microsoft.WindowsAppSDK.Foundation",
+  "version": "1.8.260803002",
+  "url": "https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK.Foundation/1.8.260803002",
+  "sha256": "b9232041afd605b606c6f78f442d92ead0076453f1f2a3260d2b7f8089bcab0e",
+  "files": [
+    {
+      "source": "runtimes/win-x64/native/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "path": "win-x64/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "sha256": "280275d5c4d509e85e394ff99bfb271fb0d6426718b1fa0913dce5888f847d14",
+      "size": 399712
+    },
+    {
+      "source": "runtimes/win-arm64/native/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "path": "win-arm64/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "sha256": "3edd76930ae4c5c9429c3b8d87f107cd9ab99e8b72e2ea9990715e0f36ba09c2",
+      "size": 392504
+    },
+    {
+      "source": "runtimes/win-x86/native/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "path": "win-x86/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+      "sha256": "ea19d105dea1d150f6265c65879b3abc6f78a47c59ac083e9afada063b22d759",
+      "size": 351072
+    },
+    {
+      "source": "license.txt",
+      "path": "Microsoft.WindowsAppSDK.LICENSE.txt",
+      "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+      "size": 12637
+    }
+  ]
+}
