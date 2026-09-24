@@ -15,6 +15,12 @@ import tempfile
 FIXTURE = Path(__file__).resolve().parent
 ROOT = FIXTURE.parents[4]
 NO_IPC_MODES = ["source", "bundle", "frameless-source", "frameless-bundle"]
+WINDOWS_APP_SDK_FILES = (
+    "Microsoft.WindowsAppRuntime.Bootstrap.dll",
+    "Microsoft.WindowsAppSDK.LICENSE.txt",
+    "Microsoft.WindowsAppSDK.NOTICES.txt",
+    "Microsoft.WindowsAppSDK.PROVENANCE.json",
+)
 
 
 def platform_plan(platform):
@@ -60,6 +66,19 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def copy_native_runner(source, destination, platform, *, companion_directory=None):
+    files = [source]
+    if platform == "win32":
+        directory = companion_directory or source.parent
+        files.extend(directory / name for name in WINDOWS_APP_SDK_FILES)
+    for path in files:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"native runner input is missing or empty: {path}")
+    shutil.copy2(source, destination)
+    for path in files[1:]:
+        shutil.copy2(path, destination.parent / path.name)
+
+
 def assert_clean_native_log(mode, stderr):
     errors = [line for line in stderr.splitlines()
               if line.startswith(("NATIVE_IPC_FAILURE", "NATIVE_IPC_DIAGNOSTIC failure"))]
@@ -95,7 +114,10 @@ def no_ipc_run(artifacts, plan, timeout):
     directory.mkdir()
     binary = directory / plan["executable"]
     suffix = ".exe" if sys.platform == "win32" else ""
-    shutil.copy2(ROOT / "target/release/examples" / ("no-ipc-native" + suffix), binary)
+    copy_native_runner(
+        ROOT / "target/release/examples" / ("no-ipc-native" + suffix),
+        binary, plan["platform"], companion_directory=ROOT / "target/release",
+    )
     for mode in NO_IPC_MODES:
         result = subprocess.run([str(binary), mode], cwd=directory, timeout=timeout,
                                 capture_output=True, text=True)
@@ -199,7 +221,8 @@ def main():
     source_runner = artifacts / "source-runner"
     source_runner.mkdir()
     binary = source_runner / plan["executable"]
-    shutil.copy2(ROOT / "target/release" / plan["executable"], binary)
+    copy_native_runner(ROOT / "target/release" / plan["executable"],
+                       binary, plan["platform"])
     digest = sha256(binary)
     metadata = capture([binary, "metadata"], "NATIVE_METADATA ")
     for key in ["platform", "native_backend", "package_target"]:
@@ -210,7 +233,8 @@ def main():
     runtime_runner = artifacts / "runtime-runner"
     runtime_runner.mkdir()
     runtime_binary = runtime_runner / plan["executable"]
-    shutil.copy2(ROOT / "target/release" / plan["executable"], runtime_binary)
+    copy_native_runner(ROOT / "target/release" / plan["executable"],
+                       runtime_binary, plan["platform"])
     runtime_digest = sha256(runtime_binary)
     runtime_metadata = capture([runtime_binary, "metadata"], "NATIVE_METADATA ")
     assert runtime_metadata == dict(metadata, source=False)
@@ -230,6 +254,11 @@ def main():
     assert packaged_binary == package_root / plan["executable_dir"] / plan["executable"]
     assert resources == package_root / plan["resources"]
     assert sha256(packaged_binary) == runtime_digest
+    if plan["platform"] == "win32":
+        for name in WINDOWS_APP_SDK_FILES:
+            assert sha256(packaged_binary.parent / name) == sha256(runtime_runner / name), (
+                f"Windows portable package did not preserve {name}"
+            )
     assert (resources / "manifest.webui-desktop.json").is_file()
     shutil.rmtree(bundle_input)
     assert not bundle_input.exists()
