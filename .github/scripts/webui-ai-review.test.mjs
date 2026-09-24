@@ -28,7 +28,20 @@ function event(name = "pull_request_target", author = "mohamedmansour") {
 function decision(overrides = {}) {
   return { type: "publish_webui_review", pull_request_number: 42,
     base_sha: BASE, head_sha: HEAD, outcome: "clean",
-    coverage_complete: true, challenge: "none", ...overrides };
+    coverage_complete: true, challenge: "none",
+    challenge_report: undefined, ...overrides };
+}
+
+function confirmedFinding(overrides = {}) {
+  return decision({ outcome: "findings", coverage_complete: false,
+    challenge: "confirmed", body: "Concrete trigger and smallest fix.",
+    challenge_report: JSON.stringify({ name: "webui-findings-challenger",
+      base_sha: BASE, head_sha: HEAD,
+      findings: [{ verdict: "confirm", location: "DESIGN.md:10",
+        evidence: "DESIGN.md:42 and base:38" },
+        { verdict: "confirm", location: "DESIGN.md:42",
+          evidence: "DESIGN.md:42 and base:38" }] }),
+    ...overrides });
 }
 
 function output(item = decision()) {
@@ -37,6 +50,7 @@ function output(item = decision()) {
 
 function checks(conclusion = "success") {
   return [{ name: "PR Checks", status: "completed", conclusion,
+    app: { slug: "github-actions" },
     started_at: "2026-09-24T10:00:00Z" }];
 }
 
@@ -64,11 +78,13 @@ function mockClient({ author = "mohamedmansour", currentChecks = checks(),
       }
       if (path === "/pulls/42/reviews" && method === "POST") {
         const requested = JSON.parse(options.body);
-        return { state: postedState ?? (requested.event === "APPROVE" ?
+        const receipt = { state: postedState ?? (requested.event === "APPROVE" ?
           "APPROVED" : "COMMENTED"), commit_id: requested.commit_id,
         id: receiptId, submitted_at: "2026-09-24T11:00:00Z",
         body: requested.body,
         user: { login: "github-actions[bot]" } };
+        currentReviews.push(receipt);
+        return receipt;
       }
       if (path.startsWith("/labels/") && method === "GET") {
         if (labelMissing) throw new Error(`${method} ${path}: HTTP 404`);
@@ -126,10 +142,21 @@ test("structured decisions must target the event and have valid evidence", () =>
   assert.throws(() => readDecision(output(decision({
     outcome: "findings", body: "Known defect", challenge: "none",
   })), target), /independent verification/);
-  assert.throws(() => readDecision(output(decision({
-    outcome: "findings", body: "Known defect", challenge: "confirmed",
+  assert.throws(() => readDecision(output(confirmedFinding({
     comments_json: "[null]",
   })), target), /changed lines/);
+  assert.throws(() => readDecision(output(confirmedFinding({
+    challenge_report: JSON.stringify({ name: "webui-findings-challenger",
+      base_sha: BASE, head_sha: HEAD,
+      findings: [{ verdict: "reject", evidence: "No introduced defect." }] }),
+  })), target), /confirmed findings/);
+  assert.throws(() => readDecision(output(confirmedFinding({
+    comments_json: JSON.stringify([{ path: "lib.rs", line: 10,
+      body: "Finding not checked by challenger." }]),
+  })), target), /matching challenger assessment/);
+  assert.throws(() => readDecision(output(confirmedFinding({
+    challenge_report: undefined,
+  })), target), /bounded independent challenger report/);
 });
 
 test("only a complete, verified Mohamed PR can receive a native approval", () => {
@@ -144,6 +171,9 @@ test("only a complete, verified Mohamed PR can receive a native approval", () =>
   assert.equal(chooseReview(item, snapshot("mohamedmansour",
     { threads: [{ isResolved: false,
       comments: [{ author: "mddinbox" }] }] })).event, null);
+  assert.equal(chooseReview(item, snapshot("mohamedmansour",
+    { threads: [{ isResolved: false,
+      comments: [{ author: "another-reviewer" }] }] })).event, null);
   assert.throws(() => chooseReview(item, snapshot("mohamedmansour",
     { pr: { ...pr(), base: { sha: "c".repeat(40),
       repo: { full_name: REPO } } } })), /revision changed/);
@@ -161,9 +191,7 @@ test("an earlier human COMMENT is not equivalent to a human APPROVE", () => {
 
 test("confirmed findings on a human-authored PR may be COMMENTED, never approved", () => {
       const target = eventTarget("pull_request_target", event("pull_request_target", "mddinbox"));
-      const item = readDecision(output(decision({ outcome: "findings",
-        coverage_complete: false, challenge: "confirmed",
-        body: "Concrete trigger and smallest fix." })), target);
+      const item = readDecision(output(confirmedFinding()), target);
       assert.equal(chooseReview(item, snapshot("mddinbox")).event, "COMMENT");
       const clean = readDecision(output(), target);
       assert.equal(chooseReview(clean, snapshot("mddinbox")).event, null);
@@ -190,8 +218,7 @@ test("new confirmed findings are posted even after an older bot approval", async
     state: "APPROVED", id: 17,
     body: `Approved.\n\n<!-- webui-ai-review:${HEAD}:approved -->` };
   const client = mockClient({ currentReviews: [previous] });
-  const item = decision({ outcome: "findings", coverage_complete: false,
-    challenge: "confirmed", body: "A newly verified defect with a concrete fix." });
+  const item = confirmedFinding({ body: "A newly verified defect with a concrete fix." });
   await processReview("pull_request_target", event(), output(item), client, false);
   const review = JSON.parse(writes(client)[0].body);
   assert.equal(review.event, "COMMENT");
@@ -212,7 +239,22 @@ test("unchanged approval restores its label only while checks and discussion sta
     { reviews: [prior], checks: checks("failure") })).label, null);
   assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
     { reviews: [prior, { user: { login: "reviewer" }, commit_id: HEAD,
-      state: "CHANGES_REQUESTED", body: "Blocking issue." }] })).label, null);
+      state: "CHANGES_REQUESTED", body: "Blocking issue.",
+      submitted_at: "2026-09-24T11:00:00Z" }] })).label, null);
+  assert.equal(chooseReview(unchanged, snapshot("mohamedmansour", {
+    reviews: [prior, { user: { login: "reviewer" }, commit_id: HEAD,
+      state: "COMMENTED", body: "New concern.",
+      submitted_at: "2026-09-24T11:00:00Z" }],
+  })).label, null);
+  assert.equal(chooseReview(unchanged, snapshot("mohamedmansour", {
+    reviews: [{ user: { login: "reviewer" }, commit_id: HEAD,
+      state: "CHANGES_REQUESTED", body: "Earlier blocking finding.",
+      submitted_at: "2026-09-24T09:00:00Z" }, prior],
+  })).label, null);
+  assert.equal(chooseReview(unchanged, snapshot("mohamedmansour", {
+    reviews: [prior], threads: [{ isResolved: false,
+      comments: [{ author: "another-reviewer", updatedAt: "2026-09-24T09:00:00Z" }] }],
+  })).label, null);
   assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
     { reviews: [prior], issueComments: [{
       created_at: "2026-09-24T11:00:00Z", body: "New concern.",
@@ -267,8 +309,7 @@ test("other authors only get LGTM COMMENT without Approved label", async () => {
 
 test("confirmed finding posts COMMENT before the orange label", async () => {
   const client = mockClient({ currentChecks: checks("failure") });
-  const item = decision({ outcome: "findings", coverage_complete: false,
-    challenge: "confirmed", body: "Trigger, impact, and smallest fix." });
+  const item = confirmedFinding({ body: "Trigger, impact, and smallest fix." });
   await processReview("pull_request_target", event(), output(item), client, false);
   assert.equal(JSON.parse(writes(client)[0].body).event, "COMMENT");
   assert.deepEqual(JSON.parse(writes(client)[1].body).labels,
@@ -277,8 +318,7 @@ test("confirmed finding posts COMMENT before the orange label", async () => {
 
 test("invalid inline anchors become actionable body findings", async () => {
   const client = mockClient();
-  const item = decision({ outcome: "findings", coverage_complete: false,
-    challenge: "confirmed", body: "One supported finding.",
+  const item = confirmedFinding({ body: "One supported finding.",
     comments_json: JSON.stringify([
       { path: "DESIGN.md", line: 10, body: "Valid changed line." },
       { path: "DESIGN.md", line: 42, body: "Unanchorable finding and fix." },
@@ -336,6 +376,24 @@ test("a new PR comment before posting invalidates the reviewed discussion", asyn
   assert.equal(writes(client).length, 0);
 });
 
+test("a new human concern after approval receipt prevents green labeling", async () => {
+  const client = mockClient();
+  const read = client.snapshot.bind(client);
+  let reads = 0;
+  client.snapshot = async (...args) => {
+    const current = await read(...args);
+    reads++;
+    if (reads > 2) current.issueComments = [{
+      created_at: "2026-09-24T11:01:00Z",
+      updated_at: "2026-09-24T11:01:00Z", body: "Concern after review.",
+    }];
+    return current;
+  };
+  await assert.rejects(processReview("pull_request_target", event(), output(),
+    client, false), /changed before labeling/);
+  assert.deepEqual(writes(client).map(({ path }) => path), ["/pulls/42/reviews"]);
+});
+
 test("pending CI polls until required checks succeed", async () => {
   const pending = { name: "PR Checks", status: "in_progress", conclusion: null };
   const client = mockClient();
@@ -346,6 +404,37 @@ test("pending CI polls until required checks succeed", async () => {
   const result = await waitForChecks(client, item, async () => { waits++; }, 3);
   assert.equal(result.checks[0].conclusion, "success");
   assert.equal(waits, 2);
+  assert.equal(writes(client).length, 0);
+});
+
+test("a staged clean decision exercises read-only CI polling", async () => {
+  const client = mockClient();
+  let polls = 0;
+  const preview = await processReview("pull_request_target", event(), output(),
+    client, true, async (_client, _decision, _pause, _attempts, initial) => {
+      polls++;
+      assert.ok(initial);
+      return initial;
+    });
+  assert.equal(polls, 1);
+  assert.match(preview, /STAGED #42: APPROVE/);
+  assert.equal(writes(client).length, 0);
+});
+
+test("staged run actually waits for pending PR Checks without publishing", async () => {
+  const client = mockClient();
+  let reads = 0;
+  client.snapshot = async () => ({
+    ...snapshot(), checks: [reads++ < 1 ?
+      { name: "PR Checks", status: "in_progress", conclusion: null } :
+      checks()[0]],
+  });
+  let polls = 0;
+  const preview = await processReview("pull_request_target", event(), output(),
+    client, true, (...args) => waitForChecks(...args.slice(0, 2),
+      async () => { polls++; }, 3, args[4]));
+  assert.equal(polls, 1);
+  assert.match(preview, /STAGED #42: APPROVE/);
   assert.equal(writes(client).length, 0);
 });
 
@@ -365,9 +454,17 @@ test("a newer queued PR Checks run cannot reuse an older success", () => {
   const item = readDecision(output(), eventTarget("pull_request_target", event()));
   const previous = checks()[0];
   const pending = { name: "PR Checks", status: "queued", conclusion: null,
+    app: { slug: "github-actions" },
     created_at: "2026-09-24T11:00:00Z", started_at: null };
   assert.equal(chooseReview(item, snapshot("mohamedmansour",
     { checks: [previous, pending] })).event, null);
+});
+
+test("a similarly named check from another app cannot authorize approval", () => {
+  const item = readDecision(output(), eventTarget("pull_request_target", event()));
+  const untrusted = { ...checks()[0], app: { slug: "other-app" } };
+  assert.equal(chooseReview(item, snapshot("mohamedmansour",
+    { checks: [untrusted] })).event, null);
 });
 
 test("GitHub API errors fail explicitly without a success-shaped response", async () => {

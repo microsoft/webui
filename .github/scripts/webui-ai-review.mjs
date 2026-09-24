@@ -20,6 +20,9 @@ function marker(head, kind) {
 
 function requiredCheck(checks) {
   const matches = checks.filter((check) => check.name === "PR Checks");
+  if (matches.some((check) => check.app?.slug !== "github-actions")) {
+    return null;
+  }
   const pending = matches.find((check) => check.status !== "completed");
   if (pending) return pending;
   if (matches.length > 1 && matches.some((check) =>
@@ -34,6 +37,27 @@ function requiredCheck(checks) {
 function sameDiscussion(first, second) {
   return ["reviews", "threads", "issueComments"].every((key) =>
     JSON.stringify(first[key]) === JSON.stringify(second[key]));
+}
+
+function approvedHeadIsCurrent(snapshot, approval, head) {
+  const approvedAt = Date.parse(approval?.submitted_at);
+  const required = requiredCheck(snapshot.checks);
+  return approval?.state === "APPROVED" &&
+    approval.body?.includes(marker(head, "approved")) &&
+    Number.isFinite(approvedAt) &&
+    required?.status === "completed" && required.conclusion === "success" &&
+    !snapshot.reviews.some((review) => review.state === "CHANGES_REQUESTED") &&
+    snapshot.threads.every((thread) => thread.isResolved &&
+      thread.comments.every((comment) =>
+        Number.isFinite(Date.parse(comment.updatedAt)) &&
+        Date.parse(comment.updatedAt) <= approvedAt)) &&
+    snapshot.reviews.every((review) =>
+      review === approval || review.commit_id !== head ||
+      (Number.isFinite(Date.parse(review.submitted_at)) &&
+        Date.parse(review.submitted_at) <= approvedAt)) &&
+    snapshot.issueComments.every((comment) =>
+      Number.isFinite(Date.parse(comment.updated_at ?? comment.created_at)) &&
+      Date.parse(comment.updated_at ?? comment.created_at) <= approvedAt);
 }
 
 function validNumber(value) {
@@ -114,6 +138,35 @@ export function readDecision(output, target) {
         (!body.trim() && !comments.length))) {
     throw new Error("Findings require independent verification and actionable evidence.");
   }
+  let challengeReport = null;
+  if (item.outcome === "findings") {
+    if (typeof item.challenge_report !== "string" ||
+        item.challenge_report.length > 30_000) {
+      throw new Error("Findings require a bounded independent challenger report.");
+    }
+    try {
+      challengeReport = JSON.parse(item.challenge_report);
+    } catch {
+      throw new Error("Findings require a structured independent challenger report.");
+    }
+    if (challengeReport?.name !== "webui-findings-challenger" ||
+        challengeReport.base_sha !== item.base_sha ||
+        challengeReport.head_sha !== item.head_sha ||
+        !Array.isArray(challengeReport.findings) ||
+        !challengeReport.findings.length || challengeReport.findings.length > 30 ||
+        challengeReport.findings.some((finding) =>
+          !["confirm", "revise"].includes(finding.verdict) ||
+          typeof finding.location !== "string" || !finding.location.trim() ||
+          typeof finding.evidence !== "string" || !finding.evidence.trim())) {
+      throw new Error("Challenger report must identify pinned evidence and confirmed findings.");
+    }
+    if (comments.some((comment) => !challengeReport.findings.some((finding) =>
+      finding.location === `${comment.path}:${comment.line}`))) {
+      throw new Error("Every inline finding needs a matching challenger assessment.");
+    }
+  } else if (item.challenge_report) {
+    throw new Error("Only findings may carry a challenger report.");
+  }
   return { number, base: item.base_sha, head: item.head_sha,
     outcome: item.outcome,
     coverage: item.coverage_complete === true || item.coverage_complete === "true",
@@ -137,6 +190,10 @@ export function chooseReview(decision, snapshot) {
   const botReview = onHead.find((review) =>
     loginEqual(review.user?.login, BOT) &&
     review.body?.includes(`<!-- webui-ai-review:${decision.head}:`));
+  const botApproval = onHead.find((review) =>
+    loginEqual(review.user?.login, BOT) &&
+    review.state === "APPROVED" &&
+    review.body?.includes(marker(decision.head, "approved")));
   const botFindings = onHead.some((review) =>
     loginEqual(review.user?.login, BOT) &&
     review.body?.includes(marker(decision.head, "findings")));
@@ -145,25 +202,9 @@ export function chooseReview(decision, snapshot) {
       reason: "existing findings require a new head or human resolution" };
   }
   if (decision.outcome === "unchanged") {
-    const check = requiredCheck(checks);
-    const approvedAt = Date.parse(botReview?.submitted_at);
-    const approved = botReview?.state === "APPROVED" &&
-      botReview.body.includes(marker(decision.head, "approved")) &&
-      Number.isFinite(approvedAt) &&
-      !onHead.some((review) => review.state === "CHANGES_REQUESTED") &&
-      check?.status === "completed" && check.conclusion === "success" &&
-      !threads.some((thread) => !thread.isResolved &&
-        thread.comments.some((comment) =>
-          loginEqual(comment.author, REVIEWER) ||
-          loginEqual(comment.author, BOT))) &&
-      threads.every((thread) => thread.comments.every((comment) =>
-        Number.isFinite(Date.parse(comment.updatedAt)) &&
-        Date.parse(comment.updatedAt) <= approvedAt)) &&
-      snapshot.issueComments.every((comment) =>
-        Number.isFinite(Date.parse(comment.created_at)) &&
-        Date.parse(comment.created_at) <= approvedAt);
     return { event: null,
-      label: approved ? LABELS.approved.name : null,
+      label: approvedHeadIsCurrent(snapshot, botApproval, decision.head) ?
+        LABELS.approved.name : null,
       reason: "existing review on this head" };
   }
   if (decision.outcome === "inconclusive") {
@@ -180,9 +221,7 @@ export function chooseReview(decision, snapshot) {
   if (loginEqual(pr.user?.login, REVIEWER)) {
     return { event: null, label: null, reason: "human-authored PR" };
   }
-  if (!decision.coverage || threads.some((thread) =>
-    !thread.isResolved && thread.comments.some((comment) =>
-      loginEqual(comment.author, REVIEWER) || loginEqual(comment.author, BOT)))) {
+  if (!decision.coverage || threads.some((thread) => !thread.isResolved)) {
     return { event: null, label: null, reason: "coverage or threads incomplete" };
   }
   const required = requiredCheck(checks);
@@ -194,8 +233,7 @@ export function chooseReview(decision, snapshot) {
   }
   if (botReview) {
     return { event: null,
-      label: botReview.state === "APPROVED" &&
-        botReview.body.includes(marker(decision.head, "approved")) ?
+      label: approvedHeadIsCurrent(snapshot, botApproval, decision.head) ?
         LABELS.approved.name : null, reason: "already reviewed" };
   }
   if (onHead.some((review) =>
@@ -289,13 +327,14 @@ initial = null) {
   throw new Error("Required-check wait had no attempts.");
 }
 
-export async function processReview(eventName, event, output, client, staged) {
+export async function processReview(eventName, event, output, client, staged,
+  awaitChecks = waitForChecks) {
   const target = eventTarget(eventName, event);
   if (!target) return "Not a same-repository PR with a current review target.";
   const decision = readDecision(output, target);
   const before = await client.snapshot(target.number, decision.head);
-  const initial = !staged && decision.outcome === "clean" ?
-    await waitForChecks(client, decision, undefined, undefined, before) : before;
+  const initial = decision.outcome === "clean" ?
+    await awaitChecks(client, decision, undefined, undefined, before) : before;
   if (!sameDiscussion(before, initial)) {
     throw new Error("Review discussion changed while waiting for CI.");
   }
@@ -334,6 +373,17 @@ export async function processReview(eventName, event, output, client, staged) {
     if (current.head.sha !== decision.head || current.base.sha !== decision.base ||
         current.state !== "open") {
       throw new Error("PR changed before label publication.");
+    }
+    if (action.label === LABELS.approved.name) {
+      const after = await client.snapshot(target.number, decision.head);
+      if (after.pr.base.sha !== decision.base ||
+          !approvedHeadIsCurrent(after, after.reviews.find((review) =>
+            loginEqual(review.user?.login, BOT) &&
+            review.commit_id === decision.head &&
+            review.body?.includes(marker(decision.head, "approved"))),
+          decision.head)) {
+        throw new Error("Approval state or discussion changed before labeling.");
+      }
     }
     if (action.label) await ensureLabel(client, action.label);
     await reconcileLabels(client, target.number, action.label);
