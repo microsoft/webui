@@ -221,6 +221,7 @@ mod tests {
     #[test]
     fn borrowing_an_existing_ui_queue_does_not_shut_it_down() {
         use super::super::bindings::Microsoft::UI::Dispatching::DispatcherQueueHandler;
+        let _bootstrap_lock = super::super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
         let _com = crate::windows::initialize_com().unwrap();
         let runtime = Runtime::initialize().unwrap();
         let borrowed = Dispatcher::current().unwrap();

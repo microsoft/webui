@@ -25,6 +25,7 @@ fn height_preference_uses_supported_native_sizes() {
 
 #[test]
 fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
     let _com = crate::windows::initialize_com().unwrap();
     let runtime = Runtime::initialize().unwrap();
     let options = WindowOptions {
@@ -70,6 +71,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
 #[test]
 fn sdk_native_controls_preserve_frame_capabilities_and_input_safe_areas() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
     let _com = crate::windows::initialize_com().unwrap();
     let runtime = Runtime::initialize().unwrap();
     for titlebar in [

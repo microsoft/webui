@@ -9,6 +9,10 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 
+// MddBootstrap initialization and shutdown affect the entire test process.
+#[cfg(test)]
+static BOOTSTRAP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use anyhow::{Context, Result};
 use std::cell::Cell;
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
