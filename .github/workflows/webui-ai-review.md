@@ -169,7 +169,7 @@ safe-outputs:
             node .github/scripts/webui-ai-review.mjs publish
 ---
 
-# WebUI PR review
+# WebUI AI review
 
 Use the V4 WebUI review standard on the **one PR in this event**, not an
 hourly search of the repository. The candidate is #${{ github.event.pull_request.number || inputs.pull_request_number }}.
@@ -288,7 +288,7 @@ replace WebUI's human code-owner and last-push approval requirements.
 
 ## agent: `webui-findings-challenger`
 ---
-description: Independently challenge evidence and fixes for WebUI PR review findings.
+description: Independently challenge evidence and fixes for WebUI AI review findings.
 model: gpt-5.6-sol
 ---
 

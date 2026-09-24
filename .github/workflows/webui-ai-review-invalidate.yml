@@ -1,4 +1,4 @@
-name: Invalidate WebUI AI approval
+name: WebUI AI review invalidation
 
 on:
   pull_request_review:
