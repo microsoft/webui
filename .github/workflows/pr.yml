@@ -180,6 +180,37 @@ jobs:
         with:
           skip-build: 'true'
 
+      - name: Install Windows App Runtime 1.8
+        shell: pwsh
+        run: |
+          $minimum = [version]'8000.946.1701.0'
+          function Get-CompatibleRuntime {
+            Get-AppxPackage -Name Microsoft.WindowsAppRuntime.1.8 |
+              Where-Object { $_.Architecture -eq 'X64' -and [version]$_.Version -ge $minimum }
+          }
+          if (-not (Get-CompatibleRuntime)) {
+            $installer = Join-Path $env:RUNNER_TEMP 'windowsappruntimeinstall-1.8.260804001-x64.exe'
+            Invoke-WebRequest `
+              -Uri 'https://aka.ms/windowsappsdk/1.8/1.8.260804001/windowsappruntimeinstall-x64.exe' `
+              -OutFile $installer
+            $expected = 'D20630D3078EA1514FB2D1FBE827254F04AF49D86502ACE8ECFDA626A8631192'
+            if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $expected) {
+              throw 'Windows App Runtime 1.8 installer SHA-256 mismatch'
+            }
+            $signature = Get-AuthenticodeSignature $installer
+            if ($signature.Status -ne 'Valid' -or
+                $signature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation') {
+              throw 'Windows App Runtime 1.8 installer signature is not valid'
+            }
+            & $installer --quiet
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows App Runtime 1.8 installer failed with exit code $LASTEXITCODE"
+            }
+          }
+          if (-not (Get-CompatibleRuntime)) {
+            throw 'Windows App Runtime 1.8 x64 (at least 8000.946.1701.0) is not registered for the CI user'
+          }
+
       - name: Install desktop contract browsers
         run: pnpm exec playwright install --with-deps chromium firefox webkit
 

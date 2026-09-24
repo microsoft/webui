@@ -144,7 +144,8 @@ python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 ```
 
 Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime
-(122.0.2365.46 or later),
+(122.0.2365.46 or later), the x64 Windows App Runtime 1.8
+(8000.946.1701.0 or newer in the 1.8 family),
 `protoc.exe` on PATH and an interactive desktop-capable runner. In PowerShell:
 
 ```powershell
