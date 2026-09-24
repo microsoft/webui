@@ -3847,10 +3847,12 @@ terminal record, all queued records, definition waiters, ancestor barriers, and
 generated spans settle successfully. `hydratedCallback()` is latched before
 author code runs and is never retried after reconnect or exception.
 
-The terminal record is part of the document body: it is emitted at the
-structural `body_end` hook after body-end injections and before the raw closing
-document tail. This keeps every boundary payload/sentinel pair in the same DOM
-placement model while preserving the single-terminal completion contract.
+The terminal record is emitted at the structural `body_end` hook, after
+host-supplied `body_inject` / `$webui.bodyEnd` content and before the parser
+writes the raw `</body>` / `</html>` tail. Keeping the final
+`data-webui-boundary` script and `<webui-hydrate>` sentinel inside `<body>`
+avoids relying on intermediary-safe preservation of bytes after `</html>` while
+retaining the single-terminal completion contract.
 
 #### Commit observability
 
