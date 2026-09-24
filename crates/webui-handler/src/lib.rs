@@ -14164,6 +14164,45 @@ mod tests {
         assert!(writer.output.contains("[1,4,0,{}]"));
     }
 
+    #[test]
+    fn streaming_terminal_record_emits_before_body_close() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_start"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>"),
+                    structural_fragment("body_start"),
+                    WebUIFragment::raw("<main>static</main>"),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+                contains_boundary: false,
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = FlushTestWriter::default();
+
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let terminal = writer.output.find("[0,4,0,{}]").expect("terminal");
+        let body_close = writer.output.find("</body>").expect("body close");
+        assert!(
+            terminal < body_close,
+            "terminal boundary record must stay inside <body>: {}",
+            writer.output
+        );
+    }
+
     /// Streaming must place the reserved-state injects exactly where the
     /// ordinary render does, so a host can switch modes without its
     /// boundary HTML moving.
@@ -14694,7 +14733,11 @@ mod tests {
         }
         assert_eq!(
             streaming.output,
-            "<html><head><meta name=\"webui-streaming\" content=\"1\"></head><body></body>"
+            concat!(
+                "<html><head><meta name=\"webui-streaming\" content=\"1\"></head><body>",
+                "<script type=\"application/json\" data-webui-boundary>[0,4,0,{}]</script>",
+                "<webui-hydrate></webui-hydrate></body>"
+            )
         );
         assert!(!streaming.output.contains("<!--wb:0-->"));
 

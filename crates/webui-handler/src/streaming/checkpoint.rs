@@ -474,8 +474,7 @@ impl WebUIHandler {
         write_record_header(context.writer, record_sequence, RECORD_KIND_TERMINAL, 0)?;
         context
             .writer
-            .write("{}]</script><webui-hydrate></webui-hydrate>")?;
-        flush_streaming_transport(context)
+            .write("{}]</script><webui-hydrate></webui-hydrate>")
     }
 
     pub(super) fn emit_streaming_state_update(
