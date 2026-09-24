@@ -5920,12 +5920,19 @@ same package directory and must not race to overwrite the reference.
 
 `ai/SKILL.md`, discovered through `.claude-plugin/plugin.json`, is a stable loader
 installed once rather than a snapshot of the reference. It instructs agents to
-read `node_modules/@microsoft/webui/ai.md` from the application's installed
-dependencies and reread after upgrades, without prescribing loading commands. Missing
-dependencies and older releases without `ai.md` are reported explicitly, never
-silently replaced with latest-version guidance. Framework contributors read
-`docs/ai.md` directly. The loader and package reference do not require runtime
-network requests or install-time changes to consumers' agent configuration.
+resolve `@microsoft/webui/ai.md` from the target application's installed
+dependencies, including app-local and hoisted packages, and reread after upgrades
+or checkout changes, without prescribing loading commands. Project-local and
+global skill installations resolve references from the target project, never
+from the skill directory. For work in the `microsoft/webui` source checkout,
+including its workspace examples, the loader selects the repository's
+`docs/ai.md` directly instead of requiring a packaged copy. This source-checkout
+rule is not a fallback for consuming applications: missing dependencies and older
+releases without `ai.md` are reported explicitly, never replaced with cached,
+latest-version, or implementation-derived guidance. The loader and package
+reference do not require runtime network requests or install-time changes to
+consumers' agent configuration. Package upgrades refresh the reference; changes
+to the loader itself require reinstalling the skill in the same scope.
 
 ### Desktop Distribution
 

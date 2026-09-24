@@ -262,11 +262,18 @@ The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads
 directly. The installer also sets it up in agent-specific skill directories
 where needed.
 
-The loader asks the agent to read `node_modules/@microsoft/webui/ai.md` from
-the application's installed dependencies.
+The loader asks the agent to resolve `@microsoft/webui/ai.md` from the target
+application's installed dependencies, including app-local and hoisted packages.
+A global skill installation still uses the application's reference, not the
+skill's installation directory. When working on WebUI itself or its workspace
+examples, the loader reads `docs/ai.md` from the framework checkout instead.
+
 Upgrading `@microsoft/webui` updates the guidance with it. You do not need to
 rerun `skills add` for reference updates. If you upgrade during an agent session,
 ask the agent to reread the installed reference.
+
+To pick up changes to the loader's own instructions, rerun the install command
+in the same scope (project or `-g`).
 
 If you previously installed the full reference as a skill, run the install
 command above once more in the same scope (project or `-g`) to replace it with
@@ -286,10 +293,10 @@ To try the reference in a single session without installing it:
 npx skills use microsoft/webui@webui-reference | copilot
 ```
 
-This also uses the reference from your installed package. Releases predating
-bundled `ai.md`, and Rust-only toolchains without `@microsoft/webui`, need a
-reference from their matching release instead. The loader reports missing
-guidance rather than silently using a newer version.
+This uses the same project-aware reference selection. Consuming applications on
+releases predating bundled `ai.md`, and Rust-only toolchains without
+`@microsoft/webui`, need a reference from their matching release instead.
+The loader reports missing guidance rather than silently using a newer version.
 
 <webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
 
