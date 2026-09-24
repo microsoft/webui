@@ -2222,6 +2222,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-core",
+ "windows-future",
  "windows-sys 0.61.2",
 ]
 
@@ -4299,6 +4300,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-bindgen"
+version = "0.65.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5308a9704923cabf7c090f0c00a8328dec5551cee858b0b6347e5465e622a6f1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-threading",
+]
+
+[[package]]
 name = "windows-collections"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4605,8 +4617,10 @@ dependencies = [
  "ctrlc",
  "libc",
  "serde_json",
+ "sha2",
  "tempfile",
  "which",
+ "windows-bindgen",
 ]
 
 [[package]]

@@ -84,6 +84,8 @@ gtk4 = { version = "0.11.3", default-features = false }
 webkit6 = { version = "0.6.1", default-features = false }
 windows = "0.62.2"
 windows-core = "0.62.2"
+windows-future = "0.3.2"
+windows-bindgen = "=0.65.0"
 
 # Test dependencies
 criterion = "0.8.2"

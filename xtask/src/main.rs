@@ -14,6 +14,8 @@ mod publish;
 mod release_version;
 mod util;
 mod version;
+#[cfg(feature = "windows-app-sdk-tools")]
+mod windows_app_sdk;
 mod windows_local;
 
 use std::process::ExitCode;
@@ -45,6 +47,8 @@ fn main() -> ExitCode {
     let task = args.get(1).map(|s| s.as_str());
 
     match task {
+        #[cfg(feature = "windows-app-sdk-tools")]
+        Some("windows-app-sdk-bindings") => windows_app_sdk::run(args.get(2)),
         Some("check") => check(),
         Some("fmt") => run_steps(&[Step::FMT]),
         Some("clippy") => run_steps(&[Step::CLIPPY]),

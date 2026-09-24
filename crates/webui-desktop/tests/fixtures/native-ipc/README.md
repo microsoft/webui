@@ -39,7 +39,13 @@ runner copies are removed. Only package resources can supply the app. Both
 native flows run optimized release code; this is correctness evidence, not a
 performance measurement. A separate release no-IPC fixture exercises source and
 bundle modes without compiling `application-ipc`, checks that IPC assets,
-endpoints and bootstrap are absent, and verifies ordinary API and window closure.
+endpoints and the IPC bootstrap script are absent, and verifies ordinary API and
+window closure. On Windows, the harness copies the Windows App SDK bootstrap
+DLL and its license, notices, and provenance from `target/release` beside each
+temporary runner, including the no-IPC example built under `target/release/examples`.
+It preflights all companions before copying and checks that portable packaging
+preserves their bytes. The Windows runtime bootstrap is required even when
+application IPC is disabled.
 Keep this fixture's registry dependency versions aligned with the root
 `Cargo.lock` when updating dependencies, so native acceptance exercises the same
 versions as the product build. Use `cargo update --manifest-path` with
@@ -144,7 +150,8 @@ python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
 ```
 
 Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime
-(122.0.2365.46 or later),
+(122.0.2365.46 or later), the x64 Windows App Runtime 1.8
+(8000.946.1701.0 or newer in the 1.8 family),
 `protoc.exe` on PATH and an interactive desktop-capable runner. In PowerShell:
 
 ```powershell

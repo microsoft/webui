@@ -30,7 +30,7 @@
     "title": "Contact Book Manager",
     "width": 1200,
     "height": 800,
-    "titlebar": { "style": "none" },
+    "titlebar": { "style": "overlay", "height": 48 },
     "background": "#f8fafc",
     "rememberState": true,
     "devtools": true

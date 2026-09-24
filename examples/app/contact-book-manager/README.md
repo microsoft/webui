@@ -39,11 +39,22 @@ pnpm --dir examples/app/contact-book-manager run build:client
 cargo run -p contact-book-desktop --features source
 ```
 
-The desktop example uses a frameless window (`titlebar: { "style": "none" }`).
-WebUI owns the edge-to-edge header, drag region, and minimize, maximize/restore,
-and close buttons. Search, navigation, and caption buttons remain interactive
-inside the draggable header through `webui-no-drag`. Window actions use the
-SDK's native window bridge, without enabling application IPC.
+The desktop example uses an overlay titlebar
+(`titlebar: { "style": "overlay", "height": 48 }`) in both source and packaged
+launches. The operating system owns the native caption buttons; the web header
+does not render replacements or send window-action messages. WebUI owns the
+edge-to-edge header and drag region. Search and Add Contact remain interactive
+inside the draggable header through `webui-no-drag`.
+
+On Windows, the 48-DIP header aligns with the Windows App SDK's tall native
+caption region and requires the installed shared Windows App SDK runtime.
+Search retains its 38px input height and Add Contact its 40px hit target.
+
+The header reserves native control space with the SDK's
+`--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and
+`--webui-titlebar-height` CSS variables. At narrow desktop widths the title
+remains in the safe titlebar area while search and Add Contact move into a
+second row below the native controls.
 
 The shared `data/state.json` defaults to `"mode": "web"`. Both source and packaged
 Rust launches supply `"mode": "desktop"` before rendering, including subsequent

@@ -335,9 +335,15 @@ fn decode_host_message(raw: &str) -> Option<DesktopHostMessage> {
 pub(super) fn register_navigation_completed(
     webview: &ICoreWebView2,
     events: EventRegistry,
+    hwnd: HWND,
 ) -> Result<ICoreWebView2NavigationCompletedEventHandler> {
     let webview_for_uri = webview.clone();
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
+        super::state::with_window_state(hwnd, |state| {
+            if let Err(error) = state.app_window.publish_metrics(&state.webview) {
+                eprintln!("WebUI: failed to publish native titlebar measurements: {error}");
+            }
+        });
         // SAFETY: The cloned interface is live for as long as the handler is
         // registered, and the source URL is copied out immediately.
         let url = read_pwstr(|out| unsafe { webview_for_uri.Source(out) })?;

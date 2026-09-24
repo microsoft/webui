@@ -213,8 +213,48 @@ Where a platform has no exact analogue but a close one, it maps rather than
 fails: `vibrancy` on Windows renders through the acrylic system backdrop.
 Where it has no analogue at all, it does not advertise the effect, so the
 mismatch surfaces as a validation error. Linux advertises no window effects or
-tray support. On Windows, `overlay` removes the native caption buttons, so web
-content must draw its own.
+tray support.
+
+On Windows, `overlay` and `hidden-inset` use Windows App SDK's native caption
+buttons over application content. Do not render HTML minimize, maximize, or
+close buttons. An overlay height greater than 32 CSS pixels selects the native
+tall caption (48 DIPs); smaller heights select the standard caption (32 DIPs).
+The application band reserves at least the configured height and never less
+than the native caption height.
+Windows controls the glyphs, hover states, snap-layout menu, and window actions.
+Keep interactive controls outside the injected safe insets and use
+`webui-drag` / `webui-no-drag` for application drag regions.
+
+macOS retains its native traffic-light controls over full-size content. Linux
+uses a native GTK header bar above the web content rather than overlaying it.
+
+On Windows, `none` hides the system titlebar while retaining native resizing
+when `resizable` is enabled. Windows manages shadows and rounded corners where
+supported; maximized and fullscreen windows follow the system's square-corner
+presentation. The window stays hidden until its native frame and webview are
+configured, including when restoring a maximized window.
+
+### Windows runtime prerequisites
+
+Windows builds with `native` use the framework-dependent **Windows App SDK
+1.8.11** runtime, alongside WebView2. Install the architecture-matching
+**Windows App Runtime 1.8, version 8000.946.1701.0 or newer in the 1.8 family**,
+and the applicable Visual C++ Redistributable. A different runtime family,
+including 2.x, does not replace 1.8. Missing prerequisites produce an actionable
+startup error, not a fallback to web-rendered caption buttons.
+
+See Microsoft's [runtime downloads](https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads)
+and [unpackaged deployment requirements](https://learn.microsoft.com/windows/apps/windows-app-sdk/deploy-unpackaged-apps).
+
+Cargo builds stage `Microsoft.WindowsAppRuntime.Bootstrap.dll` and its license
+notices beside the executable. Windows portable packaging includes those
+companions; distribute the directory, not the executable alone. The shared
+runtime is installed separately: the package does not bundle WinUI, XAML, or
+the full Windows App Runtime. Custom Windows runners must provide matching
+bootstrap companions alongside their executable when packaging.
+
+These requirements apply only to native Windows builds. Headless desktop
+rendering, macOS, and Linux do not acquire a Windows App SDK dependency.
 
 Query `PlatformFrameBackend::capabilities()` when choosing optional features:
 

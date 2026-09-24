@@ -22,23 +22,4 @@
       </a>
     </div>
   </div>
-  <if condition="mode == 'desktop'">
-    <div class="window-controls" role="group" aria-label="Window controls" webui-no-drag>
-      <button class="window-control" type="button" aria-label="Minimize window" title="Minimize window" @click="{onWindowAction('minimize')}" webui-no-drag>
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
-          <path d="M3 8h10" stroke="currentColor" stroke-width="1.25"></path>
-        </svg>
-      </button>
-      <button class="window-control" type="button" aria-label="Maximize or restore window" title="Maximize or restore window" @click="{onWindowAction('toggle-maximize')}" webui-no-drag>
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
-          <rect x="3.5" y="3.5" width="9" height="9" rx="0.5" stroke="currentColor" stroke-width="1.25"></rect>
-        </svg>
-      </button>
-      <button class="window-control window-close" type="button" aria-label="Close window" title="Close window" @click="{onWindowAction('close')}" webui-no-drag>
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
-          <path d="m4 4 8 8m0-8-8 8" stroke="currentColor" stroke-width="1.25"></path>
-        </svg>
-      </button>
-    </div>
-  </if>
 </header>

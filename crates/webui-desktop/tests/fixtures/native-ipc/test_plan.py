@@ -3,8 +3,10 @@
 
 """Pure planning tests only: these do not exercise any native adapter."""
 import unittest
-from pathlib import PureWindowsPath, PurePosixPath
-from run import NO_IPC_MODES, assert_clean_native_log, assert_runtime_dependencies, platform_plan
+from pathlib import Path, PureWindowsPath, PurePosixPath
+from tempfile import TemporaryDirectory
+from run import (NO_IPC_MODES, WINDOWS_APP_SDK_FILES, assert_clean_native_log,
+                 assert_runtime_dependencies, copy_native_runner, platform_plan)
 
 
 class PlatformPlanTests(unittest.TestCase):
@@ -31,6 +33,66 @@ class PlatformPlanTests(unittest.TestCase):
                          PureWindowsPath("C:/package/resources/webui"))
         self.assertEqual(PureWindowsPath("C:/package") / plan["executable_dir"] / plan["executable"],
                          PureWindowsPath("C:/package/webui-native-ipc-fixture.exe"))
+
+    def test_windows_runner_copies_bootstrap_and_notices_without_mutating_inputs(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "release" / "fixture.exe"
+            destination = root / "run" / "fixture.exe"
+            source.parent.mkdir()
+            destination.parent.mkdir()
+            source.write_bytes(b"runner")
+            for name in WINDOWS_APP_SDK_FILES:
+                (source.parent / name).write_bytes(name.encode())
+            copy_native_runner(source, destination, "win32")
+            self.assertEqual(destination.read_bytes(), b"runner")
+            for name in WINDOWS_APP_SDK_FILES:
+                self.assertEqual((destination.parent / name).read_bytes(),
+                                 (source.parent / name).read_bytes())
+
+    def test_windows_runner_missing_companion_fails_before_copying_executable(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "release" / "fixture.exe"
+            destination = root / "run" / "fixture.exe"
+            source.parent.mkdir()
+            destination.parent.mkdir()
+            source.write_bytes(b"runner")
+            for name in WINDOWS_APP_SDK_FILES[:-1]:
+                (source.parent / name).write_bytes(name.encode())
+            with self.assertRaisesRegex(RuntimeError, WINDOWS_APP_SDK_FILES[-1]):
+                copy_native_runner(source, destination, "win32")
+            self.assertFalse(destination.exists())
+
+    def test_windows_example_uses_profile_companions_not_examples_directory(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            profile = root / "release"
+            examples = profile / "examples"
+            examples.mkdir(parents=True)
+            source = examples / "no-ipc-native.exe"
+            source.write_bytes(b"example")
+            for name in WINDOWS_APP_SDK_FILES:
+                (profile / name).write_bytes(name.encode())
+            destination = root / "run" / "no-ipc-native.exe"
+            destination.parent.mkdir()
+            copy_native_runner(source, destination, "win32", companion_directory=profile)
+            self.assertEqual(destination.read_bytes(), b"example")
+            for name in WINDOWS_APP_SDK_FILES:
+                self.assertEqual((destination.parent / name).read_bytes(), name.encode())
+
+    def test_other_platforms_copy_only_the_runner(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture"
+            source.write_bytes(b"runner")
+            for platform in ("darwin", "linux"):
+                destination = root / platform / "fixture"
+                destination.parent.mkdir()
+                copy_native_runner(source, destination, platform)
+                self.assertEqual(destination.read_bytes(), b"runner")
+                self.assertEqual([path.name for path in destination.parent.iterdir()],
+                                 ["fixture"])
 
     def test_linux_portable(self):
         plan = platform_plan("linux")

@@ -72,7 +72,7 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
         width: 1200,
         height: 800,
         devtools: true,
-        titlebar: TitlebarStyle::None,
+        titlebar: TitlebarStyle::Overlay { height: 48 },
         background: Some("#f8fafc".parse()?),
         remember_state: true,
         ..WindowOptions::default()
@@ -780,14 +780,21 @@ mod tests {
 
     #[cfg(feature = "source")]
     #[test]
-    fn source_and_packaged_frames_render_app_owned_chrome() {
+    fn source_and_packaged_frames_render_native_overlay_chrome() {
         use webui_desktop::{build_desktop_bundle, DesktopBundleOptions, DesktopShellConfig};
 
         let fixture = source_fixture(&test_state());
         let app_root = fixture.path();
         let source = source_frame(app_root.to_path_buf()).unwrap();
-        assert_eq!(source.window().titlebar, TitlebarStyle::None);
+        assert_eq!(
+            source.window().titlebar,
+            TitlebarStyle::Overlay { height: 48 }
+        );
         assert!(source.runtime().startup_html().contains("mode=\"desktop\""));
+        assert!(source
+            .runtime()
+            .startup_html()
+            .contains("--webui-titlebar-height:48px"));
         let response = source
             .runtime()
             .handle_request(&webui_desktop::DesktopProtocolRequest::get("/app.js"))
@@ -801,7 +808,7 @@ mod tests {
         let package: Value = serde_json::from_str(include_str!("../../package.json")).unwrap();
         let window: WindowOptions =
             serde_json::from_value(package["webuiDesktop"].clone()).unwrap();
-        assert_eq!(window.titlebar, TitlebarStyle::None);
+        assert_eq!(window.titlebar, TitlebarStyle::Overlay { height: 48 });
         let bundle = tempfile::tempdir().unwrap();
         build_desktop_bundle(DesktopBundleOptions {
             build_options: contact_book_build_options(app_root.join("src")),
@@ -821,7 +828,14 @@ mod tests {
         .unwrap();
 
         let packaged = packaged_frame(bundle.path()).unwrap();
-        assert_eq!(packaged.window().titlebar, TitlebarStyle::None);
+        assert_eq!(
+            packaged.window().titlebar,
+            TitlebarStyle::Overlay { height: 48 }
+        );
+        assert!(packaged
+            .runtime()
+            .startup_html()
+            .contains("--webui-titlebar-height:48px"));
         assert!(packaged
             .runtime()
             .startup_html()

@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{self, MSG};
 
 use super::command::execute_window_command;
 use super::event::{logical_dimension, physical_to_logical, size_event_transition};
-use super::nonclient::{non_client_calc_size, non_client_hit_test, redraw_frame};
+use super::nonclient::{initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame};
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
 #[cfg(feature = "application-ipc")]
@@ -47,6 +47,16 @@ pub(super) extern "system" fn window_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     match msg {
+        WindowsAndMessaging::WM_NCCREATE => {
+            if let Err(error) = initialize_frame(hwnd, l_param) {
+                eprintln!(
+                    "WebUI: failed to initialize the native window frame: {error}; help: verify the native window creation parameters"
+                );
+                return LRESULT(0);
+            }
+            // SAFETY: Frame configuration is installed before default creation.
+            unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) }
+        }
         super::APP_WAKE_MESSAGE => {
             let tasks = super::state::with_window_state_result(hwnd, |state| {
                 state.application_tasks.clone()
@@ -80,19 +90,23 @@ pub(super) extern "system" fn window_proc(
         WindowsAndMessaging::WM_NCCALCSIZE => non_client_calc_size(hwnd, msg, w_param, l_param),
         WindowsAndMessaging::WM_NCHITTEST => non_client_hit_test(hwnd, msg, w_param, l_param),
         WindowsAndMessaging::WM_DWMCOMPOSITIONCHANGED => {
+            refresh_frame(hwnd);
             redraw_frame(hwnd);
             LRESULT(0)
         }
         WindowsAndMessaging::WM_DPICHANGED => {
             apply_suggested_rect(hwnd, l_param);
+            refresh_frame(hwnd);
             dispatch_scale_changed(hwnd, w_param);
             LRESULT(0)
         }
         WindowsAndMessaging::WM_ACTIVATE => {
+            refresh_frame(hwnd);
             dispatch_activation(hwnd, w_param);
             LRESULT(0)
         }
         WindowsAndMessaging::WM_SETTINGCHANGE => {
+            refresh_frame(hwnd);
             dispatch_theme_changed(hwnd);
             // SAFETY: Setting changes must still reach default processing.
             unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) }
@@ -222,8 +236,10 @@ fn apply_size_limits(hwnd: HWND, l_param: LPARAM) {
 /// Resize the WebView2 surface and publish the matching lifecycle event.
 fn dispatch_size_changed(hwnd: HWND, w_param: WPARAM) {
     with_window_state(hwnd, |state| {
-        let _ = set_controller_bounds(&state.controller, hwnd);
-        let size = get_window_size(hwnd);
+        if let Err(error) = resize_content(hwnd, state) {
+            eprintln!("WebUI: failed to resize native web content: {error}");
+        }
+        let size = get_window_size(state.content);
         let size_code = u32::try_from(w_param.0).unwrap_or(WindowsAndMessaging::SIZE_RESTORED);
         let (current, transition) = size_event_transition(state.window_state.get(), size_code);
         state.window_state.set(current);
@@ -239,6 +255,26 @@ fn dispatch_size_changed(hwnd: HWND, w_param: WPARAM) {
         emit(state, &event);
         save_window_state(hwnd, state);
     });
+}
+
+pub(super) fn refresh_frame(hwnd: HWND) {
+    with_window_state(hwnd, |state| {
+        if matches!(state.options.titlebar, crate::TitlebarStyle::None) {
+            if let Err(error) = super::create::extend_frameless_frame(hwnd) {
+                eprintln!("WebUI: failed to refresh the frameless DWM border: {error}");
+            }
+        }
+        if let Err(error) = resize_content(hwnd, state) {
+            eprintln!("WebUI: failed to refresh native caption controls: {error}");
+        }
+    });
+}
+
+fn resize_content(hwnd: HWND, state: &FrameState) -> Result<()> {
+    if state.app_window.refresh(hwnd)? {
+        state.app_window.publish_metrics(&state.webview)?;
+    }
+    set_controller_bounds(&state.controller, state.content)
 }
 
 /// Publish a move event and persist the new position.

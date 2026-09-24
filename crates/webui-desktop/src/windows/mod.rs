@@ -14,6 +14,7 @@
 //! * [`bridge`] receives window controls and typed application IPC.
 //! * [`protocol`] serves app resources through native request interception.
 
+mod app_sdk;
 mod bridge;
 mod command;
 mod create;
@@ -99,15 +100,18 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let store = WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
+    let runtime = app_sdk::Runtime::initialize()?;
 
     let saved = state::load_saved_state(store.as_ref());
     let window_frame = FrameWindow::new(&frame.window, saved.as_ref())?;
+    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, &frame.window)?;
 
     let profile = webview::browser_profile(frame.app_id.as_deref())?;
     let environment = webview::create_environment(&profile.path).with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
-    let controller = webview::create_controller(&environment, window_frame.hwnd)?;
+    let content = window_frame.hwnd;
+    let controller = webview::create_controller(&environment, content)?;
     webview::configure_controller_background(&controller, frame.window.background)?;
     webview::configure_window_effect(window_frame.hwnd, frame.window.effect);
     // SAFETY: The controller was created successfully, so it owns a WebView2.
@@ -120,8 +124,9 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
 
     let navigation_starting = webview::register_navigation_guard(&webview, frame.events.clone())?;
     let navigation_completed =
-        webview::register_navigation_completed(&webview, frame.events.clone())?;
+        webview::register_navigation_completed(&webview, frame.events.clone(), window_frame.hwnd)?;
     webview::inject_drag_script(&webview)?;
+    app_window.install_metrics(&webview)?;
     let web_message_received = bridge::register_message_handler(
         &webview,
         window_frame.hwnd,
@@ -137,11 +142,13 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         Rc::downgrade(&ipc),
     )?;
-    message::set_controller_bounds(&controller, window_frame.hwnd)?;
+    message::set_controller_bounds(&controller, content)?;
     // SAFETY: The controller is live and owns the WebView2 surface.
     unsafe { controller.SetIsVisible(true)? };
 
     let state = Box::new(FrameState {
+        app_window,
+        content,
         application_tasks,
         #[cfg(feature = "application-ipc")]
         ipc: Rc::clone(&ipc),
@@ -155,7 +162,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         options: frame.window.clone(),
         webview: webview.clone(),
         store,
-        fullscreen: Cell::new(None),
+        fullscreen: Cell::new(false),
         window_state: Cell::new(state::initial_window_size_state(window_frame.hwnd)),
     });
     state::set_window_state(window_frame.hwnd, Some(state));
@@ -171,9 +178,10 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         });
     }
 
+    window_frame.show()?;
+    message::refresh_frame(window_frame.hwnd);
     // SAFETY: `window_frame.hwnd` is a live window owned by this thread.
     unsafe {
-        let _ = WindowsAndMessaging::ShowWindow(window_frame.hwnd, WindowsAndMessaging::SW_SHOW);
         let _ = Gdi::UpdateWindow(window_frame.hwnd);
         let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }

@@ -7,8 +7,7 @@
 use std::cell::Cell;
 
 use crate::{
-    DisplayBounds, EventRegistry, TitlebarStyle, WindowHandle, WindowOptions, WindowState,
-    WindowStateStore,
+    DisplayBounds, EventRegistry, WindowHandle, WindowOptions, WindowState, WindowStateStore,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2NavigationCompletedEventHandler,
@@ -17,9 +16,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi;
-use windows::Win32::UI::WindowsAndMessaging::{
-    self, WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WINDOW_STYLE,
-};
+use windows::Win32::UI::WindowsAndMessaging::{self, WINDOW_LONG_PTR_INDEX};
 
 /// The native state reported by `WM_SIZE`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,21 +29,10 @@ pub(super) enum WindowSizeState {
     Minimized,
 }
 
-/// Window geometry and styles saved before entering fullscreen.
-#[derive(Clone, Copy)]
-pub(super) struct SavedFrame {
-    /// Window style captured before the fullscreen transition.
-    pub(super) style: WINDOW_STYLE,
-    /// Extended window style captured before the fullscreen transition.
-    pub(super) ex_style: WINDOW_EX_STYLE,
-    /// Screen rectangle captured before the fullscreen transition.
-    pub(super) rect: RECT,
-    /// Whether the window was maximized before the fullscreen transition.
-    pub(super) maximized: bool,
-}
-
 /// Per-window state owned by the native window procedure.
 pub(super) struct FrameState {
+    pub(super) app_window: super::app_sdk::WindowFrame,
+    pub(super) content: HWND,
     pub(super) application_tasks: std::rc::Rc<super::tasks::ApplicationTasks>,
     /// Native IPC adapter, with weak core facade and UI-local completions.
     #[cfg(feature = "application-ipc")]
@@ -71,17 +57,10 @@ pub(super) struct FrameState {
     pub(super) webview: ICoreWebView2,
     /// Geometry store, present only when `remember_state` is enabled.
     pub(super) store: Option<WindowStateStore>,
-    /// Saved frame captured while the window is fullscreen.
-    pub(super) fullscreen: Cell<Option<SavedFrame>>,
+    /// Whether the native presenter is fullscreen.
+    pub(super) fullscreen: Cell<bool>,
     /// Most recent state reported by `WM_SIZE`.
     pub(super) window_state: Cell<WindowSizeState>,
-}
-
-impl FrameState {
-    /// Return the requested titlebar style.
-    pub(super) fn titlebar(&self) -> &TitlebarStyle {
-        &self.options.titlebar
-    }
 }
 
 /// Read the current native size state while constructing a frame record.
@@ -163,7 +142,7 @@ pub(super) fn save_window_state(hwnd: HWND, state: &FrameState) {
     let Some(store) = state.store.as_ref() else {
         return;
     };
-    if state.fullscreen.get().is_some() {
+    if state.fullscreen.get() {
         return;
     }
     // SAFETY: `hwnd` is a live window; `IsIconic` only reads window state.

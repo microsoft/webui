@@ -1,0 +1,21 @@
+Microsoft Windows App SDK bootstrap redistributables
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+These unmodified Microsoft.WindowsAppRuntime.Bootstrap.dll binaries come from
+Microsoft.WindowsAppSDK.Foundation 1.8.260803002, the official Microsoft NuGet
+package. See Microsoft.WindowsAppSDK.PROVENANCE.json for the source URL, archive
+SHA256, source entry names, and individual SHA256 values.
+
+The binaries are NOT licensed under WebUI's MIT source-code license. They are
+governed by the accompanying Microsoft.WindowsAppSDK.LICENSE.txt, copied
+verbatim from license.txt in the official package. Section 3 describes
+redistribution rights, requirements, and restrictions. Application distributors
+are responsible for satisfying these terms, including end-user terms.
+The Foundation archive contains no separate third-party notice file.
+
+Deployment is framework-dependent, not self-contained. This directory includes
+only the bootstrap loader, not the Windows App Runtime shared framework.
+Install the matching-architecture Windows App Runtime 1.8 on destination
+machines, as well as the WebView2 Runtime required by WebUI. The bootstrap DLL
+does not install the shared runtime. No download or runtime installation is
+performed by the WebUI build script.

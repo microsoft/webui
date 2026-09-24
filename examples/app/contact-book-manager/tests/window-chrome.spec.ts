@@ -23,6 +23,9 @@ type WindowBridge = Window & {
   windowActions: string[];
 };
 
+type TitlebarInsets = { start: number; end: number; height: number };
+const windowsInsets: TitlebarInsets = { start: 0, end: 138, height: 48 };
+
 async function captureWindowActions(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const host = window as WindowBridge;
@@ -35,6 +38,7 @@ async function renderDesktopMode(
   page: Page,
   request: APIRequestContext,
   baseURL: string | undefined,
+  insets: TitlebarInsets = windowsInsets,
 ): Promise<void> {
   if (!baseURL) throw new Error('Contact Book tests require a baseURL');
   const origin = new URL(baseURL).origin;
@@ -63,7 +67,12 @@ async function renderDesktopMode(
     const data = await response.json() as { state: Record<string, unknown> };
     const state = { ...data.state, mode: 'desktop', basePath: '/', tokens };
     const body = document
-      ? protocol.render(state, { requestPath: url.pathname }).toString('utf8')
+      ? protocol.render(state, { requestPath: url.pathname }).toString('utf8').replace(
+        '</head>',
+        `<style>:root{--webui-titlebar-inset-start:${insets.start}px;`
+          + `--webui-titlebar-inset-end:${insets.end}px;`
+          + `--webui-titlebar-height:${insets.height}px}</style></head>`,
+      )
       : protocol.renderPartial(
         state, 'index.html', url.pathname, incoming.headers()['x-webui-inventory'] ?? '',
       );
@@ -73,6 +82,43 @@ async function renderDesktopMode(
       body,
     });
   });
+}
+
+async function expectNativeControlSafeAreas(
+  page: Page,
+  insets: TitlebarInsets = windowsInsets,
+): Promise<void> {
+  await expect(page.locator('cb-header .window-controls, cb-header .window-control')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /window$/ })).toHaveCount(0);
+  await expect(page.locator('cb-header .header')).toHaveAttribute('webui-drag', '');
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error('Contact Book tests require a viewport');
+  const band = page.locator(viewport.width <= 800 ? 'cb-header .header-left' : 'cb-header .header');
+  await expect(band).toHaveCSS('height', `${insets.height}px`);
+  await expect(page.locator('cb-header .search-input')).toHaveCSS('height', '38px');
+  await expect(page.locator('cb-header .add-btn')).toHaveCSS('height', '40px');
+  const title = await page.locator('cb-header .title').boundingBox();
+  if (!title) throw new Error('Contact Book title has no layout box');
+  expect(title.x).toBeGreaterThanOrEqual(insets.start);
+  expect(title.x + title.width).toBeLessThanOrEqual(viewport.width - insets.end);
+  expect(title.y + title.height).toBeLessThanOrEqual(insets.height);
+  for (const selector of ['.search-container', '.add-btn']) {
+    const control = page.locator(`cb-header ${selector}`);
+    await expect(control).toBeVisible();
+    await expect(control).toHaveAttribute('webui-no-drag', '');
+    const rect = await control.boundingBox();
+    if (!rect) throw new Error(`${selector} has no hit target`);
+    expect(rect.x).toBeGreaterThanOrEqual(0);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width);
+    if (viewport.width <= 800) {
+      expect(rect.y).toBeGreaterThanOrEqual(insets.height);
+    } else {
+      expect(rect.y).toBeGreaterThanOrEqual(0);
+      expect(rect.y + rect.height).toBeLessThanOrEqual(insets.height);
+      expect(rect.x).toBeGreaterThanOrEqual(insets.start);
+      expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width - insets.end);
+    }
+  }
 }
 
 async function expectViewportContained(page: Page): Promise<void> {
@@ -122,7 +168,7 @@ test.describe('desktop mode', () => {
     await page.goto('/');
     await expect(page.locator('cb-header')).toHaveAttribute('mode', 'desktop');
     await expect(page.locator('cb-header')).toHaveJSProperty('$ready', true);
-    await expect(page.getByRole('button', { name: 'Close window', exact: true })).toBeVisible();
+    await expectNativeControlSafeAreas(page);
     const header = await page.locator('cb-header').boundingBox();
     expect(header?.x).toBe(0);
     expect(header?.y).toBe(0);
@@ -138,55 +184,64 @@ test.describe('desktop mode', () => {
     await content.evaluate(element => { element.scrollTop = element.scrollHeight; });
     expect(await content.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
     expect((await page.locator('cb-header').boundingBox())?.y).toBe(0);
-    await expect(page.getByRole('button', { name: 'Close window', exact: true })).toBeVisible();
+    await expectNativeControlSafeAreas(page);
     await expectViewportContained(page);
     await page.locator('cb-header').getByRole('link', { name: 'Add Contact', exact: true }).click();
     await expect(page.locator('cb-contact-form .form-title')).toBeInViewport();
     await expect(content).toHaveJSProperty('scrollTop', 0);
   });
 
-  test('caption controls send only native window actions and support the keyboard', async ({ page }) => {
+  test('header actions support the keyboard without sending native window messages', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('cb-header')).toHaveJSProperty('$ready', true);
-    const minimize = page.getByRole('button', { name: 'Minimize window', exact: true });
-    await minimize.focus();
-    await expect(minimize).toBeFocused();
-    await page.keyboard.press('Enter');
-    await page.getByRole('button', { name: 'Maximize or restore window', exact: true }).click();
-    await page.getByRole('button', { name: 'Close window', exact: true }).click();
-    expect(await page.evaluate(() => (window as WindowBridge).windowActions))
-      .toEqual(['"minimize"', '"toggle-maximize"', '"close"']);
+    await expectNativeControlSafeAreas(page);
     await expect(page.locator('cb-header [webui-no-drag] .search-input')).toHaveCount(1);
-    expect(await minimize.evaluate(element => element.closest('[webui-no-drag]') !== null))
-      .toBe(true);
-    await page.locator('cb-header .search-input').fill('Ada');
-    await expect(page.locator('cb-header .search-input')).toHaveValue('Ada');
-    expect(await page.evaluate(() => (window as WindowBridge).windowActions)).toHaveLength(3);
+    const search = page.locator('cb-header .search-input');
+    await search.focus();
+    await expect(search).toBeFocused();
+    await search.fill('Sarah');
+    await expect(search).toHaveValue('Sarah');
+    await expect(page.locator('cb-app')).toHaveJSProperty('searchQuery', 'Sarah');
+    await page.locator('cb-header .add-btn').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('cb-contact-form .form-title')).toBeInViewport();
+    expect(await page.evaluate(() => (window as WindowBridge).windowActions)).toEqual([]);
     await page.getByRole('link', { name: 'Skip to content' }).focus();
     await page.keyboard.press('Enter');
     await expect(page.locator('cb-app .content')).toBeFocused();
   });
 
-  test('dark and narrow layouts keep all caption controls reachable', async ({ page }, testInfo) => {
+  test('dark and narrow layouts reserve native caption space', async ({ page }, testInfo) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await page.goto('/');
     await expect(page.locator('cb-header')).toHaveJSProperty('$ready', true);
     await expectViewportContained(page);
+    await expectNativeControlSafeAreas(page);
     await page.screenshot({ path: testInfo.outputPath('desktop-dark.png') });
     await page.setViewportSize({ width: 480, height: 640 });
-    for (const name of ['Minimize window', 'Maximize or restore window', 'Close window']) {
-      const control = page.getByRole('button', { name, exact: true });
-      await expect(control).toBeVisible();
-      const rect = await control.boundingBox();
-      if (!rect) throw new Error(`${name} has no hit target`);
-      expect(rect.x).toBeGreaterThanOrEqual(0);
-      expect(rect.x + rect.width).toBeLessThanOrEqual(480);
-      expect(rect.width).toBeGreaterThanOrEqual(32);
-      expect(rect.height).toBeGreaterThanOrEqual(32);
-    }
+    await expectNativeControlSafeAreas(page);
     await expect(page.locator('cb-header .search-input')).toBeVisible();
     await expect(page.locator('cb-header .add-btn')).toBeVisible();
     await expectViewportContained(page);
     await page.screenshot({ path: testInfo.outputPath('desktop-narrow.png') });
   });
+
+  for (const [platform, insets] of [
+    ['Windows', windowsInsets],
+    ['macOS', { start: 78, end: 0, height: 48 }],
+    ['Linux', { start: 0, end: 0, height: 48 }],
+    ['custom', { start: 90, end: 160, height: 72 }],
+  ] as const) {
+    test(`${platform} safe areas apply to wide and responsive desktop headers`, async ({ page, request, baseURL }) => {
+      await renderDesktopMode(page, request, baseURL, insets);
+      await page.goto('/');
+      await expect(page.locator('cb-header')).toHaveJSProperty('$ready', true);
+      await expectNativeControlSafeAreas(page, insets);
+      for (const width of [800, 768, 480, 390]) {
+        await page.setViewportSize({ width, height: 640 });
+        await expectNativeControlSafeAreas(page, insets);
+        await expectViewportContained(page);
+      }
+    });
+  }
 });

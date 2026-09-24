@@ -6818,7 +6818,30 @@ and returns an actionable error unless `--force` is supplied.
 
 `microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
 
-For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` once into startup HTML. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
+For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines initial CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` into startup HTML. Native Windows overlay windows refine these properties from the actual caption measurements, converting physical pixels outward to CSS pixels and mapping physical sides to the document's writing direction. Measurements refresh after native layout/DPI changes and document navigation. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
+
+Native Windows builds use framework-dependent Windows App SDK 1.8.11
+(minimum Windows App Runtime 1.8 package version 8000.946.1701.0), with
+architecture-matching bootstrap companions staged by Cargo and preserved by
+Windows portable packaging. The shared runtime and applicable Visual C++
+Redistributable are prerequisites; missing assets/runtime fail actionably.
+No SDK dependency or companion assets apply to headless, macOS, or Linux builds.
+The HWND remains a Win32 window hosting WebView2; no XAML application is required.
+The bootstrap outlives all native windows and SDK objects.
+The backend reuses an existing current-thread Windows App SDK dispatcher.
+Otherwise it creates and owns one, shutting down only its own queue before
+releasing interop modules and the bootstrap.
+
+Windows `Overlay` and `HiddenInset` extend application content beneath genuine
+AppWindow caption controls. AppWindow owns caption drawing, non-client input,
+and fullscreen presentation; the backend must not override its frame calculation
+with a second custom caption implementation. Overlay heights over 32 CSS pixels
+select the native Tall (48-DIP) caption; other heights use Standard (32 DIPs).
+The CSS application band is at least the configured height and the measured
+native caption height; Windows does not stretch its native controls arbitrarily.
+Application drag regions remain `webui-drag`, with `webui-no-drag` controls
+interactive outside native caption safe areas. Native startup configures the
+titlebar while hidden before publishing the window.
 
 Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
 
@@ -6843,6 +6866,15 @@ Wakeups are coalesced until a drain, installed callbacks wake any existing
 backlog, and wakeup invocation/destruction occurs outside channel locks.
 
 `TitlebarStyle::None` removes system-drawn chrome, not native window capabilities.
+On Windows, custom-frame layout applies from native window creation, independently
+of WebView2 initialization. Initial and restored maximized geometry must not make
+the window visible before its native frame and webview are configured.
+The caption is removed through client-area calculation, while overlapped-window
+style bits retain DWM shadows and OS-managed corners. Restored, resizable `None`
+windows reserve per-window-DPI resize borders outside WebView2; maximized custom
+frames inset the off-monitor frame so content fills the work area. Fixed-size
+and fullscreen custom windows expose no resize hit targets. Overlay and
+hidden-inset styles delegate their extended frame geometry to Windows App SDK.
 On macOS its style mask retains close/minimize capabilities and the configured
 resizability without `Titled`. The window subclass handles frameless
 `performClose:` by consulting `windowShouldClose:` before closing, since AppKit's
