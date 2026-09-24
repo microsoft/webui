@@ -50,7 +50,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEBUI_AI_REVIEW_STAGED: "true"
-        run: node .github/scripts/webui-ai-review.mjs start
+        run: |
+          if [ ! -f .github/scripts/webui-ai-review.mjs ]; then
+            echo "::notice::Reviewer scripts are not present at the pinned base commit; skipping. They become available once this PR merges to the default branch."
+            exit 0
+          fi
+          node .github/scripts/webui-ai-review.mjs start
   agent:
     needs: [review_start]
     if: needs.review_start.outputs.current == 'true'
@@ -72,7 +77,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEBUI_AI_REVIEW_STAGED: "true"
           WEBUI_PUBLISH_RESULT: ${{ needs.publish_webui_review.result }}
-        run: node .github/scripts/webui-ai-review.mjs finish
+        run: |
+          if [ ! -f .github/scripts/webui-ai-review.mjs ]; then
+            echo "::notice::Reviewer scripts are not present at the pinned base commit; skipping."
+            exit 0
+          fi
+          node .github/scripts/webui-ai-review.mjs finish
 safe-outputs:
   staged: true
   report-failure-as-issue: false
@@ -151,7 +161,12 @@ safe-outputs:
             WEBUI_AI_REVIEW_STAGED: "true"
             WEBUI_DETECTION_SUCCESS: ${{ needs.detection.outputs.detection_success }}
             WEBUI_DETECTION_CONCLUSION: ${{ needs.detection.outputs.detection_conclusion }}
-          run: node .github/scripts/webui-ai-review.mjs publish
+          run: |
+            if [ ! -f .github/scripts/webui-ai-review.mjs ]; then
+              echo "::notice::Reviewer scripts are not present at the pinned base commit; skipping."
+              exit 0
+            fi
+            node .github/scripts/webui-ai-review.mjs publish
 ---
 
 # WebUI PR review

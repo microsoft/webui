@@ -25,4 +25,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEBUI_AI_REVIEW_STAGED: "true"
-        run: node .github/scripts/webui-ai-review-invalidate.mjs
+        run: |
+          if [ ! -f .github/scripts/webui-ai-review-invalidate.mjs ]; then
+            echo "::notice::Invalidation script is not present on the default branch yet; skipping. It becomes available once the reviewer PR merges."
+            exit 0
+          fi
+          node .github/scripts/webui-ai-review-invalidate.mjs
