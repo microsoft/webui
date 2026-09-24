@@ -498,9 +498,7 @@ impl ContinuationVm {
         {
             return Err(HandlerError::MissingStreamingBodyEnd);
         }
-        let sequence = streaming_state(context)?.next_record_sequence;
-        handler.emit_streaming_terminal(sequence, context)?;
-        increment_streaming_record_sequence("terminal", streaming_state(context)?)?;
+        context.writer.stream_flush()?;
         context.writer.end()?;
         Ok(StreamStatus {
             boundary: None,

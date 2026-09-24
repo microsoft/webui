@@ -37,7 +37,7 @@ pub(crate) use state::StreamingRenderState;
 pub(crate) use vm::PreparedContinuationStatePlan;
 
 use root::process_streaming_root_signal;
-use state::require_streaming_head_start;
+use state::{increment_streaming_record_sequence, require_streaming_head_start};
 
 pub(crate) const STREAMING_MARKER: &str = "<meta name=\"webui-streaming\" content=\"1\">";
 
@@ -340,7 +340,13 @@ impl WebUIHandler {
             if let Some(html) = context.state_inject.body_end {
                 context.writer.write(html)?;
             }
-            streaming_state(context)?.body_ended = true;
+            let sequence = streaming_state(context)?.next_record_sequence;
+            self.emit_streaming_terminal(sequence, context)?;
+            {
+                let streaming = streaming_state(context)?;
+                increment_streaming_record_sequence("terminal", streaming)?;
+                streaming.body_ended = true;
+            }
             context.body_end_emitted = true;
             return Ok(true);
         }
