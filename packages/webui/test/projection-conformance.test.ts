@@ -5,9 +5,8 @@
  * Runs the shared adapter conformance suite against `compileProjection`
  * (the bundler-neutral TypeScript AST semantic compiler).
  *
- * This is the primary correctness oracle for the compiler: every fixture in
- * `ALL_CASES` documents an authoritative scenario from DESIGN.md's
- * "Bundler-Neutral State Projection Compiler" contract.
+ * This is the primary correctness oracle for the compiler: `ALL_CASES`
+ * defines the executable scenarios behind DESIGN.md's projection architecture.
  */
 
 import { describe, test } from "node:test";

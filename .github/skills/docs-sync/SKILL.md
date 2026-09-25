@@ -1,6 +1,6 @@
 ---
 name: docs-sync
-description: Keep user-facing docs and DESIGN specification aligned with behavior and API changes.
+description: Keep user-facing docs current and DESIGN aligned with architectural changes.
 ---
 
 # Docs Synchronization Workflow
@@ -14,30 +14,35 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 | CLI flags or commands | `docs/guide/cli/index.md` + `docs/ai.md` (Build and run section) |
 | Template syntax or directives | `docs/guide/concepts/directives/` + `docs/ai.md` |
 | Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/ai.md` |
-| Hydration markers or mechanism | `docs/guide/concepts/hydration.md` + `DESIGN.md` (WebUI Framework Plugin) |
+| Hydration markers or mechanism | `docs/guide/concepts/hydration.md`; `DESIGN.md` only if hydration architecture changes |
 | Routing behavior | `docs/guide/concepts/routing.md` + `docs/ai.md` |
 | State management or path resolution | `docs/guide/concepts/state-management/index.md` |
 | Handler API (Rust, Node, FFI) | `docs/guide/concepts/handlers/` + `docs/guide/integrations.md` |
-| Protocol fields or fragment types | `DESIGN.md` (Protocol Specification) |
-| Plugin system (parser or handler) | `docs/guide/concepts/plugins/index.md` + `DESIGN.md` |
+| Protocol fields or fragment types | `crates/webui-protocol/proto/webui.proto` + consumers/tests; `DESIGN.md` only if the graph or ownership model changes |
+| Internal streaming, projection, or desktop IPC contract | Relevant `specs/` reference + producer/consumer tests; `DESIGN.md` only if the architecture changes |
+| Plugin system (parser or handler) | `docs/guide/concepts/plugins/index.md`; `DESIGN.md` if plugin responsibilities change |
 | Performance characteristics | `docs/guide/concepts/performance.md` |
-| Public API (Rust crate, npm package) | `DESIGN.md` + relevant handler/integration docs |
-| Error variants or error messages | `DESIGN.md` |
+| Public API (Rust crate, npm package) | Relevant handler/integration docs; `DESIGN.md` only if an architectural boundary changes |
+| Error variants or error messages | Defining source/tests and relevant public troubleshooting docs; `DESIGN.md` only if error-handling architecture changes |
 | `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
 | `@microsoft/webui-router` behavior | `docs/guide/concepts/routing.md` + `packages/webui-router/README.md` |
 
 ## DESIGN.md rules
 
-`DESIGN.md` is the living technical specification. Update it in the same commit when modifying:
+`DESIGN.md` is the living, technology-independent architecture for rebuilding
+WebUI. Update it in the same change only when modifying:
 
-- Public APIs or type signatures
-- Protocol fields or fragment types
-- Behavioral contracts (matching semantics, expression evaluation, state resolution)
-- Error variants
-- SSR marker formats
-- Metadata object format
+- Subsystem responsibilities and data flow
+- Build-time versus request-time ownership
+- Cross-layer design invariants and compatibility boundaries
+- Technology choices essential to reproducing the system
 
-If `DESIGN.md` and the code disagree, that is a bug - fix both.
+Revise existing explanations instead of appending incident histories. Exact
+schemas, signatures, error codes, SSR marker layouts, metadata tuples, and
+regression details belong in the defining source and tests; preserve exact
+cross-language contracts in focused internal `specs/` references. A field or
+API change alone is not an architectural change. If an
+architectural claim and the code disagree, reconcile them.
 
 ## docs/ rules
 
@@ -62,9 +67,9 @@ point:
 
 Do not document private or `pub(crate)` items, internal callbacks, intermediate
 representations, cache algorithms, implementation sequencing, regression-test
-details, or dependency-specific workarounds in developer docs. Put architecture
-and implementation invariants in `DESIGN.md`; keep local rationale in succinct
-ordinary source comments.
+details, or dependency-specific workarounds in developer docs. Put system-level
+architecture in `DESIGN.md`, cross-language technical contracts in `specs/`,
+and implementation invariants and local rationale near code and tests.
 
 Rust `///` documentation comments are for exported public APIs only. Use `//`
 sparingly for non-public implementation rationale. Before finishing, audit the

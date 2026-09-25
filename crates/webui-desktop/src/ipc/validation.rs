@@ -233,8 +233,6 @@ fn field<'a>(input: &mut &'a [u8], wire: u8) -> Result<&'a [u8], IpcError> {
     Ok(data)
 }
 
-/// Decode a strict v2 envelope after checking complete size and wire boundaries.
-/// Application bytes remain opaque here; generated validators run on workers.
 /// Decode a strict v3 envelope. The fixed layout has no ambiguity to police
 /// (no duplicate/unknown fields, no wire-type confusion), so a single decode
 /// pass both parses and structurally validates the bytes; only the envelope's

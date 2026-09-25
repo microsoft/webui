@@ -22,7 +22,7 @@ Every behavioral contract that spans more than one layer (parser â†’ protocol â†
 | **Tie-breaking determinism** | When multiple candidates match with equal rank, the selection rule must be documented and identical across layers. |
 | **Edge values** | Empty strings, `/`, encoded slashes (`%2F`), Unicode, and values containing delimiters (`.`, `:`, `*`) must be tested at every boundary. |
 | **Error representation** | When one layer returns an error, the other layers must handle or propagate it consistently - no silent swallowing. |
-| **Spec-vs-code parity** | If `DESIGN.md` specifies behavior (e.g., array indexing `items.0.name`, string `.length` semantics), the implementation must match. Tests that lock in spec-violating behavior are bugs, not proof of correctness. |
+| **Architecture-vs-code parity** | `DESIGN.md` must match system boundaries and invariants; exact cross-language contracts in `specs/` and supported syntax in public docs must match the defining source and tests. Tests that lock in contradictory behavior are bugs, not proof of correctness. |
 | **Binding surface parity** | Node, WASM, and CLI bindings must expose the same logical API. If one uses protobuf bytes and another uses JSON strings, transparent fallback is impossible. |
 | **Type coercion consistency** | If `==` uses strict equality but `>` coerces strings to numbers, document the coercion matrix. Operators on the same pair of operands should not produce contradictory outcomes. |
 | **Literal grammar completeness** | If the expression engine supports `true`, `false`, `"strings"`, and numbers as literals, it must also support `null`. Missing literals create dead-end conditions (e.g., `foo == null` fails). |
@@ -284,7 +284,7 @@ When the change touches `.proto` files, serialization, or the binary protocol:
 | **Measure payload size** | Before/after byte counts for representative inputs. Extra fields add decode overhead even when empty. |
 | **Prioritize decode speed** | Breaking field changes are allowed when they improve performance measurably. Remove unused fields and message shapes that add decode overhead. |
 | **Cascade all layers** | Schema changes affect the whole stack: protocol -> handler -> FFI -> CLI. Update all in the same change. Run `cargo xtask build && cargo xtask test` to validate. |
-| **Update DESIGN.md** | Protocol behavior changes must update the protocol sections of `DESIGN.md` in the same commit. |
+| **Update architecture when needed** | A change to the protocol graph or producer/consumer boundary updates `DESIGN.md`; field-level details belong in `.proto`, consumers, and tests. |
 
 ---
 
@@ -310,7 +310,7 @@ Every behavioral change must include corresponding documentation updates. Missin
 
 | Check | Why |
 |-------|-----|
-| **DESIGN.md updated** | If the change modifies public APIs, protocol fields, behavioral contracts, error variants, or SSR markers, `DESIGN.md` must be updated in the same commit. |
+| **DESIGN.md updated when architecture changes** | Changes to responsibilities, data flow, or cross-layer invariants must update the living architecture; individual APIs, fields, error variants, and marker formats do not belong there. |
 | **User-facing docs updated** | If the change affects CLI flags, template syntax, component authoring, routing, or integration behavior, `docs/` must be updated. |
 | **AI reference updated** | If the change affects anything a code-generation AI would need to know, `docs/ai.md` must be updated. |
 | **README links to docs portal** | Package READMEs should defer to the docs portal, not duplicate content. |

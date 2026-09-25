@@ -16,7 +16,7 @@ This document is for framework contributors, plugin authors, and anyone debuggin
 WebUI is built on a hard rule: the server emits HTML, the browser parses HTML, and the framework adopts that HTML in place. Nothing is re-rendered. No virtual DOM, no diff against a fresh tree, no `innerHTML = ...` to swap content. To make that work without DOM annotations on every dynamic node, the framework leans on:
 
 - compiled template metadata (element indices, not selectors),
-- five lightweight HTML comment markers around structural blocks,
+- lightweight HTML comment markers around structural blocks and raw HTML ranges,
 - a single pre-order walk pairing the SSR DOM with the parsed template DOM,
 - a per-component path index so reactive updates touch only the bindings that actually depend on a changed property.
 
@@ -36,7 +36,7 @@ Compile metadata        Inject SSR markers         existing DOM,
                         Emit webui-data            O(affected) updates
 ```
 
-1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus an inert `#webui-data` block carrying state and per-component template metadata.
+1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with structural and raw-range comment markers, plus an inert `#webui-data` block carrying state and per-component template metadata.
 2. **Browser parses HTML.** The parser creates shadow roots inline. The user sees a fully painted page before any framework code runs.
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
@@ -51,7 +51,8 @@ There is no flash of content, because the HTML was already on screen at step 2. 
 
 ## SSR markers
 
-The handler emits exactly five comment markers, all defined in `src/element/markers.ts`:
+The handler emits five structural marker forms and a numbered pair for each raw
+HTML binding. The client counterparts are defined in `src/element/markers.ts`:
 
 | Marker | Meaning |
 |---|---|
@@ -60,12 +61,19 @@ The handler emits exactly five comment markers, all defined in `src/element/mark
 | `<!--wi-->` | Repeat item boundary (one per iteration) |
 | `<!--wc-->` | Conditional block start (one per `<if>`) |
 | `<!--/wc-->` | Conditional block end |
+| `<!--wN-->` | Raw HTML binding range start (`N` is its index) |
+| `<!--/wN-->` | Raw HTML binding range end |
 
-Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled element indices.
+Ordinary escaped text bindings, attribute bindings, and event handlers are
+**not** marked. They are located via compiled element indices.
 
 ### Why markers exist for blocks but not bindings
 
-Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from those indices alone. The markers make that boundary explicit.
+Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An
+`<if>` may render its content or not. Raw HTML can introduce an arbitrary number
+of nodes. The compiled indices in `meta.h` describe the static skeleton, so
+the framework cannot derive those ranges from indices alone. Markers make
+their boundaries explicit.
 
 Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a pre-order element index is enough.
 
@@ -512,7 +520,7 @@ Everything else is internal and may change without notice.
 
 - Performance: `performance.getEntriesByName('webui:hydrate:total', 'measure')` after `webui:hydration-complete`.
 - Per-component lifecycle: instrument `connectedCallback` / `disconnectedCallback` on a subclass.
-- Marker layout: View Source on the SSR HTML. The five comment markers should be balanced; mismatched pairs almost always indicate a handler-plugin bug.
+- Marker layout: View Source on the SSR HTML. Repeat, conditional, and numbered raw-HTML ranges need matching end markers; mismatches almost always indicate a handler-plugin bug.
 - "Template metadata not found": `window.__webui.templates` was not populated from `#webui-data` or partial-response template registration. Check the build output.
 - A binding that does not update: confirm the property is `@observable` (not just a class field) and the path appears in the template. Check `$pathIndex` after the first update if you can attach a debugger.
 

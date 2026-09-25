@@ -6,7 +6,7 @@
 //! `IpcFrame`/`WireError` are the only messages exchanged between the Rust host
 //! and its own JavaScript renderer inside the *same* packaged binary: both ends
 //! are built and versioned together, so there is no cross-process schema
-//! evolution to support. A fixed byte layout (see `DESIGN.md`) replaces the
+//! evolution to support. A fixed byte layout, defined by this codec, replaces the
 //! previously protobuf-encoded envelope: smaller generated code, faster
 //! encode/decode, and a single decode pass instead of a lenient-format pre-scan
 //! plus a full parse. Application-defined message payloads remain arbitrary

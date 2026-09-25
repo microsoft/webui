@@ -4,8 +4,8 @@
 /**
  * Versioned deterministic JSON manifest schema for WebUI state projection.
  *
- * See DESIGN.md §"Bundler-Neutral State Projection Compiler" for the
- * authoritative cross-language contract.
+ * See DESIGN.md for the build/runtime architecture. The types, validator,
+ * and canonical hash functions here define the exact manifest contract.
  */
 
 import { createHash } from "node:crypto";

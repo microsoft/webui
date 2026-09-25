@@ -19,7 +19,7 @@ mod limits;
 mod registry;
 mod session;
 mod validation;
-/// Fixed-layout envelope wire types (see `DESIGN.md` for the byte layout).
+/// Fixed-layout envelope wire types; the byte layout is defined here.
 pub mod wire;
 
 pub use admission::DocumentActivation;
