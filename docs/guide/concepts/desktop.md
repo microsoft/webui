@@ -195,6 +195,9 @@ WebKitGTK do not implement it.
 The generated manifest is for `DesktopApp::from_bundle`; do not hand-edit it.
 Its `shell` section contains `icon_path`, menus, and tray configuration. Set
 shell defaults on the builder with `.shell(...)` when running from source.
+For macOS Dock artwork, bundle icons must stay relative to the selected bundle
+root (no absolute paths, `..`, or symlink escapes); source hosts may supply an
+absolute icon path. An invalid or unreadable icon does not block launch.
 Check platform capabilities before requesting menus, tray, or effects.
 
 ## Message passing

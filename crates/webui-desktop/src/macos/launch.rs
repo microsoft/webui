@@ -106,7 +106,11 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     });
     app.setMainMenu(Some(menu.menu()));
     let _ = ivars.main_menu.set(menu);
-    install_app_icon(app, ivars.shell.icon_path.as_deref());
+    install_app_icon(
+        app,
+        ivars.shell.icon_path.as_deref(),
+        ivars.runtime.bundle_root(),
+    );
     if let Some(tray) = ivars
         .shell
         .tray

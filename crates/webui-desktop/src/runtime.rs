@@ -128,6 +128,8 @@ pub struct DesktopRuntime {
     state: Value,
     css_files: HashMap<String, String>,
     asset_root: Option<PathBuf>,
+    #[cfg(all(feature = "native", target_os = "macos"))]
+    bundle_root: Option<PathBuf>,
     asset_index: HashMap<PathBuf, DesktopAssetEntry>,
     max_asset_bytes: u64,
     startup_html: String,
@@ -197,6 +199,8 @@ impl DesktopRuntime {
             state,
             css_files,
             asset_root,
+            #[cfg(all(feature = "native", target_os = "macos"))]
+            bundle_root: None,
             asset_index: HashMap::new(),
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
@@ -301,6 +305,8 @@ impl DesktopRuntime {
             state,
             css_files: HashMap::new(),
             asset_root: Some(asset_root),
+            #[cfg(all(feature = "native", target_os = "macos"))]
+            bundle_root: Some(bundle_root),
             asset_index,
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
@@ -409,6 +415,11 @@ impl DesktopRuntime {
     #[must_use]
     pub fn startup_html(&self) -> &str {
         &self.startup_html
+    }
+
+    #[cfg(all(feature = "native", target_os = "macos"))]
+    pub(crate) fn bundle_root(&self) -> Option<&Path> {
+        self.bundle_root.as_deref()
     }
 
     pub(crate) fn validate_window(&self, window: &crate::WindowOptions) -> Result<()> {

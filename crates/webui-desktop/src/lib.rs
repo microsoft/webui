@@ -32,6 +32,8 @@ mod event;
 mod execution;
 mod frame;
 mod hydration;
+#[cfg(any(test, all(feature = "native", target_os = "macos")))]
+mod icon_path;
 #[cfg(feature = "application-ipc")]
 pub mod ipc;
 #[cfg(feature = "application-ipc")]

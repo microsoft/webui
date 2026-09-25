@@ -1358,6 +1358,8 @@ runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
+symlink escapes; source hosts can set an absolute path for Dock artwork.
 `titlebar.height` sizes the application band; Windows caption buttons default
 to 32 DIPs independently. Set `webuiDesktop.captionButtonSize: "tall"` for
 48-DIP buttons without changing the application band height.

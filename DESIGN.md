@@ -6208,9 +6208,11 @@ particular OS API:
   `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
   macOS also applies the resolved icon at launch as the Dock tile image, so
   source-mode runners with no `.app` bundle still show app artwork. A relative
-  path resolves against the packaged resources directory; source-mode hosts pass
-  an absolute path. An unreadable icon leaves the Dock tile untouched instead of
-  failing launch.
+  path from a bundle-backed runtime resolves against that runtime's canonical
+  bundle root (including when the bundle is not next to the executable);
+  absolute paths, parent traversal, and symlink escapes are rejected. Source-mode
+  hosts may pass an absolute path, which is used unchanged. An unreadable or
+  rejected icon leaves the Dock tile untouched instead of failing launch.
   Windows native windows use icon resource 1 from the runner executable when
   present, independently of the bundle-relative icon path.
 - `menus` - declarative native menu groups and menu items. Items dispatch to
