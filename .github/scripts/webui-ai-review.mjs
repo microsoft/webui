@@ -46,7 +46,8 @@ function approvedHeadIsCurrent(snapshot, approval, head) {
     approval.body?.includes(marker(head, "approved")) &&
     Number.isFinite(approvedAt) &&
     required?.status === "completed" && required.conclusion === "success" &&
-    !snapshot.reviews.some((review) => review.state === "CHANGES_REQUESTED") &&
+    !snapshot.reviews.some((review) => review.commit_id === head &&
+      review.state === "CHANGES_REQUESTED") &&
     snapshot.threads.every((thread) => thread.isResolved &&
       thread.comments.every((comment) =>
         Number.isFinite(Date.parse(comment.updatedAt)) &&

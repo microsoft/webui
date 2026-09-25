@@ -235,6 +235,11 @@ test("unchanged approval restores its label only while checks and discussion sta
     body: `Approved.\n\n<!-- webui-ai-review:${HEAD}:approved -->` };
   assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
     { reviews: [prior] })).label, "AI - Approved");
+  const oldHeadConcern = { user: { login: "reviewer" },
+    commit_id: "c".repeat(40), state: "CHANGES_REQUESTED",
+    submitted_at: "2026-09-24T09:00:00Z" };
+  assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
+    { reviews: [oldHeadConcern, prior] })).label, "AI - Approved");
   assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
     { reviews: [prior], checks: checks("failure") })).label, null);
   assert.equal(chooseReview(unchanged, snapshot("mohamedmansour",
@@ -355,6 +360,16 @@ test("outcome label is created in the correct color only after the review receip
   assert.equal(mutations[1].path, "/labels");
   assert.equal(JSON.parse(mutations[1].body).color, "0e8a16");
   assert.equal(mutations[2].path, "/issues/42/labels");
+});
+
+test("an old-head changes request does not block the new approval label", async () => {
+  const client = mockClient({ currentReviews: [{
+    user: { login: "reviewer" }, commit_id: "c".repeat(40),
+    state: "CHANGES_REQUESTED", submitted_at: "2026-09-24T09:00:00Z",
+  }] });
+  await processReview("pull_request_target", event(), output(), client, false);
+  assert.equal(JSON.parse(writes(client)[0].body).event, "APPROVE");
+  assert.deepEqual(JSON.parse(writes(client)[1].body).labels, ["AI - Approved"]);
 });
 
 test("a head changed before posting prevents any write", async () => {
