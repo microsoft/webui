@@ -1358,6 +1358,8 @@ runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+For custom headers, mark the drag surface `webui-drag` and interactive children
+`webui-no-drag`; a double-click on the drag surface toggles maximize/restore.
 
 Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
 or set `webuiDesktop.projectionManifests` for app-root packaging. Rust source

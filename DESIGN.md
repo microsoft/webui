@@ -6206,6 +6206,8 @@ particular OS API:
 
 - `icon_path` - bundle-relative app icon path. macOS uses `.icns` as
   `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
+  Windows native windows use icon resource 1 from the runner executable when
+  present, independently of the bundle-relative icon path.
 - `menus` - declarative native menu groups and menu items. Items dispatch to
   allowlisted desktop IPC commands.
 - `tray` - optional native tray icon and tooltip.
@@ -6840,8 +6842,10 @@ select the native Tall (48-DIP) caption; other heights use Standard (32 DIPs).
 The CSS application band is at least the configured height and the measured
 native caption height; Windows does not stretch its native controls arbitrarily.
 Application drag regions remain `webui-drag`, with `webui-no-drag` controls
-interactive outside native caption safe areas. Native startup configures the
-titlebar while hidden before publishing the window.
+interactive outside native caption safe areas. Windows begins a native drag
+only after pointer movement, leaving header double-clicks available to
+maximize or restore the window. Native startup configures the titlebar while
+hidden before publishing the window.
 
 Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
 

@@ -223,7 +223,9 @@ The application band reserves at least the configured height and never less
 than the native caption height.
 Windows controls the glyphs, hover states, snap-layout menu, and window actions.
 Keep interactive controls outside the injected safe insets and use
-`webui-drag` / `webui-no-drag` for application drag regions.
+`webui-drag` / `webui-no-drag` for application drag regions. Double-clicking
+a drag region maximizes or restores the window; nested `webui-no-drag`
+controls keep their normal click and text-input behavior.
 
 macOS retains its native traffic-light controls over full-size content. Linux
 uses a native GTK header bar above the web content rather than overlaying it.
@@ -426,6 +428,10 @@ non-generated assets, builds the bundle, and packages that runner. Example:
 Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
 Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
 as `CFBundleIconFile`, and portable layouts copy the icon into resources.
+For a Windows taskbar and executable icon, embed a `.ico` as icon resource 1 in
+the app's Rust runner (for example, with a Windows resource build script).
+`webuiDesktop.icon` alone does not set a Windows executable icon. An embedded
+runner icon also appears when launching that runner from source.
 
 ```json
 {

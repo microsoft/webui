@@ -383,7 +383,17 @@ fn drag_script_resolves_regions_through_shadow_dom() {
 }
 #[test]
 fn drag_script_ignores_non_primary_buttons() {
-    assert!(DRAG_REGION_SCRIPT.contains("e.button===0"));
+    assert!(DRAG_REGION_SCRIPT.contains("e.button!==0"));
+}
+#[test]
+fn webview_drag_waits_for_motion_so_double_click_can_complete() {
+    assert!(DRAG_REGION_SCRIPT.contains("window.chrome?.webview"));
+    assert!(DRAG_REGION_SCRIPT.contains("pointermove"));
+    assert!(DRAG_REGION_SCRIPT.contains("Math.abs(e.screenX-a[1])<4"));
+    assert!(DRAG_REGION_SCRIPT.contains("a=null;p('start-drag')"));
+    assert!(DRAG_REGION_SCRIPT.contains("pointerup"));
+    assert!(DRAG_REGION_SCRIPT.contains("pointercancel"));
+    assert!(DRAG_REGION_SCRIPT.contains("dblclick"));
 }
 #[test]
 fn command_queue_applies_back_pressure_at_the_documented_cap() {

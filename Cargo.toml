@@ -86,6 +86,7 @@ windows = "0.62.2"
 windows-core = "0.62.2"
 windows-future = "0.3.2"
 windows-bindgen = "=0.65.0"
+winresource = { version = "0.1.31", default-features = false }
 
 # Test dependencies
 criterion = "0.8.2"

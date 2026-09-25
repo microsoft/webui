@@ -594,8 +594,25 @@ impl DesktopHostMessage {
 /// drag region declared inside a component's shadow root. The path is scanned
 /// from the innermost node outward, so the nearest `webui-drag` or
 /// `webui-no-drag` ancestor wins, and non-element entries such as `document`
-/// and `window` are skipped.
-pub const DRAG_REGION_SCRIPT: &str = "(()=>{const p=m=>window.webuiHostPostMessage&&window.webuiHostPostMessage(JSON.stringify(m));const d=e=>{const q=typeof e.composedPath==='function'?e.composedPath():[];for(let i=0;i<q.length;i++){const n=q[i];if(!n||n.nodeType!==1)continue;if(n.hasAttribute('webui-no-drag'))return false;if(n.hasAttribute('webui-drag'))return true}return false};document.addEventListener('pointerdown',e=>{if(e.button===0&&d(e))p('start-drag')});document.addEventListener('dblclick',e=>{if(e.button===0&&d(e))p('toggle-maximize')})})();";
+/// and `window` are skipped. WebView2 waits for pointer movement before
+/// starting a native drag, since its move loop would consume a double-click.
+pub const DRAG_REGION_SCRIPT: &str = concat!(
+    "(()=>{const p=m=>window.webuiHostPostMessage&&window.webuiHostPostMessage(JSON.stringify(m));",
+    "const d=e=>{const q=typeof e.composedPath==='function'?e.composedPath():[];",
+    "for(let i=0;i<q.length;i++){const n=q[i];if(!n||n.nodeType!==1)continue;",
+    "if(n.hasAttribute('webui-no-drag'))return false;if(n.hasAttribute('webui-drag'))return true}return false};",
+    "let a=null,w=!!window.chrome?.webview;document.addEventListener('pointerdown',e=>{a=null;",
+    "if(e.button!==0||!d(e))return;if(!w){p('start-drag');return}",
+    "a=[e.pointerId,e.screenX,e.screenY]});",
+    "if(w){document.addEventListener('pointermove',e=>{",
+    "if(!a||e.pointerId!==a[0])return;if(!(e.buttons&1)){a=null;return}",
+    "if(Math.abs(e.screenX-a[1])<4&&Math.abs(e.screenY-a[2])<4)return;",
+    "a=null;p('start-drag')});",
+    "const end=e=>{if(a&&e.pointerId===a[0])a=null};",
+    "document.addEventListener('pointerup',end);document.addEventListener('pointercancel',end);",
+    "window.addEventListener('blur',()=>{a=null})}",
+    "document.addEventListener('dblclick',e=>{if(e.button===0&&d(e))p('toggle-maximize')})})();"
+);
 #[cfg(test)]
 #[path = "event_tests.rs"]
 mod tests;

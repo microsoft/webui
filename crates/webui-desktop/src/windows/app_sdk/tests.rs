@@ -144,3 +144,61 @@ fn sdk_native_controls_preserve_frame_capabilities_and_input_safe_areas() {
         }
     }
 }
+
+#[test]
+fn overlay_keeps_all_eight_resize_hit_targets() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
+    let _com = crate::windows::initialize_com().unwrap();
+    let runtime = Runtime::initialize().unwrap();
+    let options = WindowOptions {
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        center: false,
+        width: 800,
+        height: 600,
+        ..WindowOptions::default()
+    };
+    let frame = FrameWindow::new(&options, None).unwrap();
+    let _sdk = WindowFrame::attach(&runtime, frame.hwnd, &options).unwrap();
+    let mut rect = RECT::default();
+    // SAFETY: This test owns the live window and supplies writable RECT storage.
+    unsafe { WindowsAndMessaging::GetWindowRect(frame.hwnd, &mut rect).unwrap() };
+    let mid_x = (rect.left + rect.right) / 2;
+    let mid_y = (rect.top + rect.bottom) / 2;
+    let hit = |x: i32, y: i32| {
+        let bits = ((y.cast_unsigned() & 0xffff) << 16) | (x.cast_unsigned() & 0xffff);
+        // SAFETY: This test owns the live window; WM_NCHITTEST reads the packed screen point.
+        unsafe {
+            WindowsAndMessaging::SendMessageW(
+                frame.hwnd,
+                WindowsAndMessaging::WM_NCHITTEST,
+                Some(WPARAM(0)),
+                Some(LPARAM(isize::try_from(bits).unwrap())),
+            )
+            .0
+        }
+    };
+    for ((x, y), expected) in [
+        ((rect.left, rect.top), WindowsAndMessaging::HTTOPLEFT),
+        ((mid_x, rect.top), WindowsAndMessaging::HTTOP),
+        ((rect.right - 1, rect.top), WindowsAndMessaging::HTTOPRIGHT),
+        ((rect.left, mid_y), WindowsAndMessaging::HTLEFT),
+        ((rect.right - 1, mid_y), WindowsAndMessaging::HTRIGHT),
+        (
+            (rect.left, rect.bottom - 1),
+            WindowsAndMessaging::HTBOTTOMLEFT,
+        ),
+        ((mid_x, rect.bottom - 1), WindowsAndMessaging::HTBOTTOM),
+        (
+            (rect.right - 1, rect.bottom - 1),
+            WindowsAndMessaging::HTBOTTOMRIGHT,
+        ),
+    ] {
+        assert_eq!(
+            hit(x, y),
+            isize::try_from(expected).unwrap(),
+            "at ({x}, {y})"
+        );
+    }
+}
