@@ -1358,6 +1358,9 @@ runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+`titlebar.height` sizes the application band; Windows caption buttons default
+to 32 DIPs independently. Set `webuiDesktop.captionButtonSize: "tall"` for
+48-DIP buttons without changing the application band height.
 For custom headers, mark the drag surface `webui-drag` and interactive children
 `webui-no-drag`; a double-click on the drag surface toggles maximize/restore.
 

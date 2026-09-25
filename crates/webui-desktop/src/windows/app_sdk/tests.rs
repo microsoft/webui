@@ -8,18 +8,14 @@ use crate::windows::create::FrameWindow;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 #[test]
-fn height_preference_uses_supported_native_sizes() {
+fn caption_button_size_selects_supported_native_sizes() {
     assert_eq!(
-        height_option(&TitlebarStyle::Overlay { height: 32 }),
+        height_option(CaptionButtonSize::Standard),
         TitleBarHeightOption::Standard
     );
     assert_eq!(
-        height_option(&TitlebarStyle::Overlay { height: 48 }),
+        height_option(CaptionButtonSize::Tall),
         TitleBarHeightOption::Tall
-    );
-    assert_eq!(
-        height_option(&TitlebarStyle::HiddenInset),
-        TitleBarHeightOption::Standard
     );
 }
 
@@ -30,6 +26,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
     let runtime = Runtime::initialize().unwrap();
     let options = WindowOptions {
         titlebar: TitlebarStyle::Overlay { height: 48 },
+        caption_button_size: CaptionButtonSize::Tall,
         center: false,
         width: 800,
         height: 600,
@@ -52,6 +49,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
             i32::try_from(48 * dpi / 96).unwrap()
         );
     }
+
     let size = sdk.window.Size().unwrap();
     sdk.set_fullscreen(true).unwrap();
     // SAFETY: Changing the presenter must not reveal an uninitialized window.
@@ -66,6 +64,32 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
         AppWindowPresenterKind::Overlapped
     );
     assert_eq!(sdk.window.Size().unwrap(), size);
+}
+
+#[test]
+fn standard_buttons_keep_a_taller_application_bar() {
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
+    let _com = crate::windows::initialize_com().unwrap();
+    let runtime = Runtime::initialize().unwrap();
+    let options = WindowOptions {
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        center: false,
+        ..WindowOptions::default()
+    };
+    let frame = FrameWindow::new(&options, None).unwrap();
+    let sdk = WindowFrame::attach(&runtime, frame.hwnd, &options).unwrap();
+    let caption = sdk.overlay.as_ref().unwrap();
+    assert_eq!(
+        caption.titlebar.PreferredHeightOption().unwrap(),
+        TitleBarHeightOption::Standard
+    );
+    // SAFETY: The test owns this live window and reads its native DPI.
+    let dpi = unsafe { GetDpiForWindow(frame.hwnd) };
+    assert_eq!(
+        caption.titlebar.Height().unwrap(),
+        i32::try_from(32 * dpi / 96).unwrap()
+    );
+    assert_eq!(caption.metrics.get().unwrap().minimum_height, 48);
 }
 
 #[test]

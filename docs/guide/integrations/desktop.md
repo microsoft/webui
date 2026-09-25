@@ -178,9 +178,11 @@ native frame use the same values. Source hosts can supply a stable identity with
 
 `webuiDesktop` and `WindowOptions` support `title`, `width`, `height`,
 `min_width`, `min_height`, `max_width`, `max_height`, `resizable`, `maximized`,
-`fullscreen`, `always_on_top`, `center`, `background`, `titlebar`, `effect`,
-`remember_state`, and `devtools`. `background` is `#rrggbb` or `#rrggbbaa` and
-is painted before the first web content paint.
+`fullscreen`, `always_on_top`, `center`, `background`, `titlebar`,
+`caption_button_size`, `effect`, `remember_state`, and `devtools`. In
+`webuiDesktop`, set `captionButtonSize` to `"standard"` or `"tall"`;
+the manifest and Rust field use `caption_button_size`. `background` is
+`#rrggbb` or `#rrggbbaa` and is painted before the first web content paint.
 
 `titlebar` is one of `native`, `hidden-inset`, `overlay` with a `height`, or
 `none`. `effect` is one of `none`, `vibrancy`, `acrylic`, `mica`, or `tabbed`.
@@ -217,10 +219,11 @@ tray support.
 
 On Windows, `overlay` and `hidden-inset` use Windows App SDK's native caption
 buttons over application content. Do not render HTML minimize, maximize, or
-close buttons. An overlay height greater than 32 CSS pixels selects the native
-tall caption (48 DIPs); smaller heights select the standard caption (32 DIPs).
-The application band reserves at least the configured height and never less
-than the native caption height.
+close buttons. The default `captionButtonSize` is `"standard"` (32 DIPs);
+set it to `"tall"` for 48-DIP buttons. This setting does not change the overlay
+`height`, which controls the application band, and has no effect on macOS or
+Linux. The application band reserves at least its configured height and never
+less than the native caption height.
 Windows controls the glyphs, hover states, snap-layout menu, and window actions.
 Keep interactive controls outside the injected safe insets and use
 `webui-drag` / `webui-no-drag` for application drag regions. Double-clicking

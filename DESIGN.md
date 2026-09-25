@@ -6823,7 +6823,7 @@ and returns an actionable error unless `--force` is supplied.
 
 ## Desktop Window Contract
 
-`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
+`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` uses a kebab-case `style` tag; `CaptionButtonSize` and `WindowEffect` use kebab-case strings. The optional `caption_button_size` (app-root `captionButtonSize`) defaults to Standard and only affects Windows overlay and hidden-inset controls.
 
 For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines initial CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` into startup HTML. Native Windows overlay windows refine these properties from the actual caption measurements, converting physical pixels outward to CSS pixels and mapping physical sides to the document's writing direction. Measurements refresh after native layout/DPI changes and document navigation. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
 
@@ -6842,10 +6842,10 @@ releasing interop modules and the bootstrap.
 Windows `Overlay` and `HiddenInset` extend application content beneath genuine
 AppWindow caption controls. AppWindow owns caption drawing, non-client input,
 and fullscreen presentation; the backend must not override its frame calculation
-with a second custom caption implementation. Overlay heights over 32 CSS pixels
-select the native Tall (48-DIP) caption; other heights use Standard (32 DIPs).
-The CSS application band is at least the configured height and the measured
-native caption height; Windows does not stretch its native controls arbitrarily.
+with a second custom caption implementation. Caption buttons default to Standard (32 DIPs) independently of overlay height;
+applications can explicitly select Tall (48 DIPs). The CSS application band is
+at least the configured height and the measured native caption height; Windows
+does not stretch its native controls arbitrarily.
 Application drag regions remain `webui-drag`, with `webui-no-drag` controls
 interactive outside native caption safe areas. Windows begins a native drag
 only after pointer movement, leaving header double-clicks available to

@@ -20,7 +20,7 @@ use windows::Graphics::RectInt32;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging;
 
-use crate::{TitlebarStyle, WindowOptions};
+use crate::{CaptionButtonSize, TitlebarStyle, WindowOptions};
 use bindings::Microsoft::UI::Input::{InputNonClientPointerSource, NonClientRegionKind};
 use bindings::Microsoft::UI::Windowing::{
     AppWindow, AppWindowPresenter, AppWindowPresenterKind, AppWindowTitleBar, IconShowOptions,
@@ -62,7 +62,7 @@ impl WindowFrame {
                 .SetExtendsContentIntoTitleBar(true)
                 .context("cannot extend content into native titlebar")?;
             titlebar
-                .SetPreferredHeightOption(height_option(&options.titlebar))
+                .SetPreferredHeightOption(height_option(options.caption_button_size))
                 .context("cannot set native titlebar height")?;
             titlebar
                 .SetIconShowOptions(IconShowOptions::HideIconAndSystemMenu)
@@ -168,9 +168,9 @@ impl WindowFrame {
     }
 }
 
-fn height_option(style: &TitlebarStyle) -> TitleBarHeightOption {
-    match style {
-        TitlebarStyle::Overlay { height } if *height > 32 => TitleBarHeightOption::Tall,
-        _ => TitleBarHeightOption::Standard,
+fn height_option(size: CaptionButtonSize) -> TitleBarHeightOption {
+    match size {
+        CaptionButtonSize::Standard => TitleBarHeightOption::Standard,
+        CaptionButtonSize::Tall => TitleBarHeightOption::Tall,
     }
 }
