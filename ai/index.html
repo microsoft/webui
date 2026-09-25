@@ -763,8 +763,15 @@ package. Package targets are <code>macos-app</code>, <code>windows-portable</cod
 <code>linux-portable</code>; <code>all</code> writes all three layouts without cross-compiling the
 runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all <code>DesktopRuntime::from_bundle*</code>
-entry points. See the <a href="/webui/guide/integrations/desktop.md">desktop SDK guide</a> for
-source/bundle construction, window customization, and scoped event subscriptions.</p><p>Pass the client bundler's <code>--projection-manifest &lt;PATH&gt;</code> to desktop <code>run</code>/<code>build</code>,
+entry points. See the <a href="/webui/guide/concepts/desktop.md">desktop SDK guide</a> for
+source/bundle construction, window customization, and scoped event subscriptions.
+On macOS, bundle <code>shell.icon_path</code> must stay inside the bundle without <code>..</code> or
+symlink escapes; source hosts can set an absolute path for Dock artwork.
+<code>titlebar.height</code> sizes the application band; Windows caption buttons default
+to 32 DIPs independently. Set <code>webuiDesktop.captionButtonSize: "tall"</code> for
+48-DIP buttons without changing the application band height.
+For custom headers, mark the drag surface <code>webui-drag</code> and interactive children
+<code>webui-no-drag</code>; a double-click on the drag surface toggles maximize/restore.</p><p>Pass the client bundler's <code>--projection-manifest &lt;PATH&gt;</code> to desktop <code>run</code>/<code>build</code>,
 or set <code>webuiDesktop.projectionManifests</code> for app-root packaging. Rust source
 hosts set <code>BuildOptions::projection_manifests</code>. Desktop and web share navigation
 state projection; unknown requirements keep the correctness-safe full-state
@@ -776,8 +783,8 @@ bytes are <code>Uint8Array</code>, and maps are <code>Map&lt;K,V&gt;</code>. Reg
 explicit <code>IpcOptions</code> before building the frame. Requests return typed
 promises/futures; notification completion acknowledges admission rather than
 subscriber completion. Dispose subscriptions and honor cancellation.
-See the <a href="/webui/guide/integrations/desktop.md#message-passing">IPC guide</a> for the
-complete shared-schema example.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> Install the native CLIs</span><span class="hl-comment">
+See <a href="/webui/guide/concepts/desktop.md#message-passing">desktop message passing</a>
+for schema generation, the four message flows, and connection lifetime.</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> Install the native CLIs</span><span class="hl-comment">
 </span>npm install @microsoft/webui @microsoft/webui-press
 
 <span class="hl-comment">#</span><span class="hl-comment"> Dev server with live reload</span><span class="hl-comment">
