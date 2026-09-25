@@ -174,6 +174,8 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+Finally run with `cargo run`.
+
 ## What We've Learned
 
 In this tutorial, we've:
