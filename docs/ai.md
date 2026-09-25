@@ -1356,8 +1356,15 @@ package. Package targets are `macos-app`, `windows-portable`, and
 `linux-portable`; `all` writes all three layouts without cross-compiling the
 runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
-entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
+entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
+symlink escapes; source hosts can set an absolute path for Dock artwork.
+`titlebar.height` sizes the application band; Windows caption buttons default
+to 32 DIPs independently. Set `webuiDesktop.captionButtonSize: "tall"` for
+48-DIP buttons without changing the application band height.
+For custom headers, mark the drag surface `webui-drag` and interactive children
+`webui-no-drag`; a double-click on the drag surface toggles maximize/restore.
 
 Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
 or set `webuiDesktop.projectionManifests` for app-root packaging. Rust source
@@ -1373,8 +1380,8 @@ bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
 explicit `IpcOptions` before building the frame. Requests return typed
 promises/futures; notification completion acknowledges admission rather than
 subscriber completion. Dispose subscriptions and honor cancellation.
-See the [IPC guide](./guide/integrations/desktop.md#message-passing) for the
-complete shared-schema example.
+See [desktop message passing](./guide/concepts/desktop.md#message-passing)
+for schema generation, the four message flows, and connection lifetime.
 
 ```bash
 # Install the native CLIs

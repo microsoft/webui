@@ -32,6 +32,8 @@ mod event;
 mod execution;
 mod frame;
 mod hydration;
+#[cfg(any(test, all(feature = "native", target_os = "macos")))]
+mod icon_path;
 #[cfg(feature = "application-ipc")]
 pub mod ipc;
 #[cfg(feature = "application-ipc")]
@@ -108,8 +110,8 @@ pub use routes::{ApiContext, ApiRouteRegistry, RouteContext, RouteStateRegistry}
 pub use runtime::DesktopSourceConfig;
 pub use runtime::{DesktopBundleConfig, DesktopRuntime};
 pub use window::{
-    apply_window_css, window_css_block, DesktopPlatform, Rgba, RgbaParseError, TitlebarStyle,
-    WindowEffect, WindowInsets, WindowOptions,
+    apply_window_css, window_css_block, CaptionButtonSize, DesktopPlatform, Rgba, RgbaParseError,
+    TitlebarStyle, WindowEffect, WindowInsets, WindowOptions,
 };
 pub use window_state::{DisplayBounds, WindowState, WindowStateError, WindowStateStore};
 

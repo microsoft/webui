@@ -19,6 +19,7 @@ use objc2_web_kit::{
 use super::app_delegate::DesktopAppDelegate;
 use super::effects::{apply_background, install_content_view};
 use super::host_message::DesktopHostMessageHandler;
+use super::icon::install_app_icon;
 use super::menu::build_main_menu;
 use super::navigation::DesktopNavigationDelegate;
 use super::scheme::DesktopSchemeHandler;
@@ -105,6 +106,11 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     });
     app.setMainMenu(Some(menu.menu()));
     let _ = ivars.main_menu.set(menu);
+    install_app_icon(
+        app,
+        ivars.shell.icon_path.as_deref(),
+        ivars.runtime.bundle_root(),
+    );
     if let Some(tray) = ivars
         .shell
         .tray

@@ -6206,6 +6206,15 @@ particular OS API:
 
 - `icon_path` - bundle-relative app icon path. macOS uses `.icns` as
   `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
+  macOS also applies the resolved icon at launch as the Dock tile image, so
+  source-mode runners with no `.app` bundle still show app artwork. A relative
+  path from a bundle-backed runtime resolves against that runtime's canonical
+  bundle root (including when the bundle is not next to the executable);
+  absolute paths, parent traversal, and symlink escapes are rejected. Source-mode
+  hosts may pass an absolute path, which is used unchanged. An unreadable or
+  rejected icon leaves the Dock tile untouched instead of failing launch.
+  Windows native windows use icon resource 1 from the runner executable when
+  present, independently of the bundle-relative icon path.
 - `menus` - declarative native menu groups and menu items. Items dispatch to
   allowlisted desktop IPC commands.
 - `tray` - optional native tray icon and tooltip.
@@ -6816,7 +6825,7 @@ and returns an actionable error unless `--force` is supplied.
 
 ## Desktop Window Contract
 
-`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
+`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` uses a kebab-case `style` tag; `CaptionButtonSize` and `WindowEffect` use kebab-case strings. The optional `caption_button_size` (app-root `captionButtonSize`) defaults to Standard and only affects Windows overlay and hidden-inset controls.
 
 For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines initial CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` into startup HTML. Native Windows overlay windows refine these properties from the actual caption measurements, converting physical pixels outward to CSS pixels and mapping physical sides to the document's writing direction. Measurements refresh after native layout/DPI changes and document navigation. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
 
@@ -6835,13 +6844,15 @@ releasing interop modules and the bootstrap.
 Windows `Overlay` and `HiddenInset` extend application content beneath genuine
 AppWindow caption controls. AppWindow owns caption drawing, non-client input,
 and fullscreen presentation; the backend must not override its frame calculation
-with a second custom caption implementation. Overlay heights over 32 CSS pixels
-select the native Tall (48-DIP) caption; other heights use Standard (32 DIPs).
-The CSS application band is at least the configured height and the measured
-native caption height; Windows does not stretch its native controls arbitrarily.
+with a second custom caption implementation. Caption buttons default to Standard (32 DIPs) independently of overlay height;
+applications can explicitly select Tall (48 DIPs). The CSS application band is
+at least the configured height and the measured native caption height; Windows
+does not stretch its native controls arbitrarily.
 Application drag regions remain `webui-drag`, with `webui-no-drag` controls
-interactive outside native caption safe areas. Native startup configures the
-titlebar while hidden before publishing the window.
+interactive outside native caption safe areas. Windows begins a native drag
+only after pointer movement, leaving header double-clicks available to
+maximize or restore the window. Native startup configures the titlebar while
+hidden before publishing the window.
 
 Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
 

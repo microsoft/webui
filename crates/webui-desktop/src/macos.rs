@@ -29,6 +29,7 @@ mod commands;
 mod effects;
 mod geometry;
 mod host_message;
+mod icon;
 #[cfg(feature = "application-ipc")]
 mod ipc;
 #[cfg(feature = "application-ipc")]

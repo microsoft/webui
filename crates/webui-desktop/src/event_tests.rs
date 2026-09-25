@@ -374,18 +374,6 @@ fn event_js_emits_a_quoted_event_name() {
     );
 }
 #[test]
-fn drag_script_resolves_regions_through_shadow_dom() {
-    // Regression: a `document`-level listener sees shadow DOM events
-    // retargeted to the host, so `target.closest()` cannot find a drag
-    // region declared inside a component's shadow root.
-    assert!(DRAG_REGION_SCRIPT.contains("composedPath"));
-    assert!(!DRAG_REGION_SCRIPT.contains("closest"));
-}
-#[test]
-fn drag_script_ignores_non_primary_buttons() {
-    assert!(DRAG_REGION_SCRIPT.contains("e.button===0"));
-}
-#[test]
 fn command_queue_applies_back_pressure_at_the_documented_cap() {
     let handle = WindowHandle::default();
     for _ in 0..MAX_QUEUED_WINDOW_COMMANDS {

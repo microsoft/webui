@@ -63,7 +63,7 @@ credentials or private tokens in render state.
 Keep state route-scoped as well. A page that renders one account should not
 receive the application's complete account collection.
 
-For [desktop apps](/guide/integrations/desktop), keep canonical collections in
+For [desktop apps](/guide/concepts/desktop), keep canonical collections in
 shared Rust storage and borrow them for read-only route preparation. Keep
 global seed settings separate from those collections. Loading browser-derived
 copies of the same data only to recompute them in Rust adds startup allocations

@@ -15,7 +15,7 @@ use webui_desktop::{
     DesktopHttpMethod, DesktopProtocolResponse, EventResponse, RouteContext, RouteStateRegistry,
 };
 #[cfg(feature = "source")]
-use webui_desktop::{DesktopSourceConfig, TitlebarStyle, WindowOptions};
+use webui_desktop::{DesktopShellConfig, DesktopSourceConfig, TitlebarStyle, WindowOptions};
 
 mod state;
 use state::{load_state, read_state, SharedState};
@@ -79,6 +79,10 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
     };
     Ok(DesktopApp::from_source(config)
         .app_id("com.microsoft.webui.contactbook")
+        .shell(DesktopShellConfig {
+            icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
+            ..DesktopShellConfig::default()
+        })
         .build()?)
 }
 
@@ -781,7 +785,7 @@ mod tests {
     #[cfg(feature = "source")]
     #[test]
     fn source_and_packaged_frames_render_native_overlay_chrome() {
-        use webui_desktop::{build_desktop_bundle, DesktopBundleOptions, DesktopShellConfig};
+        use webui_desktop::{build_desktop_bundle, DesktopBundleOptions};
 
         let fixture = source_fixture(&test_state());
         let app_root = fixture.path();
@@ -809,8 +813,18 @@ mod tests {
         let window: WindowOptions =
             serde_json::from_value(package["webuiDesktop"].clone()).unwrap();
         assert_eq!(window.titlebar, TitlebarStyle::Overlay { height: 48 });
+        let icon_path = package["webuiDesktop"]["icon"].as_str().unwrap();
+        assert_eq!(icon_path, "desktop/icon.icns");
+        let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns");
+        assert!(std::fs::read(&icon).unwrap().starts_with(b"icns"));
+        // Source launches have no `.app` bundle, so the Dock icon can only come
+        // from the shell config the runner supplies at runtime.
+        assert_eq!(source.shell().icon_path.as_deref(), Some(icon.as_path()));
+        let windows_icon = include_bytes!("../icon.ico");
+        assert_eq!(&windows_icon[..4], &[0, 0, 1, 0]);
+        assert!(windows_icon[4] >= 4);
         let bundle = tempfile::tempdir().unwrap();
-        build_desktop_bundle(DesktopBundleOptions {
+        let manifest = build_desktop_bundle(DesktopBundleOptions {
             build_options: contact_book_build_options(app_root.join("src")),
             out_dir: bundle.path().to_path_buf(),
             state_file: Some(app_root.join("data/state.json")),
@@ -821,11 +835,25 @@ mod tests {
             version: "0.0.0".to_string(),
             publisher: "Microsoft".to_string(),
             window,
-            icon_file: None,
+            icon_file: Some(icon.clone()),
             shell: DesktopShellConfig::default(),
             package_targets: Vec::new(),
         })
         .unwrap();
+        let bundled_icon = manifest.shell.icon_path.as_ref().unwrap();
+        assert!(bundle.path().join(bundled_icon).is_file());
+        let package_dir = tempfile::tempdir().unwrap();
+        let package = webui_desktop::package_desktop_bundle(webui_desktop::DesktopPackageOptions {
+            bundle_dir: bundle.path().to_path_buf(),
+            out_dir: package_dir.path().to_path_buf(),
+            target: webui_desktop::DesktopPackageTarget::MacosApp,
+            runner_exe: std::env::current_exe().unwrap(),
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(package.output_path.join("Contents/Resources/AppIcon.icns")).unwrap(),
+            std::fs::read(icon).unwrap()
+        );
 
         let packaged = packaged_frame(bundle.path()).unwrap();
         assert_eq!(

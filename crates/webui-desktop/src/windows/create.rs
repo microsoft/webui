@@ -6,7 +6,7 @@
 use crate::{TitlebarStyle, WindowOptions, WindowState};
 use anyhow::{Context, Result};
 use webview2_com::CoTaskMemPWSTR;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::System::LibraryLoader;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -32,6 +32,17 @@ impl FrameWindow {
         if window.maximized || saved.is_some_and(|state| state.maximized) {
             style |= WindowsAndMessaging::WS_MAXIMIZE;
         }
+        // SAFETY: The executable module remains loaded for the lifetime of the
+        // window; Win32 treats this low pointer value as resource ID 1, not an
+        // address to dereference. The resource is optional for custom runners.
+        let instance = unsafe { HINSTANCE(LibraryLoader::GetModuleHandleW(None)?.0) };
+        let icon = unsafe {
+            WindowsAndMessaging::LoadIconW(
+                Some(instance),
+                PCWSTR::from_raw(std::ptr::without_provenance(1)),
+            )
+            .unwrap_or_default()
+        };
         // SAFETY: The class name, window title, and module handle are valid for
         // this call, and `window_proc` has the required `WNDPROC` signature.
         let hwnd = unsafe {
@@ -39,6 +50,8 @@ impl FrameWindow {
                 lpfnWndProc: Some(window_proc),
                 lpszClassName: w!("WebUIDesktopWindow"),
                 cbWndExtra: CUSTOM_FRAME_BYTES,
+                hInstance: instance,
+                hIcon: icon,
                 hCursor: WindowsAndMessaging::LoadCursorW(None, WindowsAndMessaging::IDC_ARROW)
                     .unwrap_or_default(),
                 ..Default::default()
@@ -55,9 +68,7 @@ impl FrameWindow {
                 height,
                 None,
                 None,
-                LibraryLoader::GetModuleHandleW(None)
-                    .ok()
-                    .map(|handle| HINSTANCE(handle.0)),
+                Some(instance),
                 Some(std::ptr::from_ref(window).cast()),
             )?
         };

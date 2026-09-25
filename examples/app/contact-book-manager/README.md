@@ -45,10 +45,15 @@ launches. The operating system owns the native caption buttons; the web header
 does not render replacements or send window-action messages. WebUI owns the
 edge-to-edge header and drag region. Search and Add Contact remain interactive
 inside the draggable header through `webui-no-drag`.
+The runner embeds the Contact Book icon for Windows executable and taskbar
+display, including source launches. macOS packages use `desktop/icon.icns` for
+the Dock and Finder icon; source launches pass that same file through
+`DesktopShellConfig::icon_path`, so the Dock shows app artwork without an `.app`
+bundle. The editable artwork is `desktop/icon.svg`.
 
-On Windows, the 48-DIP header aligns with the Windows App SDK's tall native
-caption region and requires the installed shared Windows App SDK runtime.
-Search retains its 38px input height and Add Contact its 40px hit target.
+On Windows, the native caption buttons default to 32 DIPs while the web header
+remains 48px tall. Search retains its 38px input height and Add Contact its
+40px hit target. The installed shared Windows App SDK runtime is required.
 
 The header reserves native control space with the SDK's
 `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and

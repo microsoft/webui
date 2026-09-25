@@ -22,6 +22,7 @@
     "projectionManifests": ["dist/webui-projection.json"],
     "theme": "@microsoft/webui-examples-theme",
     "plugin": "webui",
+    "icon": "desktop/icon.icns",
     "runnerCrate": "contact-book-desktop",
     "buildScripts": ["build:deps", "build:client"],
     "appId": "com.microsoft.webui.contactbook",

@@ -52,7 +52,7 @@ Application IPC uses `ipc::IpcLimits::default()` with checked
 The SDK owns queue, callback, control-reservation, and aggregate memory budgets;
 applications cannot tune these independently.
 
-See the [desktop guide](https://microsoft.github.io/webui/guide/integrations/desktop)
+See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop)
 for application setup and customization.
 
 ## Regenerating the Windows projection

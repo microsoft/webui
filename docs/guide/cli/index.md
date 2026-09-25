@@ -715,7 +715,7 @@ bundle-building, or package-building APIs. Run unpackaged development builds
 with `cargo run --features source`. Build options are reexported by
 `webui_desktop` when `source` is enabled; applications need no separate compiler
 or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
-app code. See the [desktop SDK guide](../integrations/desktop.md) for the shared
+app code. See the [desktop SDK guide](../concepts/desktop.md) for the shared
 source/bundle app builder and customization APIs.
 
 `webui desktop ipc generate` creates typed Rust and TypeScript bindings from
@@ -726,7 +726,7 @@ generator uses `PROTOC` and then PATH. Compiler inputs and outputs must use
 local drive paths on Windows. Generation never downloads tools silently. With `--format json`, generation
 failures preserve their stable `ipc-*` code and actionable `help`; filesystem
 errors also identify the affected `file`. See
-[message passing](../integrations/desktop.md#message-passing) for the schema,
+[message passing](../concepts/desktop.md#message-passing) for the schema,
 four communication flows, permissions and lifetime rules.
 
 ## Error output and exit codes

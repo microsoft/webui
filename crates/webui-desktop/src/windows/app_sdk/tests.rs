@@ -8,18 +8,14 @@ use crate::windows::create::FrameWindow;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 #[test]
-fn height_preference_uses_supported_native_sizes() {
+fn caption_button_size_selects_supported_native_sizes() {
     assert_eq!(
-        height_option(&TitlebarStyle::Overlay { height: 32 }),
+        height_option(CaptionButtonSize::Standard),
         TitleBarHeightOption::Standard
     );
     assert_eq!(
-        height_option(&TitlebarStyle::Overlay { height: 48 }),
+        height_option(CaptionButtonSize::Tall),
         TitleBarHeightOption::Tall
-    );
-    assert_eq!(
-        height_option(&TitlebarStyle::HiddenInset),
-        TitleBarHeightOption::Standard
     );
 }
 
@@ -30,6 +26,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
     let runtime = Runtime::initialize().unwrap();
     let options = WindowOptions {
         titlebar: TitlebarStyle::Overlay { height: 48 },
+        caption_button_size: CaptionButtonSize::Tall,
         center: false,
         width: 800,
         height: 600,
@@ -52,6 +49,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
             i32::try_from(48 * dpi / 96).unwrap()
         );
     }
+
     let size = sdk.window.Size().unwrap();
     sdk.set_fullscreen(true).unwrap();
     // SAFETY: Changing the presenter must not reveal an uninitialized window.
@@ -66,6 +64,32 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
         AppWindowPresenterKind::Overlapped
     );
     assert_eq!(sdk.window.Size().unwrap(), size);
+}
+
+#[test]
+fn standard_buttons_keep_a_taller_application_bar() {
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
+    let _com = crate::windows::initialize_com().unwrap();
+    let runtime = Runtime::initialize().unwrap();
+    let options = WindowOptions {
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        center: false,
+        ..WindowOptions::default()
+    };
+    let frame = FrameWindow::new(&options, None).unwrap();
+    let sdk = WindowFrame::attach(&runtime, frame.hwnd, &options).unwrap();
+    let caption = sdk.overlay.as_ref().unwrap();
+    assert_eq!(
+        caption.titlebar.PreferredHeightOption().unwrap(),
+        TitleBarHeightOption::Standard
+    );
+    // SAFETY: The test owns this live window and reads its native DPI.
+    let dpi = unsafe { GetDpiForWindow(frame.hwnd) };
+    assert_eq!(
+        caption.titlebar.Height().unwrap(),
+        i32::try_from(32 * dpi / 96).unwrap()
+    );
+    assert_eq!(caption.metrics.get().unwrap().minimum_height, 48);
 }
 
 #[test]
@@ -142,5 +166,63 @@ fn sdk_native_controls_preserve_frame_capabilities_and_input_safe_areas() {
                 WindowsAndMessaging::WS_THICKFRAME.0 | WindowsAndMessaging::WS_MAXIMIZEBOX.0;
             assert_eq!(before & capabilities, after & capabilities);
         }
+    }
+}
+
+#[test]
+fn overlay_keeps_all_eight_resize_hit_targets() {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
+    let _com = crate::windows::initialize_com().unwrap();
+    let runtime = Runtime::initialize().unwrap();
+    let options = WindowOptions {
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        center: false,
+        width: 800,
+        height: 600,
+        ..WindowOptions::default()
+    };
+    let frame = FrameWindow::new(&options, None).unwrap();
+    let _sdk = WindowFrame::attach(&runtime, frame.hwnd, &options).unwrap();
+    let mut rect = RECT::default();
+    // SAFETY: This test owns the live window and supplies writable RECT storage.
+    unsafe { WindowsAndMessaging::GetWindowRect(frame.hwnd, &mut rect).unwrap() };
+    let mid_x = (rect.left + rect.right) / 2;
+    let mid_y = (rect.top + rect.bottom) / 2;
+    let hit = |x: i32, y: i32| {
+        let bits = ((y.cast_unsigned() & 0xffff) << 16) | (x.cast_unsigned() & 0xffff);
+        // SAFETY: This test owns the live window; WM_NCHITTEST reads the packed screen point.
+        unsafe {
+            WindowsAndMessaging::SendMessageW(
+                frame.hwnd,
+                WindowsAndMessaging::WM_NCHITTEST,
+                Some(WPARAM(0)),
+                Some(LPARAM(isize::try_from(bits).unwrap())),
+            )
+            .0
+        }
+    };
+    for ((x, y), expected) in [
+        ((rect.left, rect.top), WindowsAndMessaging::HTTOPLEFT),
+        ((mid_x, rect.top), WindowsAndMessaging::HTTOP),
+        ((rect.right - 1, rect.top), WindowsAndMessaging::HTTOPRIGHT),
+        ((rect.left, mid_y), WindowsAndMessaging::HTLEFT),
+        ((rect.right - 1, mid_y), WindowsAndMessaging::HTRIGHT),
+        (
+            (rect.left, rect.bottom - 1),
+            WindowsAndMessaging::HTBOTTOMLEFT,
+        ),
+        ((mid_x, rect.bottom - 1), WindowsAndMessaging::HTBOTTOM),
+        (
+            (rect.right - 1, rect.bottom - 1),
+            WindowsAndMessaging::HTBOTTOMRIGHT,
+        ),
+    ] {
+        assert_eq!(
+            hit(x, y),
+            isize::try_from(expected).unwrap(),
+            "at ({x}, {y})"
+        );
     }
 }

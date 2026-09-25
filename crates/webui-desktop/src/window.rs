@@ -52,6 +52,14 @@ pub struct WindowOptions {
     /// Native titlebar presentation.
     #[serde(default)]
     pub titlebar: TitlebarStyle,
+    /// Windows caption button size for overlay and hidden-inset titlebars.
+    /// Defaults to 32 DIPs independently of the application bar height.
+    #[serde(
+        default,
+        alias = "captionButtonSize",
+        skip_serializing_if = "CaptionButtonSize::is_standard"
+    )]
+    pub caption_button_size: CaptionButtonSize,
     /// Requested platform visual effect.
     #[serde(default)]
     pub effect: WindowEffect,
@@ -96,6 +104,7 @@ impl Default for WindowOptions {
             center: true,
             background: None,
             titlebar: TitlebarStyle::default(),
+            caption_button_size: CaptionButtonSize::default(),
             effect: WindowEffect::default(),
             remember_state: false,
             devtools: false,
@@ -192,6 +201,23 @@ impl<'de> Deserialize<'de> for Rgba {
     }
 }
 
+/// Size of native Windows caption buttons in an application-drawn titlebar.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptionButtonSize {
+    /// Standard 32-DIP caption buttons (the default).
+    #[default]
+    Standard,
+    /// Tall 48-DIP caption buttons.
+    Tall,
+}
+
+impl CaptionButtonSize {
+    const fn is_standard(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+}
+
 /// Native titlebar presentation requested by a window.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case", tag = "style")]
@@ -204,7 +230,8 @@ pub enum TitlebarStyle {
     /// System caption buttons with an application-drawn bar.
     Overlay {
         /// Height of the overlay titlebar in CSS pixels.
-        /// Windows uses a 32- or 48-DIP native caption and reserves at least this height.
+        /// The application band reserves at least this height; Windows caption
+        /// buttons are sized independently through [`WindowOptions::caption_button_size`].
         height: u32,
     },
     /// Fully frameless window. The application draws all chrome.
@@ -488,6 +515,24 @@ mod tests {
         assert!(options.resizable);
         assert!(options.center);
         assert_eq!(options.titlebar, TitlebarStyle::Native);
+        assert_eq!(options.caption_button_size, CaptionButtonSize::Standard);
         assert_eq!(options.effect, WindowEffect::None);
+    }
+
+    #[test]
+    fn caption_button_size_deserializes_app_config_and_preserves_manifest_format() {
+        let options: WindowOptions = serde_json::from_str(
+            r#"{"titlebar":{"style":"overlay","height":48},"captionButtonSize":"tall"}"#,
+        )
+        .unwrap();
+        assert_eq!(options.titlebar, TitlebarStyle::Overlay { height: 48 });
+        assert_eq!(options.caption_button_size, CaptionButtonSize::Tall);
+        let manifest = serde_json::to_value(&options).unwrap();
+        assert_eq!(manifest["caption_button_size"], "tall");
+        assert!(manifest.get("captionButtonSize").is_none());
+        assert!(serde_json::to_value(WindowOptions::default())
+            .unwrap()
+            .get("caption_button_size")
+            .is_none());
     }
 }
