@@ -1,4 +1,4 @@
-# WebUI Desktop
+# Desktop Apps
 
 WebUI desktop apps render the same templates as browser apps in a native window.
 They use WebView2 on Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux.

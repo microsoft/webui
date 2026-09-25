@@ -1356,7 +1356,7 @@ package. Package targets are `macos-app`, `windows-portable`, and
 `linux-portable`; `all` writes all three layouts without cross-compiling the
 runner. Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
-entry points. See the [desktop SDK guide](./guide/integrations/desktop.md) for
+entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
 `titlebar.height` sizes the application band; Windows caption buttons default
 to 32 DIPs independently. Set `webuiDesktop.captionButtonSize: "tall"` for
@@ -1378,7 +1378,7 @@ bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
 explicit `IpcOptions` before building the frame. Requests return typed
 promises/futures; notification completion acknowledges admission rather than
 subscriber completion. Dispose subscriptions and honor cancellation.
-See [desktop message passing](./guide/integrations/desktop.md#message-passing)
+See [desktop message passing](./guide/concepts/desktop.md#message-passing)
 for schema generation, the four message flows, and connection lifetime.
 
 ```bash

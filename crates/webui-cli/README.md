@@ -165,7 +165,7 @@ On macOS, inspect from Safari's Develop menu.
 Rust desktop apps that need dynamic route data can configure `.route(...)` on
 `webui_desktop::DesktopApp::from_bundle(path)?` or, with the `source` feature,
 `DesktopApp::from_source(config)`. Both builders produce a desktop frame.
-See the [desktop SDK guide](https://microsoft.github.io/webui/guide/integrations/desktop)
+See the [desktop SDK guide](https://microsoft.github.io/webui/guide/concepts/desktop)
 for setup and customization. The CLI `--state` flag is a file-backed fallback
 for simple demos.
 
