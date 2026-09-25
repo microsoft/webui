@@ -433,6 +433,23 @@ the app's Rust runner (for example, with a Windows resource build script).
 `webuiDesktop.icon` alone does not set a Windows executable icon. An embedded
 runner icon also appears when launching that runner from source.
 
+A source-mode launch produces a bare executable rather than an `.app` bundle, so
+macOS has no `CFBundleIconFile` to read and falls back to a generic Dock icon.
+Set `DesktopShellConfig::icon_path` to an absolute `.icns` path and the runner
+applies it to the Dock tile at launch:
+
+```rust
+DesktopApp::from_source(config)
+    .shell(DesktopShellConfig {
+        icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
+        ..DesktopShellConfig::default()
+    })
+    .build()?
+```
+
+Packaged apps keep using `CFBundleIconFile`; an unreadable icon is ignored
+rather than failing launch.
+
 ```json
 {
   "webuiDesktop": {

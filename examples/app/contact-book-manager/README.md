@@ -47,7 +47,9 @@ edge-to-edge header and drag region. Search and Add Contact remain interactive
 inside the draggable header through `webui-no-drag`.
 The runner embeds the Contact Book icon for Windows executable and taskbar
 display, including source launches. macOS packages use `desktop/icon.icns` for
-the Dock and Finder icon; the editable artwork is `desktop/icon.svg`.
+the Dock and Finder icon; source launches pass that same file through
+`DesktopShellConfig::icon_path`, so the Dock shows app artwork without an `.app`
+bundle. The editable artwork is `desktop/icon.svg`.
 
 On Windows, the 48-DIP header aligns with the Windows App SDK's tall native
 caption region and requires the installed shared Windows App SDK runtime.

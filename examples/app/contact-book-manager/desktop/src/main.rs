@@ -15,7 +15,7 @@ use webui_desktop::{
     DesktopHttpMethod, DesktopProtocolResponse, EventResponse, RouteContext, RouteStateRegistry,
 };
 #[cfg(feature = "source")]
-use webui_desktop::{DesktopSourceConfig, TitlebarStyle, WindowOptions};
+use webui_desktop::{DesktopShellConfig, DesktopSourceConfig, TitlebarStyle, WindowOptions};
 
 mod state;
 use state::{load_state, read_state, SharedState};
@@ -79,6 +79,10 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
     };
     Ok(DesktopApp::from_source(config)
         .app_id("com.microsoft.webui.contactbook")
+        .shell(DesktopShellConfig {
+            icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
+            ..DesktopShellConfig::default()
+        })
         .build()?)
 }
 
@@ -781,7 +785,7 @@ mod tests {
     #[cfg(feature = "source")]
     #[test]
     fn source_and_packaged_frames_render_native_overlay_chrome() {
-        use webui_desktop::{build_desktop_bundle, DesktopBundleOptions, DesktopShellConfig};
+        use webui_desktop::{build_desktop_bundle, DesktopBundleOptions};
 
         let fixture = source_fixture(&test_state());
         let app_root = fixture.path();
@@ -813,6 +817,9 @@ mod tests {
         assert_eq!(icon_path, "desktop/icon.icns");
         let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns");
         assert!(std::fs::read(&icon).unwrap().starts_with(b"icns"));
+        // Source launches have no `.app` bundle, so the Dock icon can only come
+        // from the shell config the runner supplies at runtime.
+        assert_eq!(source.shell().icon_path.as_deref(), Some(icon.as_path()));
         let windows_icon = include_bytes!("../icon.ico");
         assert_eq!(&windows_icon[..4], &[0, 0, 1, 0]);
         assert!(windows_icon[4] >= 4);
