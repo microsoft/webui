@@ -1378,8 +1378,8 @@ bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
 explicit `IpcOptions` before building the frame. Requests return typed
 promises/futures; notification completion acknowledges admission rather than
 subscriber completion. Dispose subscriptions and honor cancellation.
-See the [IPC guide](./guide/integrations/desktop.md#message-passing) for the
-complete shared-schema example.
+See [desktop message passing](./guide/integrations/desktop.md#message-passing)
+for schema generation, the four message flows, and connection lifetime.
 
 ```bash
 # Install the native CLIs
