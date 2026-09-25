@@ -17,7 +17,9 @@ import * as esbuild from "esbuild";
 import {
   esbuildProjection,
   hashContent,
+  resolveBuildRoot,
   validateManifestSchema,
+  ProjectionError,
 } from "@microsoft/webui/projection.js";
 import type {
   ProjectionManifest,
@@ -29,6 +31,14 @@ const FRAMEWORK_ENTRY = path.resolve(
   "src",
   "index.ts"
 );
+
+interface ConcurrencyModule {
+  mapConcurrent<T, U>(
+    values: ReadonlyArray<T>,
+    maxConcurrency: number,
+    operation: (value: T, index: number, workerIndex: number) => Promise<U>
+  ): Promise<U[]>;
+}
 
 async function fixtureRoot(): Promise<string> {
   const root = await mkdtemp(
@@ -85,7 +95,328 @@ Card.define('probe-card');
   );
 }
 
+async function writeSharedChunkFixture(root: string): Promise<void> {
+  // Two entries that both *statically* import one module. Splitting hoists it
+  // into its own chunk that is named only inside each entry's bytes, so the
+  // browser's preload scanner cannot see it — the case the closure exists for.
+  await writeFile(
+    path.join(root, "src", "shared.ts"),
+    `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+export class Base extends WebUIElement {
+  @observable shared = '';
+}
+export const padding = '${"padding".repeat(2048)}';
+`
+  );
+  await writeFile(
+    path.join(root, "src", "entry.ts"),
+    `
+import { Base, padding } from './shared.ts';
+class Main extends Base {}
+Main.define('probe-main');
+export const used = padding.length;
+`
+  );
+  await writeFile(
+    path.join(root, "src", "island.ts"),
+    `
+import { Base, padding } from './shared.ts';
+class Island extends Base {}
+Island.define('probe-island');
+export const used = padding.length;
+`
+  );
+}
+
 describe("esbuildProjection", () => {
+  test("bounds projection I/O concurrency and preserves order", async () => {
+    const moduleUrl = new URL(
+      "../projection/concurrency.js",
+      import.meta.url
+    );
+    const { mapConcurrent } = (await import(
+      moduleUrl.href
+    )) as ConcurrencyModule;
+    const values = Array.from({ length: 20 }, (_, index) => index);
+    let active = 0;
+    let peak = 0;
+
+    const results = await mapConcurrent(
+      values,
+      4,
+      async (value) => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        active--;
+        return value * 2;
+      }
+    );
+
+    assert.equal(peak, 4);
+    assert.deepEqual(
+      results,
+      values.map((value) => value * 2)
+    );
+  });
+
+  test("settles active projection I/O before propagating errors", async () => {
+    const moduleUrl = new URL(
+      "../projection/concurrency.js",
+      import.meta.url
+    );
+    const { mapConcurrent } = (await import(
+      moduleUrl.href
+    )) as ConcurrencyModule;
+    const started: number[] = [];
+    let active = 0;
+
+    await assert.rejects(
+      mapConcurrent([0, 1, 2], 2, async (value) => {
+        started.push(value);
+        if (value === 1) throw new Error("read failed");
+        active++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        active--;
+        return value;
+      }),
+      /read failed/
+    );
+
+    assert.equal(active, 0);
+    assert.deepEqual(started, [0, 1]);
+  });
+
+  test("proves opaque assets through emitted bytes", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const weatherBytes = Uint8Array.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46,
+    ]);
+    await writeFile(path.join(root, "src", "weather.jpg"), weatherBytes);
+    await writeFile(
+      path.join(root, "src", "entry.ts"),
+      "import weather from './weather.jpg';\nexport { weather };\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".jpg": "file" },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.equal(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/weather.jpg")
+      ),
+      false
+    );
+    assert.ok(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/entry.ts")
+      )
+    );
+
+    const outputKey = Object.keys(manifest.outputs).find((key) =>
+      key.endsWith(".jpg")
+    );
+    assert.ok(outputKey);
+    assert.equal(
+      manifest.outputs[outputKey],
+      hashContent(await readFile(resolvedArtifact(root, manifest, outputKey)))
+    );
+  });
+
+  test("honors non-source loader overrides on source extensions", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const assetBytes = Uint8Array.from([0xff, 0x00, 0xfe, 0x01]);
+    await writeFile(path.join(root, "src", "asset.ts"), assetBytes);
+    await writeFile(
+      path.join(root, "src", "entry.js"),
+      "import asset from './asset.ts';\nexport { asset };\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.js"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file" },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.equal(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/asset.ts")
+      ),
+      false
+    );
+    assert.ok(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/entry.js")
+      )
+    );
+  });
+
+  test("follows esbuild loader plugins and longest suffixes", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(
+      path.join(root, "src", "card.component.ts"),
+      `
+import { WebUIElement } from '@microsoft/webui-framework';
+class Card extends WebUIElement {}
+Card.define('suffix-card');
+`
+    );
+    await writeFile(
+      path.join(root, "src", "suffix-entry.js"),
+      "import './card.component.ts';\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/suffix-entry.js"],
+      outdir: "suffix-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file", ".component.ts": "ts" },
+      external: ["@microsoft/webui-framework"],
+      plugins: [esbuildProjection()],
+    });
+    assert.ok(
+      (await readManifest(root, "suffix-dist")).components["suffix-card"]
+    );
+
+    await writeFile(
+      path.join(root, "src", "plugin-asset.ts"),
+      Uint8Array.from([0xff, 0x00, 0xfe, 0x01])
+    );
+    await writeFile(
+      path.join(root, "src", "plugin-entry.js"),
+      "import asset from './plugin-asset.ts';\nexport { asset };\n"
+    );
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/plugin-entry.js"],
+      outdir: "plugin-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [
+        {
+          name: "binary-ts-loader",
+          setup(build) {
+            build.onLoad(
+              { filter: /plugin-asset\.ts$/ },
+              async (args) => ({
+                contents: await readFile(args.path),
+                loader: "file",
+              })
+            );
+          },
+        },
+        esbuildProjection(),
+      ],
+    });
+    assert.equal(
+      Object.keys(
+        (await readManifest(root, "plugin-dist")).inputs
+      ).some((key) => key.endsWith("src/plugin-asset.ts")),
+      false
+    );
+  });
+
+  test("resolves the default stdin loader from its sourcefile", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const source = "const value: number = 1;\nexport { value };\n";
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: source,
+        sourcefile: "src/entry.ts",
+        loader: "default",
+        resolveDir: root,
+      },
+      outfile: "dist/index.js",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [esbuildProjection()],
+    });
+    assert.equal(
+      Object.keys((await readManifest(root)).inputs).length,
+      1
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: source,
+        sourcefile: "src/asset.ts",
+        loader: "default",
+        resolveDir: root,
+      },
+      outdir: "opaque-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file" },
+      plugins: [esbuildProjection()],
+    });
+    assert.deepEqual(
+      (await readManifest(root, "opaque-dist")).inputs,
+      {}
+    );
+  });
+
+  test("treats stdin as virtual even when sourcefile exists on disk", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(
+      path.join(root, "src", "entry.ts"),
+      `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+class DiskCard extends WebUIElement {
+  @observable diskOnly = '';
+}
+DiskCard.define('disk-card');
+`
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: "export const fromStdin = true;\n",
+        sourcefile: "src/entry.ts",
+        resolveDir: root,
+        loader: "ts",
+      },
+      outfile: "dist/index.js",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(manifest.components, {});
+  });
+
   test("emits a code-split manifest from the same esbuild run", async (t) => {
     const root = await fixtureRoot();
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -135,6 +466,140 @@ describe("esbuildProjection", () => {
       false,
       "atomic manifest temporary files must be cleaned"
     );
+  });
+
+  test("records each entry's static import closure, largest first", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeSharedChunkFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts", "src/island.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+
+    const closures = manifest.entryClosures ?? {};
+    // esbuild also marks dynamic-import split points as entry points, so match
+    // the two configured entries by name rather than counting keys.
+    const entryKeys = Object.keys(closures).filter(
+      (key) => key.endsWith("/entry.js") || key.endsWith("/island.js")
+    );
+    assert.equal(entryKeys.length, 2, "both entries should carry a closure");
+
+    for (const entryKey of entryKeys) {
+      const closure = closures[entryKey]!;
+      assert.ok(
+        closure.some((member) => member.includes("chunk-")),
+        `${entryKey} must reach the shared chunk it statically imports`
+      );
+      assert.equal(
+        closure.includes(entryKey),
+        false,
+        "an entry must not list itself"
+      );
+      for (const member of closure) {
+        assert.ok(
+          manifest.outputs[member] !== undefined,
+          `closure member ${member} must be a declared output`
+        );
+      }
+
+      // Preloads are issued in document order over a shared connection, so a
+      // small chunk ahead of a large one delays the long pole. Verify the
+      // contract against real bytes rather than trusting the sort.
+      const sizes: number[] = [];
+      for (const member of closure) {
+        const bytes = await readFile(resolvedArtifact(root, manifest, member));
+        sizes.push(bytes.byteLength);
+      }
+      for (let index = 1; index < sizes.length; index++) {
+        assert.ok(
+          sizes[index - 1]! >= sizes[index]!,
+          `closure for ${entryKey} must be ordered largest-first`
+        );
+      }
+    }
+  });
+
+  test("excludes dynamically imported chunks from the closure", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeCardFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+
+    // `entry.ts` reaches `card.ts` only through `import()`. Preloading it would
+    // defeat the deferral the author asked for, so its retained ownership
+    // record must have an empty closure.
+    const closures = manifest.entryClosures ?? {};
+    const entryKey = Object.keys(closures).find((key) =>
+      key.endsWith("/entry.js")
+    );
+    assert.ok(entryKey, "the configured entry must remain represented");
+    const closure = closures[entryKey]!;
+    assert.equal(closure.length, 0, "dynamic imports must not be preloaded");
+  });
+
+  test("suppresses closure members when publicPath changes served URLs", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeSharedChunkFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts", "src/island.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      publicPath: "https://cdn.example.com/assets",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    const closures = manifest.entryClosures ?? {};
+    const configuredEntries = Object.entries(closures).filter(
+      ([key]) => key.endsWith("/entry.js") || key.endsWith("/island.js")
+    );
+    assert.equal(configuredEntries.length, 2);
+    for (const [, closure] of configuredEntries) {
+      assert.deepEqual(
+        closure,
+        [],
+        "local metafile paths must not become same-origin CDN preload guesses"
+      );
+    }
   });
 
   test("hashes esbuild outputFiles when write is false", async (t) => {
@@ -310,4 +775,61 @@ SharedCard.define('shared-card');
       ["value"]
     );
   });
+});
+
+describe("resolveBuildRoot", () => {
+  const isWindows = process.platform === "win32";
+
+  test("returns the deepest directory containing every artifact", () => {
+    const root = process.cwd();
+    assert.equal(
+      resolveBuildRoot([
+        path.join(root, "dist", "webui-projection.json"),
+        path.join(root, "src", "card.ts"),
+        path.join(root, "dist", "entry.js"),
+      ]),
+      root
+    );
+  });
+
+  test("accepts a single artifact", () => {
+    const manifest = path.join(process.cwd(), "dist", "manifest.json");
+    assert.equal(
+      resolveBuildRoot([manifest]),
+      path.dirname(manifest)
+    );
+  });
+
+  test("rejects an empty artifact list with PROJ-C015", () => {
+    assert.throws(
+      () => resolveBuildRoot([]),
+      (error: unknown) =>
+        error instanceof ProjectionError &&
+        error.diagnostics[0]?.code === "PROJ-C015"
+    );
+  });
+
+  test(
+    "reports PROJ-C015 naming both paths when artifacts span filesystem roots",
+    { skip: isWindows ? false : "requires Windows drive letters" },
+    () => {
+      const manifest = String.raw`E:\project\dist\webui-projection.json`;
+      const foreignInput = String.raw`C:\Users\me\AppData\Local\Temp\webui-press\template\index.ts`;
+      assert.throws(
+        () => resolveBuildRoot([manifest, foreignInput]),
+        (error: unknown) => {
+          assert.ok(error instanceof ProjectionError);
+          const diagnostic = error.diagnostics[0];
+          assert.equal(diagnostic?.code, "PROJ-C015");
+          assert.equal(diagnostic?.severity, "error");
+          assert.equal(diagnostic?.location, foreignInput);
+          // The help line must name both paths: the only fix is moving one.
+          assert.ok(diagnostic?.help?.includes(manifest));
+          assert.ok(diagnostic?.help?.includes(foreignInput));
+          assert.ok(diagnostic?.help?.includes("TEMP"));
+          return true;
+        }
+      );
+    }
+  );
 });

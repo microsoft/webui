@@ -10,12 +10,34 @@ export default function init(
 export class Protocol {
   constructor(protocolBytes: Uint8Array, plugin?: string | null);
 
-  renderStream(
-    stateJson: string,
-    onChunk: (html: string) => void,
+  streamResponse(
+    entry: string,
+    requestPath: string,
     options?: {
-      entry?: string;
-      requestPath?: string;
+      nonce?: string;
+      headInject?: string;
+      bodyInject?: string;
     },
-  ): void;
+  ): StreamingSession;
+}
+
+export interface BoundaryDescriptor {
+  instanceId: number;
+  declarationId: number;
+  owner: string;
+  name: string;
+  key?: string | number;
+}
+
+export interface StreamStep {
+  bytes: Uint8Array;
+  done: boolean;
+  boundary?: BoundaryDescriptor;
+}
+
+export class StreamingSession {
+  start(stateJson: string): StreamStep;
+  resume(instanceId: number, stateJson: string, mode?: 'final' | 'updatable'): StreamStep;
+  advance(): StreamStep;
+  update(instanceId: number, stateJson: string): Uint8Array;
 }

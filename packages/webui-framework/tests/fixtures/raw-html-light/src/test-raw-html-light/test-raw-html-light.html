@@ -1,0 +1,15 @@
+<div class="body">
+  <span class="before">Before</span>
+  {{{rawHtml}}}
+  <if condition="showConditional">
+    <span class="conditional">Conditional</span>
+  </if>
+  <span class="after">After</span>
+</div>
+<table>
+  <tbody class="rows">
+    <tr class="row-before"><td>Before row</td></tr>
+    {{{rowsHtml}}}
+    <tr class="row-after"><td>After row</td></tr>
+  </tbody>
+</table>

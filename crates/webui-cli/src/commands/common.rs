@@ -25,9 +25,19 @@ pub struct AppArgs {
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
 
-    /// DOM strategy for component rendering (shadow or light)
+    /// Fallback DOM strategy for components without an authored Shadow root
     #[arg(long, value_enum, default_value_t = DomStrategy::Shadow)]
     pub dom: DomStrategy,
+
+    /// Merge component stylesheets into shared bundled chunks
+    ///
+    /// Composes with `--css`: bundling decides how stylesheets are grouped,
+    /// `--css` decides how they reach the page. Stylesheets reached from more
+    /// than one CSS tree are split into their own chunk so they are downloaded
+    /// and cached once. Not supported with `--css module`, which already inlines
+    /// every stylesheet as a data URI.
+    #[arg(long)]
+    pub css_bundle: bool,
 
     /// Framework plugin to load
     #[arg(long, value_enum)]
@@ -62,9 +72,11 @@ impl AppArgs {
             entry: self.entry.clone(),
             css: self.css,
             dom: self.dom,
+            css_bundle: self.css_bundle,
             plugin: self.plugin,
             components: self.components.clone(),
             component_asset_roots: Vec::new(),
+            metafile: false,
             css_file_name_template: self.asset_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
@@ -90,6 +102,37 @@ pub fn load_theme(theme: &str, search_root: &Path) -> Result<webui::TokenFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Parser)]
+    struct TestArgs {
+        #[command(flatten)]
+        app: AppArgs,
+    }
+
+    #[test]
+    fn dom_option_defaults_to_shadow_and_accepts_light() {
+        assert!(TestArgs::try_parse_from(["test"]).is_ok());
+        assert_eq!(
+            TestArgs::try_parse_from(["test"])
+                .expect("default arguments")
+                .app
+                .dom,
+            DomStrategy::Shadow
+        );
+        assert_eq!(
+            TestArgs::try_parse_from(["test", "--dom=light"])
+                .expect("Light DOM arguments")
+                .app
+                .dom,
+            DomStrategy::Light
+        );
+        assert!(TestArgs::try_parse_from(["test", "--dom=invalid"]).is_err());
+        assert!(TestArgs::command()
+            .render_long_help()
+            .to_string()
+            .contains("--dom"));
+    }
 
     #[test]
     fn to_build_options_passes_asset_file_output_settings() {
@@ -98,6 +141,7 @@ mod tests {
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
             dom: DomStrategy::Shadow,
+            css_bundle: false,
             plugin: None,
             components: Vec::new(),
             projection_manifests: vec![
@@ -110,6 +154,7 @@ mod tests {
         };
         let options = args.to_build_options(std::path::Path::new("."));
 
+        assert_eq!(options.dom, DomStrategy::Shadow);
         assert_eq!(options.css_file_name_template, "[name]-[hash].[ext]");
         assert_eq!(
             options.css_public_base.as_deref(),

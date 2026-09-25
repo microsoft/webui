@@ -52,9 +52,10 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--state` | *(none)* | JSON state file for rendering |
 | `--servedir` | *(none)* | Static assets directory served at `/*` |
 | `--port` | `3000` | Server port |
-| `--api-port` | *(none)* | Proxy API requests to this port |
+| `--api-port` | *(none)* | Proxy API requests; JSON provides buffered state and `application/x-webui-stream` drives progressive boundaries |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
 | `--watch` | off | Enable file watching + HMR |
+| `--shutdown-timeout <SECONDS>` | *(none)* | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
@@ -63,12 +64,52 @@ webui serve ./src --state ./data/state.json --port 3000 --watch
 webui serve ./src --plugin webui --servedir ./dist --port 3004 --api-port 3014 --watch
 ```
 
+By default, shutdown waits for an active rebuild without a deadline. Add
+`--shutdown-timeout 10` to terminate the owned server process tree when a stop
+request cannot finish within ten seconds; a second stop request escalates
+sooner. Forced shutdown returns nonzero and can leave incomplete outputs.
+Supervised mode reserves stdin, so interactive build tools are unsupported.
+See [bounded shutdown](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
+for platform limits.
+
 Features:
 - Renders HTML at `/` and all route paths
 - Serves static files from `--servedir`
 - JSON partials for client-side navigation (`Accept: application/json`)
 - HMR polling at `/hmr` when `--watch` is enabled
-- API proxy when `--api-port` is set
+- API proxy when `--api-port` is set. Backends may return JSON state or a
+  versioned, newline-delimited `application/x-webui-stream` control response;
+  the CLI retains the Rust renderer, caps precommit output staging at 4,000,000
+  bytes, and cancels the backend when the browser disconnects.
+
+The control response uses version 2 and exactly three command types:
+
+```json
+{"type":"start","version":2,"state":{"title":"Initial state"}}
+{"type":"resume","boundary":{"owner":"index.html","name":"hero"},"mode":"updatable","state":{}}
+{"type":"update","boundary":{"owner":"index.html","name":"hero"},"state":{"status":"ready"}}
+```
+
+`start` is first and supplies the initial object state. Each `resume` must echo
+the pending runtime descriptor's `owner`, `name`, and optional string-or-number
+`key`; `declarationId` may also be supplied for validation. The CLI retains
+committed descriptors, so `update` uses the same target without a reverse
+acknowledgement channel. Ambiguous unkeyed update targets are rejected.
+
+The CLI drives the Rust step machine as follows:
+
+| Rust step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching backend `resume`, then call `resume` |
+| no descriptor and not done | Call `advance` internally |
+| done | Complete the browser response |
+
+Rust `resume` emits only the pending boundary through its checkpoint. The
+following internal `advance` emits parent or tail bytes through the next
+descriptor or terminal. The backend does not send an `advance` control record.
+It closes its NDJSON body after sending the resume for the final descriptor;
+the CLI's final `advance` completes the response. There is no terminal control
+command.
 
 ### `webui inspect`
 
@@ -81,6 +122,52 @@ webui inspect <FILE>
 ```bash
 webui inspect ./dist/protocol.bin
 ```
+
+### `webui desktop`
+
+Run desktop commands through the desktop sidecar backend. `webui` remains the
+only user-facing CLI; the sidecar is resolved automatically from the installed
+desktop support package, next to the `webui` binary, or from the workspace during
+local development. Set `WEBUI_DESKTOP_BINARY` only to override sidecar discovery.
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin webui \
+  --devtools
+```
+
+The sidecar currently creates immutable desktop bundles with `protocol.bin`,
+copied assets, startup state, `manifest.webui-desktop.json`, and SHA-256
+integrity hashes. Native window backends and platform package emitters are
+implemented in the desktop sidecar so the default CLI stays lean.
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+The Rust packager currently writes runnable macOS `.app` bundles and portable
+folder layouts. For app roots, the sidecar reads `webuiDesktop` from
+`package.json`, runs configured web build scripts, builds the app-specific Cargo
+runner crate, stages non-generated assets, builds the bundle, and packages the
+runner-backed app. Use `--runner` for lower-level existing-bundle flows with
+route providers or typed IPC commands; omitting it packages the generic sidecar
+for file-backed/static seed-state bundles. Installer targets return actionable
+missing-tool diagnostics until the platform packagers are enabled.
+
+Use `--devtools` on desktop build/run to make development webviews inspectable.
+On macOS, inspect from Safari's Develop menu.
+
+Rust desktop apps that need dynamic route data can configure `.route(...)` on
+`webui_desktop::DesktopApp::from_bundle(path)?` or, with the `source` feature,
+`DesktopApp::from_source(config)`. Both builders produce a desktop frame.
+See the [desktop SDK guide](https://microsoft.github.io/webui/guide/integrations/desktop)
+for setup and customization. The CLI `--state` flag is a file-backed fallback
+for simple demos.
 
 ## App Layout
 

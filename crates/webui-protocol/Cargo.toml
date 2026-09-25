@@ -16,6 +16,8 @@ exclude = ["build.rs"]
 name = "webui_protocol"
 
 [features]
+# Enable the build-time state-projection manifest contract and validation.
+projection-manifest = ["dep:sha2"]
 # Enable to regenerate src/gen_webui.rs from proto/webui.proto via prost-build.
 # Off by default so crates.io consumers don't pull in prost-build.
 regenerate-proto = ["dep:prost-build"]
@@ -25,7 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 prost = { workspace = true }
-sha2 = { workspace = true }
+sha2 = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build = { workspace = true, optional = true }

@@ -71,7 +71,7 @@ const MANIFEST_PATH = path.join(
 );
 
 /**
- * Run all compiler-scoped fixtures, including byte-for-byte determinism and
+ * Run all Light-DOM fixtures, including byte-for-byte determinism and
  * full manifest structural/hash validation.
  */
 export async function runConformanceSuite(

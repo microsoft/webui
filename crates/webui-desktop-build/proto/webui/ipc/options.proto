@@ -1,0 +1,25 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+package webui.ipc;
+import "google/protobuf/descriptor.proto";
+
+enum Endpoint {
+  ENDPOINT_UNSPECIFIED = 0;
+  HOST = 1;
+  RENDERER = 2;
+}
+extend google.protobuf.FileOptions {
+  string contract_name = 51000;
+  uint32 contract_major = 51001;
+}
+extend google.protobuf.ServiceOptions {
+  Endpoint receiver = 51000;
+}
+extend google.protobuf.MethodOptions {
+  uint32 id = 51000;
+  bool notification = 51001;
+  bool development_only = 51002;
+}
+message Notification {}

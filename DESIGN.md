@@ -38,10 +38,46 @@ pub struct WebUIProtocol {
     pub components: HashMap<String, ComponentData>,
     /// Build-wide CSS delivery strategy (Link, Style, or Module).
     pub css_strategy: CssStrategy,
-    /// Build-wide DOM encapsulation strategy (Shadow or Light).
-    pub dom_strategy: DomStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Ordered modulepreload hrefs for critical shared JavaScript chunks.
+    pub module_preloads: Vec<String>,
+    /// Deterministic document-level CSS for build-authored component rendering
+    /// policies. Empty when no component uses `w-render="lazy"`.
+    pub component_render_css: String,
+    /// Ordered component style resources for each CSS-tree entry point.
+    pub style_closures: HashMap<String, ComponentStyleClosure>,
+    /// Bundled stylesheet chunks, empty unless the build enabled `css_bundle`.
+    pub style_chunks: Vec<StyleChunk>,
+    /// Deterministic Link stylesheet metadata for component asset roots.
+    /// Empty when the build does not emit component assets.
+    pub component_asset_style_preloads: Vec<ComponentAssetStylePreload>,
+}
+
+pub struct ComponentStyleClosure {
+    /// Component tags in cascade-sensitive first-discovery order.
+    pub component_tags: Vec<String>,
+    /// Indices into `WebUIProtocol.style_chunks`, in the same cascade order.
+    /// Empty unless the build bundled CSS, in which case consumers deliver
+    /// `component_tags` resources individually.
+    pub style_chunks: Vec<u32>,
+}
+
+pub struct StyleChunk {
+    /// Stable resource name, used for `data-webui-resource` and dedup.
+    pub name: String,
+    /// Concatenated CSS for Style and Module strategies.
+    pub css: String,
+    /// External stylesheet href for the Link strategy.
+    pub css_href: String,
+    /// Merged component tags, in cascade order.
+    pub component_tags: Vec<String>,
+}
+
+/// Link stylesheet metadata for one static component asset root.
+pub struct ComponentAssetStylePreload {
+    pub root: String,
+    pub style_hrefs: Vec<String>,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -50,7 +86,7 @@ pub struct WebUIProtocol {
 pub struct ComponentData {
     /// Non-WebUI client-side template payload, such as FAST `<f-template>` HTML.
     pub template: String,
-    /// Component CSS content for the Module strategy.
+    /// Retained component CSS content for Style and Module strategies.
     pub css: String,
     /// External stylesheet href for the Link CSS strategy.
     /// Default format is `<component-name>.css`, but build-time naming
@@ -58,10 +94,7 @@ pub struct ComponentData {
     /// prepend a CDN/public base URL.
     /// Always set when CssStrategy::Link is active and the component has CSS.
     /// Empty for Style/Module strategies and for components without CSS.
-    /// The handler uses `css_strategy` and `dom_strategy` on `WebUIProtocol` to
-    /// decide what to emit in `<head>`:
-    ///   Link + Shadow → `<link rel="preload">` (shadow root has the stylesheet)
-    ///   Link + Light  → `<link rel="stylesheet">` (no shadow root to host it)
+    /// Ordered style closures decide which CSS tree receives this resource.
     pub css_href: String,
     /// WebUI plugin JSON-safe component metadata.
     pub template_json: String,
@@ -73,8 +106,22 @@ pub struct ComponentData {
     pub navigation_keys: Vec<String>,
     /// `None`, `Keys`, or correctness-safe `All` initial hydration state.
     pub hydration_mode: StateProjectionMode,
-    /// `None`, `Keys`, or correctness-safe `All` partial-navigation state.
-    pub navigation_mode: StateProjectionMode,
+    /// Present for protocols with exact navigation projection metadata.
+    /// Absence means the surface is unknown and requires full state.
+    pub navigation_mode: Option<StateProjectionMode>,
+    /// Whether the component authors a sole open declarative Shadow root.
+    pub uses_shadow_dom: bool,
+    /// Eager, lazy hydration, lazy rendering, interaction hydration, or the
+    /// combined lazy-render/interaction policy.
+    pub work_policy: ComponentWorkPolicy,
+}
+
+pub enum ComponentWorkPolicy {
+    Eager = 0,
+    LazyHydration = 1,
+    LazyRender = 2,
+    Interaction = 3,
+    LazyRenderInteraction = 4,
 }
 
 pub enum InitialStateStrategy {
@@ -91,6 +138,8 @@ pub enum StateProjectionMode {
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 pub struct FragmentList {
     pub fragments: Vec<WebUIFragment>,
+    /// True when this record directly or transitively reaches a boundary.
+    pub contains_boundary: bool,
 }
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
@@ -100,6 +149,30 @@ pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
 /// Generated from protobuf `message WebUIFragment` with a `oneof fragment` field.
 pub struct WebUIFragment {
     pub fragment: Option<web_ui_fragment::Fragment>,
+}
+
+/// Which end of an inline boundary tape a fragment marks.
+pub enum BoundaryPhase {
+    Start = 0,
+    End = 1,
+}
+
+/// Compile-time declaration preserved in the fragment graph as an inline tape.
+pub struct WebUIFragmentBoundary {
+    /// Stable build-local declaration identity, shared by the start/end pair.
+    pub declaration_id: u32,
+    /// Entry or reusable component template that owns the declaration.
+    pub owner_fragment_id: String,
+    /// Static authored name, unique within `owner_fragment_id`.
+    pub name: String,
+    /// Optional expression evaluated for each runtime occurrence.
+    pub key: Option<String>,
+    /// Conservative build-time result for declarations rendered from more than
+    /// one static callsite. A `<for>` repeat never contributes: the build
+    /// rejects every boundary a repeat body reaches (`boundary-in-repeat`).
+    pub may_repeat: bool,
+    /// Whether this fragment opens or closes the declaration's body.
+    pub phase: BoundaryPhase,
 }
 
 /// The fragment oneof variants.
@@ -113,6 +186,7 @@ pub enum Fragment {
     Plugin(WebUIFragmentPlugin),
     Route(WebUIFragmentRoute),
     Outlet(WebUIFragmentOutlet),
+    Boundary(WebUIFragmentBoundary),
 }
 ```
 ### Fragment Types
@@ -130,6 +204,30 @@ pub struct WebUIFragmentComponent {
     pub fragment_id: String,
 }
 ```
+#### Boundary Fragment
+
+`Boundary` is a typed declaration in the normal fragment graph, written as an
+**inline tape**: a `Start` marker, the body fragments, and an `End` marker
+carrying the same `declaration_id`, all in the owner's own record. Ordinary
+rendering therefore walks the body without an extra record lookup and simply
+skips both markers. Streaming suspends at `Start`; public `resume` renders only
+the body and its checkpoint, then public `advance` continues the owning record.
+The declaration may be reached through entries, reusable components,
+conditions, outlets, and the selected route. Runtime traversal, not declaration
+order, creates response-local occurrences.
+
+Markers always pair within one record, because a `<boundary>`'s children are
+lexically inside it; constructs that own their own record (`<if>`, `<for>`,
+components, route content) still nest as separate records. Nesting a boundary
+inside another — lexically or transitively through those records — is rejected
+at build time, so a response has at most one active occurrence and matching is
+stack-free.
+
+The compiler assigns `declaration_id`, records the authoring
+`owner_fragment_id`, and sets `contains_boundary` on every directly or
+transitively boundary-bearing `FragmentList`. Field 8 of `WebUIProtocol` and
+field 5 of `WebUIFragmentBoundary` are reserved and must not be reused.
+
 #### For Loop Fragment
 ```rust
 pub struct WebUIFragmentFor {
@@ -148,8 +246,22 @@ pub struct WebUIFragmentSignal {
     pub value: String,
     /// Determines if the value should be rendered as raw content.
     pub raw: bool,
+    /// Whether the signal is inside an HTML raw-text context such as `<style>`.
+    /// Raw-text signals never own replaceable sibling ranges.
+    pub raw_text_context: bool,
 }
 ```
+`raw_text_context` governs marker ownership only; it does not change escaping.
+`raw` keeps its usual meaning (`false` HTML-encodes, `true` writes verbatim) in
+every context, including inside `<script>`/`<style>`/`<xmp>` (HTML raw-text,
+never decodes character references) and `<title>`/`<textarea>` (RCDATA, does
+decode them). An escaped (`{{value}}`) binding inside a raw-text element is
+therefore an authoring footgun: an HTML-encoded value such as `&amp;` is
+emitted as literal text and is never decoded back by the browser, which can
+corrupt CSS/JS. Authors binding values that may contain `&`, `<`, `>`, or
+quotes inside `<script>`/`<style>`/`<xmp>` must use the raw (`{{{value}}}`)
+form. The parser does not currently reject an escaped binding in these
+contexts.
 #### Conditional Fragment
 ```rust
 pub struct WebUIFragmentIf {
@@ -173,7 +285,7 @@ pub struct WebUIFragmentAttribute {
     pub complex: bool,
     /// True for the first dynamic attribute on a component element.
     pub attr_start: bool,
-    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    /// True for host-only attributes (class, style, role, data-*).
     pub attr_skip: bool,
     /// True for static attribute values on components.
     pub raw_value: bool,
@@ -181,6 +293,22 @@ pub struct WebUIFragmentAttribute {
     pub condition_tree: Option<ConditionExpr>,
 }
 ```
+
+`attr_start` opens the component attribute collection window and `attr_skip`
+excludes individual attributes from it. The window closes when the matching
+component fragment is entered. Attributes on native elements never carry
+`attr_start`, so they render directly to HTML and never enter component
+attribute state — a native attribute cannot become a local variable of a
+later component.
+
+Valueless component inputs are presence flags: `<my-drawer open>` supplies
+boolean `open: true` to that component's template through an existing constant
+boolean-attribute fragment. Explicit `?` inputs retain their evaluated boolean;
+literal values, including empty strings, remain literal values. Native HTML
+attributes retain their authored presence. ARIA inputs use the existing attribute
+name mapping and are not excluded from component scope. None of this reads
+JavaScript decorators or requires projection metadata. Literal component
+attribute text is decoded at build time and escaped once on output.
 
 ##### Attribute Name Mapping
 
@@ -212,6 +340,12 @@ pub struct WebUIFragmentPlugin {
     pub data: Vec<u8>,
 }
 ```
+
+FAST 3 element metadata is a four-byte little-endian binding count. FAST 2
+element metadata is always five bytes: the same count followed by lifecycle
+flags. Bit 0 tells the FAST 2 handler to restart child marker indexes after
+emitting the root host-binding marker. Four-byte FAST 2 payloads are rejected;
+there is no compatibility branch for the prior intermediate format.
 
 #### Route Fragment
 Route fragments define declarative URL-based routes linking path templates to fragment bodies.
@@ -245,7 +379,13 @@ the full invalidation graph - developers cannot forget to invalidate related dat
 
 **Pending component:** Declared via `pending="mail-skeleton"` on `<route>`. The compiler validates
 the component exists at build time. During slow navigations (>150ms), the router mounts this
-component as a loading indicator. Skip for keep-alive and cached routes.
+component as a loading indicator. The indicator remains owned by that navigation through response
+validation, component loading, route loaders, and view-transition preparation. A successful
+navigation removes its tracked pending element inside the synchronous DOM commit before settled
+route content is mutated or `webui:route:navigated` is dispatched. Aborted, superseded, failed,
+and destroyed navigations release pending UI through the same generation-checked O(1) ownership
+path, without scanning the document or authored shadow roots. Skip pending setup entirely for
+keep-alive and cached routes.
 
 **Error component:** Declared via `error="error-page"` on `<route>`. The compiler validates
 the component exists at build time. When a navigation fetch fails, the router mounts this
@@ -256,7 +396,7 @@ via `WebUIFragmentRoute` nesting.
 
 #### Outlet Fragment
 Outlet fragments mark where matched child route content renders inside a parent route component.
-The parser emits these from `<outlet />` elements.
+The parser emits these from `<outlet />` or paired `<outlet></outlet>` directives.
 ```rust
 pub struct WebUIFragmentOutlet {}
 ```
@@ -266,6 +406,14 @@ Components use `<outlet />` in their templates to declare insertion points:
 <h1>Title</h1>
 <main><outlet /></main>
 ```
+Only one outlet is supported at a given route level. The count includes outlets
+reachable through nested components, `<if>`, and `<for>` records, preserving
+separate callsites to the same record. Route edges start a separate level and
+are not included in the enclosing count. If a template's closure reaches
+more than one `<outlet>` for the same level, the build adds a
+non-fatal `multiple-outlets` warning to `BuildResult::warnings`; authors should
+remove the extra outlet or move duplicated layout into the matched route
+component.
 
 **Route declaration:** Routes are declared as nested `<route>` elements in the entry HTML.
 Child paths are relative to their parent (no leading `/`). The HTML nesting IS the route tree:
@@ -291,11 +439,21 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 
 **Server-side rendering:** When the handler encounters `Fragment::Route`:
 1. Pre-scan siblings, pick the best match by specificity.
-2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `data-ri`. Routing metadata (`query`, `keep-alive`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead.
+2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `keep-alive`, `data-ri`. Routing metadata (`query`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead. `keep-alive` remains on unmatched placeholders so pending UI can be skipped before the destination partial resolves.
 3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
-For the WebUI framework path, matched route components do **not** receive route
-state as scalar attributes or `data-state`. Initial SSR state comes from the
+Both buffered and progressive rendering preserve sibling declaration order,
+including hidden placeholders. Activating a route must not move it ahead of its
+siblings: the client uses this order to break equal-specificity boundary ties.
+
+For FAST plugins, matched route components expose scalar route state as
+kebab-case HTML attributes. Strings, numbers, and booleans are emitted.
+Complex values should be initialized from the rendered DOM or another
+documented mechanism appropriate to the component. Keep FAST route payloads
+flat when the component reads them via `@attr`.
+
+For the WebUI framework plugin path, matched route components do **not**
+receive route state as scalar attributes. Initial SSR state comes from the
 rendered DOM plus hydration markers, and client-side navigations apply fresh
 state through the partial-response `setState(...)` path.
 
@@ -322,10 +480,23 @@ non-executable SSR metadata:
 </script>
 ```
 
-This is the single metadata startup contract. The client packages first read any existing `window.__webui`, then
-lazily parse and remove `#webui-data` into `window.__webui` when metadata is needed. Note that
+This is the single metadata startup contract. The client packages first read any
+existing `window.__webui`, then lazily parse and remove `#webui-data` into
+`window.__webui` when metadata is needed. The projected `state` object is a
+one-shot handoff: eager components consume it synchronously, lazy roots copy
+their owned roots before deferral, and the framework deletes it when the startup
+`webui:hydration-complete` cohort settles on a page without a route chain. Pages
+with a route chain retain the handoff for router-owned lazy startup instead.
+Template closure entries are likewise removed from `templateFns` after
+normalization embeds each function into its template metadata. Note that
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
+
+The TypeScript entry points model this object through the mergeable global
+`WebUIRuntimeGlobal` interface. Each client package augments the fields it owns
+and declares the identical `Window.__webui?: WebUIRuntimeGlobal` property, so
+applications can import the router and framework entry points together without
+conflicting ambient declarations.
 
 `initial_state_strategy` controls the `state` field. Default and non-WebUI
 plugin builds use `Full` and serialize the complete state object. WebUI builds
@@ -358,95 +529,234 @@ emit WebUI `templates` or `templateFns`.
 **Client-side navigation:**
 1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking. While active, it installs a nonce-bearing `@view-transition { navigation: none; }` override and removes it on `destroy()`. This disables automatic cross-document transitions without affecting explicit same-document `document.startViewTransition()` commits.
 2. `RouterConfig` supports `ssrFresh?: boolean` (default `true`) — when set, the router skips the initial loader replay because SSR state is authoritative. Components can opt into loader replay at startup by declaring `static ssrLoader = true`.
-3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
-4. The server returns the matched route chain; the client does NOT perform route matching.
-5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit.
+3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server. The initial response, including the JSON body or first NDJSON chain chunk, has a 10-second deadline. A router-owned controller cancels a deferred NDJSON reader when a newer navigation starts or the router is destroyed; the deadline itself is cleared after the initial chunk so deferred state is not time-limited.
+4. The server returns the authoritative matched route chain; the client does NOT select route content. Before that chain is available, the client may match the SSR-emitted hidden route placeholders solely to choose the destination's pending/error boundary. This bounded fallback uses the same literal, `:param`, `:param?`, `*splat`, exactness, specificity, and relative-path semantics as server matching. Equal-specificity ties keep the first declared sibling, matching the server; SSR preserves that order in the DOM.
+5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit. The event detail includes a synchronous `waitUntil(promise)` collector. Optional runtimes use it to extend template-resource readiness without creating a router-to-framework import; the router awaits collected work before loaders or route commit and stops waiting promptly when the navigation is aborted. Inventory, templates, and head CSS are global retained resources, so CSS injection occurs before the wait and remains available when a stale navigation is abandoned.
 6. Configured authored loaders run. If the destination tag is still unregistered, the router performs document navigation.
 7. Otherwise, the router reconciles old vs new chain — finds first changed level.
 8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 9. Parent components and their state are preserved.
 
-**Partial response:** `Protocol::render_partial()` returns the complete response
-with projected top-level `state`. Raw-state input is validated
-with a streaming serde visitor that enforces `serde_json::Value` numeric limits,
-skips unselected values without materializing them, and borrows selected raw
-values into the response. FFI, Node, WASM, and .NET expose only the complete
+For non-query-only commits, the router owns the explicit view transition's
+`ready` and `finished` rejections immediately after `startViewTransition()`.
+Animation skips, including supersession and invalid snapshot state, do not fail
+a committed route.
+`updateCallbackDone` remains the only awaited transition promise and propagates
+the original commit callback failure. Explicitly observing `finished` avoids
+relying on browsers to automatically handle its duplicate callback failure.
+Neither `ready` nor `finished` delays route notification or queues subsequent
+navigations. Both observers share one rejection handler, without per-navigation
+closures or retained transition state.
+
+**Partial response:** `Protocol::prepare_partial()` accepts owned
+`serde_json::Value` state and returns a serializable `PartialNavigation` with
+projected top-level `state` and an out-of-band `is_match()` result. Selected
+values move into the response without cloning their trees. Desktop and the web
+CLI serialize this response directly into their byte buffers. The compatible
+`Protocol::render_partial()` string API wraps the same preparation path.
+`Protocol::render_partial_json()` accepts raw state and validates it with a
+streaming serde visitor that enforces `serde_json::Value` numeric limits, skips
+unselected values without materializing them, and borrows selected raw values
+into the same response serializer. Unknown component surfaces retain full state
+for correctness; both input paths exclude the reserved top-level `$webui` key,
+including that fallback. Inventory filtering never narrows state selection:
+resident templates still receive their required data. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
-- `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
+- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots. Component resources may use the template inventory, but bundled chunks are distinct resources and are never inferred from component bits. A multi-member chunk carries its ordered `members`; registering or claiming that chunk marks those component resources covered in the same CSS tree. Module resources carry both their specifier and compiled CSS
 - `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
-- `inventory`: updated hex bitmask of loaded templates
+- `inventory`: updated hex bitmask of loaded component template and style metadata
 - `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
-**NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
+**NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately. The router registers those templates, awaits any `webui:templates-registered` readiness work, commits the navigation, and then reads Chunk 2 (per-component states) in the background. Deferred states are merged into the retained Chunk 1 response before a streaming cache entry is marked complete, including speculative preloads. A superseding navigation aborts the readiness wait and prevents the stale chunk from committing; rejected commits cancel and unlock the unread stream.
 
 **Cache control:** The server can include `cacheControl: { staleTime: number }` in the partial response to override the client's default stale time for this specific route.
 
-**Static component assets:** `webui build --emit-component-assets mail-thread,compose-page`
-emits CDN-loadable component asset files next to `protocol.bin`. The flag is a
-strict comma-separated allowlist of root component tags; every tag must be a
-discovered lowercase kebab-case component with WebUI template metadata. Static
-component asset runtimes are framework-owned: the WebUI Framework loader lives at
-`@microsoft/webui-framework/component-asset.js`; a FAST runtime should define its
-own asset loader rather than making the core `@microsoft/webui` package know
-plugin details. Asset roots are parsed into the protocol through synthetic
-non-entry fragments, so they do not become reachable from the SSR entry tree and
-are not included in the initial SSR bootstrap unless the entry graph also
-references them. `webui serve --emit-component-assets` parses and validates the
-same roots on every dev build — surfacing their HTML and theme-token errors even
-though they are outside the SSR tree — and serves the compiled modules from
-memory. Asset generation is parallelized across requested roots. Each root produces one
-standard ESM module, `<tag>.webui.js`, by default. Use
-`--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable CSS and
-component asset names; `[hash]` is the emitted file's SHA-256 content hash
-truncated to 8 hex characters and `[ext]` resolves to `webui.js` for component
-assets. Programmatic Rust builds expose the rendered files through
-`BuildResult::component_asset_files`; `build_to_disk()` and the CLI validate
-protocol/CSS/component-asset filenames as one output set before writing any
-file. The module default-exports:
+**Static component asset graph:** `webui build --emit-component-assets
+mail-thread,compose-page` emits CDN-loadable component asset modules next to
+`protocol.bin`. The flag is a strict comma-separated allowlist of root tags;
+every tag must be a discovered lowercase kebab-case component with template
+metadata. Component assets cannot be combined with `<route>` directives. That
+invalid mode fails with the stable `component-assets-with-routes` diagnostic
+because route branches belong to the SSR/navigation graph.
+
+The build computes the entry and requested-root dependency closures without
+evaluating runtime state. It follows component edges, `<if>`, `<for>`, and
+attribute-template edges. Ownership is deterministic and independent of the
+order supplied to `--emit-component-assets`:
+
+- Components reachable from the normal entry remain owned by the application's
+  entry bundle and `protocol.bin`. Asset modules list them as external
+  template prerequisites and never copy or import their templates. The asset
+  does carry an exact style-resource definition for each external dependency in
+  one of its closures: an entry bundle's `members` prove coverage only in a CSS
+  tree where that bundle is already installed, while a deferred Shadow root is
+  a fresh target and must be able to install the dependency without
+  over-delivering the entire entry bundle.
+- A non-entry component needed by one requested root stays inline in that
+  root's module.
+- Non-entry components needed by the same set of two or more roots are emitted
+  once in a flat shared chunk. Different consumer sets produce different
+  chunks. A chunk's logical name is `chunk-<first-sorted-component>`.
+- Every root directly imports all chunks that it needs. Shared chunks never
+  import other shared chunks.
+
+For example, two roots that both need `mail-message` emit
+`mail-thread.webui.js`, `compose-page.webui.js`, and
+`chunk-mail-message.webui.js`. Requested roots remain graph entry points even
+when all their payload components are shared. With
+`--asset-file-name-template "[name]-[hash].[ext]"`, each root's content hash
+includes its final hashed chunk filenames. Root allowlist order therefore
+cannot change output names or bytes. Filename templates are ASCII-only and
+reject URL delimiters such as `#`, `%`, and `?`, along with path separators,
+whitespace, control characters, and Windows-reserved filename characters.
+
+Every module default-exports an asset object. The relevant graph fields are:
 
 ```js
 export default {
+  version: 3,
   type: "webui-component-asset",
-  version: 1,
-  components: ["mail-thread", "mail-message"],
-  templateStyles: [],
-  templates: {},
-  templateFunctions: {
-    "mail-thread": [function(v, s) { return !!v("hasMessages", s); }]
-  }
+  kind: "root",
+  root: "mail-thread",
+  components: ["mail-thread"],
+  requiredComponents: ["app-shell", "mail-message", "mail-thread"],
+  externalComponents: ["app-shell"],
+  imports: [{
+    components: ["mail-message"],
+    href: new URL("./chunk-mail-message.webui.js", import.meta.url).href,
+    load: () => import("./chunk-mail-message.webui.js")
+  }],
+  componentStyles: {
+    version: 1,
+    strategy: "link",
+    resources: {},
+    closures: {}
+  },
+  templates: {}
 };
 ```
 
-The component list is the conservative dependency closure for the requested root:
-component edges, `<if>`, `<for>`, attribute-template edges, and all nested
-`<route>` branches are followed without evaluating runtime state. The JSON file
-is inert data and intentionally omits `inventory`: a build-time static asset does
-not know the page's current loaded bitset, so consumers must not replace
-`window.__webui.inventory` with asset-local state. Component-local condition
-closures are carried in the same ESM request as `templateFunctions`, so the
-template asset, component class chunk, and component data request can all start
-in parallel from the manifest. CSS module importmaps still use the page's current
-CSP nonce when materialized by the optional
-`@microsoft/webui-framework/component-asset.js` `defineComponentAssets()`
-manifest loader. The manifest loader exposes `preload(tag)` to start asset,
-module, and data work, and `create(tag)` to create the element after
-template/module work is ready. This loader is not re-exported from the framework
-root package entrypoint, keeping it out of normal framework bundles unless an app
-imports the optional subpath. The loader uses the manifest tag as the
-registered-template fast path, so hashed asset filenames still skip importing when
-`window.__webui.templates[tag]` already exists. Otherwise it deduplicates
-in-flight imports by resolved asset URL and deduplicates module-style importmaps
-against `window.__webui.styles` plus previously injected asset styles.
-`create(tag)` waits for the asset/module, mounts without blocking on data by
-default, and applies data later; callers can opt into bounded data blocking with
-`{ awaitData: true, dataTimeoutMs }`.
+`components` names the payload installed by that module,
+`requiredComponents` is the root's complete conservative closure,
+`externalComponents` names entry-owned prerequisites, and `imports` carries
+real dynamic import edges to shared chunks. A chunk uses `kind: "chunk"`,
+omits `root`, and has an empty `imports` array. The payload intentionally omits
+`inventory`: a static build cannot know the page's loaded template bitset.
+Component assets use version 3 and require `componentStyles`, whose resource
+catalog and ordered root closures use the same registration and install
+contract as SSR and partial navigation. Other asset versions and assets that
+omit the catalog are rejected before any templates or styles are registered.
+Every required component must have exactly one local payload, external
+prerequisite, or chunk import, and a root must include itself in
+`requiredComponents`. The framework loader rejects malformed coverage before
+registering any payload.
 
-FAST plugin builds can emit the same ESM asset shape with trusted `<f-template>`
+Asset-only fragments and component records are available while the graph is
+rendered, then removed before `protocol.bin` is serialized. The protocol keeps
+only entry-reachable records, while Link-mode CSS needed by emitted assets is
+still written. The application entry bundle remains application-owned and is
+never emitted or fetched by the asset graph.
+
+`--metafile <path>` writes an esbuild-compatible `inputs`/`outputs` graph for
+the emitted roots and chunks. Virtual inputs use
+`webui:component/<tag>`, root outputs carry `entryPoint`, and root-to-chunk
+edges use `kind: "dynamic-import"`. The option requires component asset roots.
+The CLI validates the metafile path against every other output before writing;
+`serve --watch` replaces it atomically only after a successful rebuild and
+preserves the previous valid graph after failures. Rust and Node builds opt in
+with `metafile` and receive the JSON in the matching build-result field.
+
+Static component asset runtimes are framework-owned. The WebUI Framework
+loader lives at `@microsoft/webui-framework/component-asset.js`, is not
+re-exported from the framework root, and accepts compiler-emitted asset objects.
+It imports the root even when its root template is already registered because
+the graph may still require chunks. After reading root metadata, it verifies
+entry-owned prerequisites before starting chunk requests, imports all missing
+chunks concurrently, validates graph envelopes and coverage, resolves condition
+closure indexes against each asset's own closure arrays, and parses import maps
+before mutating the global registry or DOM. It then registers chunks before the
+root and verifies the complete closure. Serialized template tuples are
+compiler-owned and are not revalidated in the browser. A malformed graph
+registers none of its payloads. Resolved root and chunk URLs share global
+in-flight deduplication. Module-style import maps use the page's CSP nonce and
+are deduplicated against `window.__webui.styles`.
+Link-style payloads begin a bounded, destination-matched
+`<link rel="preload" as="style">` before the asset is registered. The preload
+mirrors the stylesheet's CORS, integrity, and referrer-policy attributes so the
+native link reuses its request. `create(tag)` waits for that warmup or an
+explicit native-link fallback decision. Preload bytes are never applied
+directly. The first client mount validates the original link through the
+browser and releases its paint guard as soon as that native CSS is active. It
+then promotes the native CSSOM into a shared constructable sheet; later
+instances can adopt that authorized sheet synchronously.
+
+After final CSS filenames are resolved, the compiler stores one root-sorted
+`ComponentAssetStylePreload` per requested root that has Link-mode CSS. Each
+entry contains the compiler-emitted stylesheet hrefs owned by that root and its
+shared chunks in component discovery order, preserving the Light-DOM cascade.
+Entry-owned prerequisites remain excluded because a component asset protocol is
+built for one entry and the runtime rejects an asset until those entry templates
+are registered.
+
+For Shadow builds, the handler publishes this finite manifest at the document
+`head_end` boundary as inert JSON in `#webui-component-assets`. Body-only host
+protocols that omit a head boundary emit it at `body_start` instead. It is
+available before body interaction, including streaming responses, without
+adding a fetch or creating a client-build dependency on later protocol output.
+The component asset runtime parses and removes the node on first use, shares the
+remaining entries through `window.__webui`, and preserves them when the body
+metadata block is loaded. Light builds instead emit the deduplicated hrefs as
+document-level stylesheet links at the same boundary. Light CSS is global, so
+it must be applied rather than warmed speculatively and is loaded with the
+entry's other document styles.
+Automatic Shadow intent preloading requires document output rendered through
+the WebUI handler or `Protocol`, which emits `#webui-component-assets`. Consuming
+build artifacts without rendering that protocol does not publish a browser
+manifest. The later native-link mount remains guarded, but it cannot begin the
+compiler-owned style request before the root asset reveals its template
+metadata.
+
+Low-level Rust integrations that call `render_component_assets()` directly can
+read the same records from `ComponentAssetGraph.style_preloads`. A full
+`build()` moves them into `WebUIProtocol.component_asset_style_preloads` before
+returning the retained entry protocol.
+
+`defineComponentAssets()` manifest entries keep either the authored stable root
+asset URL or a build-tool-owned importer callback, plus optional component class
+and data loaders. The callback form lets bundlers preserve their normal chunk
+and public-path semantics without reimplementing component asset registration.
+Shared chunk and stylesheet filenames never belong in authored code. Each
+generated root asset carries its own dynamic imports, while Shadow builds carry
+eager Link styles in the head manifest.
+
+For Shadow builds, `preload(tag)` resolves the compiler-owned style metadata
+synchronously, creates temporary style-destination preloads, and then starts
+the authored root asset, component class module, and optional data request.
+Resolved hrefs are deduplicated for the finite generated manifest. Registration
+claims a speculative node when its eventual native link has the
+compiler-default request attributes, so CSS starts beside the lazy root module
+instead of after it. Unclaimed nodes are removed after three seconds. An intent
+that never mounts the component may produce the browser's standard
+unused-preload warning.
+`create(tag)` waits for asset/module work, mounts without blocking on data by
+default, and can opt into bounded data blocking with
+`{ awaitData: true, dataTimeoutMs }`.
+Rejected root asset or authored module work evicts that registry generation, so
+a later `preload(tag)` or `create(tag)` retries instead of reusing a permanently
+rejected promise.
+
+FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
+A plugin whose client runtime builds its own roots from the captured template
+owns component style delivery: WebUI keeps its own templates style-free because
+the handler installs the stored closure, but a Shadow component's CSS stays
+inline in that plugin-facing template so a client-created element is styled.
+Light CSS is never inlined there — it is Document-owned, and its host selector
+cannot be resolved from inside a runtime-created root.
 
 **Navigation cache:** The client router exposes an optional tagged navigation
 cache tier. The default `Router.start()` path does not import or instantiate the
@@ -457,9 +767,9 @@ loads the cache tier because hover preloads store speculative responses there.
 After a mutation action, `Router.invalidateTags()` evicts all entries whose tags
 overlap with the invalidated tags.
 
-**Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. `Router.start({ actions: true })` opts into the action runtime; otherwise the router core does not import form interception code. When enabled, the router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
+**Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. `Router.start({ actions: true })` opts into the action runtime; otherwise the router core does not import form interception code. When enabled, the router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. The owning chain entry is resolved by route-element identity, not by component tag, so two declarations that reuse one component cannot consume each other's invalidation metadata. Loader results are keyed by the same concrete chain entries. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
 
-**Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component — SSR'd and build-time validated. Keep-alive and cached routes skip pending (no delay to show).
+**Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component - SSR'd and build-time validated. It remains visible through all pre-commit work and is removed atomically inside the successful DOM commit. Aborted, superseded, failed, and destroyed navigations remove only their generation-owned pending element in O(1). Keep-alive and cached routes skip pending setup entirely.
 
 **Error boundaries:** Routes with an `error` attribute show an error component when the navigation fetch fails. The error component receives `{ error, status, path }` as state and can call `Router.navigate()` to recover.
 
@@ -468,7 +778,7 @@ overlap with the invalidated tags.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata already loaded - server skips re-sending it |
 
 The `chain` field is produced by `Protocol::render_partial()`, which walks the
 fragment graph and matches routes at each nesting level using request-local
@@ -580,7 +890,10 @@ Existing JSON values are returned as `Cow::Borrowed` so handler and expression h
 - Special length property support for arrays and strings (e.g., users.length)
 - Numeric array indexes are not resolved by dotted path lookup; loops bind array items by moniker instead
 - Nullable path handling via `Option`
-- Missing paths return `None`; handler text and attribute bindings render empty, and missing condition values evaluate as false
+- Missing paths return `None`; handler text and attribute bindings render empty.
+  A missing identifier in a condition is a falsy operand, so `path` evaluates
+  false and `!path` evaluates true. A missing comparison operand still makes
+  the complete handler condition false.
 
 ## Expression Evaluation (webui-expressions)
 ### Core Function
@@ -593,6 +906,8 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, Expres
 - **Logical operators:** Support for && (AND) and || (OR) only
 - **Comparison operators:** Support for >, <, ==, !=, >=, <= only
 - **Negation:** Support for ! operator
+- **Missing identifiers:** Treat a missing identifier as a falsy operand before
+  applying negation or logical operators
 - **No mixed operators:**  Cannot mix AND and OR in the same expression level
 - **Operator limit:**  Maximum of 5 logical operators per expression
 - **Error handling:**  Clear, actionable error messages for invalid expressions
@@ -613,7 +928,7 @@ pub enum ExpressionError {
 ### Core API
 ```rust
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -634,12 +949,33 @@ pub struct RenderOptions<'a> {
     pub body_inject: Option<&'a str>,
 }
 
+/// Reserved top-level state key carrying host-supplied boundary HTML.
+pub const STATE_INJECT_KEY: &str = "$webui";
+
 impl<'a> RenderOptions<'a> {
     pub fn new(entry_id: &'a str, request_path: &'a str) -> Self;
     pub fn with_nonce(self, nonce: &'a str) -> Self;
     pub fn with_head_inject(self, html: &'a str) -> Self;
     pub fn with_body_inject(self, html: &'a str) -> Self;
 }
+
+/// One router-aware request handled by the high-level Rust server helper.
+pub struct ServeRequest<'a> { /* private fields */ }
+
+impl<'a> ServeRequest<'a> {
+    pub fn new(
+        render_options: RenderOptions<'a>,
+        accept_json: bool,
+        inventory_hex: &'a str,
+    ) -> Self;
+}
+
+pub fn serve_request(
+    protocol: &Protocol,
+    handler: &WebUIHandler,
+    state: Value,
+    request: &ServeRequest<'_>,
+) -> std::result::Result<ServeResponse, String>;
 
 impl WebUIHandler {
     pub fn new() -> Self;
@@ -654,6 +990,13 @@ impl WebUIHandler {
     ) -> Result<()>;
 }
 ```
+
+`ServeRequest` owns the complete borrowed `RenderOptions` value. Full-document
+requests pass that exact value to `WebUIHandler::render`, so the request nonce
+and all other per-render controls cannot diverge from the lower-level handler
+API. JSON partial requests use its entry and request path together with the
+client inventory. Constructing the request performs no heap allocation, and the
+helper never scans or rewrites rendered HTML.
 
 #### Runtime Protocol
 
@@ -689,6 +1032,13 @@ impl Protocol {
     pub fn protocol(&self) -> &WebUIProtocol;
     pub fn tokens(&self) -> &[String];
     pub fn render_partial(
+        &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError>;
+    pub fn render_partial_json(
         &self,
         state_json: &str,
         entry_id: &str,
@@ -766,6 +1116,15 @@ pub trait ResponseWriter {
 }
 ```
 
+The handler owns quoted and boolean attribute formatting in centralized string
+and byte helpers. Normal buffered hosts use the hidden
+`define_string_response_writer!` / `define_bytes_response_writer!` macros, or
+the corresponding method macros for writers with additional fields. The macros
+expand local, inlinable methods without duplicating formatter source in every
+host. Generic writers retain byte-identical `write()`-based fallback behavior.
+Only writers with distinct semantics - threshold flushing, stream forwarding,
+or profiling counters - implement the hidden attribute methods directly.
+
 ### Streaming Response Writers (`webui::streaming`)
 
 Hosts that support HTTP response streaming can render directly into a
@@ -788,6 +1147,131 @@ The `webui::streaming` module provides:
   `StreamingWriter::new_pooled` to recycle the per-flush `Vec<u8>`
   across requests, eliminating per-flush heap allocation in
   steady-state high-RPS workloads.
+
+### Progressive Response API
+
+Progressive rendering discovers occurrences while it executes the normal
+fragment graph. There is no compile-time boundary count and no name lookup API.
+
+```rust
+pub struct BoundaryDescriptor {
+    pub instance_id: BoundaryInstanceId,
+    pub declaration_id: u32,
+    /// Interned per protocol; discovering an occurrence shares the compiled
+    /// string instead of allocating a copy.
+    pub owner: Arc<str>,
+    pub name: Arc<str>,
+    pub key: Option<BoundaryKey>,
+}
+
+pub struct StreamStatus {
+    pub boundary: Option<BoundaryDescriptor>,
+    pub done: bool,
+}
+
+pub struct StreamStep {
+    pub bytes: Vec<u8>,
+    pub boundary: Option<BoundaryDescriptor>,
+    pub done: bool,
+}
+
+impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
+    pub fn start<'state>(
+        &mut self,
+        state: impl Into<StreamingState<'state>>,
+    ) -> Result<StreamStatus>;
+    pub fn resume<'state>(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        state: impl Into<StreamingState<'state>>,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus>;
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus>;
+    pub fn advance(&mut self) -> Result<StreamStatus>;
+    pub fn update(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        patch: &Value,
+    ) -> Result<()>;
+    pub fn is_done(&self) -> bool;
+}
+
+impl StreamingSession {
+    pub fn start<'state>(
+        &mut self,
+        state: impl Into<StreamingState<'state>>,
+    ) -> Result<StreamStep>;
+    pub fn resume<'state>(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        state: impl Into<StreamingState<'state>>,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep>;
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep>;
+    pub fn advance(&mut self) -> Result<StreamStep>;
+    pub fn update(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        patch: &Value,
+    ) -> Result<Vec<u8>>;
+    pub fn is_done(&self) -> bool;
+}
+```
+
+Every step is one independently writable, independently flushed segment:
+
+- `start` renders the shell prefix and stops **before** the first occurrence, or
+  runs through the terminal when the document declares none.
+- `resume` must target the descriptor the session currently reports. It renders
+  **only** that occurrence, through its checkpoint record, and returns
+  immediately. Its bytes contain the occurrence's `<!--wb:n-->` … `<!--/wb:n-->`
+  range and record, never the parent or tail bytes that follow it.
+- `advance` renders the ordinary parent/shell bytes that follow a committed
+  occurrence until the next occurrence suspends or the terminal record and
+  document suffix complete. It is valid only after `resume`.
+
+The `(boundary, done)` pair names exactly one state:
+
+| `boundary` | `done` | meaning |
+|------------|--------|---------|
+| `Some`     | `false`| the occurrence is waiting for `resume` |
+| `None`     | `false`| the committed occurrence flushed; call `advance` |
+| `None`     | `true` | the terminal record and document suffix completed |
+
+There is no separate terminal call. Out-of-order calls (`advance` before any
+`resume`, a second `resume` before `advance`, or any step after `done`) are
+rejected with an actionable `StreamingBoundary` error **before** any byte is
+written, so the response is not poisoned and the host can retry with the
+correct step.
+
+`update` accepts only an object patch and only a committed `Updatable`
+occurrence. It emits projected state bytes and no application markup, and is
+valid between `resume` and `advance` as well as afterwards, so a host can revise
+the occurrence it just committed while the response stays open. A borrowed
+`StreamingResponse` writes directly to its `FlushWriter`; an owned
+`StreamingSession` returns one complete byte vector per call for language
+bindings and host-controlled backpressure. Each owned step's bytes end exactly
+on the transport flush boundary that closed the step, so a host that writes and
+flushes once per step reproduces the borrowed writer's flush positions byte for
+byte.
+
+`resume_current` preserves the checkpoint-only return and the pause before
+`advance`, but commits against the retained snapshot without comparing another
+state tree. `start` and `resume` accept either owned or borrowed state through
+`StreamingState`: owned values move changed top-level values into the session,
+while borrowed values let shared-state callers retain ownership. Equal values
+preserve the prior state-reference base.
+`WebUIHandler::render_streaming` drives the whole response in one prepared
+render context while borrowing its one state value; it preserves the same flush
+positions without cloning the state or rebuilding that context between records.
 
 ### Per-Render HTML Injection
 
@@ -867,20 +1351,69 @@ HttpResponse::Ok()
   full measurement suite (criterion + custom-allocator + HTTP-level +
   Playwright browser).
 
+### Reserved State Inject Channel
+
+`RenderOptions::with_head_inject` / `with_body_inject` are Rust-only. Hosts
+that reach WebUI through FFI, Node, or WASM already pass a JSON state
+object across the boundary, so the same capability is exposed there through
+a **reserved top-level state key** (`STATE_INJECT_KEY = "$webui"`) instead
+of a new per-host API symbol:
+
+| Member | Emitted at |
+| --- | --- |
+| `headEnd` | immediately before `</head>` |
+| `bodyStart` | immediately after `<body>` |
+| `bodyEnd` | immediately before `</body>` |
+
+Each member is optional and must be a string; anything else (non-object
+`$webui`, `null`, empty string, wrong type, unknown member) is **inert
+rather than an error**. Values are emitted after WebUI's own emissions at the
+same boundary. `headEnd` follows `head_inject`, `bodyEnd` follows `body_inject`,
+and `bodyStart` has no corresponding `RenderOptions` injection. Each is emitted
+once per render (the same defensive dedup as the Rust inject fields).
+
+- **Host owns escaping.** Like `head_inject` / `body_inject`, the values are
+  written **verbatim with no escaping**. The render state is host-supplied,
+  so the reserved key is honored with no extra flag; hosts that merge
+  request-derived data into their state must not let untrusted input reach
+  `$webui`.
+- **Never hydrated.** `$webui` is stripped from the client hydration
+  payload for both full and projected state, so boundary HTML is never
+  re-serialized into the DOM.
+- **Zero-copy.** The members are resolved once when the render context is
+  built and stored as `Option<&str>` borrowed from the caller's state, so
+  each structural hook costs one `Option` check — no map lookup, no clone.
+- **Mode parity.** Buffered, streaming, and owned-streaming renders emit
+  the same bytes at the same boundaries.
+
+The `$` prefix keeps the key from colliding with ordinary application state
+and keeps authored `{{{bodyEnd}}}` bindings resolving as plain state keys.
+
 ### Handler Plugin System
 The handler supports framework-specific hydration plugins. Plugins receive lifecycle
 callbacks during rendering and write marker formats for their framework, while shared
 completion work such as rendered-component template emission stays in handler core.
 
 ```rust
-pub trait HandlerPlugin {
+pub trait HandlerPlugin: Send {
     fn push_scope(&mut self);
     fn pop_scope(&mut self);
-    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_binding_start(
+        &mut self,
+        name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+    fn on_binding_end(
+        &mut self,
+        name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    /// Write framework-specific route component opening-tag attributes.
     fn write_route_component_state(
         &self,
         state: &serde_json::Value,
@@ -889,8 +1422,25 @@ pub trait HandlerPlugin {
 }
 ```
 
+`HandlerPlugin` deliberately requires `Send`, but not `Sync`. The same erased
+factory type backs buffered rendering and owned host-driven streaming. An owned
+`StreamingSession` parks its live per-render plugin between calls and may move
+to another host thread; Rust cannot safely add `Send` after a factory result has
+been erased to `Box<dyn HandlerPlugin>`. Establishing the guarantee at the
+plugin implementation boundary therefore keeps the unified handler API
+statically sound, even though an ordinary buffered render does not itself move
+threads.
+
+Each render creates a fresh plugin instance from the stored factory, and plugin
+instances are never shared or called concurrently. Sendable single-owner
+interior mutability such as `Cell` and `RefCell` remains valid. Plugins cannot
+retain thread-affine state such as `Rc`; use owned state, `Arc`, or another
+sendable handle instead.
+
 **Hook invocation points:**
-- **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
+- **Signal**: every signal calls `on_binding_start/end`. The `raw` argument is
+  `true` only for authored raw HTML signals that own replaceable sibling ranges;
+  escaped signals and marker-free signals in HTML raw-text contexts pass `false`.
 - **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
 - **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body
@@ -899,12 +1449,18 @@ pub trait HandlerPlugin {
 
 **Selecting handler plugins**
 
-The CLI and host APIs select handler plugins by name (passed as a string). No plugin
-is loaded by default; output is plain SSR HTML unless a plugin is selected.
+The CLI and host APIs select handler plugins by name (passed as a string). No
+plugin is loaded by default; output is plain SSR HTML unless a plugin is
+selected.
 
-The set of available plugin names is implementation-defined; refer to the CLI and
-crate documentation for the current list. Each plugin emits its own framework-specific
-hydration markers and attributes; WebUI itself does not interpret them.
+The shipped handler names are:
+- `fast` - deprecated compatibility alias for `fast-v2`
+- `fast-v2` - FAST hydration plugin pinned to FAST major version 2
+- `fast-v3` - FAST hydration plugin pinned to FAST major version 3
+- `webui` - WebUI framework hydration plugin
+
+Each plugin emits its own framework-specific hydration markers and
+attributes; WebUI itself does not interpret them.
 
 **Usage:**
 ```rust
@@ -965,7 +1521,7 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    /// CSS custom property definitions from this component's CSS.
+    /// Unconditional `:host`/`:root` custom property defaults from this component's CSS.
     pub css_definitions: Vec<String>,
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
@@ -1023,35 +1579,53 @@ pub struct DiscoveredComponent {
 ```
 
 #### npm Package Resolution
-1. Walk up from the search directory to find `node_modules/` (Node.js-style resolution)
-2. For scoped packages (`@scope`), enumerate all sub-directories
-3. For each package, read `package.json`:
-   - `exports["./template-webui.html"]` → template HTML path
-   - `exports["./styles.css"]` → styles CSS path (optional)
-   - `customElements` → path to Custom Elements Manifest
-   - root JS entry (`exports["."]`, `main`, `module`, or `browser`) → authored component ownership
-4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
-5. Return `DiscoveredComponent` structs with `is_client_owned` set from source metadata (callers handle registration)
+Package sources are validated before constructing any `node_modules` candidate:
+only an unscoped package, `@scope`, or `@scope/package` is accepted, optionally
+followed by `/*`. Empty segments, traversal, backslashes, absolute components,
+and package subpaths are rejected with guidance to use an explicit local path.
+This validates the requested identifier, not the canonical symlink target.
 
-Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
+1. Walk up from the search directory to find the requested package or scope in
+   `node_modules/` (Node.js-style resolution), then fall back to the process
+   working directory for synthesized app roots. An unrelated nearer
+   `node_modules/` does not hide packages installed in ancestors. A found but
+   invalid package fails rather than falling back to a different installation.
+2. For bare scopes (`@scope`), enumerate sub-packages in the nearest matching
+   scope directory, in filename order. `supports_package` identifies unrelated
+   packages that may be skipped. Errors from declared component packages propagate
+   with the failing scope member's name; they are never silently dropped.
+   A trailing `/*` is a collection spelling: `@scope/*` resolves the scope and
+   `@scope/package/*` resolves that package. It is normalized before npm lookup,
+   not applied to local filesystem sources.
+3. Delegate the canonical package root to the selected discovery plugin.
+   Only plugins opting into `requires_package_metadata()` load/parse package JSON.
+4. Default WebUI scans `components/` when present, otherwise the package root,
+   deriving component names only from hyphenated `<component-name>.html` filenames.
+   Matching CSS and TS/JS siblings provide styling and authored ownership.
+   It does not interpret template/style exports or Custom Elements Manifest names.
+5. FAST retains its separate `customElements` manifest and special template/style
+   resolution, including package-metadata-based script ownership.
+6. Return `DiscoveredComponent` structs; callers handle registration.
 
-Script ownership is metadata-only: discovery never scans package JavaScript to find
-`customElements.define()` calls. Packages without a root JS entry are treated as
-compiler-owned template libraries. Packages with a root JS entry own their custom
-elements and are never replaced by compiler-owned hosts. Package source is not
-scanned by Rust. If the package is bundled with the application, the bundler
-projection adapter analyzes its source and includes it in the application
-manifest; external/separately built packages provide their own fragment.
+Discovery does not scan package JavaScript for `customElements.define()` calls.
+For bundled authored components, the projection adapter analyzes their source
+and includes it in the application manifest; external/separately built packages
+provide their own fragment.
 
 #### Security
-- **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
-- **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Path traversal safety is enforced on `package.json` export paths (not on the symlink target)
+- **Path traversal**: npm source identifiers are validated before filesystem lookup. FAST manifest and asset-export paths are also validated; absolute paths and `..` components are rejected. Native discovery never follows template/CEM export paths.
+- **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Metadata path validation does not restrict the package symlink target.
 - **File size limits**: Manifests and templates are capped at 10 MB to prevent denial-of-service
 
 #### Discovery Cache
 - Location: `~/.webui/cache/components/`
 - Cache key: hash of source identifier + resolved path
-- Invalidation: hash of `package.json` content (re-discover on change)
+- Invalidation: hash every source declared by the discovery plugin, including
+  missing optional candidates (re-discover on content changes or file
+  creation/removal). Include `package.json` contents only when the plugin opts
+  into `requires_package_metadata()`; default/WebUI/none does not hash metadata.
+- Dependency contents are hashed incrementally with one reusable 8 KiB buffer,
+  including script siblings that are not subject to template size limits.
 - Atomic writes: temp file + rename to prevent corruption from concurrent builds
 - Corrupt cache files are silently ignored (graceful fallback)
 
@@ -1075,6 +1649,43 @@ pub struct HtmlParser {
 }
 ```
 
+#### Component DOM Invariant
+
+`DomStrategy` is a build-time fallback for components that do not author a
+declarative Shadow root:
+
+| Build strategy | Component source | Effective mode |
+| --- | --- | --- |
+| `Shadow` (default) | Unwrapped component content | Compiler-generated open Shadow root |
+| `Shadow` (default) | Sole bare `<template>` wrapper | Explicit authored/global Light DOM |
+| `Shadow` (default) | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
+| `Light` | Unwrapped component content | Authored/global Light DOM |
+| `Light` | Sole bare `<template>` wrapper | Explicit authored/global Light DOM |
+| `Light` | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
+
+`DomStrategy` applies only when a component has no explicit root mode. A sole
+top-level bare `<template>` with no attributes is an explicit Light wrapper;
+the wrapper is removed and its contents render directly into the host. A
+`<template>` carrying compiler policy attributes such as `w-render` or
+`w-hydrate` is a policy wrapper, not a mode selector, and still follows the
+build fallback. Attributed ordinary templates and nested templates remain
+ordinary inert template content.
+
+An authored Shadow wrapper must contain the complete component and be the only
+top-level content other than whitespace and comments. A dynamic value, `closed`,
+any value other than `open`, more than one `shadowrootmode`, placement on a
+non-template element, or additional top-level content fails with
+`invalid-shadow-root-mode`.
+
+Native `<slot>` is valid whenever the effective component mode is Shadow. A
+`<slot>` in an effective Light component fails the build with `light-dom-slot`
+and help to author a sole top-level `<template shadowrootmode="open">`.
+
+`ComponentData.uses_shadow_dom` stores this effective parser-derived boolean once per
+component. It controls HTML structure, style-tree boundaries, CSS ownership, and
+client-created DOM without runtime template scans. The root
+protocol has no DOM mode; the build fallback is never needed at runtime.
+
 #### CSS Strategy
 ```rust
 /// Strategy for how component CSS is delivered in rendered output.
@@ -1082,21 +1693,269 @@ pub enum CssStrategy {
     /// Emit `<link rel="stylesheet" href="./component.css">` tags for
     /// components that actually have discovered CSS (default).
     Link,
-    /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
+    /// Embed CSS content inline in a component-local `<style>` tag.
     Style,
-    /// Register each component's CSS module via a `<script type="importmap">`
-    /// data-URI definition (one per component, deduped) and reference it via
-    /// `shadowrootadoptedstylesheets` on each shadow root `<template>`.
+    /// Deliver an SSR style fallback and a CSS module specifier for browser
+    /// adoption.
     Module,
 }
 ```
 
-- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links. Handler-emitted `<head>` links are ordered by **document/traversal order** (the order components are first discovered while walking the fragment graph), not alphabetically by tag name. This keeps the Light-DOM cascade aligned with source order (stable across component renames) and prioritizes Shadow-DOM `<link rel="preload">` hints by appearance. The order is deterministic because the graph walk is deterministic.
-- **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), the parser preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. Multi-specifier values already authored by the developer (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before installing component template closure arrays). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
+- **Link** (default): Stores an external `.css` href for each component with CSS.
+  Output filenames use `[name]`, `[hash]`, and `[ext]`, default to
+  `[name].[ext]`, and may use a public base URL.
+  Static component-asset roots retain their final Link hrefs in
+  `component_asset_style_preloads`. Shadow builds publish this finite metadata
+  so `assets.preload(tag)` can begin stylesheet requests beside the lazy root
+  module; Light builds emit the same hrefs as deduplicated document stylesheets
+  because their CSS is global. Client-created Shadow components use bounded
+  `<link rel="preload" as="style">` requests with matching link attributes, and
+  the first native stylesheet link remains authoritative for CSP, MIME,
+  integrity, CORS, redirects, and service workers.
+- **Style**: Stores compiled CSS bytes for delivery in `<style>` elements. No
+  separate CSS files are written.
+- **Module**: Stores the same compiled bytes and a component specifier. SSR
+  provides an immediately usable style fallback, while the browser can import
+  one shared CSS module and adopt its `CSSStyleSheet` into each target CSS tree.
+  No separate CSS files are written. Module loading requires CSS Module Scripts
+  support. Partial navigation carries newly needed module import-map entries
+  with the template payload; the router applies the request nonce before
+  appending them to `<head>`.
+
+All three strategies use the ordered component style closures below. CSS
+strategy changes delivery, not component discovery, Shadow ownership, authored
+CSS semantics, or cascade order.
+
+#### Component CSS Ownership
+
+Developers author paired component stylesheets or component-local `<style>`
+blocks. After legal-comment processing, Shadow components retain those CSS
+bytes unchanged. Effective Light components also retain authored CSS bytes:
+their styles are ordinary global CSS in the owning `Document` or `ShadowRoot`
+CSS tree.
+
+The compiler does not stamp HTML, qualify selectors, generate `@scope`,
+namespace keyframes, or namespace cascade layers for Light components. This is
+intentional composition rather than an isolation boundary. A Light component's
+`.card` selector can match any `.card` in the same CSS tree, and parent CSS can
+reach Light descendants. Authors should use deliberate names, `@layer`, and
+custom properties when they need predictable global composition. Native Shadow
+DOM remains the isolation escape hatch.
+
+Shadow-only selectors are not silently rewritten. `:host`, `:host(...)`,
+`:host-context(...)`, and `::slotted(...)` in effective Light CSS fail with
+`unsupported-light-css`, with help to use an ordinary selector such as the
+component tag or author an open declarative Shadow root. The check covers both
+external component CSS and inline `<style>` blocks. Shadow CSS keeps the native
+meaning of those selectors.
+
+Ordinary CSS comment/legal-comment processing and token analysis still run for
+Light CSS. Raw bindings, nested selectors, relational selectors, keyframes,
+layers, and other authored at-rules are not rewritten by the Light path; the
+browser receives the authored global CSS semantics.
+
+#### Component Style Closures
+
+A CSS tree is one `Document` or one `ShadowRoot` instance. The compiler stores a
+`ComponentStyleClosure` for every root entry fragment and compiled component root
+in `WebUIProtocol.style_closures` (protobuf field 9). Each closure is a repeated
+component-tag list in cascade-sensitive first-discovery order; it is never sorted
+or derived from the component-asset set traversal. Link builds consider a tag a
+style resource only when `css_href` is nonempty. Style and Module builds use
+nonempty retained authored `ComponentData.css`.
+
+For a component-root closure, that component's paired CSS is first when present.
+The iterative graph walk then follows fragment source order. Light children
+contribute their CSS once and their fragment graph is traversed in the same CSS
+tree. Shadow children are cut points: neither their CSS nor
+their descendants enter the caller's closure, but scanning resumes after the
+host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
+and attribute-template dependencies are followed conservatively. Routes are
+activation edges, not static closure edges: route bodies, pending/error
+components, and outlet children do not enter the declaring fragment's closure.
+Each matched Light route root whose inherited CSS tree is the Document has its
+stored closure hoisted with the entry closure before `</head>`. The later route
+host observes those resources as already delivered and emits no duplicates. A
+matched Light route inside an inherited ShadowRoot installs its closure as
+compiler-owned children of the active `<webui-route>`, immediately before the
+generated host. A matched Shadow route root installs its closure at the compiler
+hook inside its declarative root.
+Visited-fragment and first-style sets make malformed or cyclic protocols finite
+without changing first-discovery order.
+
+Light hosts and their template elements receive no compiler-owned CSS markers.
+Servers and clients consume stored closures directly and must not expand the
+fragment graph per request. A styled protocol without required closure metadata
+is invalid.
+
+The handler keeps Document delivered-resource state directly and uses a lazily
+allocated stack of component indexes only while rendering Shadow
+roots. Each closure is installed in stored order and each resource is emitted at
+most once in that tree for the lifetime of the render. Full-document SSR installs
+the entry closure plus every active route closure targeting the Document before
+`</head>`. This makes Link resources render-blocking and makes Style/Module
+fallbacks available before route content can paint. When the document omits an
+explicit head, those closures precede document content while remaining immediately
+after any leading doctype. The browser therefore places resources in the document
+head and the doctype remains the first token.
+Document fragment renders install their closure before fragment content. A
+matched route installs only its active closure; inactive route closures are not
+emitted or installed during hydration. Link builds emit ordered preload hints
+for request-reachable static Shadow roots and matched route closures targeting a
+ShadowRoot, before module preloads, so
+those tree-local styles begin fetching without waiting for body discovery. A
+resource already applied to the Document or preloaded by an active route is
+deduplicated; the actual stylesheet still installs only in its owning
+ShadowRoot. Before any
+component closure installs, the framework scans that complete
+Document or ShadowRoot for compiler-owned resource markers and claims them in
+place.
+It rescans an activating route's direct children for later streaming markers.
+Loaded Link elements are never reparented, avoiding a second request for
+non-cacheable CSS; the router preserves those route-owned markers across
+component remounts. Every retained or dynamically installed Link/Style element
+carries both `data-webui-resource` and `data-webui-strategy`, so hydration can
+distinguish it from authored data attributes. A structural Shadow reconnect
+preserves those direct marker elements while replacing component DOM; completed
+closure bookkeeping therefore remains valid and styles do not disappear.
+Module fallbacks are adopted in marker order and removed after adoption. A
+Shadow component used directly as the entry or as a matched
+route installs its component closure at the compiler hook inside the declarative
+root. The same Document state is retained across progressive streaming
+checkpoints. Partial navigation sends a versioned `componentStyles` catalog
+containing the newly needed resources and closures; the browser registers it per
+Document and installs each resource at most once per Document or ShadowRoot.
+Bundled resources carry their ordered component `members`. Installing or
+claiming a chunk marks both its own ID and every member ID as present in that CSS
+tree, so descendant Light hosts do not reinstall their per-component fallbacks.
+When one requested tree closure already covers a component closure completely,
+the handler omits that redundant closure and its duplicate CSS definitions.
+Version-3 component assets carry the same catalog, so SSR, navigation,
+streaming, and deferred assets share the ordering and deduplication contract.
+Module sheets reserve their adoption slot when their closure requests them, so
+a descendant closure whose load resolves first never adopts ahead of its
+caller, and an adopted SSR fallback element is dropped from marker state with
+the node.
+
+Shadow roots are closure cut points. A caller's closure stops at an effective
+Shadow host, and the child's closure begins inside that root. Light descendants
+remain in the caller's closure. Link and Style resources install as elements.
+Module resources carry `{ kind: "module", specifier, css }`. Catalog
+registration creates each nonce-bearing import-map definition once per
+Document before publishing templates. SSR resource markers seed that
+definition set. The SSR style fallback remains until module adoption succeeds;
+failed asynchronous module installs remain retryable.
+
+
+Constructable Link promotion is a progressive enhancement. Unsupported
+browsers, inaccessible native CSSOM, ambiguous, redirected, or
+service-worker-backed native resource timing, top-level `@import`, authored DOM
+`<style>` elements, CSS URL forms that cannot be rewritten safely, dynamically
+bound link attributes, compiled link events, and unsupported link attributes
+retain the original template links. The authored-style check covers staged
+template styles, live styles, and styles appended by `hydratedCallback()`, so a
+link is never promoted across the DOM-style/adopted-style cascade boundary.
+Classes with an authored `hydratedCallback()` take the guarded native path even
+when shared sheets are warm, allowing lifecycle-added styles to be observed
+before promotion. Bound link attributes are reconciled before a CSP-deferred
+append; if a request-affecting value changes, readiness is re-armed for the new
+native request instead of exposing the component.
+Preload CORS, integrity, CSP `style-src`, or timeout failures likewise do not
+authorize CSS and do not weaken the authoritative native path. MIME enforcement
+belongs to the native stylesheet link because preload exposes no response
+headers. The framework installs an anonymous first-layer shadow guard before
+appending client content. When CSSOM confirms that guard parsed, it is the sole
+guard and the framework does not mutate author-facing host inline styles. Only
+when the shadow guard is unavailable does an inline backup preserve and later
+restore both property values and priorities. The guard disables host transitions
+before forcing hidden visibility and is released only after every applicable
+native link fires `load`. If CSP blocks the temporary shadow guard,
+non-style content stays detached and `$ready` remains false. Immediately before
+append, the framework reconciles the staging instance from current reactive
+state; it then transfers structural containers to the live root and invokes
+`hydratedCallback()`. A synchronous disconnect/reconnect keeps that pending
+mount intact. A disconnect that remains detached through microtask teardown
+cancels and discards it so a later reconnect creates a fresh client instance.
+Disabled and non-CSS-type links are preserved but do not block readiness. A
+final link `error` is reported, leaves every native link in place, releases the
+temporary guard, and completes deferred content and hydration. The component
+may render unstyled after a definitive stylesheet failure, but it remains
+visible and usable instead of becoming permanently hidden. Declarative-shadow-root
+SSR hydration, Style mode, Module mode, and Light DOM behavior do not use this
+client-mount gate.
 
 Set at construction time with
 `HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.
+
+#### Bundled Style Chunks
+
+`--css-bundle` (`BuildOptions::css_bundle`) merges component stylesheets into
+shared chunks. It composes with `--css` rather than replacing it: bundling
+decides how stylesheets are *grouped*, the strategy decides how they *reach the
+page*. Link and Style builds therefore each have a bundled and an unbundled form.
+Module builds reject `--css-bundle`: they already inline every stylesheet as a
+data URI, so there is no request to merge, and their import-map specifiers are
+resolved per component during parsing, before chunks exist.
+
+Chunks are planned only for the closures a runtime installs *as a unit* into one
+CSS tree: the entry document, every authored-Shadow component, and every route
+root, including its `pending_component`, `error_component`, and nested
+`children`. A plain Light component also keeps a stored closure for independent
+loading, but it does not own a CSS tree: its normal ancestor tree installs the
+covering chunk before the host connects. Treating those fallbacks as roots would
+make every component its own consumer and prevent all merging. The asymmetry is
+deliberate: tree closures drive chunk planning, while retained per-component
+resources preserve independent-loading and older-handler compatibility.
+
+Merging stylesheets reorders rules, which can silently change computed styles.
+Two rules make that impossible, and the second is verified rather than assumed:
+
+1. **Equal consumer sets.** Only components reached by an identical set of CSS
+   trees may share a chunk. Every tree that needs one member needs all of them,
+   so a chunk is never over-delivered and no tree receives a rule it would not
+   otherwise have.
+2. **Contiguity and relative order in every consumer.** A chunk's members must be
+   adjacent and appear in the same order in every closure that contains them.
+   Emitting each chunk at its first member then reproduces the unbundled rule
+   sequence exactly.
+
+The planner verifies both uninterrupted membership and each member's canonical
+position while walking every closure. Any interleaved or differently ordered
+chunk is split into single-component chunks, and one pass suffices. Correctness
+therefore never depends on the grouping heuristic being clever. The entry root
+forms chunks first, then the remaining roots in sorted order, so plans are
+deterministic and reproducible.
+
+Chunk indices are stable `u32` handles into `WebUIProtocol.style_chunks`.
+`ComponentStyleClosure.style_chunks` holds them in the same cascade order as
+`component_tags`, and stays empty for unbundled builds so protocol size and
+existing `data-webui-resource` values are unchanged. Handlers branch once on
+that emptiness; a bundled protocol never mixes the two, so
+`ShadowStyleRoot.routed_resources` holds chunk indices under bundling and
+component indices otherwise. Link preloads and the `componentStyles` navigation
+catalog are emitted per chunk: a chunk shared by several routes is the highest
+value preload target. Progressive streaming deduplicates exact resource IDs in
+a separate style inventory; a component-template inventory never stands in for
+chunk registration.
+
+Multi-member chunks are named `_chunk-<first-member>-<count>`; the leading
+underscore cannot begin a custom-element tag, so the resource ID cannot collide
+with a component. A single-member chunk keeps bare `<tag>`. Link builds emit one
+file per chunk and retain per-component files as independently loaded component
+and older-handler fallbacks. Current handlers link only chunks on the bundled
+path, so fallbacks add no render-blocking requests.
+
+An authored-Shadow component's own stylesheet is never merged. Parsing resolves
+it into artifacts that address it by tag before chunks exist: the `css_href` a
+plugin injects into the shadow template its runtime builds roots from, and the
+module specifier recorded on `shadowrootadoptedstylesheets`. A single-member
+chunk is named after its sole member and carries that member's exact bytes, so
+keeping these unmerged keeps both references valid without a rewrite pass.
+Effective Light components carry no such parse-time identity and merge freely
+when the build opts into `DomStrategy::Light`. This does not promise one
+application-wide file: route-specific closures and distinct ShadowRoot
+consumers can require separate chunks, and each chunk remains in the exact
+authored cascade order for its consumers.
 
 #### Legal Comments
 ```rust
@@ -1124,32 +1983,164 @@ pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<(), Par
 pub fn into_fragment_records(self) -> WebUIFragmentRecords
 ```
 
+### Component Discovery Plugin System
+
+Filesystem and npm resolution are separated from component layout. The
+`webui-discovery` crate resolves local roots and npm package roots, validates
+package-relative manifest paths, determines client ownership from package
+metadata, and owns cache invalidation. The selected discovery plugin maps that
+validated root to normalized `DiscoveredComponent` values:
+
+`plugin/mod.rs` owns the discovery contract and default filename-based behavior.
+`plugin/fast/mod.rs` contains FAST's special naming, manifest, and style rules.
+
+```rust
+pub trait DiscoveryPlugin {
+    fn cache_namespace(&self) -> &'static str;
+    fn requires_package_metadata(&self) -> bool;
+    fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>>;
+    fn supports_package(&self, package: PackageContext<'_>) -> Result<bool>;
+    fn package_cache_files(
+        &self,
+        package: PackageContext<'_>,
+    ) -> Result<Vec<PathBuf>>;
+    fn discover_package(
+        &self,
+        package: PackageContext<'_>,
+    ) -> Result<Vec<DiscoveredComponent>>;
+}
+```
+
+`PackageContext` exposes the canonical package root, package name, and an optional
+parsed `package.json`. `requires_package_metadata` defaults to false; opted-in
+plugins receive `Some(&Value)` while filename-only plugins receive `None`.
+Default/WebUI/none never reads, parses, or cache-hashes package metadata contents,
+nor performs FAST export/CEM/ownership analysis. The package path/presence and
+selected HTML/CSS/script inputs still participate in normal source resolution.
+FAST opts in and computes package-level authored ownership only for its manifest
+declarations. Custom metadata-based plugins must also opt in explicitly.
+A discovery plugin may
+interpret package files and Custom Elements Manifest module declarations, but
+it does not insert directly into parser state. Every returned component still
+passes through `ComponentRegistry::register_component`, which owns custom
+element name validation, duplicate detection, CSS processing, render policy,
+source transformation, and insertion. This keeps all plugin layouts compatible
+with the WebUI runtime's existing component registration contract.
+`package_cache_files` declares every required or optional path affecting that
+mapping; missing optional candidates remain dependencies so later file creation
+invalidates the cache. Cache writes use process- and sequence-qualified
+temporary paths before atomic rename, preventing concurrent builds from
+clobbering one another.
+
+`supports_package` defaults to `true` for custom plugins. In scoped searches,
+default discovery claims packages with named HTML templates; FAST claims packages
+with a `customElements` field or ordinary named HTML sources. Explicit package requests still diagnose missing
+component inputs rather than returning an empty success.
+
+App-folder discovery dispatches only to the selected plugin. FAST local discovery
+continues to admit ordinary `<component-name>.html` with matching CSS and script
+siblings, without loading app package metadata; FAST 2 and FAST 3 compile/render
+those ordinary app components using their selected parser and handler.
+
+`WebUIDiscoveryPlugin` uses hyphenated `<tag-name>.html` filenames for both local
+and npm sources. Native npm packages use `components/` as their source root when
+present, otherwise the package root. Traversal is filename-sorted and skips hidden
+directories and nested `node_modules`; directory names do not determine tags.
+Selecting `components/` excludes duplicate artifacts elsewhere in the package.
+Template/style exports and CEM naming are not part of default discovery.
+Ownership is component-local: a matching `.ts` or `.js`
+sibling makes that component authored; package-level JS exports do not make
+unrelated scriptless components authored. `.spec.ts`, documentation, and JSON
+sidecars do not imply authored code. Scriptless catalog components retain normal
+compiler-owned SSR and do not require a projection entry. Native discovery uses
+a `webui-filenames` cache namespace so legacy metadata-derived names and ownership
+are never reused. This namespace is internal, not a framework or plugin version.
+The current template list and all CSS/TS/JS candidates participate in the cache
+fingerprint, including missing optional files.
+`FastDiscoveryPlugin` also admits local
+`<component>.template-webui.html` files. For single-component npm packages, a
+`./template-webui.html` export selects the converted template relative to the canonical
+package root; `./styles.css` may select its stylesheet independently of the JS
+module location. Export values accept strings or deterministic
+`default`/`import`/`require` conditions. FAST-specific templates must have the
+`.template-webui.html` suffix; raw `.template.html` files and exports are never
+used. A package-level template export must have exactly one CEM component.
+Invalid or missing declared assets are errors, never fallbacks to another file.
+Selected exports and inferred optional styles participate in cache invalidation.
+
+Without a package-level template export, FAST reads CEM module declarations and
+maps each declaration to a sibling `<component>.template-webui.html`. If the declared module is virtual (the package
+does not contain that JavaScript path), discovery also checks component-root
+directories derived from the class name: kebab-case, compact lowercase, then
+the terminal class noun. Candidate priority is deterministic and every
+candidate participates in cache invalidation. Discovery associates
+`<component>.styles.css` or `<component>.css` when present. The parser plugin
+subsequently resolves the final registry key from the authored
+`<f-template name>`. FAST 2 and FAST 3 share this discovery layout and retain
+separate parser and handler behavior.
+If those module-local candidates do not exist, FAST also tries standard
+module/class-named `.template-webui.html` files in ancestor directories bounded
+by the package root. Missing converted assets are errors, never a fallback to
+raw `.template.html` files.
+The CEM is the declared-component inventory; template exports are only location
+hints. FAST adds ordinary named HTML files not covered by that inventory using
+default CSS/script-sibling rules. Missing or empty CEM inventory enables this
+fallback; malformed metadata and missing declared assets remain errors.
+Declared tags win conflicts, and generated `.template.html`/`.template-webui.html`
+files are excluded from the ordinary fallback. Cache inputs include the selected
+ordinary files and their CSS/TS/JS siblings.
+
+`discover_source` remains the WebUI-native convenience API.
+`discover_source_with_plugin` selects another layout. Cache keys include the
+plugin's stable namespace so the same package cannot reuse results produced by
+a different discovery contract. Directory walks are filename-sorted, making
+duplicate detection and diagnostics deterministic.
+
 ### Parser Plugin System
 The parser supports a framework-aware plugin system. Plugins classify framework-owned
 attributes, capture finalized component templates, and emit per-element hydration
 metadata without requiring the build layer to downcast concrete plugin types.
 
 ```rust
-pub trait ParserPlugin {
-    fn start_fragment(&mut self, fragment_id: &str) {}
-    fn register_component_template(
-        &mut self,
-        tag_name: &str,
-        component: &Component,
-        processed_template: &str,
-    ) -> Result<()>;
-    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
-    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
-    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
+pub struct ComponentProcessing {
+    pub source_transform: Option<ComponentSourceTransform>,
+    pub process_root_template_attributes: bool,
+    pub inline_styles_after_content: bool,
 }
+
+pub struct ComponentBuildContext<'a> {
+    pub component: &'a Component,
+    pub template: &'a str,
+    pub uses_shadow_dom: bool,
+    pub style: Option<ComponentStyleDelivery<'a>>,
+}
+
+pub trait ParserPlugin {
+    fn configure_parser(&mut self, options: &ParserOptions) {}
+    fn component_processing(&self) -> ComponentProcessing { ComponentProcessing::default() }
+    fn begin_fragment(&mut self, context: FragmentContext<'_>) {}
+    fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> { Ok(()) }
+    fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction { AttributeAction::Keep }
+    fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> { None }
+    fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> { Ok(ParserPluginArtifacts::None) }
+}
+
+pub enum ComponentStyleDelivery<'a> {
+    Link { href: &'a str },
+    Inline { css: &'a str },
+    Adopted { specifier: &'a str },
+}
+
 ```
 
 **Hook invocation points:**
-- **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
-- **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
-- **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
-- **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
+- **Parser setup**: `configure_parser` receives immutable parser options once before any component registration or parsing.
+- **Component policy**: `component_processing` is read once after configuration. Its optional function pointer transforms source before registry insertion; `Ok(None)` preserves one source without allocation. The two cached booleans control root-attribute processing and inline-style placement without per-component virtual calls.
+- **Fragment start**: `begin_fragment` receives a `FragmentContext` before each `HtmlParser::parse(...)` call so plugins can reset fragment-local state while retaining build-wide state.
+- **Attribute processing**: `process_attribute` receives an `AttributeContext` and decides whether each attribute is kept, skipped, or skipped-and-counted as a binding.
+- **Opening-tag completion**: `finish_opening_tag` receives an `ElementStartContext` after attributes are processed; returned bytes become a `Plugin` fragment.
+- **Component build**: `component_built` receives the registered component, finalized plugin template, effective DOM ownership, and resolved style delivery in one `ComponentBuildContext`. Authored root `<template>` attributes remain available in the plugin-facing view.
+- **Build completion**: `finish` consumes the plugin and returns post-parse artifacts without `Any` downcasts. It is fallible, so authoring errors remain structured and recoverable.
 
 **Selecting parser plugins**
 
@@ -1161,6 +2152,136 @@ documentation for the current list. Each plugin defines:
 - The opaque `Plugin` fragment payload it emits per element
 - Any post-parse artifacts (e.g., client component templates) it injects at `</body>`
 - Any template-syntax conversions it performs inside component templates
+
+**Built-in FAST parser plugins**
+
+The `fast_v2` and `fast_v3` parser implementations (selected as `fast-v2` and
+`fast-v3` by CLI and host string APIs) are pinned to FAST major versions 2 and
+3, respectively, and share one source transform through `component_processing`.
+The legacy `fast` identifier remains a deprecated compatibility alias for
+`fast-v2`.
+Only when one of these plugins is selected does the component registry run that
+transform for each component, after reading the authored HTML but before name
+validation, duplicate checking, CSS processing, or insertion. With no plugin,
+or with another plugin whose `ComponentProcessing::source_transform` is `None`,
+the registry never scans for or interprets
+`<f-template>` syntax — an `<f-template>`-shaped source passes through
+unchanged, exactly like any other component.
+
+The shared FAST transform scans the authored source for an `<f-template>`. A
+source that has one must contain exactly one `<f-template>` with one direct
+inner `<template>` as its only meaningful child - only whitespace and comments
+may surround that direct child, and a meaningful sibling around it (text or
+another element) returns `invalid-fast-template` rather than being silently
+dropped from the SSR view. Nested inert `<template>` elements inside that
+child remain ordinary component content. A present, non-empty `name` becomes
+the registered component tag and overrides the filename-derived tag. If
+`name` is absent or trims to empty, registration keeps the filename-derived
+tag after discovery removes the generated `.template-webui.html` suffix. Multiple
+`<f-template>` elements return `unsupported-multiple-f-templates`. Sources
+without an `<f-template>` return `Ok(None)` and follow the normal component
+template path.
+
+HTML element and attribute names in the FAST dialect are matched
+ASCII-case-insensitively, so `<F-TEMPLATE NAME="my-card">`,
+`<F-WHEN VALUE="{{visible}}">`, and `F-REF` have the same semantics as their
+lowercase spellings. Wrapper discovery and conversion treat raw-text element
+bodies (`<script>`, `<style>`, and the other HTML raw-text elements) as opaque:
+markup-shaped text inside them is copied verbatim and never interpreted as an
+`<f-template>`, inner `<template>`, or FAST directive.
+
+The `<f-template>` wrapper carries only its `name` and declarative-shadow-root
+options — any attribute whose name begins with `shadowroot` (`shadowrootmode`,
+`shadowrootdelegatesfocus`, …). Any other wrapper attribute returns
+`invalid-fast-template` at its own offset rather than being silently discarded.
+The shadow-root options are moved onto the inner `<template>` element (the WebUI
+declarative shadow root) in both the parser view and the retained artifact,
+matching the reference `@microsoft/fast-test-harness` WebUI template output. In a
+`DomStrategy::Shadow` build the SSR `<template>` therefore activates a
+declarative shadow root with the authored `shadowrootmode` (default `open`) and
+`shadowrootdelegatesfocus`, and the FAST client hydration runtime reads the same
+options back off the regenerated `<f-template>` wrapper, where the artifact
+generator hoists them (leaving the inner client `<template>` free of
+shadow-root-creation options). Authored shadow options are preserved verbatim in
+both `DomStrategy::Shadow` and `DomStrategy::Light`, consistent with WebUI's
+contract that a dev-authored `<template>` is never rewritten; `--dom` governs
+only whether WebUI wraps a *dev-omitted* template, not the options a FAST
+component authored.
+
+`@microsoft/fast-test-harness`'s `generate-templates` emits a `{{styles}}`
+placeholder immediately after the inner `<template>` opening. It is a build-time
+style-injection marker the harness replaces with a `<link rel="stylesheet">` (or
+strips) before hydration — not component state. WebUI removes that exact marker
+from that generated position (allowing generator whitespace) in both the parser
+view and the artifact, so it is neither rendered as a `styles` text signal nor
+counted as a hydration binding, and lets the selected CSS strategy inject the
+real `<style>`/`<link>`/adopted-stylesheet at the same position. A legitimate
+`{{styles}}` interpolation elsewhere in the template is left untouched.
+
+For build-time SSR parsing, WebUI internally adapts supported FAST declarative
+constructs into the WebUI parser view. The adapted inner template becomes the
+parser view returned as `TransformedComponentSource::parser_content`:
+
+- `<f-repeat value="{{item in items}}">` converts to
+  `<for each="item in items">`.
+- `<f-when value="{{condition}}">` converts to
+  `<if condition="condition">`. The generated condition attribute uses a quote
+  delimiter that does not clash with a quoted string literal in the condition —
+  a single-quoted `<if condition='status == "ready"'>` when the expression
+  contains a double-quoted literal — because the WebUI parser reads the raw
+  attribute value without entity decoding. A condition that mixes both quote
+  styles cannot be represented with a raw delimiter and returns
+  `invalid-fast-template`.
+- The adaptation unwraps the `value` expression for those directives. Text
+  `{{expression}}` bindings and `?boolean` bindings remain available to the
+  WebUI parser; ordinary attributes are not treated as additional FAST
+  declarative syntax.
+- A FAST directive (`<f-when>`/`<f-repeat>`) accepts only its `value`
+  attribute. Any other attribute — a framework `f-*` attribute or an ordinary
+  one such as `id`, `class`, or `data-*` — returns `invalid-fast-template` at
+  that attribute's offset, so it is never silently discarded.
+- Unsupported `f-*` elements or attributes and malformed directive expressions
+  return structured authoring diagnostics. A stray FAST closing tag — a
+  `</f-when>`/`</f-repeat>` with no matching opening directive, or an
+  unsupported `</f-*>` element — is likewise rejected at its own offset instead
+  of leaking into the WebUI parser view. WebUI claims support only for the
+  FAST constructs described here. Stable codes are
+  `unsupported-multiple-f-templates` for multiple wrappers,
+  `invalid-fast-template` for unsupported or malformed FAST declarative syntax,
+  and the shared `unclosed-html-tag` for unclosed markup.
+- The FAST plugins' `process_attribute` skips `@event`, FAST single-brace
+  `:property="{expression}"`, `f-ref`, `f-slotted`, and `f-children` and counts
+  each as a binding, so they are absent from the SSR view while the hydration
+  binding count still reflects them. WebUI-owned
+  `:property="{{expression}}"` bypasses plugin classification and remains a
+  normal complex attribute fragment: the handler resolves it into the child
+  component's render scope without emitting an HTML attribute, and parser-core
+  binding accounting counts it once. No parser-core FAST-named branch is
+  involved. FAST idiomatically
+  authors host-element bindings directly on the root `<template>` (e.g.
+  `<template @click="{…}">`); because their `ComponentProcessing` enables root
+  attribute processing, those bindings flow through the same
+  `process_attribute`/`finish_opening_tag` count as any other element. The
+  server emits a FAST binding count for the root that keeps the client hydration
+  markers aligned with the client template's binding order. FAST 2 marks that
+  root metadata as the end of the separately consumed host-binding range, so
+  child marker indexes restart at zero instead of applying the host offset twice.
+
+The transform separately returns the authored inner `<template>` (with its
+client-only bindings) as `TransformedComponentSource::artifact_content`, rather
+than deriving it from the converted parser view. Retaining exactly the inner
+`<template>` — not the whole `<f-template>` body — keeps the artifact anchored
+to an element that always begins with `<template`, so it can never be
+accidentally re-wrapped in a synthetic outer `<template>` (which would strand
+the authored template, and its bindings, as inert content of a declarative
+shadow root). The FAST plugin wraps that retained source in the resolved
+`<f-template name="...">` for insertion. The artifact is normalized rather than
+preserved byte-for-byte: it passes through the same generic component-template
+processing as any other component, including wrapper normalization, selected
+CSS-strategy injection, module stylesheet adoption where applicable,
+legal-comment handling, and plugin artifact normalization. `fast_v2` and
+`fast_v3` use the hydration marker formats for their pinned FAST major versions
+while sharing this transform, conversion, and artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)
@@ -1178,21 +2299,62 @@ webui build ./templates --out ./dist --plugin=<name>
 webui build ./templates --out ./dist --asset-file-name-template="[name]-[hash].[ext]" --css-public-base="https://cdn.example.com/assets"
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread --asset-file-name-template="[name]-[hash].[ext]"
+webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page --metafile=./dist/component-assets-meta.json
 webui serve ./templates --state ./data/state.json --plugin=<name>
-webui serve ./templates --state ./data/state.json --plugin=webui --emit-component-assets mail-thread,compose-page --watch
+webui serve ./templates --state ./data/state.json --plugin=webui --emit-component-assets mail-thread,compose-page --metafile=./dist/component-assets-meta.json --watch
 ```
 
 `webui serve` performs a preflight bind check on its configured HTTP port and
 fails before the initial build if that port is already in use, returning an
 actionable message so stale dev processes can be stopped explicitly.
 
+With `webui serve --api-port`, route state requests and `/api/*` forwarding
+preserve the incoming URI's encoded path and query exactly except for the entry
+route alias. The development server does not decode or re-encode percent escapes
+before sending non-entry request paths to the backend. `/` and `/index.html`
+both resolve backend state at `/` (the entry path is normalized), while still
+preserving the query string. All other request paths forward their encoded path
+and query unchanged. Encoded slashes such as `%2F` therefore remain inside one
+route segment, and encoded spaces, percent signs, and UTF-8 bytes reach
+development backends with the same representation used by production clients.
+
+Backend failures degrade uniformly. Whether the API is unreachable, returns a
+body that is not parseable state, or answers a stream request with a non-success
+status, `webui serve` logs one warning and renders the page from fallback state.
+A refused stream request is an *acquisition* failure — no record has been written
+and no boundary has reached the browser — so it is handled like any other
+pre-stream failure rather than surfacing the upstream error body in place of the
+application. This is distinct from rule 19: once a stream is live, a mid-stream
+transport failure still fails the response, because already-committed boundaries
+cannot be rewound into a buffered render.
+
+After generated assets and `--servedir` files miss, `webui serve` uses request
+intent rather than path punctuation to decide whether to run the SPA route
+fallback. Fallback runs only when `Accept` explicitly includes `text/html` or
+`application/xhtml+xml` for document navigation, or `application/json` for a
+WebUI JSON partial render. `q=0` disables that media type, while a malformed or
+out-of-range `q` value falls back to `q=1.0`; when HTML and JSON are both
+acceptable, the higher `q` wins and exact ties prefer JSON. Missing or
+wildcard-only `Accept` headers return 404, as do JS, CSS, image, and other
+non-HTML/non-JSON asset requests.
+Literal dots in route segments, such as `/docs/v2.1`, are valid and do not block
+route matching or fallback.
+
 In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
 changed file and drops events whose bytes are unchanged, so a no-op save
 (repeated Ctrl+S that rewrites identical content) triggers no rebuild in the
 clean state. While a rebuild error is active, unchanged events are forwarded so a
 no-op save can retry transient failures without forcing a real content edit.
-Deletions and oversized files always count as changed. Each rebuild's terminal
-line names the triggering file (`↻ rebuilt app-shell.css …`, or `… (+N more)`).
+Deletions and oversized files always count as changed. Hashing reuses one
+8 KiB scratch buffer per watcher instead of allocating a whole-file content
+buffer. Regular-file metadata is checked before and after opening, and reads
+are bounded to 8 MiB plus one overflow-probe byte so growth after the metadata
+check cannot bypass the cap. Short reads preserve the whole-file digest;
+interrupted reads retry. Other read failures count as changes and never cache
+a partial digest.
+
+Each rebuild's terminal line names the triggering file
+(`↻ rebuilt app-shell.css …`, or `… (+N more)`).
 Incremental rebuild failures are retained in dev-server state. The rebuild
 worker reports the error to the terminal and live-reload SSE; subsequent browser
 refreshes, route renders, JSON partial requests, and component template requests
@@ -1217,8 +2379,38 @@ surfaced on every rebuild attempt.
 - Flush buffer when transitioning to non-raw content
 
 ##### Directive Processing
-- **<for>:** Extract item/collection pair and process children into separate fragment. Empty `<for>` bodies (no children) are silently skipped.
+- **<for>:** Extract the unbraced `each="item in collection"` item/collection
+  pair and process children into a separate fragment. Braced `each` expressions
+  are invalid authoring input on both SSR and native client compilation paths.
+  Unnamed empty bodies are silently skipped. A static `id` names a reusable body within its owning
+  entry/component file: `id="tree-item"` uses `tree-item-N`, where `N` is the
+  parser's stable, one-based owner index. Parsing a nested component saves and
+  restores the caller's named-loop scope. A paired tag defines the body once
+  (including an empty body); a self-closing tag only emits a `ForLoop` reference
+  with its own collection. Forward references and finite data-driven direct
+  or mutual recursion share the existing protocol record, without copying or
+  expanding bodies. References must use the defining item variable.
+  The callsite collection (e.g. `foo.children`) is evaluated in the parent
+  scope before each child shadows `foo` in the shared body. Normal lexical
+  shadowing restores the parent item after each nested repeat. The defining
+  loop's original collection expression is not re-executed by references.
+  `id` is the only supported naming attribute. The removed `template` spelling
+  is rejected with `invalid-for-id` and migration guidance, never treated as an
+  alias or silently ignored. Named IDs are non-empty ASCII
+  alphanumeric/underscore/hyphen strings. Duplicate definitions (including
+  nested definitions using a different iterator), missing definitions,
+  conflicting fragment names, and inconsistent item variables return
+  `duplicate-for-id`, `unknown-for-id`, `invalid-for-id`, and
+  `incompatible-for-item` diagnostics. Duplicate definitions take precedence
+  over item-variable mismatch diagnostics. Generated IDs skip reserved named
+  records; a named claim cannot overwrite an already generated record.
+  Native WebUI supports cyclic client block references. FAST v2/v3 reject
+  named self-closing references in component artifacts with the actionable
+  `fast-named-for-unsupported` diagnostic; server-only entry loops remain
+  supported without requiring FAST client template reuse. This rejection uses
+  the FAST converters' ASCII-case-insensitive tag matching.
 - **<if>:** Extract and parse condition, process children into separate fragment
+  (optional surrounding `{{...}}` is accepted).
 - **<body>:** Injects `body_start` and `body_end` raw signals around the body content
 - **Components:** Check component registry, process as component if found
 
@@ -1293,9 +2485,11 @@ impl CssParser {
 - Reject malformed CSS at build time with `ParserError::Css`, including
   unterminated `var()` calls, block comments, strings, and unmatched braces,
   parentheses, or brackets.
-- Exclude any token that is defined by local CSS before validating theme
+- Exclude tokens defined in the same declaration block or by unconditional
+  `:host`/`:root` defaults before validating theme
   coverage. For example, `--foo: var(--token-a, var(--token-b))` reports
-  `token-b` only when `--token-a` is defined in the same CSS input.
+  `token-b` only when `--token-a` is defined in the same block or as an
+  unconditional root/host default.
 
 ### HTML Scanner
 
@@ -1351,8 +2545,8 @@ The `extract_tokens` method uses a deterministic CSS scanner to extract custom p
 
 **Excluded (not hoisted):**
 - `--bar: 12px` — local custom property definitions
-- `var(--bar)` when `--bar` is defined in the same CSS file or by an ancestor
-  component/root CSS scope
+- `var(--bar)` when `--bar` is defined in the same declaration block or by an
+  unconditional `:host`/`:root` default in the current or ancestor CSS scope
 
 The scanner tracks nested `var()` fallback expressions, so nested fallbacks are naturally handled.
 
@@ -1362,7 +2556,7 @@ The `HtmlParser` records CSS fallback-chain requirements and custom-property
 definitions from two sources:
 
 1. **Component CSS** — component registration stores each component's
-   pre-extracted `css_fallback_chains` and `css_definitions`.
+   pre-extracted `css_fallback_chains` and unconditional `css_definitions`.
 2. **Inline `<style>` tags** — when the parser processes a `<style>` tag, it extracts token usages and definitions while stripping removable CSS comments in the same scanner pass.
 
 After parsing completes, `HtmlParser::token_analysis()` walks the parsed fragment
@@ -1371,8 +2565,36 @@ protocol_tokens, fallback_chains }`. The walk carries a counted set of CSS
 custom-property definitions from the entry/root through component boundaries,
 because CSS custom properties inherit through Shadow DOM. Each token candidate
 in a fallback chain such as `var(--a, var(--b, var(--c)))` is removed when that
-token is defined by the current or ancestor CSS scope; any remaining candidates
-contribute to the sorted protocol token list.
+token has an unconditional default in the current or ancestor CSS scope; any
+remaining candidates contribute to the sorted protocol token list.
+
+The existing CSS scanner assigns declaration-block IDs with an iterative stack.
+Definitions and usages in the same block can resolve locally, including forward
+references. Only bare, unconditional `:host` and `:root` rules export defaults to
+other rules or descendant components. Cascade-layer grouping remains
+unconditional, but selector qualifiers, CSS nesting, and conditional at-rules
+do not export defaults. A parent `.green { --brand: ... }` must therefore not
+remove a child's `var(--brand)` from the inventory: another instance can lie
+outside `.green`. Unknown selector coverage is kept conservative rather than
+attempting selector matching.
+
+Definition names are borrowed during the scan. Active rule-local definitions
+are removed and empty requirements compacted when each block closes; reusable
+buffers avoid retaining a declaration table for every rule. A standalone
+top-level rule needs no scope-stack allocation. Internal callers consume
+requirements directly instead of allocating an unused token-name set; only the
+public extraction API and final graph analysis materialize that set. The
+additional scope data is build-time-only and is not serialized or retained at
+runtime.
+
+When shared loop records exist, the CSS token walk tracks only active fragment
+ancestors and skips back-edges, rather than globally marking records visited:
+sibling visits must still be analyzed under their different inherited CSS
+definitions. It also memoizes each fragment with its canonical set of inherited
+definition names, avoiding redundant visits through equivalent acyclic paths.
+Definition counts still control lexical restoration; only membership enters
+the memoization key. Ordinary templates without shared loops retain the original
+traversal without allocating cycle-tracking or memoization state.
 
 #### Comment Handling
 
@@ -1390,6 +2612,13 @@ trimmed body is exactly one handlebars expression:
 
 Bare handlebars expressions in CSS are raw text. Dynamic CSS fragments must use
 the comment wrapper so the CSS parser can distinguish them from invalid CSS.
+`<style>` is an HTML raw-text element, so the browser never decodes character
+references in it: an escaped (`raw: false`) CSS signal whose value contains
+`&`, `<`, `>`, or quotes is HTML-encoded (e.g. `&amp;`) exactly like any other
+escaped signal, and that encoded text is emitted verbatim into the stylesheet
+rather than decoded back — corrupting the CSS for those values. Prefer
+`/*{{{tokens.light}}}*/` (raw) for CSS custom-property/token values, which are
+expected to be plain CSS syntax rather than pre-escaped text.
 
 ### Design Token Resolution (`webui-tokens`)
 
@@ -1480,6 +2709,45 @@ This section specifies only the cross-crate wire contract for `--plugin=webui`: 
 
 It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead, WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
+### Compiled-template Trusted Types boundary
+
+Native framework sinks use Trusted Types automatically when the browser supports
+them, independently of CSP enforcement. No configuration API, setup entry point
+or special import order exists. The first compiler HTML or CSS import-map sink
+creates the fixed-name `webui` policy, cached privately by document window.
+Ordinary module imports and metadata registration do not create a policy.
+Policy denial, including browser rejection of a pre-created or duplicated name,
+throws actionable CSP/shared-module guidance without falling back to strings.
+Browsers without Trusted Types preserve the string path. No default policy is
+created; nonce-based script/style authorization remains separate.
+
+No policy, capability, callable trust bridge, or policy-name marker is placed on
+`window`. Policy callbacks reject calls lacking the private capability; there is
+no public HTML/script conversion API or `createScriptURL` rule. On browsers with
+Trusted Types, compiler normalization records each block's immutable `h` in a
+module-private weak map. A template-cache miss checks that exact registered
+string before constructing TrustedHTML; parsed-fragment caching and cloning are
+unchanged. Unsupported browsers allocate no trust maps. Registration
+(`registerTemplateData`, SSR metadata and trusted component asset modules) accepts
+compiler programs, never request state or user HTML. This is a provenance
+contract, not a sanitizer or signature check on compiler output.
+
+No API accepts compiler condition source strings for execution; router integration
+is separate from this framework boundary. CSS Module import maps are generated
+from serialized specifier/CSS data and receive TrustedScript only on import-map
+nodes, retaining their nonce. Native streamed boundary payloads are parsed from
+browser-created inert script nodes; deferred activation, lazy/component-asset mounts and reactive
+condition/repeat insertion all reuse registered compiler blocks.
+
+Runtime triple-brace strings are not compiler output and do not enter the policy:
+the native Range sink still rejects them under enforcement. Parsing precedes
+deletion, so rejection leaves the existing raw range intact. Flush errors
+propagate without leaving the scheduling gate latched: unprocessed paths in the
+current batch are requeued alongside independently queued re-entrant writes.
+Already processed paths and the rejected path are not automatically retried.
+Subsequent updates can still run. Dynamic attribute/property bindings are not
+promoted; parser restrictions and native Trusted Types enforcement remain applicable.
+
 ### Metadata object format
 
 Each component's compiled template metadata is emitted as JSON-safe data in
@@ -1493,21 +2761,56 @@ update hot paths still call the function directly.
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
 | `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
-| `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
+| `tx`  | `[slot, parts, raw?][]`           | Client text runs inserted at precompiled slots; `raw = 1` identifies unescaped HTML ranges |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
-| `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
+| `ag`  | `[elementIndex, start, count][]`  | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
-| `r`   | `[collection, itemVar, blockIndex, slot][]` | Repeat blocks                            |
-| `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
+| `r`   | `[collection, itemVar, blockIndex, slot, keyPath?][]` | Repeat blocks; `keyPath` is relative to the item variable |
+| `eg`  | `[event, [[handler, argSpecs, targetIndex, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
-| `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
-| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element          |
+| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe host-targeted events plus anything bubbling to the host (`composed` is required only to cross a shadow boundary) |
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
 | `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
+| `wp`  | `1 \| 2 \| 3 \| 4`                | Component work policy: `1` = lazy hydration, `2` = lazy rendering + hydration, `3` = interaction, `4` = lazy rendering + interaction |
 
 All arrays are optional and omitted from the output when empty to minimize payload.
+
+### Interaction hydration boundary
+
+`w-hydrate="interaction"` compiles to `wp: 3` and
+`ComponentData.work_policy = Interaction`. Combining it with
+`w-render="lazy"` and a reservation compiles to `wp: 4` and
+`ComponentData.work_policy = LazyRenderInteraction`. Both forms emit a
+`data-webui-interaction` marker on each rendered root. The combined form also
+emits the same build-time `content-visibility` CSS as `wp: 2`, but hydrates
+eagerly once its deferred module loads instead of entering the visibility
+coordinator. `@microsoft/webui-framework/interaction-hydration.js`
+consumes exactly one marker. Routed apps compose it with the independent
+`@microsoft/webui-router/preload.js` handle; FAST or another runtime composes the
+same router handle with its own readiness lifecycle.
+`installInteractionHydration({ load })` is the lower-level non-router API. It listens in capture phase for
+pointer-down, focus, keyboard, and click intent and invokes `load()` once. Hover
+does not load. Pointer, focus, keyboard, ineligible click, and previously
+cancelled click signals are not cancelled. A cancelable unmodified primary click
+is copied, cancelled, and dispatched on its first composed-path target after
+`load()` resolves; that promise must mean listeners are ready.
+
+The disposer removes capture listeners. Rejection removes the boundary, reports
+through `onError` or `console.error`, and replays the click. Replay metadata
+identifies synthetic events and boundary roots already traversed, so same-root
+replacement cannot loop while nested boundaries still compose. Replay cannot
+preserve `isTrusted`, transient activation, or closed-shadow targets. The
+protocol addition is zero-default and absent for eager components; evidence must
+pair startup bytes/heap with first-interaction latency.
+`@microsoft/webui-router/preload.js` buffers one raw JSON/NDJSON partial (2 MB
+cap, 5 second TTL), deduplicates same-link pointer movement, and transfers the
+single-use response into `Router.start()` without another fetch or early
+template/CSS registration. It contains no WebUI Framework or FAST dependency:
+each hydration runtime starts through `onIntent` and passes the handle to the
+router after readiness. Inventory mismatch, abort, expiry, malformed data, or
+load failure releases the entry and falls back to normal navigation.
 
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
@@ -1516,7 +2819,16 @@ All arrays are optional and omitted from the output when empty to minimize paylo
 
 The closure itself has the shape `(resolve, scope) => boolean`; generated source calls
 `resolve(path, scope)` for identifier lookups and preserves the existing WebUI condition
-semantics for truthiness, comparison, negation, and `&&` / `||` compounds.
+semantics for truthiness, comparison, negation, and `&&` / `||` compounds. A resolver
+miss is a falsy identifier operand on both server and client, so `path` is false
+and `!path` is true even when the path is absent from a loop item.
+
+> **Known divergence.** A bare identifier compiles to `!!resolve(path, scope)`, i.e.
+> host JavaScript truthiness, while the server evaluator in `webui-expressions`
+> reports `Value::Array` and `Value::Object` as truthy only when non-empty. An
+> empty array or object therefore evaluates falsy during SSR and truthy on the
+> client. Scalars agree. Templates must test `items.length` rather than `items`
+> until the two evaluators are reconciled.
 - `5` = `GREATER_THAN_OR_EQUAL`
 - `6` = `LESS_THAN_OR_EQUAL`
 
@@ -1574,10 +2886,13 @@ whenever any manifest is supplied at all (`PROJ-B001`); `All` for an uncovered
 scripted component is only reachable when no manifest was supplied for the
 build at all.
 `ComponentData::{hydration_mode,navigation_mode}` encode the surface and the
-corresponding key vectors are populated only for `Keys`.
-For protocol binaries created before the mode fields existed, a default
-`None` mode paired with a non-empty legacy key vector is interpreted as
-`Keys`; current builders never emit that combination.
+corresponding key vectors are populated only for `Keys`. `navigation_mode` is
+presence-tracked: an absent value from a protocol created before navigation
+projection metadata existed selects full state. An absent mode paired with a
+non-empty legacy key vector remains `Keys` for backward compatibility. For the
+non-optional hydration field, a default `None` paired with a non-empty legacy
+key vector is likewise interpreted as `Keys`; current builders never emit
+either legacy combination.
 
 At initial render, `InitialStateStrategy::Full` bypasses component-key
 collection. `Components` finds components reachable from the active entry and
@@ -1601,14 +2916,18 @@ not a secrecy boundary. Any state selected by exact metadata or preserved by a
 full fallback is client-facing. Hosts must not place secrets in browser render
 state.
 
-**Partial state.** `Protocol::render_partial()` accepts raw JSON and applies the
-active route's navigation surfaces with the same `None` / `Keys` / `All`
-rules. On `Keys`, a streaming JSON visitor validates the complete object,
-skips unselected values without materializing them, and borrows selected raw
-values into the response. On `All`, raw APIs validate and preserve the borrowed
-JSON object without materializing it. Scriptless routes therefore receive only
-template roots needed for the destination; uncertain routes receive complete
-state.
+**Partial state.** `Protocol::render_partial()` accepts an owned parsed
+`serde_json::Value` and applies the active route's navigation surfaces with the
+same `None` / `Keys` / `All` rules. Selected values move into the response, so
+Rust servers do not serialize and reparse the complete state tree. The
+high-level `serve_request()` helper uses this path.
+`Protocol::render_partial_json()` is the serialized-input boundary used by
+Node, FFI, WASM, and Python hosts. On `Keys`, a streaming JSON visitor validates
+the complete object, skips unselected values without materializing them, and
+borrows selected raw values into the response. On `All`, it validates and
+preserves the borrowed JSON object without materializing it. Scriptless routes
+therefore receive only template roots needed for the destination; uncertain
+routes receive complete state.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 
@@ -1638,12 +2957,1196 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `<for id="name" each="v in coll">body</for>` | `r[]` + `b[]` | one file-local named body |
+| `<for id="name" each="v in v.children" />` | `r[]` | existing named block index reused |
+| `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
+| `<template w-hydrate="lazy">`     | `wp: 1`                | policy wrapper/attributes stripped |
+| `<template w-render="lazy" w-reserve-block-size="72px">` | `wp: 2` | policy wrapper/attributes stripped |
+| `<template w-render="lazy" w-reserve-block-size="72px" w-hydrate="interaction">` | `wp: 4` | policy wrapper/attributes stripped |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
-| `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+| `<outlet />`, `<outlet></outlet>`   | *(stays)*              | `<outlet></outlet>`               |
 
-**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
+Both outlet spellings compile as one empty directive element. The compiler
+consumes the paired closing tag before assigning later binding slots, preserving
+the authored parent hierarchy for siblings after the outlet.
+
+`<if>` and `<for>` recognition, attribute extraction, and closing-tag matching
+use the same quote-aware HTML scanner as SSR compilation. HTML whitespace
+(space, tab, LF, CR, and form feed), including CRLF inside opening tags and
+whitespace before a closing tag's `>`, does not change block ownership, keys,
+bindings, events, or element-index mappings. Matching consumes the scanned
+closing-tag range, not a fixed-length spelling. Directive wrappers are removed
+from client `h`; unrelated literal text and native elements are preserved.
+
+The finalizer matches native HTML void tags ASCII-case-insensitively and counts
+the browser-implied `<colgroup>` / `<tbody>` parents around direct `<col>` /
+`<tr>` runs. Compiler-owned structural marker comments and trailing HTML
+whitespace remain inside the implied parent, matching the browser tree used for
+SSR hydration and client locator resolution.
+
+Component policies are visible to the Rust build because they live on the root
+component `<template>`, not on a TypeScript class. A component that authors
+`<template shadowrootmode="open">` keeps that wrapper as its declarative
+shadow-root template after its build-only policy attributes are removed. Every
+other component is Light, so the policy wrapper is unwrapped and the policy
+reaches the host through `WebUIProtocol.component_render_css`.
+`w-render="lazy"` requires one non-negative CSS
+length in `w-reserve-block-size`; the parser accepts absolute,
+font-relative, viewport, and container-query length units, and rejects
+percentages, negative values, CSS functions, keywords, duplicates, missing
+values, misplaced policy attributes, and reservations without the rendering
+policy. Invalid input returns the stable diagnostics
+`invalid-component-render-policy`, `missing-render-reservation`, or
+`invalid-render-reservation`.
+`w-render="lazy"` and `w-hydrate="lazy"` are rejected as redundant.
+`w-render="lazy"` and `w-hydrate="interaction"` are intentionally orthogonal:
+the former controls browser rendering while the latter controls module-graph
+hydration.
+
+For every entry- or component-asset-reachable `wp: 2` or `wp: 4` component, the registry
+emits one deterministic tag rule into `WebUIProtocol.component_render_css`:
+
+```css
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+Rules are sorted by component tag and concatenated once at build time. The
+handler writes them verbatim in one nonce-aware
+`<style data-webui-render-policy>` at the structural `</head>` boundary, before
+component CSS links. This guarantees that containment can affect first layout
+without runtime style injection or per-request rule construction.
+
+The build also appends the same declarations to each lazy-rendered component's
+stylesheet with a shadow-scoped selector:
+
+```css
+:host(activity-row:not([w-render="eager"])),
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+The document rule covers document and Light DOM instances. In a component
+stylesheet, the qualified `:host(...)` selector covers a Shadow DOM component
+without matching an unrelated enclosing host. The tag selector also covers a
+Light DOM instance nested in an authored shadow root: the precomputed style
+closure delivers that stylesheet into the containing root under every CSS
+strategy, so the containment rule follows the component across the boundary.
+Both generated rules are build-time output, and `w-render="eager"`
+disables both.
+
+Repeat identity is positional by default. At runtime, the existing block at
+index `i` receives the current collection item at index `i`; only tail growth
+or shrinkage creates or removes blocks. The runtime never infers identity from
+repeated-root attributes, so duplicate values and attributes are safe and
+attribute order has no reconciliation semantics.
+
+Authors may opt into logical identity by adding `key="{{item.id}}"` to the first
+concrete element inside `<for>`. Leading `<if>` wrappers are transparent, so the
+key belongs on the first concrete element inside the conditional, not on the
+directive. A nested `<for>` owns its own child key. `key` on `<if>`, `<for>`, or
+`<outlet>` is invalid. Primitive arrays use `key="{{item}}"`. Under the WebUI
+plugin, `key` is compiler-only structural metadata: the compiler validates this
+restricted item-rooted path grammar, removes the attribute from SSR and client
+HTML, and emits only the relative path as the optional fifth `r[]` tuple field
+(`""` for the item itself). It is not included in `a[]` or `ag[]`. Unkeyed
+repeats retain the four-field tuple. `data-key` remains an ordinary application
+attribute and has no identity semantics. Only `key` on the first repeated child
+is consumed as identity metadata. A `key` on another regular element produces
+an `invalid-for-key` build diagnostic; directive attributes remain governed by
+their own contracts. Keyed repeats accept unique
+strings and finite numbers, preserve number/string type identity, and use a
+stable-order positional fast path. A changed order uses a reusable key map to
+move existing block instances, preserving browser-owned and local component
+state with the logical item. Invalid or duplicate runtime key values clear
+established identity, warn once, and reconcile positionally for that update; a
+later valid update establishes identity again. Validation completes before DOM,
+scope, or instance mutation.
+
+SSR repeat markers do not serialize separate key values. When the bootstrap
+collection is present and its length matches the hydrated SSR instance count,
+the runtime derives typed keys by index from that collection and establishes
+identity immediately, so the first later reorder can move existing SSR blocks.
+Missing state, a count mismatch, or invalid keys leave identity unestablished
+and the next valid update reconciles positionally once. This relies on the
+existing hydration invariant that SSR HTML and bootstrap state represent the
+same render. FAST v2/v3 do not reserve `key` and do not emit WebUI key metadata
+into `<f-repeat>` markup.
+
+**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a malformed or misplaced first-child repeat key (`invalid-for-key`), a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
+
+---
+
+## Progressive Streaming Hydration
+
+Progressive streaming is one unversioned contract shared by the compiler, Rust
+handler, host bindings, CLI proxy, and browser coordinator. It discovers
+boundaries by executing the compiled fragment graph and hydrates complete
+regions while the document is still loading.
+
+### Normative invariants
+
+1. **Runtime discovery.** `<boundary name>` is valid in entries and reusable
+   components, including runtime `<if>`, outlet, and selected-route paths. A
+   false branch or unselected route produces no occurrence. Authored boundaries
+   must not directly or transitively contain another authored boundary in this
+   version.
+2. **Repeats are boundary-free.** A boundary must never execute inside a `<for>`
+   repeat body, directly or transitively behind `<if>`, a route, an outlet, or
+   a reusable component reached from the body. A repeat iteration cannot
+   suspend, so the build rejects the whole reachable set with
+   `boundary-in-repeat` and names the repeat, the declaration, and its owner.
+   The inverse is allowed and is the intended pattern: a `<for>` **inside** one
+   boundary makes the whole finite list one atomic independently paced region,
+   and a boundary may appear before or after a repeat. The continuation VM
+   therefore keeps no resumable repeat state: a repeat is walked to completion
+   inside the step that opens it, and a boundary discovered while a repeat is
+   open is rejected as a malformed protocol.
+3. **Local declaration identity.** `name` is static, non-empty, and unique only
+   within its owning entry or component template. `declarationId` is a stable
+   build-local integer. Each runtime occurrence receives a gapless
+   response-local `instanceId` and the host receives
+   `{ instanceId, declarationId, owner, name, key }`.
+4. **Multiple static occurrences.** A declaration in a reusable component
+   reached from more than one static callsite in one entry traversal must author
+   `key`; the build rejects an unkeyed declaration with `missing-boundary-key`.
+   Independent entries that each reach the component once do not make the
+   declaration repeatable. A `<for>` never creates keyed boundary occurrences
+   because every boundary its body reaches is rejected. The expression must
+   resolve in that occurrence's lexical scope to a finite JSON number or string.
+   Keys for simultaneously live occurrences of one declaration must be unique.
+5. **Pull session.** `start(state)` renders the shell prefix and stops before the
+   first occurrence, or runs through the terminal when there is none.
+   `resume(instanceId, state, mode)` must target the currently pending
+   descriptor and renders **only** that occurrence, through its checkpoint;
+   its bytes contain no following parent or tail bytes. `advance()` renders the
+   ordinary parent bytes that follow a committed occurrence until the next
+   occurrence or the terminal, and is valid only after `resume`.
+   `update(instanceId, patch)` targets only a committed updatable occurrence,
+   returns or writes one markerless update record, and is valid between `resume`
+   and `advance`. Every step is one independently writable, independently
+   flushed segment; the final step has `done = true`, no descriptor, and
+   includes the document tail, terminal record, final flush, and writer end. An
+   out-of-order step is rejected before any byte is written and does not poison
+   the response.
+6. **Frozen continuation state.** At `start`, the handler projects and freezes
+   only top-level state keys reachable by the continuation. It also preserves
+   lexical locals, component attributes, route state, inventories, and
+   continuation frames. Resume state overlays the frozen parent projection for
+   selected keys. Expression resolution remains lexical first, then the
+   boundary resume overlay, then frozen parent state. The one-shot
+   `WebUIHandler::render_streaming` helper drives `start → resume → advance → …`
+   directly against its original start snapshot, avoiding redundant overlays
+   when one state value drives the complete response.
+7. **Generated component spans.** When traversal suspends inside a reusable
+   component, the handler opens a generated component span around its unfinished
+   host. An early child checkpoint may bypass exactly its nearest unfinished
+   spanning ancestor. Other descendants remain opaque behind that parent until
+   its span completion record arrives. Nested generated spans complete
+   inner-first. This rule is identical for light and shadow DOM; the browser
+   crosses open shadow roots, slots, and hosts without leaving the bounded
+   range.
+8. **Exactly-once activation.** Streamed roots hydrate parent-first and
+   `hydratedCallback()` runs exactly once after their first successful
+   activation. Undefined roots wait by tag. An undefined or unfinished parent
+   is an activation barrier except for a compiler-marked early child matching
+   the nearest span ID.
+9. **Updates are state only.** An update applies the existing projected
+   `setState()` path to roots retained by an updatable checkpoint. It never
+   inserts, replaces, relocates, or reparses application markup and never
+   re-runs hydration or `hydratedCallback()`. A patch that arrives before a
+   retained root activates is shallow-merged and replayed after activation.
+10. **Ordered, self-sufficient wire.** Records use a gapless response-local
+    sequence starting at zero. Each checkpoint or span completion carries all
+    template, inventory, CSS, route, nonce, and projected-state data needed to
+    commit it after prior records. A range may reference the exact preceding
+    range record by sequence and carry only a top-level state delta when that
+    prior projection is a proven subset under the same server state revision.
+    Global metadata merges additively. Boundary state remains ephemeral and is
+    not published to `window.__webui.state`.
+11. **Fail closed.** Tuple arity, record sequence, occurrence sequence,
+    target kind, marker closure, span ancestry, and all configured work and
+    retention limits are mandatory. Malformed, truncated, stale, duplicate, or
+    overflowing input halts the coordinator, suppresses successful completion,
+    and releases discoverable scripts, sentinels, markers, waiters, span state,
+    and update roots within fixed bounds.
+12. **Mode isolation.** Streaming is explicitly selected per response and
+    requires a `FlushWriter` or owned `StreamingSession`. Ordinary `render`,
+    partial navigation, and component-template operations do not emit streaming
+    markers or browser records.
+
+### Stream contract (normative)
+
+The four-field envelope below is the only supported streaming wire contract.
+There is no runtime compatibility branch; legacy versioned envelopes are
+rejected by the tuple-shape gate.
+
+These invariants are binding. Every one is enforced somewhere — by the
+compiler, by the coordinator, or by a test — and none may be relaxed without a
+corresponding change here. Any additional transport must satisfy this same
+contract rather than introduce a parallel one.
+
+**Record format**
+
+1. **Gapless monotonic record order.** Every checkpoint, state update, and
+   terminal record carries one response-local record sequence starting at `0`
+   and increasing by exactly one. Any other value is rejected and halts the
+   stream. There is no reordering buffer and no out-of-order tolerance.
+2. **Typed records and exactly one empty terminal.** The four-element envelope
+   is `[record_sequence, kind, target, payload]`. `kind` is `0` for a
+   final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
+   for a state update, and `4` for the terminal. Every response ends with
+   exactly one markerless `[sequence, 4, 0, {}]` after all scriptless tail
+   bytes. A record arriving after it is corruption: it is rejected, its
+   scaffolding released, and the stream is halted without disturbing the
+   successful completion the terminal record already drove. The empty terminal
+   payload binds the *emitter*; a reader ignores unrecognized terminal payload
+   fields rather than halting a page that has already fully rendered (rule 21).
+3. **Self-sufficient records.** Given all prior records, a record carries
+   everything needed to commit itself: its own template delta, component-style
+   closure delta, inventory delta, and projected state. A range record may carry
+   `stateRef: N` instead of complete `state`, where `N` must identify the exact
+   preceding range record, plus optional `stateDelta` additions/replacements.
+   The server uses this only when the referenced projection is a subset of the
+   current projection and the continuation state revision is unchanged. A
+   record never forward-references a later one, so a truncated response is
+   always a prefix of a valid one.
+4. **Additive global merge; ordered island state.** Global handoff merges
+   accumulate only:
+   inventory bits are OR-ed, CSS/style lists are appended with deduplication,
+   component-style resources and closures are registered once, and templates
+   are registered additively. No record may overwrite or invalidate an earlier
+   record's contribution. The coordinator retains only the last resolved range
+   state as a reference base, creates a new top-level object when applying a
+   delta, and releases that base on terminal, cancellation, reset, or failure.
+   Missing, stale, forward, malformed, or non-object references fail closed.
+   Boundary state is ephemeral and never published to `window.__webui.state`.
+   A state-update record is a shallow patch applied in record order to one
+   already-committed updatable boundary; repeated writes to the same key are
+   last-writer-wins and never mutate the range-state reference base.
+5. **Identity is not placement.** A record never contains a selector, node
+   path, or DOM position. Checkpoints carry the compiler-assigned integer
+   boundary ID in `target`; state updates carry the same ID. The integer
+   resolves through coordinator-owned references captured during the original
+   range walk and never requires a document scan. Placement remains expressed
+   only through the marker pair the browser's HTML parser materializes.
+6. **Boundary-local payload.** A record carries only the templates and state
+   reachable from its own roots. Boundary 0 must not contain template metadata
+   or state reachable only from a later boundary. Component-style closures
+   remain CSS-tree metadata: the first entry closure can include static
+   transitive resources used by later boundaries, but never resources reachable
+   only through an inactive route. Each resource definition and closure is
+   serialized at most once per response. State locality requires a
+   state-projection manifest; without one the build falls back to full state and
+   every checkpoint costs `O(boundaries × full state)`, which the compiler reports as
+   a `streaming-without-projection` warning.
+
+**Coordinator**
+
+7. **One queue, one record in flight.** Sentinels enqueue onto a single shared
+   task pump; exactly one checkpoint or update commits at a time, and neither
+   hydration nor a state write runs inside the parser's sentinel-upgrade
+   callback. No per-record timer, observer, or root listener is created.
+8. **Range resolution is the only placement-aware step.**
+   `resolveBoundaryRange()` is the sole function that inspects DOM adjacency.
+   Template registration, state seeding, activation, scaffolding removal, and
+   lifecycle accounting all consume an abstract `HydrationRange`. State updates
+   bypass range resolution and use only the roots retained by their original
+   updatable checkpoint.
+9. **`data-ws` is per-element deferral state, not a boundary marker.** It is
+   compiler-owned, identifies exactly the SSR roots the server deferred, and is
+   removed on activation, rejection, or abandonment. An element without it
+   mounts normally even while a streaming response is still open.
+10. **Definitions and waiters are metadata-gated by tag name.** The browser
+    snapshots `observedAttributes` during `customElements.define()`, so a
+    streaming `.define(tag)` request waits until that tag's template metadata is
+    registered. Undefined custom elements then share one
+    `customElements.whenDefined` reaction per tag with a bounded root set,
+    never one promise closure per root instance.
+11. **Undefined parents are activation barriers.** If an outer streamed root is
+    undefined, the range walk counts but does not activate its descendants or
+    register descendant tag waiters. The retained subtree is revisited only
+    after the outer definition arrives and activates, preserving parent-first
+    hydration and preventing children from mutating an unhydrated parent tree.
+12. **Retention is opt-in and response-bounded.** A final checkpoint releases
+    its payload script, sentinel, marker pair, parsed envelope, projected state,
+    and root references immediately. An updatable checkpoint retains only its
+    bounded root array until the terminal record or fatal cleanup, when all
+    update targets and queued state are released together. Final boundaries pay
+    no target-map or root-retention cost. That array holds **live roots only**:
+    a root joins when it activates successfully, so one that was ignored,
+    failed, or was abandoned is never an update target and its element is not
+    kept alive by the boundary. Liveness is never inferred from `data-ws`,
+    which rule 9 strips on rejection and abandonment as well as on activation,
+    and which would therefore mark an inert root as ready to receive. The
+    retention budget is charged separately, at scan time, against every marked
+    root the checkpoint saw, so activating a root after its boundary was
+    retained can never grow that boundary past its bound. Delivering an update
+    to a live root is consequently an array walk with no DOM access. Because
+    `setState()` is defined on `TemplateElement` itself, a live root missing it
+    is a framework invariant violation and halts the stream rather than
+    reporting the same failure on every later update.
+13. **Bounded terminal failure.** On malformed, truncated, or overflow input
+    the coordinator releases every discoverable scaffold and pending reference
+    within its configured bounds, balances the pending-boundary count, and
+    suppresses `webui:hydration-complete`. A halt never leaves a root stuck in
+    the deferred state and never wedges completion on a stuck pending count.
+    Valid commits never scan the document; a bounded document sweep is reserved
+    for fatal cleanup when the malformed stream no longer exposes a complete
+    marker range.
+14. **Post-hydration author code runs exactly once.** `hydratedCallback()` runs
+    synchronously with the first successful ordinary hydration, client mount,
+    streamed activation, or dormant static-host wake. A Link-mode client mount
+    whose CSP blocks the prepaint guard remains resource-deferred until its
+    native styles load. Reactive writes made during that interval are reconciled
+    against the staging instance immediately before detached content is
+    appended; the callback runs only after the live container is installed.
+    Its latch is set before author code runs, so reconnects and exceptions never
+    retry it.
+15. **Updates never rehydrate.** A state update calls the existing reactive
+    `setState()` path on each target root. It does not rerun
+    `$activateDeferredSSR()`, template wiring, or `hydratedCallback()`. If the
+    target class is not defined or its boundary is still activating, one
+    bounded shallow patch is queued per target and replayed through that same
+    `setState()` path immediately after the root activates - never merged into
+    the state the root hydrates from. Hydration wires bindings against the
+    server's bytes without evaluating them, so seeding a post-render value
+    first would bind the branch the DOM actually shows while the element
+    believed it held the new one, and the next equal-valued write would skip
+    the patch entirely. A root retained behind an undefined ancestor is
+    patched after its own activation, parent first.
+    A state update may reference only an earlier updatable
+    checkpoint; forward references and updates to final checkpoints are fatal
+    protocol errors. An application component whose `setState()` or change
+    handler throws degrades that root alone: the failure is reported and the
+    walk continues to the remaining targets, including the retained
+    descendants of a throwing root, because one
+    component's bug must never strand later boundaries.
+
+**Compile time**
+
+16. **`<boundary>` is a directive, not an element.** It emits no wrapper
+    node, never nests or overlaps another boundary, and may not cut through a
+    component template or host content, native raw/inert HTML content, `<if>`,
+    `<for>`, route, or hydration-marker scope.
+17. **Boundaries are rejected in HTML foster-parenting contexts.** Inside
+    `table`, `thead`, `tbody`, `tfoot`, `tr`, `colgroup`, `select`, or
+    `optgroup` the browser relocates the unknown `<webui-hydrate>` sentinel out
+    of the table while the payload `<script>` stays inside, permanently
+    breaking their adjacency. This is a build error
+    (`boundary-in-foster-context`), never a runtime failure. `td`, `th`, and
+    `caption` return to "in body" insertion rules and are allowed.
+18. **Boundary names are free-form and resolve once.** Names are author-chosen
+    strings validated at build time for non-emptiness, staticness, and
+    per-entry uniqueness. The protocol stores their declaration order so a
+    response session can resolve `boundary("weather-shell")` once to a
+    `BoundaryId`. Only that integer reaches the HTML response; no generated
+    language symbols or name strings reach the wire.
+
+**Host**
+
+19. **The compiler decides where a flush is legal; the host decides when to
+    write.** A `StreamingResponse` writes the shell, each compile-time boundary,
+    state updates, and the tail only when the host calls it. Each synchronous
+    call borrows its state only for that call, so the host may await backend
+    work between calls without retaining a state borrow. Rendering requires a
+    `FlushWriter` and never silently degrades to buffering. Every shell,
+    checkpoint, update, and terminal write flushes through the same transport,
+    preserving its backpressure and disconnect errors.
+
+**Wire shape**
+
+20. **The reader validates transport shape, not its own serializer.**
+    A record is written by this repository's handler and read back by this
+    repository's coordinator, so the coordinator re-derives nothing the
+    serializer already guaranteed. Exactly two conditions are checked before
+    the tuple is trusted: `JSON.parse` success, which is a *complete*
+    truncation detector because every proper prefix of a JSON array is invalid
+    JSON (rule 3 seen from the transport side); and a four-element array, so
+    destructuring is total. Everything past those is document
+    state rather than record shape, and is enforced where it is actually
+    known — the coordinator halts the stream on a sequence or target mismatch,
+    and commits inside an error boundary so any payload defect fails closed
+    instead of hydrating partially.
+21. **There is one clean-break contract.** The handler and coordinator change
+    together. A versioned or otherwise obsolete tuple is rejected by rule 20;
+    no compatibility parser or alternate serializer is retained. Any
+    incompatible change updates this contract, both endpoints, and their tests
+    in one release.
+
+### Directive spelling and the structural signal namespace
+
+`<boundary>` is one arm of the parser's existing bare-element dispatch
+(`HtmlParser::parse`, `match element.name()`: `"for"`, `"if"`, `"body"`,
+`"head"`, `"route"`, `"outlet"`, then the component-registry fallback). Its
+handler `enter_boundary_directive` follows the shape `enter_body_element`
+established: it pushes compiler-owned structure before children and after them
+via a raw signal fragment, reusing `WebUIFragmentSignal` for
+`boundary_start:<seq>` / `boundary_end:<seq>` rather than adding `oneof`
+variants to `webui.proto`.
+
+All compiler-owned structural signal values use the internal wire namespace
+`}}}webui:<token>` (for example `}}}webui:body_end` and
+`}}}webui:boundary_start:0`). The parser's authored double/triple bindings
+cannot produce a value beginning with `}}}` because those bytes close the
+binding; CSS comment bindings also reject braces in paths. The handler strips
+this prefix only from raw signals before interpreting structure. Unprefixed
+values such as authored `{{{head_start}}}`, `{{{head_end}}}`,
+`{{{body_start}}}`, `{{{body_end}}}`, and `{{{streaming_root}}}` always remain
+ordinary public state keys. Protocols built before this namespace therefore no
+longer receive structural hooks and must be rebuilt. Such a protocol also
+cannot enter streaming mode because it lacks namespaced `head_start`, boundary,
+and streamed-root signals. This namespace is an internal parser/handler
+contract, not author syntax.
+
+Boundary validation — unique static `name`, no nesting, outermost entry
+template only, and "must not cut through a component, native raw/inert content,
+`<if>`, `<for>`, route, or hydration-marker scope" — is parse-time structural
+analysis of the same order as the existing `key`-on-`<for>` validation
+(`invalid-for-key`). Marking a statically-provable, independently-hydratable
+fragment subtree is inherently a parse-time question, so no surface spelling
+avoids that cost. An attribute spelling (`<div boundary="name">`) would carry
+identical validation cost while losing "emits no wrapper element" and a clean
+reserved-tag diagnostic.
+
+The bare, unhyphenated spelling follows the rule the rest of the compiler uses:
+
+| Spelling | Meaning | Examples |
+| --- | --- | --- |
+| Bare tag | Compile-time directive, erased at build, never in the DOM | `<if>`, `<for>`, `<route>`, `<outlet>`, `<boundary>` |
+| `webui-` tag | Real custom element defined at runtime | `<webui-hydrate>` |
+| `data-webui-*` | Runtime marker attribute on emitted output | `data-webui-boundary`, `data-webui-ssr-preload` |
+
+A hyphenated name is the HTML requirement for *custom elements*, so spending it
+on a directive that is deleted before the browser ever sees it would imply a
+runtime element that does not exist. `<boundary>` cannot collide with a
+component either: WebUI components are discovered from hyphenated filenames, so
+no component can ever be named `boundary`.
+
+### Compilation and author syntax
+
+`<boundary>` is a bare compile-time directive. The parser erases its tags and
+brackets its body with a `WebUIFragmentBoundary` start/end pair emitted inline
+in the owner's record. It is valid in an entry or reusable component and may be
+reached through conditions, outlets, and route content. A boundary may enclose
+a boundary-free `<for>`. Component templates strip directive tags from their
+browser template HTML, while the server fragment graph retains the typed
+declaration.
+
+```html
+<!-- index.html -->
+<html>
+  <head>
+    <script type="module" async src="/index.js"></script>
+  </head>
+  <body>
+    <ntp-page></ntp-page>
+  </body>
+</html>
+```
+
+```html
+<!-- ntp-page.html -->
+<main>
+  <h1>{{title}}</h1>
+  <boundary name="search-ready">
+    <search-box query="{{query}}"></search-box>
+  </boundary>
+  <section class="tail">{{slowFeed}}</section>
+</main>
+```
+
+The only entry component is `<ntp-page>`. Runtime traversal opens a generated
+span for its unfinished host, discovers the component-local `search-ready`
+declaration, and returns that occurrence to the host. The host may resume it
+before the rest of `ntp-page` renders, so `<search-box>` becomes interactive
+before the parent tail arrives.
+
+The compiler enforces:
+
+- `name` is required, static, non-empty, and unique within the current owner.
+- Direct and transitive authored boundary nesting is rejected.
+- A boundary reachable from a `<for>` repeat body, directly or transitively
+  through `<if>`, a component, a route, or an outlet mount, is rejected with
+  `boundary-in-repeat`. Wrapping the whole `<for>` in one boundary is the
+  supported alternative.
+- A declaration in a reusable component reached from more than one static
+  callsite in one entry traversal requires `key`; graph analysis marks those
+  declarations conservatively. Independent entries that each call it once do
+  not.
+- `key` is a non-empty expression whose runtime value must be a string or finite
+  JSON number.
+- Entry boundaries must be inside `<body>`. Component-local boundaries use the
+  component's template body.
+- Boundaries cannot occur in component host children, raw or inert native
+  content, authored `<template>`, or foster-parenting contexts such as
+  `table`, `tbody`, `tr`, `select`, and `optgroup`.
+- `<webui-hydrate>` is reserved for generated sentinels.
+
+The parser retains namespaced structural signals for document and component-root
+events, including `head_start`, `body_end`, and compiler-owned streaming roots.
+Authored bindings with the same visible text remain ordinary state paths. Typed
+boundary declarations do not use start/end signal pairs.
+
+The coordinator loads with `async`, or an equivalent non-blocking strategy,
+in `<head>` before the first possible checkpoint. A manually authored early
+application entry imports `@microsoft/webui-framework/streaming.js` before
+component registration modules. The independent asset integration below
+also supports either module arriving first without an early application entry.
+
+### Generated response shape
+
+Conceptually, the component-local search occurrence and its unfinished parent
+produce:
+
+```html
+<!--ws:0-->
+<ntp-page data-ws data-ws-span="0">
+<!--wb:0-->
+<search-box data-ws data-ws-enclosing="0">...</search-box>
+<!--/wb:0-->
+<script type="application/json" data-webui-boundary>
+  [0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{"todos":[]},"templates":{}}]
+</script>
+<webui-hydrate></webui-hydrate>
+...ntp-page tail...
+</ntp-page>
+<!--/ws:0-->
+<script type="application/json" data-webui-boundary>
+  [1,3,0,{"stateRef":0,"stateDelta":{"toolbar":{}},"templates":{}}]
+</script>
+<webui-hydrate></webui-hydrate>
+<script type="application/json" data-webui-boundary>
+  [2,4,0,{}]
+</script>
+<webui-hydrate></webui-hydrate>
+```
+
+- `<!--wb:N-->` / `<!--/wb:N-->` are marker comments, siblings of the
+  existing `<!--wr-->` / `<!--wc-->` family documented under "Plugin data and
+  SSR hydration markers" above — same removal-after-hydration contract.
+- The stream envelope is the script-safe tuple
+  `[record_sequence, kind, target, payload]`. A boundary checkpoint
+  uses kind `0` (final) or `1` (updatable), its compiler-assigned boundary ID as
+  `target`, and a bootstrap object as `payload`. The first reusable projection
+  carries `state`; a later proven superset under the same revision may instead
+  carry `stateRef` and an optional `stateDelta`. Every checkpoint resolves to
+  exact projected state plus template/CSS metadata for the transitive component
+  surface reachable from the tags rendered since the previous checkpoint.
+  `Protocol::new` precomputes a
+  compact, integer-indexed entry plan only for entries that declare boundary
+  metadata; ordinary entries allocate no streaming plan. Hand-built protocols
+  without compiler metadata use a request-local fallback plan. Route-free
+  checkpoints expand that
+  graph with one reusable DFS stack; leaf-only checkpoints perform no graph
+  walk. A component surface containing authored routes uses the request-aware
+  traversal so unmatched route branches do not leak into the boundary. This
+  conservative local expansion lets a hydrated condition or repeat create an
+  initially unrendered descendant without a global state block or server
+  round-trip. Inventory remains exact and contains only tags with rendered SSR
+  DOM. Template/CSS metadata is sent once when first reachable; a later rendered
+  instance receives its inventory delta and checkpoint-local state without
+  resending metadata. State references are backward-only and identify the exact
+  preceding range-record sequence; state updates never become reference bases.
+  Per-instance positional state tuples are not part of the wire contract; state
+  is carried as named keys.
+- `data-ws` is a compiler-owned, streaming-only identity inserted into every
+  streamed SSR component opening tag before browser upgrade. It is the sole
+  parser-time deferral signal when the document also has the streaming mode
+  marker. The coordinator removes it after activation or bounded failure
+  cleanup. Ordinary rendering ignores the structural signal, never emits the
+  attribute, and does not reserve an authored `data-ws` attribute.
+- `<webui-hydrate>` is the generated sentinel custom element. Its
+  `connectedCallback` (via `customElements.define`) is the checkpoint signal
+  the coordinator needs when the boundary arrives before its component
+  definitions are loaded (see races below).
+- The handler emits one marker pair, one payload, and one sentinel per boundary,
+  then calls `flush()` (see "Flush contract"). State updates are markerless
+  `[record_sequence, 2, boundary_id, projected_state]` records followed by
+  the same sentinel and flush; they resolve only through roots captured by the
+  updatable checkpoint. The coordinator removes every payload and sentinel
+  after processing and removes checkpoint markers after hydration commits.
+- At `body_end`, the handler writes any host-provided body injection and then
+  emits one empty markerless `[next_sequence,4,0,{}]` terminal record. The
+  terminal flush also commits preceding native/scriptless tail bytes, but those
+  bytes never manufacture another state or template projection. A static
+  streaming document with no boundaries therefore emits exactly
+  `[0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
+  `#webui-data` block. Boundary checkpoints share the existing `WebUiBootstrap`
+  and `write_selected_state` paths, so there is no second state-selection
+  implementation. A request-local key scratch vector is cleared and reused
+  between checkpoints. Any later structural signal, including a boundary
+  start/end, is a malformed protocol error; no record may follow the
+  terminal record.
+- A small `<meta name="webui-streaming" content="1">` mode marker is emitted
+  at the structural `head_start` signal, before authored head children. It is
+  therefore available before an async application entry can define component
+  classes. Route chain, inventory, CSP nonce, CSS bookkeeping, templates, and
+  projected state deltas arrive in the applicable boundary bootstrap.
+- **Streaming does not alter non-streaming output, byte-for-byte.** Streaming
+  is a distinct, explicitly selected render/session mode. Non-streaming
+  rendering ignores namespaced raw structural signals; ordinary element and
+  fragment rendering is identical in both modes. Boundary emission is gated on
+  session mode and reuses the existing per-signal dedup pattern.
+- Every browser record is the four-element tuple
+  `[sequence, kind, target, payload]`.
+- Kinds are `0` final checkpoint, `1` updatable checkpoint, `2` state update,
+  `3` generated span completion, and `4` terminal.
+- A checkpoint target is `BoundaryInstanceId`; a span-completion target is
+  `SpanInstanceId`. They are separate response-local namespaces. Update targets
+  reuse the committed boundary instance ID. Terminal target is zero.
+- `<!--wb:N-->` and `<!--/wb:N-->` delimit occurrence `N`.
+  `<!--ws:N-->` and `<!--/ws:N-->` delimit generated component span `N`.
+- `data-ws` marks a deferred component root. `data-ws-span="N"` identifies the
+  unfinished host for span `N`. `data-ws-enclosing="N"` permits an early child
+  root to bypass exactly that nearest unfinished ancestor.
+- Boundary payloads include `declarationId`, optional
+  `enclosingSpanInstanceId`, projected `state`, and additive template,
+  inventory, route, nonce, CSS, and style deltas as needed. Span completion
+  payloads use the same bootstrap fields except declaration identity.
+- State updates are markerless `[sequence, 2, instanceId, patch]` records.
+  They carry no templates and insert no application markup.
+- Exactly one markerless `[sequence, 4, 0, {}]` terminal follows the final
+  tail bytes. A boundary-free streaming render emits the terminal from
+  `start`.
+- Each record script is followed by one generated `<webui-hydrate>` sentinel.
+  The coordinator removes scripts, sentinels, range markers, and compiler
+  attributes when they are no longer needed.
+- `<meta name="webui-streaming" content="1">` is emitted at `head_start`.
+  Streaming mode does not emit a page-wide `#webui-data` block.
+
+### Initialization ordering
+
+1. Streaming mode marker at `head_start`, before authored head children and
+   therefore before the async application entry `<script type="module">`.
+2. `start` writes the prefix and stops immediately before the first discovered
+   occurrence, or writes through terminal if none occurs.
+3. Each `resume` writes only the selected occurrence through its checkpoint and
+   returns before subsequent parent or tail bytes.
+4. `update` records may interleave after their updatable target commits,
+   including between that target's `resume` and `advance`.
+5. `advance` writes subsequent static bytes and span completions, stopping
+   before the next discovered occurrence or after terminal.
+6. The call that reaches `body_end` writes tail bytes, terminal, final flush,
+   and writer end.
+
+The application entry imports
+`@microsoft/webui-framework/streaming.js` before component registration modules.
+This keeps the coordinator out of ordinary application bundles and installs it
+synchronously before any authored `.define()` call in the same module graph.
+The head marker lets that entry no-op safely on non-streaming pages.
+
+#### Independent streaming assets
+
+The streaming runtime and its delivery contract are bundler-independent.
+`@microsoft/webui-framework/streaming.js` is the public side-effect entry.
+Applications explicitly import it, either before registrations in an existing
+early entry or in a small application-owned streaming entry:
+
+```typescript
+// src/streaming.ts
+import '@microsoft/webui-framework/streaming.js';
+```
+
+The application registers that source with its bundler. WebUI supplies no
+streaming build plugin, synthetic entry, asset-inspection API, or deployment
+manifest. The bundler preserves initialization and shares framework modules
+with the application. Its native entry metadata identifies generated outputs
+without filename heuristics; the host owns served URLs and any persisted asset
+handoff. The early static closure must exclude unrelated application code and
+deferred hydration imports.
+
+Do not globally inject that entry into application or framework modules:
+injection creates import cycles that can capture uninitialized shared constants
+in top-level arrays. Normal ESM evaluation initializes dependencies first, and
+one shared module graph preserves registry and lifecycle identities.
+
+Application-first delivery is handled by the existing mode marker, not a
+forced dependency on the coordinator. Definitions remain metadata-gated and
+streamed roots remain marker-deferred. Before publishing completion, the
+lifecycle tracker reserves the terminal gate when the cached mode detector says
+streaming, even if coordinator installation has not run yet. Thus early
+client-created hydration cannot publish completion while the streaming asset
+is still downloading. The host must load the application's streaming entry.
+If the import is omitted, WebUI does not install the coordinator implicitly.
+
+`streaming-bootstrap.ts` registers metadata through the lightweight
+`template-registry.ts` and `element/style-catalog.ts`. These own the original
+normalization sets, definition waiters, and document catalogs, not copies.
+The `template.ts` facade attaches Link resource preparation to the existing
+registration listener only when the hydration runtime loads. It does not add
+a second template listener or rescan the accumulated catalog at every
+checkpoint. Native SSR styles remain responsible for initial paint.
+
+The streaming entry has no static dependency on `TemplateElement`, the DOM
+stylesheet installer, or Link client-mount guards. When a bounded activation
+walk first encounters an undefined compiler-owned (`th`) root, it requests the
+existing `static-host.ts` runtime once and uses the existing per-tag waiter.
+Merely receiving metadata for an unrendered compiler-owned template does not
+trigger a download. An excluded or authored tag never triggers that request.
+Load/installation failure halts the coordinator through normal bounded
+cleanup. Abandonment invalidates the activation generation so an outstanding
+module load cannot install hosts for a failed/reset stream.
+
+An external template registration carrying a `waitUntil` readiness barrier
+also demands dormant-host support when necessary. This preserves navigation
+from a native-only streamed shell whose initial ranges never needed that
+runtime. The existing registry listener reuses its registration key array,
+joins the consumer's barrier, and prepares styles after the newly loaded
+runtime installs its resource hook. Successful host-runtime installation
+permanently releases the demand hook; no extra listener, duplicate catalog, or
+per-root promise is created. Readiness-load failures reject the requesting
+navigation, whereas a load demanded by a streamed root uses stream failure
+cleanup.
+
+This split does not introduce a second hydration implementation, whole-response
+buffer, or extra per-root promise. Undefined roots still retain the exact
+checkpoint-local state reference until activation, and updatable roots may
+retain their collapsed patch past terminal until late activation consumes it.
+Moving every registration to the footer prolongs that retention and delays
+interactivity; small critical registration entries may still load with their
+boundaries. Explicit `fetchpriority="low"` module scripts opt out of automatic
+modulepreloads without changing ordinary module-entry preload behavior.
+
+### Boundary lifecycle and races
+
+Streaming reuses `TemplateElement`'s existing deferred SSR activation seam.
+There is no second component hydration implementation.
+
+**Parent already defined.** The unfinished parent host has `data-ws-span`.
+Normal descendants remain behind its activation barrier. A child root in the
+early boundary carries the matching `data-ws-enclosing` value and may bypass
+that one barrier. It hydrates from its complete boundary range while the parent
+tail remains unparsed.
+
+**Parent not defined.** The boundary still registers template metadata first.
+Undefined roots share one `customElements.whenDefined()` waiter per tag. The
+early child's matching enclosing-span marker remains sufficient when its class
+defines. Other descendants are not assigned waiters until the opaque parent
+defines and its barrier releases.
+
+**Span completion.** Closing the boundary-bearing component emits the matching
+`ws` end marker and a kind-3 record. The coordinator validates that the span is
+open, its nested spans have completed, the marker pair is root-local, and the
+host lies inside the range. It then activates the parent range, removes span
+attributes and scaffolding, and decrements the parent span's open-child count.
+
+This algorithm works for light DOM and open declarative shadow DOM. Bounded
+walks cross a `ShadowRoot` through its host and follow assigned slots without a
+global selector or document-position comparison. The nearest generated span is
+load-bearing: an unmarked child or a child carrying another span ID remains
+dormant.
+
+For every final or updatable boundary checkpoint the coordinator:
+
+1. Resolves its root-local `wb` marker pair.
+2. Registers additive template, inventory, route, nonce, CSS, and style deltas.
+3. Registers any enclosing `ws` ancestry from the compiler-owned host
+   attributes.
+4. Walks the bounded range parent-first and activates only `data-ws` roots.
+5. Retains successfully activated roots only when the occurrence is updatable.
+6. Removes the record script, sentinel, boundary markers, and consumed
+   compiler attributes.
+
+Three inputs make this computable, and each is recorded where the build
+already has it in hand:
+
+- **Module sizes.** The bundler adapter reads `metafile.outputs[path].bytes`,
+  which it already iterates for `.inputs`. Ordering is not incidental:
+  `examples/app/streaming` measures a **125 ms swing from ordering alone**,
+  larger than the split itself, because preloads are issued in document order
+  over one shared connection. Only the bundler knows output sizes, so it sorts
+  once at build time and ships the answer.
+- **Island exclusion.** The parser maintains `in_boundary` to reject nested
+  boundaries, and a `<script type="module" src>` seen while it is set is
+  island-owned by definition. Only non-boundary module entries are recorded,
+  so an island loader is excluded without any subtraction pass. This matters:
+  preloading the island is precisely the regression the hint exists to remove.
+  Explicit `fetchpriority="low"` scripts are also excluded, so a footer
+  application can retain its chosen delivery priority.
+  A chunk the island *shares* with the critical entry still gets preloaded,
+  because it is genuinely critical.
+- **The output import graph.** A shared runtime chunk defines no component, so
+  it appears in no component's `outputs` — yet it is exactly the file the hint
+  must cover. In `examples/app/streaming` the critical entry's closure is
+  45,912 B, of which the unmapped shared chunk is 35,827 B (78%); the mapped
+  `index.js` is 9,801 B and the scanner already finds it unaided. The manifest
+  therefore records output-to-output edges in `entryClosures`, filtered to
+  `kind === "import-statement"` so a dynamic `import()` — which is *meant* to
+  cost a round trip — is never hoisted onto the critical path. Every known
+  entry remains a map key even when this filtered closure is empty; the empty
+  ownership record prevents an equal basename from another merged build from
+  being selected.
+
+Two constraints govern the design. The closure is computed at **build time and
+shipped as an ordered list of finished hrefs** in `WebUIProtocol
+.module_preloads`, not shipped as a graph and traversed per request — so
+request-time emission is N writes against a precomputed slice, with no
+traversal, sorting, or scratch collections. And the hint set lives on the
+entry rather than on `ComponentData`, because a critical closure is a
+per-entry property.
+
+Resolution joins the authored `src` URL to build-root-relative manifest keys.
+It fails safe throughout: an entry whose basename matches more than one
+manifest key emits nothing and warns, because a wrong preload costs a 404 and
+a wasted connection while a missing one costs only speed; an unrecognized
+`src` is skipped silently, since a third-party script is not a build mistake;
+cross-origin, protocol-relative, and query-bearing authored URLs are skipped
+because they do not describe a path the manifest covers; the list is capped so
+a runaway closure cannot starve the entry itself; and an href that cannot be
+written verbatim into an attribute is rejected at build time rather than
+escaped per request. Compiler-generated query-bearing URLs are accepted only
+through an exact physical-output-to-served-URL map. A non-empty esbuild
+`publicPath` also suppresses closure members unless the host supplies that
+explicit map: the metafile exposes local output paths while emitted imports use
+the configured served URL, so synthesizing same-origin hrefs would be unsafe.
+
+CSS delivery strategy is selected once per build and is not boundary-local.
+
+**Commit.** For one boundary, the coordinator:
+
+1. Validates sequence, size, marker closure, template indexes, state arity,
+   and response identity.
+2. Registers new template metadata/functions immediately, without waiting for
+   `DOMContentLoaded`. Eligible compiler-owned hosts are defined at registration
+   if their runtime is already installed. Otherwise the range walk demand-loads
+   that runtime for undefined compiler-owned roots; definitions can complete
+   after the checkpoint commits, with roots held by shared per-tag waiters.
+3. Resolves the boundary's `HydrationRange` (`resolveBoundaryRange()` — the
+   only placement-aware step), then walks that range once in boundary order,
+   including open declarative shadow roots, without a root list or per-element
+   document-position comparisons.
+4. Passes the checkpoint-local projected state directly into component
+   activation. It does not merge ephemeral state into `window.__webui.state`.
+   Inventory deltas are ORed into the cumulative global bitmask; CSS/style
+   bookkeeping deltas are appended with deduplication; component-style
+   resources and closures are registered only on first delivery.
+5. Hydrates outer roots before descendants. After each successful first
+   hydration or mount, `hydratedCallback()` runs synchronously with completion
+   exactly once; a CSP-deferred Link mount completes only after its native styles
+   load and detached content is appended. Reconnects and callback exceptions do
+   not retry it.
+6. Removes the payload, sentinel, markers, and `data-ws` identities and releases
+   parsed arrays before dispatching diagnostics or completion.
+
+Hydration runs through one shared task pump so it never executes inside the
+parser's sentinel-upgrade callback. No per-boundary timer, observer, or root
+listener is created. `webui:hydration-complete` fires only after the
+terminal record and zero pending boundaries. Truncated or malformed streams
+abort that completion gate and release discoverable generated scaffolding within
+the configured bounds.
+Hydration runs through one document-scoped FIFO pump, never directly from the
+sentinel upgrade callback. `webui:hydration-complete` fires only after the
+terminal record, all queued records, definition waiters, ancestor barriers, and
+generated spans settle successfully. `hydratedCallback()` is latched before
+author code runs and is never retried after reconnect or exception.
+
+The terminal record is emitted at the structural `body_end` hook, after
+host-supplied `body_inject` / `$webui.bodyEnd` content and before the parser
+writes the raw `</body>` / `</html>` tail. Keeping the final
+`data-webui-boundary` script and `<webui-hydrate>` sentinel inside `<body>`
+avoids relying on intermediary-safe preservation of bytes after `</html>` while
+retaining the single-terminal completion contract.
+
+#### Commit observability
+
+Every commit is recorded twice, for two different consumers:
+
+- A `performance.mark()` is emitted **unconditionally**: `webui:boundary:<id>`
+  for a checkpoint, `webui:boundary:<id>:update` for a projected state update,
+  `webui:span:<id>` for a generated component span completion, and
+  `webui:streaming:terminal` for the terminal. Marks are not gated on the
+  debug flag because they are read *retroactively* - an analytics or RUM script
+  that loads after hydration can still call
+  `performance.getEntriesByType('mark')`, whereas a listener must be installed
+  before the first checkpoint commits and the coordinator is a separate async
+  entry, so early boundaries are easy to miss. They cost one call per commit,
+  which is O(boundaries), not O(roots).
+- `webui:boundary-hydrated` is emitted only when
+  `window.__WEBUI_STREAMING_DEBUG__ === true`, avoiding a `CustomEvent`
+  allocation per commit in production. Its `detail` is
+  `{ sequence, terminal, kind }`, where `kind` is `'checkpoint'`, `'span'`,
+  `'update'`, or `'terminal'`.
+
+Boundary marks are keyed by response-local `BoundaryInstanceId`, not by
+`declarationId` or authored name. Span marks use the separate response-local
+`SpanInstanceId` namespace.
+
+#### Drain policy
+
+The pump drains its queue in one uninterrupted pass by default: that finishes
+hydration soonest and keeps `webui:hydration-complete` early, which is right
+when records arrive spread across the response.
+
+Setting `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond budget
+opts into a time-sliced drain that yields to the renderer (`scheduler.yield()`
+where available, otherwise a task) whenever the budget is exhausted. This
+matters when an intermediary coalesces the response so every record lands in
+one chunk - the single long hydration task streaming exists to avoid. It costs
+total hydration time and delays the last boundary's interactivity, so it is
+opt-in rather than the default. Record order, per-boundary validation, and the
+single-terminal contract are unchanged; the drain holds the pump open across
+its yields so a sentinel that arrives mid-drain joins the same pass and the
+terminal cannot settle early.
+
+### Flush contract
+
+The public transport contract is:
+
+```rust
+pub trait FlushWriter: ResponseWriter {
+    fn flush(&mut self) -> Result<()>;
+}
+```
+
+`webui::streaming::StreamingWriter` implements `FlushWriter` by exposing its
+existing private `flush_buf` (`crates/webui/src/streaming.rs`) as a public
+`flush()`. Rendering the streaming-boundary protocol requires a
+`FlushWriter`; a writer that only implements `ResponseWriter` must be
+rejected at the streaming-render entry point rather than silently buffering.
+
+When `resume` completes a checkpoint, it finishes all child markup, emits
+template/state deltas and the sentinel, then calls `flush()` and returns
+immediately: the parent bytes that follow belong to the next `advance` step, so
+one checkpoint is exactly one host write. Span completion and update records
+also flush immediately. The terminal record is followed only by the raw
+`</body>` / `</html>` tail, so the final `advance` coalesces that tail with the
+terminal record in one flush instead of adding a separate tiny transport write.
+This sequence is atomic from the host's perspective.
+"Flush" means bytes were handed to the HTTP transport; intermediary proxies may
+still coalesce them, so production guidance must document disabling
+reverse-proxy response buffering where applicable (this is a deployment note,
+not something the library can enforce).
+
+Because each complete record and sentinel precedes its flush, a transport prefix
+can commit only complete records. Flush points control delivery timing, not
+wire correctness.
+
+### Limits, errors, and malformed input
+
+- Server limits are 256 continuation frames, 512 runtime boundary occurrences,
+  512 keyed occurrences, 128 updatable occurrences, 32 nested generated spans,
+  and 1,024 frozen top-level state keys.
+- Browser limits are 512 queued records, 128 updatable occurrences, 50,000
+  retained update roots, 50,000 pending undefined roots, 50,000 pending
+  ancestor-barrier roots, 10,000 elements per checkpoint, 50,000 marker-scan
+  nodes, and an eight-element payload-script lookback.
+- Exceeding any limit is a stream error, never silent truncation. A malformed
+  tuple, bad version or sequence, stale target, duplicate live key, missing
+  marker, impossible span ancestry, or truncated response also fails closed.
+- Client disconnect during a boundary flush surfaces through the existing
+  `HandlerError::ClientDisconnected` path (`streaming.rs`); no new error type
+  is needed on the Rust side.
+- CSP nonce reflection follows the existing per-render nonce contract (one
+  `<meta name="webui-nonce">` plus nonce on every SSR-emitted inline
+  `<script>`); boundary payload/sentinel scripts get the same nonce.
+
+Stable parser diagnostics are `missing-boundary-name`,
+`invalid-boundary-name`, `duplicate-boundary-name`,
+`missing-boundary-key`, `invalid-boundary-key`, `too-many-boundaries`,
+`nested-boundary`, `boundary-in-repeat`, `boundary-crosses-scope`,
+`boundary-outside-body`, `boundary-in-foster-context`,
+`invalid-route-boundary-placement`, and `authored-webui-hydrate`.
+`streaming-without-projection` remains a warning.
+
+Runtime ordering, key, continuation, span, and marker failures use
+`HandlerError::StreamingBoundary`. Missing or duplicate document initialization
+uses `MissingStreamingHeadStart` or `DuplicateStreamingHeadStart`; a render
+that reaches no `body_end` uses `MissingStreamingBodyEnd`. Transport failures
+remain `ClientDisconnected` and `StreamTimeout`. Once rendering or transport
+has failed after bytes may have escaped, subsequent session work is rejected as
+poisoned.
+
+### Rendering-mode isolation
+
+- Streaming boundaries are strictly opt-in (a distinct render/session mode);
+  a page without `<boundary>` renders through the ordinary path.
+- Non-streaming pages carry one `#webui-data` block and the ordinary script
+  behavior, byte-for-byte identical to a build with no streaming support.
+- `render()` and complete `renderPartial()` are unaffected by streaming.
+- Router JSON and navigation NDJSON use independent response formats.
+- Host-driven response sessions are available from every host. Rust drives a
+  `StreamingResponse` that writes into a `ResponseWriter`; Node, WASM, C, and C#
+  drive a `StreamingSession` that returns each chunk's bytes to the caller.
+  `webui serve --api-port` additionally accepts a versioned, bounded control
+  stream from a Node or other HTTP backend while the CLI retains ownership of
+  the Rust session and browser transport. Existing whole-render APIs
+  (`render`, `renderStream`, `webui_handler_render`) are unchanged.
+
+### Performance invariants
+
+The continuation VM is iterative and retains bounded frames, lexical scopes,
+projected parent keys, occurrence-key sets, open-span captures, and reusable
+scratch buffers. It does not clone the complete parent state. Because a repeat
+can carry no boundary, it holds no resumable repeat iterator across host calls:
+a `<for>` is walked to completion inside the step that opens it, and closing one
+item and opening the next share a single frame. Runtime discovery follows only
+the selected fragment path and uses `FragmentList::contains_boundary` to avoid
+probing boundary-free subgraphs. Capture buffers are swapped and recycled rather
+than rebuilt for nested spans.
+
+Range records keep one bounded prior-projection descriptor. Under an unchanged
+state revision, an equal projection emits only `stateRef`; a proven superset
+emits `stateRef` plus its top-level `stateDelta`. The descriptor stores compact
+interned key IDs rather than projected values, so eliminating repeated JSON does
+not clone the state tree. The synchronous helper borrows one state and retains
+one render context for the complete response. Async owned sessions pass `Value` to `start` and `resume` to move fresh state,
+pass `&Value` when retaining caller ownership, or use `resume_current` when the
+retained snapshot is already authoritative.
+
+The browser performs no `MutationObserver`, polling, or document-wide query on
+a valid path. It resolves root-local markers, walks each committed range once,
+and retains root references only for updatable occurrences and pending
+definitions or barriers. Fatal cleanup alone may perform one bounded document
+sweep when marker-local cleanup is impossible.
+
+Pending root records live in a lazily allocated coordinator-owned `WeakMap`,
+not temporary element properties. Adding and deleting properties around native
+custom-element upgrade can leave the final instance in dictionary mode even
+after all state was released. One optional module-level resume function lets
+`TemplateElement` return control to the coordinator without adding a per-root
+callback or closure. Pending records are removed on activation or abandonment;
+the empty registry is released when the last undefined/barrier root settles.
+Non-streaming entries allocate no pending registry and import no coordinator.
+
+### Reference scenario
+
+The primary scenario has one `<ntp-page>` in the entry. Its reusable component
+template owns `search-ready` around `<search-box>` and continues with a slow
+parent tail. `start` returns the component-local descriptor after writing the
+document prefix and the opening `ntp-page` span. Resuming that descriptor
+commits and hydrates `search-box` and returns immediately, so the host's write
+for that step contains the `search-ready` checkpoint and nothing else. The
+following `advance` writes the rest of `ntp-page`, completes the generated span,
+and emits terminal. The early child is interactive before the parent tail,
+without an authored outer boundary and without a synthetic sibling boundary to
+separate the two writes.
+
+### Server-driven response sessions
+
+```rust
+let mut page = handler.stream_response(&protocol, &options, writer)?;
+let mut step = page.start(&initial_state)?;
+
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state = load_boundary_state(
+                &boundary.owner,
+                &boundary.name,
+                boundary.key.as_ref(),
+            )?;
+            // Writes only this occurrence, through its checkpoint.
+            page.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        // Writes the parent bytes up to the next occurrence or terminal.
+        None => page.advance()?,
+    };
+}
+```
+
+Each call is synchronous and borrows state only for that call. An asynchronous
+host may await between calls but must serialize one session onto one admitted
+worker. A stale or non-pending instance ID, a `resume` before the previous
+commit was advanced past, or an `advance` with no committed occurrence is
+rejected before any byte is written and leaves the session usable. A rendering
+or transport failure poisons the session because emitted bytes cannot be
+rewound.
+
+An occurrence committed as `Updatable` may receive object patches before the
+terminal, including between its `resume` and the following `advance`, while
+the response is still open:
+
+```rust
+page.update(search.instance_id, &search_patch)?;
+```
+
+The patch is projected through the update plan captured by that checkpoint.
+When no state changed, `resume_current` avoids an overlay while retaining the
+same checkpoint-only return. `StreamingSession::start` and `resume` accept owned
+`Value`s, allowing a host to transfer freshly loaded state into the continuation
+before returning its worker to the pool and awaiting the next operation. They
+also accept borrowed values for shared-state callers.
+
+### Host-owned streaming sessions
+
+Rust's borrowed `StreamingResponse` writes to a `FlushWriter`. Language
+boundaries use owned `StreamingSession`, which returns bytes:
+
+| Host | Step bytes | API spelling |
+|------|------------|--------------|
+| Rust | `Vec<u8>` | `start`, `resume`, `advance`, `update` |
+| Node | `Buffer` | `start`, `resume`, `advance`, `update` |
+| WASM | `Uint8Array` | `start`, `resume`, `advance`, `update` |
+| C | `uint8_t *` plus length | `webui_streaming_session_start`, `_resume`, `_advance`, `_update` |
+| C# | `byte[]` | `Start`, `Resume`, `Advance`, `Update` |
+| Python | `bytes` | `start`, `resume`, `advance`, `update` |
+
+Step results carry bytes, optional descriptor, and `done`. Descriptor fields
+preserve JSON key identity across bindings: string keys remain strings and
+finite numeric keys remain numbers. Each step's bytes are one semantic write
+segment ending on the transport flush that closed the step, so a host writes and
+flushes exactly once per step. The host owns socket writes, flushing,
+backpressure, cancellation, and one session per in-flight response.
+
+### API-proxy host-control stream
+
+With `webui serve --api-port`, the backend selects
+`Content-Type: application/x-webui-stream` and writes UTF-8 NDJSON controls.
+The version-2 control vocabulary mirrors the session:
+
+```text
+{"type":"start","version":2,"state":{"query":""}}
+{"type":"resume","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":""},"mode":"updatable"}
+{"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
+```
+
+`start` appears exactly once and drives `StreamingResponse::start`. Every
+`resume.boundary` must match the currently returned descriptor by `owner`,
+`name`, and `key`; omit `key` only when the descriptor has none. An optional
+`declarationId` can tighten the match. The CLI passes the descriptor's
+response-local `instanceId` to Rust and then drives `advance` itself to reach
+the next descriptor, so the control vocabulary needs no advance record and the
+backend still decides only per-occurrence state. `update.boundary` uses the same
+identity to select one previously committed updatable occurrence; multiple
+matches fail. After sending the resume for the final descriptor, the backend
+closes its control body; the CLI's internal `advance` reports done. There is no
+advance or end-control record.
+
+Resolved token CSS, `basePath`, and route parameters are injected into start
+and resume state. Update state receives no unrelated defaults. Each NDJSON
+record remains capped at 2,000,000 bytes and the initial bytes produced by
+`start` are staged up to 4,000,000 bytes before HTTP success. Async ingestion
+only frames and size-checks records. A capacity-one channel transfers owned
+record bytes to the response's existing blocking renderer, which deserializes,
+validates command order, and applies state defaults. Start and resume values
+move into the continuation instead of cloning a borrowed projection. Initial
+command failures remain HTTP 502 responses, while initial rendering failures
+remain HTTP 500 responses; neither commits a successful response. The command
+channel and bounded `StreamingWriter` preserve backpressure.
+Disconnect cancels backend ingestion. Unsupported versions, descriptor
+mismatches, invalid order, malformed state, renderer failure, or truncation
+close and log the response.
+
+### Scope
+
+- Runtime occurrences follow the selected document path. Their order is
+  deterministic for a given start state and resume overlays.
+- Authored boundary nesting is not supported. Generated component spans provide
+  the only ancestor mechanism.
+- Updates affect existing retained roots only and never carry markup.
+- Router partial responses keep their independent JSON and NDJSON formats.
+- Host scheduling is external and concurrent calls to one session are invalid.
+- CSS strategy is selected per build, not per occurrence.
+- Only response-local integer targets reach the browser wire. `owner`, `name`,
+  and `key` are host-side descriptor identity and are not repeated in checkpoint
+  envelopes.
 
 ---
 
@@ -1651,9 +4154,8 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 
 This section is the authoritative specification for the projection compiler,
 manifest schema, adapter SPI, Rust consumer contract, diagnostic codes, and
-conformance fixtures. It is precise enough for the TypeScript compiler/esbuild
-adapter and the Rust manifest consumer to be implemented concurrently by
-independent agents without semantic drift.
+conformance fixtures. The TypeScript compiler/esbuild adapter and Rust manifest
+consumer implement these shared contracts without semantic drift.
 
 ### Canonical build order
 
@@ -1683,14 +4185,9 @@ Step 3 — Runtime handler
 The manifest is a build-time handoff artifact. It is not deployed as a handler
 runtime dependency.
 
-An optional `buildWebUI()` convenience helper may run steps 1 and 2
-sequentially, but it must be orchestration sugar over the same manifest contract
-and must not create a second projection architecture.
-
 ### Package architecture
 
-No new npm package is created. The existing `@microsoft/webui` package gains
-one build-only subpath:
+The `@microsoft/webui` package exposes projection through a build-only subpath:
 
 ```typescript
 import { compileProjection, esbuildProjection } from '@microsoft/webui/projection.js';
@@ -1706,16 +4203,14 @@ Internal source organization:
 packages/webui/src/projection/
   index.ts          — public subpath barrel
   compiler.ts       — TypeScript AST analysis and symbol graph
+  typescript-api.ts — TypeScript 6/7 parser API compatibility layer
+  typescript-version.ts — centralized supported-version policy
   graph.ts          — normalized module graph types and adapter SPI
   manifest.ts       — manifest schema types and serialization
+  loader.ts         — manifest loading and filesystem validation
   diagnostics.ts    — stable diagnostic codes and error types
   adapters/
-    esbuild.ts      — esbuild adapter (first supported adapter)
-    vite.ts         — future
-    rollup.ts       — future
-    rolldown.ts     — future
-    webpack.ts      — future
-    rspack.ts       — future
+    esbuild.ts      — supported esbuild adapter
   fixtures/
     conformance.ts  — adapter conformance test helpers and reference cases
 ```
@@ -1727,13 +4222,13 @@ implementation and the Rust manifest consumer must satisfy.
 ### Optional peer dependency policy
 
 `typescript` and each officially supported bundler are optional peer
-dependencies of `@microsoft/webui`. The first supported bundler is esbuild:
+dependencies of `@microsoft/webui`. The supported bundler is esbuild:
 
 ```json
 {
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": { "optional": true },
@@ -1750,10 +4245,23 @@ peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
 
 Both peers are optional so users importing only the root build/render API do
 not receive dependency warnings for compiler tooling they do not use.
+The TypeScript range is intentionally split at the major boundary: WebUI
+supports TypeScript 6 from 6.0.3 onward and the tested TypeScript 7.0.2
+release, while excluding earlier and untested versions. TypeScript 7 is
+pinned because its compiler integration uses unstable subpaths; later
+TypeScript 7 releases are added only after compatibility testing.
+The projection compiler uses the legacy in-process parser exposed by
+TypeScript 6. TypeScript 7 builds use its native synchronous API with an
+in-memory virtual filesystem, preserving the adapter contract that source is
+analyzed from the resolved module graph rather than reread from application
+files. The TypeScript 6 parser is isolated behind `LegacyProjectionParser`,
+its single traversal shim, and a pinned `typescript-6` test-only dependency;
+removing TypeScript 6 support deletes those three surfaces plus the version
+policy branch.
 
 Bundler adapters use local structural interfaces and do **not** statically
-import their bundler packages at module load time. Future supported adapters
-add their bundlers as optional peers under the same policy.
+import their bundler packages at module load time. Every supported adapter
+declares its bundler as an optional peer under the same policy.
 
 ### Normalized module graph and adapter SPI
 
@@ -1837,11 +4345,19 @@ export interface AdapterContext {
   A specifier is treated as WebUI framework semantics only when the adapter
   proves `packageName: "@microsoft/webui-framework"`. Literal source text does
   not override adapter resolution.
+- The normalized graph contains only JavaScript/TypeScript modules that can
+  participate in projection semantics. Bundler inputs such as images, fonts,
+  and CSS are omitted; their incoming edges are external to this semantic graph.
 - Every physical module has raw source and every physical output has exact
   bytes. Disk outputs can never be represented as `"virtual"` to skip stale
   validation.
-- `rootDir` contains the manifest and every physical input/output. The compiler
-  rejects graph members outside it.
+- `rootDir` contains the manifest and every physical normalized input/output.
+  The compiler rejects graph members outside it. Because manifest keys are
+  root-relative, one bundler invocation must stay on a single filesystem root:
+  artifacts split across roots (separate Windows drive letters, typically a
+  `TEMP` directory on another volume) have no expressible `rootDir` and are
+  rejected with `PROJ-C015`. Adapters derive this root with the exported
+  `resolveBuildRoot(paths)` helper rather than reimplementing the scan.
 
 The compiler parses source lazily. It seeds modules containing a supported
 literal `.define(...)`/`customElements.define(...)` candidate (or a framework
@@ -1923,6 +4439,8 @@ following:
 | `import { observable, attr } from '...'` | Direct named import |
 | `import { observable as obs } from '...'` | Aliased named import |
 | `import * as webui from '...'` | Namespace; `webui.observable` resolved |
+| `const obs = observable` | Immutable local alias; alias chains are resolved |
+| `const obs = webui.observable` | Immutable alias of a namespace member |
 | `export { observable } from '...'` | Re-export chain |
 | `export { observable as obs } from '...'` | Aliased re-export |
 | `export * from '...'` | Star re-export (all public names forwarded) |
@@ -1956,6 +4474,9 @@ Rules:
   is ignored.
 - The tag-name argument must be a **string literal** at analysis time. Dynamic
   tags on a proven WebUI class produce `PROJ-C008`.
+- Class expressions associated through a variable must use an immutable `const`
+  binding. A `let`/`var` class binding can change before `define()` executes and
+  therefore produces `PROJ-C009` rather than a stale exact-state proof.
 - An unrelated or unresolvable `.define()` receiver is ignored by the compiler.
   If it was actually a scripted WebUI component, Rust strict coverage later
   fails with `PROJ-B001`; the compiler never guesses based on capitalization or
@@ -1972,7 +4493,7 @@ outputs:
 
 - `hydrationKeys: []` and `navigationKeys: []` are valid proven-empty results.
   Both contain inherited/local `@observable + @attr`; `navigationKeys` remains
-  a validated hydration superset for future channel-specific extensions.
+  the validated superset used by navigation projection.
 - Any condition that prevents proving the exact key set is a **hard diagnostic**
   that fails the build. There is no fallback `All` entry in the manifest.
 
@@ -2054,7 +4575,8 @@ export interface ProjectionManifest {
   readonly outputs: Record<string, string>;
 
   /**
-   * Every module in the adapter graph, including tree-shaken modules.
+   * Every module in the normalized adapter graph, including tree-shaken
+   * modules.
    * Key: canonical build-root-relative path, or `virtual:<hex-id>`.
    * Value: exact UTF-8 source SHA-256, or "virtual" only for a virtual key.
    */
@@ -2064,6 +4586,25 @@ export interface ProjectionManifest {
    * Component entries keyed by custom-element tag name.
    */
   readonly components: Record<string, ComponentEntry>;
+
+  /**
+   * Per-entry transitive *static* import closure, keyed by entry output.
+   *
+   * Value: the other outputs that entry pulls in through static `import`
+   * statements, ordered **largest byte size first**. Dynamic `import()` edges
+   * are excluded — those are meant to cost a round trip, and preloading them
+   * would defeat the deferral the author asked for.
+   *
+   * These chunks are named only inside the entry's own bytes, so the browser's
+   * preload scanner cannot see them. Recording the closure here is what lets a
+   * host emit `<link rel="modulepreload">` without a second bundler pass.
+   *
+   * Every known entry is present even when its closure is empty, which
+   * preserves entry ownership for basename disambiguation. The field is absent
+   * when the adapter cannot report entry ownership, so manifests produced
+   * before this field existed keep reproducing their original `buildId`.
+   */
+  readonly entryClosures?: Record<string, readonly string[]>;
 }
 
 export interface ComponentEntry {
@@ -2084,18 +4625,22 @@ The manifest must be reproducible byte-for-byte given the same inputs,
 graph, configuration, and tool versions:
 
 1. **No timestamps.** No `builtAt`, `date`, `time`, or any time-derived field.
-2. **Sorted object keys.** `outputs`, `inputs`, and `components` are sorted
-   lexicographically by raw UTF-8 bytes, ascending.
+2. **Sorted object keys.** `outputs`, `inputs`, `components`, and
+   `entryClosures` are sorted lexicographically by raw UTF-8 bytes, ascending.
 3. **Sorted arrays.** `ComponentEntry.outputs`, `hydrationKeys`, and
    `navigationKeys` are sorted and deduplicated by raw UTF-8 bytes.
    `navigationKeys` must contain every `hydrationKeys` entry.
+   `entryClosures` values are the deliberate exception: their order is *load
+   order*, sorted by descending output size, so it is validated for uniqueness
+   and membership but never re-sorted. Only the bundler knows output sizes,
+   so it sorts once and every consumer uses the order as given.
 4. **Normalized paths.** All paths use forward slashes. No leading `./`.
    Physical keys are relative to `root`, never the manifest directory.
 5. **Compact JSON serialization.** No trailing newlines, no pretty-printing
    (for the canonical form that participates in hashing). The written file
    may be pretty-printed for readability, but hashing uses compact form.
-6. **Stable enum values.** No booleans substituted for integers in future
-   versions; new optional fields are added with `undefined` (absent, not `null`).
+6. **Stable enum values.** Schema evolution never substitutes booleans for
+   integers; optional fields are added with `undefined` (absent, not `null`).
 
 #### Path normalization algorithm
 
@@ -2182,6 +4727,9 @@ component(
   navigation-keys...
 )
   ... sorted by UTF-8 tag bytes
+entryClosures(count)                    ... omitted entirely when empty
+entryClosure(entry, member-count, members...)
+  ... sorted by UTF-8 entry bytes; members in their given load order
 ```
 
 Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
@@ -2190,6 +4738,13 @@ UTF-16 code units. The final identifier is:
 ```text
 "sha256:" + hex(sha256(canonical_record_bytes))
 ```
+
+The two `entryClosures` records are appended **only when the map is non-empty**.
+That is what keeps a manifest written before the field existed hashing to
+exactly the value it hashed to then, which the cross-language golden vector
+below pins. Closure member order participates in the hash on purpose: reordering
+preloads measurably changes page load, so it is a real input, not noise to
+normalize away.
 
 Cross-language golden vector:
 
@@ -2271,7 +4826,8 @@ After loading and merging all manifests, `webui build` validates strict coverage
    unused (not compiled into the protocol, not in any route or asset closure)
    do **not** trigger an error. They are silently ignored.
 4. The merged manifest may contain components that WebUI has no template for.
-   This is permitted (external controls, future components). No warning.
+   This is permitted for external controls or components outside this build. No
+   warning.
 
 After coverage validation, `webui build`:
 
@@ -2321,9 +4877,11 @@ pub projection_manifests: Vec<ProjectionManifestSource>,
 ```
 
 Schema parsing, canonical ordering/reference validation, and build-ID
-recomputation live in `webui-protocol::projection_manifest` so native and WASM
-hosts share one contract. `webui` adds filesystem root, symlink, and stale
-input/output validation for path and inline native sources.
+recomputation live in `webui-protocol::projection_manifest` behind the
+opt-in `projection-manifest` feature so native and WASM build-time hosts share
+one contract without adding SHA-256 dependencies to handler-only consumers.
+`webui` adds filesystem root, symlink, and stale input/output validation for
+path and inline native sources.
 
 The handler runtime never reads manifest files. Protocol fields are the sole
 runtime source of projection metadata.
@@ -2368,9 +4926,10 @@ await build({
 
 The package serializes inline objects once at the NAPI boundary. NAPI receives
 paths plus `{path, json}` records and performs all validation on the Rust side;
-it never depends on compiler or esbuild packages. The CLI fallback supports
-paths and rejects inline objects with an actionable message rather than
-silently writing files.
+it never depends on compiler or esbuild packages. The Node API requires the
+platform-specific native addon and propagates resolution or loading failures.
+It never silently invokes the CLI; filesystem builds use `webui build`
+explicitly.
 
 #### WASM
 
@@ -2411,6 +4970,7 @@ No color in diagnostic data; color is added only by `webui-cli` output layer.
 | `PROJ-C012` | error | Circular import detected during symbol resolution |
 | `PROJ-C013` | error | Adapter graph is incomplete/inconsistent (unknown entry/member, missing resolved edge/source, path outside root) |
 | `PROJ-C014` | error | Adapter omitted exact bytes for a physical emitted output |
+| `PROJ-C015` | error | Manifest, physical inputs, and outputs span filesystem roots, so no build root can express them (e.g. Windows `TEMP` on another drive) |
 
 #### Peer dependency diagnostics (PROJ-P*)
 
@@ -2614,18 +5174,29 @@ The esbuild adapter:
    never overrides the resolved target.
 5. Reads `metafile.outputs[*].inputs` for final output membership and
    `output.entryPoint` for normalized graph entries.
-6. Reads exact file source bytes/text for physical inputs. Non-file namespace
-   inputs are represented as virtual graph nodes; a WebUI component whose
-   defining source is unavailable fails strict coverage instead of being
-   guessed.
-7. Hashes exact `result.outputFiles` bytes for `write: false`, or reads emitted
+6. Classifies esbuild `stdin` from its metafile identity before probing the
+   filesystem, so a `sourcefile` that also exists on disk remains virtual and
+   cannot substitute unrelated disk bytes. Other non-file namespace inputs are
+   also represented as virtual graph nodes. A WebUI component whose defining
+   source is unavailable fails strict coverage instead of being guessed.
+7. Filters the metafile to supported JavaScript/TypeScript source extensions
+   that esbuild classified as ESM or CommonJS, then reads those sources through
+   a fixed 64-worker pool. This follows configured and plugin-provided loader
+   decisions, including longest-suffix loader overrides. Non-source bundler
+   inputs are omitted from the semantic graph and output membership; imports to
+   them are represented as external semantic edges. Their bytes remain covered
+   by emitted-output hashes without being read a second time as projection
+   inputs.
+8. Hashes exact `result.outputFiles` bytes for `write: false`, or reads emitted
    files during `onEnd` for `write: true` (esbuild has completed writes before
    `onEnd`).
-8. Chooses the common ancestor of the manifest, physical inputs, and outputs
-   as `rootDir`, constructs `AdapterContext`, and calls the shared compiler.
-9. Writes canonical compact JSON to a same-directory temporary file, flushes
+9. Chooses the common ancestor of the manifest, physical inputs, and outputs
+   as `rootDir` via `resolveBuildRoot()`, constructs `AdapterContext`, and calls
+   the shared compiler. Artifacts spanning filesystem roots fail with
+   `PROJ-C015` naming both offending paths.
+10. Writes canonical compact JSON to a same-directory temporary file, flushes
    it, and atomically renames it over the manifest.
-10. If the build or projection compiler has errors, the manifest is **not**
+11. If the build or projection compiler has errors, the manifest is **not**
    written. An existing stale
    manifest from a prior run is left in place (not deleted).
 
@@ -2639,14 +5210,71 @@ The adapter handles all outputs in one `onEnd` pass.
 
 ### webui-press integration
 
+`DocsConfig.show` is a typed `ShowMode` (`all` or `content`), defaulting to
+`all`. Both native `build` and `serve` accept `--show`; an explicit CLI value
+overrides configuration on the initial build and every serve config reload.
+Page and 404 build errors retain the core error's complete source chain,
+including parser diagnostic codes, locations, snippets, and help when present.
+
+Press materializes its embedded template and built-in components into a
+content-addressed cache and generates per-page scratch directories. Both live
+under the system temporary directory when that directory is on the same volume
+as the configured output directory, and under a self-ignoring
+`<config-dir>/.webui-press-cache` when it is not. The output directory decides
+the volume because it holds the generated entry points, the bundler
+`outbase`/`outdir`, and the projection manifest, so the build root always
+contains it. The extracted tree contains TypeScript sources that become bundler
+inputs, so a cache on another volume would split one bundle across filesystem
+roots and fail with `PROJ-C015`; keeping it on the output volume also makes the
+cache publish step a same-volume (atomic) `rename`. A project whose sources and
+output directory are themselves on different volumes has no expressible build
+root at all, and `PROJ-C015` reports that directly.
+
+Content mode selects the bundled content document before region expansion,
+component/script reachability, compilation, and SSR. It retains document
+metadata, base URL, configured head tags, themes, authored page modules, state,
+and semantic `main`/`article` wrappers. Markdown (including home Markdown),
+custom-page HTML, examples, and API panels are content, regardless of their
+element names. No template regions, navigation, sidebar/TOC, mobile context,
+previous/next links, hero/features, footer, or shell scripts are generated.
+Configured regions remain validated against the selected full template, but
+their state and scripts are inactive. This also applies to the 404 document.
+
+The bundled `docs.css` contains shared tokens and content typography;
+`shell.css` contains full-site layout constraints. All mode concatenates both
+into one served stylesheet, preserving the existing layout without an extra
+request. Content mode uses only the bundled content styles, normal document
+scrolling, and no shell width/height constraints. A custom full template and
+its styles/entry script do not replace the content-mode scaffold; configured
+head tags, CSS/theme, components, and custom pages continue to apply.
+
+Full-site manual light/dark selection overrides the OS preference for both
+native theme tokens and `color-scheme`. Manual overrides are inactive under
+forced colors so site-authored forced-colors token rules retain precedence.
+Content mode has no shell theme control, does not read or snapshot a persisted
+theme into `data-theme`, and uses only the light default and system dark media
+query. It follows live OS preference changes without JavaScript and leaves the
+stored full-site preference untouched.
+
 `webui-press` invokes esbuild's JavaScript API once through
 `@microsoft/webui/projection.js`, then validates the generated manifest once.
+Filesystem alias targets are resolved against an absolute config directory
+before passing them to esbuild. Relative and absolute CLI config paths retain
+the same config-relative alias semantics, independent of the invocation cwd.
 The resulting `PreparedProjectionManifests` is reused by every page and the 404
 build; page builds never re-open or re-hash bundle files. The prepared handle
 is an `Arc`-backed immutable snapshot containing both component surfaces and
 canonical artifact identities. A page using one prepared source clones only
 the `Arc`; mixed prepared/fresh sources retain artifact identities so
 conflicting hashes still fail with `PROJ-M007`.
+
+Every generated page uses `<base href>` for root-relative site assets.
+Markdown links are therefore normalized during conversion: relative paths are
+resolved from the source Markdown file's directory, root-absolute internal
+paths receive `basePath`, and fragment-only or query-only links target the
+current canonical page. External and protocol-relative URLs remain unchanged.
+This preserves normal Markdown link semantics for both `index.md` and leaf
+pages without relying on browser resolution against the site root.
 
 To preserve build throughput without exposing a public compile/finalize split,
 press uses a hidden orchestration barrier:
@@ -2659,7 +5287,78 @@ press uses a hidden orchestration barrier:
 
 External bundle fragments can be listed in
 `bundler.projectionManifests` (paths relative to `config.json`) and are merged
-with the generated application fragment before the barrier completes.
+with the generated application fragment before the barrier completes. They
+remain active when the site has no local JavaScript bundle, and
+`webui-press serve` watches each resolved manifest file explicitly.
+
+Generated esbuild entries live in a targeted temporary directory beneath the
+site output, keeping projection inputs and outputs on the project volume. The
+directory is removed after that bundle completes.
+
+The shared dev-server rebuild worker is owned by a `RebuildWorker` handle;
+watchers receive cloned `TickSender`s via `sender()`. Both `webui-press serve`
+and `webui serve --watch` retain that handle until HTTP serving stops, drop the
+watcher, and call `shutdown()` before returning. Shutdown wakes an idle worker,
+discards queued rebuilds, and joins any active rebuild even if sender clones
+remain alive. Dropping the handle also stops and joins it on setup/error paths.
+This keeps Press's bundle thread and synchronous Node/esbuild subprocess wait
+inside the server lifetime, so normal shutdown cannot leave output writers
+behind. Forced process termination is outside this graceful-shutdown contract.
+
+Both native serve commands additionally accept an opt-in positive integer
+`--shutdown-timeout <SECONDS>`, including `webui serve` without `--watch`.
+Omitting it preserves the in-process server and unbounded join above; no
+supervisor process, control thread, or signal handler is added. Enabled mode
+uses one contained same-executable child for the entire server lifetime, so the
+existing build cache and worker remain warm across rebuilds.
+
+The internal `webui-dev-server::shutdown` module gates the child on a private
+stdin pipe before config extraction, output writes, watchers, or build
+subprocesses. The parent releases startup only after checked Windows Job
+assignment or Unix process-group creation. Windows uses a non-inherited
+kill-on-close Job; Unix uses a dedicated process group. Containment failure
+never falls back to unsupervised execution. The private child environment
+marker is removed before application threads or subprocesses start. On Unix,
+the foreground supervisor relays child stdout/stderr so the child's background
+process group cannot be suspended by a terminal with `TOSTOP` enabled.
+
+The parent installs the platform signal handling provided by `ctrlc`. The first
+request sends a control byte and starts the grace deadline. The child disables
+Actix's signal handlers, stops HTTP with `ServerHandle::stop(false)`, and returns
+through the existing watcher-drop/worker-join path. The stop future and server
+future are polled concurrently because the server drives stop acknowledgement.
+HTTP or control errors must not bypass worker joining. Expiry or a second
+request terminates the owned process scope rather than abandoning an in-process
+thread.
+
+The child reserves exit status 125 solely for successful return after normal
+server teardown and joining; the parent translates it to success. Other child
+exit codes are preserved. Forced termination waits up to two additional seconds
+for the direct child to exit and reports failure if it cannot confirm that exit.
+Output may be incomplete after forced termination. Descendants that escape the
+Job or process group, uninterruptible kernel work, and force-killing the parent
+are outside the contract. Supervised mode reserves stdin for control.
+
+The WebUI Press template may declare compile-time extension regions with
+`<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
+Child markup is the default; matching site configuration may replace it with
+inline or file-backed HTML, clear it with an empty inline value, or retain it
+while adding page-local state and an optional script. The builder substitutes
+regions before component discovery and protocol compilation, so default and
+replacement components retain ordinary SSR, CSS, projection, and bundling
+behavior. Dotted names map state beneath the reserved `regions` object, and
+layout-qualified declarations inject only into pages of that layout.
+State-bearing names cannot overlap as dotted prefixes, while HTML-only prefix
+names remain valid. Full template replacement remains an escape hatch.
+The bundled template's `site.*`, `home.*`, `doc.*`, `page.*`, and `full.*`
+region names are stable extension points documented by WebUI Press.
+
+Before the projection barrier releases page rendering, press publishes the
+generated root/page output identities and an exact identity-to-served-URL map.
+The compiler consumes each manifest's already ordered static-import closure and
+adds its hints to the page protocol. Generated cache-busting `?v=` URLs are
+accepted only through this explicit map; authored query-bearing URLs retain the
+fail-safe rejection rule. No request traverses or sorts the bundle graph.
 
 On the 33-page documentation site, an initial strictly sequential
 implementation regressed warm build wall time by 49.0%. Precise component
@@ -2693,11 +5392,31 @@ strict missing-fragment failure.
 
 **Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
-`tx[]` stores text runs as `[slot, parts]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Client-created DOM inserts one runtime `Text` node per run instead of scanning compiled marker comments.
+`tx[]` stores text runs as `[slot, parts, raw?]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Escaped text omits `raw` and client-created DOM inserts one runtime `Text` node per run. Triple-brace bindings set `raw` to `1` and own the sibling-safe DOM range between paired `<!--wN-->` and `<!--/wN-->` markers.
+
+**Element addressing.** Every locator - the `slot` in `tx` / `c` / `r`, the target in `ag`, and the event target in `eg` - names an element by its **pre-order index** within its own compiled section: `0` is the section root and elements are numbered `1..N` in the order a depth-first walk of `h` meets them. The root template and each `<if>` / `<for>` block number independently, matching the `b[]` split. A `slot` is `[parentIndex, beforeIndex, order?]`, where `beforeIndex` remains a child offset within that parent and `order` is the zero-based source order of dynamic text, conditional, and repeat bindings that share that static offset. Both runtime paths rebuild the same numbering in one walk - client-created DOM by walking the cloned `h`, SSR by walking the server output while skipping structural block ranges - so a binding resolves by array index rather than by descending a chain of child offsets.
 
 Attribute bindings are recorded in `a[]`, while `ag[]` points at the owning element and the contiguous `[start, count)` range inside `a[]`. The compiled client HTML never embeds `data-w-*` markers; those remain SSR-only handler markers.
 
 Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` block table. The client runtime instantiates compiled child blocks directly and evaluates precompiled condition AST tuples — it does not parse raw template syntax or condition strings from repeat or conditional body content.
+
+Named repeats can form cycles through `b[]` indices. The table remains flat,
+serializable, and proportional to authored bodies, not runtime tree depth.
+State-root collection must terminate on those cycles while retaining roots
+visible in every lexical callsite scope. Shared-block analysis memoizes each
+block with the sorted, deduplicated set of bound item names, not frame identity,
+ordering, or shadow counts. Equivalent paths are processed once, while distinct
+scope sets remain separate. Visits are memoized in traversal order so root
+discovery order is unchanged; ordinary templates allocate no memoization state.
+Recursive references reuse the
+definition's optional repeat key. No new wire fields, runtime identifier
+resolution, or per-item metadata copies are required.
+
+Native compilation carries original source spans through trimmed content,
+Shadow DOM wrappers, and nested blocks. Repeat keys are skipped during
+attribute emission without rewriting or copying the body source. Named-repeat
+errors therefore point to the actual offending tag; unresolved names are
+reported in source order, independently of hash-map iteration order.
 
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 
@@ -2725,19 +5444,200 @@ WebUI SSR marker formats are:
 | Repeat item | `<!--wi-->` | Marks each iteration boundary inside a repeat |
 | Conditional start | `<!--wc-->` | Opens an `<if>` block |
 | Conditional end | `<!--/wc-->` | Closes the `<if>` block |
+| Raw HTML start | `<!--wN-->` | Opens raw range `N` owned by a triple-brace binding |
+| Raw HTML end | `<!--/wN-->` | Closes the same raw range `N` |
 
-The WebUI handler plugin emits only these five comment markers. Text bindings, attribute bindings, and event handlers are resolved from compiled metadata path indices at hydration time - no DOM attribute markers are needed. The handler only emits markers in active child scopes; the root page scope remains marker-free. During hydration the framework keeps `<!--wr-->` and `<!--wc-->` as runtime anchors and removes `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->` markers.
+The WebUI handler plugin emits these seven comment marker roles. Escaped text bindings, attribute bindings, and event handlers are resolved from compiled pre-order element indices at hydration time - no DOM attribute markers are needed. The handler only emits structural markers in active child scopes; the root page scope remains marker-free. Raw HTML is the exception because its rendered value can contain any number of top-level nodes and therefore needs explicit ownership boundaries. Raw markers carry a decimal pair identifier so adjacent bindings cannot claim each other's ranges. Exact `<!--wN-->` / `<!--/wN-->` comments are framework-reserved and trusted raw HTML must not emit a marker matching its surrounding range. During hydration the framework keeps `<!--wr-->` as the repeat anchor, keeps `<!--wc-->` only for an absent conditional body, retains `<!--wN-->` / `<!--/wN-->` for sibling-safe reactive replacement, and removes visible-condition starts, `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->`. A visible conditional creates an empty anchor only if it later becomes absent, and removes that anchor when content is restored.
 
 WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled metadata were generated by the same trusted WebUI compiler/handler version. Hand-authored or partially modified marker streams are unsupported; missing structural closing markers are invalid input, not a recoverable runtime condition.
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup or explicitly opt into visibility-driven activation, and compiler-owned scriptless hosts remain dormant until browser code actually writes state. An empty compiler-owned template still registers its tag for soft navigation but uses a minimal `HTMLElement` host rather than allocating dormant `TemplateElement` state.
 
-- SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
+- SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects structural markers and raw HTML ranges in document order. Because compiler metadata and server output share source order, each block and raw range is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips complete conditional, repeat, and raw HTML ranges - their rendered elements are not static children owned by the enclosing section - and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->`, structural closing markers, and starts for visible conditions are removed afterwards; raw HTML boundaries remain for targeted updates.
+- Reactive triple-brace updates delete only the nodes between the binding's retained
+  `<!--wN-->` / `<!--/wN-->` anchors, parse the new trusted HTML in the parent
+  element's context, and insert the resulting fragment before the end anchor.
+  Static, conditional, and repeated siblings outside that range are preserved.
+- Authored browser entries execute only after every SSR instance they may
+  upgrade has complete markup. Parser-inserted, non-async ES module scripts and
+  classic `defer` scripts satisfy this automatically; blocking classic scripts
+  must appear after all such instances. Under this loading contract,
+  `TemplateElement.connectedCallback()` hydrates synchronously, so
+  `super.connectedCallback()` returns only after that component's bindings,
+  events, and references are wired, unless compiler metadata selects a
+  visibility policy and no eager instance override applies.
+- **Component-level work policy.** The absence of `wp` metadata is the universal
+  eager default. `wp: 1`, compiled from
+  `<template w-hydrate="lazy">`, defers only SSR hydration. `wp: 2`, compiled
+  from `<template w-render="lazy"
+  w-reserve-block-size="<length>">`, combines that hydration policy with
+  browser-managed `content-visibility: auto` and an intrinsic block-size
+  reservation emitted before first layout. Client-created instances always
+  mount eagerly.
+  `wp: 3`, compiled from `<template w-hydrate="interaction">`, leaves the
+  component module graph to the document interaction boundary. `wp: 4` combines
+  that hydration trigger with the same lazy-rendering CSS as `wp: 2`; after the
+  module loads it hydrates synchronously before replay rather than registering
+  with the visibility coordinator.
+  - The visibility policies (`wp: 1` and `wp: 2`) require the optional
+    `@microsoft/webui-framework/lazy-hydration.js` entry before component
+    definitions in the same module graph. Without it, or without
+    `IntersectionObserver`, hydration falls back to eager and the component is
+    never left inert. A missing optional entry logs one development-only
+    warning per session. A missing `IntersectionObserver` never warns because
+    the eager fallback is expected on older browsers. A `wp: 2` rendering rule
+    remains browser-managed independently of the hydration fallback.
+  - **Instance escape hatches.** For `wp: 1` and `wp: 2`,
+    `w-hydrate="eager"` hydrates synchronously. On `wp: 2`, rendering deferral
+    remains active.
+    `w-render="eager"` excludes a `wp: 2` instance from the generated CSS selector
+    and also hydrates it synchronously, disabling the complete policy. Only the
+    exact, case-sensitive string `"eager"` is recognized. Other values are
+    ignored. Ordinary eager components short-circuit on absent `wp` metadata
+    before reading either attribute. The framework does not strip instance
+    overrides, so they survive hydration and reconnect.
+    On `wp: 4`, `w-render="eager"` disables only browser rendering deferral;
+    module-graph hydration remains owned by the singleton interaction boundary.
+- **Optional lazy-hydration entry.** The shared viewport/interaction
+  coordinator lives in `lazy-hydration-coordinator.ts`, reachable only
+  through the optional `@microsoft/webui-framework/lazy-hydration.js` entry
+  (`lazy-hydration-entry.ts`), mirroring the streaming coordinator's split
+  (`streaming.js`). `element.ts` imports only a tiny, dependency-free contract
+  module (`lazy-hydration-contract.ts`: an activation symbol, types, and a
+  coordinator registry `element.ts` consults through an optional-chained
+  reference), so an application that never imports the optional entry never
+  bundles the coordinator. The optional entry installs it synchronously as an
+  import side effect, before any authored `.define()` body in the same module
+  graph, exactly like the streaming entry.
+- Deferred SSR DOM remains present and structurally untouched. The complete
+  policy does not defer HTML parsing, DOM construction, declarative shadow-root
+  construction, custom-element definition/upgrade, or resource discovery.
+  `content-visibility: auto` preserves find-in-page and accessibility semantics
+  while allowing the browser to skip offscreen style, layout, paint, and raster.
+  WebUI does not add explicit `contain: layout paint`; the platform's
+  `content-visibility: auto` containment is sufficient and avoids expanding the
+  behavior change.
+- One lazily created `IntersectionObserver` is shared across the realm with
+  `root: null` and `threshold: 0`. Browsers exposing
+  `IntersectionObserver.scrollMargin` receive `scrollMargin: "200px"` and
+  `rootMargin: "0px"` so the document scrollport is expanded exactly once.
+  Older implementations receive `rootMargin: "200px"`; nested scroll containers
+  then activate at their own clip boundary instead of receiving an additional
+  lead.
+  - Every target enters this observer once for initial classification. This
+    closes the race where a `contentvisibilityautostatechange` transition occurs
+    before the component listener is installed and is not replayed.
+  - A `wp: 2` target retains the observer fallback until a native event proves
+    that its direct listener has observed the current state. A received
+    `skipped === true` event classifies the target as dormant and retires its
+    observer registration; `skipped === false` activates it. This prevents a
+    late component definition from missing an earlier relevant-state event and
+    then becoming stranded between the browser's relevance margin and WebUI's
+    200px observer margin. The event bubbles but is not composed across shadow
+    roots, so delegation cannot replace direct listeners.
+  - Unsupported browsers and `wp: 1` targets remain under the shared observer.
+- The observer keeps a strong `Set` only for currently connected targets so it
+  can unobserve and remove global listeners, while weak state retains reconnect
+  eligibility without retaining detached elements. Observation generations
+  reject queued or delivered records from an earlier connection. A successful
+  mount latch survives delayed disconnect teardown. Reconnect therefore skips
+  fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM in
+  place, and reconciles available current client state while retaining unknown
+  trusted values. Templates containing conditionals or repeats remount from the
+  instance's current state instead of attempting to reclaim SSR ranges whose
+  closing markers were already removed. Client-created policy-bearing instances
+  follow the same eager reconnect path.
+- Lazy intersection batches enqueue each composed ancestor as an individual
+  parent-first work item and run synchronously until they consume an 8ms budget.
+  Remaining targets continue through
+  `scheduler.postTask(..., { priority: "user-visible" })`, with one shared
+  `MessageChannel` fallback. A rejected scheduler task reports the error and
+  drains the retained queue through `MessageChannel`. Small batches incur no
+  scheduling hop. Shared capture listeners for `pointerover`, `pointerdown`,
+  `focus`, `keydown`, and `click` activate pending ancestors before target
+  handling and are installed only while connected lazy targets exist.
+  `pointerover` lets the first hover sequence install a direct `mouseenter`
+  handler without also subscribing to `mouseover`. Composed ancestry follows
+  assigned slots and shadow hosts. One failed activation is reported without
+  abandoning other visible work.
+- State writes after an instance enters lazy deferral are stored in its normal
+  authored or hidden template state. A lazily allocated root-name `Set`
+  prevents older ordinary or boundary-local bootstrap values from overwriting
+  those roots, including an explicit same-value assignment. Ordinary bootstrap
+  values are copied into component-local state when deferral begins, so a
+  router can release the page-wide bootstrap object before activation. After
+  normal SSR wiring succeeds, one synchronous path-indexed pass replays the
+  newest values. A binding that also depends on an unavailable template-only
+  root keeps its complete trusted SSR value on replay and every later reactive
+  or structural binding pass until that root is supplied; WebUI never
+  substitutes an unknown dependency with an empty string. An explicitly
+  supplied `undefined` is known state: scope availability comes from the repeat
+  frame's knownness, so explicit and sparse `undefined` items clear text and
+  attributes while genuinely unknown SSR item scopes remain untouched. A root
+  repeat supplied as `undefined` reconciles as empty. This covers `setState`,
+  compiled parent-to-child writes, attributes, and repeat reconciliation
+  without a separate initial mount implementation. It does not alter
+  pre-`super` hydration mismatch behavior.
+- Native image fetching and `loading="lazy"` use browser-owned scheduling that
+  is independent of the hydration observer. Direct `@load` / `@error` listeners
+  begin at hydration; the runtime does not replay an earlier one-shot resource
+  event because a native event racing listener installation could then dispatch
+  twice. Components that derive state from image completion reconcile
+  `HTMLImageElement.complete` and `naturalWidth` in `hydratedCallback()`. Native
+  events after hydration retain their normal repeated listener semantics.
+- A streamed lazy root reports a successful boundary activation without walking
+  its DOM. It retains the boundary state by reference, joins the coordinator's
+  root set when its boundary is updatable, accepts later shallow patches through
+  `setState`, and releases the retained state when visibility or interaction
+  invokes the same `$activateDeferredSSR` path. The coordinator still removes
+  `data-ws` and checkpoint/span scaffolding at commit. `hydratedCallback()` runs
+  only at the eventual successful hydration.
+- Parser-startup lazy roots hold `webui:hydration-complete` only until
+  `DOMContentLoaded` and their first intersection result. Roots intersecting
+  at that point join the active hydration batch; non-intersecting roots are
+  classified as dormant and no longer hold the gate. Later visibility
+  activation does not redispatch the one-shot event. Component-specific
+  readiness belongs in `hydratedCallback()`.
+- Before a containing WebUI component hydrates, descendants must not
+  structurally mutate its SSR subtree. Hydration numbers the server DOM in the
+  same pre-order the compiler numbered the template and does not recover from
+  pre-hydration node insertion, removal, or reordering. `TemplateElement`
+  therefore applies a parent-first barrier to nested SSR components. A child
+  that upgrades before an already-deferred parent registers with that parent. A
+  child that upgrades before a compiled parent tag has upgraded registers in a
+  weak pending map keyed by the ancestor element; the parent adopts those
+  children in `connectedCallback()`. Compiler-owned `th: 1` hosts are
+  pass-through because they may intentionally remain dormant indefinitely and a
+  child owns the DOM inside its own host. An ancestor-barrier child copies
+  ordinary bootstrap state into component-local storage before the page-wide
+  handoff can be released. After the parent hydrates it releases descendants
+  through one reusable iterative queue. Each child then applies its own policy
+  or eager override; one child failure is retained while later queue entries
+  continue, then the collected error is rethrown. This supports arbitrarily deep
+  definition order without recursion, per-depth promise allocation, lost state,
+  or child mutation of authored-parent markers.
+- Progressive component spans add one narrow exception to the parent barrier.
+  A root with `data-ws-enclosing="N"` may bypass only the nearest unfinished
+  ancestor whose compiler-owned `data-ws-span` is `N`. Unmarked, mismatched, or
+  more deeply blocked roots remain dormant. A kind-3 span-completion record
+  later releases the parent through the same exactly-once activation path.
+- A complex `:` property has no durable HTML representation. During SSR
+  hydration, the parent resolves every known complex property in the existing
+  attribute-binding pass. An upgraded child receives the value through the
+  branded single-key state hook. An unupgraded compiled WebUI child retains its
+  instance-local values in a module-local weak map, then consumes them after its
+  own bootstrap state and before its first binding walk. Parent values therefore
+  override page-wide keys even when parent and child property names differ.
+  Parent updates that arrive after SSR rendering retain only a lazily allocated
+  root-name set and replay once after wiring. The common upgraded-child path
+  allocates nothing; the unresolved path creates no promise, strong element
+  registry, or cross-runtime state bridge. Undefined third-party custom elements
+  keep native direct-property assignment semantics.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
-  embedded in `c` / `r`, and event target paths directly, then applies the first binding pass before
+  embedded in `c` / `r`, and event target indices directly, then applies the first binding pass before
   appending nodes to the connected DOM. Child components therefore observe
   initial parent `:` property bindings in `connectedCallback`, while later parent
   updates remain live.
@@ -2777,17 +5677,27 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
 - Scriptless components receive compiled `template_json` with `th: 1` but no
-  `hydration_keys` or initial bootstrap state. The framework registers a
-  compiler-owned `TemplateElement` host for each such tag. Existing SSR DOM is
-  not walked and bindings are not installed on startup. The host activates only
-  after `setState`, a compiled parent property write, or a later observed
-  attribute change. Activation wires the existing SSR markers against the new
-  state and replays only the roots supplied by the triggering write. Omitted
-  text, attribute, condition, and repeat roots keep their trusted SSR DOM until
+  `hydration_keys` or initial bootstrap state. A template with static DOM,
+  bindings, blocks, events, state roots, Shadow DOM, or component styles receives
+  a compiler-owned `TemplateElement` host. Existing SSR DOM is not walked and
+  bindings are not installed on startup. The host activates only after
+  `setState`, a compiled parent property write, or a later observed attribute
+  change. Activation wires the existing SSR markers against the new state and
+  replays only the roots supplied by the triggering write. Omitted text,
+  attribute, condition, and repeat roots keep their trusted SSR DOM until
   explicitly supplied; an explicit empty collection removes repeat items.
   Client-created instances mount immediately from the cached template.
+  - A template proven to have no DOM, reactive, or component-style work receives
+    a minimal compiler-owned `HTMLElement` host. Parent `:` property writes
+    queued before definition become own properties when the host connects, or
+    when its streaming boundary activates. A newer post-definition write wins.
+    The host implements the streaming static-opt-out hook but intentionally has
+    no `setState` or component lifecycle surface, so updatable boundaries do
+    not retain it as a later state target.
   `WebUIElement` remains the authored layer for events, `w-ref`, lifecycle code,
-  decorators, and `$emit`.
+  decorators, and `$emit`. `$emit()` always dispatches a bubbling, cancelable,
+  composed `CustomEvent`, so a Light component nested in an authored Shadow
+  tree can communicate with a root event binding on the Shadow host.
 - Developer-authored `WebUIElement` classes also treat compiled template roots
   as navigation state. `setState()` stores undecorated template-bound roots in
   hidden framework state, so `@observable` is only required when TypeScript
@@ -2806,15 +5716,39 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   After configured lazy loaders run, document navigation is used only when
   neither authored code nor the compiler-owned host runtime registers the
   destination tag. Route chain JSON has no `client` capability flag.
+- Navigation interception has two mechanisms with identical semantics. The
+  Navigation API (`NavigateEvent.intercept()`) is used only when the document
+  has an HTTP-family origin (`http:` or `https:`); otherwise the router
+  intercepts capture-phase link clicks and `popstate`, driving the same
+  `handleNavigation` path through `history.pushState`. Desktop shells serve
+  applications from a custom scheme (`webui://app`), where WebKit refuses to
+  treat a navigation as same-document and reports `canIntercept: false` on
+  every real `NavigateEvent` even though `window.navigation` exists. The origin
+  scheme is the gate because probing with `history.replaceState` is misleading:
+  a same-document state change is interceptable on a custom scheme while an
+  actual navigation is not. Without this fallback every desktop route change
+  becomes a full document load and the web engine retains one document per
+  navigation. The same fallback serves browsers that lack the Navigation API.
+  Click interception resolves the anchor through `composedPath()` so links
+  inside shadow roots are honored, and declines modified clicks, non-primary
+  buttons, `download`, `target` other than `_self`, `rel=external`,
+  cross-origin destinations, excluded paths, and pure fragment changes.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
-  that receive `e`, so the runtime installs one delegated listener per event
-  name on the component render root without regrouping or scanning event
-  arguments during hydration. It resolves handler
-  arguments against the scope captured when that block was rendered. Nested
-  conditional/repeat instances unregister their delegated listeners when removed
-  so detached DOM is not retained. Root events from `re[]` attach directly to the
-  host element or shadow root.
+  that receive `e`, so the runtime installs listeners without regrouping or
+  scanning event arguments during hydration. Listeners attach to the bound
+  element, never the render root: `$wireEvents` runs once per block instance, so
+  delegating would stack one listener per block on the same node and fire all of
+  them per dispatch, and would never see non-bubbling events such as `focus`.
+  It resolves handler arguments against the scope
+  captured when that block was rendered. Nested conditional/repeat instances
+  unregister their listeners when removed
+  so detached DOM is not retained. Root events from `re[]` attach to the host
+  element, so they observe events dispatched on the host itself plus every
+  `composed` event leaving the shadow tree. Non-composed events (`change`,
+  `submit`, `select`, media) stop at the shadow root by design and are bound per
+  element instead. `event.target` is retargeted to the host for anything raised
+  inside the shadow tree; `event.composedPath()[0]` recovers the originating element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.
@@ -2833,14 +5767,16 @@ webui/
 │   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
+│   ├── webui-desktop/        # Desktop SDK with optional native backends and tooling (binary: "webui-desktop")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
 │   ├── webui-handler/        # Protocol handler implementation
 │   ├── webui-node/           # Node.js native addon (napi-rs)
 │   ├── webui-parser/         # HTML/CSS/template parser
-│   ├── webui-press/          # Markdown-driven docs site generator + dev server
+│   ├── webui-press/          # Markdown-driven docs site generator and dev server
 │   ├── webui-protocol/       # Protocol definition
+│   ├── webui-python/         # Python native extension (PyO3 + maturin)
 │   ├── webui-state/          # State management
 │   ├── webui-test-utils/     # Testing utilities
 │   └── webui-wasm/           # WebAssembly bindings
@@ -2852,7 +5788,14 @@ webui/
 │   │   ├── webui-linux-x64/      # Platform binary (Linux x64)
 │   │   ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
 │   │   ├── webui-win32-x64/      # Platform binary (Windows x64)
-│   │   └── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   │   ├── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   │   ├── webui-press/              # npm package for the WebUI Press CLI wrapper
+│   │   ├── webui-press-darwin-arm64/ # Press platform binary (macOS ARM64)
+│   │   ├── webui-press-darwin-x64/   # Press platform binary (macOS x64)
+│   │   ├── webui-press-linux-x64/    # Press platform binary (Linux x64)
+│   │   ├── webui-press-linux-arm64/  # Press platform binary (Linux ARM64)
+│   │   ├── webui-press-win32-x64/    # Press platform binary (Windows x64)
+│   │   └── webui-press-win32-arm64/  # Press platform binary (Windows ARM64)
 │   ├── webui-framework/      # WebUI Framework client runtime (@microsoft/webui-framework)
 │   ├── webui-router/         # SPA router for WebUI Framework (@microsoft/webui-router)
 │   └── webui-test-support/   # Private shared JS test metadata helpers (@microsoft/webui-test-support)
@@ -2876,9 +5819,19 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
+webui-cli ──────► webui-desktop (sidecar process, enabled by the cli feature)
+                       │
+                       ├── webui-handler
+                       ├── webui-protocol
+                       ├── webui (source feature only)
+                       └── system webview (native feature only)
+
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
      └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
                                    └──── webui-wasm (all/default feature)
+
+webui-python ───► webui-handler
+             └──► webui-protocol
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
@@ -2896,7 +5849,11 @@ consumers only ship the parser and/or handler code they need:
   protobuf protocol bytes and depends on `webui-handler` and `webui-protocol`,
   not `webui-parser`. `Protocol` decodes and indexes once, binds the selected
   plugin at construction, and provides `render`, `renderStream`,
-  `renderPartial`, `renderComponentTemplates`, and `tokens`. Callback rendering
+  `streamResponse`, `renderPartial`, `renderComponentTemplates`, and `tokens`.
+  `streamResponse(entry, requestPath, options)` returns an owned session whose
+  `start`, `resume`, and `advance` methods return
+  `{ bytes, done, boundary? }` and whose `update` method returns bytes. Callback
+  rendering
   coalesces handler fragments with a
   16 KiB target before crossing the WASM-to-JavaScript boundary.
 - `parser` builds `webui_wasm_parser.js` and exports `build_protocol`. It
@@ -2919,12 +5876,667 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `Protocol` is the only runtime rendering API; construction decodes and
   indexes a protocol `Buffer` once and binds the selected plugin
 - callers own the lifecycle explicitly, so the package has no hidden
-  `WeakMap`, no protocol-sized mutation snapshot, and no byte-per-call render
-  functions
-- `Protocol.render()` returns the buffered-string result;
-  `Protocol.renderStream()` batches callbacks with a 16 KiB target instead of
-  crossing into JavaScript for every internal handler fragment
+  `WeakMap`, no protocol-sized mutation snapshot, and no render functions that
+  accept protocol bytes on every call
+- `Protocol.render()` returns the rendered UTF-8 bytes as the canonical Node
+  `Buffer` result; callers explicitly decode it when they need a JavaScript
+  string
+- `Protocol.prepareState()` creates an immutable, process-local native state
+  snapshot for repeated renders, and `Protocol.renderPrepared()` renders that
+  snapshot without another stringify/parse cycle; snapshots never observe later
+  source object mutations, retain their native state tree until JavaScript
+  garbage collection, and must be recreated when request state changes
+- `Protocol.renderStream()` batches callbacks with a 16 KiB target
+  instead of crossing into JavaScript for every internal handler fragment;
+  callbacks are synchronous, arbitrary return values are ignored, and thrown
+  errors abort rendering immediately; the API cannot await Node transport
+  `drain` and therefore does not provide backpressure
+- `Protocol.streamResponse()` returns an owned session. The public package
+  accepts object or serialized state, converts once per call, and exposes
+  `start`, `resume`, `advance`, and `update`; native steps carry `Buffer`,
+  `done`, and an optional camel-case descriptor
 - render currently requires the native addon; no WASM render fallback is wired
+
+The `@microsoft/webui-press` npm package is a native CLI package:
+- `bin: { "webui-press": "bin/webui-press" }` exposes the static-site generator
+  without requiring consumers to compile the Rust crate
+- platform-specific optional dependencies
+  (`@microsoft/webui-press-{darwin|linux|win32}-{arm64|x64}`) carry only the
+  native `webui-press` or `webui-press.exe` binary for their OS/architecture
+- `postinstall` copies the selected platform binary into `bin/`; workspace
+  builds can set `WEBUI_PRESS_BINARY_PATH` or use the local Cargo
+  `target/{release,debug}` fallback
+
+#### Versioned AI reference
+
+`docs/ai.md` is the canonical application-authoring reference and is served at
+`/ai` on the documentation site. The npm prepack step copies it verbatim
+to `packages/webui/ai.md`; this generated copy is ignored by Git and included in
+the package's `files` allowlist. The `@microsoft/webui/ai.md` export allows
+application-relative package resolution without importing the native runtime.
+Packaging fails if the canonical reference is unavailable. Ordinary dependency
+builds do not generate this package-only file: parallel example builds share the
+same package directory and must not race to overwrite the reference.
+
+`ai/SKILL.md`, discovered through `.claude-plugin/plugin.json`, is a stable loader
+installed once rather than a snapshot of the reference. It instructs agents to
+resolve `@microsoft/webui/ai.md` from the target application's installed
+dependencies, including app-local and hoisted packages, and reread after upgrades
+or checkout changes, without prescribing loading commands. Project-local and
+global skill installations resolve references from the target project, never
+from the skill directory. For work in the `microsoft/webui` source checkout,
+including its workspace examples, the loader selects the repository's
+`docs/ai.md` directly instead of requiring a packaged copy. This source-checkout
+rule is not a fallback for consuming applications: missing dependencies and older
+releases without `ai.md` are reported explicitly, never replaced with cached,
+latest-version, or implementation-derived guidance. The loader and package
+reference do not require runtime network requests or install-time changes to
+consumers' agent configuration. Package upgrades refresh the reference; changes
+to the loader itself require reinstalling the skill in the same scope.
+
+### Desktop Distribution
+
+The `webui desktop` command runs and packages WebUI applications in a
+Rust-native desktop shell without Electron, Node, or a bundled JavaScript
+runtime. `webui` is the only public CLI. Desktop work is implemented by a
+separate `webui-desktop` sidecar backend so the default `webui` CLI does not
+link webview dependencies. The base CLI exposes `webui desktop ...`, resolves
+and executes the sidecar backend, and returns a typed CLI error with an install
+hint if desktop support is unavailable.
+
+#### Runtime backend
+
+Desktop runtime uses direct platform backends:
+
+- Windows: WebView2.
+- macOS: WKWebView.
+- Linux: GTK4 with WebKitGTK 6.
+
+Native shells are hidden behind the `webui_desktop` frame abstraction.
+App-specific runners construct a runtime-neutral `DesktopFrame` and call
+`webui_desktop::run_frame(frame)` or
+`webui_desktop::run_runtime(runtime, window)`. The crate dispatches to a
+target-gated `PlatformFrameBackend` that implements the shared
+`DesktopFrameBackend` trait. Application code must not branch on
+`cfg(target_os)` to choose `macos`, `windows`, or `linux`; platform differences
+belong in backend modules. Public shell APIs require a working backend
+implementation, capability reporting, and actionable unsupported-feature errors
+on other backends. Unimplemented capabilities must not reserve public types,
+manifest fields, or capability flags.
+
+The shell registers a custom app protocol and loads the initial page from that
+origin instead of starting a localhost HTTP server. Platform engines expose
+custom origins differently, so desktop client code must use relative URLs and
+`location.origin` rather than hard-coded `webui://app` URLs. Navigation is
+denied by default unless the target stays inside the allowed app origin or is
+explicitly allowed by a registered capability.
+
+Linux builds require GTK4 and WebKitGTK 6 so protobuf IPC POST bodies are
+available without depending on unmaintained GTK3 Rust bindings. CI and developer
+setup must install the platform WebKitGTK/GTK packages explicitly; the xtask
+helpers may auto-install Rust tooling, but must not auto-install system
+packages.
+
+The native window-control bridge (`webuiHost`, used for drag/minimize/
+maximize/close from web content) is frame-scoped on macOS via
+`WKScriptMessage.frameInfo().isMainFrame()` and on Windows because
+`ICoreWebView2::add_WebMessageReceived` only delivers top-level messages
+(the backend deliberately never subscribes to
+`ICoreWebView2Frame::add_WebMessageReceived`). WebKitGTK 6 has no equivalent:
+`UserContentManager::register_script_message_handler` exposes the handler to
+every frame, and `script-message-received` reports no sending-frame identity.
+The Linux backend restricts script injection to
+`UserContentInjectedFrames::TopFrame` to keep the convenience
+`window.webuiHostPostMessage` alias out of subframes, but this is a partial
+mitigation: a subframe can still call
+`window.webkit.messageHandlers.webuiHost.postMessage(...)` directly. Apps that
+embed untrusted third-party iframe content must not rely on this bridge being
+frame-scoped on Linux.
+
+Windows requires WebView2 Runtime 122.0.2365.46 or later, the stable runtime for
+SDK 1.0.2365.46's `ICoreWebView2_22` request-source filter. Startup requires that
+interface and registers `WebResourceRequested` for all resource contexts and
+request sources before navigation; unsupported runtimes fail with an update
+hint, never a reduced filter or JavaScript fallback. The filter targets only
+`https://app.webui.localhost/*`. Application resources, including document and
+worker fetches, use the same native request body and response `IStream` path in
+source and packaged apps. WebUI does not replace `fetch` or encode resource
+bodies into web messages, and owns no JavaScript pending-resource map.
+Browser `Request`, `Response`, body consumption, and `AbortSignal` semantics
+remain native. The WebView2 adapter removes response bodies for HEAD requests
+before creating the intercepted response, including handler-error and executor
+failure responses, while retaining status and content type. HEAD still reaches
+the application handler as authored; the adapter does not substitute GET.
+Intercepted WebView2 responses publish `Cache-Control: no-store`, matching the
+canonical IPC response policy on the other native backends.
+Cancellation stops browser delivery but does not roll back a
+synchronous Rust API handler that already ran. Typed application IPC retains
+its separate authenticated dispatch and cancellation contract.
+
+WebView2 browser storage is scoped by the frame's validated `app_id`, not by
+the executable name. Exact byte encoding avoids case-folding, device-name and
+sanitization collisions on Windows. Missing identity allocates a fresh,
+exclusively created profile for that frame; anonymous profiles are never reused
+and are removed on shutdown when native file locks permit. Hosts that need
+persistent localStorage or IndexedDB must supply a stable application identity.
+
+Backend dependencies are target-specific so the default `webui` CLI and
+non-desktop platforms stay lean. macOS links only the objc2 WebKit/AppKit stack.
+Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
+Windows. The runtime still uses the same `DesktopRuntime` dispatcher on every
+platform: no localhost server, one shared protocol/state/asset graph, bounded
+asset reads, and route/API/IPC dispatch through the custom app origin.
+Packaged app runners use `webui_desktop::find_packaged_resources_dir()`
+to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
+layouts remain behind one API.
+
+The `microsoft-webui-desktop` SDK has no default features. Its base API includes
+bundle loading, frame configuration, lifecycle ownership, rendering, routes, and
+custom-protocol APIs, without native GUI or application IPC dependencies.
+`application-ipc` explicitly enables the IPC APIs, frame-owned sessions, async
+workers, embedded assets, and native admission/transport integration. Without it,
+the SDK does not compile those modules, generate or reserve IPC bundle assets,
+serve embedded IPC assets, or install native IPC bootstrap/control handlers.
+The direct `prost`, futures, and randomness dependencies belong to this feature;
+the rendering protocol still uses `prost` transitively, independently of IPC.
+`native` enables the current platform's stock
+backend; `source` enables `BuildOptions`, `DesktopSourceConfig`,
+`DesktopRuntime::from_source`, bundle construction, and packaging APIs.
+`cli` enables the sidecar binary and implies both `native` and `source`.
+Neither `native`, `source`, nor `cli` implies `application-ipc`.
+The test gate exercises the `native`/`source`/`application-ipc` combinations
+in package-local Cargo invocations, independently of workspace feature
+unification, plus a no-IPC `cli` build. Each selected
+unit/integration suite must execute passing tests; IPC contract targets declare
+their required features instead of succeeding with zero tests when disabled.
+Generated Rust consumer checks explicitly enable `application-ipc`.
+Committed typed/native fixture bindings and embedded browser assets are
+checked for generation parity without first rewriting them.
+Application manifests enable `native` on their SDK dependency and forward
+`source` through an opt-in local feature, so source compilation is absent from
+normal production builds. Runtime-only builds preserve bundle manifest types and
+`DesktopRuntime::from_bundle`, `from_bundle_config`, and
+`from_bundle_config_and_manifest`. The compiler dependency is optional, not
+merely unreachable: runtime-only builds use `webui-handler`'s `Protocol`,
+`RenderOptions`, and `WebUIHandler` directly, and do not depend on the parser,
+discovery, Tokio, Rayon, or CLI argument parsing. The stateless handler factory
+is selected once when a runtime loads and shared across renders.
+The `DesktopError::Build` variant is available only with `source`.
+
+The SDK's `cli` feature enables the `webui-desktop` binary and its
+command-line dependencies. The binary declares
+`required-features = ["cli"]` so runtime-only crate checks do not accidentally
+compile development tools.
+
+Portable modules inherit the workspace's `unsafe_code = "deny"` policy.
+Only target-gated native adapters, Windows atomic state replacement, and the opened-asset path verification helpers
+allow unsafe code for their OS FFI boundaries. Physical package consolidation does not change the IPC wire format,
+bundle layout, or process isolation provided by the system webview.
+Native and custom backend errors cross the public API as
+`DesktopError::Backend`, retaining their source error.
+Missing bundle resources report `DesktopError::PackagedResourcesNotFound`
+with a development-or-packaging hint rather than falling back to compilation.
+
+`DesktopApp::from_bundle` and `from_bundle_config` return a
+`DesktopAppBuilder` after loading the manifest once. The
+`from_bundle_config_and_manifest` constructor accepts an already-loaded manifest
+without additional manifest I/O. With `source`, `DesktopApp::from_source`
+accepts `DesktopSourceConfig`. Both paths register host state/routes/API/IPC
+before startup SSR, apply a single resolved window configuration to renderer and
+native frame, and preserve shell configuration and stable app identity.
+`DesktopAppBuilder::build` returns an owning `DesktopFrame`, not a runtime.
+`run_frame_with(frame, &backend)` validates capabilities before invoking a custom
+`DesktopFrameBackend`, and is available without stock native dependencies.
+Frame configuration is private and exposed through immutable `app_id()`,
+`runtime()`, `window()`, `shell()`, `events()`, and `window_handle()` accessors.
+Consuming construction methods may set identity/shell options before launch.
+Frame construction rejects titlebar/background CSS that disagrees with the
+already-rendered runtime; configure these options on the app builder before
+building. Platform-specific `run_runtime` entry points and direct
+`PlatformFrameBackend::run_frame` calls use the same validation boundary.
+On macOS the frame/delegate/scheme handler own their runtime references; there
+is no process-global runtime slot.
+
+When callers need manifest metadata, they should load
+`DesktopBundleManifest` once and call
+`DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. This avoids
+double manifest I/O during cold start. Bundle-backed runtimes also build an
+in-memory index from manifest integrity metadata, so immutable asset requests
+avoid per-request canonicalization while preserving lexical traversal validation
+and the configured response-size cap. Manifest asset names are literal filesystem
+paths; request segments are percent-decoded exactly once before index lookup.
+Indexed paths are checked against the canonical asset root at load time.
+Every asset's opened handle is checked for root containment, regular file type
+and actual length before delivery, including indexed assets. This handle check
+rejects symlink substitution between path validation and opening. Linux requires
+accessible `/proc/self/fd` for this check; unavailable handle-path verification
+fails closed. The response owns that checked handle and never reopens its name.
+
+Startup HTML is a construction-time snapshot. Full `/` and `/index.html`
+requests rerender when a Rust provider matches `/`, including propagating provider
+errors; immutable provider-free root documents may reuse startup HTML.
+Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
+`PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
+something xtask may install. The Windows WebView2 dependency and Win32
+controller/message-loop backend are target-gated and share the same
+`DesktopRuntime` dispatcher; runtime validation still belongs on Windows CI or a
+Windows developer machine with the WebView2 Runtime installed.
+
+#### Desktop command surface
+
+```bash
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window flags]
+webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [--projection-manifest <PATH>]... [shared build flags] [window/package flags]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
+```
+
+`run` builds from source paths, renders the startup HTML in process, creates the
+native window, and loads the app protocol URL. Desktop watch/reload is not
+implemented; `--watch` is not a supported option. Restart `run` after changes.
+
+`build` creates an immutable desktop bundle containing:
+
+- `protocol.bin`, generated CSS, copied static assets, and the desktop IPC
+  helper under `assets/`.
+- Optional seed `state.json`. Dynamic desktop apps should treat this as seed
+  data only; route-scoped data comes from Rust route providers.
+- A desktop manifest with app id, app name, version, publisher, window defaults,
+  WebUI build options, asset roots, capabilities, and package
+  metadata.
+- The shared browser IPC runtime and native admission bootstrap. Application
+  interfaces and codecs are generated separately from proto3 contracts through
+  `webui desktop ipc generate` and bundled with application code.
+- Integrity hashes for packaged protocol and assets.
+
+`package` is the one-command Rust-first packaging entry point. When the input is
+a WebUI app root, the sidecar reads `webuiDesktop` metadata from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate,
+stages non-generated static assets, builds the desktop bundle, and emits native
+artifacts with that runner. When the input is an existing desktop bundle, the
+command remains a lower-level packager and accepts `--runner <PATH>` for the
+app-specific executable. The generic sidecar runner is only for file-backed or
+static seed-state bundles.
+
+App-root packaging builds the runner with `--release --no-default-features`
+by default. `--debug` explicitly selects the debug profile; `--release` remains
+accepted for existing commands. Production capabilities can be enabled through
+`webuiDesktop.runnerFeatures` (an array of Cargo feature names) and additional
+`--runner-features` values. `webuiDesktop.runnerDefaultFeatures: true` or
+`--runner-default-features` explicitly restores defaults for custom runners.
+These options affect a Cargo-built runner, not an executable supplied with
+`--runner`.
+
+Example app metadata:
+
+```json
+{
+  "webuiDesktop": {
+    "app": "src",
+    "state": "data/state.json",
+    "assets": "dist",
+    "theme": "@microsoft/webui-examples-theme",
+    "icon": "desktop/app.icns",
+    "plugin": "webui",
+    "runnerCrate": "contact-book-desktop",
+    "buildScripts": ["build:deps", "build:client"],
+    "appId": "com.microsoft.webui.contactbook",
+    "appName": "Contact Book Manager",
+    "appVersion": "1.0.0",
+    "title": "Contact Book Manager",
+    "width": 1200,
+    "height": 800,
+    "devtools": true
+  }
+}
+```
+
+If `runnerCrate` is omitted, the sidecar tries to infer it from
+`<APP_ROOT>/desktop/Cargo.toml`. App-root packaging copies non-generated assets
+from `assets` into an internal staging directory and excludes generated CSS,
+`protocol.bin`, generated startup HTML, manifest, seed state, and IPC helper
+files so WebUI-owned outputs cannot collide with static assets.
+The CLI `--theme` flag overrides `webuiDesktop.theme` for one-off packaging.
+
+#### Shell extension model
+
+The desktop bundle manifest carries a runtime-neutral `shell` object. It is the
+stable extension point for native shell features without coupling app code to a
+particular OS API:
+
+- `icon_path` - bundle-relative app icon path. macOS uses `.icns` as
+  `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
+- `menus` - declarative native menu groups and menu items. Items dispatch to
+  allowlisted desktop IPC commands.
+- `tray` - optional native tray icon and tooltip.
+
+Backends must expose only capabilities they can implement safely. Unsupported
+shell features are rejected with actionable diagnostics before launch.
+Unknown shell fields fail manifest deserialization rather than being silently
+ignored. Jump-list, popover, and download declarations are not part of the
+public API. Shell extensions must not add background servers, global mutable
+state, or persistent caches to the render hot path.
+
+- `macos-app`
+- `windows-portable`
+- `linux-portable`
+- `all` (CLI selection of all three implemented layouts)
+
+Packaging is Rust-first and build-time only. The current Rust implementation
+writes macOS `.app` and portable folder layouts directly, validates that output
+paths do not overlap app/bundle/state/asset/runner inputs before deleting
+anything. Installer/archive generation and signing are not supported targets.
+`all` copies the supplied runner into each layout; it does not cross-compile
+executables. Removed installer names fail CLI argument or manifest validation,
+not a misleading missing-tooling error. There is no
+`DesktopError::PackageTargetRequiresTooling` variant.
+
+#### Desktop IPC
+
+Application IPC uses generated Rust/TypeScript interfaces over bounded binary
+transport. It does not embed Chromium's Mojo runtime. The separate lifecycle
+and window-control channels remain closed sets, not application message buses.
+
+`microsoft-webui-desktop-build` compiles proto3 descriptors with protoc and
+build-time descriptor reflection. It emits WebUI-owned Rust and TypeScript
+payload codecs, role markers, host handler registration, renderer clients,
+TypeScript clients and receivers, validation metadata, a normalized schema hash
+and an ID-evolution lock. Rust owns the capability registry and policy; generated
+payload codecs are synchronous and monomorphic; JavaScript/TypeScript remains a
+thin facade over the platform-native transport. Compiler/reflection dependencies
+are build-time only.
+The CLI's JSON diagnostics preserve the generator's stable `ipc-*` code,
+actionable help, and filesystem path when available through contextual wrappers.
+Compiler selection uses explicit `protoc` configuration, then `PROTOC`, then PATH.
+Canonical paths remain the basis for filesystem containment; Windows verbatim
+drive paths are adapted only at the subprocess boundary. No process-global
+directory or environment is changed. Generated TypeScript excludes host
+compiler-version comments.
+
+Generated `ipc.ts` is a runtime-free application facade: its type imports are
+erased, and only an explicit `connectDesktop()` dynamically loads the private
+`ipc-runtime.ts` implementation, schema codecs, and browser runtime. The
+bindings cache the module-loading promise, including rejection, not a
+connection. Concurrent and subsequent calls each perform their own handshake
+and retain independent handlers, subscriptions, closure, and call IDs.
+Import failures reject before transport activation without retries. The
+supported typed client/receiver API is unchanged; synchronous schema codecs
+and validation metadata live only in the private implementation. ESM code
+splitting is required to defer transfer and parsing in bundled applications.
+
+Services declare a receiver (`HOST` or `RENDERER`); every method has a unique,
+explicit uint32 ID above 1023. An acknowledged RPC returning
+`google.protobuf.Empty` is distinct from a notification marked with
+`webui.ipc.Notification` and `notification = true`. Removed IDs are retired,
+never reused. Protobuf fields and enum values preserve reservation history.
+Generation rejects unsupported streaming, recursive message graphs, proto2 and
+unsupported well-known types rather than silently omitting them.
+
+Application 64-bit integers map to Rust `i64`/`u64` and TypeScript `bigint`.
+Bytes map to `Vec<u8>`/`Uint8Array`; maps use native Rust map types and
+TypeScript `Map<K,V>` without key coercion. Generated value and iterative wire
+validation enforce ranges, oneofs, collection counts and depth before decoding.
+Protobuf field ordering is not a canonical application-byte representation;
+compatibility hashing uses the normalized descriptor, not incidental encoding
+order.
+
+`IpcRegistry::new(&schema)` owns immutable host RPC and startup notification
+definitions. `IpcRegistry::default()` disables application IPC. Registration
+alone grants no renderer authority: `IpcOptions` deny methods by default;
+`IpcOptions::for_schema` explicitly grants the declared IDs, with host/renderer
+allowlists available for narrowing. Development-only methods require both an
+explicit development grant and an actual source-backed host; packaged hosts
+deny them even when the executable was compiled with source support.
+
+`DesktopRuntime` shares immutable registry definitions with rendering state.
+The non-cloneable `DesktopFrame` owns mutable IPC state. Its `ipc()` handle and
+native `ipc_bridge()` facade are weak; they cannot keep a closed frame accepting
+work. Frame construction validates registry/options and can fail.
+`DesktopAppBuilder::ipc_options` supplies the frame's policy. Custom backends
+must advertise `application_ipc` and implement the bridge contract.
+`DesktopError::Ipc` retains the structured `IpcError` as its source; wire-v2
+payload and codec failures use `IpcErrorCode`, not the removed v1 codec variants.
+
+Each committed document receives a new session. Native lifecycle tracking
+supplies `CommittedMainDocument`, probes the current main document's random
+nonce, verifies that navigation did not change, and issues a fresh random
+challenge. The evaluated activation wrapper checks that nonce before invoking
+bootstrap, which checks again. Hello echoes the proof; admission atomically
+consumes the matching live activation and verifies wire version, contract
+name/major and exact schema hash. Secret comparisons do not stop at the first
+different byte.
+
+WKWebView may supply nil navigation identities for Navigation API document
+loads. A nil commit is admitted only after an observed nil native start, and
+consumes that pending start once. Pointer-identified starts require the identical
+native commit object. All asynchronous probes remain guarded by the frame's
+document epoch; neither a URL nor renderer-supplied identity authorizes admission.
+
+The unconsumed document proof remains valid until its document retires, so a
+lazy application's first connection need not happen during startup. The
+handshake deadline begins at `IpcBridge::admit`, includes worker queue time, and
+is checked again before delivering the admitted session. Native retirement
+publication is nonce-bound and precedes generation reset and response
+cancellation; a delayed publication cannot close a replacement document.
+For WKWebView main-document back/forward policy decisions, native retirement is
+queued before revocation and navigation is allowed only after the outgoing
+realm has evaluated the terminal control. This prevents browser Fetch
+cancellation from winning the terminal reason race before provisional-start or
+`pagehide`. A failed control evaluation cancels that traversal with a native
+diagnostic; the revoked connection remains terminal. Same-document history
+traversals bypass this document-navigation policy and preserve their session.
+WebView2 retains the native document's unavailability reason while a replacement
+is provisional. IPC resource callbacks arriving before queued renderer closure
+receive `navigated` after native navigation, or the recorded closure/failure
+code, rather than a fresh-handshake `not-ready`. This is native state, not
+renderer inference from a Fetch failure, and does not relax admission.
+Renderer error normalization preserves allowlisted `IpcError` codes across the
+separately bundled bootstrap and runtime; foreign stacks and messages are not
+copied. An admission timeout remains `deadline-exceeded`, not `transport`.
+
+The authenticated principal is possession of the native-authorized
+main-document capability, not a fabricated physical sender-frame identity.
+Cross-origin callers cannot read the capability under SOP. Same-origin parent
+delegation is within the trusted application boundary. This permits GTK's
+provenance-free reply signal without broadening CORS or trusting renderer
+origin/counter claims. GTK IPC views disable page-cache until restoration can
+prove fresh admission. Full navigation revokes old sessions; cancelled revoked
+navigation remains disconnected. Same-document routing preserves the session.
+
+For browser back/forward-cache restoration, trusted `pagehide` retires the
+current connection and pending hello. A cache-eligible document prepares a new
+cryptographic nonce and inactive bootstrap epoch before freezing. The frozen
+bootstrap exposes the current nonce through a read-only getter. On restored
+`pageshow`, application code must explicitly reconnect and await the existing
+trusted native commit/probe/activation sequence. Old transports, callbacks,
+proofs and credentials cannot retarget this epoch. There is no reload
+workaround, automatic RPC replay, automatic application reconnect, or second
+activation from JavaScript lifecycle events.
+
+Native control metadata contains only bounded admission, availability and
+closure information. WKWebView and WebKitGTK use reply-capable handlers;
+WebView2 correlates web messages. `disconnect_authenticated` requires generation
+and session token; generation alone grants no authority. Failed or late hello
+delivery retires only its authenticated session, never a replacement.
+Tokens remain closure-held and header-only, not in URLs, logs or user events.
+
+Wire version 2 replaces the unmerged string-method envelope. Its protobuf
+`IpcFrame` contains version, document generation, sender-local ID, kind,
+method ID, remaining timeout, and payload/error oneof. Kinds are `REQUEST`,
+`RESULT`, `ERROR`, `NOTIFY`, `ACCEPT`, and `CANCEL`. Caller IDs increase without
+reuse, with independent spaces for each direction. Duplicate invocations never
+reexecute; unknown kinds, mismatched roles, stale versions and schemas fail
+closed. No heuristic legacy fallback or automatic retry exists.
+
+Binary frames POST to `/_webui/ipc` using the session header. A `204` is bounded
+ingress acceptance, not handler completion. Rust results and Rust-initiated
+requests/notifications enter the bounded outbound queue; native code signals
+availability and JavaScript drains `/_webui/ipc/outbound` until `204`, with no
+idle polling. Dirty/draining coordination prevents a wake racing the final
+empty response from being lost. Application bytes never become base64 or
+per-byte native objects. The SDK injects one generated bootstrap and serves the
+same reserved runtime assets in source and packaged modes.
+Bodyless outbound GETs use Fetch keepalive so browser history traversal cannot
+cancel them before document retirement is observed. The document's abort
+controller still cancels them on native closure or trusted pagehide; no read
+continues into a replacement session. Payload POSTs do not use keepalive, which
+would impose the browser's separate 64 KiB request-body quota.
+
+RPC APIs return typed promises or `IpcCall<T>` futures. `RESULT`/`ERROR` settle
+RPCs; notifications use `ACCEPT`/`ERROR` to acknowledge capacity reservation,
+not callback completion. Notifications run in receipt order per subscription;
+invalid or cancelled intermediate work cannot let successors overtake their
+predecessors. Scoped subscription disposal prevents queued callbacks from
+starting; an already-running callback may finish. Startup Rust notification
+handlers are bound before readiness and reinstalled for replacement documents.
+
+Application handlers, decoding and user future polling run on bounded SDK
+workers, never native UI/protocol callback threads. Execution resources are
+lazy; disabled or unused IPC does not start workers or deadline threads.
+Deadlines include local queue time and use monotonic timing. Cancellation,
+dropped callers, navigation and shutdown settle waiters once, but cannot roll
+back completed side effects or forcibly terminate arbitrary blocking Rust code.
+Retired tasks retain their permits until actual completion.
+
+`IpcLimits` is an opaque Rust policy initialized with `Default`.
+`with_max_frame_bytes` accepts 2,176 bytes through 8 MiB and
+`with_default_timeout` accepts whole milliseconds from 1 through 300,000;
+both return `Result` and preserve private safety budgets. The corresponding
+`max_frame_bytes()` and `default_timeout()` accessors expose these choices.
+The default timeout applies to renderer RPCs; Rust callers continue to use
+`CallOptions`. Admission and notification deadlines are not changed by it.
+Queue, callback, worker-task, control-reservation, collection, and aggregate
+memory limits remain crate-private. No deserialization API can bypass policy
+construction. Native admission serialization retains the existing numeric wire
+fields; this is transport metadata, not an author-configurable object.
+
+Default limits include 1 MiB frames, 4 KiB native controls, 64 pending calls per
+direction, 128 queued frames, 8 MiB queued bytes per direction, 8 MiB admitted
+input, and 16 MiB retained bytes per frame. Limits also cap callbacks, worker
+tasks, readiness waiters, collection entries and depth. Overload fails promptly;
+separate bounded control reserves keep cancellation/completion deliverable under
+payload saturation. Raw varints are bounded before narrowing into codec types.
+
+Reservations precede SDK buffer growth and survive queue removal, cancellation,
+navigation and native transfer. `DesktopResponseBody` owns bytes and an opaque
+lease; native NSData, GBytes and IStream owners must retain that lease until the
+last view releases the buffer. A response body is not freely cloneable.
+`DesktopProtocolResponse::body` is `DesktopResponseContent`, with `Bytes` and
+`File` variants. `as_bytes()` borrows only buffered content; `into_bytes()`
+explicitly materializes a file for a non-native consumer and can fail.
+`DesktopResponseFile` owns an open handle and implements bounded `Read`/`Seek`:
+growth after opening is excluded and premature EOF is an error. File responses
+do not eagerly allocate an asset-sized Rust buffer. macOS reads at most 64 KiB
+per worker job, rechecks cancellation after each completion, and transfers each
+chunk to native storage. GTK and Windows hand owned file readers to their
+native stream interfaces; stream clones retain the same backing ownership.
+Limits bound SDK-owned transport resources, not arbitrary application
+allocations or uncooperative application work.
+
+#### Rust route/state providers
+
+Desktop applications that need dynamic route data should use the Rust host API
+instead of baking route data into static files. Developers register route state
+providers in their desktop host:
+
+```rust
+let mut config = webui_desktop::DesktopSourceConfig::new(build_options);
+config.asset_root = Some("./dist".into());
+let frame = webui_desktop::DesktopApp::from_source(config)
+    .state_value(seed_state)
+    .route("/", |ctx| {
+        Ok(json!({ "page": "dashboard", "recentContacts": recent_contacts() }))
+    })?
+    .route("/contacts/:id", |ctx| {
+        let id = ctx.param("id").ok_or_else(|| missing_id())?;
+        Ok(contact_detail_state(id))
+    })?
+    .build()?;
+webui_desktop::run_frame(frame)?;
+```
+
+Route providers run inside the Rust desktop host for full HTML renders and
+`@microsoft/webui-router` partial requests. They receive the request path,
+route parameters, and seed state, and return route-scoped JSON state. This keeps
+state ownership in Rust, avoids duplicated static route HTML, and lets router
+navigation use the same protocol path as browser/server deployments.
+`Protocol::prepare_partial` consumes the route state once and returns
+a serializable `PartialNavigation` with `is_match()`. Desktop uses the same
+navigation projection and reserved-state filtering as web hosts, rather than
+replacing projected state with the original view model. Declared and
+template-derived requirements are retained; unknown surfaces use the common
+correctness fallback, not a desktop-specific bypass.
+`Protocol::matches_route` uses the compiled route chain without rendering assets.
+
+Desktop `run`/`build` accept repeatable `--projection-manifest` inputs.
+App-root packaging accepts the same flag or the `webuiDesktop.projectionManifests`
+array, resolving configuration paths against the app root and CLI paths against
+the working directory. CLI inputs replace configured inputs. Manifests pass
+through the compiler's existing schema, freshness and coverage checks and are
+excluded from both staged assets and direct bundle asset copying. Disk and
+inline manifest locations participate in output-overlap validation before
+cleanup, so bundling cannot erase its projection inputs. Filesystem resolution
+precedes lexical reduction of `..` segments, matching compiler file identity.
+Existing bundles already contain compiled
+projection metadata and reject new manifest arguments. The Contact Book runner
+passes its client build manifest in source mode and configures it for packaging.
+
+If a route provider returns an error, the desktop runtime surfaces that error;
+it must not silently fall back to seed state. Valid route paths may contain `.`
+segments, so asset lookup happens before protocol route-chain matching rather
+than using filename heuristics.
+
+Rust desktop hosts may also register custom-protocol API handlers for paths such
+as `/api/contacts/:id`. This lets existing browser code keep using `fetch("./api")`
+while the packaged app services create/update/delete/favorite mutations against
+Rust-owned in-memory state.
+
+Native ordinary resource/API callbacks copy bounded transport input and submit
+routes, providers, rendering and file opening to one frame-owned lazy
+application/I/O executor. It starts two workers on first use, admits at most 16
+queued/running/completed jobs together, and rejects overload with HTTP 503.
+Ordinary native request bodies are capped at 1 MiB
+(`DEFAULT_MAX_REQUEST_BYTES`); file response lengths default to 32 MiB
+(`DEFAULT_MAX_ASSET_BYTES`). Typed IPC retains its separate authenticated async
+admission, scheduling and byte-credit contract. There are no route-specific or
+file-specific worker pools. Direct `DesktopRuntime::handle_request` remains a
+synchronous API for non-native hosts; startup rendering runs during construction.
+Frame shutdown closes admission without joining arbitrary host callbacks.
+Cancellation suppresses delivery and queued work when its completion is dropped,
+but cannot preempt or roll back a synchronous callback already executing.
+Native UI completion drivers only poll completion/delivery futures. All adapters
+share document epoch advancement, one-shot commit, proof comparison and stale
+generation policy; native navigation IDs, FFI ownership, timers and session
+storage remain in their platform adapters.
+
+#### Desktop performance and memory constraints
+
+- No localhost HTTP server in desktop mode.
+- No Electron, Node, or bundled Chromium.
+- No per-navigation template rebuild.
+- Share protocol, route indexes, CSS maps, and immutable asset metadata by
+  reference.
+- Route-backed hosts should retain canonical application collections once,
+  borrow them for read-only route preparation, and keep global render seeds
+  separate from route-owned data. Browser-only derived collections should not
+  be materialized when a desktop host recomputes them from canonical data.
+- The macOS response bridge transfers owned response buffers to `NSData`
+  without another body-sized allocation. Buffer ownership must remain valid
+  if WebKit retains the data after the scheme callback returns, including the
+  original Rust allocation's capacity and deallocator.
+- macOS initialization and scheme callbacks use bounded autorelease scopes;
+  windows, delegates, and webviews retain explicit ownership across those
+  scopes and the application event loop.
+- Serve packaged assets from the bundle/resource root only; cap or stream large
+  static reads.
+- Packaged builds must not include watchers, HMR scripts, devtools, or debug IPC
+  methods unless explicitly built as a development bundle.
+- Measure cold startup phases, first paint where automatable, packaged app
+  startup, steady-state RSS after first paint, binary size, and bundle size.
+  Distinguish cold filesystem caches from fresh-process launches with warm
+  caches. On macOS, report physical footprint for the host and WebKit helper
+  processes separately; host-only RSS or its stabilization is not a measure of
+  total application memory or page readiness.
 
 ### .NET / NuGet Distribution
 
@@ -2937,11 +6549,173 @@ token queries are protocol-owned operations exposed as `RenderPartial`,
 `RenderComponentTemplates`, and `Tokens`. The type is thread-safe and releases
 both decoded protocol data and reusable indices on dispose.
 
+`WebUIHandler.StreamResponse` returns a single-driver `StreamingSession`.
+`Start`, `Resume`, and `Advance` return immutable `StreamingStep` values;
+`Update` returns a `byte[]`. `BoundaryDescriptor` exposes response-local and
+declaration IDs, owner, name, and a typed `BoundaryKey`. Native step handles are
+copied into managed values and disposed before each call returns.
+
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
-`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
+`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, the SPDX `MIT` license expression with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-NuGet publishing is not automated by ESRP today. Release workflows attach staged NuGet artifacts to GitHub Releases for manual/externally tracked nuget.org publishing. Before nuget.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and exact `hotfix/*` release branches and can also be queued manually. `PrepareRelease` runs one explicit source-only Component Detection scan before any release jobs, so policy-compliant dependency registration does not rescan restored Cargo caches in every matrix leg. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. The container uses an ephemeral Cargo target directory so it cannot reuse host objects linked against a newer glibc or leave root-owned state in Azure's target cache. Its artifact-staging bind mount keeps mode-aware wheel exports after the container exits without disturbing the natives the host run staged. The macOS and Windows legs install the same pinned `maturin` version before building their wheels. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Production stable builds require `refs/heads/main`; production hotfix builds require the exact `refs/heads/hotfix/v<version>` branch. Other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. Before any hotfix artifact build, `ValidateHotfix` runs the complete `cargo xtask check` gate against the backported release line. `BuildArtifacts` then runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. A seventh job builds the release WASM variants concurrently with those native legs. The assembly job merges all seven outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only --prebuilt-wasm`, because that directory contains versioned release archives rather than incremental build inputs. The packer consumes the downloaded WASM output, generates npm, crate, NuGet, Python, and standalone artifacts, and validates the exact 10 npm, 17 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Hotfix builds must instead be selected by a manually authorized CD run, so pushing an unprotected hotfix branch cannot publish production packages by itself. The CD pipeline independently verifies that a hotfix release commit descends from its corresponding stable tag before signing. Its `SignArtifacts` stage validates release metadata and signs NuGet packages in one job while two parallel jobs stage the npm/crate and Python/standalone outputs. Splitting the outputs lets 1ES analyze and generate SBOMs for independent artifact groups concurrently. For production runs, `TagRelease` creates or verifies the annotated Git tag only after every signed or staged output passes its 1ES checks. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 64 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+
+Hotfix automation extends the stable-release rules above. `cargo xtask hotfix
+<commit> <oldest-tag>` fetches release refs, selects every stable `v`-prefixed
+tag from `<oldest-tag>` through `HEAD`, and prepares the next available
+`major.minor.patch-hotfix.number` release for each tag that does not already
+contain the fix. Each release is built in an isolated worktree from its latest
+hotfix tag (or the stable tag for `.1`), bootstraps the commit that introduced
+hotfix tooling when necessary, cherry-picks the requested fix, updates every
+package version and `Cargo.lock`, commits the version change, and pushes
+`hotfix/v<version>`. `--dry-run` reports the complete branch plan without
+creating worktrees or pushing branches. Existing untagged hotfix branches block
+the next run so an in-flight release cannot be skipped accidentally.
+`--support-commit <commit>` overrides the automatically discovered introducing
+commit when an older release line needs newer hotfix tooling.
+
+`Web UI - CD Build` triggers for `hotfix/*`, validates that the corresponding
+stable tag exists and is an ancestor of the release commit, and runs the full
+quality gate before packaging. The CD pipeline does not automatically trigger
+for these builds: an authorized operator must manually select the hotfix build,
+after which CD repeats the stable-tag ancestry check before signing or
+publishing. Production stable versions remain restricted to `refs/heads/main`;
+a production hotfix is accepted only when the source branch is exactly
+`refs/heads/hotfix/v<version>`. Hotfix GitHub releases are marked as
+prereleases, omit the stable-release changelog comparison, and never replace
+the latest stable release. Cargo, npm, and NuGet use the requested SemVer value.
+Stable npm packages explicitly publish with the `latest` dist-tag; hotfix
+packages use the release-line-specific `hotfix-major.minor.patch` dist-tag, so
+publishing a prerelease can never move `latest`. The package manifests carry
+the same policy for directory-based publication, while the CD npm release job
+also sets `NPM_CONFIG_TAG` because npm ignores embedded `publishConfig` when
+publishing a tarball path.
+Inter-crate Cargo requirements use the exact `=<version>` form for hotfixes so
+the resolver cannot prefer the original stable package over its SemVer
+prerelease. Python package metadata maps
+`major.minor.patch-hotfix.number` to the PEP 440 post-release form
+`major.minor.patch.postnumber`. The unpublished Rust extension crate uses the
+equivalent Cargo- and PEP-440-compatible `major.minor.patch-post.number` form
+because maturin validates the Cargo package version before building Python
+metadata. Artifact validation uses the mapped Python filename while release
+tags and published non-Python package metadata retain the requested SemVer value.
+Because SemVer prereleases sort below their base stable release, registry
+consumers must request a hotfix version explicitly or select its release-line
+npm dist-tag; ordinary stable/latest resolution does not select it.
+
+### Python Distribution
+
+The `microsoft-webui` package is a first-class runtime binding for
+`webui-handler` and `webui-protocol`, built with `maturin` from a
+`webui-python` crate as a direct **PyO3** native extension — not a `ctypes`
+wrapper around `webui-ffi`. It imports as `microsoft_webui`.
+
+**Runtime-only scope.** Like `webui-ffi`, the Python binding renders compiled
+protocols; it does not expose a build/compile API. Producing `protocol.bin`
+stays the job of `webui build` (the npm or Rust CLI); Python consumes the
+compiled artifact exactly like every other host.
+
+**Ownership.** `Renderer` decodes and indexes protocol bytes once at
+construction and binds an optional named plugin, mirroring the `Protocol` /
+handler pairing every other host owns for the process lifetime:
+
+```python
+from microsoft_webui import Renderer
+
+renderer = Renderer(protocol_bytes, plugin="webui")
+# or:
+renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
+```
+
+**Concurrency and the GIL.** `Renderer` is thread-safe: the underlying
+`Arc<Protocol>` and bound handler satisfy the same `Send + Sync` contract as
+every other host binding. Every rendering call releases the GIL for the
+duration of the Rust work via `Python::detach`, so concurrent Python
+threads render through one `Renderer` without serializing on CPython's
+interpreter lock. `StreamingSession` is synchronized for memory safety but is
+logically **single-driver** - drive one session from one Python thread at a
+time, exactly like the Node and C# session types (see
+[Host-owned streaming sessions](#host-owned-streaming-sessions)); independent
+sessions on the same `Renderer` may run concurrently. Session calls acquire the
+session lock with the GIL already released, so contention on one session cannot
+stall unrelated Python threads.
+
+**API surface.**
+
+| Python | Description |
+|--------|-------------|
+| `Renderer(protocol_bytes, *, plugin=None)` | Decode and index protocol bytes once, binding an optional named plugin |
+| `Renderer.from_file(path, *, plugin=None)` | Read `path` and construct a `Renderer` from its bytes |
+| `renderer.render(state, *, entry="index.html", request_path="/")` | Render into `bytes`, the canonical fast path |
+| `renderer.render_text(...)` | Render and decode to `str` |
+| `renderer.render_partial(state, *, entry="index.html", request_path="/", inventory="")` | Complete JSON partial-navigation response as `bytes` |
+| `renderer.render_component_templates(tags, *, inventory="")` | On-demand component template payloads as `bytes` |
+| `renderer.tokens` | `tuple[str, ...]` of CSS token names in build order |
+| `renderer.stream_response(*, entry="index.html", request_path="/", nonce=None, head_inject=None, body_inject=None)` | Open a host-driven `StreamingSession` |
+
+`StreamingSession.start(state) -> StreamStep`,
+`StreamingSession.resume(instance_id, state, mode) -> StreamStep`, and
+`StreamingSession.advance() -> StreamStep` return
+`bytes`, `done`, and an optional descriptor with `instance_id`,
+`declaration_id`, `owner`, `name`, and `key`.
+`StreamingSession.update(instance_id, patch) -> bytes` targets a committed
+updatable occurrence. WebUI never touches a Python socket or ASGI/WSGI
+transport, so the caller owns writes and backpressure exactly as documented in
+[Host-owned streaming sessions](#host-owned-streaming-sessions).
+
+**State encoding.** `state` accepts a Python `Mapping`, which the facade
+serializes with the standard library `json` module before crossing into
+Rust. Callers that already hold serialized JSON pass `str`, `bytes`,
+`bytearray`, or a `memoryview` directly, bypassing Python-side `json.dumps`.
+Immutable `str` and `bytes` stay backed by their Python objects during detached
+Rust work; mutable/general buffers are copied before the GIL is released.
+
+**Exceptions.** Every failure raises a native subclass of `WebUIError`:
+`ProtocolError` (undecodable protocol bytes), `StateError` (bad caller state
+JSON), `RenderError` (render failure), and `StreamingError` (session ordering
+or lifecycle violation). Type errors and unknown plugin names raise the builtin
+`TypeError` / `ValueError`, and a missing protocol file raises the builtin
+`OSError` subclass, so ordinary Python idioms keep working. The classes are
+defined on `microsoft_webui._native`, which makes them picklable and safe to
+propagate out of `ProcessPoolExecutor` workers.
+
+Bindings must be able to tell a caller input error from a render failure
+**without inspecting message text**. `HandlerError::InvalidState` exists for
+exactly this: `webui-handler` returns it for any host-supplied state JSON it
+cannot parse or validate, and each binding maps that one variant to its own
+state-error type (`StateError` in Python). Reclassifying by matching on error
+prose is not permitted.
+
+**`Plugin` and `BoundaryMode`.** Both are `enum.StrEnum` — available since
+CPython 3.11, the package's minimum interpreter version — so plugin
+identifiers and boundary modes compare equal to their plain string form while
+staying self-documenting and typo-checked by static analysis.
+
+**Head/body injection.** `head_inject`, `body_inject`, and the reserved
+`$webui` state channel's `headEnd` / `bodyStart` / `bodyEnd` members are
+written **verbatim**, exactly like every other host binding. They are
+trusted HTML, not escaped input — never let untrusted request data reach
+these fields. See [Per-Render HTML Injection](#per-render-html-injection) and
+[Reserved State Inject Channel](#reserved-state-inject-channel).
+
+### Python Wheel Matrix
+
+`webui-python` builds against PyO3's `abi3-py311` stable ABI, so one wheel per
+platform serves every CPython 3.11+ interpreter without a per-minor-version
+build matrix. v1 ships six wheels plus one `sdist`:
+
+| Platform | Architectures |
+|----------|---------------|
+| Windows | x86_64, ARM64 |
+| macOS | x86_64, ARM64 (separate wheels, not a `universal2` fat binary) |
+| manylinux | x86_64, ARM64 |
+
+Explicitly out of scope for v1: PyPy, GraalPy, free-threaded (`t`-suffixed)
+CPython builds, `musllinux`, and 32-bit architectures — each would need its
+own ABI-specific build and CI leg. The self-contained `sdist` bundles the
+matching WebUI Rust source closure and lets a Rust toolchain build any of those
+targets, but doing so is unsupported and untested.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
@@ -2972,6 +6746,37 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |
 
+### Streaming session functions
+
+Progressive streaming is exposed as an **encoder**, not a writer: each call
+returns the bytes it produced and the host writes them to its own transport.
+That keeps the C ABI free of callbacks, keeps ownership of the socket with the
+host, and lets the host apply its own backpressure policy.
+
+| Function | Description |
+|----------|-------------|
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Open a session. It inherits the handler's already-configured nonce (see `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json` (see [Reserved State Inject Channel](#reserved-state-inject-channel)), not a create-time argument. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. |
+| `webui_streaming_session_destroy(session)` | Destroy a session. `NULL` is a safe no-op. Destroying an unfinished session discards its pending output. |
+| `webui_streaming_session_start(session, state_json)` | Return an owned step through the shell prefix, stopping before the first runtime occurrence, or through the terminal when there is none, or `NULL`. |
+| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Commit the pending occurrence as mode `0` final or `1` updatable and return an owned step holding only that occurrence's bytes, through its checkpoint. |
+| `webui_streaming_session_advance(session)` | Return an owned step with the ordinary parent bytes following a committed occurrence, up to the next occurrence or the terminal. Valid only after resume. |
+| `webui_streaming_session_update(session, instance_id, patch_json, out_len)` | Produce a projected state patch for a committed updatable occurrence. |
+| `webui_streaming_step_bytes(step, out_len)` | Borrow the step's binary-safe bytes until destroy. |
+| `webui_streaming_step_done(step)` / `webui_streaming_step_has_boundary(step)` | Observe completion and descriptor presence. |
+| `webui_streaming_step_boundary_*` | Read instance ID, declaration ID, owner, name, key type, and typed key value. |
+| `webui_streaming_step_destroy(step)` | Release the opaque step and all borrowed pointers. `NULL` is safe. |
+
+`webui_streaming_step_t` is opaque. Owner, name, string key, and step bytes are
+borrowed slices with explicit lengths and are not NUL-terminated. Numeric keys
+are read as `double`; key type is none, string, or number. Update bytes are
+released with `webui_free`. A failing function returns `false` or `NULL`, and
+`webui_last_error()` explains the rejection.
+
+Host parity: the same session shape is available as `StreamingSession` from
+Rust (`webui-handler`), Node (`Protocol.streamResponse`), WASM
+(`Protocol.streamResponse`), Python (`Renderer.stream_response`), and C#
+(`WebUIHandler.StreamResponse`).
+
 The C ABI uses a typed opaque `webui_protocol_t *` with explicit
 `webui_protocol_create` / `webui_protocol_destroy` ownership because C has no
 portable object constructor or RAII lifetime. Automatically caching raw
@@ -2992,3 +6797,101 @@ The CLI specification and usage details are maintained in [crates/webui-cli/READ
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
+
+## Desktop CLI Scaffolding
+
+The public `webui desktop init [APP_ROOT] [--force]` command is a progressive
+scaffold. It creates `src/index.html`, `package.json` with a `webuiDesktop`
+block, and `desktop/Cargo.toml` plus `desktop/src/main.rs`. The generated runner
+uses one SDK dependency with `native` enabled and an opt-in local `source`
+feature. `find_packaged_resources_dir()` selects the immutable packaged bundle;
+only a build with `source` may fall back to source compilation. Without packaged
+resources or source support, launch fails before native startup with an
+actionable error. Source and bundle construction preserve window, shell, and app
+identity together rather than discarding manifest shell configuration.
+The generated Cargo manifest declares its own workspace boundary and an
+optimized release profile; it never modifies an enclosing workspace. Init
+checks all generated paths before writing
+and returns an actionable error unless `--force` is supplied.
+
+## Desktop Window Contract
+
+`microsoft-webui-desktop` defines the platform-neutral window contract. `WindowOptions` is manifest-serialized with defaults for every field so a manifest containing only `title`, `width`, `height`, `maximized`, and `devtools` remains compatible. `Rgba` is serialized as `#rrggbb` or `#rrggbbaa`. `TitlebarStyle` and `WindowEffect` use kebab-case tagged manifest values.
+
+For non-native titlebars, `WindowInsets::for_style(style, DesktopPlatform)` defines initial CSS-pixel safe areas. The runtime injects `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and `--webui-titlebar-height` into startup HTML. Native Windows overlay windows refine these properties from the actual caption measurements, converting physical pixels outward to CSS pixels and mapping physical sides to the document's writing direction. Measurements refresh after native layout/DPI changes and document navigation. When `background` is configured it also injects `--webui-window-background` and applies it to `html` before web content paints.
+
+Native Windows builds use framework-dependent Windows App SDK 1.8.11
+(minimum Windows App Runtime 1.8 package version 8000.946.1701.0), with
+architecture-matching bootstrap companions staged by Cargo and preserved by
+Windows portable packaging. The shared runtime and applicable Visual C++
+Redistributable are prerequisites; missing assets/runtime fail actionably.
+No SDK dependency or companion assets apply to headless, macOS, or Linux builds.
+The HWND remains a Win32 window hosting WebView2; no XAML application is required.
+The bootstrap outlives all native windows and SDK objects.
+The backend reuses an existing current-thread Windows App SDK dispatcher.
+Otherwise it creates and owns one, shutting down only its own queue before
+releasing interop modules and the bootstrap.
+
+Windows `Overlay` and `HiddenInset` extend application content beneath genuine
+AppWindow caption controls. AppWindow owns caption drawing, non-client input,
+and fullscreen presentation; the backend must not override its frame calculation
+with a second custom caption implementation. Overlay heights over 32 CSS pixels
+select the native Tall (48-DIP) caption; other heights use Standard (32 DIPs).
+The CSS application band is at least the configured height and the measured
+native caption height; Windows does not stretch its native controls arbitrarily.
+Application drag regions remain `webui-drag`, with `webui-no-drag` controls
+interactive outside native caption safe areas. Native startup configures the
+titlebar while hidden before publishing the window.
+
+Native backends dispatch `DesktopEvent` callbacks on their UI thread. Callbacks return `EventResponse::PreventDefault` to cancel `WindowCloseRequested` or `NavigationRequested` and must not block. Backends mirror events using `DesktopEvent::to_javascript()` as `CustomEvent`s named `webui:<event-name>` with the serde JSON event as `detail`. DOM mirrors are asynchronous, best-effort notifications only while a document exists; they cannot synchronously cancel native work or own teardown. Native `Ready` is not a document-hydration guarantee.
+
+`DesktopFrame` is a non-cloneable session owner. Dropping it closes registrations
+and the command channel, including validation failures and native launch errors.
+`on_event` registers a session-lifetime callback and returns a registration
+result; `subscribe` returns a `#[must_use] EventSubscription` whose drop removes
+that callback. Registration is limited to 256 handlers and fails after shutdown.
+Tokens hold weak registry references. Dispatch clones one immutable handler
+snapshot; registration/removal affects later snapshots, while an in-progress
+dispatch may finish. Neither callbacks nor destruction of callback captures run
+under registry locks.
+
+`WindowHandle` is `Send + Sync`; it queues bounded `WindowCommand`s and invokes a backend-installed wakeup callback. Backends drain it only on their UI thread. They install `DRAG_REGION_SCRIPT`, expose `window.webuiHostPostMessage`, and parse payloads through `DesktopHostMessage::from_json`. The only valid JSON string payloads are `"start-drag"`, `"minimize"`, `"toggle-maximize"`, and `"close"`; payloads over 256 bytes are rejected.
+
+Command submission returns acceptance, not confirmation that the operation was
+applied. Queues allocate lazily and cap 256 commands, 16 KiB per title, and
+64 KiB aggregate queued title bytes. `request_close()` requests native close;
+session shutdown closes the sender, drops pending commands and wakeup captures,
+and rejects subsequent submissions with `WindowCommandError::Closed`.
+Wakeups are coalesced until a drain, installed callbacks wake any existing
+backlog, and wakeup invocation/destruction occurs outside channel locks.
+
+`TitlebarStyle::None` removes system-drawn chrome, not native window capabilities.
+On Windows, custom-frame layout applies from native window creation, independently
+of WebView2 initialization. Initial and restored maximized geometry must not make
+the window visible before its native frame and webview are configured.
+The caption is removed through client-area calculation, while overlapped-window
+style bits retain DWM shadows and OS-managed corners. Restored, resizable `None`
+windows reserve per-window-DPI resize borders outside WebView2; maximized custom
+frames inset the off-monitor frame so content fills the work area. Fixed-size
+and fullscreen custom windows expose no resize hit targets. Overlay and
+hidden-inset styles delegate their extended frame geometry to Windows App SDK.
+On macOS its style mask retains close/minimize capabilities and the configured
+resizability without `Titled`. The window subclass handles frameless
+`performClose:` by consulting `windowShouldClose:` before closing, since AppKit's
+implementation requires a native close button. Both host messages and queued
+close commands therefore preserve `WindowCloseRequested` cancellation and the
+normal `WindowClosed` teardown. Titled windows retain AppKit's close behavior.
+
+When `remember_state` is enabled, a backend uses `WindowStateStore` to save `WindowState` and restores only state intersecting a supplied display work area with bounded dimensions. `DesktopFrameCapabilities` is the source of truth for each backend's support. `run_frame` rejects requested unsupported menu, tray, titlebar, and effect features before native startup rather than silently ignoring them.
+
+Window-state writes publish complete sibling temporary files atomically.
+Windows uses `SetFileInformationByHandle(FileRenameInfoEx)` with replacement and
+POSIX semantics directly, rather than first attempting `MoveFileExW`. Existing
+reader handles retain the old snapshot while new opens see the replacement;
+concurrent readers must not encounter a delete-pending target. State storage
+therefore requires Windows 10 version 1607 or later and a filesystem supporting
+that operation, such as local NTFS. Unsupported replacement reports an
+actionable I/O error; there is no weaker rename fallback or permission-error
+suppression. Read-only targets remain protected, failed writes clean up only
+their own temporary file, and successful saves guarantee visibility rather
+than power-loss durability.

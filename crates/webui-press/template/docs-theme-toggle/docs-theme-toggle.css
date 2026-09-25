@@ -3,10 +3,13 @@
 }
 
 button {
+  box-sizing: border-box;
+  width: var(--docs-header-control-height, 36px);
+  height: var(--docs-header-control-height, 36px);
   background: none;
   border: 1px solid var(--docs-color-border);
   border-radius: var(--docs-radius-m);
-  padding: var(--docs-space-s) var(--docs-space-s);
+  padding: 0;
   cursor: pointer;
   color: var(--docs-color-text-2);
   font-size: var(--docs-font-size-base);
@@ -17,4 +20,12 @@ button {
 button:hover {
   color: var(--docs-color-brand);
   border-color: var(--docs-color-brand);
+}
+
+@media (max-width: 520px) {
+  button {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
 }

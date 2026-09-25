@@ -18,7 +18,7 @@ describe('template root metadata helpers', () => {
       tr: ['displayValue', 'readOnly'],
       ta: ['display-value', 'readonly'],
       tx: [[
-        [[], 0],
+        [0, 0],
         [['ignoredByHelpers']],
       ]      ],
     };

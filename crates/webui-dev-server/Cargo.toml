@@ -25,6 +25,22 @@ mime_guess = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
 time = { workspace = true }
+thiserror = { workspace = true }
+ctrlc = { workspace = true, features = ["termination"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "watch_hash_bench"
+harness = false

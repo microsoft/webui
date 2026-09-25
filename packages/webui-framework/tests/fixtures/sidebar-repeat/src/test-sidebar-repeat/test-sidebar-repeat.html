@@ -9,7 +9,7 @@
   <div class="nav-section">
     <h3 class="nav-heading">Groups</h3>
     <for each="group in groups">
-      <a class="nav-item nav-item-group" ?data-active="{{page == 'group' && activeGroup == group}}" data-nav="{{group}}" href="/groups/{{group}}">{{group}}</a>
+      <a class="{{group.className}}" ?data-active="{{page == 'group' && activeGroup == group.slug}}" data-nav="{{group.slug}}" href="/groups/{{group.slug}}">{{group.label}}</a>
     </for>
   </div>
 </nav>

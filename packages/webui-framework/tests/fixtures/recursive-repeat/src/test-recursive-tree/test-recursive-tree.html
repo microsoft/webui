@@ -1,0 +1,14 @@
+<ul class="tree">
+  <for id="tree-item" each="child in items">
+    <li key="{{child.id}}" data-id="{{child.id}}">
+      <button class="select" @click="{select(child.id)}"><span class="prefix">{{prefix}}</span><span class="name">{{child.name}}</span></button>
+      <if condition="{{child.children}}">
+        <ul><for id="tree-item" each="child in child.children" /></ul>
+      </if>
+      <button class="after" @click="{select(child.id)}">{{child.name}}</button>
+    </li>
+  </for>
+</ul>
+<span class="outer">{{child.name}}</span>
+<output class="selected">{{selected}}</output>
+<output class="clicks">{{clicks}}</output>

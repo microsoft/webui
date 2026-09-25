@@ -83,6 +83,12 @@ fn template_diagnostic(err: &anyhow::Error) -> Option<&Diagnostic> {
                 source: ParserError::Template(diag),
                 ..
             }) => Some(&**diag),
+            // Source-transform diagnostics surface during registration.
+            Some(WebUIError::ComponentRegistration {
+                source: ParserError::Template(diag),
+                ..
+            }) => Some(&**diag),
+            Some(WebUIError::ComponentAssets(diag) | WebUIError::Projection(diag)) => Some(&**diag),
             _ => None,
         })
 }
@@ -270,6 +276,21 @@ pub fn warning_diagnostic(diag: &Diagnostic) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// `console` color enablement is process-global, so tests that force it on
+    /// must not run concurrently with each other or they observe each other's
+    /// restore and see uncolored output.
+    static COLOR_LOCK: Mutex<()> = Mutex::new(());
+
+    fn force_colors() -> (MutexGuard<'static, ()>, bool) {
+        let guard = COLOR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = console::colors_enabled();
+        console::set_colors_enabled(true);
+        (guard, previous)
+    }
 
     fn template_error() -> anyhow::Error {
         let diag = Diagnostic::error("invalid <for> each expression")
@@ -285,14 +306,27 @@ mod tests {
         .into()
     }
 
+    fn registration_template_error() -> anyhow::Error {
+        let diag = Diagnostic::error("invalid transformed component source")
+            .code("invalid-component-source")
+            .component("file-card")
+            .position(3, 5)
+            .snippet("<invalid-source>")
+            .help("fix the component source accepted by the active plugin");
+        WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".to_owned(),
+            source: ParserError::Template(Box::new(diag)),
+        }
+        .into()
+    }
+
     #[test]
     fn build_error_message_is_plain_for_browser() {
         // The browser receives `message` via live-reload and logs it with
         // `console.error`; ANSI escape codes would render as literal garbage
         // and break the single-line SSE frame. It must stay color-free even
         // when terminal color is forced on.
-        let prev = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let (_guard, prev) = force_colors();
         let (_display, message) = build_error_renderings(&template_error());
         console::set_colors_enabled(prev);
 
@@ -308,8 +342,7 @@ mod tests {
 
     #[test]
     fn build_error_display_is_colorized_for_terminal() {
-        let prev = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let (_guard, prev) = force_colors();
         let (display, _message) = build_error_renderings(&template_error());
         console::set_colors_enabled(prev);
 
@@ -360,6 +393,51 @@ mod tests {
         assert!(value["chain"].is_array());
         // The serialized object never carries ANSI escapes.
         assert!(!value.to_string().contains('\u{1b}'));
+    }
+
+    #[test]
+    fn error_json_extracts_registration_template_diagnostic() {
+        // A component-registration authoring mistake must surface its full
+        // structured diagnostic in `--format json` (code/file/line/column/
+        // snippet/help), not a flattened string — the same shape as a parse
+        // error — and never leak ANSI escapes.
+        let prev = console::colors_enabled();
+        console::set_colors_enabled(true);
+        let value = error_json(&registration_template_error());
+        console::set_colors_enabled(prev);
+
+        assert_eq!(value["severity"], "error");
+        assert_eq!(value["code"], "invalid-component-source");
+        assert_eq!(value["file"], "file-card");
+        assert_eq!(value["line"], 3);
+        assert_eq!(value["column"], 5);
+        assert_eq!(value["snippet"], "<invalid-source>");
+        assert!(value["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid transformed component source")));
+        assert!(value["help"]
+            .as_str()
+            .is_some_and(|h| h.contains("active plugin")));
+        assert!(value["chain"].is_array());
+        assert!(!value.to_string().contains('\u{1b}'));
+    }
+
+    #[test]
+    fn build_error_rendering_for_registration_diagnostic_is_plain_and_located() {
+        // The dev-server/browser rendering path also extracts the structured
+        // diagnostic from a registration error, so the color-free browser
+        // message keeps its rustc-style `--> file:line:col` location.
+        let prev = console::colors_enabled();
+        console::set_colors_enabled(true);
+        let (_display, message) = build_error_renderings(&registration_template_error());
+        console::set_colors_enabled(prev);
+
+        assert!(
+            !message.contains('\u{1b}'),
+            "browser message must be ANSI-free: {message:?}"
+        );
+        assert!(message.contains("--> file-card:3:5"));
+        assert!(message.contains("[invalid-component-source]"));
     }
 
     #[test]

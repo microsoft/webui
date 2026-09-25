@@ -12,17 +12,25 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The two-line copyright header that must appear at the top of every source
-/// file.
-const HEADER_LINE_1: &str = "// Copyright (c) Microsoft Corporation.";
-const HEADER_LINE_2: &str = "// Licensed under the MIT license.";
+const SLASH_HEADER: (&str, &str) = (
+    "// Copyright (c) Microsoft Corporation.",
+    "// Licensed under the MIT license.",
+);
+const HASH_HEADER: (&str, &str) = (
+    "# Copyright (c) Microsoft Corporation.",
+    "# Licensed under the MIT license.",
+);
 
-/// Extensions that require the `//`-style license header.
-const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "cs", "h", "proto"];
+/// Extensions that require a language-appropriate license header.
+const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "mjs", "cs", "h", "proto", "py", "pyi"];
 
 /// Individual tracked files to skip (relative to workspace root).
 /// Generated files that are checked in but not hand-authored belong here.
-const SKIP_FILES: &[&str] = &["crates/webui-ffi/include/webui_ffi.h"];
+const SKIP_FILES: &[&str] = &[
+    "crates/webui-ffi/include/webui_ffi.h",
+    "packages/webui-desktop/src/generated/webui_desktop.ts",
+    "packages/webui-desktop/test/fixture.ts",
+];
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -111,6 +119,13 @@ fn is_checked_file(path: &Path) -> bool {
         .is_some_and(|ext| CHECKED_EXTENSIONS.contains(&ext))
 }
 
+fn expected_header(path: &Path) -> (&'static str, &'static str) {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("py" | "pyi") => HASH_HEADER,
+        _ => SLASH_HEADER,
+    }
+}
+
 /// Whether a path matches one of the individually skipped files.
 /// Paths from `git ls-files` use forward slashes, matching `SKIP_FILES`.
 fn is_skipped_file(path: &Path) -> bool {
@@ -129,36 +144,52 @@ fn has_header(path: &Path) -> Result<bool, String> {
     };
 
     let mut lines = content.lines();
-    let first = match lines.next() {
+    let mut first = match lines.next() {
         Some(line) => line,
         None => return Ok(false),
     };
+    if first.starts_with("#!") {
+        first = match lines.next() {
+            Some(line) => line,
+            None => return Ok(false),
+        };
+    }
     let second = match lines.next() {
         Some(line) => line,
         None => return Ok(false),
     };
 
-    Ok(first == HEADER_LINE_1 && second == HEADER_LINE_2)
+    let (expected_first, expected_second) = expected_header(path);
+    Ok(first == expected_first && second == expected_second)
 }
 
 /// Prepend the two-line header to a file, preserving existing content.
 fn prepend_header(path: &Path) -> Result<(), String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let (header_line_1, header_line_2) = expected_header(path);
 
+    let shebang_len = content
+        .strip_prefix("#!")
+        .and_then(|rest| rest.find('\n').map(|line_len| line_len + 3))
+        .unwrap_or(0);
     let mut new_content =
-        String::with_capacity(HEADER_LINE_1.len() + HEADER_LINE_2.len() + 3 + content.len());
-    new_content.push_str(HEADER_LINE_1);
+        String::with_capacity(header_line_1.len() + header_line_2.len() + 3 + content.len());
+    if shebang_len > 0 {
+        new_content.push_str(&content[..shebang_len]);
+    }
+    new_content.push_str(header_line_1);
     new_content.push('\n');
-    new_content.push_str(HEADER_LINE_2);
+    new_content.push_str(header_line_2);
     new_content.push('\n');
 
     // Add a blank separator line unless the file already starts with one.
-    if !content.is_empty() && !content.starts_with('\n') {
+    let remaining = &content[shebang_len..];
+    if !remaining.is_empty() && !remaining.starts_with('\n') {
         new_content.push('\n');
     }
 
-    new_content.push_str(&content);
+    new_content.push_str(remaining);
 
     fs::write(path, new_content).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(())
@@ -195,7 +226,30 @@ mod tests {
     fn detects_present_header() {
         let dir = temp_dir();
         let file = dir.join("present.rs");
-        let content = format!("{HEADER_LINE_1}\n{HEADER_LINE_2}\n\nfn main() {{}}\n");
+        let content = format!("{}\n{}\n\nfn main() {{}}\n", SLASH_HEADER.0, SLASH_HEADER.1);
+        fs::write(&file, content).expect("write");
+
+        assert!(has_header(&file).expect("has_header"));
+    }
+
+    #[test]
+    fn detects_present_header_after_shebang() {
+        let dir = temp_dir();
+        let file = dir.join("runner.mjs");
+        let content = format!(
+            "#!/usr/bin/env node\n{}\n{}\n\nconsole.log('ok');\n",
+            SLASH_HEADER.0, SLASH_HEADER.1
+        );
+        fs::write(&file, content).expect("write");
+
+        assert!(has_header(&file).expect("has_header"));
+    }
+
+    #[test]
+    fn detects_present_python_header() {
+        let dir = temp_dir();
+        let file = dir.join("present.py");
+        let content = format!("{}\n{}\n\nprint('ok')\n", HASH_HEADER.0, HASH_HEADER.1);
         fs::write(&file, content).expect("write");
 
         assert!(has_header(&file).expect("has_header"));
@@ -210,9 +264,38 @@ mod tests {
         prepend_header(&file).expect("prepend");
 
         let result = fs::read_to_string(&file).expect("read");
-        assert!(result.starts_with(HEADER_LINE_1));
-        assert!(result.contains(HEADER_LINE_2));
+        assert!(result.starts_with(SLASH_HEADER.0));
+        assert!(result.contains(SLASH_HEADER.1));
         assert!(result.contains("\n\nfn main()"));
+    }
+
+    #[test]
+    fn prepend_uses_python_comment_style() {
+        let dir = temp_dir();
+        let file = dir.join("fix_me.py");
+        fs::write(&file, "print('ok')\n").expect("write");
+
+        prepend_header(&file).expect("prepend");
+
+        let result = fs::read_to_string(&file).expect("read");
+        assert!(result.starts_with(HASH_HEADER.0));
+        assert!(result.contains(HASH_HEADER.1));
+        assert!(result.contains("\n\nprint('ok')"));
+    }
+
+    #[test]
+    fn prepend_preserves_shebang_first() {
+        let dir = temp_dir();
+        let file = dir.join("fix_me.mjs");
+        fs::write(&file, "#!/usr/bin/env node\nconsole.log('ok');\n").expect("write");
+
+        prepend_header(&file).expect("prepend");
+
+        let result = fs::read_to_string(&file).expect("read");
+        assert!(result.starts_with("#!/usr/bin/env node\n"));
+        assert!(result.contains(SLASH_HEADER.0));
+        assert!(result.contains(SLASH_HEADER.1));
+        assert!(result.contains("\n\nconsole.log('ok')"));
     }
 
     #[test]
@@ -224,7 +307,7 @@ mod tests {
         prepend_header(&file).expect("prepend");
 
         let result = fs::read_to_string(&file).expect("read");
-        assert_eq!(result, format!("{HEADER_LINE_1}\n{HEADER_LINE_2}\n"));
+        assert_eq!(result, format!("{}\n{}\n", SLASH_HEADER.0, SLASH_HEADER.1));
     }
 
     #[test]
@@ -242,7 +325,10 @@ mod tests {
         assert!(is_checked_file(Path::new("baz.cs")));
         assert!(is_checked_file(Path::new("qux.h")));
         assert!(is_checked_file(Path::new("quux.js")));
+        assert!(is_checked_file(Path::new("runner.mjs")));
         assert!(is_checked_file(Path::new("schema.proto")));
+        assert!(is_checked_file(Path::new("package.py")));
+        assert!(is_checked_file(Path::new("package.pyi")));
 
         assert!(!is_checked_file(Path::new("page.html")));
         assert!(!is_checked_file(Path::new("style.css")));
@@ -258,6 +344,22 @@ mod tests {
             "crates/webui-ffi/include/webui_ffi.h"
         )));
         assert!(!is_skipped_file(Path::new("crates/webui/src/lib.rs")));
+    }
+
+    #[test]
+    fn skips_only_generated_desktop_codecs_not_authored_runtime_or_tests() {
+        assert!(is_skipped_file(Path::new(
+            "packages/webui-desktop/src/generated/webui_desktop.ts"
+        )));
+        assert!(is_skipped_file(Path::new(
+            "packages/webui-desktop/test/fixture.ts"
+        )));
+        assert!(!is_skipped_file(Path::new(
+            "packages/webui-desktop/src/transport.ts"
+        )));
+        assert!(!is_skipped_file(Path::new(
+            "packages/webui-desktop/test/transport.test.ts"
+        )));
     }
 
     #[test]

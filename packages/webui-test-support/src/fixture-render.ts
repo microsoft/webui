@@ -81,6 +81,9 @@ function renderOne(
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
   }
+  if (fixtureConfig.dom === 'shadow' || fixtureConfig.dom === 'light') {
+    buildOptions.dom = fixtureConfig.dom;
+  }
   if (projectionManifest) {
     buildOptions.projectionManifests = [projectionManifest];
   }
@@ -104,7 +107,7 @@ function renderOne(
 
   const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
   const protocol = new Protocol(result.protocol, { plugin: 'webui' });
-  let html = protocol.render(state, { entry: renderEntry });
+  let html = protocol.render(state, { entry: renderEntry }).toString('utf8');
 
   {
     const scriptPath = hasAuthoredEntry

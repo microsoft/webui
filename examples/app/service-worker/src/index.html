@@ -7,10 +7,29 @@
 </head>
 
 <body>
-  <shell-panel></shell-panel>
-  <hero-panel></hero-panel>
-  <metrics-panel></metrics-panel>
-  <activity-panel></activity-panel>
+  <main class="page">
+    <div class="stream-note">Streaming from service worker + WebUI WASM handler</div>
+    <boundary name="shell">
+      <div class="stream-chunk" data-chunk="shell">
+        <shell-panel></shell-panel>
+      </div>
+    </boundary>
+    <boundary name="hero">
+      <div class="stream-chunk" data-chunk="hero">
+        <hero-panel></hero-panel>
+      </div>
+    </boundary>
+    <boundary name="metrics">
+      <div class="stream-chunk" data-chunk="metrics">
+        <metrics-panel></metrics-panel>
+      </div>
+    </boundary>
+    <boundary name="activity">
+      <div class="stream-chunk" data-chunk="activity">
+        <activity-panel></activity-panel>
+      </div>
+    </boundary>
+  </main>
 </body>
 
 </html>

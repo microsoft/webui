@@ -117,7 +117,8 @@ mod tests {
         );
         files.insert(
             "my-card.html".to_string(),
-            "<div class=\"card\"><slot></slot></div>".to_string(),
+            "<template shadowrootmode=\"open\"><div class=\"card\"><slot></slot></div></template>"
+                .to_string(),
         );
 
         let result = render_files_for_test(&files, "{}", "index.html", "/");
@@ -181,7 +182,7 @@ mod tests {
         );
         files.insert(
             "my-card.html".to_string(),
-            "<p><slot></slot></p>".to_string(),
+            "<template shadowrootmode=\"open\"><p><slot></slot></p></template>".to_string(),
         );
         files.insert("my-card.css".to_string(), "p { color: red; }".to_string());
 
@@ -189,7 +190,9 @@ mod tests {
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
         assert!(
-            html.contains("<style>p { color: red; }</style>"),
+            html.contains(
+                r#"<style data-webui-resource="my-card" data-webui-strategy="style">p { color: red; }</style>"#,
+            ),
             "Expected inline <style> tag in: {}",
             html
         );

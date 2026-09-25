@@ -10,9 +10,16 @@ import { WebUIRouter } from './router.js';
 import { parseQuery, filterQuery } from './route-element.js';
 import { resolveLoaders } from './loaders.js';
 import { ensureComponentLoaded } from './loaders.js';
-import { NavigationCache } from './cache.js';
+import { NavigationCache, type PartialResponse } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
-import { registerTemplatesAndStyles } from './templates.js';
+import {
+  registerInitialTemplatesAndStyles,
+  registerTemplatesAndStyles,
+} from './templates.js';
+import { findChangeLevel, sameRouteDeclaration } from './chain.js';
+import { findActionRouteEntry } from './actions.js';
+import { mountedRouteComponent } from './route-element.js';
+import type { ComponentStyles } from './types.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -27,6 +34,13 @@ interface RouteChainEntry {
 interface RouterInternals {
   inventory: string;
   activeChain: RouteChainEntry[];
+  commitWithData(
+    data: PartialResponse,
+    path: string,
+    query: Record<string, string>,
+    navigationGeneration: number,
+    boundaryGeneration: number,
+  ): Promise<boolean>;
 }
 
 /** Cast a WebUIRouter to expose private fields for test setup. */
@@ -39,12 +53,18 @@ interface TemplateRegistry {
   __webui?: {
     templates?: Record<string, unknown>;
     templateFns?: Record<string, unknown>;
+    styles?: string[];
     [key: string]: unknown;
   };
 }
 
 function globals(): TemplateRegistry {
   return globalThis as unknown as TemplateRegistry;
+}
+
+/** An empty componentStyles catalog for fixtures that don't exercise CSS. */
+function emptyComponentStyles(): { version: 1; strategy: 'style'; resources: {}; closures: {} } {
+  return { version: 1, strategy: 'style', resources: {}, closures: {} };
 }
 
 // Assign deterministic indices for test components
@@ -85,7 +105,7 @@ function hasBit(hex: string, name: string): boolean {
 }
 
 describe('WebUIRouter', () => {
-  let savedWebui: typeof window.__webui;
+  let savedWebui: TemplateRegistry['__webui'];
 
   beforeEach(() => {
     savedWebui = globals().__webui;
@@ -136,6 +156,11 @@ describe('WebUIRouter', () => {
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.deepEqual(
+          globals().__webui!.styles,
+          ['x-card'],
+          'SSR Module specifiers must remain available for lazy framework deduplication',
+        );
         assert.equal(
           (globals().__webui!.templateHostExclusions as Set<string>).has('lazy-card'),
           true,
@@ -185,6 +210,95 @@ describe('WebUIRouter', () => {
   });
 
   describe('destroy', () => {
+    test('start rolls back all synchronous bootstrap failures', () => {
+      const router = new WebUIRouter();
+      const previous = window.__webui;
+      window.__webui = {
+        css: {} as unknown as string[],
+        state: {},
+      };
+      assert.throws(() => router.start());
+      assert.equal((router as any).started, false);
+
+      window.__webui = {
+        chain: [],
+        css: [],
+        inventory: '',
+        nonce: '',
+        state: {},
+        styles: [],
+      };
+      router.start();
+      assert.equal((router as any).started, true);
+      router.destroy();
+      window.__webui = previous;
+    });
+
+    test('rolls back an asynchronous initial navigation failure', async () => {
+      const router = new WebUIRouter();
+      const failure = new Error('loader failed');
+      const previousConsoleError = console.error;
+      let reported: unknown;
+      console.error = (_message, error) => {
+        reported = error;
+      };
+      (router as any).started = true;
+      (router as any).handleNavigation = async () => {
+        throw failure;
+      };
+
+      try {
+        (router as any).startInitialNavigation(globals().__webui);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal((router as any).started, false);
+        assert.equal((router as any).startupNavigation, null);
+        assert.equal(reported, failure);
+      } finally {
+        console.error = previousConsoleError;
+        router.destroy();
+      }
+    });
+
+    test('does not roll back a newer navigation after startup fails', async () => {
+      const router = new WebUIRouter();
+      const failure = new Error('stale loader failed');
+      const previousConsoleError = console.error;
+      let rejectStartup!: (error: Error) => void;
+      let reports = 0;
+      console.error = () => {
+        reports++;
+      };
+      (router as any).started = true;
+      (router as any).handleNavigation = () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStartup = reject;
+        });
+
+      try {
+        (router as any).startInitialNavigation(globals().__webui);
+        (router as any).navGeneration++;
+        rejectStartup(failure);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal((router as any).started, true);
+        assert.equal((router as any).startupNavigation, null);
+        assert.equal(reports, 0);
+      } finally {
+        console.error = previousConsoleError;
+        router.destroy();
+      }
+    });
+
+    test('restart does not reuse consumed SSR navigation metadata', () => {
+      const router = new WebUIRouter();
+      (router as any).isInitialNavigation = false;
+
+      router.destroy();
+
+      assert.equal((router as any).isInitialNavigation, false);
+    });
+
     test('clears in-flight loadPromises so the router can be restarted cleanly', async () => {
       const router = new WebUIRouter();
       // Initialize navCache so destroy() can call .clear()
@@ -207,6 +321,24 @@ describe('WebUIRouter', () => {
       } finally {
         (globalThis as any).fetch = origFetch;
       }
+    });
+  });
+
+  describe('boundary UI lifecycle', () => {
+    test('rejects a settle that synchronously starts a newer boundary generation', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+      priv.pending = {
+        clearElements() {
+          priv.boundaryGeneration++;
+        },
+        destroy() {},
+      };
+
+      const generation = priv.boundaryGeneration as number;
+      assert.equal(priv.invalidateBoundaryState(generation), null);
+      assert.equal(priv.boundaryGeneration, generation + 2);
+      router.destroy();
     });
   });
 
@@ -238,7 +370,8 @@ describe('WebUIRouter', () => {
         registerTemplatesAndStyles({
           templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
           templateFunctions: { 'test-comp': '[function(){return true}]' },
-        }, '', new Set(), () => {});
+          componentStyles: emptyComponentStyles(),
+        }, '', () => {});
 
         const registry = globals().__webui!.templates!;
         assert.ok(registry['test-comp'], 'template should be registered');
@@ -278,7 +411,8 @@ describe('WebUIRouter', () => {
         assert.throws(
           () => registerTemplatesAndStyles({
             templates: { 'old-executable': 'window.executed=true;' },
-          }, '', new Set(), () => {}),
+            componentStyles: emptyComponentStyles(),
+          }, '', () => {}),
           /Unsupported executable template payload/,
         );
 
@@ -290,27 +424,203 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial appends module styles before one batched script execution', async () => {
+    test('registers component styles and closures before templates are announced', () => {
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origHead = (globalThis as any).document.head;
+      const origBridge = window.__webuiRegisterComponentStyles;
+      const order: string[] = [];
+      const tag = 'ordered-component';
+      let styleRegistrations = 0;
+      let announcedStyles: unknown = 'not-dispatched';
+      const onRegistered = (event: Event): void => {
+        order.push('event');
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
+        assert.ok(globals().__webui?.templates?.[tag]);
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
+      window.__webuiRegisterComponentStyles = () => {
+        assert.equal(globals().__webui?.templates?.[tag], undefined);
+        styleRegistrations++;
+        order.push('styles');
+      };
+      (globalThis as any).document.createElement = (elementTag: string) => ({
+        tagName: elementTag,
+        nonce: '',
+        textContent: '',
+      });
+
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          order.push('closures');
+          // eslint-disable-next-line no-new-func
+          Function(el.textContent as string)();
+          return el;
+        },
+        removeChild() { return undefined; },
+      };
+
+      try {
+        registerTemplatesAndStyles({
+          componentStyles: {
+            version: 1,
+            strategy: 'style',
+            resources: {
+              [tag]: { kind: 'style', css: '.ordered{}' },
+            },
+            closures: { [tag]: [tag] },
+          },
+          templateFunctions: { [tag]: '[function(){return true}]' },
+          templates: { [tag]: { h: '<p>ordered</p>' } },
+        }, '', () => {});
+
+        assert.deepEqual(order, ['styles', 'closures', 'event']);
+        assert.equal(styleRegistrations, 1);
+        assert.equal(
+          announcedStyles,
+          undefined,
+          'styles accepted by the framework bridge should not be registered again from the event',
+        );
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = origBridge;
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.head = origHead;
+        delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('registers initial component styles before announcing bootstrap templates', () => {
+      const originalBridge = window.__webuiRegisterComponentStyles;
+      const order: string[] = [];
+      const styles = emptyComponentStyles();
+      const templates = { 'initial-card': { h: '<p>Initial</p>' } };
+      const onRegistered = (): void => {
+        order.push('templates');
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
+      window.__webuiRegisterComponentStyles = (value: unknown) => {
+        assert.strictEqual(value, styles);
+        order.push('styles');
+      };
+
+      try {
+        registerInitialTemplatesAndStyles(templates, styles);
+        assert.deepEqual(order, ['styles', 'templates']);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = originalBridge;
+      }
+    });
+
+    test('keeps component styles in the template event when the framework bridge is absent', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      const previousStyles = window.__webui!.componentStyles;
+      const tag = 'fallback-event-component';
+      const componentStyles: ComponentStyles = {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          [tag]: { kind: 'style', css: '.fallback{}' },
+        },
+        closures: { [tag]: [tag] },
+      };
+      let announcedStyles: unknown;
+      const onRegistered = (event: Event): void => {
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
+      };
+      window.__webuiRegisterComponentStyles = undefined;
+      delete window.__webui!.componentStyles;
+      window.addEventListener('webui:templates-registered', onRegistered);
+
+      try {
+        registerTemplatesAndStyles({
+          componentStyles,
+          templates: { [tag]: { h: '<p>fallback</p>' } },
+        }, '', () => {});
+
+        assert.equal(announcedStyles, componentStyles);
+        assert.equal(window.__webui!.componentStyles, componentStyles);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = origBridge;
+        if (previousStyles) window.__webui!.componentStyles = previousStyles;
+        else delete window.__webui!.componentStyles;
+        delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('fallback style merging ignores resource property order', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      window.__webuiRegisterComponentStyles = undefined;
+      window.__webui!.componentStyles = {
+        version: 1,
+        strategy: 'module',
+        resources: {
+          'ordered-component': {
+            css: '.ordered{}',
+            specifier: 'ordered-component',
+            kind: 'module',
+          },
+        },
+        closures: { 'ordered-component': ['ordered-component'] },
+      };
+
+      try {
+        assert.doesNotThrow(() => registerTemplatesAndStyles({
+          componentStyles: {
+            version: 1,
+            strategy: 'module',
+            resources: {
+              'ordered-component': {
+                kind: 'module',
+                specifier: 'ordered-component',
+                css: '.ordered{}',
+              },
+            },
+            closures: { 'ordered-component': ['ordered-component'] },
+          },
+        }, '', () => {}));
+      } finally {
+        window.__webuiRegisterComponentStyles = origBridge;
+        delete window.__webui!.componentStyles;
+      }
+    });
+
+    test('fetchPartial forwards componentStyles through the registration bridge and batches closure scripts', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origQuerySelector = (globalThis as any).document.querySelector;
       const origHead = (globalThis as any).document.head;
+      const origBridge = window.__webuiRegisterComponentStyles;
 
       const order: string[] = [];
       const templateScriptBodies: string[] = [];
       const templateScriptNonces: string[] = [];
-      const importmapBodies: string[] = [];
-      const importmapNonces: string[] = [];
+      let receivedComponentStyles: unknown;
+
+      window.__webuiRegisterComponentStyles = (value: unknown) => {
+        order.push('styles');
+        receivedComponentStyles = value;
+      };
 
       (globalThis as any).fetch = async () => ({
         ok: true,
         headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
-          templateStyles: [
-            '<script type="importmap">{"imports":{"alpha":"data:text/css,.alpha{color:red}"}}</script>',
-            '<script type="importmap">{"imports":{"beta":"data:text/css,.beta{color:blue}"}}</script>',
-          ],
+          componentStyles: {
+            version: 1,
+            strategy: 'module',
+            resources: {
+              alpha: { kind: 'module', specifier: 'alpha', css: '.alpha{color:red}' },
+              beta: { kind: 'module', specifier: 'beta', css: '.beta{color:blue}' },
+            },
+            closures: { alpha: ['alpha'], beta: ['beta'] },
+          },
           templates: {
             alpha: { h: '<div>a</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
             beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
@@ -338,15 +648,10 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelector = () => null;
       (globalThis as any).document.head = {
         appendChild(el: Record<string, unknown>) {
-          if (el.tagName === 'script' && el.type === 'importmap') {
-            const body = el.textContent as string;
-            const parsed = JSON.parse(body) as { imports: Record<string, string> };
-            const specifier = Object.keys(parsed.imports)[0];
-            order.push(`importmap:${specifier}`);
-            importmapBodies.push(body);
-            importmapNonces.push(el.nonce as string);
-            return el;
-          }
+          // Import-map installation for Module resources is now the
+          // framework's responsibility (installed lazily per Document when
+          // a component mounts), so the router only appends the batched
+          // condition-closure script.
           order.push('script');
           templateScriptNonces.push(el.nonce as string);
           templateScriptBodies.push(el.textContent as string);
@@ -371,10 +676,9 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test');
 
         assert.ok(result, 'should return partial data');
-        // SSR and SPA paths emit ONE <script type="importmap"> per component
-        // (consistent 1:1 mapping); importmap scripts must be appended
-        // BEFORE the batched closure script.
-        assert.deepEqual(order, ['importmap:alpha', 'importmap:beta', 'script']);
+        // componentStyles registration (via the bridge) happens before the
+        // batched closure script executes.
+        assert.deepEqual(order, ['styles', 'script']);
         // All condition closure arrays are batched into one script tag
         assert.equal(
           templateScriptBodies.length,
@@ -393,35 +697,22 @@ describe('WebUIRouter', () => {
           templateScriptBodies[0].includes('f["beta"]'),
           'batch should include beta closure table',
         );
-        // CSP nonce preserved on every emitted script (importmaps + closure batch).
+        // CSP nonce preserved on the emitted closure batch script.
         assert.deepEqual(
           templateScriptNonces,
           ['test-nonce'],
           'batched closure script should carry the nonce',
         );
-        assert.deepEqual(
-          importmapNonces,
-          ['test-nonce', 'test-nonce'],
-          'each appended importmap script should carry the per-request nonce',
-        );
-        // Each importmap body should register exactly one specifier.
         assert.equal(
-          importmapBodies.length,
-          2,
-          'one importmap script per component (1:1 with SSR emission)',
-        );
-        assert.ok(
-          importmapBodies[0].includes('"alpha":"data:text/css,'),
-          'alpha importmap body should register alpha under a data:text/css URI',
-        );
-        assert.ok(
-          importmapBodies[1].includes('"beta":"data:text/css,'),
-          'beta importmap body should register beta under a data:text/css URI',
+          (receivedComponentStyles as { strategy?: string } | undefined)?.strategy,
+          'module',
+          'the module componentStyles catalog should reach the registration bridge',
         );
         // Templates actually registered
         assert.ok(globals().__webui?.templates?.['alpha'], 'alpha template should register');
         assert.ok(globals().__webui?.templates?.['beta'], 'beta template should register');
       } finally {
+        window.__webuiRegisterComponentStyles = origBridge;
         (globalThis as any).fetch = origFetch;
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.querySelector = origQuerySelector;
@@ -429,7 +720,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial handles empty templateStyles for Link/Style modes', async () => {
+    test('fetchPartial handles an empty componentStyles catalog for Link/Style modes', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origHead = (globalThis as any).document.head;
@@ -441,7 +732,7 @@ describe('WebUIRouter', () => {
         headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
-          templateStyles: [],
+          componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
           templates: {
             'link-comp': { h: '<div></div>' },
           },
@@ -490,13 +781,18 @@ describe('WebUIRouter', () => {
   });
 
   describe('navigation abort signal', () => {
-    test('fetchPartial passes signal to fetch', async () => {
-      // Shim fetch to capture the options passed to it
+    test('fetchPartial propagates the navigation abort to fetch', async () => {
       const origFetch = (globalThis as any).fetch;
       let capturedSignal: AbortSignal | undefined;
-      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+      (globalThis as any).fetch = (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }) };
+        return new Promise((_resolve, reject) => {
+          capturedSignal?.addEventListener(
+            'abort',
+            () => reject(capturedSignal?.reason),
+            { once: true },
+          );
+        });
       };
 
       try {
@@ -507,10 +803,13 @@ describe('WebUIRouter', () => {
         ) => Promise<unknown>;
 
         const controller = new AbortController();
-        await fetchPartial('/test', controller.signal);
-
+        const request = fetchPartial('/test', controller.signal);
         assert.ok(capturedSignal, 'signal should be passed to fetch');
-        assert.equal(capturedSignal, controller.signal, 'should be the same signal instance');
+        const reason = new DOMException('Navigation superseded', 'AbortError');
+        controller.abort(reason);
+        await assert.rejects(request, error => error === reason);
+        assert.equal(capturedSignal.aborted, true, 'fetch signal should follow navigation aborts');
+        assert.equal(capturedSignal.reason, reason, 'fetch signal should preserve the abort reason');
       } finally {
         (globalThis as any).fetch = origFetch;
       }
@@ -518,8 +817,10 @@ describe('WebUIRouter', () => {
 
     test('fetchPartial skips side effects when signal is aborted after response', async () => {
       const origFetch = (globalThis as any).fetch;
+      let capturedSignal: AbortSignal | undefined;
 
-      (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) => {
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedSignal = opts?.signal as AbortSignal | undefined;
         return {
           ok: true,
           headers: { get: () => 'application/json' },
@@ -528,6 +829,7 @@ describe('WebUIRouter', () => {
             templates: {
               'abort-test': { h: '<div></div>' },
             },
+            componentStyles: emptyComponentStyles(),
             path: '/',
             chain: [],
             inventory: 'ff',
@@ -549,6 +851,7 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test', controller.signal);
 
         assert.equal(result, null, 'should return null for aborted navigation');
+        assert.equal(capturedSignal?.aborted, true, 'an already-aborted signal should abort the request');
         assert.equal(globals().__webui?.templates?.['abort-test'], undefined, 'should not register templates after abort');
       } finally {
         (globalThis as any).fetch = origFetch;
@@ -558,8 +861,9 @@ describe('WebUIRouter', () => {
     test('fetchPartial works normally without signal', async () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
-        assert.equal(opts?.signal, undefined, 'signal should be undefined');
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }) };
+        assert.ok(opts?.signal, 'bounded fetch should always receive a timeout signal');
+        assert.equal(opts.signal.aborted, false);
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
       };
 
       try {
@@ -576,12 +880,222 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('fetchPartial returns null when its bounded timeout aborts before headers', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origSetTimeout = globalThis.setTimeout;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        queueMicrotask(callback);
+        return 1;
+      };
+      (globalThis as any).fetch = (_url: string, opts?: RequestInit) => new Promise(
+        (_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Timed out', 'AbortError')),
+            { once: true },
+          );
+        },
+      );
+
+      try {
+        const router = new WebUIRouter();
+        const result = await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(result, null);
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('fetchPartial timeout covers reading the initial response body', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origSetTimeout = globalThis.setTimeout;
+      let timeoutRequest: (() => void) | undefined;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        timeoutRequest = callback;
+        return 1;
+      };
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => ({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => reject(opts.signal?.reason),
+            { once: true },
+          );
+          queueMicrotask(() => timeoutRequest?.());
+        }),
+      });
+
+      try {
+        const router = new WebUIRouter();
+        const result = await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(result, null);
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('prepared partial timeout covers reading the adopted response body', async () => {
+      const origSetTimeout = globalThis.setTimeout;
+      let timeoutRequest: (() => void) | undefined;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        timeoutRequest = callback;
+        return 1;
+      };
+      const rawController = new AbortController();
+      const response = {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          rawController.signal.addEventListener(
+            'abort',
+            () => reject(rawController.signal.reason),
+            { once: true },
+          );
+          queueMicrotask(() => timeoutRequest?.());
+        }),
+      };
+      const prepared = {
+        release() {},
+        take: async () => ({
+          controller: rawController,
+          inventory: '',
+          response,
+          timestamp: Date.now(),
+        }),
+      };
+
+      try {
+        const router = new WebUIRouter();
+        (router as any).preparedPreload = prepared;
+        const result = await (router as any).takePreparedPartial('/test');
+        assert.equal(result, null);
+        assert.equal(rawController.signal.aborted, true);
+      } finally {
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('navigation abort reaches an adopted response body', async () => {
+      const rawController = new AbortController();
+      const response = {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          rawController.signal.addEventListener(
+            'abort',
+            () => reject(rawController.signal.reason),
+            { once: true },
+          );
+        }),
+      };
+      const prepared = {
+        release() {},
+        take: async () => ({
+          controller: rawController,
+          inventory: '',
+          response,
+          timestamp: Date.now(),
+        }),
+      };
+      const navigation = new AbortController();
+      const router = new WebUIRouter();
+      (router as any).preparedPreload = prepared;
+
+      const taking = (router as any).takePreparedPartial(
+        '/test',
+        navigation.signal,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      navigation.abort(new DOMException('Superseded', 'AbortError'));
+
+      await assert.rejects(taking, { name: 'AbortError' });
+      assert.equal(rawController.signal.aborted, true);
+    });
+
+    test('a new partial request aborts a stalled deferred stream', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const encoder = new TextEncoder();
+      let fetchCount = 0;
+      let firstSignal: AbortSignal | undefined;
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        fetchCount++;
+        if (fetchCount === 1) {
+          firstSignal = opts?.signal as AbortSignal | undefined;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(
+                '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/first"}\n',
+              ));
+              firstSignal?.addEventListener(
+                'abort',
+                () => controller.error(firstSignal?.reason),
+                { once: true },
+              );
+            },
+          });
+          return new Response(body, {
+            headers: { 'content-type': 'application/x-ndjson' },
+          });
+        }
+        return new Response(
+          '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/second"}',
+          { headers: { 'content-type': 'application/json' } },
+        );
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const cache = new NavigationCache({
+          staleTime: 30_000,
+          gcTime: 30_000,
+          maxEntries: 10,
+        });
+        (router as any).navCache = cache;
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+          speculative?: boolean,
+        ) => Promise<unknown>;
+
+        const preloadController = new AbortController();
+        const first = await fetchPartial('/first', preloadController.signal, true);
+        assert.ok(first);
+        cache.store('/first', first as any, true, true);
+        const streaming = await import('./streaming.js');
+        assert.equal(
+          (router as any).deferredReader,
+          null,
+          'the deferred reader must not start before preload caching',
+        );
+        streaming.startDeferredStream(first as any);
+        const deferred = (router as any).deferredReader as Promise<void> | null;
+        assert.ok(deferred, 'the deferred reader should remain active after chunk one');
+
+        const second = await fetchPartial('/second');
+        assert.ok(second);
+        assert.equal(firstSignal?.aborted, true, 'the next request should abort the old stream');
+        await deferred;
+        assert.equal((router as any).deferredReader, null);
+        assert.equal(
+          cache.getEntry('/first')?.complete,
+          false,
+          'an aborted stream must remain incomplete',
+        );
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
     test('intercept handler silently swallows AbortError', async () => {
       // Verify the architectural contract: the intercept handler catches
       // AbortError without logging. This is critical for rapid navigation
       // where superseded fetches throw AbortError.
       const router = new WebUIRouter();
-      const source = (router as any).start.toString() as string;
+      const source = (router as any).initialize.toString() as string;
 
       // The handler must check for AbortError by name
       assert.ok(
@@ -599,7 +1113,7 @@ describe('WebUIRouter', () => {
       );
     });
 
-    test('handleNavigation checks signal.aborted after fetch and inside preload loop', () => {
+    test('handleNavigation checks signal.aborted after fetch and during commit', () => {
       // Verify the architectural contract: commitWithData has abort gates
       // after fetchPartial and inside the ensureComponentLoaded loop.
       const router = new WebUIRouter();
@@ -643,16 +1157,117 @@ describe('WebUIRouter', () => {
       const clearIdx = source.indexOf('this.clearSsrPreloads()');
       const fetchIdx = source.indexOf('fetchPartial');
 
-      assert.ok(clearIdx > -1, 'handleNavigation should clear SSR preload links on SPA navigations');
+      assert.ok(clearIdx > -1, 'handleNavigation should clear SSR preload links');
       assert.ok(fetchIdx > -1, 'handleNavigation should fetch partial data');
       assert.ok(
         clearIdx < fetchIdx,
         'SSR preload links should be cleared before fetching the next partial route',
       );
     });
+
+    test('commit atomically settles pending UI before mutating route content', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).commitWithData.toString() as string;
+      const commitIdx = source.indexOf('const commitNavigation');
+      const settleIdx = source.indexOf('this.invalidateBoundaryState', commitIdx);
+      const deactivateIdx = source.indexOf('deactivateRoute', commitIdx);
+
+      assert.ok(commitIdx > -1, 'commitWithData should define a synchronous DOM commit');
+      assert.ok(settleIdx > commitIdx, 'the DOM commit should settle its pending boundary');
+      assert.ok(
+        settleIdx < deactivateIdx,
+        'pending UI must be removed before settled route content is mutated',
+      );
+    });
+
+    test('settles pending UI before awaiting deferred stream cancellation', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+      const mismatchIdx = source.indexOf('Response path mismatch');
+      const settleIdx = source.indexOf('this.invalidateBoundaryState', mismatchIdx);
+      const cancelIdx = source.indexOf('cancelDeferredStream', mismatchIdx);
+
+      assert.ok(mismatchIdx > -1, 'handleNavigation should reject mismatched responses');
+      assert.ok(settleIdx > mismatchIdx, 'mismatch cleanup should settle pending UI');
+      assert.ok(
+        settleIdx < cancelIdx,
+        'pending UI must settle before deferred stream cancellation can block',
+      );
+    });
   });
 
   describe('view transition timing', () => {
+    let savedStartViewTransition: typeof document.startViewTransition;
+    beforeEach(() => {
+      savedStartViewTransition = document.startViewTransition;
+    });
+    afterEach(() => {
+      document.startViewTransition = savedStartViewTransition;
+    });
+
+    const partial: PartialResponse = {
+      chain: [{ component: '', path: '/next', params: {} }],
+      componentStyles: emptyComponentStyles(),
+      templates: {},
+      path: '/next',
+    };
+
+    test('commits while ready and finished are still pending', async () => {
+      const update = Promise.withResolvers<void>();
+      const ready = new Promise<void>(() => {});
+      const finished = new Promise<void>(() => {});
+      document.startViewTransition = callback => {
+        assert.ok(typeof callback === 'function');
+        callback();
+        return {
+          ready, finished, updateCallbackDone: update.promise,
+          types: new Set<string>(), skipTransition() {},
+        };
+      };
+      const router = new WebUIRouter();
+      let settled = false;
+      const commit = internals(router).commitWithData(
+        partial, '/next', {}, 0, 0,
+      ).then(result => {
+        settled = true;
+        return result;
+      });
+
+      await new Promise(setImmediate);
+      assert.equal(settled, false, 'must await the update callback');
+      update.resolve();
+      await new Promise(setImmediate);
+      assert.equal(settled, true, 'must not await animation readiness or completion');
+      assert.equal(await commit, true);
+    });
+
+    for (const failure of [
+      new Error('route commit failed'),
+      new DOMException('route commit failed', 'InvalidStateError'),
+    ]) {
+      test(`propagates a commit callback ${failure.name} without duplicate rejection`, async (t) => {
+        t.mock.method(document, 'createElement', () => { throw failure; });
+        document.startViewTransition = callback => {
+          assert.ok(typeof callback === 'function');
+          const updateCallbackDone = Promise.resolve().then(callback);
+          const ready = updateCallbackDone.then(() => {});
+          const finished = updateCallbackDone.then(() => {});
+          return {
+            ready, finished, updateCallbackDone,
+            types: new Set<string>(), skipTransition() {},
+          };
+        };
+        const router = new WebUIRouter();
+        await assert.rejects(
+          internals(router).commitWithData(
+            partial, '/next', {}, 0, 0,
+          ),
+          error => error === failure,
+        );
+        await new Promise(setImmediate);
+      });
+    }
+
     test('startViewTransition awaits updateCallbackDone not finished', () => {
       // Regression: awaiting .finished blocks the Navigation API intercept
       // handler until the CSS animation completes, serializing navigations
@@ -666,7 +1281,7 @@ describe('WebUIRouter', () => {
         'should await updateCallbackDone on the view transition',
       );
       assert.ok(
-        !source.includes('transition.finished'),
+        !source.includes('await transition.finished'),
         'should NOT await transition.finished on the view transition — it blocks rapid navigation',
       );
     });
@@ -835,11 +1450,15 @@ describe('WebUIRouter', () => {
         get origin() { return origLocation.origin; },
         get pathname() { return origLocation.pathname; },
       };
-      (globalThis as any).fetch = async () => ({
-        ok: true,
-        headers: { get: () => 'text/html' },
-        json: async () => ({}),
-      });
+      const responseSignals: AbortSignal[] = [];
+      (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
+        if (init?.signal) responseSignals.push(init.signal);
+        return {
+          ok: true,
+          headers: { get: () => 'text/html' },
+          json: async () => ({}),
+        };
+      };
 
       try {
         const router = new WebUIRouter();
@@ -859,6 +1478,11 @@ describe('WebUIRouter', () => {
         const result2 = await fetchPartial('/login', undefined, true);
         assert.equal(result2, null);
         assert.ok(!redirected, 'speculative HTML response should not redirect');
+        assert.equal(
+          responseSignals.every((signal) => signal.aborted),
+          true,
+          'discarded HTML response bodies should be aborted',
+        );
       } finally {
         (globalThis as any).fetch = origFetch;
         (globalThis as any).location = origLocation;
@@ -882,6 +1506,40 @@ describe('WebUIRouter', () => {
       assert.deepEqual(consumed.state, { msg: 'preloaded' });
       priv.navCache.evict('/about');
       assert.ok(!priv.navCache.has('/about'), 'cache should be empty after eviction');
+    });
+
+    test('completed JSON preload is immediately available to navigation', () => {
+      const cache = new NavigationCache({
+        staleTime: 0,
+        gcTime: 300_000,
+        maxEntries: 50,
+      });
+      const data = {
+        componentStyles: emptyComponentStyles(),
+        chain: [{ component: 'about-page', path: '/about', params: {} }],
+        path: '/about',
+        templates: {},
+      };
+      cache.store('/about', data, true, false);
+      assert.equal(cache.lookup('/about'), data);
+    });
+
+    test('streaming preload remains unavailable until its tail completes', () => {
+      const cache = new NavigationCache({
+        staleTime: 0,
+        gcTime: 300_000,
+        maxEntries: 50,
+      });
+      const data = {
+        componentStyles: emptyComponentStyles(),
+        chain: [{ component: 'about-page', path: '/about', params: {} }],
+        path: '/about',
+        templates: {},
+      };
+      cache.store('/about', data, true, true);
+      assert.equal(cache.lookup('/about'), null);
+      cache.getEntry('/about')!.complete = true;
+      assert.equal(cache.lookup('/about'), data);
     });
 
     test('stale preload cache (>TTL) is not consumed', () => {
@@ -1001,12 +1659,13 @@ describe('WebUIRouter', () => {
       };
 
       try {
+        const entry = { component: 'dash-page', path: '/', params: { id: '42' } };
         const results = await resolveLoaders(
-          [{ component: 'dash-page', path: '/', params: { id: '42' } }],
+          [entry],
           { filter: 'active' },
         );
-        assert.ok(results.has('dash-page'), 'should have loader result for dash-page');
-        assert.deepEqual(results.get('dash-page'), { dashId: '42', source: 'loader' });
+        assert.ok(results.has(entry), 'should have loader result for the route entry');
+        assert.deepEqual(results.get(entry), { dashId: '42', source: 'loader' });
       } finally {
         (globalThis as any).customElements.get = origGet;
       }
@@ -1086,6 +1745,32 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('keeps loader state distinct for declarations sharing a component', async () => {
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'shared-page') {
+          return class SharedPage {
+            static async loader(ctx: { params: Record<string, string> }) {
+              return { id: ctx.params.id };
+            }
+          };
+        }
+        return origGet(name);
+      };
+      const first = { component: 'shared-page', path: '/first/:id', params: { id: 'first' } };
+      const second = { component: 'shared-page', path: '/second/:id', params: { id: 'second' } };
+
+      try {
+        const results = await resolveLoaders([first, second], {});
+
+        assert.equal(results.size, 2);
+        assert.deepEqual(results.get(first), { id: 'first' });
+        assert.deepEqual(results.get(second), { id: 'second' });
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
     test('mountComponent calls applyParamsQueryState with state', () => {
       const router = new WebUIRouter();
       const source = (router as any).mountComponent.toString() as string;
@@ -1133,12 +1818,67 @@ describe('WebUIRouter', () => {
         path: '/',
         params: { id: '42' },
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,  // null = skip setState
       };
 
       priv.applyState(entry, {}, new Map());
       assert.ok(!setStateCalled, 'setState must not be called for keep-alive with null state');
+    });
+
+    describe('route declaration identity and teardown', () => {
+      test('treats distinct paths using one component as different declarations', () => {
+        const login = { component: 'auth-page', path: '/login', params: {} };
+        const signup = { component: 'auth-page', path: '/signup', params: {} };
+
+        assert.equal(sameRouteDeclaration(login, signup), false);
+        assert.equal(findChangeLevel([login], [signup]), 0);
+      });
+
+      test('tears down non-keep-alive siblings through marker-preserving cleanup', () => {
+        const router = new WebUIRouter();
+        const source = (router as unknown as {
+          commitWithData: (...args: unknown[]) => Promise<void>;
+        }).commitWithData.toString();
+
+        assert.ok(source.includes('sameRouteDeclaration(oldEntry, newEntry)'));
+        assert.ok(source.includes('$destroy'));
+        assert.ok(source.includes('clearRouteContent(oldEntry.el)'));
+      });
+
+      test('resolves actions by route element when component tags repeat', () => {
+        const firstRoute = {} as HTMLElement;
+        const secondRoute = {} as HTMLElement;
+        const first = {
+          component: 'shared-page',
+          path: '/first',
+          params: {},
+          el: firstRoute,
+          invalidates: ['first'],
+        };
+        const second = {
+          component: 'shared-page',
+          path: '/second',
+          params: {},
+          el: secondRoute,
+          invalidates: ['second'],
+        };
+
+        assert.strictEqual(findActionRouteEntry([first, second], secondRoute), second);
+      });
+
+      test('finds a dotted component tag without CSS selector parsing', () => {
+        const component = {
+          localName: 'x-foo.bar',
+          nextElementSibling: null,
+        } as unknown as HTMLElement;
+        const route = {
+          firstElementChild: component,
+        } as unknown as HTMLElement;
+
+        assert.strictEqual(mountedRouteComponent(route, 'x-foo.bar'), component);
+      });
     });
 
     test('applyState calls setState for keep-alive with loader override', () => {
@@ -1162,11 +1902,12 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,
       };
       const loaderStates = new Map();
-      loaderStates.set('test-comp', { fresh: 'data' });
+      loaderStates.set(entry, { fresh: 'data' });
 
       priv.applyState(entry, {}, loaderStates);
       assert.deepEqual(setStateArg, { fresh: 'data' }, 'setState should receive loader override');
@@ -1193,6 +1934,7 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl as any,
+        compEl: mockCompEl,
         keepAlive: false,
         state: { from: 'server' },
       };
@@ -1307,6 +2049,9 @@ describe('WebUIRouter', () => {
       const tag = `missing-client-${Date.now()}`;
 
       try {
+        const navigationGeneration = (router as any).navGeneration as number;
+        const boundaryGeneration =
+          (router as any).invalidateBoundaryState() as number;
         await (router as any).commitWithData(
           {
             state: {},
@@ -1314,10 +2059,13 @@ describe('WebUIRouter', () => {
           },
           '/missing-client',
           {},
+          navigationGeneration,
+          boundaryGeneration,
         );
 
         assert.equal(window.location.href, '/missing-client');
       } finally {
+        router.destroy();
         window.location.href = originalHref;
       }
     });
@@ -1333,7 +2081,7 @@ describe('WebUIRouter', () => {
         return {
           ok: true,
           headers: { get: () => 'application/json' },
-          json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }),
+          json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }),
         };
       };
 

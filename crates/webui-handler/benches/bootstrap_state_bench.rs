@@ -37,7 +37,7 @@
 //! whose inactive route owns the large collection. Those cases gate adaptive
 //! projection lookup and request-scoped hydration key collection.
 //!
-//! The protocol is intentionally minimal — a bare `<body>` plus a raw
+//! The protocol is intentionally minimal — a bare `<body>` plus a structural
 //! `body_end` signal that triggers the bootstrap emission — so the measured
 //! work is dominated by state projection + serialization, not template
 //! rendering.
@@ -55,6 +55,13 @@ use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
     WebUIFragmentRoute, WebUIProtocol,
 };
+
+fn structural_fragment(value: &str) -> WebUIFragment {
+    let mut token = String::with_capacity("}}}webui:".len() + value.len());
+    token.push_str("}}}webui:");
+    token.push_str(value);
+    WebUIFragment::signal(token, true)
+}
 
 struct BenchWriter {
     output: String,
@@ -81,6 +88,8 @@ impl ResponseWriter for BenchWriter {
         self.output.push_str(content);
         Ok(())
     }
+
+    webui_handler::string_response_writer_methods!(output);
 
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
@@ -186,12 +195,14 @@ fn build_partial_protocol(
         "index.html".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::route("/", "benchmark-page")],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "benchmark-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Benchmark</p>")],
+            contains_boundary: false,
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);
@@ -213,8 +224,9 @@ fn build_partial_protocol(
                 .iter()
                 .map(|key| (*key).to_string())
                 .collect(),
-            navigation_mode: navigation_mode
-                .map_or_else(|| keyed_mode(navigation_keys), |mode| mode as i32),
+            navigation_mode: Some(
+                navigation_mode.map_or_else(|| keyed_mode(navigation_keys), |mode| mode as i32),
+            ),
             navigation_keys: navigation_keys
                 .iter()
                 .map(|key| (*key).to_string())
@@ -244,21 +256,25 @@ fn build_routed_protocol() -> WebUIProtocol {
                     exact: true,
                     ..Default::default()
                 }),
-                WebUIFragment::signal("body_end", true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
+
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "dashboard-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Dashboard</p>")],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "contacts-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Contacts</p>")],
+            contains_boundary: false,
         },
     );
 
@@ -305,15 +321,17 @@ fn build_bootstrap_protocol(
             fragments: vec![
                 WebUIFragment::raw("<!DOCTYPE html><html><body>"),
                 WebUIFragment::component("bench-component"),
-                WebUIFragment::signal("body_end", true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "bench-component".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>ready</p>")],
+            contains_boundary: false,
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);
@@ -333,7 +351,7 @@ fn build_bootstrap_protocol(
                 keyed_mode(&hydration_keys)
             },
             hydration_keys,
-            navigation_mode: keyed_mode(&navigation_keys),
+            navigation_mode: Some(keyed_mode(&navigation_keys)),
             navigation_keys,
             ..Default::default()
         },
@@ -379,7 +397,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         .get_mut("bench-component")
         .unwrap_or_else(|| panic!("benchmark component missing"));
     fallback_component.hydration_mode = StateProjectionMode::All as i32;
-    fallback_component.navigation_mode = StateProjectionMode::All as i32;
+    fallback_component.navigation_mode = Some(StateProjectionMode::All as i32);
     let full_fallback_protocol = Protocol::new(full_fallback_protocol);
     let server_only_protocol = Protocol::new(build_bootstrap_protocol(
         metadata_keys.clone(),
@@ -618,7 +636,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let mut dormant_routed_protocol = build_routed_protocol();
     for component in dormant_routed_protocol.components.values_mut() {
         component.navigation_keys = component.hydration_keys.clone();
-        component.navigation_mode = component.hydration_mode;
+        component.navigation_mode = Some(component.hydration_mode);
         component.hydration_keys.clear();
         component.hydration_mode = StateProjectionMode::None as i32;
         component.template_json = r#"{"h":"<p>ready</p>","th":1}"#.to_string();
@@ -669,7 +687,12 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
     let response = json!({
         "templates": {},
         "templateFunctions": {},
-        "templateStyles": [],
+        "componentStyles": {
+            "version": 1,
+            "strategy": "link",
+            "resources": {},
+            "closures": {},
+        },
         "cssHrefs": [],
         "inventory": "",
         "path": "/",
@@ -719,7 +742,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = full_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("full partial response serialization failed: {error}")
                         });
@@ -734,7 +757,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = projected_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("projected partial response serialization failed: {error}")
                         });
@@ -749,7 +772,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = scriptless_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("scriptless partial response serialization failed: {error}")
                         });
@@ -764,7 +787,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = static_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("static partial response serialization failed: {error}")
                         });

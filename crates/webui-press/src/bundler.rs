@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::{Error, Result};
@@ -27,10 +28,28 @@ const require = createRequire(pathToFileURL(path.join(config.resolveDir, "__webu
 const esbuild = require(require.resolve("esbuild"));
 const projectionUrl = pathToFileURL(config.projectionEntry).href;
 const { esbuildProjection } = await import(projectionUrl);
-await esbuild.build({
-  ...config.build,
-  plugins: [esbuildProjection({ manifest: config.manifest })],
-});
+try {
+  await esbuild.build({
+    ...config.build,
+    plugins: [esbuildProjection({ manifest: config.manifest })],
+  });
+} catch (error) {
+  // esbuild's own summary message drops note text, which is where projection
+  // diagnostics put their actionable `help:` line. Re-format the raw messages
+  // so the cause survives to the terminal. Press reads this stderr through a
+  // pipe, so set `exitCode` rather than calling `process.exit`, which can drop
+  // the pending write.
+  const errors = error?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) {
+    throw error;
+  }
+  const formatted = await esbuild.formatMessages(errors, {
+    kind: "error",
+    color: false,
+  });
+  process.stderr.write(formatted.join(""));
+  process.exitCode = 1;
+}
 if (process.env.WEBUI_PROJECTION_PROFILE === "1") {
   console.error(`[webui-press] esbuild-total=${(performance.now() - started).toFixed(1)}ms`);
 }
@@ -378,13 +397,64 @@ pub(crate) struct BundleResult {
     pub(crate) script_map: HashMap<usize, Vec<String>>,
     /// Projection metadata validated once against the completed bundle.
     pub(crate) projection: webui::PreparedProjectionManifests,
+    /// Exact generated-entry identities and cache-busted served output URLs.
+    pub(crate) preloads: BundlePreloadMap,
     /// Wall time spent producing and validating the client bundle.
     pub(crate) duration: std::time::Duration,
+}
+
+#[derive(Clone)]
+pub(crate) struct BundlePreloadMap {
+    projection: webui::PreparedProjectionManifests,
+    root_entry: Option<PathBuf>,
+    page_entries: HashMap<usize, PathBuf>,
+    output_urls: Arc<BTreeMap<PathBuf, String>>,
+}
+
+impl BundlePreloadMap {
+    fn empty(projection: webui::PreparedProjectionManifests) -> Self {
+        Self {
+            projection,
+            root_entry: None,
+            page_entries: HashMap::new(),
+            output_urls: Arc::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        existing_hrefs: &[String],
+        page_entry_id: Option<usize>,
+    ) -> (Vec<String>, Vec<webui::Diagnostic>) {
+        let page_entry = page_entry_id.and_then(|id| self.page_entries.get(&id));
+        match (self.root_entry.as_deref(), page_entry.map(PathBuf::as_path)) {
+            (Some(root), Some(page)) => webui::resolve_generated_module_preloads(
+                &self.projection,
+                existing_hrefs,
+                &[root, page],
+                &self.output_urls,
+            ),
+            (Some(root), None) => webui::resolve_generated_module_preloads(
+                &self.projection,
+                existing_hrefs,
+                &[root],
+                &self.output_urls,
+            ),
+            (None, Some(page)) => webui::resolve_generated_module_preloads(
+                &self.projection,
+                existing_hrefs,
+                &[page],
+                &self.output_urls,
+            ),
+            (None, None) => (existing_hrefs.to_vec(), Vec::new()),
+        }
+    }
 }
 
 /// Configuration for the [`bundle_assets`] function.
 pub(crate) struct BundleOptions<'a> {
     pub(crate) site_dir: &'a Path,
+    pub(crate) base_path: &'a str,
     pub(crate) node_modules: Option<&'a Path>,
     pub(crate) root_bundle: Option<&'a RootBundleEntry>,
     pub(crate) page_bundles: &'a [PageBundleEntry],
@@ -482,6 +552,18 @@ fn file_version(path: &Path) -> Result<String> {
 fn versioned_asset_path(rel_path: &str, full_path: &Path) -> Result<String> {
     let version = file_version(full_path)?;
     Ok(format!("{rel_path}?v={version}"))
+}
+
+fn served_asset_path(base_path: &str, rel_path: &str) -> String {
+    let mut served = String::with_capacity(base_path.len() + rel_path.len() + 1);
+    if base_path.is_empty() || base_path == "/" {
+        served.push('/');
+    } else {
+        served.push_str(base_path.trim_end_matches('/'));
+        served.push('/');
+    }
+    served.push_str(rel_path.trim_start_matches('/'));
+    served
 }
 
 fn has_allowed_extension(path: &Path, allowed: &[&str]) -> bool {
@@ -1034,11 +1116,59 @@ fn page_script_paths(
     }
 }
 
-fn next_rebuild_nonce_hex() -> String {
+fn next_rebuild_suffix_hex() -> String {
     format!(
         "{:x}",
         BUNDLE_REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
+}
+
+fn bundle_temp_path(site_dir: &Path, unique_suffix: &str) -> PathBuf {
+    site_dir.join(format!(
+        ".webui-press-bundle-{}-{unique_suffix}",
+        std::process::id()
+    ))
+}
+
+fn resolved_bundle_temp_path(site_dir: &Path, unique_suffix: &str) -> Result<PathBuf> {
+    Ok(bundle_temp_path(&absolute_path(site_dir)?, unique_suffix))
+}
+
+fn external_projection_sources(opts: &BundleOptions<'_>) -> Vec<webui::ProjectionManifestSource> {
+    opts.bundler_config
+        .map(|config| {
+            config
+                .projection_manifests
+                .iter()
+                .map(|manifest| {
+                    webui::ProjectionManifestSource::Path(opts.config_dir.join(manifest))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn collect_versioned_output_urls(
+    site_dir: &Path,
+    base_path: &str,
+    outputs: &[PathBuf],
+) -> Result<BTreeMap<PathBuf, String>> {
+    let canonical_site = site_dir
+        .canonicalize()
+        .map_err(|error| Error::Io(format!("Cannot resolve {}: {error}", site_dir.display())))?;
+    let mut output_urls = BTreeMap::new();
+    for output in outputs {
+        let relative = output.strip_prefix(&canonical_site).map_err(|_| {
+            Error::Build(format!(
+                "Bundled output is outside the site directory: {}",
+                output.display()
+            ))
+        })?;
+        let relative = path_for_js(relative);
+        let versioned = versioned_asset_path(&relative, output)?;
+        output_urls.insert(output.clone(), served_asset_path(base_path, &versioned));
+    }
+    Ok(output_urls)
 }
 
 pub(crate) fn resolve_node_modules(config_dir: &Path) -> Result<PathBuf> {
@@ -1090,7 +1220,8 @@ fn normalized_alias_target(config_dir: &Path, target: &str) -> String {
     target.replace('\\', "/")
 }
 
-fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
+fn build_aliases(opts: &BundleOptions<'_>) -> Result<BTreeMap<String, String>> {
+    let config_dir = absolute_path(opts.config_dir)?;
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     if let Some(node_modules) = opts.node_modules {
         if let Some(path) = default_framework_alias(node_modules) {
@@ -1100,11 +1231,11 @@ fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
 
     if let Some(cfg) = opts.bundler_config {
         for (from, to) in &cfg.alias {
-            aliases.insert(from.clone(), normalized_alias_target(opts.config_dir, to));
+            aliases.insert(from.clone(), normalized_alias_target(&config_dir, to));
         }
     }
 
-    aliases
+    Ok(aliases)
 }
 
 #[cfg(test)]
@@ -1126,8 +1257,8 @@ fn esbuild_args(
     opts: &BundleOptions<'_>,
     entry_files: &[(String, PathBuf)],
     bundle_tmp: &Path,
-) -> Vec<String> {
-    let aliases = build_aliases(opts);
+) -> Result<Vec<String>> {
+    let aliases = build_aliases(opts)?;
     let target = opts
         .bundler_config
         .and_then(|cfg| cfg.target.as_deref())
@@ -1163,7 +1294,7 @@ fn esbuild_args(
     for (_, path) in entry_files {
         args.push(path_for_js(path));
     }
-    args
+    Ok(args)
 }
 
 fn esbuild_build_config(
@@ -1176,7 +1307,7 @@ fn esbuild_build_config(
     let working_dir = absolute_path(opts.config_dir)?;
     let site_dir = absolute_path(opts.site_dir)?;
     let manifest_path = absolute_path(manifest_path)?;
-    let aliases = build_aliases(opts);
+    let aliases = build_aliases(opts)?;
     let target = opts
         .bundler_config
         .and_then(|cfg| cfg.target.as_deref())
@@ -1329,14 +1460,16 @@ fn run_esbuild_with_projection(
 pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     let started = Instant::now();
     if opts.root_bundle.is_none() && opts.page_bundles.is_empty() {
-        let projection = webui::prepare_projection_manifests(&[])
+        let projection = webui::prepare_projection_manifests(&external_projection_sources(opts))
             .map_err(|error| Error::Build(error.chain_message()))?;
+        let preloads = BundlePreloadMap::empty(projection.clone());
         return Ok(BundleResult {
             root_script: None,
             component_count: 0,
             page_entry_count: 0,
             script_map: HashMap::new(),
             projection,
+            preloads,
             duration: started.elapsed(),
         });
     }
@@ -1349,9 +1482,8 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     let allowed_roots = allowed_script_roots(opts.config_dir, opts.content_dir)?;
 
     // Create a temp directory for the bundler entry files.
-    let nonce = next_rebuild_nonce_hex();
-    let bundle_tmp =
-        std::env::temp_dir().join(format!("webui-press-bundle-{}-{nonce}", std::process::id(),));
+    let unique_suffix = next_rebuild_suffix_hex();
+    let bundle_tmp = resolved_bundle_temp_path(opts.site_dir, &unique_suffix)?;
     if bundle_tmp.exists() {
         fs::remove_dir_all(&bundle_tmp).ok();
     }
@@ -1465,17 +1597,55 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
             .map_or(0, |cfg| cfg.projection_manifests.len()),
     );
     projection_sources.push(webui::ProjectionManifestSource::Path(manifest_path.clone()));
-    if let Some(cfg) = opts.bundler_config {
-        projection_sources.extend(
-            cfg.projection_manifests.iter().map(|manifest| {
-                webui::ProjectionManifestSource::Path(opts.config_dir.join(manifest))
-            }),
-        );
-    }
+    projection_sources.extend(external_projection_sources(opts));
     let projection_result = webui::prepare_projection_manifests(&projection_sources)
         .map_err(|error| Error::Build(error.chain_message()));
     fs::remove_file(&manifest_path).ok();
     let projection = projection_result?;
+    let root_entry = if opts.root_bundle.is_some() {
+        Some(
+            opts.site_dir
+                .join("index.js")
+                .canonicalize()
+                .map_err(|error| {
+                    Error::Build(format!("Cannot resolve generated root entry: {error}"))
+                })?,
+        )
+    } else {
+        None
+    };
+    let mut page_entries = HashMap::with_capacity(opts.page_bundles.len());
+    for bundle in opts.page_bundles {
+        let path = opts
+            .site_dir
+            .join(format!("assets/page-{}.js", bundle.id))
+            .canonicalize()
+            .map_err(|error| {
+                Error::Build(format!(
+                    "Cannot resolve generated page entry {}: {error}",
+                    bundle.id
+                ))
+            })?;
+        page_entries.insert(bundle.id, path);
+    }
+    let mut generated_entries =
+        Vec::with_capacity(usize::from(root_entry.is_some()) + page_entries.len());
+    if let Some(root) = root_entry.as_deref() {
+        generated_entries.push(root);
+    }
+    generated_entries.extend(page_entries.values().map(PathBuf::as_path));
+    let preload_outputs = webui::generated_module_preload_outputs(&projection, &generated_entries);
+    let output_urls = Arc::new(collect_versioned_output_urls(
+        opts.site_dir,
+        opts.base_path,
+        &preload_outputs,
+    )?);
+    let preloads = BundlePreloadMap {
+        projection: projection.clone(),
+        root_entry,
+        page_entries,
+        output_urls,
+    };
 
     let mut root_imports = HashSet::new();
     let root_script = if opts.root_bundle.is_some() {
@@ -1522,6 +1692,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         page_entry_count: opts.page_bundles.len(),
         script_map,
         projection,
+        preloads,
         duration: started.elapsed(),
     })
 }
@@ -1899,11 +2070,12 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_args_force_webui_decorator_semantics() {
+    fn esbuild_args_force_webui_decorator_semantics() -> TestResult {
         let site_dir = Path::new("/site");
         let config_dir = Path::new("/site/.webui-press");
         let opts = BundleOptions {
             site_dir,
+            base_path: "/",
             node_modules: None,
             root_bundle: None,
             page_bundles: &[],
@@ -1912,13 +2084,14 @@ mod tests {
             config_dir,
             content_dir: Path::new("/site"),
         };
-        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"));
+        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"))?;
 
         assert!(args.contains(&format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}")));
+        Ok(())
     }
 
     #[test]
-    fn esbuild_args_folds_webui_dev_flag_for_production_only() {
+    fn esbuild_args_folds_webui_dev_flag_for_production_only() -> TestResult {
         fn opts<'a>(
             site_dir: &'a Path,
             config_dir: &'a Path,
@@ -1927,6 +2100,7 @@ mod tests {
         ) -> BundleOptions<'a> {
             BundleOptions {
                 site_dir,
+                base_path: "/",
                 node_modules: None,
                 root_bundle: None,
                 page_bundles: &[],
@@ -1943,12 +2117,12 @@ mod tests {
 
         // Production build: the flag is folded to `false` so the framework's
         // dev-only diagnostics (and the module gating them) tree-shake out.
-        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp);
+        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp)?;
         assert!(prod.contains(&define));
 
         // Development build (`webui-press serve`): the flag is left undefined so
         // the `typeof` guard defaults it to on and diagnostics run.
-        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp);
+        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp)?;
         assert!(!dev.iter().any(|arg| arg.contains("__WEBUI_DEV__")));
 
         // A user-supplied define wins: esbuild honors the last `--define` for a
@@ -1956,7 +2130,7 @@ mod tests {
         let mut cfg = BundlerConfig::default();
         cfg.define
             .insert("__WEBUI_DEV__".to_string(), "true".to_string());
-        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp);
+        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp)?;
         let ours = overridden.iter().position(|arg| arg == &define);
         let theirs = overridden
             .iter()
@@ -1967,6 +2141,7 @@ mod tests {
             ours < theirs,
             "framework default must precede the user override so esbuild's last-wins keeps the user's value",
         );
+        Ok(())
     }
 
     #[test]
@@ -2067,7 +2242,7 @@ mod tests {
             PathBuf::from("/repo/components/live-preview/live-preview.ts"),
         ];
         let scripts = vec![
-            ScriptSource::File("./scripts/fluent.ts".to_string()),
+            ScriptSource::File("./scripts/custom.ts".to_string()),
             ScriptSource::Inline("import \"@mai-ui/button/define.js\";".to_string()),
         ];
 
@@ -2099,6 +2274,7 @@ mod tests {
 
         let result = bundle_assets(&BundleOptions {
             site_dir: &root,
+            base_path: "/",
             node_modules: None,
             root_bundle: None,
             page_bundles: &[],
@@ -2111,6 +2287,81 @@ mod tests {
         fs::remove_dir_all(&root)?;
         assert!(result.root_script.is_none());
         assert_eq!(result.page_entry_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn external_projection_manifest_is_loaded_without_local_scripts() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-external-only-projection-test-{}-{:x}",
+            std::process::id(),
+            test_hash("external-only-projection")
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(&root)?;
+        let config = BundlerConfig {
+            projection_manifests: vec!["missing-projection.json".to_string()],
+            ..BundlerConfig::default()
+        };
+
+        let result = bundle_assets(&BundleOptions {
+            site_dir: &root,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &[],
+            bundler_config: Some(&config),
+            dev_mode: false,
+            config_dir: &root,
+            content_dir: &root,
+        });
+
+        fs::remove_dir_all(&root)?;
+        let Err(error) = result else {
+            panic!("configured external manifest must be loaded");
+        };
+        assert!(error.to_string().contains("PROJ-M001"));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_bundle_entries_stay_on_the_site_volume() {
+        let site_dir = Path::new("D:/project/dist");
+        let generated = bundle_temp_path(site_dir, "abc");
+        let expected_name = format!(".webui-press-bundle-{}-abc", std::process::id());
+
+        assert!(generated.starts_with(site_dir));
+        assert_eq!(
+            generated.file_name().and_then(|name| name.to_str()),
+            Some(expected_name.as_str())
+        );
+    }
+
+    #[test]
+    fn generated_bundle_entries_use_absolute_child_process_paths() -> TestResult {
+        let generated = resolved_bundle_temp_path(Path::new("relative-site"), "abc")?;
+        assert!(generated.is_absolute());
+        Ok(())
+    }
+
+    #[test]
+    fn versioned_output_map_uses_exact_cache_busted_served_urls() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-output-url-test-{}-{:x}",
+            std::process::id(),
+            test_hash("output-url-map")
+        ));
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(root.join("assets"))?;
+        let chunk = root.join("assets/chunk.js");
+        fs::write(&chunk, "export const value = 1;")?;
+
+        let identity = chunk.canonicalize()?;
+        let urls = collect_versioned_output_urls(&root, "/docs/", std::slice::from_ref(&identity))?;
+        let href = urls.get(&identity).ok_or("generated output URL missing")?;
+
+        assert!(href.starts_with("/docs/assets/chunk.js?v="));
+        fs::remove_dir_all(&root)?;
         Ok(())
     }
 
@@ -2267,10 +2518,11 @@ mod tests {
 
     #[test]
     fn extract_bundle_scripts_inline() {
-        let html = r#"<p>Hello</p><script type="module" bundle>import "@fluentui/web-components";</script><p>World</p>"#;
+        let html =
+            r#"<p>Hello</p><script type="module" bundle>import "custom";</script><p>World</p>"#;
         let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("@fluentui")));
+        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("custom")));
         assert!(!out.contains("<script"));
         assert!(out.contains("<p>Hello</p>"));
         assert!(out.contains("<p>World</p>"));

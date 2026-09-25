@@ -1,4 +1,5 @@
 {
+  "mode": "web",
   "searchQuery": "",
   "activeGroup": "all",
   "groups": ["Work", "Family", "Friends", "Other"],

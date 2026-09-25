@@ -1,3 +1,4 @@
+<template shadowrootmode="open">
 <button class="mismatch-toggle" @click="{toggleClientOnlyOpen()}">Toggle mismatch</button>
 <if condition="clientOnlyOpen">
   <span class="mismatch-details">Client-only details</span>
@@ -9,4 +10,10 @@
   </if>
   <div class="outer-details">Outer details</div>
 </if>
+<if condition="snapshotOpen">
+  <for each="snapshotItem in snapshotItems">
+    <span class="snapshot-item">{{snapshotItem}}</span>
+  </for>
+</if>
 <div class="static-sibling">Static sibling</div>
+</template>

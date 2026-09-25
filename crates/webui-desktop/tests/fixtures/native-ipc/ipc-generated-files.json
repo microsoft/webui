@@ -1,0 +1,12 @@
+{
+  "rust": [
+    "fixture.native.rs",
+    "ipc.rs",
+    "ipc_messages.rs"
+  ],
+  "typescript": [
+    "application.ts",
+    "ipc-runtime.ts",
+    "ipc.ts"
+  ]
+}

@@ -5,7 +5,7 @@
  * End-to-end tests for the Contact Book Manager app.
  *
  * Tests SSR rendering, client-side navigation, and visual regression.
- * The app uses shadow DOM components (cb-*) with WebUI Framework templating.
+ * The app uses WebUI Framework components with nested Shadow DOM boundaries.
  */
 
 import { test, expect, type Page } from '@playwright/test';
@@ -51,7 +51,8 @@ test.describe('SSR pages', () => {
     const response = await page.goto('/');
     if (!response) throw new Error('dashboard navigation returned no response');
     const bootstrapState = bootstrapStateFromHtml(await response.text());
-    expect(Object.keys(bootstrapState).sort()).toEqual(['totalFavorites']);
+    expect(Object.keys(bootstrapState).sort()).toEqual(['mode', 'totalFavorites']);
+    expect(bootstrapState['mode']).toBe('web');
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
     // Stat cards
     await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();
@@ -60,6 +61,69 @@ test.describe('SSR pages', () => {
     // Recent contacts section
     await expect(page.locator('cb-page-dashboard .section-title')).toContainText('Recent Contacts');
     await expect(page.locator('cb-page-dashboard cb-contact-card').first()).toBeVisible();
+  });
+
+  test('dashboard installs active route styles once per CSS tree', async ({ page }) => {
+    const stylesheetRequests = new Map<string, number>();
+    await page.route('**/*.css', async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      stylesheetRequests.set(path, (stylesheetRequests.get(path) ?? 0) + 1);
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), 'cache-control': 'no-store' },
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('cb-app')).toHaveJSProperty('$ready', true);
+    const resources = await page.locator('cb-app').evaluate((host) => {
+      const root = host.shadowRoot;
+      if (!root) throw new Error('cb-app ShadowRoot missing');
+      const roots: Array<{ name: string; resources: string[] }> = [];
+      const visit = (cssRoot: Document | ShadowRoot, name: string): void => {
+        roots.push({
+          name,
+          resources: Array.from(
+            cssRoot.querySelectorAll<HTMLElement>('[data-webui-resource]'),
+            element => element.dataset.webuiResource ?? '',
+          ),
+        });
+        for (const element of cssRoot.querySelectorAll<HTMLElement>('*')) {
+          if (element.shadowRoot) visit(element.shadowRoot, element.localName);
+        }
+      };
+      visit(root, 'cb-app');
+      const route = root.querySelector('webui-route[active]');
+      if (!route) throw new Error('active dashboard route missing');
+      return { roots };
+    });
+
+    expect(stylesheetRequests.has('/cb-contact-form.css')).toBe(false);
+    expect(stylesheetRequests.has('/cb-contact-detail.css')).toBe(false);
+    const initialDashboardRequests = stylesheetRequests.get('/cb-page-dashboard.css') ?? 0;
+    expect(initialDashboardRequests).toBe(1);
+    expect(stylesheetRequests.get('/cb-contact-card.css')).toBe(5);
+    expect(resources.roots).toEqual(expect.arrayContaining([
+      { name: 'cb-app', resources: ['cb-app'] },
+      { name: 'cb-header', resources: ['cb-header'] },
+      { name: 'cb-sidebar', resources: ['cb-sidebar'] },
+      { name: 'cb-page-dashboard', resources: ['cb-page-dashboard'] },
+    ]));
+    const cardRoots = resources.roots.filter(({ name }) => name === 'cb-contact-card');
+    expect(cardRoots).toHaveLength(5);
+    expect(cardRoots.every(({ resources: installed }) =>
+      installed.length === 1 && installed[0] === 'cb-contact-card')).toBe(true);
+    expect(resources.roots.every(({ resources: installed }) =>
+      new Set(installed).size === installed.length)).toBe(true);
+
+    await page.locator('cb-sidebar').getByRole('link', { name: 'All Contacts' }).click();
+    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page.locator('cb-page-dashboard .section-title')).toContainText('Recent Contacts');
+    await expect(page.locator('cb-page-dashboard cb-contact-card .card').first())
+      .toHaveCSS('display', 'flex');
+    expect(stylesheetRequests.get('/cb-page-dashboard.css')).toBe(initialDashboardRequests + 1);
   });
 
   test('contacts page renders contact list', async ({ page }) => {
@@ -77,6 +141,19 @@ test.describe('SSR pages', () => {
     await expect(page.locator('cb-page-favorites cb-contact-card')).toHaveCount(5);
     await expect(page.getByText('Sarah Chen')).toBeVisible();
     await expect(page.getByText('Yuki Tanaka')).toBeVisible();
+  });
+});
+
+test.describe('SSR without JavaScript', () => {
+  test.use({ javaScriptEnabled: false });
+
+  test('dashboard styles are available inside its ShadowRoot', async ({ page }) => {
+    await page.goto('/');
+
+    const card = page.locator('cb-page-dashboard cb-contact-card .card').first();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveCSS('display', 'flex');
+    await expect(card).toHaveCSS('align-items', 'center');
   });
 });
 
@@ -240,7 +317,7 @@ test.describe('client-side navigation', () => {
 test.describe('contact edit does not corrupt sidebar groups', () => {
   test('editing a contact group from Work to Friends keeps sidebar labels stable', async ({ page, request }) => {
     // Ensure contact #1 starts in group "Work" (reset from any prior test run)
-    await request.put('http://127.0.0.1:3013/api/contacts/1', { data: { group: 'Work' } });
+    await request.put('/api/contacts/1', { data: { group: 'Work' } });
 
     // Navigate to contact #1 (Sarah Chen, group: Work)
     await page.goto('/contacts/1');

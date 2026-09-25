@@ -14,6 +14,7 @@ fn create_test_protocol() -> WebUIProtocol {
     fragments.insert(
         "index.html".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("Hello, WebUI!\n"),
                 WebUIFragment::for_loop("person", "people", "for-1"),
@@ -26,6 +27,7 @@ fn create_test_protocol() -> WebUIProtocol {
     fragments.insert(
         "for-1".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::signal("person.name", false)],
         },
     );
@@ -33,6 +35,7 @@ fn create_test_protocol() -> WebUIProtocol {
     fragments.insert(
         "if-1".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::component("contact-card")],
         },
     );
@@ -40,6 +43,7 @@ fn create_test_protocol() -> WebUIProtocol {
     fragments.insert(
         "contact-card".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("Hello, "),
                 WebUIFragment::signal("name", false),
@@ -56,6 +60,7 @@ fn create_simple_protocol() -> WebUIProtocol {
     fragments.insert(
         "index.html".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("Hello, WebUI!\n"),
                 WebUIFragment::for_loop("person", "people", "for-1"),
@@ -66,6 +71,7 @@ fn create_simple_protocol() -> WebUIProtocol {
     fragments.insert(
         "for-1".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::signal("person.name", false)],
         },
     );
@@ -105,12 +111,14 @@ fn complex_condition_benchmark(c: &mut Criterion) {
     fragments.insert(
         "main".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::if_cond(nested, "then")],
         },
     );
     fragments.insert(
         "then".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::raw("ok")],
         },
     );
@@ -129,6 +137,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "index.html".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>"),
                 WebUIFragment::signal("title", false),
@@ -143,6 +152,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "app".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("<div class=\"app\"><header><h1>"),
                 WebUIFragment::signal("title", false),
@@ -161,6 +171,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "item-frag".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("<li"),
                 WebUIFragment::attribute("data-id", "item.id"),
@@ -182,6 +193,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "item-class-tmpl".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("todo-item "),
                 WebUIFragment::signal("item.state", false),
@@ -193,6 +205,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "done-badge".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![WebUIFragment::raw("<span class=\"badge done\">✓</span>")],
         },
     );
@@ -201,6 +214,7 @@ fn create_medium_protocol() -> WebUIProtocol {
     fragments.insert(
         "footer-frag".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("<footer><p>"),
                 WebUIFragment::signal("footerText", false),
@@ -233,6 +247,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
     fragments.insert(
         "index.html".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: root_frags,
         },
     );
@@ -241,6 +256,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
     fragments.insert(
         "nav-link-frag".to_string(),
         FragmentList {
+            contains_boundary: false,
             fragments: vec![
                 WebUIFragment::raw("<a"),
                 WebUIFragment::attribute("href", "link.url"),
@@ -264,6 +280,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
         fragments.insert(
             panel_id,
             FragmentList {
+                contains_boundary: false,
                 fragments: vec![
                     WebUIFragment::raw(format!("<section class=\"panel\" data-idx=\"{idx}\">")),
                     WebUIFragment::raw("<h3>"),
@@ -279,6 +296,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
         fragments.insert(
             body_id,
             FragmentList {
+                contains_boundary: false,
                 fragments: vec![
                     WebUIFragment::raw("<div class=\"panel-body\"><p>"),
                     WebUIFragment::signal("description", false),
@@ -292,6 +310,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
         fragments.insert(
             cond_id,
             FragmentList {
+                contains_boundary: false,
                 fragments: vec![
                     WebUIFragment::raw("<details><summary>More</summary><p>"),
                     WebUIFragment::signal("details", false),

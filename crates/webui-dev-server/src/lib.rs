@@ -24,6 +24,8 @@ pub mod livereload;
 pub mod path;
 pub mod reporter;
 pub mod serve;
+#[doc(hidden)]
+pub mod shutdown;
 pub mod watch;
 pub mod worker;
 
@@ -31,4 +33,4 @@ pub use livereload::{sse_handler, LiveReload, ReloadEvent};
 pub use reporter::{local_hms, RebuildReporter};
 pub use serve::{serve_file_response, serve_static_file, NotFoundStrategy, StaticServeConfig};
 pub use watch::{default_ignore_paths, spawn_watcher, WatchConfig, WatcherHandle};
-pub use worker::{spawn_rebuild_worker, RebuildError, TickSender};
+pub use worker::{spawn_rebuild_worker, RebuildError, RebuildWorker, TickSender};

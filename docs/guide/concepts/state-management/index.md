@@ -39,7 +39,11 @@ The handler resolves paths using `find_value_by_dotted_path`. Supported patterns
 | Array index | `items.0.label` | `"First"` |
 | Array length | `items.length` | `2` |
 
-Paths are resolved at render time. If a path doesn't exist in the state, the Rust handler treats it as a missing value: text and attribute bindings render as empty, and `<if>` conditions using that path evaluate to `false` (the block is not rendered). No error is reported for missing paths by default.
+Paths are resolved at render time. If a path doesn't exist in the state, text
+and attribute bindings render as empty. In conditions, a missing identifier is
+a falsy operand: `<if condition="path">` does not render, while
+`<if condition="!path">` does render. No error is reported for a missing
+identifier path.
 
 ## State in Loops
 
@@ -122,7 +126,11 @@ The `<for>` directive iterates over arrays. Each item should be a self-contained
 
 ### Provide all state upfront
 
-Unlike client-side frameworks that fetch data on mount, WebUI renders in a single pass. The state object should contain everything the template needs for first render. Missing values render as empty output (for text and attribute bindings) or evaluate to `false` (for `<if>` conditions) - no error is reported.
+Unlike client-side frameworks that fetch data on mount, WebUI renders in a
+single pass. The state object should contain everything the template needs for
+first render. Missing values render as empty output for text and attribute
+bindings. A missing condition identifier is falsy before logical operators are
+applied, so its positive branch is hidden and its negated branch is shown.
 
 ```json
 // ✅ Complete - every binding has data

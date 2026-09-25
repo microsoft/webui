@@ -68,11 +68,12 @@ export async function resolveLoaders(
   query: Record<string, string>,
   signal?: AbortSignal,
   ssrBoot?: boolean,
-): Promise<Map<string, Record<string, unknown> | typeof LOADER_FAILED>> {
-  const results = new Map<string, Record<string, unknown> | typeof LOADER_FAILED>();
+): Promise<Map<RouteChainEntry, Record<string, unknown> | typeof LOADER_FAILED>> {
+  const results = new Map<RouteChainEntry, Record<string, unknown> | typeof LOADER_FAILED>();
 
   // Collect only entries that have loaders
   type LoaderEntry = {
+    entry: RouteChainEntry;
     component: string;
     params: Record<string, string>;
     loaderFn: (ctx: RouteLoaderContext) => Promise<Record<string, unknown>>;
@@ -94,7 +95,12 @@ export async function resolveLoaders(
     ) | undefined;
     if (!ctor || typeof ctor.loader !== 'function') continue;
 
-    loaderEntries.push({ component: entry.component, params: entry.params, loaderFn: ctor.loader });
+    loaderEntries.push({
+      entry,
+      component: entry.component,
+      params: entry.params,
+      loaderFn: ctor.loader,
+    });
   }
 
   // Early exit — no loaders in this chain
@@ -102,11 +108,11 @@ export async function resolveLoaders(
 
   const effectiveSignal = signal ?? NOOP_SIGNAL;
 
-  await Promise.all(loaderEntries.map(async ({ component, params, loaderFn }) => {
+  await Promise.all(loaderEntries.map(async ({ entry, component, params, loaderFn }) => {
     try {
       const state = await loaderFn({ params, query, signal: effectiveSignal });
       if (!effectiveSignal.aborted && state) {
-        results.set(component, state);
+        results.set(entry, state);
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -115,7 +121,7 @@ export async function resolveLoaders(
         err,
       );
       // Mark as failed so callers fall back to server state (not local state)
-      results.set(component, LOADER_FAILED);
+      results.set(entry, LOADER_FAILED);
     }
   }));
 

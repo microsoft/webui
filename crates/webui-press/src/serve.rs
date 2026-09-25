@@ -31,13 +31,14 @@ use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{anyhow, Context, Result};
 use console::style;
 use webui_dev_server::path::normalize_base_path;
+use webui_dev_server::shutdown::Control;
 use webui_dev_server::{
     default_ignore_paths, serve_static_file, spawn_rebuild_worker, spawn_watcher, sse_handler,
     LiveReload, NotFoundStrategy, StaticServeConfig, WatchConfig, WatcherHandle,
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
-use crate::types::DocsConfig;
+use crate::types::{DocsConfig, ShowMode};
 
 /// Filesystem-event debounce window. Editors often save in multiple bursts;
 /// a single rebuild per burst feels right.
@@ -55,10 +56,12 @@ pub struct ServeConfig {
     pub config_path: PathBuf,
     pub host: String,
     pub port: u16,
+    /// Explicit CLI display-mode override, reapplied after each config reload.
+    pub show_override: Option<ShowMode>,
 }
 
 /// Run the dev server until interrupted.
-pub async fn run_serve(opts: ServeConfig) -> Result<()> {
+pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()> {
     let ServeConfig {
         config,
         config_dir,
@@ -66,6 +69,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         config_path,
         host,
         port,
+        show_override,
     } = opts;
     let base_path = normalize_base_path(&config.base_path);
     // Match `build_docs` semantics: `out_dir`, `content_dir`, and
@@ -74,6 +78,13 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     let out_dir = PathBuf::from(&config.out_dir);
     let content_dir_str = config.content_dir.clone();
     let public_dir_str = config.public_dir.clone();
+    let projection_manifest_files = projection_manifest_paths(
+        &config_dir,
+        config
+            .bundler
+            .as_ref()
+            .map_or(&[][..], |bundler| bundler.projection_manifests.as_slice()),
+    );
 
     println!(
         "{} {}",
@@ -88,7 +99,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     // amortizing across rebuilds — every other build step runs from
     // scratch).
     let initial_cache: BuildCache = {
-        let cfg = clone_config_via_reparse(&config_path)?;
+        let cfg = clone_config_via_reparse(&config_path, show_override)?;
         let cd = config_dir.clone();
         let td = template_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<BuildCache> {
@@ -117,13 +128,13 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     // itself, so the mutex is uncontended in practice.
     let cache = Arc::new(Mutex::new(initial_cache));
 
-    let tick_tx = {
+    let worker = {
         let config_path = config_path.clone();
         let config_dir = config_dir.clone();
         let template_dir = template_dir.clone();
         let cache = cache.clone();
         spawn_rebuild_worker(livereload.clone(), move || {
-            let cfg = clone_config_via_reparse(&config_path)
+            let cfg = clone_config_via_reparse(&config_path, show_override)
                 .map_err(|e| format!("config reload failed: {e}"))?;
             let mut guard = cache
                 .lock()
@@ -135,8 +146,8 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         })
     };
 
-    let _watcher: WatcherHandle = {
-        let tx = tick_tx.clone();
+    let watcher: WatcherHandle = {
+        let tx = worker.sender();
         let watched = watch_paths(
             &config_dir,
             &config_path,
@@ -149,7 +160,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         spawn_watcher(
             WatchConfig {
                 paths: watched,
-                explicit_files: Vec::new(),
+                explicit_files: projection_manifest_files,
                 ignore,
                 debounce: DEBOUNCE_DURATION,
                 retry_unchanged_when: None,
@@ -182,21 +193,29 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     );
     println!();
 
-    HttpServer::new(move || {
+    let mut server = HttpServer::new(move || {
         App::new()
             .app_data(static_data.clone())
             .app_data(lr_data.clone())
             .route(RELOAD_PATH, web::get().to(sse_handler))
             .default_service(web::get().to(static_handler))
-    })
-    .bind(&bind)
-    .with_context(|| format!("Cannot bind {bind}"))?
-    .run()
-    .await
-    .context("Dev server failed")?;
+    });
+    if control.is_some() {
+        server = server.disable_signals();
+    }
+    let server = server
+        .bind(&bind)
+        .with_context(|| format!("Cannot bind {bind}"))?
+        .run();
+    let server_result: Result<()> = match control {
+        Some(control) => control.serve(server).await.map_err(Into::into),
+        None => server.await.map_err(Into::into),
+    };
+    let server_result = server_result.context("Dev server failed");
 
-    // Hold the watcher until the server returns so it isn't dropped early.
-    drop(_watcher);
+    drop(watcher);
+    worker.shutdown()?;
+    server_result?;
     Ok(())
 }
 
@@ -265,12 +284,30 @@ fn watch_paths(
     paths
 }
 
+fn projection_manifest_paths(config_dir: &Path, manifests: &[String]) -> Vec<PathBuf> {
+    manifests
+        .iter()
+        .map(|manifest| {
+            let path = config_dir.join(manifest);
+            path.canonicalize().unwrap_or(path)
+        })
+        .collect()
+}
+
 /// Re-read and parse `config.json`. Used both to seed the initial build
 /// and inside the rebuild worker so live edits to the config take effect.
-fn clone_config_via_reparse(config_path: &Path) -> Result<DocsConfig> {
+fn clone_config_via_reparse(
+    config_path: &Path,
+    show_override: Option<ShowMode>,
+) -> Result<DocsConfig> {
     let s = std::fs::read_to_string(config_path)
         .with_context(|| format!("Cannot read {}", config_path.display()))?;
-    serde_json::from_str(&s).with_context(|| format!("Invalid JSON in {}", config_path.display()))
+    let mut config: DocsConfig = serde_json::from_str(&s)
+        .with_context(|| format!("Invalid JSON in {}", config_path.display()))?;
+    if let Some(show) = show_override {
+        config.show = show;
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -317,6 +354,21 @@ mod tests {
                 PathBuf::from("/proj/.webui-press"),
                 PathBuf::from("/proj/markdown"),
             ]
+        );
+    }
+
+    #[test]
+    fn projection_manifest_paths_resolve_from_config_directory() {
+        let paths = projection_manifest_paths(
+            Path::new("/proj/docs/.webui-press"),
+            &["../../client/dist/webui-projection.json".to_string()],
+        );
+
+        assert_eq!(
+            paths,
+            [PathBuf::from(
+                "/proj/docs/.webui-press/../../client/dist/webui-projection.json"
+            )]
         );
     }
 }

@@ -2,22 +2,18 @@
 // Licensed under the MIT license.
 
 // WebUI Docs — hydration entry point.
-// Imports interactive components for client-side behavior.
-
-import "./docs-theme-toggle/docs-theme-toggle.js";
-import "./docs-search/docs-search.js";
+// Interactive components are discovered from the active template regions.
 
 // Hash anchor scrolling
 if (window.location.hash) {
-  const el = document.querySelector(window.location.hash);
-  if (el) el.scrollIntoView();
-}
-
-// Mobile sidebar toggle
-const mobileBtn = document.getElementById("mobile-menu-btn");
-if (mobileBtn) {
-  mobileBtn.addEventListener("click", () => {
-    const sidebar = document.querySelector(".sidebar");
-    if (sidebar) sidebar.classList.toggle("open");
-  });
+  const rawAnchor = window.location.hash.slice(1);
+  let anchor = rawAnchor;
+  try {
+    anchor = decodeURIComponent(rawAnchor);
+  } catch (error) {
+    if (!(error instanceof URIError)) {
+      throw error;
+    }
+  }
+  document.getElementById(anchor)?.scrollIntoView();
 }

@@ -2,10 +2,13 @@
 
 The WebUI FFI (Foreign Function Interface) handler exposes the loaded-protocol
 rendering pipeline as a C-compatible shared library. Any language with C
-interop, Go, Python, Ruby, PHP, Lua, and more, can render compiled WebUI
-applications without a JavaScript runtime. .NET applications should prefer the
-managed `Microsoft.WebUI` NuGet package, which restores native runtime packages
-transitively.
+interop, Go, Ruby, PHP, Lua, and more, can render compiled WebUI applications
+without a JavaScript runtime. .NET applications should prefer the managed
+`Microsoft.WebUI` NuGet package, which restores native runtime packages
+transitively, and Python applications should prefer the native
+`microsoft-webui` package (see [Python](./python)). .NET wraps this C ABI;
+Python binds the Rust handler directly through PyO3. Only languages without a
+first-class binding need to call the C ABI directly.
 
 ## Building the Shared Library
 
@@ -122,11 +125,29 @@ Set the CSP nonce for inline tags on a handler instance. When set, all subsequen
 
 The nonce is written verbatim — pass the raw base64 string without any encoding. The same value should appear in your `Content-Security-Policy` header.
 
-::: warning Thread Safety
-Concurrent render calls are supported after configuration. Do not call
+**Thread safety.** Concurrent render calls are supported after configuration. Do not call
 `webui_handler_set_nonce` or `webui_handler_destroy` while another operation is
 using the same handler.
-:::
+
+### Reserved `$webui` state channel
+
+A top-level `$webui` object in the render state JSON passed to
+`webui_handler_render` (or a streaming session) may carry `headEnd`,
+`bodyStart`, and `bodyEnd` strings, each emitted **raw** at the matching
+structural boundary (before `</head>`, after `<body>`, before `</body>`):
+
+```json
+{"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
+```
+
+Members that are missing, `null`, empty, or not strings are ignored rather than
+an error. The `$webui` key is stripped from the client hydration payload, so it
+never reaches the DOM. No extra API call is needed — it travels on the state
+JSON hosts already send.
+
+**Safety.** The values are written verbatim with no escaping, exactly like the
+Rust `head_inject` / `body_inject` options. Never let untrusted request input
+reach the `$webui` key.
 
 ### webui_protocol_create / webui_protocol_destroy
 
@@ -182,6 +203,87 @@ The explicit create/destroy pair is the C representation of the normal
 identity is not content identity, and hashing or copying on every request would
 erase the startup-only performance model.
 
+### Progressive streaming sessions
+
+A streaming session lets a C host render one response in chunks it writes
+itself. Start, resume, and advance return owned step handles with borrowed byte
+slices; update returns an owned byte buffer. WebUI never touches your socket,
+so backpressure and cancellation stay yours.
+
+```c
+webui_streaming_session_t *session = webui_streaming_session_create(
+    handler, protocol, "index.html", "/");
+
+webui_streaming_step_t *step =
+    webui_streaming_session_start(session, initial_state_json);
+if (step == NULL) {
+    fprintf(stderr, "%s\n", webui_last_error());
+}
+
+while (step != NULL) {
+    uintptr_t bytes_len = 0;
+    const uint8_t *bytes = webui_streaming_step_bytes(step, &bytes_len);
+    send_all(socket, bytes, bytes_len);
+    if (webui_streaming_step_done(step)) {
+        webui_streaming_step_destroy(step);
+        break;
+    }
+
+    if (webui_streaming_step_has_boundary(step)) {
+        /* Copies owner, name, typed key, and IDs from the step accessors. */
+        struct app_boundary target = copy_boundary_descriptor(step);
+        webui_streaming_step_destroy(step);
+
+        const char *state_json = load_state(&target);
+        step = webui_streaming_session_resume(
+            session,
+            target.instance_id,
+            state_json,
+            WEBUI_BOUNDARY_MODE_FINAL);
+        free_boundary_descriptor(&target);
+    } else {
+        webui_streaming_step_destroy(step);
+        step = webui_streaming_session_advance(session);
+    }
+    if (step == NULL) {
+        fprintf(stderr, "%s\n", webui_last_error());
+        break;
+    }
+}
+
+webui_streaming_session_destroy(session);
+```
+
+| Function | Result |
+|----------|--------|
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Session handle, or `NULL`. Inherits the handler's nonce (set with `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json`, not through this call. |
+| `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
+| `webui_streaming_session_start(session, state_json)` | Owned step through the first runtime occurrence or terminal, or `NULL` |
+| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Owned step containing only the pending occurrence through its checkpoint |
+| `webui_streaming_session_advance(session)` | Owned step containing following parent bytes through the next occurrence or terminal |
+| `webui_streaming_session_update(session, instance_id, patch_json, out_len)` | Projected state bytes for a committed updatable occurrence |
+| `webui_streaming_step_bytes(step, out_len)` | Borrow binary-safe step bytes until destroy |
+| `webui_streaming_step_done(step)` / `webui_streaming_step_has_boundary(step)` | Read completion and descriptor presence |
+| `webui_streaming_step_boundary_*` | Read IDs, owner/name slices, key type, and typed key |
+| `webui_streaming_step_destroy(step)` | Release the opaque step and all borrowed pointers |
+
+`webui_streaming_step_t` is opaque. Step bytes, owner, name, and string keys are
+borrowed slices with explicit lengths and are not NUL-terminated. Key type is
+none, string, or number; numeric keys are returned as `double`. Copy any
+descriptor values needed after destroying the step. Free update bytes with
+`webui_free`.
+
+If a step has a descriptor, call `resume`. If it has neither a descriptor nor
+`done`, call `advance`. If `done` is true, the response is complete. `resume`
+is boundary-only so the host can send that checkpoint immediately; `advance`
+renders the following parent or document-tail bytes. No sibling boundary is
+needed. An update may be emitted between `resume` and `advance`.
+
+The session clones its own references to the handler and protocol, so you may
+destroy them in any order. Drive a session from one thread at a time. See
+[Streaming Boundaries](/guide/concepts/directives/boundary) for the authoring
+and occurrence rules.
+
 ## Error Handling
 
 The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:
@@ -214,10 +316,13 @@ Two rules to remember:
 |---|---|---|
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
+| Streaming update bytes | Caller | `webui_free(ptr)` |
+| Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_protocol_create` | Caller | `webui_protocol_destroy(ptr)` |
+| `webui_streaming_session_create` | Caller | `webui_streaming_session_destroy(ptr)` |
 
 ## Using Plugins
 
@@ -246,7 +351,19 @@ Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](
 
 ## Python
 
-Python's built-in `ctypes` module can load the shared library directly. No pip packages needed.
+Most Python applications should use the `microsoft-webui` package
+instead of using this FFI directly — it is a native PyO3 binding (not a
+`ctypes` wrapper) with a `Renderer` facade, typed `bytes`/`str` returns, and a
+host-driven `StreamingSession`. See [Python](./python) for installation and
+examples.
+
+### Advanced fallback: `ctypes`
+
+Platforms the `microsoft-webui` wheel matrix doesn't cover (musllinux, 32-bit,
+PyPy, GraalPy, free-threaded builds) can still reach WebUI by loading the
+shared library directly with Python's built-in `ctypes` module. No pip
+packages are needed, but you own memory management, argument marshalling, and
+thread-safety yourself.
 
 ```python
 import ctypes
@@ -369,6 +486,38 @@ string html = handler.Render(
 Custom P/Invoke bindings should mirror this lifecycle and receive returned
 strings as `IntPtr`, copy them with `Marshal.PtrToStringUTF8`, then release them
 with `webui_free`.
+
+The package also wraps the streaming session, so an ASP.NET endpoint can pace a
+progressive response without touching the native ABI:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+Response.ContentType = "text/html; charset=utf-8";
+StreamingStep step = session.Start(initialState);
+while (true)
+{
+    await Response.Body.WriteAsync(step.Bytes);
+    await Response.Body.FlushAsync();
+    if (step.Done) break;
+
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadStateAsync(
+            boundary.Owner,
+            boundary.Name,
+            boundary.Key);
+        step = session.Resume(boundary.InstanceId, state, BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
+}
+```
+
+Each call returns a `byte[]`, so `HttpResponse.Body` keeps its own write and
+flush semantics. Failures throw `WebUIException` carrying the same diagnostic
+`webui_last_error()` would report. See the [.NET integration](./dotnet).
 
 ## Other Languages
 

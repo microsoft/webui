@@ -15,9 +15,9 @@ This document is for framework contributors, plugin authors, and anyone debuggin
 
 WebUI is built on a hard rule: the server emits HTML, the browser parses HTML, and the framework adopts that HTML in place. Nothing is re-rendered. No virtual DOM, no diff against a fresh tree, no `innerHTML = ...` to swap content. To make that work without DOM annotations on every dynamic node, the framework leans on:
 
-- compiled template metadata (path indices, not selectors),
+- compiled template metadata (element indices, not selectors),
 - five lightweight HTML comment markers around structural blocks,
-- a parallel walk of the SSR DOM and the parsed template DOM to keep ordinals aligned,
+- a single pre-order walk pairing the SSR DOM with the parsed template DOM,
 - a per-component path index so reactive updates touch only the bindings that actually depend on a changed property.
 
 The rest of this document explains each of those pieces, in the order the runtime executes them.
@@ -41,7 +41,7 @@ Compile metadata        Inject SSR markers         existing DOM,
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
 5. **`$applySSRState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.state` so reactive bindings observe values that match the painted DOM.
-6. **`$hydrate` walks the DOM once.** Text, attribute, conditional, repeat, and event bindings are resolved by a single in-order pass that uses path indices plus marker-aware ordinal traversal.
+6. **`$hydrate` walks the DOM once.** One marker-aware pre-order pass numbers the subtree; text, attribute, conditional, repeat, and event bindings then resolve by index. The attribute pass also transfers known complex `:` values. An unupgraded compiled WebUI child holds those values behind a weak key and consumes them after bootstrap but before its own binding walk, without a promise or strong retained element reference.
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 
@@ -61,13 +61,13 @@ The handler emits exactly five comment markers, all defined in `src/element/mark
 | `<!--wc-->` | Conditional block start (one per `<if>`) |
 | `<!--/wc-->` | Conditional block end |
 
-Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled path indices.
+Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled element indices.
 
 ### Why markers exist for blocks but not bindings
 
-Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled path indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from path indices alone. The markers make that boundary explicit.
+Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from those indices alone. The markers make that boundary explicit.
 
-Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a path index plus a marker-aware ordinal walk is enough.
+Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a pre-order element index is enough.
 
 ### Example
 
@@ -98,13 +98,18 @@ Server output:
 </template>
 ```
 
-Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Path indices reach those.
+Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Pre-order element indices reach those.
 
 ### Marker removal is deferred
 
-`<!--/wc-->`, `<!--/wr-->`, and `<!--wi-->` must remain in the DOM for the **entire** hydration pass, because the ordinal-traversal algorithm uses marker pairs to skip block content when counting siblings. Removing a closing marker mid-pass corrupts later resolution calls. The framework collects them into a `staleMarkers` array and deletes them after `$finalize` (events + refs).
+`<!--/wc-->`, `<!--/wr-->`, and `<!--wi-->` must remain in the DOM for the **entire** hydration pass, because the walk uses marker pairs to skip block content. Removing a closing marker mid-pass corrupts later resolution calls. The framework collects them into a `staleMarkers` array and deletes them after `$finalize` (events + refs).
 
 `<!--wc-->` and `<!--wr-->` start markers are kept after hydration as runtime anchors. They are the insertion points used when the condition flips or the repeat collection grows.
+
+The removed closing markers make structural SSR hydration intentionally
+one-shot. If delayed disconnect cleanup destroys a hydrated binding graph,
+reconnect remounts templates containing conditions or repeats from current
+component state rather than trying to claim the marker-stripped DOM again.
 
 Hydration assumes SSR DOM, marker comments, and compiled metadata come from the same trusted WebUI compiler/handler version. Hand-edited marker streams are unsupported; every `<!--wr-->` and `<!--wc-->` must have its matching closing marker.
 
@@ -128,7 +133,6 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
       "r": [["items", "item", 1, [[0], 0]]],
       "eg": [],
       "b": [],
-      "sa": "todo-app",
       "sd": 1,
       "re": []
     }
@@ -141,20 +145,19 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
-| `tx` | Text-binding runs, slot path + parts. |
+| `tx` | Text-binding runs, ordered slot + parts. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
-| `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
-| `re` | Root-level host events (attached to the host element, not the shadow root). |
+| `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
 
 The same metadata serves both paths:
 
-- **SSR hydration** reads paths to compute ordinals, which are then translated against the live SSR DOM.
-- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, walks paths directly, and applies initial bindings before the staged nodes are appended to the connected DOM.
+- **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
+- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM.
 
 ### Condition references
 
@@ -173,42 +176,63 @@ before hydration or client-created wiring.
 
 ---
 
-## DOM resolution: two algorithms, one metadata
+## DOM resolution: one numbering, two walks
 
-### `$resolve` (client-created)
+Every locator names an element by its **pre-order index** within its own
+compiled section: `0` is the section root, and elements are numbered `1..N` in
+the order a depth-first walk of `h` meets them. The root template and each
+`<if>` / `<for>` block number independently, matching the `b[]` split.
 
-The DOM was cloned from `meta.h`, so child-node indices line up. Resolution is a flat index walk:
+Both paths rebuild that numbering in a single walk, then resolve every binding
+by array index.
 
-```typescript
-let cur: Node = root;
-for (const idx of path) {
-  cur = cur.childNodes[idx];   // path = [1, 0] → root.childNodes[1].childNodes[0]
-}
-return cur;
-```
+### `collectTemplateElements` (client-created)
 
-### `$resolveSSR` (server-rendered)
+The DOM was cloned from `meta.h`, so it matches the template node for node. A
+plain pre-order walk reproduces the compiled indices - no markers are involved
+and nothing is skipped.
 
-The SSR DOM contains extra content the static template does not, specifically the rendered bodies of `<if>` and `<for>` blocks delimited by markers. Naive child-index walking would land on the wrong node after the first block.
+### `buildSSRIndex` (server-rendered)
 
-`$resolveSSR` walks the SSR DOM and the parsed template DOM **in parallel**. At each step:
+The SSR DOM contains extra content the static template does not: the rendered
+bodies of `<if>` and `<for>` blocks, delimited by markers. The walk pairs the
+template with the server output in lockstep and **skips entire
+`<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->` ranges** (with depth
+tracking for nested blocks), because that content belongs to the block's own
+metadata. This is why closing markers must survive the whole hydration pass:
+they delimit the regions to skip.
 
-1. Look up the next template-side child's `nodeType` (element vs text) and its **ordinal among same-type siblings** in the template. This lookup is cached per-template-node in a `WeakMap` to avoid recounting.
-2. Call `findByOrdinal(ssrParent, nodeType, ordinal)`, which walks SSR siblings, **skips entire `<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->` ranges** (with depth tracking for nested blocks), and returns the Nth element-or-text of the requested type.
+The same pass collects `<!--wc-->` and `<!--wr-->` markers in document order.
+The compiler emits `c` / `r` in source order and the server renders in source
+order, so the two line up by index - which is what makes each block's anchor
+unambiguous.
 
-This is why closing markers must survive the whole hydration pass: they delimit the regions to skip.
+Two details shape the walk:
 
-### `$findSSRText`
+- The counter follows the **template**, never the server output. A run of
+  missing SSR elements leaves holes rather than shifting every later index onto
+  the wrong node.
+- It descends where the template has children, and also into a template-empty
+  element when the section has blocks to place - `<ul><for …></ul>` compiles to
+  an empty `<ul>`. Child components are the exception: they contribute no
+  children to the parent's `h`, so whatever the server rendered inside belongs
+  to them.
 
-A specialized variant of `$resolveSSR` for text bindings. The compiler emits text-slot positions as `[parentPath, beforeIndex]` where `beforeIndex` is the static template's child index. `$findSSRText` walks SSR text-node ordinals up to that index, again skipping marker ranges.
+### Text slot boundaries
 
----
+Text bindings cannot use the pre-order element table directly because that
+table contains only elements. The compiler instead emits each dynamic slot as
+`[parentIndex, beforeIndex, order?]`. `order` disambiguates text, conditional,
+and repeat bindings removed at the same static child offset.
 
-## Ordinal cache
-
-`getTplOrdinals(tplNode)` returns a `Map<childIndex, [nodeType, ordinal]>` cached in a `WeakMap` keyed by the template-DOM node. The map is built once on first access and reused for every binding inside that block.
-
-This avoids quadratic behaviour when a block has dozens of bindings: without the cache, every binding would re-walk the parent's children to count element vs text ordinals. With the cache, each parent is walked once per block lifetime.
+During hydration, the runtime finds the slot's right-hand boundary: the next
+co-located structural marker by `order`, or the next static child. A
+server-rendered text node is the boundary's immediate previous sibling. When an
+empty server value produced no text node, the runtime inserts one at that exact
+boundary. The text-to-marker relation is encoded once into an `Int32Array`
+cached by template metadata, so every instance resolves a structural boundary
+in O(1) without retaining a `Map`. This avoids rescanning sibling ranges and
+prevents adjacent dynamic slots from claiming the same text node.
 
 ---
 
@@ -280,21 +304,38 @@ Synchronous escape hatch. Call it when you need the DOM to reflect pending write
 
 Implemented in `src/element/diff.ts`.
 
-### Keyed mode
+### Positional mode (default)
 
-When the repeat block's root element has at least one attribute binding (e.g. `<todo-item id="{{item.id}}">`), the **first attribute** is treated as the key. On collection change:
+Every repeat matches items by array index:
 
-1. Build a `Map<key, existingInstance>` from current items.
-2. Walk the new collection in order. For each new item:
-   - If a matching key exists, reuse the existing DOM and move it into position.
-   - Otherwise, create a new instance from the block template.
-3. Anything left in the map after the walk is destroyed.
+1. Rebind the shared prefix of existing instances to the current items.
+2. Append instances for any new tail.
+3. Destroy instances in any excess old tail.
 
-Reused instances keep their event listeners, computed state, and any focus/scroll/selection state in their DOM.
+Repeated-root attributes are never inferred as keys. Duplicate values and
+attributes are therefore safe, and attribute order has no effect on identity.
+On reorder, reused instances keep local browser and component state at their
+positions while bindings update to the new positional items.
 
-### Sequential mode
+### Explicit-key mode
 
-When the repeat root has no attribute bindings, items are matched by index. Excess items are destroyed; new items are appended. Cheaper but loses identity on reorder.
+`<for each="item in items"><x key="{{item.id}}"></x></for>` compiles the
+relative path `id` from the first child as an optional fifth repeat metadata
+field. `key="{{item}}"` compiles an empty path and keys primitive items
+directly. `key` is compiler-only: it is omitted from SSR HTML, client `h`, and
+attribute metadata. `data-key` is an ordinary application attribute and has no
+identity semantics. Unkeyed repeat bindings do not allocate key state.
+
+Explicit keys must resolve to unique strings or finite numbers. The runtime
+validates the complete next key set before changing DOM, scopes, or instances.
+Stable order, append, and truncate use the positional/prefix fast path. A real
+order change fills one reusable map from old keys to instances, reorders the
+instances, and then clears the map and scratch arrays.
+
+Duplicate, invalid, or throwing key reads clear established identity, warn
+once, and use positional reconciliation. A later valid update first reconciles
+positionally and establishes fresh identity; subsequent updates can move by
+key.
 
 ### SSR repeat reading
 
@@ -307,6 +348,14 @@ frame remains unknown and its SSR bindings are preserved during unrelated
 updates. A later explicit collection reconciles the repeat normally; an
 explicit empty collection removes the SSR items. The `<!--wi-->` markers are
 then collected for deletion.
+
+SSR item markers do not contain separate key values. When bootstrap collection
+state exists and its length matches the hydrated instance count, hydration
+derives typed keys by index from that collection. Missing state, a count
+mismatch, or invalid keys leave identity unestablished, so the next valid
+update reconciles positionally once before establishing fresh keys. This uses
+the same invariant as repeat scope hydration: SSR HTML and bootstrap state
+represent the same render.
 
 ---
 
@@ -328,8 +377,10 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element, installs one delegated listener per event name, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
-- **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
+
+  Bindings are never delegated to the render root. `$wireEvents` runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
+- **Root events** (`re` field): used for `@custom-event` on the component's `<template>` root. Attached to the **host element**, the only node that observes both events dispatched on the host itself (which never enter the shadow tree) and `composed` events on their way out of it. Non-composed events (`change`, `submit`, `select`, media) stop at the shadow root by design and are bound per element instead. Because the listener is on the host, `event.target` is retargeted to the host for inner events — use `event.composedPath()[0]` to recover the originating element.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
 
@@ -337,24 +388,33 @@ Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` vi
 
 ## CSS strategies
 
-Three delivery modes, set by the compiler from `<link>` / `<style>` declarations in the source HTML:
+Three delivery modes are set by the compiler:
 
 | Strategy | How it works |
 |---|---|
-| **Link** | `<link rel="stylesheet">` baked into `meta.h`. The browser fetches it normally. |
-| **Inline** | `<style>` element baked into `meta.h`. No extra request. |
-| **Module** | A `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` block in the page payload registers the CSS as a module. The framework retrieves the same `CSSStyleSheet` via `import(tag, { with: { type: 'css' } })` and applies it to every instance via `adoptedStyleSheets` (`meta.sa` carries the specifier). |
+| **Link** | Installs an external stylesheet resource |
+| **Style** | Installs compiled CSS in a `<style>` element |
+| **Module** | Starts with an SSR style fallback, then imports and adopts a shared `CSSStyleSheet` |
 
-Module sheets are cached, so each instance pays the cost of one `adoptedStyleSheets` push, not a full CSS parse.
+Compiler-ordered closures install resources once per Document or ShadowRoot.
+Partial navigation, progressive streaming, and component assets share the same
+required `componentStyles` catalog. Module resources carry their CSS directly;
+the catalog installs each specifier's import map once per owning Document
+before importing it, then reuses the cached parsed sheet for every target.
 
 ---
 
 ## Light DOM vs Shadow DOM
 
-Set by the compiler via `--dom` flag, surfaced as `meta.sd`:
+Unwrapped components follow the build fallback: Shadow by default, or Light with
+`dom: "light"`. A sole bare top-level `<template>` explicitly selects Light and
+is unwrapped; a sole top-level `<template shadowrootmode="open">` always selects
+Shadow. The effective result is surfaced as `meta.sd`:
 
 - **Shadow DOM** (`meta.sd` truthy): SSR uses Declarative Shadow DOM. Client-created instances call `attachShadow({ mode: 'open' })`. Slot content stays in light DOM and projects through.
-- **Light DOM**: SSR renders children directly into the host. Client-created instances populate the host's `appendChild` slot. No style isolation; CSS lives globally or on the host.
+- **Light DOM**: SSR renders children directly into the host. Client-created
+  instances populate the host. Authored/global CSS is installed in the owning
+  Document or ShadowRoot, and native `<slot>` is rejected at build time.
 
 `$mount` auto-detects:
 
@@ -362,6 +422,9 @@ Set by the compiler via `--dom` flag, surfaced as `meta.sd`:
 - Children present and `meta.sd` not set → light DOM SSR.
 - `meta.sd` set, no shadow root → shadow DOM client-created (existing children become slot content).
 - Otherwise → light DOM client-created.
+
+Style resources follow compiler-ordered closures and install once per Document
+or ShadowRoot. A ShadowRoot is a closure cut point.
 
 ---
 
@@ -382,7 +445,11 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
-The `webui:hydration-complete` event fires once after the last component on the page finishes. Use it to gate post-hydration logic or to ship a metric.
+The `webui:hydration-complete` event fires once after the parser-startup
+hydration cohort settles. For lazy roots, the cohort waits for the first
+intersection result: initially visible roots finish first, while dormant roots
+do not keep the event open or redispatch it later. Use `hydratedCallback()` for
+per-instance readiness.
 
 ---
 
@@ -393,8 +460,7 @@ The `webui:hydration-complete` event fires once after the last component on the 
 | Initial hydration | O(bindings) | Single pass over compiled paths |
 | Reactive update | O(affected) | Path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create or destroy a block instance |
-| Repeat reconciliation (keyed) | O(items) | Map lookup per item, in-place moves |
-| Repeat reconciliation (sequential) | O(items) | Linear scan, append/remove tail |
+| Repeat reconciliation | O(items) | Positional scan; keyed map only for changed explicit-key order |
 | Event wiring | O(events) | One-time during hydration |
 
 ### What the framework does NOT do
@@ -412,13 +478,14 @@ The `webui:hydration-complete` event fires once after the last component on the 
 ```
 src/
 ├── element.ts                  Orchestrator: $mount, $hydrate, $wire,
-│                               $resolve, $resolveSSR, $update, events,
+│                               $wire, $hydrate, $update, events,
 │                               teardown, path index
 ├── element/
 │   ├── markers.ts              Marker constants, collectItemMarkers,
-│   │                           findByOrdinal (block-skipping ordinal walk)
-│   ├── diff.ts                 syncRepeat: keyed + sequential reconciliation
-│   ├── styles.ts               injectModuleStyle (adopted CSS modules)
+│   │                           buildSSRIndex (block-skipping pre-order walk)
+│   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
+│   ├── styles.ts               componentStyles catalog, installComponentStyles
+│   │                           (Link/Style/Module resources, import maps)
 │   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
 │                               TextBinding, ScopeFrame, TemplateInstance
 ├── decorators.ts               @observable, @attr, attribute name registry,
@@ -454,6 +521,6 @@ Everything else is internal and may change without notice.
 ## Where to look next
 
 - `examples/app/todo-webui` — minimal SSR + interactivity example
-- `examples/app/contact-book-manager` — repeat blocks, keyed reconciliation
+- `examples/app/contact-book-manager` — repeat block reconciliation
 - `examples/app/commerce` — larger composition, multiple components per page
 - [Interactivity guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — component-author view of the same machinery

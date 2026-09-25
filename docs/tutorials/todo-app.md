@@ -378,8 +378,7 @@ When the page loads:
    elements.
 3. The framework matches each element to its class, re-attaches event listeners,
    and activates reactive bindings.
-4. The `webui:hydration-complete` event fires once every component on the page
-   has been hydrated. The timing breakdown shows how long each component took.
+4. The `webui:hydration-complete` event fires once initial hydration settles.
 
 ---
 

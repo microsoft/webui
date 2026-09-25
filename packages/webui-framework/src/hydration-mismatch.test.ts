@@ -33,8 +33,15 @@ import {
 // The comparators only read getAttribute/hasAttribute, Text.data,
 // Element.innerHTML, and instance counts, so plain objects suffice — no DOM.
 
-function fakeEl(attrs: Record<string, string> = {}, innerHTML = ''): Element {
+function fakeEl(
+  attrs: Record<string, string> = {},
+  innerHTML = '',
+  localName = 'div',
+  properties: Record<string, unknown> = {},
+): Element {
   return {
+    localName,
+    ...properties,
     getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
     hasAttribute: (n: string) => n in attrs,
     innerHTML,
@@ -79,12 +86,12 @@ describe('textDiffersFromDom', () => {
     assert.equal(textDiffersFromDom(b, makeCtx({}, 'a-c')), true);
   });
 
-  test('raw bindings are skipped (innerHTML re-serialization is unreliable)', () => {
+  test('raw bindings are skipped because their owned range is not text data', () => {
     const b = {
-      node: { data: 'stale' } as unknown as Text,
+      node: { data: 'wh' } as unknown as Comment,
       path: 'html',
       raw: true,
-      rawParent: fakeEl({}, '<b>x</b>'),
+      rawEnd: { data: '/wh' } as unknown as Comment,
     } as TextBinding;
     // Even with a divergent value, raw bindings never report a mismatch.
     assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>y</b>' })), false);
@@ -143,13 +150,31 @@ describe('attrDiffersFromDom', () => {
     assert.equal(attrDiffersFromDom(differ, makeCtx({ value: '3' })), true);
   });
 
-  test('form-control value/checked/selected are skipped', () => {
-    for (const name of ['value', 'checked', 'selected']) {
+  test('native form-control value/checked/selected properties are skipped', () => {
+    const cases = [
+      ['value', 'input', ''],
+      ['checked', 'input', false],
+      ['selected', 'option', false],
+    ] as const;
+    for (const [name, localName, property] of cases) {
       const b: AttrBinding = {
-        element: fakeEl({}), name, kind: ATTR_KIND_ATTRIBUTE, path: 'v',
+        element: fakeEl({}, '', localName, { [name]: property }),
+        name,
+        kind: ATTR_KIND_ATTRIBUTE,
+        path: 'v',
       };
       assert.equal(attrDiffersFromDom(b, makeCtx({ v: 'x' })), false, name);
     }
+  });
+
+  test('custom-element value attributes are compared even when a property exists', () => {
+    const b: AttrBinding = {
+      element: fakeEl({ value: 'old' }, '', 'test-price', { value: 'new' }),
+      name: 'value',
+      kind: ATTR_KIND_ATTRIBUTE,
+      path: 'v',
+    };
+    assert.equal(attrDiffersFromDom(b, makeCtx({ v: 'new' })), true);
   });
 });
 
@@ -159,22 +184,22 @@ describe('condDiffersFromDom', () => {
   const instance = {} as unknown as TemplateInstance;
 
   test('rendered block with a true condition does not differ', () => {
-    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx()), false);
   });
 
   test('absent block with a false condition does not differ', () => {
-    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, instance: null };
+    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, owner: instance, instance: null };
     assert.equal(condDiffersFromDom(c, makeCtx()), false);
   });
 
   test('absent block with a true condition differs (server dropped it)', () => {
-    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, instance: null };
+    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, owner: instance, instance: null };
     assert.equal(condDiffersFromDom(c, makeCtx()), true);
   });
 
   test('rendered block with a false condition differs', () => {
-    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx()), true);
   });
 
@@ -182,7 +207,7 @@ describe('condDiffersFromDom', () => {
     // count 5 -> 3 both satisfy `count > 0`; the block stays rendered, so a
     // value-only comparison would false-positive but a presence check must not.
     const gtZero = cond((r) => (r('count') as number) > 0);
-    const c: CondBinding = { condition: gtZero, blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: gtZero, blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx({ count: 3 })), false);
   });
 });
@@ -195,7 +220,6 @@ function repeat(collection: string, instanceCount: number): RepeatBinding {
     container: null, start: null, end: null,
     owner: {} as unknown as TemplateInstance,
     instances: Array.from({ length: instanceCount }, () => ({})) as unknown as RepeatBinding['instances'],
-    rootTag: null,
   };
 }
 

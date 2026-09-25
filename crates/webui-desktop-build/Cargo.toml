@@ -1,0 +1,29 @@
+[package]
+name = "microsoft-webui-desktop-build"
+description = "Build-time typed IPC bindings for the WebUI desktop SDK"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+
+[lib]
+name = "webui_desktop_build"
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+prost-reflect = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.29", features = ["application-ipc"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

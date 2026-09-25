@@ -13,6 +13,15 @@ interface NestedRepeatGroup {
   values: NestedRepeatValue[];
 }
 
+interface KeyedChainGroup {
+  id: string;
+  sections: Array<{
+    id: string;
+    visible: boolean;
+    items: Array<{ id: string; label: string }>;
+  }>;
+}
+
 export class TestNestedRepeat extends WebUIElement {
   @observable groups: NestedRepeatGroup[] = [];
 
@@ -82,5 +91,62 @@ export class TestNestedRepeat extends WebUIElement {
   }
 }
 
-TestNestedRepeat.define('test-nested-repeat');
+export class TestNestedRepeatKeyedChain extends WebUIElement {
+  @observable keyedGroups: KeyedChainGroup[] = [];
 
+  reverseItems(): void {
+    this.keyedGroups = this.keyedGroups.map((group) => ({
+      id: group.id,
+      sections: group.sections.map((section) => ({
+        id: section.id,
+        visible: section.visible,
+        items: section.items
+          .map((item) => ({
+            id: item.id,
+            label: `${item.label} updated`,
+          }))
+          .reverse(),
+      })),
+    }));
+  }
+}
+
+export class TestRepeatSiblings extends WebUIElement {
+  @observable groups: NestedRepeatGroup[] = [];
+  @observable others: string[] = [];
+  @observable selected = 'none';
+
+  select(value: string): void {
+    this.selected = value;
+  }
+
+  replaceOthers(): void {
+    this.others = ['Three', 'Four'];
+  }
+}
+
+export class TestRepeatInterleaved extends WebUIElement {
+  @observable headItems: string[] = [];
+  @observable innerItems: string[] = [];
+  @observable tailItems: string[] = [];
+
+  replaceTail(): void {
+    this.tailItems = ['T3', 'T4', 'T5'];
+  }
+}
+
+export class TestRepeatAfterConditional extends WebUIElement {
+  @observable showInner = true;
+  @observable innerRows: string[] = [];
+  @observable tailRows: string[] = [];
+
+  replaceTailRows(): void {
+    this.tailRows = ['Y3', 'Y4', 'Y5'];
+  }
+}
+
+TestNestedRepeat.define('test-nested-repeat');
+TestRepeatSiblings.define('test-repeat-siblings');
+TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');
+TestRepeatInterleaved.define('test-repeat-interleaved');
+TestRepeatAfterConditional.define('test-repeat-after-conditional');

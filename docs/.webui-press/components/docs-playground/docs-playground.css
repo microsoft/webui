@@ -50,19 +50,16 @@
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
   box-sizing: border-box;
   position: relative;
-  padding: 0 16px;
+  padding-inline-start: 12px;
   font-size: 12px;
   color: var(--docs-color-text-2);
   background: transparent;
-  cursor: pointer;
   border: none;
   border-right: 1px solid var(--docs-color-border);
   border-bottom: 2px solid transparent;
   white-space: nowrap;
-  font-family: var(--docs-font-mono);
   transition: color 0.12s, background 0.12s, border-color 0.12s;
   user-select: none;
 }
@@ -70,7 +67,7 @@
   color: var(--docs-color-text);
   background: var(--docs-color-bg-alt);
 }
-.tab:focus-visible {
+.tab:focus-within {
   outline: 1px solid var(--docs-color-brand);
   outline-offset: -2px;
 }
@@ -81,6 +78,25 @@
 }
 .tab[data-editing] {
   padding: 0 8px;
+}
+
+.tab-select {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--docs-font-mono);
+  white-space: nowrap;
+}
+
+.tab-select:focus-visible {
+  outline: none;
 }
 
 .tab-icon {
@@ -182,7 +198,9 @@
   line-height: 1;
   transition: opacity 0.12s;
 }
-.tab:hover .tab-close-btn { opacity: 1; }
+.tab:hover .tab-close-btn,
+.tab:focus-within .tab-close-btn,
+.tab[active] .tab-close-btn { opacity: 1; }
 .tab-close-btn:hover {
   color: var(--docs-color-text);
   background: var(--docs-color-bg-alt);
@@ -445,6 +463,38 @@
   transform: rotate(0deg);
 }
 
+.error-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px 10px 38px;
+  color: var(--docs-color-text-2);
+  line-height: 1.45;
+}
+
+.error-retry-btn {
+  min-height: 32px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: #d04848;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error-retry-btn:hover {
+  background: rgba(208, 72, 72, 0.08);
+}
+
+.error-retry-btn:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 2px;
+}
+
 /* Collapsible body: animate the grid row from 0fr to 1fr for a smooth,
    height-agnostic expand/collapse. */
 .error-panel-body-wrap {
@@ -534,4 +584,50 @@
     grid-template-rows: 1fr 1px 1fr;
   }
   .panel-divider { width: 100%; height: 1px; }
+}
+
+@media (max-width: 600px) {
+  :host {
+    --pg-bar-height: 44px;
+  }
+
+  .tab {
+    min-width: max-content;
+    padding-inline-start: 10px;
+    scroll-snap-align: start;
+  }
+
+  .tab-strip {
+    scroll-padding-inline: 8px;
+    scroll-snap-type: x proximity;
+  }
+
+  .tab-select {
+    min-width: 44px;
+    padding: 0 10px 0 6px;
+  }
+
+  .tab-add-btn {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  .error-recovery {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-left: 14px;
+  }
+
+  .error-retry-btn {
+    min-height: 44px;
+  }
+}
+
+@media (hover: none) {
+  .tab-close-btn {
+    width: 32px;
+    height: 32px;
+    margin-right: 4px;
+    opacity: 1;
+  }
 }

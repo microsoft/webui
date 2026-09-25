@@ -2,7 +2,10 @@
   "name": "@microsoft/webui",
   "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
   "license": "MIT",
-  "version": "0.0.18",
+  "version": "0.0.29",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,6 +15,7 @@
     "webui": "bin/webui"
   },
   "files": [
+    "ai.md",
     "bin/",
     "dist/index.*",
     "dist/install.*",
@@ -22,13 +26,15 @@
   "scripts": {
     "build": "tsc",
     "postbuild": "node dist/install.js",
+    "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js dist/test/projection-cli-fallback.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js"
   },
   "engines": {
     "node": ">=18"
   },
   "exports": {
+    "./ai.md": "./ai.md",
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
@@ -58,7 +64,7 @@
   },
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": {
@@ -71,6 +77,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "typescript-6": "catalog:"
   }
 }

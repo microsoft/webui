@@ -1,0 +1,19 @@
+<template shadowrootmode="open">
+  <form class="composer" @submit="{onSubmit(e)}">
+    <label class="composer-label" for="composer-input">Write a post</label>
+    <input
+      id="composer-input"
+      type="text"
+      class="composer-input"
+      name="message"
+      autocomplete="off"
+      placeholder="Say something before the feed even arrives…"
+      value="{{draft}}"
+      @input="{onInput(e)}"
+    />
+    <button type="submit" class="composer-submit">Post</button>
+  </form>
+  <if condition="posted">
+    <p class="composer-posted" data-testid="composer-posted">Posted: {{posted}}</p>
+  </if>
+</template>

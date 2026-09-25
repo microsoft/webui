@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{CssStrategy, HtmlParser, ParserOptions};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -100,6 +100,18 @@ fn build_style_heavy_template(blocks: usize) -> String {
 
     html.push_str("<div>{{content}}</div></body>");
     html
+}
+
+fn build_component_stylesheet(rules: usize) -> String {
+    let mut css = String::with_capacity(rules * 140 + 160);
+    css.push_str(":host { display: block; }");
+    css.push_str("@keyframes pulse { from { opacity: .6; } to { opacity: 1; } }");
+    for idx in 0..rules {
+        css.push_str(".item-");
+        css.push_str(&idx.to_string());
+        css.push_str(":hover { color: var(--webui-color); animation: pulse 1s ease; }");
+    }
+    css
 }
 
 fn build_todo_app_template() -> String {
@@ -322,16 +334,8 @@ fn parser_with_bench_components() -> HtmlParser {
     parser
 }
 
-fn parser_with_bench_components_and_options(
-    options: impl Into<webui_parser::ParserOptions>,
-) -> HtmlParser {
+fn parser_with_bench_components_and_options(options: impl Into<ParserOptions>) -> HtmlParser {
     let mut parser = HtmlParser::with_options(options);
-    register_bench_components(&mut parser);
-    parser
-}
-
-fn parser_with_bench_components_and_fast_plugin() -> HtmlParser {
-    let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
     register_bench_components(&mut parser);
     parser
 }
@@ -341,7 +345,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-bench-button",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -349,7 +353,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -357,7 +361,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-panel",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -365,7 +369,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-banner",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -373,7 +377,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-dialog",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -381,7 +385,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-item",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -389,7 +393,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-stats-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -447,32 +451,6 @@ fn parser_parse_fresh_vs_reuse(c: &mut Criterion) {
     group.finish();
 }
 
-fn parser_plugin_bench(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parser_plugin_fast");
-    let input = build_attribute_heavy_template(120);
-    group.throughput(Throughput::Bytes(input.len() as u64));
-
-    group.bench_function("without_plugin", |b| {
-        let mut parser = parser_with_bench_components();
-        b.iter(|| {
-            parser
-                .parse("index.html", black_box(&input))
-                .unwrap_or_else(|error| panic!("parse without plugin failed: {error}"));
-        });
-    });
-
-    group.bench_function("with_fast_plugin", |b| {
-        let mut parser = parser_with_bench_components_and_fast_plugin();
-        b.iter(|| {
-            parser
-                .parse("index.html", black_box(&input))
-                .unwrap_or_else(|error| panic!("parse with fast plugin failed: {error}"));
-        });
-    });
-
-    group.finish();
-}
-
 fn parser_css_strategy_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("parser_css_strategy");
     let input = build_component_heavy_template(120);
@@ -495,6 +473,41 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
                 .unwrap_or_else(|error| panic!("inline css parse failed: {error}"));
         });
     });
+
+    group.finish();
+}
+
+fn parser_light_css_global_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_light_css_global");
+    let input = "<x-styled-card></x-styled-card>";
+    let css = build_component_stylesheet(40);
+    group.throughput(Throughput::Bytes((input.len() + css.len()) as u64));
+
+    for (name, component_html) in [
+        (
+            "authored_shadow",
+            r#"<template shadowrootmode="open"><div class="item-0">Styled</div></template>"#,
+        ),
+        ("light", r#"<div class="item-0">Styled</div>"#),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut parser = HtmlParser::new();
+                parser
+                    .component_registry_mut()
+                    .register_component(webui_parser::ComponentRegistration::new(
+                        "x-styled-card",
+                        component_html,
+                        Some(black_box(css.as_str())),
+                        true,
+                    ))
+                    .unwrap_or_else(|error| panic!("failed to register styled component: {error}"));
+                parser
+                    .parse("index.html", black_box(input))
+                    .unwrap_or_else(|error| panic!("{name} global CSS parse failed: {error}"));
+            });
+        });
+    }
 
     group.finish();
 }
@@ -599,15 +612,77 @@ fn parser_adversarial_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn client_template_directives_bench(c: &mut Criterion) {
+    let input = build_directive_heavy_template(3, 12);
+    c.bench_function("client_template_directives", |b| {
+        b.iter(|| {
+            webui_parser::plugin::webui::generate_compiled_template(
+                "bench-directives",
+                black_box(&input),
+            )
+            .unwrap_or_else(|error| panic!("client template compilation failed: {error}"))
+        });
+    });
+}
+
+fn parser_isolated_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_isolated");
+    for (name, input) in [
+        ("attributes_150", build_attribute_heavy_template(150)),
+        ("directives_l3_n12", build_directive_heavy_template(3, 12)),
+    ] {
+        group.throughput(Throughput::Bytes(input.len() as u64));
+        group.bench_function(name, |b| {
+            // Repeated parses on one parser retain generated fragments, so each
+            // timed operation needs the same initial graph independent of sampling.
+            b.iter_batched(
+                parser_with_bench_components,
+                |mut parser| {
+                    parser
+                        .parse("index.html", black_box(&input))
+                        .unwrap_or_else(|error| {
+                            panic!("isolated parse failed for {name}: {error}")
+                        });
+                    black_box(parser)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+fn css_token_analysis_bench(c: &mut Criterion) {
+    c.bench_function("css_token_analysis/scoped_parent", |b| {
+        b.iter(|| {
+            let mut parser = HtmlParser::new();
+            for (name, html, css) in [
+                ("layout-container", "<plain-control></plain-control><div class=\"green\"><plain-control></plain-control></div>", ".green { --brand: var(--green); --foreground: var(--on-green); }"),
+                ("plain-control", "<button>Primary</button>", "button { color: var(--foreground); background: var(--brand); }"),
+            ] {
+                parser.component_registry_mut()
+                    .register_component(webui_parser::ComponentRegistration::new(name, html, Some(css), false))
+                    .unwrap_or_else(|error| panic!("register: {error}"));
+            }
+            parser.parse("index.html", "<layout-container></layout-container>")
+                .unwrap_or_else(|error| panic!("parse: {error}"));
+            black_box(parser.token_analysis())
+        });
+    });
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
     parser_parse_fresh_vs_reuse,
-    parser_plugin_bench,
     parser_css_strategy_bench,
+    parser_light_css_global_bench,
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,
-    parser_adversarial_bench
+    parser_adversarial_bench,
+    client_template_directives_bench,
+    parser_isolated_bench,
+    css_token_analysis_bench
 );
 criterion_main!(benches);

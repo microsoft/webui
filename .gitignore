@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-test/
+*.tsbuildinfo
 bin/
 obj/
 target/
@@ -9,6 +10,7 @@ docs/.vitepress/cache/
 .turbo/
 .memory/
 test-results/
+.DS_Store
 
 # Staged native binaries (populated by cargo xtask publish-stage)
 dotnet/runtimes/

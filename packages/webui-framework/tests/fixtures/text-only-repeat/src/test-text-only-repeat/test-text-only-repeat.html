@@ -5,4 +5,14 @@
     </if>
   </for>
 </span>
+<div class="adjacent-repeats">
+  <for each="option in options">
+    <if condition="option.active">
+      <span class="adjacent-label">{{option.title}}</span>
+    </if>
+  </for>
+  <for each="option in options">
+    <if condition="option.active">{{option.title}}</if>
+  </for>
+</div>
 <button class="update" @click="{onUpdate()}">Update</button>

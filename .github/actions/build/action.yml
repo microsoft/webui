@@ -1,5 +1,5 @@
 name: Build WebUI
-description: Shared build steps for WebUI — installs protoc, Rust, Node.js, pnpm, and optionally .NET.
+description: Shared build steps for WebUI — installs protoc, GTK/WebKitGTK on Linux, Rust, Node.js, pnpm, and optionally .NET.
 
 inputs:
   shared-cache-key:
@@ -41,10 +41,19 @@ runs:
         Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
         Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
 
-    - name: Install protoc (Linux)
+    - name: Install Linux build dependencies
       if: runner.os == 'Linux'
       shell: bash
-      run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      # GTK4 and WebKitGTK 6.0 back the Linux desktop backend in
+      # microsoft-webui-desktop's native feature, used by the desktop example.
+      # Workspace validation enables that feature and needs their dev
+      # packages. Folded into the protoc step to avoid a second apt update.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          protobuf-compiler \
+          libgtk-4-dev \
+          libwebkitgtk-6.0-dev
 
     - name: Install protoc (macOS)
       if: runner.os == 'macOS'
@@ -67,26 +76,23 @@ runs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.93
+        toolchain: 1.98
         targets: ${{ inputs.rust-targets }}
         components: ${{ inputs.rust-components }}
 
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         shared-key: ${{ inputs.shared-cache-key }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
 
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+    - name: Setup pnpm and Node.js
+      uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
       with:
-        run_install: false
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
-        cache: 'pnpm'
+        version: 12.3.4
+        runtime: node@22
+        install: false
+        cache: true
 
     - name: Install dependencies
       shell: bash
@@ -94,14 +100,14 @@ runs:
 
     - name: Setup .NET
       if: inputs.dotnet != ''
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
       with:
         dotnet-version: ${{ inputs.dotnet }}
 
     - name: Build workspace
       if: inputs.skip-build != 'true'
       shell: bash
-      run: cargo build --workspace --exclude xtask
+      run: cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
 
     - name: Build examples
       if: inputs.skip-build != 'true'

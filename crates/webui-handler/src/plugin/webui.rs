@@ -4,14 +4,14 @@
 //! WebUI handler plugin that emits lightweight hydration markers.
 //!
 //! Emits comment markers around for-loop blocks (`<!--wr-->` / `<!--/wr-->`),
-//! before each repeat item (`<!--wi-->`), and around if-condition blocks
-//! (`<!--wc-->` / `<!--/wc-->`). These markers enable zero-DOM-mutation
+//! before each repeat item (`<!--wi-->`), around if-condition blocks
+//! (`<!--wc-->` / `<!--/wc-->`), and around raw HTML bindings
+//! (`<!--wN-->` / `<!--/wN-->`). These markers enable zero-DOM-mutation
 //! in-place hydration on the client: the framework reuses the SSR comment
 //! nodes as runtime anchors instead of creating temporary wrappers.
 
 use super::{BootstrapExtensionContext, HandlerPlugin};
 use crate::{ResponseWriter, Result};
-use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
 const REPEAT_START: &str = "<!--wr-->";
@@ -19,20 +19,63 @@ const REPEAT_END: &str = "<!--/wr-->";
 const REPEAT_ITEM: &str = "<!--wi-->";
 const COND_START: &str = "<!--wc-->";
 const COND_END: &str = "<!--/wc-->";
+const RAW_START_PREFIX: &str = "<!--w";
+const RAW_END_PREFIX: &str = "<!--/w";
+const MARKER_SUFFIX: &str = "-->";
 
 /// WebUI handler plugin that emits hydration markers.
 ///
 /// Emits lightweight HTML comment markers around structural boundaries
 /// (for-loops and if-conditions) so the client can hydrate in-place
 /// without reparenting DOM nodes.
-pub struct WebUIHydrationPlugin;
+pub struct WebUIHydrationPlugin {
+    raw_index: usize,
+    raw_marker: String,
+}
 
 impl WebUIHydrationPlugin {
     /// Create a new WebUI handler plugin.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            raw_index: 0,
+            raw_marker: String::new(),
+        }
     }
+}
+
+fn write_raw_marker(
+    marker: &mut String,
+    writer: &mut dyn ResponseWriter,
+    index: usize,
+    closing: bool,
+) -> Result<()> {
+    let mut reversed_digits = [0_u8; 20];
+    let mut digit_count = 0;
+    let mut remaining = index;
+    loop {
+        reversed_digits[digit_count] = b"0123456789"[remaining % 10];
+        digit_count += 1;
+        remaining /= 10;
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    marker.clear();
+    if marker.capacity() == 0 {
+        marker.reserve(32);
+    }
+    marker.push_str(if closing {
+        RAW_END_PREFIX
+    } else {
+        RAW_START_PREFIX
+    });
+    for index in (0..digit_count).rev() {
+        marker.push(char::from(reversed_digits[index]));
+    }
+    marker.push_str(MARKER_SUFFIX);
+    writer.write(marker)
 }
 
 impl Default for WebUIHydrationPlugin {
@@ -46,11 +89,29 @@ impl HandlerPlugin for WebUIHydrationPlugin {
 
     fn pop_scope(&mut self) {}
 
-    fn on_binding_start(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
-        Ok(())
+    fn on_binding_start(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, false)
+        } else {
+            Ok(())
+        }
     }
 
-    fn on_binding_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, true)?;
+            self.raw_index += 1;
+        }
         Ok(())
     }
 
@@ -100,66 +161,43 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
-        components: &HashSet<String>,
+        components: &[String],
         nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let mut templates: Vec<&str> = Vec::with_capacity(components.len());
+        webui_emit_templates(
+            protocol,
+            components.iter().map(String::as_str),
+            nonce,
+            writer,
+        )
+    }
 
-        for name in components {
-            if let Some(template) = protocol
-                .components
-                .get(name)
-                .map(|component| component.template.as_str())
-                .filter(|t| !t.is_empty())
-            {
-                templates.push(template);
-            }
-        }
-
-        if templates.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(nonce) = nonce {
-            writer.write("<script nonce=\"")?;
-            writer.write(nonce)?;
-            writer.write("\">\n")?;
-        } else {
-            writer.write("<script>\n")?;
-        }
-        for tmpl in &templates {
-            writer.write(tmpl)?;
-        }
-        writer.write("</script>\n")?;
-
-        Ok(())
+    fn emit_templates_slice(
+        &self,
+        protocol: &WebUIProtocol,
+        tags: &[&str],
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        webui_emit_templates(protocol, tags.iter().copied(), nonce, writer)
     }
 
     /// Collect split WebUI template payloads for SSR bootstrap emission.
     fn collect_template_payloads<'a>(
         &self,
         protocol: &'a WebUIProtocol,
-        components: &HashSet<String>,
+        components: &[String],
     ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
-        let mut templates: Vec<super::WebUiTemplatePayload<'a>> =
-            Vec::with_capacity(components.len());
-        for name in components {
-            if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
-                if !component.template_json.is_empty() {
-                    templates.push(super::WebUiTemplatePayload {
-                        tag_name: tag_name.as_str(),
-                        template_json: component.template_json.as_str(),
-                        template_functions: component.template_functions.as_str(),
-                    });
-                }
-            }
-        }
-        if templates.is_empty() {
-            None
-        } else {
-            Some(templates)
-        }
+        webui_collect_payloads(protocol, components.iter().map(String::as_str))
+    }
+
+    fn collect_template_payloads_slice<'a>(
+        &self,
+        protocol: &'a WebUIProtocol,
+        tags: &[&str],
+    ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
+        webui_collect_payloads(protocol, tags.iter().copied())
     }
 
     fn emit_bootstrap_extension(
@@ -167,35 +205,127 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         context: BootstrapExtensionContext<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let has_functions = context
-            .payloads
-            .iter()
-            .any(|payload| !payload.template_functions.is_empty());
-        if !has_functions {
-            return Ok(());
-        }
-
-        if let Some(nonce) = context.nonce {
-            writer.write("<script nonce=\"")?;
-            writer.write(nonce)?;
-            writer.write("\">")?;
-        } else {
-            writer.write("<script>")?;
-        }
-        writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
-        writer.write("var f=w.templateFns||(w.templateFns={});")?;
-        for payload in context.payloads {
-            if payload.template_functions.is_empty() {
-                continue;
-            }
-            writer.write("f[")?;
-            crate::write_script_safe_json(writer, payload.tag_name)?;
-            writer.write("]=")?;
-            writer.write(payload.template_functions)?;
-            writer.write(";")?;
-        }
-        writer.write("})();</script>\n")
+        webui_emit_bootstrap_fns(context.payloads, context.nonce, writer)
     }
+
+    fn emit_bootstrap_extension_payloads(
+        &self,
+        payloads: &[super::WebUiTemplatePayload<'_>],
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        webui_emit_bootstrap_fns(payloads, nonce, writer)
+    }
+}
+
+/// Emit non-split WebUI component templates inside a single `<script>` tag.
+///
+/// Shared by the ordinary slice-based path and the `&[&str]`-based streaming
+/// path; the lookup-key lifetime `'b` is independent of the protocol so both
+/// callers pass borrowed tags without cloning.
+fn webui_emit_templates<'b>(
+    protocol: &WebUIProtocol,
+    tags: impl Iterator<Item = &'b str>,
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    let mut templates: Vec<&str> = Vec::new();
+
+    for name in tags {
+        if let Some(template) = protocol
+            .components
+            .get(name)
+            .map(|component| component.template.as_str())
+            .filter(|t| !t.is_empty())
+        {
+            templates.push(template);
+        }
+    }
+
+    if templates.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(nonce) = nonce {
+        writer.write("<script nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\">\n")?;
+    } else {
+        writer.write("<script>\n")?;
+    }
+    for tmpl in &templates {
+        writer.write(tmpl)?;
+    }
+    writer.write("</script>\n")?;
+
+    Ok(())
+}
+
+/// Collect split WebUI template payloads for the given component tags.
+///
+/// Returned payloads borrow the protocol (`'a`); the lookup-key lifetime `'b`
+/// is independent so both the ordinary slice and streaming callers share this helper.
+fn webui_collect_payloads<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    tags: impl Iterator<Item = &'b str>,
+) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
+    let mut templates: Vec<super::WebUiTemplatePayload<'a>> = Vec::new();
+    for name in tags {
+        if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
+            if !component.template_json.is_empty() {
+                templates.push(super::WebUiTemplatePayload {
+                    tag_name: tag_name.as_str(),
+                    template_json: component.template_json.as_str(),
+                    template_functions: component.template_functions.as_str(),
+                });
+            }
+        }
+    }
+    if templates.is_empty() {
+        None
+    } else {
+        Some(templates)
+    }
+}
+
+/// Emit the WebUI `templateFns` executable side-channel for payloads that carry
+/// component-local condition closures. Shared by the ordinary and streaming
+/// bootstrap-extension hooks.
+fn webui_emit_bootstrap_fns(
+    payloads: &[super::WebUiTemplatePayload<'_>],
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    let has_functions = payloads
+        .iter()
+        .any(|payload| !payload.template_functions.is_empty());
+    if !has_functions {
+        return Ok(());
+    }
+
+    if let Some(nonce) = nonce {
+        writer.write("<script nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\">")?;
+    } else {
+        writer.write("<script>")?;
+    }
+    writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
+    writer.write("var f=w.templateFns||(w.templateFns={});")?;
+    // Request-local scratch reused across every tag_name serialized in this
+    // loop; dropped when the emission returns.
+    let mut json_scratch = Vec::new();
+    for payload in payloads {
+        if payload.template_functions.is_empty() {
+            continue;
+        }
+        writer.write("f[")?;
+        crate::write_script_safe_json(writer, &mut json_scratch, payload.tag_name)?;
+        writer.write("]=")?;
+        writer.write(payload.template_functions)?;
+        writer.write(";")?;
+    }
+    writer.write("})();</script>\n")
 }
 
 #[cfg(test)]
@@ -226,19 +356,29 @@ mod tests {
 
     #[test]
     fn test_default_creates_instance() {
-        let _plugin = WebUIHydrationPlugin;
+        let _plugin = WebUIHydrationPlugin::default();
     }
 
     #[test]
     fn test_signal_binding_emits_no_output() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         assert_eq!(
             writer.output, "",
             "signal binding hooks must not emit output"
         );
+    }
+
+    #[test]
+    fn test_raw_signal_binding_emits_range_markers() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("html", true, &mut writer).unwrap();
+        writer.write("<b>trusted</b>").unwrap();
+        plugin.on_binding_end("html", true, &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--w0--><b>trusted</b><!--/w0-->");
     }
 
     #[test]
@@ -360,9 +500,9 @@ mod tests {
         // Simulate a component with a signal, repeat, and conditional.
         plugin.push_scope();
         // Signal binding — no markers
-        plugin.on_binding_start("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
         writer.write("hello").unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         // For-loop — markers
         plugin.on_for_start("list", &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
@@ -410,8 +550,7 @@ mod tests {
             .or_default()
             .template = iife_template("comp-c", "h:\"c\"");
 
-        let mut components = std::collections::HashSet::new();
-        components.insert("comp-a".to_string());
+        let components = vec!["comp-a".to_string()];
 
         let plugin = WebUIHydrationPlugin::new();
         plugin
@@ -444,7 +583,7 @@ mod tests {
             .entry("comp-a".to_string())
             .or_default()
             .template = iife_template("comp-a", "h:\"a\"");
-        let components = std::collections::HashSet::new();
+        let components: Vec<String> = Vec::new();
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &components, None, &mut writer)
@@ -468,9 +607,7 @@ mod tests {
             .or_default()
             .template = iife_template("comp-b", "h:\"b\"");
 
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("comp-a".to_string());
-        rendered.insert("comp-b".to_string());
+        let rendered = vec!["comp-a".to_string(), "comp-b".to_string()];
 
         let plugin = WebUIHydrationPlugin::new();
         plugin
@@ -496,8 +633,7 @@ mod tests {
             .entry("comp-a".to_string())
             .or_default()
             .template = String::new();
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("comp-a".to_string());
+        let rendered = vec!["comp-a".to_string()];
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &rendered, None, &mut writer)
@@ -509,8 +645,7 @@ mod tests {
     fn test_on_render_complete_unknown_component() {
         let mut writer = TestWriter::new();
         let protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("nonexistent-comp".to_string());
+        let rendered = vec!["nonexistent-comp".to_string()];
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &rendered, None, &mut writer)
@@ -553,23 +688,27 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::for_loop("item", "items", "for-body"),
                     WebUIFragment::if_cond(ConditionExpr::identifier("show"), "if-body"),
+                    WebUIFragment::signal("html", true),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "for-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>yes</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"items": ["a", "b"], "show": true});
+        let state = test_json!({"items": ["a", "b"], "show": true, "html": "<i>raw</i>"});
         let output = render_with_webui_plugin(&protocol, &state);
 
         // For-loop markers
@@ -615,5 +754,32 @@ mod tests {
             output.contains("<span>yes</span>"),
             "Expected if-condition body, got: {output}"
         );
+        assert!(
+            output.contains("<!--w0--><i>raw</i><!--/w0-->"),
+            "Expected bounded raw HTML markers, got: {output}"
+        );
+    }
+
+    #[test]
+    fn test_handler_keeps_raw_text_signal_marker_free() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<style>:root{"),
+                    WebUIFragment::raw_text_signal("tokens", true),
+                    WebUIFragment::raw("}</style>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"tokens": "--accent:red"});
+        let output = render_with_webui_plugin(&protocol, &state);
+
+        assert!(output.contains("<style>:root{--accent:red}</style>"));
+        assert!(!output.contains("<!--w0-->"));
+        assert!(!output.contains("<!--/w0-->"));
     }
 }

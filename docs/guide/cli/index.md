@@ -10,6 +10,13 @@ Install via npm:
 npm install @microsoft/webui
 ```
 
+Install WebUI Press separately when you need the documentation/static-site
+generator CLI:
+
+```bash
+npm install @microsoft/webui-press
+```
+
 Or install via Cargo for standalone CLI use:
 
 ```bash
@@ -17,6 +24,11 @@ cargo install microsoft-webui-cli
 ```
 
 ## Commands
+
+WebUI Press is a separate native binary. Both `webui-press build` and
+`webui-press serve` accept `--show=all|content` (default `all`) to generate
+the complete site or only page content. See [WebUI Press](/guide/webui-press)
+for configuration, content-mode behavior, and template regions.
 
 ### Global options
 
@@ -33,7 +45,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -44,61 +56,146 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--out <OUT>` | Output folder for protocol and assets, or a `.bin` file path to set the protocol filename (e.g. `./dist/app1.bin`) | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
+| `--metafile <PATH>` | Write an esbuild-compatible component asset graph. Requires `--emit-component-assets`. | *(none)* |
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
-Path inputs for `APP`, `--state`, `--servedir`, and
-`--projection-manifest` support absolute paths, relative paths, `~/...`, and
-`file://...` URI-style values.
+Path inputs for `APP`, `--state`, `--servedir`, `--projection-manifest`, and
+`--metafile` support absolute paths, relative paths, `~/...`, and `file://...`
+URI-style values.
 
 **CSS Modes:**
 
 | Mode | Behavior |
 |------|----------|
-| `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
-| `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
-| `module` | Emits `<script type="importmap">{"imports":{"component":"data:text/css,..."}}</script>` tags that register each component's CSS under a data URI, and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Import Maps](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) and [CSS Module Scripts](https://github.com/whatwg/html/issues/9572) proposals. If a component supplies its own `<template>` wrapper (e.g. to attach `@event` handlers), WebUI preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. |
+| `link` | Emits external `.css` files and installs their `<link>` resources in compiler-defined cascade order. |
+| `style` | Installs compiled CSS in `<style>` elements. No separate CSS files are written. |
+| `module` | Delivers compiled CSS with an SSR fallback and shares imported CSS module stylesheets across component instances when supported. No separate CSS files are written. |
+
+All modes support Light and Shadow components. A component's ordinary paired
+CSS file remains authored/global CSS in Light DOM and remains native Shadow CSS
+in Shadow DOM. Resources are installed once per Document or ShadowRoot in
+first-discovery order, including partial navigation, streaming, and static
+component assets. Full-document SSR installs Document resources before
+`</head>`. When the document omits an explicit head, resources precede document
+content while remaining immediately after any leading doctype.
+Document fragment renders install resources before fragment content; a Shadow
+component rendered directly as the entry installs them inside
+its declarative root.
 
 For long-lived CDN/browser caching, include `[hash]` in
 `--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
 truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
 `--css-public-base` only changes the CSS href stored in `protocol.bin` and
-emitted in `<link>` tags.
+emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
+(`#`, `%`, and `?`), path separators, whitespace, control characters, and
+Windows-reserved filename characters are rejected.
+
+**CSS bundling:**
+
+Every component stylesheet is render-blocking, so one file per component costs a
+request each and forfeits cross-file compression. `--css-bundle` merges component
+stylesheets into shared chunks:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle
+```
+
+It composes with `--css` rather than replacing it: bundling decides how
+stylesheets are *grouped*, `--css` decides how they *reach the page*. A Link
+build gets fewer `<link>` tags and requests, and a Style build gets fewer inline
+blocks.
+
+Chunks split rather than duplicate. Only components reached by an identical set
+of CSS trees share a chunk, so a stylesheet used by several routes lands in its
+own chunk and is downloaded and cached once instead of being copied into every
+route bundle. Cascade order is preserved exactly: a chunk's members must be
+adjacent and identically ordered in every closure that contains them. The
+compiler verifies both properties and splits any incompatible chunk.
+
+Chunks are named `_chunk-<first-member>-<count>`, or the component's own tag when
+a chunk has a single member. The leading underscore keeps multi-member resource
+IDs distinct from legal component tags. Link builds retain per-component files
+as independently loaded component and older-handler fallbacks, but current
+handlers link only chunks on the bundled path, so the fallbacks add no requests.
+
+Pair bundling with content-hashed filenames so chunks can be served immutably:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle \
+  --asset-file-name-template "[name]-[hash].[ext]"
+```
+
+The default template is `[name].[ext]`, which emits `_chunk-nav-4.css`. That name
+is stable across builds even when the CSS inside it changes, so it cannot carry a
+long `Cache-Control: max-age=…, immutable`. With `[hash]` the same chunk becomes
+`_chunk-nav-4-36c58ce5.css` and changes only when its bytes change, which is what
+makes a shared chunk worth sharing: it stays in cache across deploys and across
+routes.
+
+Measured on a 26-component example over HTTP/2 with Brotli, bundling is a byte
+and CSSOM optimization first: 14% fewer compressed CSS bytes (identical rules
+compress better in fewer, larger files) and 27% fewer `CSSStyleSheet` objects,
+both deterministic. Load-time metrics improve by low single-digit percentages.
+The win is substantially larger over HTTP/1.1, where request count is bounded by
+head-of-line blocking rather than multiplexed.
+
+`--css-bundle` is rejected with `--css module`, which already inlines every
+stylesheet as a data URI: there is no request to merge, and module specifiers are
+resolved per component at compile time. Bundling is off by default, so protocol
+size and emitted resource names are unchanged unless you opt in.
 
 **Component assets:**
 
 Use `--emit-component-assets` with the WebUI plugin to prebuild CDN-loadable
-template assets for components that are not included in initial SSR, such as
-route branches or dialogs loaded without `@microsoft/webui-router`:
+template assets for deferred UI such as dialogs loaded without
+`@microsoft/webui-router`:
 
 ```bash
 webui build ./my-app --out ./dist --plugin=webui \
-  --emit-component-assets mail-thread,compose-page
+  --emit-component-assets mail-thread,compose-page \
+  --metafile ./dist/component-assets-meta.json
 ```
 
 The flag is a strict comma-separated allowlist. Every tag must be a discovered
 lowercase kebab-case component. Requested roots are compiled through synthetic
 non-entry fragments, so they do not become part of initial SSR unless your entry
-template also references them. Assets are emitted to the same output folder as
-standard ESM modules, for example `mail-thread.webui.js`. Each module
-default-exports plugin-specific template/style metadata and includes compiled
-WebUI condition closures in the same request. FAST plugin builds can emit the
-same module shape with `<f-template>` payloads, but need a FAST-owned runtime
-loader rather than the WebUI Framework loader. Asset emission is parallelized
-across requested root tags. The module intentionally omits inventory state
-because a static CDN asset cannot know the page's current loaded template bitset.
-Use `--asset-file-name-template "[name]-[hash].[ext]"` for long-lived CDN
-caching; `[hash]` is the emitted asset module's SHA-256 content hash truncated
-to 8 hex characters. Protocol, CSS, and component asset filenames are validated
-as one output set before any files are written, so collisions fail without
-leaving partial output.
+template also references them. A build containing both component assets and a
+`<route>` fails with `component-assets-with-routes`; use the router's normal
+partial-navigation pipeline for routed components.
+
+Assets are ESM graph modules. Entry-reachable components stay in `protocol.bin`
+and the application bundle, and become external prerequisites instead of being
+copied. A dependency used by one asset root stays inline in that root.
+Dependencies shared by the same two or more roots are emitted once as
+`chunk-<first-sorted-component>.webui.js`, and each root dynamically imports the
+chunks it needs. Requested-root order does not change ownership, bytes, or
+hashes. Asset-only records are removed from `protocol.bin`.
+
+Component assets use version 3 with a required, atomically registered
+`componentStyles` catalog. Other versions and assets without the catalog are
+rejected before registration.
+
+`--metafile` writes esbuild-compatible `inputs` and `outputs`, including every
+root-to-chunk `dynamic-import` edge and exact byte attribution. It can be opened
+directly in an esbuild bundle analyzer or consumed by build tooling. The
+metafile path is collision-checked with protocol, CSS, root, and chunk outputs
+before any files are written.
+
+FAST plugin builds can emit the same graph with `<f-template>`
+payloads, but need a FAST-owned runtime loader. Every module intentionally omits
+inventory state because a static CDN asset cannot know the page's loaded
+template bitset. Use `--asset-file-name-template "[name]-[hash].[ext]"` for
+long-lived CDN caching; `[hash]` is each module's SHA-256 content hash truncated
+to 8 hex characters.
 
 Load an asset before creating the component:
 
@@ -124,7 +221,12 @@ export const mailAssets = defineComponentAssets({
 
 Keep the lazy component tag out of SSR-reachable templates unless it should be
 eligible for initial SSR. Use a mount element or another non-HTML trigger, then
-create the custom element with `mailAssets.create(...)`.
+create the custom element with `mailAssets.create(...)`. The application must
+load its normal entry bundle before component assets because entry-reachable
+dependencies are external prerequisites. For Shadow builds, the compiler records final Link stylesheet hrefs in the
+protocol so `preload(tag)` can start CSS beside the authored stable root asset
+without exposing content-hashed stylesheet names. Light builds emit those hrefs
+as document stylesheets with the entry because their CSS is globally scoped.
 
 **Comment handling:**
 
@@ -136,12 +238,31 @@ With the default `--legal-comments inline`, CSS comments that contain
 `@license` or `@preserve`, or start with `/*!` or `//!`, are preserved inline.
 Use `--legal-comments none` to strip all non-signal comments.
 
-**DOM Strategies:**
+**Component DOM ownership:**
 
-| Strategy | Behavior |
-|----------|----------|
-| `shadow` | Components render inside `<template shadowrootmode="open">`. Style encapsulation via Shadow DOM. Default. |
-| `light` | Components render as direct children. No shadow boundary. 26% faster FCP on high-component-count pages. |
+Shadow is the backward-compatible default: unwrapped component content receives
+a compiler-generated open Shadow root. Pass `--dom light` to render unwrapped
+components as direct Light DOM children with authored/global CSS in their
+owning CSS tree. Light CSS is not selector-rewritten or marker-scoped, so
+ordinary selectors can reach other Light DOM in that tree. In either build mode,
+a sole bare top-level `<template>` explicitly selects Light and is unwrapped.
+A sole top-level `<template shadowrootmode="open">` is authoritative and keeps
+that component Shadow, so either build can contain explicit Shadow islands.
+Templates with attributes and policy wrappers such as `w-render` remain
+ordinary/policy content rather than selecting a mode.
+
+`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
+and fail with `unsupported-light-css` in effective Light CSS. Use ordinary
+selectors such as the component tag, or author an open Shadow root.
+
+Closed roots and invalid values or placement always fail the build. Native
+`<slot>` is allowed in effective Shadow components and rejected in effective
+Light components.
+
+FAST 2/3 plugins currently require effective Shadow components. Combining
+`--plugin fast`, `fast-v2`, or `fast-v3` with an effective Light component
+fails with `fast-light-dom-unsupported` instead of allowing the FAST client
+runtime to replace Light SSR with a Shadow root.
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
@@ -156,6 +277,9 @@ webui build ./my-app --out ./dist
 
 # Use a custom entry file
 webui build ./my-app --out ./dist --entry home.html
+
+# Opt into mixed Light DOM with authored Shadow islands
+webui build ./my-app --out ./dist --dom light
 
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
@@ -197,6 +321,13 @@ exactly one manifest entry. Build external component bundles separately and
 repeat the flag for each fragment. See
 [Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
+For progressive pages, use the
+[bundler-independent coordinator delivery contract](/guide/concepts/hydration#separate-coordinator-and-application-assets)
+to keep application startup separate. The host's existing asset handoff owns
+script URLs; there is no additional streaming manifest input. Authored module
+scripts with `fetchpriority="low"` are excluded from automatic modulepreload
+hints so deferred application code does not get promoted into the head.
+
 ### `webui inspect`
 
 Inspect a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to tools like `jq`.
@@ -229,7 +360,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -240,21 +371,54 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--state <FILE>` | Path to JSON state file for rendering | *(required)* |
 | `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
 | `--watch` | Enable file watching + HMR | `false` |
+| `--shutdown-timeout <SECONDS>` | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` | *(none)* |
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
-| `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
+| `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
+| `--metafile <PATH>` | Atomically replace an esbuild-compatible component asset graph after each successful build. Requires `--emit-component-assets`. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
+
+#### Bounded dev-server shutdown
+
+Both `webui serve` and `webui-press serve` accept `--shutdown-timeout`:
+
+```bash
+webui serve ./src --watch --shutdown-timeout 10
+webui-press serve --shutdown-timeout 10
+```
+
+Without the flag, shutdown waits for the active rebuild to finish with no
+deadline. With it, one supervised server process remains alive across rebuilds,
+retaining the warm build cache. A first Ctrl-C (or Unix SIGTERM or SIGHUP when
+supported by the platform signal handler) requests HTTP stop, then waits for the
+active rebuild within the specified grace period. Existing HTTP connections are
+stopped rather than drained.
+A second stop request or an expired grace period terminates the owned server
+process tree and returns a nonzero status. The flag also applies during initial
+build and when `webui serve` runs without `--watch`.
+
+The supervisor allows up to two additional seconds to confirm the server child
+exited. Forced termination can leave incomplete generated files; rebuild before
+using them. Normal child failures retain their exit codes.
+
+Containment uses Windows Job Objects or Unix process groups. It does not cover
+descendants that escape containment or daemonize, uninterruptible kernel tasks,
+or force-killing the supervisor. OS scheduling means the timeout is not a hard
+real-time guarantee. In supervised mode, stdin is reserved for shutdown control.
+On Unix, output is relayed by the foreground supervisor so terminals with
+`TOSTOP` do not suspend the contained server when it writes output.
 
 **What it does:**
 
@@ -264,6 +428,75 @@ The `APP` directory should contain your entry HTML and component files.
 4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
 6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+
+When `--api-port` is set, backend state requests and `/api/*` forwarding use
+the encoded path and query exactly as received except for the entry route alias.
+`/` and `/index.html` both resolve backend state at `/` (the entry path is
+normalized), while still preserving the query string. All other request paths
+forward their encoded path and query unchanged. Do not double-encode route
+parameters for development. For example, `%2F` remains part of one parameter
+instead of becoming a path separator.
+
+For progressive HTML, the server sends
+`Accept: application/x-webui-stream, application/json` to the API backend. A
+backend can return a versioned NDJSON control stream:
+
+```text
+{"type":"start","version":2,"state":{"query":""}}
+{"type":"resume","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":""},"mode":"updatable"}
+{"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
+```
+
+`start` appears once. It renders until the first runtime occurrence or terminal.
+Each `resume.boundary` must match the descriptor currently returned by WebUI
+using `owner`, `name`, and `key`; omit `key` only when that descriptor has none.
+An optional `declarationId` can tighten the match. Resume `state` is passed to
+that occurrence and `mode` is `final` by default or `updatable`.
+`update.boundary` uses the same identity to target one previously committed
+updatable occurrence and requires object-valued `state`.
+
+The control stream has no `advance` record because the CLI drives that core
+operation:
+
+| Core step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching `resume` control and call core `resume` |
+| no descriptor and not done | Call core `advance` |
+| done | Complete the browser response |
+
+Core `resume` emits only the pending occurrence through its checkpoint. Core
+`advance` emits the following parent or tail bytes through the next descriptor
+or terminal. After the backend sends the resume for the final descriptor and
+closes its NDJSON body, the CLI's final `advance` emits the terminal. There is
+no separate end command.
+
+The CLI owns response-local instance IDs and the browser transport. A
+capacity-one command channel preserves backpressure, and each record is capped
+at 2,000,000 bytes. Before HTTP 200, bytes from `start` are staged without
+copying up to a 4,000,000-byte limit. Dropping the browser response cancels the
+backend stream. The backend must honor its HTTP writer's backpressure signal and
+cap concurrent streams. Returning JSON retains ordinary buffered behavior. See
+[`<boundary>`](/guide/concepts/directives/boundary) and
+`examples/app/streaming`.
+
+If the backend is unreachable, returns state the server cannot parse, or answers
+a stream request with a non-success status such as `503` from its concurrency
+cap, `webui serve` logs one warning and still renders the page from fallback
+state. A refused request never started a stream, so it degrades the same way an
+unreachable backend does instead of replacing your app with the upstream error
+body. A failure that occurs *after* the stream is live still fails the response,
+because bytes already sent to the browser cannot be rewound.
+
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
 
 **Examples:**
 
@@ -311,12 +544,15 @@ token is also absent from every theme it is surfaced as a non-fatal
 a `did you mean …?` suggestion) since it is usually a typo.
 
 `--emit-component-assets` behaves identically on `serve` and `build`: each listed
-root is parsed and validated on every build — its template and CSS are checked
+root is parsed and validated on every build - its template and CSS are checked
 for HTML and theme-token errors even though the component is not part of the
-initial SSR tree — so authoring mistakes in lazily loaded components fail the dev
-build instead of being silently skipped. The compiled `<tag>.webui.js` modules
-are served from memory (and rebuilt on change under `--watch`), so no separate
-`webui build` step or `--out` directory is needed during development.
+initial SSR tree - so authoring mistakes in lazily loaded components fail the
+dev build instead of being silently skipped. Root and shared chunk modules are
+served from memory (and rebuilt on change under `--watch`), so no separate
+`webui build` step or `--out` directory is needed during development. With
+`--metafile`, a successful rebuild atomically replaces the graph; a failed
+rebuild leaves the last valid metafile untouched. The metafile itself is ignored
+by the watcher to prevent rebuild loops.
 
 In `serve --watch`, rebuild failures are sticky: the terminal and live-reload
 SSE report the error, and refreshing the page returns the latest rebuild error
@@ -328,9 +564,170 @@ successful rebuild clears the error and reloads connected browsers.
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
-| `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
+| `/*.webui.js` | In-memory root and shared component assets emitted by `--emit-component-assets` |
 | `/*` | Static files from `--servedir` (when provided) |
+| `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
+| Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
+
+### `webui desktop`
+
+Run desktop tooling through `webui`, the only public CLI. Desktop support is
+implemented by a separate `webui-desktop` sidecar backend so normal
+build/serve/inspect installs stay lean and do not link native webview
+dependencies. The sidecar is resolved automatically from the installed desktop
+support package, next to the `webui` binary, or from the workspace during local
+development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
+
+```bash
+webui desktop init [APP_ROOT] [--force]
+webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
+webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]...
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]...
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
+```
+
+`webui desktop init` creates a minimal `src/index.html`, `package.json`, and
+`desktop/` Rust runner. It refuses to replace existing generated files; pass
+`--force` when regenerating a scaffold.
+The runner is a standalone Cargo workspace with an optimized release profile.
+It depends on one desktop SDK and enables source compilation only when run with
+`--features source`.
+
+`desktop run` builds once. Restart it after source changes; desktop `--watch`
+is not supported.
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `APP` | Path to the app folder | `.` |
+| `--out <BUNDLE_DIR>` | Output desktop bundle directory | *(required)* |
+| `--state <FILE>` | Startup state JSON copied into the bundle | *(optional)* |
+| `--servedir <DIR>` | Static assets copied into the bundle | *(optional)* |
+| `--theme <VALUE>` | Design token theme, as a file path or npm package name | *(optional)* |
+| `--app-id <ID>` | Reverse-DNS app identifier | `com.microsoft.webui.app` |
+| `--app-name <NAME>` | Human-readable app name | `WebUI App` |
+| `--app-version <VERSION>` | App version stored in the bundle manifest | `0.0.0` |
+| `--publisher <NAME>` | Publisher stored in the bundle manifest | `Microsoft` |
+| `--title <TITLE>` | Default desktop window title | `WebUI` |
+| `--width <PX>` | Default desktop window width | `1200` |
+| `--height <PX>` | Default desktop window height | `800` |
+| `--devtools` | Enable web inspector/devtools for the packaged desktop webview | `false` |
+| `--theme <VALUE>` | Theme override for app-root packaging | `webuiDesktop.theme` |
+| `--icon <FILE>` | App icon override for app-root packaging | `webuiDesktop.icon` |
+| `--runner <PATH>` | App-specific runner executable for existing bundle packaging | sidecar runner |
+| `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
+| `--release` | Explicitly select the default optimized runner build | optimized by default |
+| `--debug` | Build a debug runner instead of an optimized release runner | `false` |
+| `--runner-features <FEATURES>` | Additional comma-separated Cargo features for the app-specific runner | `webuiDesktop.runnerFeatures` |
+| `--runner-default-features` | Include the runner's default Cargo features | `webuiDesktop.runnerDefaultFeatures`, otherwise `false` |
+| `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
+| `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
+| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | `webuiDesktop.projectionManifests` for app-root packaging, otherwise none |
+
+Package configuration manifest paths are relative to the app root; CLI paths are
+relative to the working directory. Explicit CLI manifests replace the configured
+list. Run the client build first: missing, stale, or incomplete metadata is a
+build error, not a silent fallback. Without supplied manifests, unknown component
+requirements retain full state for correctness. Existing bundles must be rebuilt
+to change their projection metadata; manifest flags cannot modify them during
+packaging.
+
+The bundle contains `protocol.bin`, generated CSS, copied static assets under
+`assets/`, optional `state.json`, `manifest.webui-desktop.json`, and SHA-256
+integrity hashes. Native window backends use system webviews only: WebView2 on
+Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux. Electron, Node,
+bundled Chromium, and localhost HTTP servers are not part of desktop mode.
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin webui \
+  --theme @my-org/brand-tokens \
+  --devtools \
+  --app-id com.example.todo \
+  --app-name "Todo Desktop"
+```
+
+On macOS, inspect the app from Safari's Develop menu. Enable it with Safari >
+Settings > Advanced > Show features for web developers.
+
+Package a Rust-first desktop app root in one command:
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+```
+
+For app roots, `webui desktop package` reads `webuiDesktop` from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate
+with `--release --no-default-features`,
+stages non-generated assets, builds the bundle, and packages the runner-backed
+app. Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
+Use `--debug` for a debug package. To include optional application capabilities,
+set `webuiDesktop.runnerFeatures` to an array of Cargo feature names, or add
+`--runner-features tray,native-dialogs` if your runner declares those features.
+Use `runnerDefaultFeatures: true` or `--runner-default-features` only when the
+runner intentionally needs its default features in production. These build
+options do not change a prebuilt executable supplied with `--runner`.
+Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
+as `CFBundleIconFile`, and portable layouts copy the icon into resources.
+Existing bundle packaging remains available:
+
+```bash
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+The current Rust packager writes runnable macOS `.app` bundles and portable
+folder layouts. Omitting `--runner` for an existing bundle packages the generic
+sidecar and is appropriate only for file-backed/static seed-state bundles.
+Supported targets are `macos-app`, `windows-portable`, and `linux-portable`.
+`--target all` writes all three layouts with the supplied runner; it does not
+cross-compile that executable. Installer generation, archives, and signing are
+not supported.
+
+For an app-specific Rust runner, enable the native SDK and keep source
+compilation opt-in:
+
+```toml
+[features]
+default = []
+source = ["microsoft-webui-desktop/source"]
+
+[dependencies]
+microsoft-webui-desktop = { version = "0.0.29", features = ["native"] }
+```
+
+`webui desktop package` builds this lean configuration automatically. For a
+manual runner build:
+
+```bash
+cargo build --release -p my-desktop-runner --no-default-features
+```
+
+The lean runner still supports `DesktopRuntime::from_bundle`,
+`DesktopRuntime::from_bundle_config`, and
+`DesktopRuntime::from_bundle_config_and_manifest`. It does not expose source,
+bundle-building, or package-building APIs. Run unpackaged development builds
+with `cargo run --features source`. Build options are reexported by
+`webui_desktop` when `source` is enabled; applications need no separate compiler
+or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
+app code. See the [desktop SDK guide](../integrations/desktop.md) for the shared
+source/bundle app builder and customization APIs.
+
+`webui desktop ipc generate` creates typed Rust and TypeScript bindings from
+one proto3 application contract. Keep its compatibility lock and generated
+outputs together. `--check` compares outputs without rewriting them.
+`--protoc` selects an explicitly installed protobuf compiler; without it, the
+generator uses `PROTOC` and then PATH. Compiler inputs and outputs must use
+local drive paths on Windows. Generation never downloads tools silently. With `--format json`, generation
+failures preserve their stable `ipc-*` code and actionable `help`; filesystem
+errors also identify the affected `file`. See
+[message passing](../integrations/desktop.md#message-passing) for the schema,
+four communication flows, permissions and lifetime rules.
 
 ## Error output and exit codes
 
@@ -510,6 +907,9 @@ The `--components` flag lets you discover components from npm packages or local 
 ### npm Packages
 
 Pass an npm package name. The package must already be installed in `node_modules/`.
+Use an unscoped name, `@scope`, or `@scope/package`, optionally followed by `/*`.
+Package subpaths, traversal, and backslashes are not valid package identifiers.
+For a filesystem directory, pass an explicit local path such as `./shared/components`.
 
 ```bash
 # Single package
@@ -522,25 +922,25 @@ webui build ./my-app --out ./dist --components @reactive-ui
 webui build ./my-app --out ./dist --components @reactive-ui/button
 ```
 
-**npm package requirements:**
+**Default WebUI package requirements:**
 
-The package's `package.json` must have:
+Provide `<component-name>.html` files beneath the package's `components/`
+directory, or the package root when no `components/` directory exists.
+The filename determines the component name, including in nested directories.
+Matching `.css` supplies styles; a matching `.ts` or `.js` sibling marks that
+component as authored. Package exports and CEM metadata do not select or rename
+native templates, and no manifest is required.
 
-| Field | Purpose |
-|-------|---------|
-| `exports["./template-webui.html"]` | Path to the component's HTML template |
-| `exports["./styles.css"]` | Path to the component's CSS (optional) |
-| `customElements` | Path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file |
-
-The Custom Elements Manifest provides the component tag name via `modules[].declarations[].tagName`.
-
-If the package also exposes a root JavaScript entry (`exports["."]`, `main`,
-`module`, or `browser`), WebUI treats those components as authored custom
-elements. Packages with only template/style exports are HTML-only component
-libraries. Their templates render on the server and the framework can activate
-them later when needed.
-
-**Resolution:** The CLI searches for `node_modules/` by walking up from the app directory, matching Node.js module resolution behavior. Symlinks (pnpm, npm workspaces) are resolved automatically.
+See
+[External components](/guide/concepts/components#external-component-sources)
+for the native package layout.
+**Resolution:** The CLI searches ancestor `node_modules/` directories for the
+requested package or scope, not merely the nearest `node_modules/`. Symlinks
+(pnpm, npm workspaces) are resolved automatically. A bare scope searches its
+nearest matching directory, skips unrelated packages, and reports failures
+in declared component packages.
+Collection spellings `@scope/*` and `@scope/package/*` select the same sources as
+`@scope` and `@scope/package`; quote them to avoid shell glob expansion.
 
 ### Local Paths
 
@@ -569,7 +969,13 @@ webui build ./my-app --out ./dist \
 
 ### Caching
 
-Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when a package's `package.json` changes. Local path sources are always re-scanned.
+Discovered npm package components are cached at `~/.webui/cache/components/`.
+Changes to the selected plugin's templates, stylesheets, scripts, or manifests
+invalidate its cached result, including optional file creation and removal.
+Default/WebUI/none discovery does not use package metadata, so metadata-only
+`package.json` edits do not invalidate its cache. Plugins that use package
+metadata, such as FAST, also invalidate on `package.json` changes.
+Local path sources are always re-scanned.
 
 ## Next Steps
 

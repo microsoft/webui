@@ -1,6 +1,15 @@
 # Interactivity
 
-WebUI uses **Islands Architecture** for client-side interactivity. Each Web Component is a self-contained island with its own HTML template, scoped CSS, and TypeScript behavior. Only components that need interactivity ship JavaScript - everything else stays as static server-rendered HTML.
+WebUI uses **Islands Architecture** for client-side interactivity. Each Web
+Component is a self-contained island with its own HTML template, authored CSS,
+and TypeScript behavior. Shadow components provide CSS isolation; Light
+components intentionally participate in the owning CSS tree's global cascade.
+Only components that need interactivity ship JavaScript - everything else stays
+as static server-rendered HTML.
+
+WebUI uses [Trusted Types](./hydration#trusted-types) automatically for compiled
+templates. Applications control enforcement through CSP; raw state HTML is not
+promoted through the compiler policy.
 
 ## Component Files
 
@@ -9,12 +18,13 @@ Every interactive component consists of three separate files. Templates are decl
 ```
 my-counter/
 ├── my-counter.html   ← Template (structure and bindings)
-├── my-counter.css    ← Styles (scoped via Shadow DOM)
+├── my-counter.css    ← Authored styles
 └── my-counter.ts     ← Behavior (TypeScript class)
 ```
 
 - **HTML** defines what the component renders and where dynamic values appear
-- **CSS** styles the component in isolation - Shadow DOM prevents leaking
+- **CSS** styles the component. Light DOM uses the owning tree's global cascade;
+  Shadow components use the browser's native boundary
 - **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
 
 Components that do not need client-side behavior can omit the TypeScript file:
@@ -60,6 +70,31 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
+For a component repeated far beyond the initial viewport, put the complete
+offscreen policy on its root template:
+
+```html
+<!-- todo-row.html -->
+<template w-render="lazy" w-reserve-block-size="72px">
+  <!-- Component content -->
+</template>
+```
+
+Import the optional coordinator once before component registration modules:
+
+```typescript
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './todo-row.js';
+```
+
+The complete policy composes visibility-deferred hydration with
+`content-visibility: auto`. Use `<template w-hydrate="lazy">` for the
+advanced hydration-only policy. On an instance, `w-hydrate="eager"` keeps
+rendering deferral but hydrates immediately, while `w-render="eager"` disables
+both. Put setup that needs bindings, events, or `w-ref` in `hydratedCallback()`.
+
+See [Lazy Hydration](/guide/concepts/hydration#lazy-hydration).
+
 The matching template (`my-counter.html`):
 
 ```html
@@ -68,10 +103,10 @@ The matching template (`my-counter.html`):
 </button>
 ```
 
-And scoped styles (`my-counter.css`):
+And authored Light DOM styles (`my-counter.css`):
 
 ```css
-:host {
+my-counter {
   display: inline-block;
 }
 
@@ -84,17 +119,25 @@ button {
 
 ## The `<template>` Tag
 
-The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
+Unwrapped components default to Shadow DOM. Build with `--dom light` to render
+unwrapped content directly into the component host.
 
-**Without `<template>` (most components):**
+A sole bare top-level `<template>` explicitly selects Light DOM and is unwrapped
+even when the build fallback is Shadow. A template with attributes or
+`w-render`/`w-hydrate` is not a mode selector; nested templates remain ordinary
+inert template content.
+
+**Light DOM (`--dom light`):**
 ```html
 <!-- my-counter.html -->
 <button @click="{increment()}">{{label}}: {{count}}</button>
 ```
 
-The framework wraps this in a `<template shadowrootmode="open">` during build.
+The paired CSS remains authored/global in the owning CSS tree. Use ordinary
+selectors such as `my-counter`; Shadow-only `:host` and `::slotted` selectors
+fail in effective Light CSS.
 
-**With `<template>` (root host events):**
+**Authored Shadow island (including inside a Light build):**
 ```html
 <!-- todo-app.html -->
 <template shadowrootmode="open"
@@ -110,7 +153,19 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - event listeners on the shadow root itself that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above). This is the delegated event pattern for parent-child communication.
+The open template must be the sole top-level element and wrap the complete
+component. Use it when the component needs native `<slot>` composition, a
+native Shadow boundary, or **root host events** - listeners on the component
+root that catch events bubbling up from child components (`@toggle-item`,
+`@delete-item` above). `closed`, another value, invalid placement, multiple
+wrappers, or extra top-level content fails the build. A native `<slot>` fails
+only when the component's effective mode is Light.
+
+To reach a root binding from a **child component**, an event must **bubble** and be **composed** whenever any Shadow boundary exists between the child and the listener. `this.$emit()` always sets both, including for a Light component nested in another component's Shadow tree. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
+
+A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
+
+Since the listener is on the host, `e.target` is the host for events raised inside the shadow tree. Use `e.composedPath()[0]` to get the element that was actually hit.
 
 Decorators define how properties behave and how they connect to the template.
 
@@ -237,8 +292,9 @@ Event handlers use method-call syntax only. Arguments can be:
 General JavaScript expressions and nested function calls are not parsed in
 templates. Compute those values in the component class or pass a supported path.
 
-Invalid handler syntax — a general expression such as `@click="e.preventDefault()"`,
-or a bare name like `@click="{closeMenu}"` — fails the build with an actionable
+Invalid handler syntax, such as a general expression like
+`@click="e.preventDefault()"` or a bare name like `@click="{closeMenu}"`, fails
+the build with an actionable
 error that names the offending component and element.
 
 ### DOM References
@@ -258,9 +314,15 @@ focusInput(): void {
 }
 ```
 
-`w-ref` must use braces to bind to a component property — `w-ref="{inputEl}"`
+`w-ref` must use braces to bind to a component property: `w-ref="{inputEl}"`
 (or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
 with an actionable error otherwise.
+
+`w-ref` is scalar. Reusing a name inside `<for>` writes the same property, so
+the last wired occurrence wins; repeat keys and positions do not create an
+indexed ref collection. For lookup by item identity, author a stable `id` and
+use the owning document or shadow root's `getElementById()`, or move the ref
+into an item component.
 
 ### Conditional Rendering
 
@@ -363,6 +425,22 @@ selectItem(id: string, e: MouseEvent): void {
 </for>
 ```
 
+### How Event Bindings Are Wired
+
+Every `@event` gets its own listener on the element it is written on. Bindings
+are never delegated to a shared root listener, which has two consequences worth
+knowing:
+
+- **Non-bubbling events work.** `@focus`, `@blur`, `@mouseenter`, `@load`,
+  `@error`, and `@toggle` fire normally. A shared root listener could never see
+  them, because those events do not travel up the tree.
+- **`stopPropagation()` behaves as written.** An ancestor stopping an event as it
+  bubbles cannot suppress a handler bound to the element the event started on.
+
+Dispatch cost does not grow with the number of rows a `<for>` renders. If you do
+want a single listener instead of one per row for a very long list, use root host
+events and find the row yourself with `e.composedPath()`.
+
 ### Custom Events and Parent-Child Communication
 
 Components communicate upward by emitting custom events with `this.$emit()`:
@@ -375,7 +453,7 @@ export class ColorPicker extends WebUIElement {
 
   selectColor(color: string): void {
     this.selectedColor = color;
-    this.$emit('color-change', { detail: { color } });
+    this.$emit('color-change', { color });
   }
 }
 ```
@@ -399,31 +477,40 @@ This pattern keeps components decoupled - the child doesn't know who is listenin
 
 ## Loading Static Component Assets
 
-When you are not using `@microsoft/webui-router`, components hidden behind
-inactive routes or deferred UI can still be loaded from static files. Build the
-root components as assets:
+When you are not using `@microsoft/webui-router`, deferred UI can still be
+loaded from static files. Build the root components as assets:
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread
 ```
 
-Each requested root writes one ESM module such as `<tag>.webui.js` next to
-`protocol.bin`. The module carries the component's template, styles, and
-dependency closure; it does not contain route inventory state.
+Each requested root writes an ESM graph module such as `<tag>.webui.js` next to
+`protocol.bin`. Entry-reachable dependencies remain in the application bundle
+and protocol. Dependencies used by one requested root stay inline, while
+dependencies used by the same set of two or more roots are emitted once as
+`chunk-<component>.webui.js` and dynamically imported by those roots. Asset-only
+fragments and component records do not remain in `protocol.bin`.
+
+Static component assets and `<route>` cannot be used in the same build. Use
+`@microsoft/webui-router` for routed components, or use component assets for
+non-routed deferred UI.
 
 During development, pass the same flag to `webui serve` so these roots are
 validated and served without a separate build step:
 
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui \
-  --emit-component-assets settings-dialog,mail-thread --watch
+  --emit-component-assets settings-dialog,mail-thread \
+  --metafile ./component-assets-meta.json --watch
 ```
 
 The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
-missed because the component is outside the initial route tree. The dev server
-serves `<tag>.webui.js` from memory and rebuilds it on change.
+missed because the component is outside the initial SSR tree. The dev server
+serves roots and shared chunks from memory and rebuilds them on change. A
+successful watch build atomically replaces `--metafile`; a failed build
+preserves the previous valid graph.
 
 Load the asset before creating or revealing the component:
 
@@ -454,28 +541,59 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`.
-`preload(tag)` starts the component's template, styles, JavaScript module, and
-optional data together. Components can then fetch their own data in their class
-code and expose it through `@observable` fields when JavaScript needs to read or
-mutate it. Concurrent requests for the same asset share one in-flight load.
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. The compiler
+stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
+handler publishes that finite manifest as inert JSON in the document head, or
+at the rendered body start for body-only host protocols. Light builds emit the
+same hrefs as deduplicated document stylesheets because their CSS is globally
+scoped.
+Automatic Shadow intent preloading requires HTML rendered through the WebUI
+handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
+the build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it cannot start the compiler-owned style
+preload before loading the root asset.
+If an authoritative native stylesheet link fails, WebUI reports the error,
+keeps the native link in place, releases the temporary guard, and completes
+hydration. The component may be unstyled, but it remains visible and usable.
+Generated root, shared chunk, and content-hashed stylesheet filenames never
+belong in authored code. In Shadow builds, `preload(tag)` starts the component's
+Link styles, template graph, JavaScript module, and optional data together.
+Components can
+then fetch their own data in their class code and expose it through
+`@observable` fields when JavaScript needs to read or mutate it. Concurrent
+roots deduplicate shared chunk and stylesheet work by resolved URL.
 `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
-fastest path: it lets the shell start the template asset, JS chunk, and data
-fetch in parallel.
+fastest path: it lets the shell start Link CSS, the authored root asset, the JS
+chunk, and data in parallel. Application code keeps only the stable root asset
+URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
+preload whose intent never mounts the component is removed after three seconds,
+but the browser may still report its standard unused-preload warning.
+If the root asset or authored module rejects, the registry evicts that failed
+generation so the next `preload(tag)` or `create(tag)` retries it.
+Generated bundler integrations can supply
+`asset: () => import('./settings-dialog.webui.js')` instead of a URL so chunk
+loading and public-path rewriting stay bundler-owned without bypassing
+`defineComponentAssets()`.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
-initial SSR graph instead of being loaded only from the static asset.
+initial SSR graph instead of being loaded only from the static asset. Always
+load the normal application entry bundle first; component assets treat all
+entry-reachable templates as external prerequisites and fail clearly when one
+is missing.
 
 ## Styling
 
-CSS is scoped to each component via Shadow DOM. Styles in one component cannot leak into or be affected by another.
+Keep styles in the ordinary paired `.css` file. For an effective Light
+component, CSS is authored/global in the owning CSS tree: selectors are not
+rewritten or marker-scoped. For effective Shadow roots, the browser provides
+native style scoping.
 
-### The `:host` Selector
+### The `:host` Selector (Shadow DOM only)
 
-Style the component's root element with `:host`:
+Style an effective Shadow component's root element with `:host`:
 
 ```css
 :host {
@@ -485,9 +603,18 @@ Style the component's root element with `:host`:
 }
 ```
 
+In effective Light DOM, target the component tag directly instead:
+
+```css
+my-card {
+  display: block;
+  padding: 1rem;
+}
+```
+
 ### Attribute-Based Styling
 
-Style the component differently based on its attributes with `:host([attr])`:
+In Shadow DOM, style component attributes with `:host([attr])`:
 
 ```css
 :host([variant="primary"]) {
@@ -501,10 +628,18 @@ Style the component differently based on its attributes with `:host([attr])`:
 }
 ```
 
-### Scoping Rules
+The equivalent global Light selector is `my-card[variant="primary"]` or
+`my-card[disabled]`. `:host`, `:host-context`, and `::slotted` in effective
+Light CSS fail with `unsupported-light-css`; use ordinary selectors or opt the
+component into Shadow DOM.
 
-- Styles defined in a component's `.css` file only apply inside that component's shadow root
-- External page styles do not penetrate into the component
+### CSS Ownership Rules
+
+- Light DOM uses authored/global selectors and normal inheritance/cascade
+- Light CSS can reach other Light DOM in the same Document or ShadowRoot
+- Use deliberate names, `@layer`, and custom properties for global composition
+- Shadow DOM provides a native style boundary
+- Shadow-only selectors in Light components fail the build
 - No CSS-in-JS - styles stay in `.css` files, separate from behavior
 - Use CSS custom properties (`--my-color`) to allow external theming
 
@@ -514,16 +649,17 @@ Understanding the lifecycle helps you write components that work correctly from 
 
 ### 1. Server renders HTML
 
-The handler renders the component's template using JSON state data. No JavaScript runs. The output includes Declarative Shadow DOM:
+The handler renders the component's template using JSON state data. No
+JavaScript runs. In a Light build, unwrapped content is emitted directly:
 
 ```html
 <my-counter>
-  <template shadowrootmode="open">
-    <style>/* scoped styles */</style>
-    <button>Count: 0</button>
-  </template>
+  <button>Count: 0</button>
 </my-counter>
 ```
+
+The default build and authored Shadow islands emit Declarative Shadow DOM with
+styles installed inside the shadow root.
 
 ### 2. Browser displays content
 
@@ -531,7 +667,8 @@ The browser parses the HTML and renders it immediately. The user sees fully styl
 
 ### 3. JavaScript loads and components hydrate
 
-The framework detects the existing Declarative Shadow DOM roots and upgrades elements in place:
+The framework detects the existing Light or Shadow SSR DOM and upgrades
+elements in place:
 
 - Bindings are wired to class properties
 - Event handlers are attached
@@ -545,7 +682,12 @@ From this point on, interactions are handled entirely on the client. Changes to 
 
 ### Setting observable state during setup
 
-The server owns the first paint, and the framework **trusts** the HTML it produced — hydration wires bindings to the existing DOM instead of re-rendering it. A value you write *before hydration finishes* — in an `@observable` field initializer, the `constructor`, or before you call `super.connectedCallback()` — updates the property's backing field but cannot touch the DOM yet, so it is dropped. Your element's state then silently disagrees with what is on screen.
+The server owns the first paint, and the framework **trusts** the HTML it
+produced. Hydration wires bindings to the existing DOM instead of re-rendering
+it. A value you write *before hydration finishes*, in an `@observable` field
+initializer, the `constructor`, or before you call `super.connectedCallback()`,
+updates the property's backing field but cannot touch the DOM yet, so it is
+dropped. Your element's state then silently disagrees with what is on screen.
 
 When the framework detects this it logs a development warning naming the properties, so the mismatch is never silent:
 
@@ -554,22 +696,44 @@ When the framework detects this it logs a development warning naming the propert
 super.connectedCallback() to a value that differs from the server-rendered DOM…
 ```
 
-Follow one rule to stay correct:
+Follow these rules to stay correct:
 
 - **A value that must appear in the first render belongs in the SSR state.** Provide it in the JSON state so the server renders it; the client then hydrates against a matching DOM.
-- **Assign anything else after `super.connectedCallback()`**, where `@observable` writes flow through live bindings.
+- **Assign post-hydration state from `hydratedCallback()`**, where
+  `@observable` writes flow through live bindings on ordinary, streamed, and
+  client-created components.
+
+On a normal buffered page or client-created mount,
+`super.connectedCallback()` hydrates synchronously. A progressive streaming host
+can connect while its checkpoint or generated parent span is incomplete, so the
+same call returns while hydration is still deferred. `hydratedCallback()` is the
+cross-mode lifecycle: WebUI invokes it synchronously exactly once after the
+first successful hydration or mount. Its once-latch is set before author code,
+so reconnecting the element or throwing from the callback does not retry it.
+
+Buffered pages rely on loading authored component code with a parser-inserted,
+non-async ES module script or a classic `defer` script. If a classic script
+blocks parsing, place it after every SSR instance it may upgrade. An opt-in
+[progressive streaming page](/guide/concepts/hydration#progressive-streaming-hydration)
+instead loads an early async module and gates each component until its complete
+streaming occurrence or generated span commits.
+
+Descendants must not structurally mutate a containing WebUI component's SSR
+subtree before that component hydrates. Inserting, removing, or reordering nodes
+can shift compiled element indices before WebUI wires them.
 
 ```ts
 export class MyCounter extends WebUIElement {
   @observable count = 0;
 
-  connectedCallback(): void {
-    // ✗ Wrong: runs before hydration — dropped, and warns.
+  constructor() {
+    super();
+    // ✗ Wrong: this runs before hydration, so the write is dropped and warns.
     // this.count = 3;
+  }
 
-    super.connectedCallback();
-
-    // ✓ Correct: runs after hydration — updates the DOM reactively.
+  protected override hydratedCallback(): void {
+    // ✓ Correct: this hook runs after hydration in every mode.
     this.count = 3;
   }
 }

@@ -164,4 +164,19 @@ export interface AdapterContext {
    * bypass stale validation.
    */
   readonly outputContents: ReadonlyMap<string, string | Uint8Array>;
+
+  /**
+   * Per-entry transitive static import closure, keyed by the same absolute
+   * output ID used in `membership.outputs`.
+   *
+   * Values list the *other* outputs an entry pulls in through static `import`
+   * statements, ordered largest-first. Dynamic `import()` edges are excluded:
+   * those are meant to cost a round trip, and preloading them would defeat
+   * the split the author asked for.
+   *
+   * Only the bundler knows output sizes, so the adapter sorts and the
+   * compiler ships the order as given. Optional: an adapter that cannot
+   * report an output import graph omits it.
+   */
+  readonly entryClosures?: ReadonlyMap<string, ReadonlyArray<string>>;
 }

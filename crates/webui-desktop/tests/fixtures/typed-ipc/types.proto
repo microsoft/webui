@@ -1,0 +1,20 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+package example.types;
+
+message Metrics {
+  double infinity = 1;
+  float not_a_number = 2;
+  fixed64 maximum_fixed = 3;
+  sfixed64 minimum_fixed = 4;
+  sint64 minimum_zigzag = 5;
+  fixed32 maximum_fixed32 = 6;
+  sfixed32 minimum_fixed32 = 7;
+  uint32 maximum_unsigned = 8;
+  int32 minimum_signed = 9;
+  bool truth = 10;
+  repeated Detail details = 11;
+  message Detail { string URL_value = 1; }
+}

@@ -3,15 +3,15 @@ members = [
     "crates/*",
     "xtask",
     "examples/integration/rust",
-    "examples/integration/ssr-performance-showdown",
     "examples/integration/streaming-browser-bench/server",
     "examples/app/commerce/server",
     "examples/demo/server",
+    "examples/app/contact-book-manager/desktop",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.18"
+version = "0.0.29"
 edition = "2021"
 rust-version = "1.93"
 authors = ["Microsoft Edge"]
@@ -21,54 +21,71 @@ homepage = "https://microsoft.github.io/webui"
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.150", features = ["raw_value"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
 thiserror = "2.0.18"
-anyhow = "1.0.103"
-log = "0.4.33"
+anyhow = "1.0.104"
+log = "0.4.34"
 env_logger = "0.11.11"
-tokio = { version = "1.52.3", features = ["full"] }
-clap = { version = "4.6.1", features = ["derive", "color"] }
-console = "0.16.4"
+tokio = { version = "1.53.1", features = ["full"] }
+clap = { version = "4.6.3", features = ["derive", "color"] }
+console = "0.16.6"
 rayon = "1.12.0"
-ctrlc = "3.5"
+ctrlc = "3.5.2"
 prost = "0.14.4"
-napi = { version = "3.10.3", features = ["napi4"] }
-napi-derive = "3.5.9"
-wasm-bindgen = "=0.2.126"
-js-sys = "0.3.103"
-serde-wasm-bindgen = "0.6"
-actix-web = "4.14.0"
-rustls = "0.23.41"
-rcgen = "0.14.8"
-awc = "3"
+napi = { version = "3.12.4", features = ["napi4"] }
+napi-derive = "3.6.5"
+pyo3 = { version = "0.29.2", features = ["abi3-py311", "generate-import-lib"] }
+wasm-bindgen = "=0.2.127"
+js-sys = "0.3.104"
+serde-wasm-bindgen = "0.6.5"
+actix-web = "4.15.0"
+rustls = "0.23.45"
+rcgen = "0.14.9"
+awc = "3.8.2"
 hmac = "0.13.0"
 sha2 = "0.11.0"
 expand-tilde = "0.6.1"
 mime_guess = "2.0.5"
-html-escape = "0.2.14"
+html-escape = "0.2.15"
 include_dir = "0.7.4"
 async-stream = "0.3.6"
-futures-util = "0.3.32"
-tokio-stream = "0.1.18"
-bytes = "1.12.0"
-crossbeam-queue = "0.3.13"
-memchr = "2.8.2"
+futures-util = "0.3.33"
+futures-channel = "0.3.34"
+futures-executor = { version = "0.3.33", features = ["thread-pool"] }
+getrandom = "0.4.3"
+tokio-stream = "0.1.19"
+bytes = "1.12.1"
+crossbeam-queue = "0.3.14"
+memchr = "2.8.3"
 notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"
 walkdir = "2.5.0"
-toml = "1.1.2"
-comrak = { version = "0.53.0", default-features = false }
-syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-onig"] }
-serde_yaml = "0.9"
-libc = "0.2.186"
-time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }
-which = "8.0.4"
+toml = "1.1.6"
+comrak = { version = "0.55.0", default-features = false }
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-onig"] }
+serde_yaml = "0.9.34"
+libc = "0.2.189"
+time = { version = "0.3.55", features = ["local-offset", "formatting", "macros"] }
+which = "8.0.6"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }
+block2 = "0.6.2"
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-foundation = { version = "0.3.2", default-features = false }
+objc2-web-kit = { version = "0.3.2", default-features = false }
+webview2-com = "0.39.1"
+gtk4 = { version = "0.11.3", default-features = false }
+webkit6 = { version = "0.6.1", default-features = false }
+windows = "0.62.2"
+windows-core = "0.62.2"
+windows-future = "0.3.2"
+windows-bindgen = "=0.65.0"
 
 # Test dependencies
 criterion = "0.8.2"
@@ -76,7 +93,9 @@ tempfile = "3.27.0"
 
 # Build dependencies
 prost-build = "0.14.4"
-napi-build = "2"
+prost-types = "0.14.4"
+prost-reflect = "0.16.5"
+napi-build = "2.4.2"
 cbindgen = "0.29.4"
 
 [workspace.lints.clippy]
@@ -109,7 +128,7 @@ unnecessary_box_returns = "deny"
 unsafe_code = "deny"
 
 [profile.release]
-lto = true
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true

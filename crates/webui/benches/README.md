@@ -1,6 +1,6 @@
 # `microsoft-webui` benches
 
-Two criterion benches in this directory:
+Four criterion benches in this directory:
 
 * **`contact_book_bench.rs`** — end-to-end render of the
   contact-book-manager template at 10 / 100 / 1 000 contacts. Measures
@@ -12,6 +12,12 @@ Two criterion benches in this directory:
   hook) vs `String + post-injection` (the legacy livereload path the
   streaming module replaces). Includes a separate `ttfb` group that
   measures time-to-first-chunk for the streaming path.
+* **`component_assets_bench.rs`** — static component asset graph
+  generation and chunk rendering.
+* **`server_request_bench.rs`** — high-level router-aware request
+  handling for full documents with and without a CSP nonce, plus JSON
+  partial responses including a large state with sparse navigation
+  projection.
 
 Two **examples** (in `crates/webui/examples/`) round out the suite:
 
@@ -22,10 +28,12 @@ Two **examples** (in `crates/webui/examples/`) round out the suite:
 * **`streaming_e2e_ttfb_bench.rs`** — HTTP-level TTFB through a real
   actix-web server.
 
-A separate Playwright package handles browser-perceived metrics:
+Separate integration packages handle external-runtime metrics:
 
 * **`examples/integration/streaming-browser-bench/`** — TTFB / FCP /
   LCP / DCL / load measured by Chromium via `PerformanceObserver`.
+* **`examples/integration/node-addon-bench/`** — protocol construction,
+  buffered render, and streaming callback costs across V8/N-API.
 
 For the cross-bench picture and recommended workflow, see
 [`BENCHMARKS.md`](../../../BENCHMARKS.md) at the repo root.
@@ -39,6 +47,8 @@ For the cross-bench picture and recommended workflow, see
 | `cargo xtask bench streaming-resource` | run the resource-counting example |
 | `cargo xtask bench streaming-e2e-ttfb` | run the HTTP-level TTFB example |
 | `cargo xtask bench streaming-browser` | run the Playwright browser-metrics test |
+| `cargo xtask bench lazy-hydration` | run the Chromium offscreen work matrix |
+| `cargo xtask bench node-addon` | run the Node/V8/N-API addon benchmark |
 | `cargo xtask bench full` | run all four streaming-related benches in sequence |
 | `cargo xtask bench all` | run every criterion bench in the workspace |
 
@@ -80,6 +90,7 @@ Negative Δ% = improvement; positive = regression.
 | streaming-resource bytes/CPU | < ±2% | > ±5% |
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
+| node-addon P50 (V8/N-API) | < ±5% | > ±10% |
 
 For criterion's HTML reports with PDF/CDF plots and violin
 comparisons, open `target/criterion/report/index.html`.

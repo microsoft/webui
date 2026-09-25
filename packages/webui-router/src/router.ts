@@ -2,8 +2,10 @@
 // Licensed under the MIT license.
 
 /**
- * Core router orchestrator — uses the Navigation API to intercept
- * navigations and activates/deactivates `<webui-route>` elements.
+ * Core router orchestrator — intercepts navigations and activates/deactivates
+ * `<webui-route>` elements. The Navigation API is used when the host grants
+ * interception; otherwise `fallback-navigation.ts` reproduces the same contract
+ * with `history.pushState` and `popstate`.
  *
  * Heavy lifting is delegated to extracted modules:
  * - cache.ts      — NavigationCache (LRU + tag invalidation)
@@ -14,9 +16,15 @@
  * - preload.ts    — speculative prefetch on hover
  * - loaders.ts    — lazy component loading & route loaders
  * - chain.ts      — route chain building & reconciliation
+ * - route-boundary.ts — destination boundary hint selection
  */
 
 import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
+import {
+  canInterceptNavigations,
+  fallbackPush,
+  setupFallbackNavigation,
+} from './fallback-navigation.js';
 import { isStateful } from './types.js';
 import type { RouterConfig, NavigationEvent, CacheConfig } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
@@ -35,27 +43,55 @@ import {
   applyParamsQueryState,
   setRouteMeta,
   getRouteMeta,
+  mountedRouteComponent,
+  clearRouteContent,
   WebUIRouteElement,
 } from './route-element.js';
 
 import type { PartialResponse, RouteChainEntry } from './cache.js';
 import type { PendingState } from './pending.js';
+import type {
+  PreparedRoutePreload,
+  RawPreloadedPartial,
+} from './prepared-preload.js';
 import {
   registerTemplatesAndStyles,
   injectCssLinks,
   fetchComponentTemplates,
   notifyTemplatesRegistered,
+  registerInitialTemplatesAndStyles,
+  waitForTemplateReadiness,
 } from './templates.js';
-import type { StreamingContext } from './streaming.js';
+import type {
+  StreamingContext,
+  StreamingPartialResponse,
+} from './streaming.js';
 import { ensureComponentLoaded, resolveLoaders, LOADER_FAILED } from './loaders.js';
-import { buildChainFromSSR, findChangeLevel, findOrCreateRouteElement } from './chain.js';
+import {
+  buildChainFromSSR,
+  findChangeLevel,
+  findOrCreateRouteElement,
+  sameRouteDeclaration,
+} from './chain.js';
+import { findErrorComponent, findPendingComponent } from './route-boundary.js';
 
 export { parseQuery, filterQuery, WebUIRouteElement };
 
 const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
 const WEBUI_DATA_ID = 'webui-data';
 const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }';
+const PARTIAL_FETCH_TIMEOUT_MS = 10_000;
 let webuiDataLoaded = false;
+
+type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
+  templates?: Record<string, unknown>;
+  templateFns?: Record<string, unknown>;
+};
+
+interface PartialReadResult {
+  readonly data: StreamingPartialResponse | null;
+  readonly hasDeferredReader: boolean;
+}
 
 export class WebUIRouter {
   private config: RouterConfig = {};
@@ -68,23 +104,29 @@ export class WebUIRouter {
   private basePath = '';
   /** O(1) lookup sets backed by the global arrays — kept in sync. */
   private cssSet = new Set<string>();
-  private stylesSet = new Set<string>();
   private navGeneration = 0;
   private currentRequestPath = '/';
   private navCache: import('./cache.js').NavigationCache | null = null;
   private navCacheLoad: Promise<import('./cache.js').NavigationCache> | null = null;
+  private preparedPreload: PreparedRoutePreload | null = null;
   private cacheLoadGeneration = 0;
   private cacheEnabled = false;
   private cacheConfig: Required<CacheConfig> = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
   private actionController: AbortController | null = null;
   private deferredReader: Promise<void> | null = null;
   private deferredGeneration = 0;
+  private partialControllers = new Set<AbortController>();
+  private partialCleanups = new WeakMap<AbortController, () => void>();
+  private boundaryGeneration = 0;
   private pending: PendingState | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   private excludePaths: string[] = [];
   private loadPromises = new Map<string, Promise<void>>();
   private ssrPreloadsCleared = false;
   private documentNavigationUrl: string | null = null;
+  /** True when the host grants `NavigateEvent.intercept()`; see fallback-navigation.ts. */
+  private nativeInterception = false;
+  private startupNavigation: Promise<void> | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -106,8 +148,31 @@ export class WebUIRouter {
     }
   }
 
-  private clearPendingElements(): void {
+  private abortPartialRequests(): void {
+    for (const controller of this.partialControllers) {
+      controller.abort();
+      this.releasePartialRequest(controller);
+    }
+    this.partialControllers.clear();
+  }
+
+  private releasePartialRequest(controller: AbortController): void {
+    this.partialControllers.delete(controller);
+    this.partialCleanups.get(controller)?.();
+    this.partialCleanups.delete(controller);
+  }
+
+  private invalidateBoundaryState(expectedGeneration?: number): number | null {
+    if (
+      expectedGeneration !== undefined &&
+      expectedGeneration !== this.boundaryGeneration
+    ) {
+      return null;
+    }
+    const generation = ++this.boundaryGeneration;
+    this.clearPendingTimer();
     this.pending?.clearElements();
+    return generation === this.boundaryGeneration ? generation : null;
   }
 
   private destroyPending(): void {
@@ -126,11 +191,23 @@ export class WebUIRouter {
   start(config: RouterConfig = {}): void {
     if (this.started) return;
     this.started = true;
+    try {
+      this.initialize(config);
+    } catch (error) {
+      this.destroy();
+      throw error;
+    }
+  }
+
+  private initialize(config: RouterConfig): void {
     this.config = config;
     this.loaders = config.loaders ?? {};
     this.basePath = document.querySelector('base')?.getAttribute('href')?.replace(/\/+$/, '') ?? '';
     this.excludePaths = config.excludePaths ?? [];
-    this.cacheEnabled = config.cache !== undefined || config.preload === true;
+    this.preparedPreload =
+      typeof config.preload === 'object' ? config.preload : null;
+    this.preparedPreload?.detach();
+    this.cacheEnabled = config.cache !== undefined || !!config.preload;
 
     if (config.cache) {
       this.cacheConfig = {
@@ -150,7 +227,7 @@ export class WebUIRouter {
     // Normalize window.__webui — ensure it exists with sensible defaults.
     // Serves as the single source of truth for SSR metadata.
     if (!window.__webui) window.__webui = {};
-    const meta = window.__webui!;
+    const meta = window.__webui as RouterRuntimeGlobal;
     // Ensure sub-fields exist
     if (!meta.inventory) meta.inventory = '';
     if (!meta.nonce) meta.nonce = '';
@@ -165,39 +242,51 @@ export class WebUIRouter {
 
     this.installDocumentTransitionOverride();
 
-    // Build O(1) lookup Sets from the global arrays, then free the arrays —
-    // they were one-shot SSR data; the Sets are the live lookup structure.
+    // Build the router's O(1) CSS URL lookup, then free its source array.
+    // Keep `styles`: the framework lazily consumes those SSR Module specifiers
+    // when it initializes the per-Document import-map deduplication set.
     for (const href of meta.css) this.cssSet.add(href);
-    for (const spec of meta.styles) this.stylesSet.add(spec);
     delete meta.css;
-    delete meta.styles;
 
-    const nav = window.navigation;
-    const handler = (event: NavigateEvent) => {
-      if (this.documentNavigationUrl === event.destination.url) {
-        this.documentNavigationUrl = null;
-        return;
-      }
-      if (!event.canIntercept || event.hashChange) return;
-      const url = new URL(event.destination.url);
-      if (url.origin !== location.origin) return;
-      const pathname = url.pathname;
-      for (let i = 0; i < this.excludePaths.length; i++) {
-        if (pathname.startsWith(this.excludePaths[i])) return;
-      }
-      event.intercept({
-        handler: async () => {
-          try {
-            await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') return;
-            console.error('[Router] Navigation error:', err);
-          }
-        },
-      });
-    };
-    nav.addEventListener('navigate', handler);
-    this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
+    // The Navigation API cannot intercept navigations on non-HTTP schemes,
+    // so desktop shells fall back to pushState/popstate interception.
+    this.nativeInterception = canInterceptNavigations();
+
+    if (this.nativeInterception) {
+      const nav = window.navigation;
+      const handler = (event: NavigateEvent) => {
+        if (this.documentNavigationUrl === event.destination.url) {
+          this.documentNavigationUrl = null;
+          return;
+        }
+        if (!event.canIntercept || event.hashChange) return;
+        const url = new URL(event.destination.url);
+        if (url.origin !== location.origin) return;
+        const pathname = url.pathname;
+        for (let i = 0; i < this.excludePaths.length; i++) {
+          if (pathname.startsWith(this.excludePaths[i])) return;
+        }
+        event.intercept({
+          handler: async () => {
+            try {
+              await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
+            } catch (err) {
+              if (err instanceof DOMException && err.name === 'AbortError') return;
+              console.error('[Router] Navigation error:', err);
+            }
+          },
+        });
+      };
+      nav.addEventListener('navigate', handler);
+      this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
+    } else {
+      const self = this;
+      this.cleanupFns.push(setupFallbackNavigation({
+        get excludePaths() { return self.excludePaths; },
+        navigate: (url, signal) =>
+          this.handleNavigation(buildNavigationTarget(url, this.basePath), signal),
+      }));
+    }
 
     if (config.preload) {
       const self = this;
@@ -214,8 +303,9 @@ export class WebUIRouter {
           excludePaths: this.excludePaths,
           get currentRequestPath() { return self.currentRequestPath; },
           get inventory() { return window.__webui!.inventory!; },
-          hasCache: (p) => cache.has(p),
-          storeCache: (p, d, pre) => cache.store(p, d, pre),
+          hasCache: (p) => cache.has(p) || this.preparedPreload?.has(p) === true,
+          storeCache: (p, d, pre, streaming) =>
+            cache.store(p, d, pre, streaming),
           fetchPartial: (p, s, spec) => this.fetchPartial(p, s, spec),
         });
         if (cancelled) cleanup();
@@ -242,18 +332,26 @@ export class WebUIRouter {
       });
     }
 
-    this.startInitialNavigation(meta.templates);
+    this.startInitialNavigation(meta);
   }
 
   /** Navigate to a new path. */
   navigate(path: string): void {
     const fullPath = prependBasePath(path, this.basePath);
-    window.navigation.navigate(fullPath);
+    if (this.nativeInterception) {
+      window.navigation.navigate(fullPath);
+    } else {
+      fallbackPush(fullPath);
+    }
   }
 
   /** Navigate back. */
   back(): void {
-    window.navigation.back();
+    if (this.nativeInterception) {
+      window.navigation.back();
+    } else {
+      history.back();
+    }
   }
 
   /** Invalidate all cache entries whose tags overlap with the given tags. */
@@ -271,7 +369,7 @@ export class WebUIRouter {
    * Batch-fetches missing templates from `/_webui/templates` in a single request.
    */
   async ensureLoaded(...tags: string[]): Promise<void> {
-    const registry = window.__webui?.templates;
+    const registry = (window.__webui as RouterRuntimeGlobal | undefined)?.templates;
 
     const missing: string[] = [];
     for (const tag of tags) {
@@ -286,7 +384,11 @@ export class WebUIRouter {
       const inv = window.__webui!.inventory!;
       const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
       const fetchPromise = fetchComponentTemplates(
-        missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
+        missing,
+        inv,
+        endpoint,
+        window.__webui!.nonce!,
+        this.cssSet,
         (inv) => this.updateInventory(inv),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
@@ -305,13 +407,14 @@ export class WebUIRouter {
 
   /** Garbage-collect all cached templates to free memory. */
   gc(): void {
-    const registry = window.__webui?.templates;
+    const runtime = window.__webui as RouterRuntimeGlobal | undefined;
+    const registry = runtime?.templates;
     if (registry) {
       for (const tag of Object.keys(registry)) {
         delete registry[tag];
       }
     }
-    const functionRegistry = window.__webui?.templateFns;
+    const functionRegistry = runtime?.templateFns;
     if (functionRegistry) {
       for (const tag of Object.keys(functionRegistry)) {
         delete functionRegistry[tag];
@@ -331,19 +434,25 @@ export class WebUIRouter {
     this.started = false;
     this.ssrPreloadsCleared = false;
     this.documentNavigationUrl = null;
+    this.nativeInterception = false;
+    this.startupNavigation = null;
     this.cssSet.clear();
-    this.stylesSet.clear();
 
     this.currentRequestPath = '/';
     this.navCache?.clear();
     this.navCache = null;
     this.navCacheLoad = null;
+    this.preparedPreload?.destroy();
+    this.preparedPreload = null;
     this.cacheLoadGeneration += 1;
     this.cacheEnabled = false;
     this.cacheConfig = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
     this.actionController?.abort();
     this.actionController = null;
+    this.navGeneration++;
+    this.invalidateBoundaryState();
     this.destroyPending();
+    this.abortPartialRequests();
     this.deferredReader = null;
   }
 
@@ -373,9 +482,9 @@ export class WebUIRouter {
       if (thisGen !== this.navGeneration) return;
 
       for (const entry of this.activeChain) {
-        const state = loaderStates.get(entry.component);
+        const state = loaderStates.get(entry);
         if (state && state !== LOADER_FAILED && entry.el) {
-          const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+          const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
           if (compEl) entry.compEl = compEl;
           if (compEl && isStateful(compEl)) {
             compEl.setState(state);
@@ -394,67 +503,127 @@ export class WebUIRouter {
       this.clearSsrPreloads();
       this.actionController?.abort();
       this.actionController = null;
-      this.clearPendingElements();
       const thisGen = ++this.navGeneration;
-      const navCache = this.cacheEnabled ? await this.ensureNavigationCache() : null;
-      if (thisGen !== this.navGeneration) return;
-      navCache?.gc();
+      const boundaryGen = this.invalidateBoundaryState();
+      if (boundaryGen === null) return;
 
-      let partialData: (PartialResponse & { inventory?: string }) | null = null;
-      const cached = navCache?.lookup(requestPath) ?? null;
-      if (cached) {
-        partialData = cached;
-      } else {
-        const pendingTag = findPendingComponent(this.activeChain, requestPath);
-        if (pendingTag) {
-          this.pendingTimer = setTimeout(() => {
-            this.pendingTimer = null;
-            void this.pendingState().then((pending) => {
-              if (thisGen === this.navGeneration) pending.mountPending(pendingTag, this.activeChain);
-            });
-          }, 150);
-        }
+      try {
+        if (thisGen !== this.navGeneration) return;
+        this.abortPartialRequests();
+        const navCache = this.cacheEnabled ? await this.ensureNavigationCache() : null;
+        if (thisGen !== this.navGeneration) return;
+        navCache?.gc();
 
-        partialData = await this.fetchPartial(requestPath, signal);
-        this.clearPendingTimer();
+        let partialData: StreamingPartialResponse | null = null;
+        const cached = navCache?.lookup(requestPath) ?? null;
+        if (cached) {
+          partialData = cached;
+        } else {
+          const pendingBoundary = findPendingComponent(this.activeChain, requestPath);
+          if (pendingBoundary && !pendingBoundary.keepAlive) {
+            this.pendingTimer = setTimeout(() => {
+              if (boundaryGen !== this.boundaryGeneration) return;
+              this.pendingTimer = null;
+              void this.pendingState().then((pending) => {
+                if (
+                  thisGen === this.navGeneration &&
+                  boundaryGen === this.boundaryGeneration
+                ) {
+                  pending.mountPending(
+                    pendingBoundary.component,
+                    pendingBoundary.container,
+                  );
+                }
+              });
+            }, 150);
+          }
 
-        if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
-          const errorTag = findErrorComponent(this.activeChain, requestPath);
-          if (errorTag) {
-            const pending = await this.pendingState();
-            pending.mountError(errorTag, {
-              error: 'Navigation failed',
-              status: 0,
-              path: requestPath,
-            }, this.activeChain);
+          partialData =
+            await this.takePreparedPartial(requestPath, signal)
+            ?? await this.fetchPartial(requestPath, signal);
+
+          if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
+            const errorBoundary = findErrorComponent(this.activeChain, requestPath);
+            if (errorBoundary) {
+              const errorBoundaryGen = this.invalidateBoundaryState(boundaryGen);
+              if (errorBoundaryGen === null) return;
+              const pending = await this.pendingState();
+              if (
+                thisGen !== this.navGeneration ||
+                errorBoundaryGen !== this.boundaryGeneration
+              ) {
+                return;
+              }
+              pending.mountError(
+                errorBoundary.component,
+                {
+                  error: 'Navigation failed',
+                  status: 0,
+                  path: requestPath,
+                },
+                errorBoundary.container,
+              );
+              return;
+            }
+            console.warn('[Router] Navigation fetch failed for:', requestPath);
             return;
           }
-          console.warn('[Router] Navigation fetch failed for:', requestPath);
+        }
+
+        const streaming = partialData?._deferredStream
+          ? await import('./streaming.js')
+          : undefined;
+        if (!partialData || signal?.aborted || thisGen !== this.navGeneration) {
+          this.invalidateBoundaryState(boundaryGen);
+          if (partialData && streaming) {
+            await streaming.cancelDeferredStream(partialData);
+          }
+          this.preparedPreload?.release(requestPath);
           return;
         }
-      }
 
-      if (!partialData || signal?.aborted || thisGen !== this.navGeneration) return;
+        if (partialData.path) {
+          const requestPathname = requestPath.split('?')[0];
+          if (partialData.path !== requestPathname && partialData.path !== requestPath) {
+            console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
+            this.invalidateBoundaryState(boundaryGen);
+            await streaming?.cancelDeferredStream(partialData);
+            this.preparedPreload?.release(requestPath);
+            return;
+          }
+        }
 
-      if (partialData.path) {
-        const requestPathname = requestPath.split('?')[0];
-        if (partialData.path !== requestPathname && partialData.path !== requestPath) {
-          console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
+        if (!cached) {
+          const isStreaming = streaming?.hasDeferredStream(partialData) ?? false;
+          navCache?.store(requestPath, partialData, undefined, isStreaming);
+          this.preparedPreload?.release(requestPath);
+        }
+
+        let committed = false;
+        try {
+          committed = await this.commitWithData(
+            partialData,
+            requestPath,
+            query,
+            thisGen,
+            boundaryGen,
+            signal,
+          );
+        } catch (error) {
+          this.invalidateBoundaryState(boundaryGen);
+          await streaming?.cancelDeferredStream(partialData);
+          if (!cached) navCache?.evict(requestPath);
+          throw error;
+        }
+        if (!committed || signal?.aborted || thisGen !== this.navGeneration) {
+          this.invalidateBoundaryState(boundaryGen);
+          await streaming?.cancelDeferredStream(partialData);
+          if (!cached) navCache?.evict(requestPath);
           return;
         }
-      }
-
-      if (!cached) {
-        const isStreaming = this.deferredReader !== null && this.deferredGeneration === thisGen;
-        navCache?.store(requestPath, partialData, undefined, isStreaming);
-      }
-
-      await this.commitWithData(partialData, requestPath, query, signal, thisGen);
-
-      const deferredStates = (partialData as any)._deferredStates;
-      if (deferredStates) {
-        const { applyDeferredStates } = await import('./streaming.js');
-        applyDeferredStates(deferredStates, requestPath, this.streamingContext());
+        streaming?.startDeferredStream(partialData);
+      } finally {
+        this.invalidateBoundaryState(boundaryGen);
       }
     }
 
@@ -474,38 +643,143 @@ export class WebUIRouter {
     requestPath: string,
     signal?: AbortSignal,
     speculative?: boolean,
-  ): Promise<(PartialResponse & { inventory?: string }) | null> {
+  ): Promise<StreamingPartialResponse | null> {
     const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (window.__webui!.inventory) headers['X-WebUI-Inventory'] = window.__webui!.inventory!;
 
-    const resp = await fetch(fullPath, { headers, signal });
-    if (!resp.ok) return null;
+    const requestController = new AbortController();
+    if (!speculative) this.abortPartialRequests();
+    this.partialControllers.add(requestController);
+    const timeout = setTimeout(
+      () => requestController.abort(new DOMException('Partial response timed out', 'TimeoutError')),
+      PARTIAL_FETCH_TIMEOUT_MS,
+    );
+    const requestSignal = signal
+      ? AbortSignal.any([signal, requestController.signal])
+      : requestController.signal;
+    let hasDeferredReader = false;
 
-    const contentType = resp.headers.get('content-type') ?? '';
-
-    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
-      if (speculative || signal?.aborted) return null;
-      this.navigateDocument(requestPath);
+    try {
+      const resp = await fetch(fullPath, { headers, signal: requestSignal });
+      const result = await this.readPartialResponse(
+        resp,
+        requestPath,
+        requestController,
+        requestSignal,
+        speculative,
+      );
+      hasDeferredReader = result.hasDeferredReader;
+      return result.data;
+    } catch (error) {
+      if (signal?.aborted) throw error;
       return null;
+    } finally {
+      clearTimeout(timeout);
+      if (!hasDeferredReader) this.releasePartialRequest(requestController);
+    }
+  }
+
+  private async takePreparedPartial(
+    requestPath: string,
+    signal?: AbortSignal,
+  ): Promise<StreamingPartialResponse | null> {
+    const raw = await this.preparedPreload?.take(
+      requestPath,
+      window.__webui!.inventory!,
+      signal,
+    );
+    if (!raw) return null;
+
+    const requestController = new AbortController();
+    this.partialControllers.add(requestController);
+    const timeout = setTimeout(
+      () => requestController.abort(new DOMException('Partial response timed out', 'TimeoutError')),
+      PARTIAL_FETCH_TIMEOUT_MS,
+    );
+    const requestSignal = signal
+      ? AbortSignal.any([signal, requestController.signal])
+      : requestController.signal;
+    const abortRaw = (): void => raw.controller.abort(requestSignal.reason);
+    if (requestSignal.aborted) {
+      abortRaw();
+    } else {
+      requestSignal.addEventListener('abort', abortRaw, { once: true });
+      this.partialCleanups.set(
+        requestController,
+        () => requestSignal.removeEventListener('abort', abortRaw),
+      );
+    }
+    let hasDeferredReader = false;
+    try {
+      const result = await this.readPartialResponse(
+        rawResponse(raw),
+        requestPath,
+        requestController,
+        requestSignal,
+        true,
+      );
+      hasDeferredReader = result.hasDeferredReader;
+      if (!result.data) this.preparedPreload?.release(requestPath);
+      return result.data;
+    } catch (error) {
+      this.preparedPreload?.release(requestPath);
+      if (signal?.aborted) throw error;
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      if (!hasDeferredReader) this.releasePartialRequest(requestController);
+    }
+  }
+
+  private async readPartialResponse(
+    response: Response,
+    requestPath: string,
+    requestController: AbortController,
+    signal: AbortSignal,
+    speculative = false,
+  ): Promise<PartialReadResult> {
+    if (!response.ok) {
+      requestController.abort();
+      return { data: null, hasDeferredReader: false };
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
+      if (!speculative && !signal.aborted) this.navigateDocument(requestPath);
+      requestController.abort();
+      return { data: null, hasDeferredReader: false };
+    }
+    if (contentType.includes('ndjson') && response.body) {
+      const streaming = await import('./streaming.js');
+      const data = await streaming.readStreamingPartial(
+        response,
+        requestPath,
+        this.streamingContext(requestController),
+        signal,
+      );
+      return {
+        data,
+        hasDeferredReader:
+          data !== null && streaming.hasDeferredStream(data),
+      };
     }
 
-    if (contentType.includes('ndjson') && resp.body) {
-      const { readStreamingPartial } = await import('./streaming.js');
-      return readStreamingPartial(resp, requestPath, this.streamingContext(), signal);
-    }
-
-    const data = await resp.json() as PartialResponse & { inventory?: string };
-    if (signal?.aborted) return null;
-    registerTemplatesAndStyles(
+    const data = await response.json() as StreamingPartialResponse;
+    if (signal.aborted) return { data: null, hasDeferredReader: false };
+    const stylesReady = registerTemplatesAndStyles(
       data,
       window.__webui!.nonce!,
-      this.stylesSet,
-      (inv) => this.updateInventory(inv),
+      this.cssSet,
+      (inventory) => this.updateInventory(inventory),
     );
-    if (signal?.aborted) return null;
     injectCssLinks(data, this.cssSet);
-    return data;
+    if (stylesReady && !await waitForTemplateReadiness(stylesReady, signal)) {
+      return { data: null, hasDeferredReader: false };
+    }
+    return {
+      data: signal.aborted ? null : data,
+      hasDeferredReader: false,
+    };
   }
 
   private mountComponent(
@@ -516,12 +790,12 @@ export class WebUIRouter {
     query?: Record<string, string>,
   ): void {
     // Destroy existing component bindings before clearing DOM
-    const existing = routeEl.firstElementChild;
+    const existing = mountedRouteComponent(routeEl);
     if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
       (existing as unknown as { $destroy: () => void }).$destroy();
     }
     const component = document.createElement(componentTag);
-    routeEl.textContent = '';
+    clearRouteContent(routeEl);
     routeEl.appendChild(component);
     applyParamsQueryState(component, routeEl, params, state, query);
   }
@@ -529,14 +803,14 @@ export class WebUIRouter {
   private applyState(
     entry: RouteChainEntry,
     query?: Record<string, string>,
-    loaderStates?: Map<string, Record<string, unknown> | typeof LOADER_FAILED>,
+    loaderStates?: Map<RouteChainEntry, Record<string, unknown> | typeof LOADER_FAILED>,
   ): void {
     if (!entry.component || !entry.el) return;
-    const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
     if (!compEl) return;
     entry.compEl = compEl;
 
-    const override = loaderStates?.get(entry.component);
+    const override = loaderStates?.get(entry);
     const effectiveOverride = override === LOADER_FAILED ? undefined : override;
     const loaderExists = override !== undefined;
     const isKeepAlive = entry.keepAlive || getRouteMeta(entry.el)?.keepAlive || false;
@@ -559,19 +833,28 @@ export class WebUIRouter {
 
   // ── Helpers ─────────────────────────────────────────────────────
 
-  private streamingContext(): StreamingContext {
+  private streamingContext(requestController?: AbortController): StreamingContext {
     const self = this;
+    let trackedReader: Promise<void> | null = null;
     return {
       get navGeneration() { return self.navGeneration; },
       get currentRequestPath() { return self.currentRequestPath; },
       get activeChain() { return self.activeChain; },
       get nonce() { return window.__webui!.nonce!; },
-      get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
-      setDeferredReader(r) { self.deferredReader = r; },
+      setDeferredReader(r) {
+        if (r) {
+          trackedReader = r;
+          self.deferredReader = r;
+          return;
+        }
+        if (self.deferredReader === trackedReader) self.deferredReader = null;
+        if (requestController) self.releasePartialRequest(requestController);
+      },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
       markCacheComplete(p) {
+        if (requestController?.signal.aborted) return;
         const entry = self.navCache?.getEntry(p);
         if (entry) entry.complete = true;
       },
@@ -659,9 +942,29 @@ export class WebUIRouter {
     this.cleanupFns.push(() => style.remove());
   }
 
-  private startInitialNavigation(templates: Record<string, unknown>): void {
-    notifyTemplatesRegistered(templates);
-    this.handleNavigation(this.currentTarget());
+  private startInitialNavigation(meta: RouterRuntimeGlobal): void {
+    if (meta.componentStyles) {
+      registerInitialTemplatesAndStyles(meta.templates ?? {}, meta.componentStyles);
+    } else {
+      notifyTemplatesRegistered(meta.templates);
+    }
+    const startup = this.handleNavigation(this.currentTarget());
+    const startupGeneration = this.navGeneration;
+    this.startupNavigation = startup;
+    void startup.then(
+      () => {
+        if (this.startupNavigation === startup) {
+          this.startupNavigation = null;
+        }
+      },
+      (error) => {
+        if (this.startupNavigation !== startup) return;
+        this.startupNavigation = null;
+        if (this.navGeneration !== startupGeneration) return;
+        this.destroy();
+        console.error('[Router] Initial navigation error:', error);
+      },
+    );
   }
 
   // ── Commit ─────────────────────────────────────────────────────
@@ -670,9 +973,10 @@ export class WebUIRouter {
     partialData: PartialResponse & { inventory?: string },
     requestPath: string,
     query: Record<string, string>,
+    navigationGeneration: number,
+    boundaryGeneration: number,
     signal?: AbortSignal,
-    generation?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const topState = partialData.state ?? null;
     const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
       component: e.component ?? '',
@@ -691,11 +995,13 @@ export class WebUIRouter {
     if (newChain.length === 0) {
       console.warn(`[Router] No route matched for path: ${requestPath}`);
       this.navigateDocument(requestPath);
-      return;
+      return false;
     }
 
     // Pre-load component modules
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
+      return false;
+    }
     const preload = Promise.all(
       newChain
         .filter(entry => entry.component)
@@ -706,32 +1012,61 @@ export class WebUIRouter {
         signal.addEventListener('abort', () => resolve('aborted'), { once: true });
       });
       const result = await Promise.race([preload.then(() => 'loaded' as const), aborted]);
-      if (result === 'aborted') return;
+      if (result === 'aborted') return false;
     } else {
       await preload;
     }
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
+      return false;
+    }
 
     // A component claimed by neither an authored module nor the framework's
     // dormant template-host runtime cannot be mounted safely.
     if (newChain.some(entry => entry.component && !customElements.get(entry.component))) {
       this.navigateDocument(requestPath);
-      return;
+      return false;
     }
 
     // Resolve static loader() methods on component constructors (pre-commit).
     // Loader results replace server state for those components.
     const loaderStates = await resolveLoaders(newChain, query, signal);
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
+      return false;
+    }
 
     const changeLevel = findChangeLevel(this.activeChain, newChain);
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
+    let committed = false;
     const commitNavigation = (): void => {
-      // Deactivate old chain from leaf up
+      if (
+        signal?.aborted ||
+        navigationGeneration !== this.navGeneration ||
+        this.invalidateBoundaryState(boundaryGeneration) === null
+      ) {
+        return;
+      }
+
+      // Deactivate old chain from leaf up. Preserve route-owned style markers,
+      // but tear down component state when the declaration will not be reused.
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
-        if (this.activeChain[i].el) deactivateRoute(this.activeChain[i].el!);
-        this.activeChain[i].compEl = undefined; // Release component reference
+        const oldEntry = this.activeChain[i];
+        if (oldEntry.el) {
+          const newEntry = i < newChain.length ? newChain[i] : undefined;
+          const willReuse = newEntry !== undefined && sameRouteDeclaration(oldEntry, newEntry);
+          if (!willReuse) {
+            const isKeepAlive = oldEntry.keepAlive || getRouteMeta(oldEntry.el)?.keepAlive || false;
+            if (!isKeepAlive) {
+              const existing = oldEntry.compEl ?? mountedRouteComponent(oldEntry.el);
+              if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
+                (existing as unknown as { $destroy: () => void }).$destroy();
+              }
+              clearRouteContent(oldEntry.el);
+            }
+          }
+          deactivateRoute(oldEntry.el);
+        }
+        oldEntry.compEl = undefined; // Release component reference
       }
       for (let i = 0; i < changeLevel; i++) {
         newChain[i].el = this.activeChain[i].el;
@@ -753,7 +1088,7 @@ export class WebUIRouter {
         const entry = newChain[i];
         const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
         const parent = i > 0 ? newChain[i - 1] : null;
-        if (oldEntry?.component === entry.component && oldEntry?.el) {
+        if (oldEntry?.el && sameRouteDeclaration(oldEntry, entry)) {
           entry.el = oldEntry.el;
           entry.compEl = oldEntry.compEl;
           setRouteMeta(entry.el, {
@@ -771,12 +1106,12 @@ export class WebUIRouter {
           keepAlive: entry.keepAlive ?? false,
         });
         if (entry.component) {
-          const override = loaderStates.get(entry.component);
+          const override = loaderStates.get(entry);
           const effectiveOverride = override === LOADER_FAILED ? undefined : override;
 
           const isKeepAlive = entry.keepAlive || getRouteMeta(routeEl)?.keepAlive || false;
-          const existingComp = routeEl.firstElementChild;
-          if (isKeepAlive && existingComp?.matches(entry.component)) {
+          const existingComp = mountedRouteComponent(routeEl);
+          if (isKeepAlive && existingComp?.localName === entry.component.toLowerCase()) {
             entry.compEl = existingComp;
             const stateToApply = effectiveOverride ?? entry.state;
             if (hasState(stateToApply)) {
@@ -787,26 +1122,34 @@ export class WebUIRouter {
           } else {
             const stateToApply = effectiveOverride ?? entry.state;
             this.mountComponent(routeEl, entry.component, entry.params, stateToApply, query);
-            entry.compEl = routeEl.firstElementChild ?? undefined;
+            entry.compEl = mountedRouteComponent(routeEl) ?? undefined;
           }
         }
         activateRoute(routeEl, entry.params);
       }
       this.activeChain = newChain;
+      committed = true;
     };
 
     if (document.startViewTransition && !isQueryOnlyChange) {
       const transition = document.startViewTransition(commitNavigation);
+      // Animation skips are non-fatal; updateCallbackDone still owns commit errors.
+      void transition.ready.catch(ignoreTransitionRejection);
+      void transition.finished.catch(ignoreTransitionRejection);
       await transition.updateCallbackDone;
     } else {
       commitNavigation();
     }
+    return committed;
   }
 
 }
 
+function ignoreTransitionRejection(): void {}
+
 function loadWebUIDataBlock(): void {
-  if (webuiDataLoaded || window.__webui?.state !== undefined) return;
+  const runtime = window.__webui as RouterRuntimeGlobal | undefined;
+  if (webuiDataLoaded || runtime?.state !== undefined) return;
   const el = document.getElementById(WEBUI_DATA_ID);
   if (!el) {
     webuiDataLoaded = true;
@@ -815,8 +1158,8 @@ function loadWebUIDataBlock(): void {
 
   const text = el.textContent;
   if (text) {
-    const templateFns = window.__webui?.templateFns;
-    const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    const templateFns = runtime?.templateFns;
+    const parsed = JSON.parse(text) as RouterRuntimeGlobal;
     if (templateFns) parsed.templateFns = templateFns;
     window.__webui = parsed;
   }
@@ -824,47 +1167,9 @@ function loadWebUIDataBlock(): void {
   webuiDataLoaded = true;
 }
 
+function rawResponse(raw: RawPreloadedPartial): Response {
+  return raw.response;
+}
+
 /** Singleton router instance. */
 export const Router = new WebUIRouter();
-
-function findPendingComponent(
-  activeChain: RouteChainEntry[],
-  _requestPath: string,
-): string | null {
-  for (let i = activeChain.length - 1; i >= 0; i--) {
-    if (activeChain[i].pendingComponent) return activeChain[i].pendingComponent!;
-  }
-  const leaf = activeChain[activeChain.length - 1];
-  if (leaf?.el) {
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (compEl) {
-      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
-        const pending = el.getAttribute('pending');
-        if (pending) return pending;
-      }
-    }
-  }
-  return null;
-}
-
-function findErrorComponent(
-  activeChain: RouteChainEntry[],
-  _requestPath: string,
-): string | null {
-  for (let i = activeChain.length - 1; i >= 0; i--) {
-    if (activeChain[i].errorComponent) return activeChain[i].errorComponent!;
-  }
-  const leaf = activeChain[activeChain.length - 1];
-  if (leaf?.el) {
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (compEl) {
-      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
-        const error = el.getAttribute('error');
-        if (error) return error;
-      }
-    }
-  }
-  return null;
-}

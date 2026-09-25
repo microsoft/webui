@@ -1,0 +1,11 @@
+:host {
+  display: block;
+}
+
+.label {
+  color: rgb(12, 34, 56);
+}
+
+::slotted(.projected) {
+  color: rgb(128, 0, 128);
+}

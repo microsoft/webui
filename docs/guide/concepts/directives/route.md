@@ -33,6 +33,10 @@ Components that have child routes use `<outlet />` to mark where the matched chi
 ```
 
 The shell (header, footer) persists across all routes. Only the content at `<outlet />` changes.
+Use one outlet at each route level, including outlets inside nested layout
+components and directives. Child routes have their own outlet level. Extra
+outlets produce a `multiple-outlets` build warning; put duplicated regions in
+the matched child component instead.
 
 ## Nested Routes
 
@@ -98,6 +102,10 @@ When multiple sibling routes match, the most specific one wins (most literal seg
 ```
 
 `/users/add` matches the first route (2 literals) over the second (1 literal + 1 param).
+
+Equal-specificity ties use declaration order, including pending and error UI.
+Declare an empty exact route before a catch-all sibling: both can match an empty
+remaining path.
 
 ## Security
 

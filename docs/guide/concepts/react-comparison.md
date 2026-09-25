@@ -10,7 +10,7 @@ This guide compares common UI patterns written in React (imperative, JavaScript-
 | **Rendering** | Client-side or Node.js SSR | Build-time compiled protocol, server-rendered HTML |
 | **Template language** | JSX (JavaScript + HTML mixed) | Separate HTML, CSS, and TypeScript files |
 | **State management** | `useState`, `useReducer`, context | `@observable` properties with targeted DOM updates |
-| **Styling** | CSS-in-JS, CSS Modules, or external | Scoped CSS via Shadow DOM or Global Light DOM via `--dom` and `--css` args |
+| **Styling** | CSS-in-JS, CSS Modules, or external | Paired CSS scoped for unwrapped Light DOM or native Shadow DOM |
 | **Runtime** | React runtime + ReactDOM in browser | No framework runtime for static content; thin hydration for interactive islands |
 | **Interactivity** | Every component ships JavaScript | Only interactive islands ship JavaScript |
 
@@ -139,7 +139,7 @@ function TodoList({ items }) {
 ```html
 <ul>
   <for each="item in items">
-    <li>
+    <li key="{{item.id}}">
       <span>{{item.title}}</span>
       <span class="status {{item.state}}">{{item.state}}</span>
     </li>
@@ -150,7 +150,13 @@ function TodoList({ items }) {
 </div>
 </code-comparison>
 
-**What changed:** `Array.map()` with JSX becomes a declarative `<for>` directive. The `key` prop is replaced by the first attribute on the repeated element. This runs on the server and produces static HTML - no JavaScript array iteration in the browser.
+**What changed:** `Array.map()` with JSX becomes a declarative `<for>`
+directive. Like React, reorderable lists can declare stable identity by placing
+the compiler-only `key` attribute on the first concrete repeated child. Leading
+`<if>` wrappers are transparent, but directives cannot carry the key. Simple
+loops may omit it and reconcile by position. `data-key` and other attributes
+never act as implicit keys. This runs on the server and produces static HTML -
+no JavaScript array iteration in the browser.
 
 ## Event Handling
 
@@ -282,7 +288,7 @@ import { WebUIElement } from '@microsoft/webui-framework';
 
 export class ColorPicker extends WebUIElement {
   selectColor(color: string): void {
-    this.$emit('color-change', { detail: { color } });
+    this.$emit('color-change', { color });
   }
 }
 
@@ -382,7 +388,9 @@ h3 {
 </div>
 </code-comparison>
 
-**What changed:** CSS-in-JS becomes a plain CSS file. Shadow DOM provides the style encapsulation that CSS-in-JS libraries simulate with generated class names. Styles cannot leak in or out of the component. No JavaScript runtime cost for styling.
+**What changed:** CSS-in-JS becomes a plain CSS file. WebUI scopes it at build
+time for unwrapped Light components, while opted-in Shadow components use native
+Shadow scoping. There is no JavaScript runtime cost for styling.
 
 ## Component Composition
 

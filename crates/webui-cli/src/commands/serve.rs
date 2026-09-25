@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod metafile;
+mod streaming_api;
+
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use clap::Args;
@@ -11,12 +14,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
 use webui::{Diagnostic, Protocol, WebUIHandler};
+use webui_dev_server::shutdown::{self, Control, Mode};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
@@ -28,6 +33,11 @@ use webui_protocol::WebUIProtocol;
 use super::common::*;
 use crate::utils::error::CliError;
 use crate::utils::output;
+#[cfg(test)]
+use metafile::temp_directory as metafile_temp_directory;
+use metafile::write_atomic;
+
+webui_handler::define_string_response_writer!(MemoryWriter, buf);
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -50,7 +60,14 @@ pub struct ServeArgs {
     #[arg(long)]
     pub watch: bool,
 
-    /// Port of the user's API server to proxy route requests to
+    /// Opt in to supervised shutdown with this grace period in seconds.
+    /// A second stop request forces termination sooner.
+    #[arg(long, value_name = "SECONDS")]
+    pub shutdown_timeout: Option<NonZeroU64>,
+
+    /// Port of the user's API server to proxy route requests to. Encoded path
+    /// and query bytes are forwarded unchanged, except the entry route: `/` and
+    /// `/index.html` both resolve backend state at `/` (query preserved).
     #[arg(long)]
     pub api_port: Option<u16>,
 
@@ -70,6 +87,10 @@ pub struct ServeArgs {
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
+    /// Write an esbuild-compatible component asset metafile after each successful build
+    #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
+    pub metafile: Option<PathBuf>,
+
     /// Base path for sub-path deployment (e.g., `/commerce/`).
     /// Emits a `<base href>` tag and makes asset paths relative so the
     /// app can be served behind a reverse proxy under a sub-path.
@@ -83,6 +104,7 @@ struct ServePaths {
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
     serve_dir: Option<PathBuf>,
+    metafile: Option<PathBuf>,
 }
 
 impl ServePaths {
@@ -160,10 +182,27 @@ impl ServePaths {
             ));
         }
 
+        let metafile = args
+            .metafile
+            .as_deref()
+            .map(expand_tilde)
+            .transpose()
+            .with_context(|| "Failed to expand metafile path")?
+            .map(std::borrow::Cow::into_owned)
+            .map(|path| {
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    std::env::current_dir().map(|current| current.join(path))
+                }
+            })
+            .transpose()?;
+
         Ok(Self {
             app_dir,
             state_file,
             serve_dir,
+            metafile,
         })
     }
 
@@ -200,30 +239,6 @@ struct SharedState {
     entry: String,
 }
 
-/// In-memory writer implementing `ResponseWriter` for the handler.
-struct MemoryWriter {
-    buf: String,
-}
-
-impl MemoryWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for MemoryWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
-
 /// SSE endpoint path. Root-relative so the script works under any
 /// `<base href>` and across sub-path deployments.
 const HMR_ENDPOINT: &str = "/__webui/livereload";
@@ -242,8 +257,8 @@ fn watch_disabled_by_env() -> bool {
     }
 }
 
-pub fn execute(args: &ServeArgs) -> Result<()> {
-    run(args).inspect_err(|err| {
+pub fn execute(args: &ServeArgs) -> Result<i32> {
+    execute_mode(args).inspect_err(|err| {
         output::error(err);
         if let Some(cli_err) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
             output::hint(cli_err.hint());
@@ -252,7 +267,16 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
     })
 }
 
-fn run(args: &ServeArgs) -> Result<()> {
+fn execute_mode(args: &ServeArgs) -> Result<i32> {
+    // Containment must precede initial builds, output writes, and watcher setup.
+    match shutdown::prepare(args.shutdown_timeout)? {
+        Mode::Direct => run(args, None).map(|()| 0),
+        Mode::Child(control) => run(args, Some(control)).map(|()| shutdown::JOINED_EXIT_CODE),
+        Mode::Supervisor(code) => Ok(code),
+    }
+}
+
+fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     let paths = ServePaths::from_args(args)?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
@@ -275,6 +299,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         state_file: paths.state_file.clone(),
         token_file,
         component_asset_roots: args.emit_component_assets.clone(),
+        metafile: paths.metafile.clone(),
         base_path: args.base_path.clone(),
     };
 
@@ -296,8 +321,12 @@ fn run(args: &ServeArgs) -> Result<()> {
     output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
     output::field("CSS", &args.app_args.css);
+    output::field("DOM", &args.app_args.dom);
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
+    }
+    if let Some(ref metafile) = paths.metafile {
+        output::field("Metafile", &metafile.display());
     }
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
@@ -331,10 +360,10 @@ fn run(args: &ServeArgs) -> Result<()> {
         entry: args.app_args.entry.clone(),
     }));
 
-    // The watcher handle must outlive the server; dropping it stops the
-    // background watcher thread. We store it in an `Option` so that the
+    // Keep both the watcher and rebuild worker alive until the server stops.
+    // We store them in an `Option` so that the
     // `--watch=false` branch is a no-op.
-    let _watcher_handle = if let Some(active_lr) = &livereload {
+    let watcher_handle = if let Some(active_lr) = &livereload {
         let mut watch_paths_list = paths.watch_paths();
 
         // Also watch local path component sources
@@ -385,9 +414,9 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     let has_api_proxy = server_context.api_port.is_some();
 
-    actix_web::rt::System::new()
+    let server_result = actix_web::rt::System::new()
         .block_on(async move {
-            HttpServer::new(move || {
+            let mut server = HttpServer::new(move || {
                 let mut app = App::new()
                     .app_data(server_context.clone())
                     .route("/", web::get().to(handle_index))
@@ -412,15 +441,26 @@ fn run(args: &ServeArgs) -> Result<()> {
                     .default_service(web::route().to(handle_not_found));
 
                 app
-            })
-            .bind(&bind_addr)
-            .map_err(|error| map_bind_error(server_port, &bind_addr, error))?
-            .run()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            });
+            if control.is_some() {
+                server = server.disable_signals();
+            }
+            let server = server
+                .bind(&bind_addr)
+                .map_err(|error| map_bind_error(server_port, &bind_addr, error))?
+                .run();
+            match control {
+                Some(control) => control.serve(server).await.map_err(anyhow::Error::from),
+                None => server.await.map_err(|error| anyhow::anyhow!("{error}")),
+            }
         })
-        .with_context(|| format!("Failed to start actix-web server on {addr}"))?;
+        .with_context(|| format!("Failed to start actix-web server on {addr}"));
 
+    if let Some((watcher, worker)) = watcher_handle {
+        drop(watcher);
+        worker.shutdown()?;
+    }
+    server_result?;
     Ok(())
 }
 
@@ -451,6 +491,8 @@ struct RenderConfig {
     /// Parsed and validated on every build so their authoring errors surface in
     /// the dev server, even though they are not part of the initial SSR tree.
     component_asset_roots: Vec<String>,
+    /// Atomic metafile destination updated only after a successful build and render.
+    metafile: Option<PathBuf>,
     /// Base path for sub-path deployment (e.g., `/commerce/`).
     base_path: Option<String>,
 }
@@ -480,6 +522,7 @@ fn build_and_render(
     // errors in lazily loaded components (which are not in the SSR tree) fail
     // the dev build instead of being silently skipped.
     build_options.component_asset_roots = config.component_asset_roots.clone();
+    build_options.metafile = config.metafile.is_some();
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
     let token_css = match config.token_file.as_ref() {
         Some(token_file) => Some(
@@ -526,10 +569,18 @@ fn build_and_render(
         &mut writer,
     )?;
 
+    let output = writer.buf;
     let html = match livereload {
-        Some(lr) => lr.inject(&writer.buf),
-        None => writer.buf,
+        Some(lr) => lr.inject(&output),
+        None => output,
     };
+
+    if let Some(path) = &config.metafile {
+        let metafile = build_result.metafile.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("component asset metafile was requested but not generated")
+        })?;
+        write_atomic(path, metafile)?;
+    }
 
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
     let component_assets: HashMap<String, String> = build_result
@@ -547,6 +598,17 @@ fn build_and_render(
         token_css,
         warnings: build_result.warnings,
     })
+}
+
+fn watcher_ignore_paths(metafile: Option<&std::path::Path>) -> Vec<PathBuf> {
+    let mut ignore = webui_dev_server::default_ignore_paths();
+    if let Ok(out_dir) = std::env::current_dir() {
+        ignore.push(out_dir.join("dist"));
+    }
+    if let Some(metafile) = metafile {
+        ignore.extend(metafile::watch_ignore_paths(metafile));
+    }
+    ignore
 }
 
 fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
@@ -624,6 +686,13 @@ struct RequestPaths {
     request_path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpaFallbackKind {
+    None,
+    Html,
+    Json,
+}
+
 fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     let route_path = if relative.is_empty() {
         "/".to_string()
@@ -652,6 +721,18 @@ fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     }
 }
 
+fn request_paths(req: &HttpRequest) -> RequestPaths {
+    let uri = req.uri();
+    let route_path = uri.path().to_string();
+    let request_path = uri
+        .path_and_query()
+        .map_or_else(|| route_path.clone(), |value| value.as_str().to_string());
+    RequestPaths {
+        route_path,
+        request_path,
+    }
+}
+
 /// Fetch state from the user's API server for a given request path, including query parameters.
 async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
     let client = awc::Client::new();
@@ -668,7 +749,7 @@ async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
         .map_err(|e| format!("API body error: {e}"))?;
     let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
     // Expect { "state": { ... } }, fall back to entire response
-    Ok(json.get("state").cloned().unwrap_or(json))
+    Ok(extract_api_state(json))
 }
 
 /// Resolve state for a request: try API proxy first, then fall back to file state.
@@ -748,50 +829,159 @@ async fn render_page_response(
         return HttpResponse::InternalServerError().body("Protocol not available");
     };
     let plugin = context.plugin;
-
-    let mut state = resolve_state(context, request_path).await;
-
-    // Inject route params (nested) into state for SSR
-    if let Value::Object(ref mut map) = state {
-        let nested_params =
-            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
-        for (k, v) in &nested_params {
-            map.insert(k.clone(), Value::String(v.clone()));
-        }
-    }
-
-    // Livereload script as Arc<str> so the producer thread holds a
-    // single cheap clone, not a per-request String.
     let livereload_script: Option<Arc<str>> =
         context.livereload.as_ref().map(|lr| lr.client_script_arc());
-    let route_path = route_path.to_string();
-    let chunk_pool = Arc::clone(&context.chunk_pool);
+    let route_params =
+        webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
+
+    let mut state = if let Some(api_port) = context.api_port {
+        let client = awc::Client::new();
+        let url = format!("http://127.0.0.1:{api_port}{request_path}");
+        match client
+            .get(&url)
+            .insert_header(("Accept", streaming_api::ACCEPT))
+            .send()
+            .await
+        {
+            Ok(response) if streaming_api::is_stream(response.headers()) => {
+                let status = response.status();
+                if !status.is_success() {
+                    // The upstream refused before writing a single record, so no
+                    // boundary has reached the browser and rule 19's "never
+                    // degrade a live stream to buffering" does not apply. Treat
+                    // it like any other pre-stream acquisition failure and
+                    // render the page from fallback state, rather than handing
+                    // the browser a raw upstream error body in place of the app.
+                    log_api_state_warning(&format!(
+                        "API stream unavailable (HTTP {status}); rendering with fallback state"
+                    ));
+                    fallback_state(context)
+                } else {
+                    let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
+                    let defaults = streaming_state_defaults(context, route_params);
+                    return streaming_api::render(
+                        backend,
+                        streaming_api::RenderConfig {
+                            protocol: proto,
+                            entry,
+                            route_path: route_path.to_owned(),
+                            plugin,
+                            body_inject: livereload_script,
+                            chunk_pool: Arc::clone(&context.chunk_pool),
+                        },
+                        defaults,
+                    )
+                    .await;
+                }
+            }
+            Ok(mut response) => match response.body().await {
+                Ok(body) => match parse_api_state(&body) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        log_api_state_warning(&error);
+                        fallback_state(context)
+                    }
+                },
+                Err(error) => {
+                    log_api_state_warning(&format!("API body error: {error}"));
+                    fallback_state(context)
+                }
+            },
+            Err(error) => {
+                log_api_state_warning(&format!("API proxy error: {error}"));
+                fallback_state(context)
+            }
+        }
+    } else {
+        fallback_state(context)
+    };
+
+    let defaults = streaming_state_defaults(context, route_params);
+    defaults.apply(&mut state);
+    render_buffered_page(
+        streaming_api::RenderConfig {
+            protocol: proto,
+            entry,
+            route_path: route_path.to_owned(),
+            plugin,
+            body_inject: livereload_script,
+            chunk_pool: Arc::clone(&context.chunk_pool),
+        },
+        state,
+    )
+}
+
+fn parse_api_state(body: &[u8]) -> Result<Value, String> {
+    let json: Value =
+        serde_json::from_slice(body).map_err(|error| format!("API JSON error: {error}"))?;
+    Ok(extract_api_state(json))
+}
+
+fn extract_api_state(mut json: Value) -> Value {
+    if let Value::Object(object) = &mut json {
+        if let Some(state) = object.remove("state") {
+            return state;
+        }
+    }
+    json
+}
+
+fn fallback_state(context: &ServerContext) -> Value {
+    context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.state_data.clone())
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+}
+
+fn streaming_state_defaults(
+    context: &ServerContext,
+    route_params: HashMap<String, String>,
+) -> streaming_api::StateDefaults {
+    let token_css = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.token_css.clone());
+    streaming_api::StateDefaults::new(
+        token_css,
+        context.base_path.as_deref().unwrap_or("/").to_owned(),
+        route_params,
+    )
+}
+
+fn log_api_state_warning(message: &str) {
+    eprintln!("  {} {message}", console::style("\u{26a0}").yellow());
+}
+
+fn render_buffered_page(config: streaming_api::RenderConfig, state: Value) -> HttpResponse {
+    let route_path_for_log = config.route_path.clone();
 
     // Bounded channel: backpressure when client is slow, no unbounded
     // memory growth. Capacity is in chunks (≈ 4 KB each).
     let (tx, rx) =
         tokio::sync::mpsc::channel::<bytes::Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
-    let route_path_for_log = route_path.clone();
     actix_web::rt::task::spawn_blocking(move || {
         // 30 s flush deadline caps slow-loris DoS: an attacker can pin
         // a render thread for at most 30 s per chunk, then we abort
         // and free the thread.
         // Pool-acquired chunk buffers recycle across requests — steady-
         // state RPS does not allocate fresh chunk Vec per flush.
-        let mut writer = StreamingWriter::new_pooled(tx, chunk_pool)
+        let mut writer = StreamingWriter::new_pooled(tx, Arc::clone(&config.chunk_pool))
             .with_flush_timeout(std::time::Duration::from_secs(30));
         // Build RenderOptions with optional body_inject for livereload.
         // The handler emits the inject string at the structural
         // body_end boundary identified by the parser — zero scan cost,
         // no risk of false-marker mis-firing on `</body>` literals
         // appearing inside HTML comments / srcdoc / inline scripts.
-        let opts_owner = RenderOptions::new(&entry, &route_path);
-        let opts = match livereload_script.as_deref() {
+        let opts_owner = RenderOptions::new(&config.entry, &config.route_path);
+        let opts = match config.body_inject.as_deref() {
             Some(script) => opts_owner.with_body_inject(script),
             None => opts_owner,
         };
-        let handler = create_handler(plugin);
-        if let Err(e) = handler.render(&proto, &state, &opts, &mut writer) {
+        let handler = create_handler(config.plugin);
+        if let Err(e) = handler.render(&config.protocol, &state, &opts, &mut writer) {
             // Status 200 + headers are already on the wire — we cannot
             // return an HTTP error. Log the detail so ops sees it;
             // emit a fixed HTML comment so an attacker-controlled
@@ -819,7 +1009,8 @@ async fn render_page_response(
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
     // JSON partial render for client-side navigation
     if wants_json(&req) {
-        return handle_json_partial(&req, &context, "").await;
+        let paths = build_request_paths("", req.query_string());
+        return handle_json_partial(&req, &context, paths).await;
     }
 
     // With API proxy, render on-the-fly with fresh state
@@ -917,8 +1108,9 @@ async fn handle_asset(
     }
 
     let Some(assets_dir) = &context.assets_dir else {
-        // No assets dir — try SPA fallback for paths without file extensions
-        return spa_fallback(&req, &context, &relative).await;
+        // No assets dir: let the Accept header decide whether this was a route
+        // navigation/partial request or a missing asset fetch.
+        return spa_fallback(&req, &context).await;
     };
 
     let asset_path = assets_dir.join(&relative);
@@ -926,8 +1118,9 @@ async fn handle_asset(
     let canonical = match asset_path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // File not found — SPA fallback for paths without file extensions
-            return spa_fallback(&req, &context, &relative).await;
+            // File not found: let the Accept header decide whether this was a
+            // route navigation/partial request or a missing asset fetch.
+            return spa_fallback(&req, &context).await;
         }
     };
 
@@ -937,7 +1130,7 @@ async fn handle_asset(
 
     let body = match fs::read(&canonical) {
         Ok(bytes) => bytes,
-        Err(_) => return spa_fallback(&req, &context, &relative).await,
+        Err(_) => return spa_fallback(&req, &context).await,
     };
 
     let content_type = from_path(&canonical).first_or_octet_stream();
@@ -947,31 +1140,89 @@ async fn handle_asset(
         .body(body)
 }
 
-/// Check if the request accepts JSON (for partial render).
+fn accept_media_q(params: &str) -> f32 {
+    for raw_param in params.split(';') {
+        let Some((key, value)) = raw_param.trim().split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("q") {
+            // HTTP qvalues are finite and within 0..=1. Anything outside that
+            // range is malformed and falls back to the default of 1.0 so an
+            // invalid header cannot force a 404 or skew tie-breaking.
+            return value
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|q| (0.0..=1.0).contains(q))
+                .unwrap_or(1.0);
+        }
+    }
+    1.0
+}
+
+/// Select the SPA fallback response explicitly accepted by the request.
+///
+/// `q=0` disables that media type, while malformed or out-of-range q values
+/// (outside `0..=1`) are treated as absent with the default q of 1.0. When HTML
+/// and JSON have the same highest acceptable q value, JSON wins because it is
+/// only sent by clients opting into partial render.
+fn spa_fallback_kind(req: &HttpRequest) -> SpaFallbackKind {
+    let Some(accept) = req.headers().get("accept").and_then(|v| v.to_str().ok()) else {
+        return SpaFallbackKind::None;
+    };
+
+    let mut html_q = 0.0;
+    let mut json_q = 0.0;
+    for raw_media in accept.split(',') {
+        let (media, params) = raw_media
+            .split_once(';')
+            .map_or((raw_media, ""), |(value, params)| (value, params));
+        let q = accept_media_q(params);
+        if q <= 0.0 {
+            continue;
+        }
+
+        let media = media.trim();
+        if media.eq_ignore_ascii_case("text/html")
+            || media.eq_ignore_ascii_case("application/xhtml+xml")
+        {
+            if q > html_q {
+                html_q = q;
+            }
+        } else if media.eq_ignore_ascii_case("application/json") && q > json_q {
+            json_q = q;
+        }
+    }
+
+    if html_q <= 0.0 && json_q <= 0.0 {
+        SpaFallbackKind::None
+    } else if json_q >= html_q {
+        SpaFallbackKind::Json
+    } else {
+        SpaFallbackKind::Html
+    }
+}
+
+/// Check if the request explicitly accepts JSON (for partial render).
 fn wants_json(req: &HttpRequest) -> bool {
-    req.headers()
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("application/json"))
+    spa_fallback_kind(req) == SpaFallbackKind::Json
 }
 
 /// SPA fallback: serve HTML or JSON partial depending on Accept header.
-/// Activates for paths that look like route paths (no file extension).
-async fn spa_fallback(
-    req: &HttpRequest,
-    context: &web::Data<ServerContext>,
-    relative: &str,
-) -> HttpResponse {
-    // Only serve fallback for paths without file extensions (likely route paths)
-    if relative.contains('.') {
+/// Activates for explicit document navigation or JSON partial requests.
+async fn spa_fallback(req: &HttpRequest, context: &web::Data<ServerContext>) -> HttpResponse {
+    let kind = spa_fallback_kind(req);
+    if kind == SpaFallbackKind::None {
         return HttpResponse::NotFound().body("Not Found");
     }
 
-    let paths = build_request_paths(relative, req.query_string());
+    // Actix decodes `web::Path` values. Route matching and backend state
+    // requests must instead receive the original encoded request target.
+    let paths = request_paths(req);
 
-    // JSON partial render: return { state, templates } for client-side navigation
-    if wants_json(req) {
-        return handle_json_partial(req, context, relative).await;
+    // JSON partial render: return { state, templates } for client-side navigation.
+    if kind == SpaFallbackKind::Json {
+        return handle_json_partial(req, context, paths).await;
     }
 
     render_page_response(context, &paths.route_path, &paths.request_path).await
@@ -985,10 +1236,8 @@ async fn spa_fallback(
 async fn handle_json_partial(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    relative: &str,
+    paths: RequestPaths,
 ) -> HttpResponse {
-    let paths = build_request_paths(relative, req.query_string());
-
     // Clone protocol from shared state (release lock quickly)
     let (protocol, entry) = match context.state.lock() {
         Ok(s) => {
@@ -1012,8 +1261,8 @@ async fn handle_json_partial(
                 &entry,
                 &paths.route_path,
             );
-            for (k, v) in &nested_params {
-                map.insert(k.clone(), Value::String(v.clone()));
+            for (key, value) in nested_params {
+                map.insert(key, Value::String(value));
             }
         }
     }
@@ -1026,33 +1275,32 @@ async fn handle_json_partial(
         .unwrap_or_default()
         .to_string();
 
-    // Build the complete partial response (templateStyles, templates, inventory, path, chain)
+    // Build the complete partial response (componentStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        let state_json = match serde_json::to_string(&state_data) {
-            Ok(value) => value,
-            Err(error) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(
-                        r#"{{"error":"state serialization failed: {error}"}}"#
-                    ));
-            }
-        };
-        match proto.render_partial(&state_json, &entry, &paths.route_path, &client_inv_hex) {
-            Ok(value) => value,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(r#"{{"error":"{}"}}"#, e));
-            }
+        let response =
+            match proto.prepare_partial(state_data, &entry, &paths.route_path, &client_inv_hex) {
+                Ok(value) => value,
+                Err(error) => return partial_error_response(error),
+            };
+        match serde_json::to_vec(&response) {
+            Ok(body) => body,
+            Err(error) => return partial_error_response(error),
         }
     } else {
-        "{}".to_string()
+        b"{}".to_vec()
     };
 
     HttpResponse::Ok()
         .content_type("application/json")
         .body(partial)
+}
+
+#[cold]
+#[inline(never)]
+fn partial_error_response(error: impl std::fmt::Display) -> HttpResponse {
+    let mut body = serde_json::Map::with_capacity(1);
+    body.insert("error".into(), serde_json::Value::String(error.to_string()));
+    HttpResponse::InternalServerError().json(body)
 }
 
 #[cfg(test)]
@@ -1064,7 +1312,12 @@ fn collect_needed_template_names(
 ) -> (Vec<String>, String) {
     let protocol = Protocol::new(protocol.clone());
     let json = protocol
-        .render_partial("{}", entry_fragment_id, request_path, inventory_hex)
+        .render_partial(
+            Value::Object(serde_json::Map::new()),
+            entry_fragment_id,
+            request_path,
+            inventory_hex,
+        )
         .unwrap();
     let response: Value = serde_json::from_str(&json).unwrap();
     let names = response["templates"]
@@ -1081,7 +1334,6 @@ fn collect_needed_template_names(
 /// Forward requests under `/api/*` to the user's API server.
 async fn handle_api_proxy(
     req: HttpRequest,
-    path: web::Path<String>,
     body: web::Bytes,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
@@ -1089,20 +1341,20 @@ async fn handle_api_proxy(
         return HttpResponse::NotFound().body("Not Found");
     };
 
-    let tail = path.into_inner();
-    let query = req.query_string();
-    let url = if query.is_empty() {
-        format!("http://127.0.0.1:{api_port}/api/{tail}")
-    } else {
-        let mut u = String::with_capacity(30 + tail.len() + query.len());
-        u.push_str("http://127.0.0.1:");
-        u.push_str(&api_port.to_string());
-        u.push_str("/api/");
-        u.push_str(&tail);
-        u.push('?');
-        u.push_str(query);
-        u
-    };
+    let uri = req.uri();
+    let path_and_query = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    const API_URL_PREFIX: &str = "http://127.0.0.1:";
+    const MAX_PORT_DIGITS: usize = 5;
+    let mut url =
+        String::with_capacity(API_URL_PREFIX.len() + MAX_PORT_DIGITS + path_and_query.len());
+    url.push_str(API_URL_PREFIX);
+    // Write the port digits straight into the reserved capacity instead of
+    // allocating a temporary `String` via `to_string()` on the proxy hot path.
+    use std::fmt::Write as _;
+    let _ = write!(url, "{api_port}");
+    url.push_str(path_and_query);
 
     let client = awc::Client::new();
     let mut proxy_req = client.request(req.method().clone(), &url);
@@ -1159,10 +1411,14 @@ struct WatcherConfig {
 }
 
 /// Start a debounced filesystem watcher that rebuilds and re-renders
-/// when template, data, or asset files change. The returned handle owns
-/// the background watcher thread; it must be kept alive for the lifetime
-/// of the server.
-fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
+/// when template, data, or asset files change. Keep both returned handles
+/// alive for the lifetime of the server.
+fn start_file_watcher(
+    config: WatcherConfig,
+) -> Result<(
+    webui_dev_server::WatcherHandle,
+    webui_dev_server::RebuildWorker,
+)> {
     let WatcherConfig {
         watch_paths,
         projection_manifests,
@@ -1186,7 +1442,8 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     let mut seen: HashSet<String> = initial_warnings.into_iter().collect();
     let state_for_rebuild = Arc::clone(&state);
     let retry_state = Arc::clone(&state);
-    let tick_tx = webui_dev_server::spawn_rebuild_worker(livereload, move || {
+    let metafile_ignore = render_config.metafile.clone();
+    let worker = webui_dev_server::spawn_rebuild_worker(livereload, move || {
         let warnings =
             rebuild_and_update_state(&render_config, &lr_for_inject, &state_for_rebuild)?;
         Ok(take_new_warnings(&mut seen, warnings))
@@ -1197,13 +1454,10 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
             .is_ok_and(|state| state.rebuild_error.is_some())
     });
 
-    let mut ignore = webui_dev_server::default_ignore_paths();
-    // Also ignore the build output dir if it lives under a watched root.
-    if let Ok(out_dir) = std::env::current_dir() {
-        ignore.push(out_dir.join("dist"));
-    }
+    let ignore = watcher_ignore_paths(metafile_ignore.as_deref());
 
-    spawn_watcher(
+    let tick_tx = worker.sender();
+    let watcher = spawn_watcher(
         WatchConfig {
             paths: watch_paths,
             explicit_files: projection_manifests,
@@ -1217,7 +1471,8 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
             // ignore send errors.
             let _ = tick_tx.try_send(paths);
         },
-    )
+    )?;
+    Ok((watcher, worker))
 }
 
 /// Return the colorized display bodies for warnings in `current` that were not
@@ -1278,6 +1533,7 @@ fn rebuild_and_update_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::body::to_bytes;
     use actix_web::http::StatusCode;
     use actix_web::test as actix_test;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1294,6 +1550,112 @@ mod tests {
             fs::write(&path, content).unwrap();
         }
         dir
+    }
+
+    fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: None,
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: Some(api_port),
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: Some(protocol),
+                state_data: Some(Value::Object(serde_json::Map::new())),
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: None,
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn dotted_route_protocol() -> Arc<Protocol> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/docs/:version".to_string(),
+                    fragment_id: "docs-page".to_string(),
+                    exact: true,
+                    keep_alive: false,
+                    ..Default::default()
+                })],
+                contains_boundary: false,
+            },
+        );
+        fragments.insert(
+            "docs-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<main>docs</main>")],
+                contains_boundary: false,
+            },
+        );
+        Arc::new(Protocol::new(WebUIProtocol::with_tokens(
+            fragments,
+            Vec::new(),
+        )))
+    }
+
+    fn start_request_target_server() -> (u16, actix_web::dev::ServerHandle, Arc<Mutex<Vec<String>>>)
+    {
+        let request_targets = Arc::new(Mutex::new(Vec::new()));
+        let server_targets = Arc::clone(&request_targets);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            let request_targets = Arc::clone(&server_targets);
+            App::new().default_service(web::to(move |req: HttpRequest| {
+                let request_targets = Arc::clone(&request_targets);
+                async move {
+                    let request_target = req.uri().path_and_query().map_or_else(
+                        || req.path().to_string(),
+                        |value| value.as_str().to_string(),
+                    );
+                    request_targets.lock().unwrap().push(request_target.clone());
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "state": { "requestTarget": request_target }
+                    }))
+                }
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle, request_targets)
     }
 
     #[test]
@@ -1345,6 +1707,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1356,6 +1719,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1375,6 +1739,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1386,6 +1751,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1411,6 +1777,7 @@ mod tests {
                     entry: "index.html".to_string(),
                     css: CssStrategy::Link,
                     dom: DomStrategy::Shadow,
+                    css_bundle: false,
                     plugin,
                     components: Vec::new(),
                     projection_manifests: Vec::new(),
@@ -1422,6 +1789,7 @@ mod tests {
                 state_file: Some(app.path().join("state.json")),
                 token_file: None,
                 component_asset_roots: Vec::new(),
+                metafile: None,
                 base_path: None,
             };
             build_and_render(&config, None).unwrap().html
@@ -1461,6 +1829,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1472,6 +1841,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
@@ -1501,6 +1871,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1512,6 +1883,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1528,6 +1900,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1539,6 +1912,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let result = build_and_render(&config, None).unwrap();
@@ -1554,6 +1928,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1565,6 +1940,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1601,6 +1977,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -1623,36 +2000,42 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-page-search".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div></div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-page-product".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<article></article>")],
+                contains_boundary: false,
             },
         );
 
@@ -1710,6 +2093,291 @@ mod tests {
         handle.stop(true).await;
     }
 
+    #[actix_web::test]
+    async fn test_route_state_fetch_preserves_encoded_request_target() {
+        let request_targets = [
+            "/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/discount/100%25?filter=percent%25value",
+            "/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .insert_header(("accept", "application/json"))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
+    fn start_stream_status_server(status: StatusCode) -> (u16, actix_web::dev::ServerHandle) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            App::new().default_service(web::to(move || async move {
+                HttpResponse::build(status)
+                    .content_type("application/x-webui-stream")
+                    .body("streaming render capacity is temporarily exhausted")
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle)
+    }
+
+    fn streaming_fallback_context(api_port: u16) -> web::Data<ServerContext> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    "<html><body><main>fallback rendered</main></body></html>",
+                )],
+                contains_boundary: false,
+            },
+        );
+        let protocol = Arc::new(Protocol::new(WebUIProtocol::with_tokens(
+            fragments,
+            Vec::new(),
+        )));
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: String::new(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: Some(protocol),
+                state_data: Some(Value::Object(serde_json::Map::new())),
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: Some(api_port),
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    /// A streaming API that refuses the request never produced a stream, so the
+    /// dev server must degrade to a buffered render exactly like it does for a
+    /// connection error — not hand the browser a raw upstream error body.
+    #[actix_web::test]
+    async fn test_streaming_api_error_status_degrades_to_a_rendered_page() {
+        for status in [
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let (port, handle) = start_stream_status_server(status);
+            let context = streaming_fallback_context(port);
+
+            let response = render_page_response(&context, "/", "/").await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "upstream {status} must not surface as the page status",
+            );
+            let body = to_bytes(response.into_body()).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains("fallback rendered"),
+                "upstream {status} must still render the page, got: {body}",
+            );
+            handle.stop(true).await;
+        }
+    }
+
+    fn fallback_kind_for_accept(accept: &str) -> SpaFallbackKind {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("accept", accept))
+            .to_http_request();
+        spa_fallback_kind(&req)
+    }
+
+    #[test]
+    fn test_spa_fallback_kind_honors_q_weights() {
+        let cases = [
+            ("application/json;q=0", SpaFallbackKind::None),
+            ("text/html;q=0", SpaFallbackKind::None),
+            (
+                "text/html;q=0.8, application/json;q=0.9",
+                SpaFallbackKind::Json,
+            ),
+            (
+                "text/html;q=0.9, application/json;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("text/html;q=1, application/json;q=1", SpaFallbackKind::Json),
+            ("application/json", SpaFallbackKind::Json),
+            (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("APPLICATION/JSON ; Q=0.5", SpaFallbackKind::Json),
+            ("application/json;q=not-a-number", SpaFallbackKind::Json),
+            // Out-of-range q is malformed and falls back to the default 1.0, so
+            // it neither wins tie-breaking nor disables the media type.
+            ("text/html;q=2, application/json;q=1", SpaFallbackKind::Json),
+            ("text/html;q=-1", SpaFallbackKind::Html),
+        ];
+
+        for (accept, expected) in cases {
+            assert_eq!(fallback_kind_for_accept(accept), expected, "{accept}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_encoded_dot_route_parameter() {
+        let request_target = "/discount/100%2E5?filter=x";
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri(request_target)
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let captured = match captured_targets.lock() {
+            Ok(targets) => targets.clone(),
+            Err(error) => panic!("captured targets mutex poisoned: {error}"),
+        };
+        assert_eq!(captured, vec![request_target.to_string()]);
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_literal_dot_html_route() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .insert_header(("accept", "text/html,application/xhtml+xml"))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_rejects_missing_asset_intent() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/missing.js")
+                .insert_header(("accept", "text/javascript,*/*;q=0.1"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/users/john.doe")
+                .insert_header(("accept", "*/*"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn test_api_proxy_preserves_encoded_request_target() {
+        let request_targets = [
+            "/api/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/api/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/api/discount/100%25?filter=percent%25value",
+            "/api/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/api/{tail:.*}", web::route().to(handle_api_proxy)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
     #[test]
     fn test_hmr_script_is_injected_when_livereload_present() {
         let app = create_app_dir(&[("index.html", "<h1>Hi</h1>"), ("state.json", "{}")]);
@@ -1719,6 +2387,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1730,6 +2399,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let lr = LiveReload::new(HMR_ENDPOINT);
@@ -1750,6 +2420,7 @@ mod tests {
             app_dir: dir.path().to_path_buf(),
             state_file: Some(dir.path().join("state.json")),
             serve_dir: Some(dir.path().join("public")),
+            metafile: None,
         };
         let watched = paths.watch_paths();
         assert_eq!(watched.len(), 2);
@@ -1768,6 +2439,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1779,6 +2451,7 @@ mod tests {
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let lr = LiveReload::new(HMR_ENDPOINT);
@@ -1908,6 +2581,59 @@ mod tests {
         assert!(body.contains("EventSource"), "body: {body}");
         assert!(body.contains(HMR_ENDPOINT), "body: {body}");
         assert!(!body.contains("stale ok"), "body: {body}");
+    }
+
+    #[actix_web::test]
+    async fn json_partial_http_response_matches_projected_string_api() {
+        let dir = create_app_dir(&[
+            ("index.html", "<route path=\"/\" component=\"home-page\" />"),
+            ("home-page.html", "<p>{{name}}</p>"),
+        ]);
+        let built = webui::build(webui::BuildOptions {
+            app_dir: dir.path().to_path_buf(),
+            plugin: Some(webui::Plugin::WebUI),
+            ..Default::default()
+        })
+        .unwrap();
+        let protocol = Arc::new(Protocol::new(built.protocol));
+        let state = serde_json::json!({
+            "name": "Ada",
+            "unused": ["not client state"],
+            "$webui": {"bodyEnd": "<script>host-only</script>"}
+        });
+        let expected = protocol
+            .render_partial(state.clone(), "index.html", "/", "")
+            .unwrap();
+        let context = test_route_context(protocol);
+        context.state.lock().unwrap().state_data = Some(state);
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/", web::get().to(handle_index)),
+        )
+        .await;
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/")
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = actix_test::read_body(response).await;
+        assert_eq!(body.as_ref(), expected.as_bytes());
+        let wire: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(wire["state"], serde_json::json!({"name": "Ada"}));
+    }
+
+    #[actix_web::test]
+    async fn partial_serialization_errors_are_valid_json() {
+        let response = partial_error_response("invalid \"metadata\"\n");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body()).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "invalid \"metadata\"\n");
     }
 
     #[actix_web::test]
@@ -2065,6 +2791,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -2081,6 +2808,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let state = Arc::new(Mutex::new(SharedState {
@@ -2133,6 +2861,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -2149,6 +2878,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let state = Arc::new(Mutex::new(SharedState {
@@ -2197,6 +2927,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -2213,6 +2944,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
 
@@ -2243,6 +2975,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -2254,6 +2987,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
+            metafile: None,
             base_path: None,
         };
         let result = build_and_render(&config, None).unwrap();
@@ -2267,6 +3001,67 @@ mod tests {
                 )
             });
         assert!(asset.contains("webui-component-asset"), "asset: {asset}");
+    }
+
+    #[test]
+    fn test_successful_rebuild_replaces_metafile_and_failure_preserves_it() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>First</p>"),
+        ]);
+        let metafile = app.path().join("component-assets.meta.json");
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: vec!["lazy-panel".to_string()],
+            metafile: Some(metafile.clone()),
+            base_path: None,
+        };
+
+        build_and_render(&config, None).unwrap();
+        let first = fs::read_to_string(&metafile).unwrap();
+        fs::write(
+            app.path().join("lazy-panel.html"),
+            "<p>Second and larger</p>",
+        )
+        .unwrap();
+        build_and_render(&config, None).unwrap();
+        let second = fs::read_to_string(&metafile).unwrap();
+        assert_ne!(first, second);
+
+        fs::write(
+            app.path().join("lazy-panel.html"),
+            r#"<if condition="ready"><p>Broken</if>"#,
+        )
+        .unwrap();
+        assert!(build_and_render(&config, None).is_err());
+        assert_eq!(fs::read_to_string(&metafile).unwrap(), second);
+        let ignored = watcher_ignore_paths(Some(&metafile));
+        assert!(ignored.contains(&metafile::watch_ignore_paths(&metafile)[1]));
+        assert!(!metafile_temp_directory(&metafile).exists());
+        assert!(
+            fs::read_dir(app.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "atomic writes must not leave temporary files"
+        );
     }
 
     #[test]
@@ -2288,6 +3083,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -2304,6 +3100,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: roots,
+            metafile: None,
             base_path: None,
         };
 

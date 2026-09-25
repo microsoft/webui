@@ -1,10 +1,14 @@
 <h2 class="heading">{{heading}}</h2>
 <p class="filter">{{filter}}</p>
 <p class="status">{{status}}</p>
+<p class="mixed">{{status}} / {{heading}}</p>
 <a class="detail-link" href="/items/{{selectedId}}">Details</a>
 <ul class="items">
   <for each="item in items">
-    <li class="item">{{item.name}}</li>
+    <li class="item">
+      <span class="item-name">{{item.name}}</span>
+      <span class="item-mixed">{{status}} / {{heading}} / {{item.name}}</span>
+    </li>
   </for>
 </ul>
 <if condition="showDetails">

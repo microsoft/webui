@@ -11,10 +11,12 @@ mod bundler;
 pub mod content;
 pub mod error;
 pub mod markdown;
+mod regions;
+mod scratch;
 pub mod serve;
 mod state;
 pub mod types;
 
 pub use build::build_docs;
 pub use serve::run_serve;
-pub use types::DocsConfig;
+pub use types::{DocsConfig, ShowMode};

@@ -22,6 +22,15 @@ test.describe('list fixture', () => {
     await expect(page.locator('test-list-item .done')).toHaveText(['Done']);
   });
 
+  test('keeps structural keys out of SSR and client-created DOM', async ({ page }) => {
+    await expect(page.locator('test-list-item[key]')).toHaveCount(0);
+
+    await page.locator('test-list .add').click();
+
+    await expect(page.locator('test-list-item')).toHaveCount(3);
+    await expect(page.locator('test-list-item[key]')).toHaveCount(0);
+  });
+
   test('boolean attr on repeat item root reflects item state', async ({ page }) => {
     // SSR: Beta (state=done) should have data-done, Alpha (pending) should not
     await expect(page.locator('test-list-item[data-done]')).toHaveCount(1);
@@ -50,23 +59,33 @@ test.describe('list fixture', () => {
     await expect(page.locator('test-list-item .done')).toHaveText(['Done', 'Done']);
   });
 
-  test('preserves keyed nodes when reversing the collection', async ({ page }) => {
+  test('moves keyed nodes with their items when reversing the collection', async ({ page }) => {
     const initial = await page.evaluate(() => {
       const host = document.querySelector('test-list');
-      const item = (host?.shadowRoot ?? host)?.querySelector('test-list-item[item-id="2"]');
-      const win = window as unknown as { __preservedNode?: Element | null };
-      win.__preservedNode = item;
-      return item instanceof HTMLElement;
+      const items = (host?.shadowRoot ?? host)?.querySelectorAll('test-list-item');
+      const win = window as unknown as {
+        __firstNode?: Element;
+        __secondNode?: Element;
+      };
+      win.__firstNode = items?.[0];
+      win.__secondNode = items?.[1];
+      return items?.length;
     });
 
-    expect(initial).toBe(true);
+    expect(initial).toBe(2);
 
     await page.locator('test-list .reverse').click();
 
     const preserved = await page.evaluate(() => {
       const host = document.querySelector('test-list');
-      const win = window as unknown as { __preservedNode?: Element | null };
-      return win.__preservedNode === (host?.shadowRoot ?? host)?.querySelector('test-list-item[item-id="2"]');
+      const items = (host?.shadowRoot ?? host)?.querySelectorAll('test-list-item');
+      const win = window as unknown as {
+        __firstNode?: Element;
+        __secondNode?: Element;
+      };
+      return (
+        win.__secondNode === items?.[0] && win.__firstNode === items?.[1]
+      );
     });
 
     expect(preserved).toBe(true);
@@ -78,34 +97,39 @@ test.describe('list fixture', () => {
     await expect(page.locator('test-list-item')).toHaveCount(0);
   });
 
-  test('prepend: inserts new item at top without recreating existing nodes', async ({ page }) => {
-    // Save references to existing nodes
+  test('prepend: preserves keyed item nodes after the inserted head', async ({ page }) => {
     const saved = await page.evaluate(() => {
       const host = document.querySelector('test-list');
       const root = host?.shadowRoot ?? host;
-      const win = window as unknown as { __item1?: Element | null; __item2?: Element | null };
-      win.__item1 = root?.querySelector('test-list-item[item-id="1"]');
-      win.__item2 = root?.querySelector('test-list-item[item-id="2"]');
-      return !!(win.__item1 && win.__item2);
+      const items = root?.querySelectorAll('test-list-item');
+      const win = window as unknown as {
+        __firstNode?: Element;
+        __secondNode?: Element;
+      };
+      win.__firstNode = items?.[0];
+      win.__secondNode = items?.[1];
+      return items?.length;
     });
-    expect(saved).toBe(true);
+    expect(saved).toBe(2);
 
     await page.locator('test-list .prepend').click();
 
-    // Existing nodes must be the same instances (not recreated)
     const preserved = await page.evaluate(() => {
       const host = document.querySelector('test-list');
       const root = host?.shadowRoot ?? host;
-      const win = window as unknown as { __item1?: Element | null; __item2?: Element | null };
+      const items = root?.querySelectorAll('test-list-item');
+      const win = window as unknown as {
+        __firstNode?: Element;
+        __secondNode?: Element;
+      };
       return {
-        item1Same: win.__item1 === root?.querySelector('test-list-item[item-id="1"]'),
-        item2Same: win.__item2 === root?.querySelector('test-list-item[item-id="2"]'),
+        firstSame: win.__firstNode === items?.[1],
+        secondSame: win.__secondNode === items?.[2],
       };
     });
-    expect(preserved.item1Same).toBe(true);
-    expect(preserved.item2Same).toBe(true);
+    expect(preserved.firstSame).toBe(true);
+    expect(preserved.secondSame).toBe(true);
 
-    // New item at top, existing items preserved in order
     await expect(page.locator('test-list-item').first().locator('.title')).toHaveText('Item 3');
     await expect(page.locator('test-list-item')).toHaveCount(3);
   });

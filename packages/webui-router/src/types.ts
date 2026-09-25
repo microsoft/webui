@@ -1,25 +1,45 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import type { PreparedRoutePreload } from './prepared-preload.js';
+
 declare global {
+  interface WebUIRuntimeGlobal {
+    chain?: unknown[];
+    inventory?: string;
+    nonce?: string;
+    css?: string[];
+    styles?: string[];
+    state?: Record<string, unknown>;
+    templateHostExclusions?: Set<string>;
+    componentStyles?: ComponentStyles;
+  }
+
   interface Window {
-    __webui?: {
-      chain?: unknown[];
-      inventory?: string;
-      nonce?: string;
-      css?: string[];
-      styles?: string[];
-      state?: Record<string, unknown>;
-      templates?: Record<string, unknown>;
-      templateFns?: Record<string, unknown>;
-      templateHostExclusions?: Set<string>;
-    };
+    __webui?: WebUIRuntimeGlobal;
+    __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
   }
 }
 
 /**
  * Public type definitions for @microsoft/webui-router.
  */
+
+export type ComponentStyleResource = (
+  | { kind: 'link'; href: string }
+  | { kind: 'style'; css: string }
+  | { kind: 'module'; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
+
+export interface ComponentStyles {
+  version: 1;
+  strategy: 'link' | 'style' | 'module';
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
+}
 
 /** Configuration passed to `Router.start()`. */
 export interface RouterConfig {
@@ -76,7 +96,7 @@ export interface RouterConfig {
    * Router.start({ preload: true });
    * ```
    */
-  preload?: boolean;
+  preload?: boolean | PreparedRoutePreload;
 
   /**
    * Intercept same-origin POST forms and dispatch component `static action()`

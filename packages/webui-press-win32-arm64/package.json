@@ -1,0 +1,19 @@
+{
+  "cpu": [
+    "arm64"
+  ],
+  "description": "WebUI Press platform-specific binary for Windows ARM64",
+  "files": [
+    "bin/webui-press.exe"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-press-win32-arm64",
+  "os": [
+    "win32"
+  ],
+  "preferUnplugged": true,
+  "publishConfig": {
+    "tag": "latest"
+  },
+  "version": "0.0.29"
+}

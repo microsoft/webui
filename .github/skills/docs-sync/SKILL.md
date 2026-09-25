@@ -11,11 +11,11 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 
 | What changed | Update |
 |-------------|--------|
-| CLI flags or commands | `docs/guide/cli/index.md` + `docs/guide/ai.md` (CLI section) |
-| Template syntax or directives | `docs/guide/concepts/directives/` + `docs/guide/ai.md` |
-| Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/guide/ai.md` |
+| CLI flags or commands | `docs/guide/cli/index.md` + `docs/ai.md` (Build and run section) |
+| Template syntax or directives | `docs/guide/concepts/directives/` + `docs/ai.md` |
+| Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/ai.md` |
 | Hydration markers or mechanism | `docs/guide/concepts/hydration.md` + `DESIGN.md` (WebUI Framework Plugin) |
-| Routing behavior | `docs/guide/concepts/routing.md` + `docs/guide/ai.md` |
+| Routing behavior | `docs/guide/concepts/routing.md` + `docs/ai.md` |
 | State management or path resolution | `docs/guide/concepts/state-management/index.md` |
 | Handler API (Rust, Node, FFI) | `docs/guide/concepts/handlers/` + `docs/guide/integrations.md` |
 | Protocol fields or fragment types | `DESIGN.md` (Protocol Specification) |
@@ -23,7 +23,7 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 | Performance characteristics | `docs/guide/concepts/performance.md` |
 | Public API (Rust crate, npm package) | `DESIGN.md` + relevant handler/integration docs |
 | Error variants or error messages | `DESIGN.md` |
-| `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/guide/ai.md` + `packages/webui-framework/README.md` |
+| `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
 | `@microsoft/webui-router` behavior | `docs/guide/concepts/routing.md` + `packages/webui-router/README.md` |
 
 ## DESIGN.md rules
@@ -48,7 +48,42 @@ Update `docs/` in the same commit when the change is user-visible:
 - Integration behavior that external developers depend on
 - New features or removed features
 
-Keep protocol internals out of general user docs. The `docs/guide/ai.md` file is the single-page AI reference and should be kept in sync with all other docs.
+### Public API boundary
+
+Developer documentation (`docs/`, crate/package READMEs, and
+`docs/ai.md`) documents only supported public APIs and externally
+observable contracts. Every addition must map to at least one public entry
+point:
+
+- an exported Rust, Node, WASM, FFI, or package API;
+- a CLI command, flag, configuration field, or supported identifier;
+- supported template/component authoring syntax;
+- a documented protocol or integration contract.
+
+Do not document private or `pub(crate)` items, internal callbacks, intermediate
+representations, cache algorithms, implementation sequencing, regression-test
+details, or dependency-specific workarounds in developer docs. Put architecture
+and implementation invariants in `DESIGN.md`; keep local rationale in succinct
+ordinary source comments.
+
+Rust `///` documentation comments are for exported public APIs only. Use `//`
+sparingly for non-public implementation rationale. Before finishing, audit the
+documentation diff against the public exports and remove text that has no public
+entry point.
+
+Do not update user-facing docs for internal implementation details, regression
+tests, refactors, or bug fixes that only restore already-documented behavior.
+Every addition must help developers author, configure, debug, or integrate a
+WebUI application. Do not add release-note-style implementation observations
+to reference docs.
+
+Keep protocol internals out of general user docs. The `docs/ai.md` file is the single-page AI reference and should be kept in sync with all other docs.
+
+`docs/ai.md` is authoring-first by design. Keep deep reference material (full CLI flag tables, error-code lists, per-language integration snippets) in its canonical page and link to it from `docs/ai.md` rather than duplicating it there.
+
+`ai/SKILL.md` is only the stable loader. Update `docs/ai.md` for authoring changes,
+not the loader or the generated `packages/webui/ai.md`. The package prepack step
+refreshes the generated reference; ordinary builds do not write it.
 
 ## Validation
 

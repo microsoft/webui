@@ -8,11 +8,14 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::{ParserPluginArtifacts, StateSurface};
-use webui_parser::{CssStrategy, HtmlParser};
+use webui_parser::{CssStrategy, DomStrategy, HtmlParser};
 use webui_protocol::projection_manifest::{ProjectionComponent, ProjectionManifest};
 use webui_protocol::{InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 /// Build protocol protobuf bytes from virtual files without rendering.
+///
+/// `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
+/// authored open Shadow roots remain Shadow in either mode.
 ///
 /// Returns the serialized `WebUIProtocol` as protobuf bytes.
 #[wasm_bindgen]
@@ -20,6 +23,7 @@ pub fn build_protocol(
     files: JsValue,
     entry: &str,
     projection_manifests: Option<JsValue>,
+    dom: Option<String>,
 ) -> Result<Vec<u8>, JsValue> {
     let files_map: HashMap<String, String> =
         serde_wasm_bindgen::from_value(files).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -28,17 +32,32 @@ pub fn build_protocol(
         .transpose()
         .map_err(|error| JsValue::from_str(&format!("invalid projection manifests: {error}")))?
         .unwrap_or_default();
+    let dom = dom
+        .map(|value| value.parse::<DomStrategy>())
+        .transpose()
+        .map_err(|error| JsValue::from_str(&error))?
+        .unwrap_or_default();
 
-    build_protocol_inner(&files_map, entry, &manifests)
+    build_protocol_inner_with_dom(&files_map, entry, &manifests, dom)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+#[cfg(test)]
 pub(crate) fn build_protocol_inner(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
 ) -> Result<Vec<u8>, WasmError> {
-    let protocol = parse_to_protocol(files, entry, projection_manifests)?;
+    build_protocol_inner_with_dom(files, entry, projection_manifests, DomStrategy::Shadow)
+}
+
+fn build_protocol_inner_with_dom(
+    files: &HashMap<String, String>,
+    entry: &str,
+    projection_manifests: &[ProjectionManifest],
+    dom: DomStrategy,
+) -> Result<Vec<u8>, WasmError> {
+    let protocol = parse_to_protocol_with_dom(files, entry, projection_manifests, dom)?;
     protocol.to_protobuf().map_err(WasmError::Protocol)
 }
 
@@ -77,27 +96,106 @@ fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool
     files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
+type ComponentDeliverySnapshot = (
+    Vec<(String, String)>,
+    Vec<(String, bool)>,
+    Vec<(String, u8)>,
+);
+
+fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot {
+    let css = parser
+        .component_registry()
+        .get_all()
+        .filter(|component| parser.has_fragment(&component.tag_name))
+        .filter_map(|component| {
+            component
+                .css_content
+                .as_ref()
+                .map(|css| (component.tag_name.clone(), css.clone()))
+        })
+        .collect();
+    let shadow_dom = parser
+        .component_shadow_dom_usage()
+        .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
+        .collect();
+    let work_policies = parser
+        .component_work_policies()
+        .map(|(tag_name, policy)| (tag_name.to_string(), policy))
+        .collect();
+    (css, shadow_dom, work_policies)
+}
+
+fn apply_component_delivery(
+    protocol: &mut WebUIProtocol,
+    snapshot: ComponentDeliverySnapshot,
+    entry: &str,
+) {
+    protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+    for (tag_name, uses_shadow_dom) in snapshot.1 {
+        if !protocol.fragments.contains_key(&tag_name) {
+            continue;
+        }
+        protocol
+            .components
+            .entry(tag_name)
+            .or_default()
+            .uses_shadow_dom = uses_shadow_dom;
+    }
+    for (tag_name, css) in snapshot.0 {
+        if protocol.fragments.contains_key(&tag_name) {
+            protocol.components.entry(tag_name).or_default().css = css;
+        }
+    }
+    for (tag_name, work_policy) in snapshot.2 {
+        if protocol.fragments.contains_key(&tag_name) {
+            protocol.components.entry(tag_name).or_default().work_policy = i32::from(work_policy);
+        }
+    }
+    protocol.populate_style_closures(&[entry]);
+}
+
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`
 /// with the WebUI plugin.
+#[cfg(test)]
 pub(crate) fn parse_to_protocol(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
 ) -> Result<WebUIProtocol, WasmError> {
+    parse_to_protocol_with_dom(files, entry, projection_manifests, DomStrategy::Shadow)
+}
+
+pub(crate) fn parse_to_protocol_with_dom(
+    files: &HashMap<String, String>,
+    entry: &str,
+    projection_manifests: &[ProjectionManifest],
+    dom: DomStrategy,
+) -> Result<WebUIProtocol, WasmError> {
     let entry_html = files
         .get(entry)
         .ok_or_else(|| WasmError::MissingEntry(entry.to_string()))?;
 
-    let mut parser =
-        HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
+    let mut parser = HtmlParser::with_plugin_options(
+        Box::new(WebUIParserPlugin::new()),
+        (CssStrategy::Style, dom),
+    );
     register_components(&mut parser, files, entry)?;
     parser.parse(entry, entry_html)?;
+    let component_delivery = component_delivery_snapshot(&parser);
     let templates = match parser.take_plugin_artifacts()? {
         ParserPluginArtifacts::None => Vec::new(),
         ParserPluginArtifacts::ComponentTemplates(templates) => templates,
     };
+    let component_render_css = parser.component_registry().render_policy_css(
+        parser
+            .component_registry()
+            .get_all()
+            .filter(|component| parser.has_fragment(&component.tag_name))
+            .map(|component| component.tag_name.as_str()),
+    );
 
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+    protocol.component_render_css = component_render_css;
     let projection = merge_projection_manifests(projection_manifests)?;
     protocol.initial_state_strategy = if projection.is_some() {
         InitialStateStrategy::Components as i32
@@ -144,9 +242,10 @@ pub(crate) fn parse_to_protocol(
         component.hydration_mode = hydration_mode;
         component.hydration_keys = hydration_keys;
         let (navigation_mode, navigation_keys) = encode_state_surface(navigation);
-        component.navigation_mode = navigation_mode;
+        component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
     }
+    apply_component_delivery(&mut protocol, component_delivery, entry);
 
     fn merge_projection_manifests(
         manifests: &[ProjectionManifest],
@@ -235,6 +334,50 @@ mod tests {
         assert_eq!(component.hydration_mode, StateProjectionMode::All as i32);
         assert!(component.hydration_keys.is_empty());
         assert!(!component.template_json.is_empty());
+        assert!(component.uses_shadow_dom);
+        assert!(protocol.style_closures.contains_key("my-card"));
+    }
+
+    #[test]
+    fn parse_to_protocol_resolves_unwrapped_dom_strategy() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><body><my-card></my-card></body></html>".to_string(),
+            ),
+            (
+                "my-card.html".to_string(),
+                "<p>Light content</p>".to_string(),
+            ),
+            (
+                "my-card.css".to_string(),
+                ".card { display: block; }".to_string(),
+            ),
+        ]);
+
+        let shadow = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        assert!(shadow.components["my-card"].uses_shadow_dom);
+        assert_eq!(
+            shadow.components["my-card"].css,
+            ".card { display: block; }"
+        );
+        assert_eq!(
+            shadow.style_closure("my-card").expect("Shadow closure"),
+            ["my-card"]
+        );
+
+        let protocol =
+            parse_to_protocol_with_dom(&files, "index.html", &[], DomStrategy::Light).unwrap();
+        assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
+        assert!(!protocol.components["my-card"].uses_shadow_dom);
+        assert_eq!(
+            protocol.components["my-card"].css,
+            ".card { display: block; }"
+        );
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["my-card"]
+        );
     }
 
     #[test]
@@ -285,6 +428,7 @@ mod tests {
                     navigation_keys: vec!["label".to_string(), "name".to_string()],
                 },
             )]),
+            entry_closures: BTreeMap::new(),
         };
         manifest.build_id = manifest.compute_build_id();
 
@@ -322,5 +466,73 @@ mod tests {
         assert!(component.hydration_keys.is_empty());
         assert_eq!(component.navigation_keys, ["name"]);
         assert!(component.template_json.contains(r#""th":1"#));
+    }
+
+    #[test]
+    fn parse_to_protocol_preserves_lazy_render_policy() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><head></head><body><my-card></my-card></body></html>".to_string(),
+            ),
+            (
+                "my-card.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" "#,
+                    r#"w-reserve-block-size="18rem"><p>{{name}}</p></template>"#,
+                )
+                .to_string(),
+            ),
+            (
+                "unused-card.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" "#,
+                    r#"w-reserve-block-size="99px"><p>unused</p></template>"#,
+                )
+                .to_string(),
+            ),
+            ("my-card.ts".to_string(), "class MyCard {}".to_string()),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        let component = protocol.components.get("my-card").unwrap();
+        assert!(component.template_json.contains(r#""wp":2"#));
+        assert_eq!(
+            protocol.component_render_css,
+            concat!(
+                r#"my-card:not([w-render="eager"]){content-visibility:auto;"#,
+                "contain-intrinsic-block-size:auto 18rem;}",
+            )
+        );
+    }
+
+    #[test]
+    fn parse_to_protocol_preserves_combined_render_interaction_policy() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><head></head><body><my-panel></my-panel></body></html>".to_string(),
+            ),
+            (
+                "my-panel.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                    r#"w-hydrate="interaction"><button>Open</button></template>"#,
+                )
+                .to_string(),
+            ),
+            ("my-panel.ts".to_string(), "class MyPanel {}".to_string()),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        let component = protocol.components.get("my-panel").unwrap();
+        assert!(component.template_json.contains(r#""wp":4"#));
+        assert_eq!(
+            component.work_policy,
+            webui_protocol::ComponentWorkPolicy::LazyRenderInteraction as i32
+        );
+        assert!(protocol
+            .component_render_css
+            .contains("content-visibility:auto"));
     }
 }

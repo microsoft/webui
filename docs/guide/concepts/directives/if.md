@@ -69,8 +69,9 @@ Supported logical operators:
 
 ## Truthiness Rules
 
-The `<if>` condition evaluator follows JavaScript truthiness semantics on both
-server (Rust `serde_json::Value`) and client (`!!value`):
+The `<if>` condition evaluator follows JavaScript truthiness semantics for
+scalars on both server (Rust `serde_json::Value`) and client (`!!value`). Empty
+collections are the exception - see the note below the table:
 
 | Value | Truthy? | Example |
 |-------|---------|---------|
@@ -81,14 +82,30 @@ server (Rust `serde_json::Value`) and client (`!!value`):
 | `""` (empty string) | ❌ No | `@observable name = ''` |
 | `"hello"` (non-empty string) | ✅ Yes | `@observable name = 'Alice'` |
 | `"false"` (string) | ⚠️ **Yes** | Non-empty string is truthy! |
-| `[]` (empty array) | - | Use `items.length` instead |
-| `null` / missing | ❌ No | Missing state key |
+| `[]` (empty array) | ⚠️ Differs | Use `items.length` instead |
+| `{}` (empty object) | ⚠️ Differs | Test a real field instead |
+| `null` / missing identifier | ❌ No | Missing state key |
+
+A missing identifier is a falsy operand, not a failure of the complete
+expression. Therefore `<if condition="missingPath">` does not render, while
+`<if condition="!missingPath">` does render. This applies to dotted paths in
+loop scopes, such as `!item.optionalFlag`.
 
 <webui-blockquote appearance="warning" title="Warning" icon="⚠️">
 
 The string `"false"` is truthy because it is a non-empty string. Never use
 `@observable show = 'false'` with `<if condition="show">`. Use a real boolean:
 `@observable show = false`.
+
+</webui-blockquote>
+
+<webui-blockquote appearance="warning" title="Warning" icon="⚠️">
+
+Never test a bare array or object. The server evaluator treats `[]` and `{}` as
+falsy, while the compiled client condition is plain `!!value`, where both are
+truthy - so `<if condition="items">` can render differently after hydration than
+it did on the server. Write `<if condition="items.length">`, which is falsy on
+both sides when the array is empty.
 
 </webui-blockquote>
 
@@ -102,3 +119,9 @@ The string `"false"` is truthy because it is a non-empty string. Never use
 | Comparisons | `<if condition="status == 'active'">` |
 | Compound AND | `<if condition="isAdmin && isActive">` |
 | Compound OR | `<if condition="hasEmail \|\| hasPhone">` |
+
+Each side of a comparison is a literal (number, quoted string, `true`, `false`)
+or a dotted state path. There is no arithmetic and there are no function calls -
+`<if condition="currentIndex == items.length - 1">` compares against a state key
+literally named `items.length - 1`, never resolves, and is silently false. Send a
+precomputed `lastIndex` from the server instead.

@@ -25,18 +25,21 @@ import type {
   CompiledCondition,
 } from '../template.js';
 
-/** Direct reference to a text node bound to a property path. */
+/** Direct reference to character data bound to a property path. */
 export interface TextBinding {
-  node: Text;
+  node: CharacterData;
   path?: string;
   parts?: CompiledAttrPart[];
   scope?: ScopeFrame;
-  /** When true, the binding renders unescaped HTML via innerHTML on the
-   *  parent element instead of setting Text.data. Corresponds to the
-   *  triple-brace `{{{expr}}}` template syntax. */
+  /** When true, the binding renders unescaped HTML between comment anchors.
+   *  Corresponds to the triple-brace `{{{expr}}}` template syntax. */
   raw?: boolean;
-  /** The parent element for raw bindings — innerHTML is set here. */
-  rawParent?: Element;
+  /** Closing ownership anchor for a raw HTML binding. */
+  rawEnd?: Comment;
+  /** Last client-patched value, used to avoid repeat HTML parsing. */
+  rawValue?: string;
+  /** Owning instance when the raw range is part of its top-level node list. */
+  rawOwner?: TemplateInstance;
 }
 
 /** Attribute binding kind constants (matches compiled metadata). */
@@ -44,6 +47,16 @@ export const ATTR_KIND_ATTRIBUTE = 0;
 export const ATTR_KIND_COMPLEX = 1;
 export const ATTR_KIND_BOOLEAN = 2;
 export const ATTR_KIND_TEMPLATE = 3;
+
+/**
+ * Return whether an attribute binding must update a native live DOM property.
+ *
+ * Autonomous custom elements contain a hyphen and use attribute semantics
+ * unless the template explicitly opts into a `:property` binding.
+ */
+export function hasNativeLiveProperty(element: Element, name: string): boolean {
+  return element.localName.indexOf('-') === -1 && name in element;
+}
 
 /** Direct reference to an attribute binding. */
 export interface AttrBinding {
@@ -66,27 +79,39 @@ export interface ScopeFrame {
 
 export interface TemplateInstance {
   scope?: ScopeFrame;
+  parent?: TemplateInstance;
+  container: (ParentNode & Node) | null;
   nodes: Node[];
   texts: TextBinding[];
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
   /**
-   * Per-instance listener cleanup. Delegated event listeners attach to the
-   * component render root for correctness while detached blocks are moved into
-   * place, so nested conditional/repeat instances must explicitly unregister
-   * when their block leaves the DOM.
+   * Per-instance listener cleanup. Event listeners attach to the elements a
+   * block owns, so nested conditional/repeat instances must explicitly
+   * unregister when their block leaves the DOM.
    */
   cleanups?: Array<() => void>;
 }
 
-/** Direct reference to a conditional block with anchor + nested compiled block. */
+/** Conditional block state. Visible blocks need no live DOM anchor. */
 export interface CondBinding {
   condition: CompiledCondition;
   blockIndex: number;
-  anchor: Comment;
+  anchor: Comment | null;
   scope?: ScopeFrame;
+  owner: TemplateInstance;
   instance: TemplateInstance | null;
+}
+
+export type RepeatKey = string | number;
+
+export interface RepeatKeyState {
+  path: string;
+  warned: boolean;
+  keys: RepeatKey[];
+  nextKeys: RepeatKey[];
+  map: Map<RepeatKey, TemplateInstance | null>;
 }
 
 /** Repeat block tracking. */
@@ -100,18 +125,10 @@ export interface RepeatBinding {
   end: Comment | null;
   scope?: ScopeFrame;
   owner: TemplateInstance;
-  instances: RepeatItemInstance[];
-  rootTag: string | null;
-  keyAttribute?: string;
-  keyPath?: string;
+  instances: TemplateInstance[];
+  keyState?: RepeatKeyState;
   /** Set to true once the collection has been explicitly set by client code. */
   synced?: boolean;
-}
-
-export interface RepeatItemInstance {
-  key: string | null;
-  value: unknown;
-  instance: TemplateInstance;
 }
 
 /**
@@ -125,8 +142,14 @@ export interface RepeatHost {
   $resolveValue(path: string, scope?: ScopeFrame): unknown;
   $hasStateRoot(path: string, scope?: ScopeFrame): boolean;
   /** Create, wire, and perform the first binding pass while detached. */
-  $createBlockInstance(blockIndex: number, scope?: ScopeFrame): TemplateInstance | null;
+  $createBlockInstance(
+    blockIndex: number,
+    scope?: ScopeFrame,
+    parent?: TemplateInstance,
+    container?: ParentNode & Node,
+  ): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;
   $removeInstance(instance: TemplateInstance): void;
+  $changeStructure(removedFrom?: TemplateInstance): void;
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
 }

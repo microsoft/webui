@@ -51,6 +51,47 @@ The response is a JSON string — pipe it directly to the HTTP response. No dese
 payload for on-demand component loading. `protocol.Tokens()` returns CSS token
 names in build order.
 
+## Progressive Streaming
+
+`WebUIHandler.StreamResponse` returns one host-owned, single-driver session:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+StreamingStep step = session.Start(initialStateJson);
+
+while (true)
+{
+    await response.Body.WriteAsync(step.Bytes);
+    await response.Body.FlushAsync();
+    if (step.Done) break;
+
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadBoundaryStateAsync(boundary);
+        step = session.Resume(
+            boundary.InstanceId,
+            state,
+            BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
+}
+```
+
+| Member | Result |
+|---|---|
+| `Start(stateJson)` | Shell bytes through the first descriptor or terminal |
+| `Resume(instanceId, stateJson, mode)` | Only the pending occurrence's bytes through its checkpoint |
+| `Advance()` | Following parent bytes through the next descriptor or terminal |
+| `Update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
+
+A descriptor requires `Resume`; no descriptor with `Done == false` requires
+`Advance`; `Done == true` means complete. `Resume` is boundary-only and
+`Advance` carries following parent or tail bytes, so no sibling boundary is
+needed. `Update` is valid between an occurrence's `Resume` and `Advance`.
+
 ## Installation
 
 ```bash
@@ -72,7 +113,7 @@ The managed package depends on all supported `Microsoft.WebUI.Runtime.<rid>` pac
 
 ### Package Metadata
 
-Packed NuGet artifacts include this README, repository metadata, Source Link, a package license URL with license acceptance required, release notes links, discoverability tags, the `© Microsoft Corporation. All rights reserved.` notice, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files; nuget.org publishing remains manual/externally tracked until ESRP supports automated NuGet publishing for this project. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
+Packed NuGet artifacts include this README, repository metadata, Source Link, the SPDX `MIT` license expression with license acceptance required, release notes links, discoverability tags, the `© Microsoft Corporation. All rights reserved.` notice, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
 ### Manual Native Library Path
 

@@ -67,6 +67,18 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 ```
 
 `<outlet />` marks where child route content renders. The nav and footer persist across navigations.
+The paired form `<outlet></outlet>` is also supported, but outlets are empty and
+the self-closing form is preferred. Use one outlet at each route level,
+including outlets inside nested layout components and directives. Child routes
+have their own outlet level.
+Additional outlets produce a `multiple-outlets` build warning because only the
+first outlet renders matched child routes. Move duplicated layout around the
+single outlet instead.
+
+On initial SSR, styles for the matched route chain that target the Document are
+applied before `</head>`, including Link-mode bundled chunks. Styles targeting a
+ShadowRoot remain tree-local; Link mode preloads them from the head and installs
+the applying stylesheet inside that root. Inactive route styles stay deferred.
 
 **3. Start the router after hydration:**
 
@@ -202,6 +214,24 @@ Router.start({ preload: true });
 
 When enabled, the router prefetches JSON partials (templates, CSS, state) when the user hovers over internal links. On click, the cached result is used immediately. Preloaded entries are stored in the [tagged cache](#tagged-cache) with a 5-second minimum freshness. Only mouse pointers trigger preload.
 
+The pre-hydration API is framework-agnostic:
+
+```typescript
+import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
+
+const prepared = prepareRoutePreload({
+  onIntent: () => startYourHydrationRuntime(),
+});
+await hydrationReady;
+Router.start({ ...config, preload: prepared });
+```
+
+It buffers one hovered partial as bounded raw bytes before any hydration
+framework starts, then transfers the in-flight/completed response into normal
+navigation without a second request or early template parsing. WebUI Framework,
+FAST, and other runtimes start through `onIntent`, then pass the same handle to
+the router after their own readiness lifecycle.
+
 ### Tagged Cache
 
 Cache partial responses with server-provided tags for precise invalidation:
@@ -273,7 +303,9 @@ Show a loading component during slow navigations (>150ms):
 <route path="inbox" component="inbox-page" exact pending="mail-skeleton" />
 ```
 
-The `pending` component is validated at build time. Keep-alive and cached routes skip pending.
+The `pending` component is validated at build time. It remains visible through response
+validation, component loading, and route loaders, then is removed atomically with the settled
+route commit before `webui:route:navigated`. Keep-alive and cached routes skip pending setup.
 
 ### Error Boundaries
 
@@ -349,6 +381,16 @@ Templates are not sent during initial SSR or partial navigation for
 unmatched routes — zero cost until explicitly requested. If a user navigates
 directly to the route path, the component renders normally in the outlet.
 
+When `@microsoft/webui-framework` is loaded, `ensureLoaded()` also waits for
+bounded Link stylesheet cache warming or an explicit native-link fallback
+decision. Warmup bytes are never applied; the first native shadow link remains
+the authorization source for any later shared constructable sheet. JSON and
+NDJSON soft navigation use the same readiness bridge before committing new
+route components. Globally retained head CSS is injected before this wait, so
+aborting a stale navigation cannot advance inventory without retaining its
+styles. The router does not import the framework; without a runtime listener,
+registration remains immediate.
+
 ### View Transitions
 
 The router automatically uses the [View Transitions API](https://developer.mozilla.org/en-US/docs/Web/API/Document/startViewTransition) when available. On each client-side navigation, the DOM swap is wrapped in `document.startViewTransition()`, giving you a CSS-driven cross-fade between old and new route content with zero extra code.
@@ -379,6 +421,9 @@ To customize the animation, use `view-transition-name` on specific elements and 
 ```
 
 The router awaits `transition.updateCallbackDone` (not `.finished`), so rapid navigations supersede each other without queuing animations.
+Resizing or starting a newer transition may skip the animation without failing
+the committed route. Route commit errors still follow normal navigation error handling
+without duplicate unhandled transition rejections.
 
 ### `Router.back()`
 
@@ -513,16 +558,27 @@ Accept: application/x-ndjson, application/json
 X-WebUI-Inventory: <hex bitmask>
 ```
 
+The inventory tracks component template and style metadata together. Partial
+responses therefore omit CSS definitions and closures that the client has
+already registered; a new closure may reference an existing shared resource
+without transmitting that resource again. If a closure dependency is not in
+the incoming inventory, its resource definition is sent with the new root.
+
 The server should return:
 
-- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
+- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ componentStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
+- **`Accept: application/json`** → JSON partial: `{ state, componentStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
 - **Otherwise** → Full SSR'd HTML page
 
 The `chain` field contains the matched route chain with `component`, `path`,
 `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and
 `invalidates`. The `cacheTags` array contains resolved cache tags from the full
 chain. The optional `cacheControl` object can override `staleTime` per-response.
+The deferred Chunk 2 reader starts only after Chunk 1 has committed, so state
+queued during template-resource readiness can never target the previous route.
+For speculative preloads, Chunk 1 is cached before reading continues; Chunk 2
+state is merged into that cached response before the entry becomes consumable.
+Failed commits cancel and unlock the unread stream.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 

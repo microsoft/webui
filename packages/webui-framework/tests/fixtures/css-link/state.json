@@ -1,1 +1,8 @@
-{ "showChild": false }
+{
+  "showChild": false,
+  "showDynamicChild": false,
+  "showEventChild": false,
+  "showAttributesChild": false,
+  "showStyleBlockChild": false,
+  "showLifecycleStyleChild": false
+}

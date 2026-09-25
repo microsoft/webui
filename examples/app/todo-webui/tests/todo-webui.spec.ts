@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 
 // ─── Helper ────────────────────────────────────────────────────
 // Playwright locators already pierce shadow DOM by default, so
-// `page.locator('todo-item .title')` works in both light and shadow mode.
+// `page.locator('todo-item .title')` works for both Light and Shadow components.
 // For page.evaluate calls we use this helper to get the render root.
 
 /** Return the render root of a custom element (shadowRoot or the element). */

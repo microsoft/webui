@@ -20,7 +20,7 @@
 
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import * as ts from "typescript";
+import * as ts from "./typescript-api.js";
 import type { AdapterContext, ModuleNode } from "./graph.js";
 import type { ComponentEntry, ProjectionManifest } from "./manifest.js";
 import {
@@ -61,6 +61,8 @@ const SUPPORTED_EXTENSIONS = new Set([
 /** What a name bound in a module's local scope refers to. */
 type ScopeBinding =
   | { readonly kind: "localClass"; readonly node: ts.ClassLikeDeclaration }
+  | { readonly kind: "mutableClass" }
+  | { readonly kind: "localAlias"; readonly localName: string }
   | { readonly kind: "localOther" }
   | { readonly kind: "import"; readonly specifier: string; readonly importedName: string }
   | { readonly kind: "namespaceImport"; readonly specifier: string };
@@ -107,6 +109,7 @@ type Resolved =
   | { readonly kind: "frameworkAttr" }
   | { readonly kind: "frameworkElement" }
   | { readonly kind: "namespace"; readonly moduleId: string }
+  | { readonly kind: "unsafeMutable" }
   | { readonly kind: "other" }
   | { readonly kind: "unresolved"; readonly reason: "no-module" | "no-source" | "no-export" | "circular" };
 
@@ -126,74 +129,45 @@ export function compileProjection(ctx: AdapterContext): ProjectionManifest {
   const profile = process.env["WEBUI_PROJECTION_PROFILE"] === "1";
   const started = profile ? performance.now() : 0;
   const diagnostics: ProjectionDiagnostic[] = [];
-  validateTypeScriptVersion(diagnostics);
   validateAdapterContext(ctx, diagnostics);
   if (diagnostics.length > 0) throw new ProjectionError(diagnostics);
 
-  const analyses = buildAnalyses(ctx, diagnostics);
-  const parsed = profile ? performance.now() : 0;
-  const candidates = compileDefinedComponents(
-    ctx,
-    analyses,
-    diagnostics
-  );
-  const analyzed = profile ? performance.now() : 0;
-
-  if (diagnostics.length > 0) {
-    throw new ProjectionError(diagnostics);
+  let parser: ts.ProjectionParser;
+  try {
+    parser = ts.createProjectionParser(ctx.graph.modules);
+  } catch (error: unknown) {
+    if (error instanceof ts.TypeScriptApiUnavailableError) {
+      throw new ProjectionError([
+        createDiagnostic("PROJ-P001", { help: error.message }),
+      ]);
+    }
+    throw error;
   }
-
-  const manifest = buildManifest(ctx, candidates);
-  if (profile) {
-    const finished = performance.now();
-    console.error(
-      `[webui-projection-compiler] parse=${(parsed - started).toFixed(1)}ms semantics=${(analyzed - parsed).toFixed(1)}ms manifest=${(finished - analyzed).toFixed(1)}ms graphModules=${ctx.graph.modules.size} parsedModules=${analyses.size} components=${Object.keys(manifest.components).length}`
+  try {
+    const analyses = buildAnalyses(ctx, diagnostics, parser);
+    const parsed = profile ? performance.now() : 0;
+    const candidates = compileDefinedComponents(
+      ctx,
+      analyses,
+      diagnostics
     );
-  }
-  return manifest;
-}
+    const analyzed = profile ? performance.now() : 0;
 
-function validateTypeScriptVersion(
-  diagnostics: ProjectionDiagnostic[]
-): void {
-  const parts = parseVersion(ts.version);
-  const supported =
-    parts !== undefined &&
-    parts.major === 6 &&
-    (parts.minor > 0 ||
-      (parts.minor === 0 && parts.patch >= 3));
-  if (!supported) {
-    diagnostics.push(
-      createDiagnostic("PROJ-P001", {
-        help: `Install a supported TypeScript peer (^6.0.3); found ${ts.version}.`,
-      })
-    );
-  }
-}
+    if (diagnostics.length > 0) {
+      throw new ProjectionError(diagnostics);
+    }
 
-function parseVersion(
-  value: string
-): { major: number; minor: number; patch: number } | undefined {
-  const parts = value.split(".");
-  if (parts.length < 3) return undefined;
-  const major = Number(parts[0]);
-  const minor = Number(parts[1]);
-  let patchEnd = 0;
-  const patchText = parts[2]!;
-  while (
-    patchEnd < patchText.length &&
-    patchText.charCodeAt(patchEnd) >= 48 &&
-    patchText.charCodeAt(patchEnd) <= 57
-  ) {
-    patchEnd++;
+    const manifest = buildManifest(ctx, candidates);
+    if (profile) {
+      const finished = performance.now();
+      console.error(
+        `[webui-projection-compiler] parse=${(parsed - started).toFixed(1)}ms semantics=${(analyzed - parsed).toFixed(1)}ms manifest=${(finished - analyzed).toFixed(1)}ms graphModules=${ctx.graph.modules.size} parsedModules=${analyses.size} components=${Object.keys(manifest.components).length}`
+      );
+    }
+    return manifest;
+  } finally {
+    parser.close();
   }
-  if (patchEnd === 0) return undefined;
-  const patch = Number(patchText.slice(0, patchEnd));
-  return Number.isInteger(major) &&
-    Number.isInteger(minor) &&
-    Number.isInteger(patch)
-    ? { major, minor, patch }
-    : undefined;
 }
 
 function validateAdapterContext(
@@ -285,9 +259,10 @@ function validateAdapterContext(
 
 function buildAnalyses(
   ctx: AdapterContext,
-  diagnostics: ProjectionDiagnostic[]
+  diagnostics: ProjectionDiagnostic[],
+  parser: ts.ProjectionParser
 ): AnalysisRegistry {
-  const analyses = new AnalysisRegistry(ctx, diagnostics);
+  const analyses = new AnalysisRegistry(ctx, diagnostics, parser);
   for (const [moduleId, node] of ctx.graph.modules) {
     if (
       node.source !== undefined &&
@@ -306,7 +281,8 @@ class AnalysisRegistry {
 
   constructor(
     private readonly ctx: AdapterContext,
-    private readonly diagnostics: ProjectionDiagnostic[]
+    private readonly diagnostics: ProjectionDiagnostic[],
+    private readonly parser: ts.ProjectionParser
   ) {}
 
   get size(): number {
@@ -329,8 +305,17 @@ class AnalysisRegistry {
     ) {
       return undefined;
     }
-    const sourceFile = parseModule(moduleId, node);
-    if (getParseDiagnostics(sourceFile).length > 0) {
+    const parsed = this.parser.parse(moduleId);
+    if (parsed === undefined) {
+      this.diagnostics.push(
+        createDiagnostic("PROJ-C013", {
+          location: moduleId,
+          help: "The TypeScript parser did not return the adapter-provided module.",
+        })
+      );
+      return undefined;
+    }
+    if (parsed.hasDiagnostics) {
       this.diagnostics.push(
         createDiagnostic("PROJ-C001", {
           location: moduleId,
@@ -339,7 +324,7 @@ class AnalysisRegistry {
       );
       return undefined;
     }
-    const analysis = analyzeModule(moduleId, sourceFile);
+    const analysis = analyzeModule(moduleId, parsed.sourceFile);
     this.analyses.set(moduleId, analysis);
     if (process.env["WEBUI_PROJECTION_PROFILE_DETAIL"] === "1") {
       console.error(`[webui-projection-module] ${moduleId}`);
@@ -350,123 +335,38 @@ class AnalysisRegistry {
 
 function containsPotentialDefineCall(node: ModuleNode): boolean {
   const source = node.source ?? "";
-  const hasFrameworkEdge = node.imports.some(
-    (edge) => edge.packageName === FRAMEWORK_SPECIFIER
-  );
-  let offset = 0;
-  while (offset < source.length) {
-    const found = source.indexOf("define", offset);
-    if (found < 0) return false;
-    const before = found === 0 ? -1 : source.charCodeAt(found - 1);
-    const afterIndex = found + "define".length;
+  const identifier = "define";
+  let offset = source.indexOf(identifier);
+  while (offset !== -1) {
+    const before = offset === 0 ? -1 : source.charCodeAt(offset - 1);
+    const afterOffset = offset + identifier.length;
     const after =
-      afterIndex === source.length
-        ? -1
-        : source.charCodeAt(afterIndex);
-    if (!isIdentifierCode(before) && !isIdentifierCode(after)) {
-      let dot = found;
-      while (dot > 0 && isWhitespaceCode(source.charCodeAt(dot - 1))) dot--;
-      if (dot > 0 && source.charCodeAt(dot - 1) === 46) {
-        let open = afterIndex;
-        while (
-          open < source.length &&
-          isWhitespaceCode(source.charCodeAt(open))
-        ) {
-          open++;
-        }
-        if (source.charCodeAt(open) === 40) {
-          let argument = open + 1;
-          while (
-            argument < source.length &&
-            isWhitespaceCode(source.charCodeAt(argument))
-          ) {
-            argument++;
-          }
-          const argumentCode = source.charCodeAt(argument);
-          if (
-            argumentCode === 34 ||
-            argumentCode === 39 ||
-            hasFrameworkEdge ||
-            receiverIdentifier(source, dot - 1) === "customElements"
-          ) {
-            return true;
-          }
-        }
-      }
+      afterOffset === source.length ? -1 : source.charCodeAt(afterOffset);
+    if (
+      !isAsciiIdentifierContinue(before) &&
+      !isAsciiIdentifierContinue(after)
+    ) {
+      return true;
     }
-    offset = found + "define".length;
+    offset = source.indexOf(identifier, afterOffset);
   }
   return false;
 }
 
-function receiverIdentifier(
-  source: string,
-  dotIndex: number
-): string {
-  let end = dotIndex;
-  while (end > 0 && isWhitespaceCode(source.charCodeAt(end - 1))) end--;
-  let start = end;
-  while (start > 0 && isIdentifierCode(source.charCodeAt(start - 1))) start--;
-  return source.slice(start, end);
-}
-
-function isWhitespaceCode(code: number): boolean {
-  return (
-    code === 9 ||
-    code === 10 ||
-    code === 13 ||
-    code === 32
-  );
-}
-
-function isIdentifierCode(code: number): boolean {
+function isAsciiIdentifierContinue(code: number): boolean {
   return (
     (code >= 48 && code <= 57) ||
     (code >= 65 && code <= 90) ||
+    code === 95 ||
     (code >= 97 && code <= 122) ||
-    code === 36 ||
-    code === 95
+    code === 36
   );
-}
-
-function parseModule(moduleId: string, node: ModuleNode): ts.SourceFile {
-  return ts.createSourceFile(
-    moduleId,
-    node.source ?? "",
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ false,
-    scriptKindForExtension(getExtension(moduleId))
-  );
-}
-
-function getParseDiagnostics(sourceFile: ts.SourceFile): readonly ts.Diagnostic[] {
-  // The TS parser is error-tolerant; syntax errors are recorded on the
-  // source file rather than thrown. `parseDiagnostics` is an established
-  // (if internal) property of the parser result used by tooling that only
-  // needs a syntax check without building a full `ts.Program`.
-  const withDiagnostics = sourceFile as unknown as { parseDiagnostics?: ts.Diagnostic[] };
-  return withDiagnostics.parseDiagnostics ?? [];
 }
 
 function getExtension(moduleId: string): string {
   const base = moduleId.slice(moduleId.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
   return dot === -1 ? "" : base.slice(dot);
-}
-
-function scriptKindForExtension(ext: string): ts.ScriptKind {
-  switch (ext) {
-    case ".tsx":
-      return ts.ScriptKind.TSX;
-    case ".jsx":
-      return ts.ScriptKind.JSX;
-    case ".js":
-    case ".mjs":
-    case ".cjs":
-      return ts.ScriptKind.JS;
-    default:
-      return ts.ScriptKind.TS;
-  }
 }
 
 /** Builds the scope/export tables and collects `define()` call sites for one module. */
@@ -496,13 +396,22 @@ function analyzeModule(moduleId: string, sourceFile: ts.SourceFile): ModuleAnaly
 }
 
 function isExported(node: ts.Node): boolean {
-  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-  return (modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  return nodeModifiers(node).some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+  );
 }
 
 function isDefaultExport(node: ts.Node): boolean {
-  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-  return (modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+  return nodeModifiers(node).some(
+    (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword
+  );
+}
+
+function nodeModifiers(node: ts.Node): readonly ts.Node[] {
+  const withModifiers = node as ts.Node & {
+    readonly modifiers?: readonly ts.Node[];
+  };
+  return withModifiers.modifiers ?? [];
 }
 
 function analyzeImportDeclaration(decl: ts.ImportDeclaration, scope: Map<string, ScopeBinding>): void {
@@ -613,18 +522,64 @@ function analyzeVariableStatement(
   exports: Map<string, ExportBinding>
 ): void {
   const exported = isExported(stmt);
+  const immutable =
+    (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
   for (const decl of stmt.declarationList.declarations) {
     if (!ts.isIdentifier(decl.name)) continue;
     if (decl.initializer && ts.isClassExpression(decl.initializer)) {
       scope.set(decl.name.text, {
-        kind: "localClass",
-        node: decl.initializer,
+        ...(immutable
+          ? { kind: "localClass" as const, node: decl.initializer }
+          : { kind: "mutableClass" as const }),
       });
       if (exported) {
         exports.set(decl.name.text, {
           kind: "localRef",
           localName: decl.name.text,
         });
+      }
+    } else if (
+      immutable &&
+      decl.initializer &&
+      ts.isIdentifier(decl.initializer)
+    ) {
+      scope.set(decl.name.text, {
+        kind: "localAlias",
+        localName: decl.initializer.text,
+      });
+      if (exported) {
+        exports.set(decl.name.text, {
+          kind: "localRef",
+          localName: decl.name.text,
+        });
+      }
+    } else if (
+      immutable &&
+      decl.initializer &&
+      ts.isPropertyAccessExpression(decl.initializer) &&
+      ts.isIdentifier(decl.initializer.expression)
+    ) {
+      const namespace = scope.get(decl.initializer.expression.text);
+      if (namespace?.kind === "namespaceImport") {
+        scope.set(decl.name.text, {
+          kind: "import",
+          specifier: namespace.specifier,
+          importedName: decl.initializer.name.text,
+        });
+        if (exported) {
+          exports.set(decl.name.text, {
+            kind: "localRef",
+            localName: decl.name.text,
+          });
+        }
+      } else {
+        analyzeNamedOtherDeclaration(
+          decl.name.text,
+          exported,
+          false,
+          scope,
+          exports
+        );
       }
     } else {
       analyzeNamedOtherDeclaration(
@@ -739,6 +694,15 @@ function compileDefinedComponents(
       site.moduleId,
       site.classArg
     );
+    if (classResolution.kind === "unsafeMutable") {
+      diagnostics.push(
+        createDiagnostic("PROJ-C009", {
+          location: site.moduleId,
+          help: "Bind class expressions with const before calling define() so the projection compiler can prove the referenced class cannot change.",
+        })
+      );
+      continue;
+    }
     if (classResolution.kind !== "class") {
       // `.define()` is a common API outside Web Components. Unknown receivers
       // are ignored here; strict WebUI build coverage catches any real
@@ -843,9 +807,10 @@ function isPotentialWebUIClass(
 
     for (const member of current.node.members) {
       if (!ts.isPropertyDeclaration(member)) continue;
-      const decorators = ts.canHaveDecorators(member)
-        ? ts.getDecorators(member) ?? []
-        : [];
+      const decorators = nodeModifiers(member).filter(
+        (modifier): modifier is ts.Decorator =>
+          modifier.kind === ts.SyntaxKind.Decorator
+      );
       for (const decorator of decorators) {
         const parsed = parseDecoratorExpression(decorator.expression);
         if (parsed.kind === "unsupported") continue;
@@ -1021,6 +986,15 @@ function stepLocal(
   switch (binding.kind) {
     case "localClass":
       return { kind: "class", moduleId: cur.moduleId, node: binding.node };
+    case "mutableClass":
+      return { kind: "unsafeMutable" };
+    case "localAlias":
+      stack.push({
+        mode: "local",
+        moduleId: cur.moduleId,
+        name: binding.localName,
+      });
+      return undefined;
     case "localOther":
       return { kind: "other" };
     case "import": {
@@ -1151,7 +1125,10 @@ function collectOwnKeys(
   let ok = true;
   for (const member of node.members) {
     if (!ts.isPropertyDeclaration(member)) continue;
-    const decorators = ts.canHaveDecorators(member) ? (ts.getDecorators(member) ?? []) : [];
+    const decorators = nodeModifiers(member).filter(
+      (modifier): modifier is ts.Decorator =>
+        modifier.kind === ts.SyntaxKind.Decorator
+    );
     for (const decorator of decorators) {
       ok =
         applyDecorator(
@@ -1358,6 +1335,7 @@ function buildManifest(
 
   const inputs = buildInputsMap(ctx);
   const outputs = buildOutputsMap(ctx);
+  const entryClosures = buildEntryClosuresMap(ctx);
   const analysisHash = computeAnalysisHash(ctx);
 
   const producerVersion = readProducerVersion();
@@ -1382,6 +1360,9 @@ function buildManifest(
             components[tag]!.navigationKeys,
           ] as const
       ),
+    ...(entryClosures
+      ? { sortedEntryClosures: Object.entries(entryClosures) }
+      : {}),
   });
 
   return {
@@ -1394,7 +1375,40 @@ function buildManifest(
     outputs,
     inputs,
     components,
+    ...(entryClosures ? { entryClosures } : {}),
   };
+}
+
+/**
+ * Canonicalizes adapter-reported entry closures to root-relative paths.
+ *
+ * Members that did not survive into `outputs` are dropped rather than
+ * diagnosed: an adapter may legitimately report an import graph wider than the
+ * outputs it hands to the compiler. Order is preserved exactly — it is the
+ * adapter's size ordering and re-deriving it here is not possible.
+ */
+function buildEntryClosuresMap(
+  ctx: AdapterContext
+): Record<string, ReadonlyArray<string>> | undefined {
+  const source = ctx.entryClosures;
+  if (!source || source.size === 0) return undefined;
+
+  const entries: Array<[string, ReadonlyArray<string>]> = [];
+  for (const [entryId, closure] of source) {
+    if (!ctx.membership.outputs.has(entryId)) continue;
+    const members: string[] = [];
+    for (const memberId of closure) {
+      if (memberId === entryId) continue;
+      if (!ctx.membership.outputs.has(memberId)) continue;
+      members.push(canonicalOutputId(ctx, memberId));
+    }
+    // Empty closures are semantic ownership records. Keeping them prevents a
+    // same-basename entry from another manifest from being selected by mistake.
+    entries.push([canonicalOutputId(ctx, entryId), members]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((left, right) => compareUtf8(left[0], right[0]));
+  return Object.fromEntries(entries);
 }
 
 function findOutputsContaining(ctx: AdapterContext, moduleId: string): string[] {

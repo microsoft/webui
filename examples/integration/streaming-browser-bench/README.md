@@ -1,8 +1,20 @@
 # `streaming-browser-bench`
 
-Browser-perceived metrics for the WebUI streaming SSR pipeline.
+Browser-perceived metrics for WebUI hydration and streaming SSR. This package
+holds **three** independent benches:
 
-This package spins up a real actix-web server with two endpoints:
+1. **Transport bench** (`browser_metrics.spec.ts`) - buffered vs streamed
+   delivery of byte-identical HTML.
+2. **Progressive hydration matrix** (`hydration_matrix.spec.ts`) - the real
+   streaming coordinator plus real `WebUIElement` hydration, measured
+   across 1/3/10/100 boundaries against an ordinary one-shot control.
+3. **Offscreen work-reduction matrix** (`lazy_hydration_matrix.spec.ts`) -
+   production component hydration and rendering for representative 10-item,
+   100-item, and 1,000-item todo lists, comparing eager, hydration-only lazy\n   hydration, and complete lazy rendering policies.
+
+## Transport bench
+
+This bench spins up a real actix-web server with two endpoints:
 
 * `/buf?delay_us=N` — buffered render (whole HTML in one HTTP chunk)
 * `/stream?delay_us=N` — streaming render (`StreamingWriter` +
@@ -21,15 +33,266 @@ measure the streaming win at realistic render times (~5 ms /
 For the bench-suite-wide picture, see
 [`BENCHMARKS.md`](../../../BENCHMARKS.md) at the repo root.
 
+## Progressive hydration matrix
+
+This bench needs no server: it bundles the *actual* framework sources in-memory
+with esbuild (`__WEBUI_DEV__=false`, minified, IIFE/browser) into two fixtures
+and drives the DOM directly via `page.setContent` + `page.addScriptTag`:
+
+* the **ordinary** fixture imports `WebUIElement` from the framework default
+  entry only;
+* the **streaming** fixture imports `streaming-entry.ts` (the public
+  coordinator entry) before the default entry.
+
+Each fixture exposes an idempotent `window.__defineBenchIsland()` that defines
+one instrumented `bench-island` class extending `WebUIElement` (a real two-text-
+binding template). The subclass accumulates real component mount/hydration CPU on
+a window global so the CPU comparison is independent of boundary parsing /
+coordinator overhead:
+
+* ordinary (unmarked) roots time `super.connectedCallback()`;
+* streamed (`data-ws`) roots do the cheap deferral uncounted and time
+  `super.$activateDeferredSSR(state)` instead.
+
+Each hook also samples `usedJSHeapSize` (after stopping its CPU timer) into a
+window global, so peak heap is captured *while components commit*, and increments
+a per-instance successful-hydration count gated on the base class's real
+`$hydrated` flag - so an early return (deferral, missing-metadata warn, or no-op
+activation) can never inflate it. After all timed/peak measurements stop, the
+driver runs an independent **reactive probe**: it calls each root's real public
+`setState` with a shared sentinel `label`, which flushes synchronously, and
+verifies the bound `<span>` re-rendered. Both the hydration count and the
+reactive-verified count must equal 1500 (`TOTAL_ROOTS`) for every arm, proving
+every root genuinely hydrated rather than merely surviving scaffold removal. (The
+probe caught two silent breakages after a framework coordinator rewrite - see
+Known limitations.)
+
+Every scenario delivers the **same** fixed total of real `bench-island` SSR
+roots (1500) and the **same** total projected state value bytes (24 KiB of
+`label` values); only the boundary count (and marker layout) changes. "Projected
+state value bytes" counts the streamed `label` values a real app would ship, and
+deliberately excludes unavoidable per-boundary protocol/property overhead (the
+`[recordSequence,kind,target,{...}]` envelope framing, required
+`declarationId`, the first-boundary `templates` block, and the tiny fixed `note`
+property) - that overhead is inherent to having more boundaries, not equal work
+to hold constant. It is projected-state value bytes, not total wire bytes.
+
+Each streamed boundary uses the browser contract - `<!--wb:N-->` markers + SSR
+roots carrying `data-ws` + an inert `[data-webui-boundary]` JSON script + a
+`<webui-hydrate>` sentinel - appended one at a time, with the driver spinning the
+coordinator's microtask pump until that boundary's scaffolding is removed (a
+deterministic "committed + cleaned" signal) before the next, then a kind-4
+terminal envelope. Final/updatable checkpoints use kinds 0/1, state updates use
+kind 2, and kind 3 is reserved for generated span completion (unused by these flat
+entry-boundary scenarios). Every checkpoint bootstrap carries a deterministic
+`declarationId`; flat entry boundaries omit `enclosingSpanInstanceId`. Runtime
+boundary instance IDs and record sequences are gapless, and updates target the
+committed boundary instance ID. Consecutive chunks enter through separate
+`MessageChannel` tasks, matching browser response-chunk scheduling without the
+nested timer clamp that would add synthetic delay at 100 boundaries. The control
+uses the real inert `#webui-data` bootstrap (present in the base document so the
+framework's lazy loader latches on the real block); only its SSR roots are
+inserted at run time (after the baseline heap sample) so its empty->populated
+peak-heap transition matches the streaming arms.
+
+Coverage includes flat and deeply nested marker ranges (one root at each
+successive `<div>` depth) and the boundary-before-definition race (the class
+stays undefined for the first boundary, exercising the O(unique tag) waiter
+path).
+
+### Metrics collected per run
+
+| Metric | Source |
+|---|---|
+| component hydration CPU sum | instrumented `bench-island` subclass |
+| successful-hydration count + reactive-verified count | instrumented subclass (`$hydrated`-gated) + post-measurement `setState` probe; both must equal 1500 |
+| exact boundary-state delivery | correctness-only wrapper around the real deferred activation hook with distinct state per boundary |
+| total scenario elapsed | `performance.now()` (streaming: append+commit pipeline; ordinary: the synchronous hydration burst, excluding one-time body parse) |
+| median + p95 | across `RUNS` repeats |
+| peak JS heap delta | `performance.memory.usedJSHeapSize` sampled inside the hydration hooks + per-boundary (`--enable-precise-memory-info`) |
+| forced-GC retained heap delta | CDP `HeapProfiler.collectGarbage` + `Runtime.getHeapUsage` before/after |
+| max long task | `PerformanceObserver('longtask')` (when supported) |
+| bundle bytes | exact minified + gzip for both fixtures |
+
+`RUNS` defaults to 5 for normal runs (cheap; note that with only 5 samples
+nearest-rank p95 == max). Strict/enforced runs use at least 20 samples so p95 is
+a real tail statistic; override with `WEBUI_STREAMING_HYDRATION_RUNS=<n>` (floored
+at 20 under enforce).
+
+Every production arm is warmed once and discarded before measurement. Each
+round then runs every arm exactly once, rotating and reversing arm order across
+rounds so no scenario owns a fixed hot or cold position. CPU and elapsed gates
+compare aligned samples from the same round as paired deltas; they do not compare
+an interleaved current run against a stale standalone baseline.
+
+The primary scaling arms all receive the same empty metadata checkpoint before
+their 1/3/10/100 content checkpoints. This keeps custom-element construction
+identical across arms: every measured root is parser-created after template
+metadata defines the class. Without that setup, B=1 upgrades every root after
+parsing while larger arms mix upgraded and parser-created roots, so the CPU gate
+would measure a changing construction mode rather than boundary scaling. The
+separate eager/race coverage cases keep metadata co-located with real roots and
+exercise the production first-checkpoint behavior.
+
+### Deterministic vs strict gates
+
+Always enforced (hard guarantees, noise-free): equal live root counts, **every
+root proven hydrated** (successful-hydration count and reactive `setState`-probe
+count both equal 1500), zero residual scaffolding (scripts, sentinels, `wb:`
+comments, `[data-ws]`), no globally-published streamed state
+(`window.__webui.state` stays unset), the ordinary bundle contains no coordinator
+tokens (`webui-hydrate`, `data-webui-boundary`, the `data-ws-span` /
+`data-ws-enclosing` compiler span attributes, or open-span registry code),
+measured component CPU is non-zero, distinct boundary-local states reach only
+their own real activation hooks, and four absolute bundle-byte caps hold.
+
+The byte caps come in two kinds, and both are required:
+
+| Cap | Bytes | Measured | Headroom |
+|---|---|---|---|
+| ordinary minified | 63,500 | 60,528 | 4.7% |
+| ordinary gzip | 19,850 | 18,993 | 4.3% |
+| streaming incremental minified | 17,400 | 16,652 | 4.3% |
+| streaming incremental gzip | 6,190 | 5,928 | 4.2% |
+
+The **ordinary** caps are absolute because they bound what a *non-streaming* app
+downloads. The incremental caps alone cannot: they subtract the ordinary bundle,
+so bytes added to the always-shipped entry cancel out of them entirely. Component
+spans are the concrete case — the compiler attribute names and open-span registry
+live only in the opt-in coordinator, and `TemplateElement` receives an
+already-resolved bypass ancestor element it compares by identity.
+
+Esbuild output is deterministic, so ~4-5% headroom absorbs a minifier or
+toolchain nudge while still failing on real growth. The spec logs measured bytes
+and remaining headroom on every run; update the recorded numbers and the caps
+together, never a cap alone.
+
+Opt-in via `WEBUI_STREAMING_HYDRATION_ENFORCE=1` (noisy, off by default), each
+printing its effective cap:
+
+* component-hydration median for every streamed arm <= the single-boundary
+  streamed one-shot median * 1.05 + 0.25 ms floor. This compares the same direct
+  boundary-state activation path, so a slower ordinary bootstrap cannot mask
+  boundary-scaling regressions;
+* retained-heap N=1/10/100 slope <= max(64 KiB, 2%) after forced GC (this is the
+  tightest gate: observed slope ~45-57 KiB sits just under the 64 KiB floor, so
+  it is the most likely to need a higher floor on noisier CI hardware);
+* peak heap must not grow with boundary count - every arm within max(512 KiB,
+  15%) of the single-boundary (largest-boundary) working set. Referenced against
+  streaming itself, not the one-shot control, because the coordinator legitimately
+  carries transient scaffolding the control never allocates;
+* every primary run must produce both a peak-heap sample and a forced-GC retained
+  sample; missing browser/CDP memory instrumentation fails an enforced run rather
+  than silently skipping its memory assertions;
+* coordinator marginal elapsed growth from 1 to 100 boundaries <=
+  max(0.25 ms, 1% of the single-boundary elapsed) per added boundary.
+
+Under baseline compare (`WEBUI_BENCH_COMPARE`), retained- and peak-heap deltas
+are reported per scenario alongside CPU/elapsed. Retained regresses when it grows
+by more than max(64 KiB, 10%) of the baseline; peak when it grows by more than
+max(512 KiB, 15%). The absolute floors are always applied, so a *uniform* memory
+regression that leaves the within-run N=1/10/100 slope flat is still caught, and
+growth from a zero/small baseline is never masked by a percentage of zero. A
+sample that is null on either side is reported `n/a` and skipped. Under enforce, a
+compare regression (CPU, elapsed, retained, or peak) fails the run.
+
+These are structured and documented separately so timing/heap noise never fails a
+normal run.
+
+## Offscreen work-reduction matrix
+
+This matrix builds **three** production modes with esbuild
+(`__WEBUI_DEV__=false`): an **eager** bundle (the framework default entry
+only), a hydration-only **lazy-hydrate** bundle, and a complete **lazy-render** bundle.
+The latter two import the optional `lazy-hydration.js` entry. Page compiler
+metadata selects `wp: 1` or `wp: 2`; the lazy-render page also contains the exact
+build-generated `content-visibility: auto` and
+`contain-intrinsic-block-size: auto 72px` rule before first layout.
+Coordinator inclusion is a build-time static import decision, matching
+production. All modes define a todo item with four text bindings and two direct
+event listeners. Each SSR row has a fixed 72px height. The 10-item list fits
+inside the viewport plus the 200px lead margin; the 100-item and 1,000-item
+lists leave offscreen rows dormant.
+
+Before running the matrix, the spec inspects each bundle's esbuild
+**metafile** (its actual module input graph, not an inferred byte count) and
+asserts the eager bundle never reaches `lazy-hydration-coordinator.ts`
+while the lazy-hydrate and lazy-render bundles do - the same "measurable
+zero-coordinator"
+guarantee the framework's own `index-decoupling.test.ts` enforces for the
+default entry point.
+
+Each arm runs in a fresh page and records:
+
+| Metric | Source |
+|---|---|
+| component CPU | instrumented real `connectedCallback` and deferred activation |
+| bundle initialization, definition, and first-screen readiness | `performance.now()` in separate measurement windows |
+| DOM construction | synchronous `insertAdjacentHTML` parser wall time |
+| forced style/layout and presentation readiness | `scrollHeight` flush plus two animation frames |
+| style and layout CPU/counts | deltas from Chromium `Performance.getMetrics` |
+| parse, style, layout, pre-paint, paint, and raster CPU | medians from separate `devtools.timeline` trace runs stopped immediately after initial rendering, before hydration and interaction probes |
+| DOM and layout objects | Chromium node and layout-object deltas; proves which work is and is not reduced |
+| hydrated roots | successful hydration count |
+| installed listeners | actual root cleanup records after successful hydration |
+| peak heap | precise `performance.memory` sampling during hydration |
+| hydration-only and total retained heap | forced GC through CDP before hydration and before bundle evaluation |
+| longest long task | overlapping `PerformanceObserver('longtask')` records from the definition/readiness window |
+| first visible and dormant interaction | synchronous click timing |
+| bundle size | exact production minified and gzip bytes, per bundle |
+
+The dormant interaction must hydrate the last row synchronously. The lazy-hydrate\nand lazy-render 100/1,000-item arms must hydrate fewer roots than they render,
+while eager arms must hydrate every root. The lazy-render last-row descendant must
+report skipped through `checkVisibility({ contentVisibilityAuto: true })`, and
+all modes must preserve the full fixed-height scroll range. The driver also
+fails if expected initial roots do not hydrate before its frame deadline. These
+correctness assertions are always enforced. Run order reverses on alternating
+rounds to reduce fixed-order bias. Timing/heap runs default to 15; trace runs
+default to 3. Set `WEBUI_LAZY_HYDRATION_RUNS` and
+`WEBUI_LAZY_HYDRATION_TRACE_RUNS` for larger samples.
+
+### Known limitations
+
+* `performance.memory` is Chromium-only and coarse/bucketed, so peak-heap deltas
+  are noisy (the in-hook sampling makes them *truthful during commit* but not
+  precise); the forced-GC CDP retained deltas are the authoritative memory
+  metrics. The hydration-only value excludes fixed runtime and SSR DOM cost,
+  while total retained heap includes both.
+* On this dev machine `longtask` reads `null` for the streaming arms (the
+  measured pipeline remains below 50 ms) while the one-shot control's synchronous
+  1500-root hydration can trip a single long task - the concrete streaming
+  main-thread-jank win - but the metric is only meaningful where the observer is
+  supported.
+* The ordinary and streamed component timers cover their real production entry
+  points (`connectedCallback` vs direct deferred activation), so their absolute
+  CPU values are useful workload signals but are not interchangeable baselines.
+  Boundary-scaling gates therefore use the single-boundary streamed arm; saved
+  before/after snapshots catch regressions shared by every streamed arm.
+* This harness injects the framework bundle after the page loads and streams
+  boundaries from script. To interoperate with the coordinator it (a) keeps the
+  inert `#webui-data` bootstrap in the base document (the framework's lazy loader
+  latches its "already loaded" guard on a macrotask, so an empty DOM at that point
+  would poison it and leave roots un-hydrated), and (b) pins `document.readyState`
+  to `'loading'` on the streaming page so the coordinator's truncation guard waits
+  for a `DOMContentLoaded` that never fires - the terminal envelope ends the
+  stream instead. Both are inert to the hydration path itself. The reactive
+  `setState` probe was added precisely because, without it, either issue would
+  silently leave roots un-hydrated while live-root-count and aggregate CPU still
+  passed.
+
+
 ## Run
 
 ```bash
-# Full bench (Chromium driver, ~30 s)
+# Transport bench (Chromium driver, ~30 s)
 cargo xtask bench streaming-browser
 
 # Or directly:
 cd examples/integration/streaming-browser-bench
-pnpm test
+pnpm test              # transport bench
+pnpm test:hydration    # progressive hydration matrix
+pnpm test:lazy-hydration # component lazy hydration matrix
+pnpm typecheck         # tsc --noEmit for this package
 ```
 
 ## Before/after comparison
@@ -44,13 +307,56 @@ cargo xtask bench streaming-browser --save-baseline before
 cargo xtask bench streaming-browser --baseline before
 ```
 
-Snapshots are written to
-`target/bench-baselines/browser-<name>.json`. The compare phase
-prints a Δ%-table for TTFB, FCP, LCP, and load.
+The transport bench writes `target/bench-baselines/browser-<name>.json` and the
+compare phase prints a Δ%-table for TTFB, FCP, LCP, and load.
 
 (Underneath, this maps to env vars `WEBUI_BENCH_SAVE` and
 `WEBUI_BENCH_COMPARE` consumed by the spec; you can also set them
 directly when running `pnpm test`.)
+
+The hydration matrix reuses the same env vars but writes a **distinct** file so
+the two benches never clobber each other:
+
+```bash
+WEBUI_BENCH_SAVE=before    pnpm test:hydration
+WEBUI_BENCH_COMPARE=before pnpm test:hydration
+# Compare only fails the run when the strict flag is also set:
+WEBUI_STREAMING_HYDRATION_ENFORCE=1 WEBUI_BENCH_COMPARE=before pnpm test:hydration
+```
+
+Hydration snapshots live at
+`target/bench-baselines/browser-hydration-<name>.json` and record median/p95
+CPU and elapsed, peak/retained heap, long task, and the bundle byte sizes. The
+compare phase prints a per-scenario delta table with CPU %, elapsed %, and signed
+retained- and peak-heap KiB deltas. A strict comparison requires a compatible
+baseline and checks it before running the measurement matrix; a missing or stale
+baseline fails with the command needed to create a new one.
+
+The work-reduction matrix uses separate environment variables and snapshot
+files. `WEBUI_LAZY_HYDRATION_MODES` accepts a comma-separated subset of
+`eager,lazy-hydrate,lazy-render`:
+
+```bash
+WEBUI_LAZY_HYDRATION_MODES=eager,lazy-hydrate,lazy-render \
+WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_TRACE_RUNS=5 \
+WEBUI_LAZY_HYDRATION_SAVE=before \
+pnpm test:lazy-hydration
+
+WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_TRACE_RUNS=5 \
+WEBUI_LAZY_HYDRATION_COMPARE=before \
+WEBUI_LAZY_HYDRATION_SAVE=after \
+pnpm test:lazy-hydration
+```
+
+Snapshots live at
+`target/bench-baselines/browser-lazy-hydration-<name>.json`.
+Set `WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC` to an extracted framework `src`
+directory to compare the current harness against an earlier runtime without
+changing the benchmark worktree. A runtime predating compiler policy metadata
+is compatible only with the eager arm.
+
 
 ## What it measures
 

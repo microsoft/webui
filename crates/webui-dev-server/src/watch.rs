@@ -8,17 +8,28 @@
 //! background thread; **the handle must be kept alive** for the watcher
 //! to run.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use notify::RecommendedWatcher;
-use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
+use notify::{
+    event::{AccessKind, AccessMode},
+    Event, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind,
+};
+use notify_debouncer_mini::{
+    new_debouncer_opt, Config as DebouncerConfig, DebounceEventResult, Debouncer,
+};
+
+#[path = "watch_hash.rs"]
+mod hash;
+
+#[cfg(test)]
+#[path = "watch_hash_tests.rs"]
+mod hash_tests;
+
+use hash::{hash_file, HASH_BUFFER_SIZE};
 
 /// Owns the watcher background thread. Drop to stop watching.
 ///
@@ -26,7 +37,51 @@ use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 /// debouncer struct; dropping the struct kills the thread. Consumers
 /// should hold this handle for the lifetime of their server.
 pub struct WatcherHandle {
-    _debouncer: Debouncer<RecommendedWatcher>,
+    _debouncer: Debouncer<ContentChangeWatcher>,
+}
+
+struct ContentChangeWatcher(RecommendedWatcher);
+
+impl Watcher for ContentChangeWatcher {
+    fn new<F: EventHandler>(mut event_handler: F, config: notify::Config) -> notify::Result<Self> {
+        RecommendedWatcher::new(
+            move |event| {
+                if matches!(&event, Ok(event) if is_read_only_access_event(event)) {
+                    return;
+                }
+                event_handler.handle_event(event);
+            },
+            config,
+        )
+        .map(Self)
+    }
+
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> notify::Result<()> {
+        self.0.watch(path, recursive_mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.0.unwatch(path)
+    }
+
+    fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+        self.0.configure(config)
+    }
+
+    fn kind() -> WatcherKind {
+        RecommendedWatcher::kind()
+    }
+}
+
+fn is_read_only_access_event(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Access(
+            AccessKind::Read
+                | AccessKind::Open(AccessMode::Read)
+                | AccessKind::Close(AccessMode::Read)
+        )
+    )
 }
 
 /// Configuration for [`spawn_watcher`].
@@ -98,41 +153,61 @@ where
         .collect();
 
     let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
+    let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let explicit_filter = explicit_files.clone();
-    let mut debouncer = new_debouncer(cfg.debounce, move |res: DebounceEventResult| match res {
-        Ok(events) => {
-            // Filter out ignored paths and dedupe (notify can emit
-            // duplicate events for the same path within a window).
-            let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
-            let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
-            for e in events {
-                if should_ignore_event(&e.path, &ignore, &explicit_filter) {
-                    continue;
+    let notify_config = notify::Config::default().with_follow_symlinks(false);
+    let debouncer_config = DebouncerConfig::default()
+        .with_timeout(cfg.debounce)
+        .with_notify_config(notify_config);
+    let mut debouncer = new_debouncer_opt::<_, ContentChangeWatcher>(
+        debouncer_config,
+        move |res: DebounceEventResult| match res {
+            Ok(events) => {
+                // Filter out ignored paths and dedupe (notify can emit
+                // duplicate events for the same path within a window).
+                let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
+                let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
+                for e in events {
+                    if should_ignore_event(&e.path, &ignore, &explicit_filter) {
+                        continue;
+                    }
+                    if seen.insert(e.path.clone()) {
+                        paths.push(e.path);
+                    }
                 }
-                if seen.insert(e.path.clone()) {
-                    paths.push(e.path);
+                // Recursive backends emit directory metadata events alongside
+                // file writes. Existing directories are not source changes and
+                // would otherwise retrigger a rebuild after every build; keep
+                // missing paths so directory/file deletions still rebuild.
+                paths.retain(|path| !path.is_dir());
+                // Drop paths whose content is byte-identical to the last event.
+                // Editors fire a write on every Ctrl+S even when nothing changed;
+                // rebuilding then is pure wasted work, so a no-op save triggers no
+                // rebuild at all in the clean state. When the caller reports that a
+                // rebuild error is active, unchanged events are allowed through so a
+                // no-op save can retry transient failures. Deletions and oversized
+                // files always count as changed (see `content_changed`).
+                let retry_unchanged = retry_unchanged_when
+                    .as_ref()
+                    .is_some_and(|predicate| predicate());
+                paths.retain(|path| {
+                    should_forward_path(
+                        &mut content_hashes,
+                        path,
+                        retry_unchanged,
+                        &mut hash_buffer,
+                    )
+                });
+                if !paths.is_empty() {
+                    on_event(paths);
                 }
             }
-            // Drop paths whose content is byte-identical to the last event.
-            // Editors fire a write on every Ctrl+S even when nothing changed;
-            // rebuilding then is pure wasted work, so a no-op save triggers no
-            // rebuild at all in the clean state. When the caller reports that a
-            // rebuild error is active, unchanged events are allowed through so a
-            // no-op save can retry transient failures. Deletions and oversized
-            // files always count as changed (see `content_changed`).
-            let retry_unchanged = retry_unchanged_when
-                .as_ref()
-                .is_some_and(|predicate| predicate());
-            paths.retain(|path| should_forward_path(&mut content_hashes, path, retry_unchanged));
-            if !paths.is_empty() {
-                on_event(paths);
+            Err(e) => {
+                eprintln!("watcher error: {e:?}");
             }
-        }
-        Err(e) => {
-            eprintln!("watcher error: {e:?}");
-        }
-    })
+        },
+    )
     .context("Cannot start file watcher")?;
 
     let mut watched_roots = Vec::with_capacity(cfg.paths.len());
@@ -221,7 +296,12 @@ fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
         let only_one_component = components.next().is_none();
         if let (Some(first), true) = (first, only_one_component) {
             let name = first.as_os_str();
-            if candidate.components().any(|c| c.as_os_str() == name) {
+            // Check the lexical event path before its canonical form. pnpm
+            // dependencies are symlinks, so canonicalization removes the
+            // `node_modules` component that identifies the ignored subtree.
+            if event_path.components().any(|c| c.as_os_str() == name)
+                || candidate.components().any(|c| c.as_os_str() == name)
+            {
                 return true;
             }
         } else if candidate.starts_with(root) {
@@ -245,19 +325,17 @@ pub fn default_ignore_paths() -> Vec<PathBuf> {
     ]
 }
 
-/// Largest file the watcher will hash to detect a no-op change. Above this,
-/// an event is always treated as a change — hashing a huge file on every event
-/// would cost more than an occasional rebuild. Dev source files are tiny, so
-/// this only guards pathological inputs.
-const MAX_HASH_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Whether `path`'s content changed since the previous event, updating `cache`.
 ///
 /// A path that cannot be read as a regular file within the size cap (deleted,
 /// a directory, a permissions error, or oversized) is treated as **changed** so
 /// deletions still trigger a rebuild and large files are never silently skipped.
-fn content_changed(cache: &mut HashMap<PathBuf, u64>, path: &Path) -> bool {
-    match hash_file(path) {
+fn content_changed(
+    cache: &mut HashMap<PathBuf, u64>,
+    path: &Path,
+    buffer: &mut [u8; HASH_BUFFER_SIZE],
+) -> bool {
+    match hash_file(path, buffer) {
         Some(hash) => match cache.insert(path.to_path_buf(), hash) {
             Some(previous) => previous != hash,
             None => true,
@@ -273,22 +351,9 @@ fn should_forward_path(
     cache: &mut HashMap<PathBuf, u64>,
     path: &Path,
     retry_unchanged: bool,
+    buffer: &mut [u8; HASH_BUFFER_SIZE],
 ) -> bool {
-    content_changed(cache, path) || retry_unchanged
-}
-
-/// Hash the full contents of `path`, or `None` if it is not a readable regular
-/// file within [`MAX_HASH_BYTES`]. Uses the standard hasher — collision
-/// resistance is irrelevant here; we only need "did these bytes change".
-fn hash_file(path: &Path) -> Option<u64> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_HASH_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let mut hasher = DefaultHasher::new();
-    hasher.write(&bytes);
-    Some(hasher.finish())
+    content_changed(cache, path, buffer) || retry_unchanged
 }
 
 #[cfg(test)]
@@ -370,30 +435,79 @@ mod tests {
     }
 
     #[test]
+    fn read_only_access_events_are_not_content_changes() {
+        use notify::event::ModifyKind;
+
+        for kind in [
+            AccessKind::Read,
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            assert!(is_read_only_access_event(&Event::new(EventKind::Access(
+                kind
+            ))));
+        }
+        for kind in [
+            AccessKind::Any,
+            AccessKind::Open(AccessMode::Write),
+            AccessKind::Close(AccessMode::Write),
+        ] {
+            assert!(!is_read_only_access_event(&Event::new(EventKind::Access(
+                kind
+            ))));
+        }
+        assert!(!is_read_only_access_event(&Event::new(EventKind::Modify(
+            ModifyKind::Any
+        ))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_ignored_matches_node_modules_symlink_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("packages/example");
+        let node_modules = dir.path().join("node_modules");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir(&node_modules).unwrap();
+        std::fs::write(package.join("index.js"), "export {};").unwrap();
+        symlink(&package, node_modules.join("example")).unwrap();
+
+        let linked_file = node_modules.join("example/index.js");
+        let canonical = std::fs::canonicalize(&linked_file).unwrap();
+        assert!(!canonical
+            .components()
+            .any(|component| component.as_os_str() == "node_modules"));
+        assert!(is_ignored(&linked_file, &[PathBuf::from("node_modules")]));
+    }
+
+    #[test]
     fn content_changed_skips_identical_saves() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.css");
         std::fs::write(&file, "a { color: red; }").unwrap();
         let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
 
         // First sighting → changed (nothing cached yet).
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // Re-saving identical bytes (repeated Ctrl+S) → no change → no rebuild.
-        assert!(!content_changed(&mut cache, &file));
-        assert!(!content_changed(&mut cache, &file));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
 
         // A real edit → changed.
         std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // Identical again → unchanged.
-        assert!(!content_changed(&mut cache, &file));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
 
         // Deletion → changed, so a rebuild can clear stale output.
         std::fs::remove_file(&file).unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // The cache forgot it, so a later recreation is a fresh change.
         std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
     }
 
     #[test]
@@ -402,9 +516,88 @@ mod tests {
         let file = dir.path().join("a.css");
         std::fs::write(&file, "a { color: red; }").unwrap();
         let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
 
-        assert!(should_forward_path(&mut cache, &file, false));
-        assert!(!should_forward_path(&mut cache, &file, false));
-        assert!(should_forward_path(&mut cache, &file, true));
+        assert!(should_forward_path(&mut cache, &file, false, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+        assert!(should_forward_path(&mut cache, &file, true, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+
+        std::fs::write(&file, "a { color: blue; }").unwrap();
+        assert!(should_forward_path(&mut cache, &file, true, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+    }
+
+    #[test]
+    fn unhashable_paths_forget_cached_content() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("a.css");
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+
+        for replacement in ["deleted", "directory", "oversized"] {
+            std::fs::write(&file, "original")?;
+            assert!(content_changed(&mut cache, &file, &mut buffer));
+            assert!(!content_changed(&mut cache, &file, &mut buffer));
+
+            std::fs::remove_file(&file)?;
+            match replacement {
+                "directory" => std::fs::create_dir(&file)?,
+                "oversized" => std::fs::File::create(&file)?.set_len(8 * 1024 * 1024 + 1)?,
+                _ => {}
+            }
+            for _ in 0..2 {
+                assert!(content_changed(&mut cache, &file, &mut buffer));
+                assert!(!cache.contains_key(&file));
+            }
+            match replacement {
+                "directory" => std::fs::remove_dir(&file)?,
+                "oversized" => std::fs::remove_file(&file)?,
+                _ => {}
+            }
+        }
+        std::fs::write(&file, "original")?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        Ok(())
+    }
+
+    #[test]
+    fn hash_buffer_is_reused_across_files_and_event_batches() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let paths = [
+            dir.path().join("large.css"),
+            dir.path().join("empty.css"),
+            dir.path().join("small.css"),
+        ];
+        for (path, size) in paths.iter().zip([3 * HASH_BUFFER_SIZE + 1, 0, 7]) {
+            std::fs::write(path, vec![b'x'; size])?;
+        }
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        for changed in [true, false, false] {
+            for path in &paths {
+                assert_eq!(content_changed(&mut cache, path, &mut buffer), changed);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_symlink_loop_forgets_cached_content() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("unreadable.css");
+        std::fs::write(&file, "original")?;
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        std::fs::remove_file(&file)?;
+        std::os::unix::fs::symlink("unreadable.css", &file)?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        assert!(!cache.contains_key(&file));
+        std::fs::remove_file(&file)?;
+        std::fs::write(&file, "original")?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        Ok(())
     }
 }

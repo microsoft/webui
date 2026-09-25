@@ -169,3 +169,38 @@ test.describe('basics: @input and @keydown events', () => {
     await expect(page.locator('test-basics .last-key')).toHaveText('ArrowDown');
   });
 });
+
+test.describe('browser parser quirks', () => {
+  // The compiler numbers elements in pre-order and the browser resolves those
+  // numbers against its own parse of the template. Two constructs make the two
+  // trees disagree unless the compiler accounts for them: a bare <tr> gains an
+  // implied <tbody>, and <template> content is parked off the light tree.
+  // Either one shifts every index after it.
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/basics/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-parser-quirks');
+      return el && (el as unknown as { $ready?: boolean }).$ready === true;
+    });
+  });
+
+  test('binds through an implied tbody and a parked template', async ({ page }) => {
+    const host = page.locator('test-parser-quirks');
+
+    await expect(host.locator('.cell')).toHaveText('cell');
+    await expect(host.locator('.after')).toHaveText('after');
+
+    // A binding after both constructs must still land on its own element.
+    await page.evaluate(() => {
+      (document.querySelector('test-parser-quirks') as unknown as { cellValue: string })
+        .cellValue = 'updated';
+    });
+    await expect(host.locator('.cell')).toHaveText('updated');
+    await expect(host.locator('.after')).toHaveText('after');
+
+    // And the event target after them must be the button, not a neighbour.
+    await host.locator('.after').click();
+    await expect(host.locator('.after')).toHaveText('bumped');
+    await expect(host.locator('.cell')).toHaveText('updated');
+  });
+});

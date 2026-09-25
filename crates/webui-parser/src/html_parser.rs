@@ -239,6 +239,27 @@ impl<'a> Iterator for Walker<'a> {
     }
 }
 
+/// Returns the first non-comment content after leading whitespace and HTML
+/// comments, together with its byte offset in the source.
+#[inline]
+pub(crate) fn leading_content(source: &str) -> (&str, usize) {
+    let mut offset = 0usize;
+    loop {
+        let remaining = &source[offset..];
+        let trimmed = remaining.trim_start();
+        offset += remaining.len() - trimmed.len();
+
+        if !trimmed.starts_with("<!--") {
+            return (trimmed, offset);
+        }
+
+        let Some(comment_end) = find_comment_close(trimmed) else {
+            return (trimmed, offset);
+        };
+        offset += comment_end;
+    }
+}
+
 /// Return the byte index of the `>` that closes an HTML tag, ignoring quoted
 /// attribute values. Returns `None` if the tag is unterminated.
 #[inline]
@@ -326,6 +347,13 @@ pub(crate) fn opening_tag_name(input: &str) -> Option<&str> {
     (!tag.closing).then_some(tag.name)
 }
 
+/// Check whether `input` starts with an opening `<name` tag, matched with the
+/// ASCII case-insensitivity HTML tag names use.
+#[inline]
+pub(crate) fn starts_with_html_tag_name(input: &str, name: &str) -> bool {
+    opening_tag_name(input).is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
+}
+
 /// Return the content and closing-tag byte ranges for a `<style>` element that
 /// starts at the beginning of `input`.
 #[inline]
@@ -380,6 +408,25 @@ pub(crate) fn find_matching_end(
     }
 
     None
+}
+
+/// Return the end byte after a named element, accepting self-closing and paired forms.
+///
+/// The opening tag name is matched case-sensitively for WebUI directives. Paired
+/// elements include their matching closing tag in the consumed range.
+#[inline]
+pub(crate) fn find_element_end(input: &str, tag_name: &str) -> Option<usize> {
+    let tag = parse_tag(input)?;
+    if tag.closing || tag.name != tag_name {
+        return None;
+    }
+
+    let content_start = tag.close + 1;
+    if tag.self_closing {
+        return Some(content_start);
+    }
+
+    find_matching_end(input, tag_name, content_start).map(|(_, close_end)| close_end)
 }
 
 /// Return the end byte after an HTML comment starting at the beginning of
@@ -437,6 +484,43 @@ pub(crate) fn is_void_element(tag_name: &str) -> bool {
 #[inline]
 fn tag_is_self_closing(input: &str, close: usize) -> bool {
     input[..close].trim_end().ends_with('/')
+}
+
+// Return true for elements whose bodies must be scanned as opaque text.
+#[inline]
+pub(crate) fn is_raw_text_element(tag_name: &str) -> bool {
+    tag_name.eq_ignore_ascii_case("script")
+        || tag_name.eq_ignore_ascii_case("style")
+        || tag_name.eq_ignore_ascii_case("textarea")
+        || tag_name.eq_ignore_ascii_case("title")
+        || tag_name.eq_ignore_ascii_case("xmp")
+        || tag_name.eq_ignore_ascii_case("iframe")
+        || tag_name.eq_ignore_ascii_case("noembed")
+        || tag_name.eq_ignore_ascii_case("noframes")
+        || tag_name.eq_ignore_ascii_case("noscript")
+        || tag_name.eq_ignore_ascii_case("plaintext")
+}
+
+// Find the end of an opaque raw-text body; `plaintext` consumes the remainder.
+#[inline]
+pub(crate) fn find_raw_text_end(source: &str, tag_name: &str, content_start: usize) -> usize {
+    if tag_name.eq_ignore_ascii_case("plaintext") {
+        return source.len();
+    }
+    let mut cursor = content_start;
+    while cursor < source.len() {
+        let Some(relative) = source[cursor..].find('<') else {
+            return source.len();
+        };
+        cursor += relative;
+        if let Some(tag) = parse_tag(&source[cursor..]) {
+            if tag.closing && tag.name.eq_ignore_ascii_case(tag_name) {
+                return cursor + tag.close + 1;
+            }
+        }
+        cursor += 1;
+    }
+    source.len()
 }
 
 impl<'a> Iterator for Attrs<'a> {
@@ -608,6 +692,19 @@ mod tests {
     fn find_matching_end_handles_nested_same_tag() {
         let html = "<div><div>x</div></div><p></p>";
         assert_eq!(find_matching_end(html, "div", 5), Some((17, 23)));
+    }
+
+    #[test]
+    fn find_element_end_accepts_self_closing_and_paired_directives() {
+        assert_eq!(find_element_end("<outlet /></main>", "outlet"), Some(10));
+        assert_eq!(
+            find_element_end("<outlet></outlet></main>", "outlet"),
+            Some(17)
+        );
+        assert_eq!(
+            find_element_end("<outlet-card></outlet-card>", "outlet"),
+            None
+        );
     }
 
     #[test]

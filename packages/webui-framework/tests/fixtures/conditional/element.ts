@@ -8,6 +8,7 @@ export class TestConditional extends WebUIElement {
   @observable busy = false;
   @observable details = 'Details';
   @observable count = 1;
+  @observable empty = false;
 
   toggleOpen(): void {
     this.open = !this.open;
@@ -32,6 +33,8 @@ export class TestConditionalHydrationRanges extends WebUIElement {
   @observable clientOnlyOpen = true;
   @observable outerOpen = true;
   @observable innerOpen = false;
+  @observable snapshotOpen = false;
+  @observable snapshotItems: string[] = [];
 
   protected $shouldApplySSRBootstrapState(): boolean {
     return false;
@@ -47,3 +50,27 @@ export class TestConditionalHydrationRanges extends WebUIElement {
 }
 
 TestConditionalHydrationRanges.define('test-conditional-hydration-ranges');
+
+export class TestConditionalInterleaved extends WebUIElement {
+  @observable showStats = true;
+  @observable compact = false;
+  @observable value = '';
+}
+
+TestConditionalInterleaved.define('test-conditional-interleaved');
+
+export class TestConditionalSiblingAfterNested extends WebUIElement {
+  @observable outer = true;
+  @observable inner = false;
+  @observable tail = true;
+}
+
+TestConditionalSiblingAfterNested.define('test-conditional-sibling-after-nested');
+
+export class TestConditionalBlockEscape extends WebUIElement {
+  @observable escOuter = true;
+  @observable escInner = true;
+  @observable escAfter = true;
+}
+
+TestConditionalBlockEscape.define('test-conditional-block-escape');

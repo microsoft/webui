@@ -38,6 +38,7 @@ macro_rules! test_json {
 /// - `component("id")` — Component fragment
 /// - `for_loop("item", "collection", "template")` — For loop
 /// - `if_cond("template")` — If condition
+/// - `boundary("name", "template")` — Streaming boundary declaration
 #[macro_export]
 macro_rules! assert_fragments {
     ($fragments:expr, [ $($matcher:expr),* $(,)? ]) => {{
@@ -66,6 +67,7 @@ pub enum FragmentMatcher {
     Signal {
         value: String,
         raw: bool,
+        raw_text_context: bool,
     },
     Attribute(AttrMatcher),
     Component(String),
@@ -76,6 +78,13 @@ pub enum FragmentMatcher {
     },
     IfCond {
         template: String,
+    },
+    Boundary {
+        name: String,
+        declaration: u32,
+    },
+    BoundaryEnd {
+        declaration: u32,
     },
 }
 
@@ -108,6 +117,7 @@ pub fn signal(value: &str) -> FragmentMatcher {
     FragmentMatcher::Signal {
         value: value.to_string(),
         raw: false,
+        raw_text_context: false,
     }
 }
 
@@ -116,6 +126,16 @@ pub fn signal_raw(value: &str) -> FragmentMatcher {
     FragmentMatcher::Signal {
         value: value.to_string(),
         raw: true,
+        raw_text_context: false,
+    }
+}
+
+/// Match a signal rendered in an HTML raw-text context.
+pub fn raw_text_signal(value: &str, raw: bool) -> FragmentMatcher {
+    FragmentMatcher::Signal {
+        value: value.to_string(),
+        raw,
+        raw_text_context: true,
     }
 }
 
@@ -278,6 +298,20 @@ pub fn if_cond(template: &str) -> FragmentMatcher {
     }
 }
 
+/// Match the start marker of an inline streaming boundary tape.
+pub fn boundary(name: &str, declaration: u32) -> FragmentMatcher {
+    FragmentMatcher::Boundary {
+        name: name.to_string(),
+        declaration,
+    }
+}
+
+/// Match the end marker that closes an inline streaming boundary tape.
+#[must_use]
+pub fn boundary_end(declaration: u32) -> FragmentMatcher {
+    FragmentMatcher::BoundaryEnd { declaration }
+}
+
 // ── Assertion implementation ────────────────────────────────────────
 
 /// Assert that a fragment list matches the expected matchers.
@@ -301,9 +335,20 @@ pub fn assert_fragment_list(
             (Some(Fragment::Raw(r)), FragmentMatcher::Raw(expected)) => {
                 assert_eq!(r.value, *expected, "Fragment[{}]: raw value mismatch", i);
             }
-            (Some(Fragment::Signal(s)), FragmentMatcher::Signal { value, raw }) => {
+            (
+                Some(Fragment::Signal(s)),
+                FragmentMatcher::Signal {
+                    value,
+                    raw,
+                    raw_text_context,
+                },
+            ) => {
                 assert_eq!(s.value, *value, "Fragment[{}]: signal value mismatch", i);
                 assert_eq!(s.raw, *raw, "Fragment[{}]: signal raw flag mismatch", i);
+                assert_eq!(
+                    s.raw_text_context, *raw_text_context,
+                    "Fragment[{i}]: signal raw-text context mismatch"
+                );
             }
             (Some(Fragment::Attribute(a)), FragmentMatcher::Attribute(m)) => {
                 assert_eq!(a.name, m.name, "Fragment[{}]: attr name mismatch", i);
@@ -439,6 +484,40 @@ pub fn assert_fragment_list(
                     i
                 );
             }
+            (
+                Some(Fragment::Boundary(boundary)),
+                FragmentMatcher::Boundary { name, declaration },
+            ) => {
+                assert_eq!(
+                    boundary.phase(),
+                    webui_protocol::BoundaryPhase::Start,
+                    "Fragment[{}]: expected a boundary start marker",
+                    i
+                );
+                assert_eq!(
+                    boundary.name, *name,
+                    "Fragment[{}]: boundary name mismatch",
+                    i
+                );
+                assert_eq!(
+                    boundary.declaration_id, *declaration,
+                    "Fragment[{}]: boundary declaration mismatch",
+                    i
+                );
+            }
+            (Some(Fragment::Boundary(boundary)), FragmentMatcher::BoundaryEnd { declaration }) => {
+                assert_eq!(
+                    boundary.phase(),
+                    webui_protocol::BoundaryPhase::End,
+                    "Fragment[{}]: expected a boundary end marker",
+                    i
+                );
+                assert_eq!(
+                    boundary.declaration_id, *declaration,
+                    "Fragment[{}]: boundary declaration mismatch",
+                    i
+                );
+            }
             (_actual, expected) => {
                 panic!(
                     "Fragment[{}]: type mismatch\n  expected: {:?}\n  actual: {}",
@@ -455,6 +534,9 @@ fn format_fragment(frag: &webui_protocol::WebUIFragment) -> String {
     use webui_protocol::web_ui_fragment::Fragment;
     match frag.fragment.as_ref() {
         Some(Fragment::Raw(r)) => format!("raw({:?})", r.value),
+        Some(Fragment::Signal(s)) if s.raw_text_context => {
+            format!("raw_text_signal({:?}, raw={})", s.value, s.raw)
+        }
         Some(Fragment::Signal(s)) => format!("signal({:?}, raw={})", s.value, s.raw),
         Some(Fragment::Attribute(a)) => format!(
             "attr({:?}, value={:?}, template={:?}, complex={}, start={}, skip={}, raw_value={})",
@@ -471,6 +553,12 @@ fn format_fragment(frag: &webui_protocol::WebUIFragment) -> String {
             format!("route(path={:?}, fragment={:?})", r.path, r.fragment_id)
         }
         Some(Fragment::Outlet(_)) => "outlet".to_string(),
+        Some(Fragment::Boundary(boundary)) => format!(
+            "boundary(name={:?}, phase={:?}, declaration={})",
+            boundary.name,
+            boundary.phase(),
+            boundary.declaration_id
+        ),
         None => "None".to_string(),
     }
 }

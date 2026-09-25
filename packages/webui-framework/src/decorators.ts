@@ -267,7 +267,15 @@ function createReactiveProperty(
     },
     set(this: ReactiveInstance, newValue: unknown) {
       const oldValue = this[backingKey];
-      if (Object.is(oldValue, newValue)) return;
+      if (Object.is(oldValue, newValue)) {
+        if (this['$deferredSSR'] === true) {
+          const update = this['$update'] as
+            | ((path?: string) => void)
+            | undefined;
+          if (update) update.call(this, name);
+        }
+        return;
+      }
       this[backingKey] = newValue;
 
       if (attrDefinition && this['$ready'] === true) {
@@ -279,7 +287,10 @@ function createReactiveProperty(
         (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
       }
 
-      if ((this as unknown as HTMLElement).isConnected) {
+      if (
+        (this as unknown as HTMLElement).isConnected ||
+        this['$deferredSSR'] === true
+      ) {
         const upd = this['$update'] as ((path?: string) => void) | undefined;
         if (upd) upd.call(this, name);
       }

@@ -4,6 +4,7 @@
 import { WebUIElement, attr } from '@microsoft/webui-framework';
 
 export class CbHeader extends WebUIElement {
+  @attr mode: 'desktop' | 'web' = 'web';
   @attr searchQuery = '';
 
   onInput(e: Event): void {

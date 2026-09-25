@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@microsoft/webui-desktop": ["../../../packages/webui-desktop/src/index.ts"]
+    },
+    "typeRoots": ["../../../node_modules/@types", "../../../packages/webui-desktop/node_modules/@types"]
+  },
+  "include": ["typescript.ts"]
+}

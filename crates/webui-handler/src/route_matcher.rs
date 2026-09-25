@@ -765,6 +765,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route_from(parent)],
+                contains_boundary: false,
             },
         )]));
         let index = CompiledRouteIndex::new(&protocol);

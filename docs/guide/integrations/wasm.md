@@ -46,6 +46,7 @@ deterministic indices, and binds the plugin once.
 |--------|-------------|
 | `render(stateJson, options?)` | Return complete rendered HTML as a string |
 | `renderStream(stateJson, onChunk, options?)` | Invoke callbacks coalesced around a 16 KiB target |
+| `streamResponse(entry, requestPath, options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
 | `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
 | `tokens()` | Return CSS token names in build order |
@@ -53,6 +54,57 @@ deterministic indices, and binds the plugin once.
 For a complete static/CDN service worker example using this callback to write a
 `ReadableStream` and mirror `--theme` token injection in the browser, see
 [Serverless Architecture](/guide/serverless-architecture).
+
+### `StreamingSession`
+
+`streamResponse()` opens a runtime-discovered session that maps directly onto a
+`ReadableStream` controller:
+
+```js
+const session = protocol.streamResponse('index.html', '/');
+
+const body = new ReadableStream({
+  async start(controller) {
+    let step = session.start(JSON.stringify(initialState));
+    controller.enqueue(step.bytes);
+    while (!step.done) {
+      const boundary = step.boundary;
+      if (boundary) {
+        const state = await loadBoundaryState(
+          boundary.owner,
+          boundary.name,
+          boundary.key,
+        );
+        step = session.resume(
+          boundary.instanceId,
+          JSON.stringify(state),
+          'final',
+        );
+      } else {
+        step = session.advance();
+      }
+      controller.enqueue(step.bytes);
+    }
+    controller.close();
+  },
+});
+```
+
+| Member | Description |
+|--------|-------------|
+| `start(stateJson)` | Return `{ bytes, done, boundary? }` through the first occurrence or terminal |
+| `resume(instanceId, stateJson, mode?)` | Return only the pending occurrence's bytes through its checkpoint |
+| `advance()` | Return following parent bytes through the next occurrence or terminal |
+| `update(instanceId, patchJson)` | Return projected state bytes for an updatable occurrence |
+
+Descriptors contain `instanceId`, `declarationId`, `owner`, `name`, and an
+optional string or numeric `key`. A descriptor means `resume`; no descriptor
+with `done: false` means `advance`; `done: true` means complete. `resume`
+returns only the occurrence and checkpoint so it can be enqueued immediately.
+`advance` returns the following parent or tail bytes, with no sibling boundary
+workaround required. An update is valid between `resume` and `advance`. The
+final step's `Uint8Array` includes tail and terminal bytes. The contract is
+identical on Node, Python, C, and .NET.
 
 ## Parser-only API
 
@@ -65,7 +117,7 @@ await init();
 
 const files = {
   'index.html': '<h1>{{title}}</h1>',
-  'my-card.html': '<p><slot></slot></p>',
+  'my-card.html': '<template shadowrootmode="open"><p><slot></slot></p></template>',
   'my-card.css': 'p { color: red; }',
 };
 
@@ -73,10 +125,11 @@ const protocolBytes = build_protocol(
   files,
   'index.html',
   [projectionManifest],
+  'light',
 );
 ```
 
-### `build_protocol(files, entry, projectionManifests?)`
+### `build_protocol(files, entry, projectionManifests?, dom?)`
 
 Parse virtual files into a WebUI protocol without rendering.
 
@@ -85,6 +138,7 @@ Parse virtual files into a WebUI protocol without rendering.
 | `files` | `Record<string, string>` | Map of filenames to content |
 | `entry` | `string` | Entry HTML filename |
 | `projectionManifests` | `object[]` | Optional bundler manifest fragments |
+| `dom` | `"shadow" \| "light"` | Optional unwrapped-component fallback; defaults to `"shadow"` |
 
 Returns protobuf-serialized `WebUIProtocol` as a `Uint8Array`. Throws on missing entry files, invalid templates, invalid component authoring, or protocol serialization errors.
 
@@ -123,5 +177,5 @@ render time separately.
 | Protocol format | Protobuf binary | Protobuf bytes |
 | CSS strategy | Link by default, Style or Module when configured | Style for virtual file builds |
 | File I/O | Filesystem and component discovery sources | Virtual file map |
-| Streaming | Supported by native handlers | `Protocol.renderStream()` calls a batched JavaScript callback |
+| Streaming | Supported by native handlers | `Protocol.renderStream()` calls a batched JavaScript callback, and `Protocol.streamResponse()` returns progressive chunks |
 | Bundle choice | Native crates/addons | Handler-only, parser-only, or combined WASM |

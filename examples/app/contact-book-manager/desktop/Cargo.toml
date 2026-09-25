@@ -1,0 +1,36 @@
+[package]
+name = "contact-book-desktop"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "contact-book-desktop"
+path = "src/main.rs"
+
+[features]
+default = []
+source = ["microsoft-webui-desktop/source"]
+
+[dependencies]
+microsoft-webui-desktop = { path = "../../../../crates/webui-desktop", features = ["native"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tempfile = { workspace = true }
+microsoft-webui-protocol = { path = "../../../../crates/webui-protocol" }
+
+[[bench]]
+name = "desktop_state"
+harness = false
+
+[[bench]]
+name = "desktop_startup"
+harness = false
+required-features = ["source"]
+
+[lints]
+workspace = true

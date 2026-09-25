@@ -1,0 +1,50 @@
+<nav class="sidebar-navigation" aria-label="Documentation sections">
+  <for each="section in sections">
+    <div class="sidebar-group">
+      <div class="sidebar-title">{{section.title}}</div>
+      <ul class="sidebar-items">
+        <for each="item in section.items">
+          <li>
+            <if condition="item.hasChildren">
+              <details class="sidebar-branch" ?open="{{item.expanded}}">
+                <summary class="sidebar-summary" ?active="{{item.active}}">
+                  <span>{{item.text}}</span>
+                </summary>
+                <ul class="sidebar-children">
+                  <if condition="item.link">
+                    <li>
+                      <if condition="item.active">
+                        <a href="{{item.link}}" class="sidebar-link sidebar-link-active">Overview</a>
+                      </if>
+                      <if condition="!item.active">
+                        <a href="{{item.link}}" class="sidebar-link">Overview</a>
+                      </if>
+                    </li>
+                  </if>
+                  <for each="child in item.children">
+                    <li>
+                      <if condition="child.active">
+                        <a href="{{child.link}}" class="sidebar-link sidebar-link-active">{{child.text}}</a>
+                      </if>
+                      <if condition="!child.active">
+                        <a href="{{child.link}}" class="sidebar-link">{{child.text}}</a>
+                      </if>
+                    </li>
+                  </for>
+                </ul>
+              </details>
+            </if>
+            <if condition="!item.hasChildren">
+              <if condition="item.active">
+                <a href="{{item.link}}" class="sidebar-link sidebar-link-active">{{item.text}}</a>
+              </if>
+              <if condition="!item.active">
+                <a href="{{item.link}}" class="sidebar-link">{{item.text}}</a>
+              </if>
+            </if>
+          </li>
+        </for>
+      </ul>
+    </div>
+  </for>
+</nav>

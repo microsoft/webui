@@ -9,6 +9,7 @@
 //! attribute-template edges without evaluating runtime state.
 
 use crate::{route_matcher, route_renderer, HandlerError, StateSelection};
+use memchr::memchr2;
 use route_matcher::CompiledRouteIndex;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -17,8 +18,35 @@ use serde_json::{value::RawValue, Map, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::RwLock;
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
+use std::sync::{Arc, OnceLock, RwLock};
+use webui_protocol::{
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, CssStrategy, StateProjectionMode,
+    WebUIFragmentRoute, WebUIProtocol,
+};
+
+fn partition_component_asset_style_preloads(
+    protocol: &WebUIProtocol,
+    preloads: &[ComponentAssetStylePreload],
+) -> (
+    Vec<ComponentAssetStylePreload>,
+    Vec<ComponentAssetStylePreload>,
+) {
+    let mut shadow = Vec::new();
+    let mut light = Vec::new();
+    for preload in preloads {
+        if protocol
+            .components
+            .get(&preload.root)
+            .is_some_and(|component| !component.uses_shadow_dom)
+        {
+            light.push(preload.clone());
+        } else {
+            shadow.push(preload.clone());
+        }
+    }
+    (shadow, light)
+}
+use crate::streaming::PreparedContinuationStatePlan;
 
 // ── Protocol Index ──────────────────────────────────────────────────────
 
@@ -33,9 +61,32 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtoco
 /// individual metadata lookups.
 pub struct Protocol {
     protocol: WebUIProtocol,
+    style_metadata_error: Option<String>,
+    css_strategy: webui_protocol::CssStrategy,
+    /// Render plan prepared once at load: numeric fragment slots, per-fragment
+    /// render targets, canonical component prop names, and route presence bits.
+    render_fragments: crate::RenderFragmentIndex,
+    component_asset_style_manifest: std::result::Result<String, String>,
+    component_asset_style_links: String,
     component_index: HashMap<String, u32>,
+    style_resource_index: HashMap<String, u32>,
+    style_resources_requiring_escape: HashSet<String>,
+    component_reachability: OnceLock<ComponentReachabilityIndex>,
+    fragment_ids: Vec<Arc<str>>,
+    fragment_slots: HashMap<Arc<str>, u32>,
     route_index: CompiledRouteIndex,
+    boundary_declarations: OnceLock<HashMap<u32, BoundaryDeclaration>>,
+    continuation_state_plans: OnceLock<Box<[OnceLock<PreparedContinuationStatePlan>]>>,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
+}
+
+/// Build-time identity of one streaming boundary declaration.
+///
+/// Interned once per protocol so a discovered occurrence clones two pointers
+/// instead of allocating the authored owner and name on every response.
+pub(crate) struct BoundaryDeclaration {
+    pub(crate) owner: Arc<str>,
+    pub(crate) name: Arc<str>,
 }
 
 impl Protocol {
@@ -45,18 +96,78 @@ impl Protocol {
     ///
     /// Returns a protocol error when `bytes` is not a valid WebUI protobuf.
     pub fn from_protobuf(bytes: &[u8]) -> std::result::Result<Self, webui_protocol::ProtocolError> {
-        WebUIProtocol::from_protobuf(bytes).map(Self::new)
+        let protocol = WebUIProtocol::from_protobuf(bytes)?;
+        if let Some(error) = Self::validate_component_style_metadata(&protocol) {
+            return Err(webui_protocol::ProtocolError::Validation(error));
+        }
+        Ok(Self::new_with_style_metadata(protocol, None))
     }
 
     /// Create a reusable runtime protocol from an already decoded document.
     #[must_use]
     pub fn new(protocol: WebUIProtocol) -> Self {
+        let style_metadata_error = Self::validate_component_style_metadata(&protocol);
+        Self::new_with_style_metadata(protocol, style_metadata_error)
+    }
+
+    fn new_with_style_metadata(
+        mut protocol: WebUIProtocol,
+        style_metadata_error: Option<String>,
+    ) -> Self {
+        let css_strategy = protocol.css_strategy();
+        let component_asset_style_preloads =
+            std::mem::take(&mut protocol.component_asset_style_preloads);
+        let (shadow_preloads, light_preloads) =
+            partition_component_asset_style_preloads(&protocol, &component_asset_style_preloads);
+        let component_asset_style_links = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_links(&light_preloads)
+        } else {
+            String::new()
+        };
+        let component_asset_style_manifest = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_manifest(&shadow_preloads).map_err(|error| {
+                format!("failed to serialize component asset style metadata: {error}")
+            })
+        } else {
+            Ok(String::new())
+        };
         let component_index = build_component_index(&protocol);
+        let style_resource_index = build_style_resource_index(&protocol);
+        let style_resources_requiring_escape = build_style_escape_resources(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
+        let mut fragment_ids: Vec<Arc<str>> = protocol
+            .fragments
+            .keys()
+            .map(|id| Arc::from(id.as_str()))
+            .collect();
+        fragment_ids.sort_unstable();
+        let mut fragment_slots = HashMap::with_capacity(fragment_ids.len());
+        for (slot, id) in fragment_ids.iter().enumerate() {
+            // Record counts are bounded by the compiled graph, well inside u32.
+            #[allow(clippy::cast_possible_truncation)]
+            fragment_slots.insert(Arc::clone(id), slot as u32);
+        }
+        // Render slots reuse the continuation slot numbering, so the prepared
+        // index shares the interned IDs instead of duplicating every string, and
+        // resolves targets through the slot map instead of re-searching by name.
+        let render_fragments =
+            crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
         Self {
             protocol,
+            style_metadata_error,
+            css_strategy,
+            render_fragments,
+            component_asset_style_manifest,
+            component_asset_style_links,
             component_index,
+            style_resource_index,
+            style_resources_requiring_escape,
+            component_reachability: OnceLock::new(),
+            fragment_ids,
+            fragment_slots,
             route_index,
+            boundary_declarations: OnceLock::new(),
+            continuation_state_plans: OnceLock::new(),
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -65,12 +176,114 @@ impl Protocol {
         &self.protocol
     }
 
+    pub(crate) fn ensure_style_metadata(&self) -> Result<(), HandlerError> {
+        self.style_metadata_error
+            .as_ref()
+            .map_or(Ok(()), |error| Err(HandlerError::Invariant(error.clone())))
+    }
+
+    pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
+        self.css_strategy
+    }
+
+    /// Render plan built once when this protocol was loaded.
+    pub(crate) fn render_fragments(&self) -> &crate::RenderFragmentIndex {
+        &self.render_fragments
+    }
+
+    pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
+        match &self.component_asset_style_manifest {
+            Ok(manifest) => Ok(manifest),
+            Err(message) => Err(HandlerError::Rendering(message.clone())),
+        }
+    }
+
+    pub(crate) fn component_asset_style_links(&self) -> &str {
+        &self.component_asset_style_links
+    }
+
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
         &self.component_index
     }
 
+    pub(crate) fn style_resource_index(&self) -> &HashMap<String, u32> {
+        if self.style_resource_index.is_empty() {
+            &self.component_index
+        } else {
+            &self.style_resource_index
+        }
+    }
+
+    pub(crate) fn style_resources_requiring_escape(&self) -> &HashSet<String> {
+        &self.style_resources_requiring_escape
+    }
+
+    pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
+        self.component_reachability
+            .get_or_init(|| ComponentReachabilityIndex::new(&self.protocol, &self.component_index))
+    }
+
     pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
         &self.route_index
+    }
+
+    /// Resolve a compiled fragment record ID to its dense slot.
+    ///
+    /// Continuation frames carry slots instead of owned IDs, so descending into
+    /// a component, condition, or loop body allocates nothing.
+    pub(crate) fn fragment_slot(&self, id: &str) -> Option<u32> {
+        self.fragment_slots.get(id).copied()
+    }
+
+    /// Borrow the compiled fragment record ID for a dense slot.
+    pub(crate) fn fragment_id(&self, slot: u32) -> Option<&str> {
+        usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.fragment_ids.get(slot))
+            .map(Arc::as_ref)
+    }
+
+    /// Borrow the interned identity of one build-time boundary declaration.
+    ///
+    /// The table is built on first streaming use and shared by every later
+    /// response, so discovering an occurrence never re-allocates the authored
+    /// owner or name.
+    pub(crate) fn boundary_declaration(&self, declaration_id: u32) -> Option<&BoundaryDeclaration> {
+        self.boundary_declarations
+            .get_or_init(|| build_boundary_declarations(&self.protocol))
+            .get(&declaration_id)
+    }
+
+    /// Borrow the memoized continuation projection surface for one entry.
+    ///
+    /// The graph walk that decides which top-level state keys a continuation
+    /// retains depends only on the compiled protocol, so it runs at most once
+    /// per entry for the lifetime of this [`Protocol`]. Memoization is a
+    /// slot-indexed table of [`OnceLock`] cells: after the first response for
+    /// an entry, every later response reads the plan through one acquire load
+    /// with no lock, no hash, and no reference-count traffic. The table itself
+    /// is allocated on first streaming use, so protocols that never stream pay
+    /// nothing. Failures are captured and replayed so the memo never re-walks a
+    /// graph that is known to be unusable.
+    pub(crate) fn continuation_state_plan(
+        &self,
+        entry_id: &str,
+    ) -> Result<&PreparedContinuationStatePlan, HandlerError> {
+        let slot = self
+            .fragment_slot(entry_id)
+            .ok_or_else(|| HandlerError::MissingFragment(entry_id.to_string()))?;
+        let index = usize::try_from(slot).map_err(|_| {
+            HandlerError::Invariant("continuation plan slot does not fit usize".to_string())
+        })?;
+        let plans = self.continuation_state_plans.get_or_init(|| {
+            (0..self.fragment_ids.len())
+                .map(|_| OnceLock::new())
+                .collect()
+        });
+        let cell = plans
+            .get(index)
+            .ok_or_else(|| HandlerError::MissingFragment(entry_id.to_string()))?;
+        Ok(cell.get_or_init(|| PreparedContinuationStatePlan::new(&self.protocol, entry_id)))
     }
 
     /// Borrow the build-time CSS token list.
@@ -79,23 +292,87 @@ impl Protocol {
         &self.protocol.tokens
     }
 
-    /// Produce a complete partial-navigation response.
-    pub fn render_partial(
+    /// Produce a complete partial-navigation response from serialized state.
+    ///
+    /// This variant validates serialized host input while borrowing selected raw
+    /// values into the response. Rust callers that already own parsed state
+    /// should use [`Self::render_partial`] instead.
+    pub fn render_partial_json(
         &self,
         state_json: &str,
         entry_id: &str,
         request_path: &str,
         inventory_hex: &str,
     ) -> Result<String, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
-        let (response, state_selection) = render_partial_indexed_with_state(
+        let (response, state_selection, _) = render_partial_indexed_with_state(
             self.protocol(),
             entry_id,
             request_path,
             inventory_hex,
             &mut index,
         )?;
-        serialize_partial_response(&response, state_json, &state_selection)
+        serialize_partial_response(response, state_json, &state_selection)
+    }
+
+    /// Produce a complete partial-navigation response from parsed state.
+    ///
+    /// This ownership-taking variant moves selected values into the response
+    /// instead of serializing and reparsing the complete state tree. Use it when
+    /// the caller already owns a [`serde_json::Value`] for the request.
+    pub fn render_partial(
+        &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError> {
+        let response = self.prepare_partial(state, entry_id, request_path, inventory_hex)?;
+        serde_json::to_string(&response)
+            .map_err(|error| partial_serialize_error(&error.to_string()))
+    }
+
+    /// Prepare a serializable partial-navigation response with projected state.
+    ///
+    /// Moves compiler-selected values from the caller's owned state without
+    /// cloning the state tree. Unknown component surfaces retain full state for
+    /// correctness; reserved host injection state is excluded in either case.
+    /// The response includes [`PartialNavigation::is_match`] so hosts can decide
+    /// their HTTP status before serializing directly to their output buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid compiled style metadata or client inventory.
+    #[must_use = "handle preparation errors before serializing the navigation response"]
+    pub fn prepare_partial(
+        &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<PartialNavigation, HandlerError> {
+        self.ensure_style_metadata()?;
+        let mut index = self.request_index();
+        let (response, state_selection, matched) = render_partial_indexed_with_state(
+            self.protocol(),
+            entry_id,
+            request_path,
+            inventory_hex,
+            &mut index,
+        )?;
+        let state = select_owned_state(state, &state_selection);
+        let response = PartialResponseWithState::new(response, state)?;
+        Ok(PartialNavigation { response, matched })
+    }
+
+    /// Test route existence using the compiled route matcher, without rendering
+    /// component assets or serializing state.
+    #[must_use]
+    pub fn matches_route(&self, entry_id: &str, request_path: &str) -> bool {
+        let chain =
+            collect_route_chain_plan(self.protocol(), entry_id, request_path, self.route_index());
+        route_chain_matches(&chain.entries, request_path)
     }
 
     /// Render component template payloads for requested component tags.
@@ -104,6 +381,7 @@ impl Protocol {
         component_tags: &[&str],
         inventory_hex: &str,
     ) -> Result<Value, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
         render_component_templates_indexed(
             self.protocol(),
@@ -113,6 +391,96 @@ impl Protocol {
         )
     }
 
+    fn validate_component_style_metadata(protocol: &WebUIProtocol) -> Option<String> {
+        if protocol.style_closures.is_empty() {
+            let requires_closures = protocol.components.iter().any(|(tag, component)| {
+                protocol.component_style_resource(tag).is_some() || component.uses_shadow_dom
+            });
+            if requires_closures {
+                return Some(
+                    "component style closure metadata is required by this protocol".to_string(),
+                );
+            }
+            return None;
+        }
+        let mut seen_resources = HashSet::new();
+        for (root, closure) in &protocol.style_closures {
+            seen_resources.clear();
+            seen_resources.reserve(closure.component_tags.len());
+            for tag in &closure.component_tags {
+                if !seen_resources.insert(tag.as_str()) {
+                    return Some(format!(
+                        "component style closure `{root}` contains duplicate resource `{tag}`"
+                    ));
+                }
+                if protocol.component_style_resource(tag).is_none() {
+                    return Some(format!(
+                        "component style closure `{root}` references missing resource `{tag}`"
+                    ));
+                }
+            }
+        }
+        for (fragment_id, fragments) in &protocol.fragments {
+            for fragment in &fragments.fragments {
+                let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+                    continue;
+                };
+                let Some(root) = crate::structural_signal_value(signal)
+                    .and_then(|value| value.strip_prefix("shadow_styles:"))
+                else {
+                    continue;
+                };
+                let Some(component) = protocol.components.get(fragment_id) else {
+                    return Some(format!(
+                        "Shadow style hook `{root}` references unknown component `{fragment_id}`"
+                    ));
+                };
+                if root != fragment_id.as_str() || !component.uses_shadow_dom {
+                    return Some(format!(
+                        "Shadow style hook `{root}` does not match component fragment `{fragment_id}`"
+                    ));
+                }
+            }
+        }
+        for (tag, component) in &protocol.components {
+            if !component.uses_shadow_dom {
+                continue;
+            }
+            let Some(fragments) = protocol.fragments.get(tag) else {
+                continue;
+            };
+            if !protocol.style_closures.contains_key(tag) {
+                return Some(format!(
+                    "component style closure metadata is missing Shadow root `{tag}`"
+                ));
+            }
+            let hook_count = fragments
+                .fragments
+                .iter()
+                .filter(|fragment| {
+                    matches!(
+                        fragment.fragment.as_ref(),
+                        Some(Fragment::Signal(signal))
+                            if crate::structural_signal_value(signal)
+                                .and_then(|value| value.strip_prefix("shadow_styles:"))
+                                == Some(tag.as_str())
+                    )
+                })
+                .count();
+            if hook_count == 0 {
+                return Some(format!(
+                    "Shadow component `{tag}` is missing its compiler style insertion hook"
+                ));
+            }
+            if hook_count > 1 {
+                return Some(format!(
+                    "Shadow component `{tag}` emitted more than one style insertion hook"
+                ));
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     fn render_partial_metadata(
         &self,
@@ -120,6 +488,7 @@ impl Protocol {
         request_path: &str,
         inventory_hex: &str,
     ) -> Result<Value, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
         render_partial_indexed(
             self.protocol(),
@@ -155,9 +524,496 @@ struct ProtocolIndex {
 }
 
 struct ComponentAssets {
-    styles: Vec<Value>,
+    component_styles: Value,
     templates: serde_json::Map<String, Value>,
     functions: serde_json::Map<String, Value>,
+}
+
+/// Build the versioned, tree-local component style metadata for the requested
+/// roots.
+pub(crate) fn collect_component_styles<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(protocol, roots, None)
+}
+
+#[derive(Clone, Copy)]
+struct StyleInventoryView<'a> {
+    bits: &'a [u8],
+    index: &'a HashMap<String, u32>,
+    chunks_are_indexed: bool,
+}
+
+impl StyleInventoryView<'_> {
+    fn contains_component(self, tag: &str) -> bool {
+        self.index
+            .get(tag)
+            .is_some_and(|&index| has_component(self.bits, index))
+    }
+
+    fn contains_chunk(self, name: &str) -> bool {
+        self.chunks_are_indexed && self.contains_component(name)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn collect_component_style_delta<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    style_inventory: &[u8],
+    style_resource_index: &HashMap<String, u32>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(
+        protocol,
+        roots,
+        Some(StyleInventoryView {
+            bits: style_inventory,
+            index: style_resource_index,
+            chunks_are_indexed: true,
+        }),
+    )
+}
+
+pub(crate) struct BorrowedComponentStyleDelta<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resources: Vec<BorrowedStyleResource<'a>>,
+    closures: Vec<BorrowedStyleClosure<'a>>,
+    ordered: Vec<&'a str>,
+}
+
+struct BorrowedStyleResource<'a> {
+    name: &'a str,
+    resource: &'a str,
+    members: Option<&'a [String]>,
+}
+
+struct BorrowedStyleClosure<'a> {
+    root: &'a str,
+    start: usize,
+    end: usize,
+}
+
+impl BorrowedComponentStyleDelta<'_> {
+    pub(crate) fn resource_names(&self) -> impl Iterator<Item = &str> {
+        self.resources.iter().map(|resource| resource.name)
+    }
+}
+
+impl Serialize for BorrowedComponentStyleDelta<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut payload = serializer.serialize_map(Some(4))?;
+        payload.serialize_entry(
+            "closures",
+            &BorrowedStyleClosures {
+                closures: &self.closures,
+                ordered: &self.ordered,
+            },
+        )?;
+        payload.serialize_entry(
+            "resources",
+            &BorrowedStyleResources {
+                strategy: self.strategy,
+                resources: &self.resources,
+            },
+        )?;
+        payload.serialize_entry("strategy", self.strategy.wire_name())?;
+        payload.serialize_entry("version", &1)?;
+        payload.end()
+    }
+}
+
+struct BorrowedStyleResources<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resources: &'a [BorrowedStyleResource<'a>],
+}
+
+impl Serialize for BorrowedStyleResources<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut resources = serializer.serialize_map(Some(self.resources.len()))?;
+        for resource in self.resources {
+            resources.serialize_entry(
+                resource.name,
+                &BorrowedStyleResourceValue {
+                    strategy: self.strategy,
+                    resource,
+                },
+            )?;
+        }
+        resources.end()
+    }
+}
+
+struct BorrowedStyleResourceValue<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resource: &'a BorrowedStyleResource<'a>,
+}
+
+impl Serialize for BorrowedStyleResourceValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let field_count = match (self.strategy, self.resource.members.is_some()) {
+            (webui_protocol::CssStrategy::Module, true) => 4,
+            (webui_protocol::CssStrategy::Module, false) | (_, true) => 3,
+            (_, false) => 2,
+        };
+        let mut resource = serializer.serialize_map(Some(field_count))?;
+        match self.strategy {
+            webui_protocol::CssStrategy::Link => {
+                resource.serialize_entry("href", self.resource.resource)?;
+                resource.serialize_entry("kind", "link")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+            }
+            webui_protocol::CssStrategy::Style => {
+                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("kind", "style")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+            }
+            webui_protocol::CssStrategy::Module => {
+                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("kind", "module")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+                resource.serialize_entry("specifier", self.resource.name)?;
+            }
+        }
+        resource.end()
+    }
+}
+
+struct BorrowedStyleClosures<'a> {
+    closures: &'a [BorrowedStyleClosure<'a>],
+    ordered: &'a [&'a str],
+}
+
+impl Serialize for BorrowedStyleClosures<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut closures = serializer.serialize_map(Some(self.closures.len()))?;
+        for closure in self.closures {
+            closures.serialize_entry(closure.root, &self.ordered[closure.start..closure.end])?;
+        }
+        closures.end()
+    }
+}
+
+pub(crate) fn collect_borrowed_component_style_delta<'a>(
+    protocol: &'a WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    style_inventory: &[u8],
+    style_resource_index: &HashMap<String, u32>,
+    chunk_index: &HashMap<&str, u32>,
+) -> Result<BorrowedComponentStyleDelta<'a>, HandlerError> {
+    if protocol.style_closures.is_empty() {
+        if protocol
+            .components
+            .keys()
+            .any(|tag| protocol.component_style_resource(tag).is_some())
+        {
+            return Err(HandlerError::Invariant(
+                "component style closure metadata is required by this protocol".to_string(),
+            ));
+        }
+        return Ok(BorrowedComponentStyleDelta {
+            strategy: protocol.css_strategy(),
+            resources: Vec::new(),
+            closures: Vec::new(),
+            ordered: Vec::new(),
+        });
+    }
+
+    let mut seen_roots = HashSet::new();
+    let roots: Vec<&str> = roots
+        .into_iter()
+        .filter(|root| seen_roots.insert(*root))
+        .collect();
+    let client_inventory = StyleInventoryView {
+        bits: style_inventory,
+        index: style_resource_index,
+        chunks_are_indexed: true,
+    };
+    let covered_components = covered_components(protocol, &roots, Some(client_inventory));
+    let unit_capacity = roots
+        .iter()
+        .filter_map(|root| protocol.style_closures.get(*root))
+        .map(WebUIProtocol::style_closure_unit_count)
+        .sum();
+    let mut resources = Vec::with_capacity(unit_capacity);
+    let mut closures = Vec::with_capacity(roots.len());
+    let mut ordered = Vec::with_capacity(unit_capacity);
+    let mut emitted = HashSet::with_capacity(unit_capacity);
+    let mut serialized_resources = HashSet::with_capacity(unit_capacity);
+
+    for root in roots {
+        let Some(closure) = protocol.style_closures.get(root) else {
+            if !protocol.fragments.contains_key(root) && !protocol.components.contains_key(root) {
+                continue;
+            }
+            return Err(HandlerError::Invariant(format!(
+                "component style closure metadata is missing root `{root}`"
+            )));
+        };
+        if closure.style_chunks.is_empty()
+            && !closure.component_tags.is_empty()
+            && closure
+                .component_tags
+                .iter()
+                .all(|tag| covered_components.contains(tag.as_str()))
+        {
+            continue;
+        }
+
+        let start = ordered.len();
+        emitted.clear();
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
+        for position in 0..unit_count {
+            let Some(unit) = protocol.style_closure_unit(closure, chunk_index, position) else {
+                continue;
+            };
+            let name = unit.name;
+            let resource = unit.resource.ok_or_else(|| match unit.chunk {
+                Some(index) => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing style chunk {index}"
+                )),
+                None => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{name}`"
+                )),
+            })?;
+            if !emitted.insert(name) {
+                continue;
+            }
+
+            let (client_has_it, members) = match unit.chunk {
+                Some(index) => (
+                    client_inventory.contains_chunk(name),
+                    protocol.style_chunk_members(index),
+                ),
+                None => (client_inventory.contains_component(name), None),
+            };
+            if !client_has_it && serialized_resources.insert(name) {
+                resources.push(BorrowedStyleResource {
+                    name,
+                    resource,
+                    members: members.filter(|members| members.len() > 1),
+                });
+            }
+            ordered.push(name);
+        }
+        closures.push(BorrowedStyleClosure {
+            root,
+            start,
+            end: ordered.len(),
+        });
+    }
+
+    resources.sort_unstable_by_key(|resource| resource.name);
+    closures.sort_unstable_by_key(|closure| closure.root);
+    Ok(BorrowedComponentStyleDelta {
+        strategy: protocol.css_strategy(),
+        resources,
+        closures,
+        ordered,
+    })
+}
+
+fn collect_component_styles_for_inventory<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    component_inventory: &[u8],
+    component_index: &HashMap<String, u32>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(
+        protocol,
+        roots,
+        Some(StyleInventoryView {
+            bits: component_inventory,
+            index: component_index,
+            chunks_are_indexed: false,
+        }),
+    )
+}
+
+fn collect_component_styles_inner<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    client_inventory: Option<StyleInventoryView<'_>>,
+) -> Result<Value, HandlerError> {
+    if protocol.style_closures.is_empty() {
+        if protocol
+            .components
+            .keys()
+            .any(|tag| protocol.component_style_resource(tag).is_some())
+        {
+            return Err(HandlerError::Invariant(
+                "component style closure metadata is required by this protocol".to_string(),
+            ));
+        }
+        return Ok(component_styles_payload(
+            protocol.css_strategy(),
+            serde_json::Map::new(),
+            serde_json::Map::new(),
+        ));
+    }
+
+    let mut resources = serde_json::Map::new();
+    let mut closures = serde_json::Map::new();
+    let mut seen_roots = HashSet::new();
+    let roots: Vec<&str> = roots
+        .into_iter()
+        .filter(|root| seen_roots.insert(*root))
+        .collect();
+    let covered_components = covered_components(protocol, &roots, client_inventory);
+    let chunk_index = protocol.style_chunk_index();
+    let mut emitted = HashSet::new();
+
+    for root in roots {
+        let Some(closure) = protocol.style_closures.get(root) else {
+            if !protocol.fragments.contains_key(root) && !protocol.components.contains_key(root) {
+                continue;
+            }
+            return Err(HandlerError::Invariant(format!(
+                "component style closure metadata is missing root `{root}`"
+            )));
+        };
+        if closure.style_chunks.is_empty()
+            && !closure.component_tags.is_empty()
+            && closure
+                .component_tags
+                .iter()
+                .all(|tag| covered_components.contains(tag.as_str()))
+        {
+            continue;
+        }
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
+        let mut ordered = Vec::with_capacity(unit_count);
+        emitted.clear();
+        for position in 0..unit_count {
+            // A bundled build ships one resource per chunk. The client installs
+            // resources by name in closure order either way, so only the names
+            // and their grouping change. A closure that lists members rather
+            // than chunks resolves each member to its covering chunk, so it
+            // stays self-sufficient instead of relying on some other closure
+            // installing first.
+            let Some(unit) = protocol.style_closure_unit(closure, &chunk_index, position) else {
+                continue;
+            };
+            let name = unit.name;
+            let resource = unit.resource.ok_or_else(|| match unit.chunk {
+                Some(index) => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing style chunk {index}"
+                )),
+                None => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{name}`"
+                )),
+            })?;
+            let (client_has_it, members) = match unit.chunk {
+                Some(index) => (
+                    client_inventory.is_some_and(|inventory| inventory.contains_chunk(name)),
+                    Some(protocol.style_chunk_members(index).unwrap_or_default()),
+                ),
+                None => (
+                    client_inventory.is_some_and(|inventory| inventory.contains_component(name)),
+                    None,
+                ),
+            };
+            // Several members of one closure can resolve to the same chunk.
+            if !emitted.insert(name) {
+                continue;
+            }
+            if !client_has_it && !resources.contains_key(name) {
+                let mut entry = serde_json::Map::new();
+                match protocol.css_strategy() {
+                    webui_protocol::CssStrategy::Link => {
+                        entry.insert("kind".into(), Value::String("link".into()));
+                        entry.insert("href".into(), Value::String(resource.to_owned()));
+                    }
+                    webui_protocol::CssStrategy::Style => {
+                        entry.insert("kind".into(), Value::String("style".into()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                    webui_protocol::CssStrategy::Module => {
+                        entry.insert("kind".into(), Value::String("module".into()));
+                        entry.insert("specifier".into(), Value::String(name.to_owned()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                }
+                if let Some(members) = members.filter(|members| members.len() > 1) {
+                    entry.insert(
+                        "members".into(),
+                        Value::Array(members.iter().cloned().map(Value::String).collect()),
+                    );
+                }
+                resources.insert(name.to_owned(), Value::Object(entry));
+            }
+            ordered.push(Value::String(name.to_owned()));
+        }
+        closures.insert(root.to_owned(), Value::Array(ordered));
+    }
+
+    Ok(component_styles_payload(
+        protocol.css_strategy(),
+        resources,
+        closures,
+    ))
+}
+
+fn covered_components<'a>(
+    protocol: &'a WebUIProtocol,
+    roots: &[&str],
+    inventory: Option<StyleInventoryView<'_>>,
+) -> HashSet<&'a str> {
+    let mut covered = HashSet::with_capacity(protocol.components.len());
+    for root in roots {
+        let Some(closure) = protocol.style_closures.get(*root) else {
+            continue;
+        };
+        for index in &closure.style_chunks {
+            if let Some(chunk) = usize::try_from(*index)
+                .ok()
+                .and_then(|index| protocol.style_chunks.get(index))
+            {
+                covered.extend(chunk.component_tags.iter().map(String::as_str));
+            }
+        }
+    }
+
+    if let Some(inventory) = inventory {
+        for chunk in &protocol.style_chunks {
+            if inventory.contains_chunk(&chunk.name) {
+                covered.extend(chunk.component_tags.iter().map(String::as_str));
+            }
+        }
+    }
+    covered
+}
+
+fn component_styles_payload(
+    strategy: webui_protocol::CssStrategy,
+    resources: serde_json::Map<String, Value>,
+    closures: serde_json::Map<String, Value>,
+) -> Value {
+    let strategy = strategy.wire_name();
+    let mut payload = serde_json::Map::new();
+    payload.insert("version".into(), Value::from(1));
+    payload.insert("strategy".into(), Value::String(strategy.into()));
+    payload.insert("resources".into(), Value::Object(resources));
+    payload.insert("closures".into(), Value::Object(closures));
+    Value::Object(payload)
 }
 
 #[cfg(test)]
@@ -197,6 +1053,31 @@ struct RequestProtocolIndex<'a> {
 
 // ── Component Inventory ─────────────────────────────────────────────────
 
+/// Intern the owner and authored name of every boundary declaration.
+///
+/// Only start markers carry identity; end markers repeat the declaration ID.
+fn build_boundary_declarations(protocol: &WebUIProtocol) -> HashMap<u32, BoundaryDeclaration> {
+    let mut declarations = HashMap::new();
+    for list in protocol.fragments.values() {
+        for fragment in &list.fragments {
+            let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_ref() else {
+                continue;
+            };
+            if boundary.phase() != webui_protocol::BoundaryPhase::Start {
+                continue;
+            }
+            declarations.insert(
+                boundary.declaration_id,
+                BoundaryDeclaration {
+                    owner: Arc::from(boundary.owner_fragment_id.as_str()),
+                    name: Arc::from(boundary.name.as_str()),
+                },
+            );
+        }
+    }
+    declarations
+}
+
 /// Build a deterministic component-name → bit-index map from the protocol.
 ///
 /// Derives names from fragment keys (hyphenated = custom element) since that
@@ -218,6 +1099,310 @@ pub(crate) fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String,
         index.insert(name.clone(), idx);
     }
     index
+}
+
+/// Build the exact resource-ID index used by streaming style deduplication.
+fn build_style_resource_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
+    if protocol.style_chunks.is_empty() {
+        return HashMap::new();
+    }
+    let mut sorted: Vec<&str> = protocol
+        .components
+        .keys()
+        .filter(|tag| protocol.component_style_resource(tag).is_some())
+        .map(String::as_str)
+        .chain(
+            protocol
+                .style_chunks
+                .iter()
+                .map(|chunk| chunk.name.as_str()),
+        )
+        .collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut index = HashMap::with_capacity(sorted.len());
+    for (position, name) in sorted.into_iter().enumerate() {
+        // The protocol cannot hold enough resource records for this to truncate.
+        #[allow(clippy::cast_possible_truncation)]
+        let position = position as u32;
+        index.insert(name.to_string(), position);
+    }
+    index
+}
+
+fn build_style_escape_resources(protocol: &WebUIProtocol) -> HashSet<String> {
+    if protocol.css_strategy() == CssStrategy::Link {
+        return HashSet::new();
+    }
+
+    let mut resources = HashSet::new();
+    for (name, component) in &protocol.components {
+        if crate::html_encode::style_text_needs_escape(&component.css) {
+            resources.insert(name.clone());
+        }
+    }
+    for chunk in &protocol.style_chunks {
+        if crate::html_encode::style_text_needs_escape(&chunk.css) {
+            resources.insert(chunk.name.clone());
+        }
+    }
+    resources
+}
+
+/// Startup-built direct component dependency graph used by streaming
+/// checkpoints. Route-free component surfaces walk integer indexes on the
+/// request path; only route-dependent surfaces need the more expensive
+/// request-aware fragment traversal.
+///
+/// The same table interns each component's compiled hydration projection as a
+/// run of key IDs. IDs are assigned in lexicographic order, so a checkpoint
+/// collects its projection by concatenating integer runs and sorting integers —
+/// no per-checkpoint component-name hash, no string sort, and no borrowed-string
+/// scratch that would have to be rebuilt on every semantic step.
+pub(crate) struct ComponentReachabilityIndex {
+    names: Vec<String>,
+    dependencies: Vec<Box<[u32]>>,
+    route_dependent: Vec<bool>,
+    hydration_keys: Vec<Box<str>>,
+    hydration_key_ids: Vec<u32>,
+    hydration_runs: Vec<HydrationRun>,
+}
+
+/// One component's interned hydration projection.
+///
+/// `len == FULL_STATE_RUN` marks a compiled surface that is not expressible as
+/// a key allowlist, which forces the whole record to full state exactly as the
+/// name-based collector did.
+#[derive(Clone, Copy)]
+struct HydrationRun {
+    start: u32,
+    len: u32,
+}
+
+impl HydrationRun {
+    const FULL_STATE: Self = Self {
+        start: 0,
+        len: u32::MAX,
+    };
+
+    const fn requires_full_state(self) -> bool {
+        self.len == u32::MAX
+    }
+}
+
+impl ComponentReachabilityIndex {
+    fn new(protocol: &WebUIProtocol, component_index: &HashMap<String, u32>) -> Self {
+        let mut names: Vec<String> = component_index.keys().cloned().collect();
+        names.sort_unstable();
+
+        let mut dependencies = Vec::with_capacity(names.len());
+        let mut route_dependent = Vec::with_capacity(names.len());
+        for name in &names {
+            let (direct, has_route) =
+                collect_direct_component_dependencies(protocol, name, component_index);
+            dependencies.push(direct.into_boxed_slice());
+            route_dependent.push(has_route);
+        }
+        propagate_route_dependencies(&dependencies, &mut route_dependent);
+        let (hydration_keys, hydration_key_ids, hydration_runs) =
+            intern_hydration_projections(protocol, &names);
+
+        Self {
+            names,
+            dependencies,
+            route_dependent,
+            hydration_keys,
+            hydration_key_ids,
+            hydration_runs,
+        }
+    }
+
+    pub(crate) fn name(&self, index: u32) -> Option<&str> {
+        self.names.get(index as usize).map(String::as_str)
+    }
+
+    pub(crate) fn dependencies(&self, index: u32) -> Option<&[u32]> {
+        self.dependencies.get(index as usize).map(Box::as_ref)
+    }
+
+    pub(crate) fn is_route_dependent(&self, index: u32) -> Option<bool> {
+        self.route_dependent.get(index as usize).copied()
+    }
+
+    pub(crate) fn requires_expansion(&self, index: u32) -> Option<bool> {
+        Some(self.is_route_dependent(index)? || !self.dependencies.get(index as usize)?.is_empty())
+    }
+
+    /// Resolve one interned hydration key ID.
+    pub(crate) fn hydration_key(&self, id: u32) -> Option<&str> {
+        self.hydration_keys.get(id as usize).map(Box::as_ref)
+    }
+
+    /// Append one component's hydration key IDs to `ids`.
+    ///
+    /// Returns `true` when the component's compiled surface requires full
+    /// state, in which case `ids` is meaningless for this record.
+    pub(crate) fn extend_hydration_keys(&self, index: u32, ids: &mut Vec<u32>) -> bool {
+        let Some(run) = self.hydration_runs.get(index as usize).copied() else {
+            return true;
+        };
+        if run.requires_full_state() {
+            return true;
+        }
+        let start = run.start as usize;
+        let end = start.saturating_add(run.len as usize);
+        match self.hydration_key_ids.get(start..end) {
+            Some(run) => ids.extend_from_slice(run),
+            None => return true,
+        }
+        false
+    }
+}
+
+/// Intern every component's compiled hydration projection into lexicographic
+/// key IDs plus one flat run per component.
+fn intern_hydration_projections(
+    protocol: &WebUIProtocol,
+    names: &[String],
+) -> (Vec<Box<str>>, Vec<u32>, Vec<HydrationRun>) {
+    let mut distinct: Vec<&str> = Vec::new();
+    for name in names {
+        if let Some(component) = protocol.components.get(name) {
+            distinct.extend(component.hydration_keys.iter().map(String::as_str));
+        }
+    }
+    distinct.sort_unstable();
+    distinct.dedup();
+    let keys: Vec<Box<str>> = distinct.iter().map(|key| Box::from(*key)).collect();
+
+    let mut key_ids = Vec::new();
+    let mut runs = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(component) = protocol.components.get(name) else {
+            // A component with no compiled surface cannot be projected, exactly
+            // as the name-based collector treated a missing entry.
+            runs.push(HydrationRun::FULL_STATE);
+            continue;
+        };
+        let mode = component.hydration_mode;
+        let component_keys = &component.hydration_keys;
+        let projects_keys = mode == StateProjectionMode::Keys as i32
+            || (mode == StateProjectionMode::None as i32 && !component_keys.is_empty());
+        if mode == StateProjectionMode::All as i32
+            || (!projects_keys && mode != StateProjectionMode::None as i32)
+        {
+            runs.push(HydrationRun::FULL_STATE);
+            continue;
+        }
+        let start = key_ids.len();
+        if projects_keys {
+            for key in component_keys {
+                if let Ok(position) = distinct.binary_search(&key.as_str()) {
+                    if let Ok(id) = u32::try_from(position) {
+                        key_ids.push(id);
+                    }
+                }
+            }
+        }
+        match (u32::try_from(start), u32::try_from(key_ids.len() - start)) {
+            (Ok(start), Ok(len)) if len != u32::MAX => runs.push(HydrationRun { start, len }),
+            _ => runs.push(HydrationRun::FULL_STATE),
+        }
+    }
+    (keys, key_ids, runs)
+}
+
+enum ComponentDependencyWork<'a> {
+    Fragment(&'a str),
+    Component(u32),
+}
+
+fn collect_direct_component_dependencies(
+    protocol: &WebUIProtocol,
+    root: &str,
+    component_index: &HashMap<String, u32>,
+) -> (Vec<u32>, bool) {
+    let mut work = vec![ComponentDependencyWork::Fragment(root)];
+    let mut visited_fragments = HashSet::new();
+    let mut seen_components = HashSet::new();
+    let mut dependencies = Vec::new();
+    let mut has_route = false;
+
+    while let Some(item) = work.pop() {
+        match item {
+            ComponentDependencyWork::Component(index) => {
+                if seen_components.insert(index) {
+                    dependencies.push(index);
+                }
+            }
+            ComponentDependencyWork::Fragment(id) => {
+                if !visited_fragments.insert(id) {
+                    continue;
+                }
+                let Some(list) = protocol.fragments.get(id) else {
+                    continue;
+                };
+                for fragment in list.fragments.iter().rev() {
+                    match fragment.fragment.as_ref() {
+                        Some(Fragment::Component(component)) => {
+                            if let Some(&index) = component_index.get(&component.fragment_id) {
+                                work.push(ComponentDependencyWork::Component(index));
+                            }
+                        }
+                        Some(Fragment::ForLoop(for_loop)) => work.push(
+                            ComponentDependencyWork::Fragment(for_loop.fragment_id.as_str()),
+                        ),
+                        Some(Fragment::IfCond(if_cond)) => work.push(
+                            ComponentDependencyWork::Fragment(if_cond.fragment_id.as_str()),
+                        ),
+                        Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
+                            work.push(ComponentDependencyWork::Fragment(
+                                attribute.template.as_str(),
+                            ));
+                        }
+                        Some(Fragment::Route(_)) => has_route = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    (dependencies, has_route)
+}
+
+fn propagate_route_dependencies(dependencies: &[Box<[u32]>], route_dependent: &mut [bool]) {
+    let mut reverse = vec![Vec::new(); dependencies.len()];
+    for (parent, children) in dependencies.iter().enumerate() {
+        for &child in children.iter() {
+            if let Some(parents) = reverse.get_mut(child as usize) {
+                #[allow(clippy::cast_possible_truncation)]
+                parents.push(parent as u32);
+            }
+        }
+    }
+
+    let mut pending = Vec::new();
+    for (index, &depends_on_route) in route_dependent.iter().enumerate() {
+        if depends_on_route {
+            #[allow(clippy::cast_possible_truncation)]
+            pending.push(index as u32);
+        }
+    }
+    while let Some(index) = pending.pop() {
+        let Some(parents) = reverse.get(index as usize) else {
+            continue;
+        };
+        for &parent in parents {
+            let Some(depends_on_route) = route_dependent.get_mut(parent as usize) else {
+                continue;
+            };
+            if !*depends_on_route {
+                *depends_on_route = true;
+                pending.push(parent);
+            }
+        }
+    }
 }
 
 /// Check if a component's bit is set in the inventory bitfield.
@@ -317,6 +1502,7 @@ pub fn get_needed_components(
 /// templates needed for the current `request_path`.
 ///
 /// Returns `(needed_names, updated_inventory_hex)`.
+#[cfg(test)]
 pub(crate) fn get_needed_components_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
@@ -336,16 +1522,13 @@ pub(crate) fn get_needed_components_for_request(
 }
 
 fn serialize_partial_response(
-    response: &Value,
+    response: Value,
     state_json: &str,
     state_selection: &StateSelection<'_>,
 ) -> Result<String, HandlerError> {
-    let response = response
-        .as_object()
-        .ok_or_else(partial_response_not_object)?;
     let state = select_raw_state(state_json, state_selection)?;
-    serde_json::to_string(&PartialResponseWithState { response, state })
-        .map_err(|error| partial_serialize_error(&error.to_string()))
+    let response = PartialResponseWithState::new(response, state)?;
+    serde_json::to_string(&response).map_err(|error| partial_serialize_error(&error.to_string()))
 }
 
 fn validate_json(json: &str) -> Result<(), HandlerError> {
@@ -450,18 +1633,27 @@ impl<'de> Visitor<'de> for ValidJsonVisitor {
     }
 }
 
-struct PartialResponseWithState<'a, 'state> {
-    response: &'a Map<String, Value>,
-    state: SelectedRawState<'state>,
+struct PartialResponseWithState<State> {
+    response: Map<String, Value>,
+    state: State,
 }
 
-impl Serialize for PartialResponseWithState<'_, '_> {
+impl<State> PartialResponseWithState<State> {
+    fn new(response: Value, state: State) -> Result<Self, HandlerError> {
+        let Value::Object(response) = response else {
+            return Err(partial_response_not_object());
+        };
+        Ok(Self { response, state })
+    }
+}
+
+impl<State: Serialize> Serialize for PartialResponseWithState<State> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let mut map = serializer.serialize_map(Some(self.response.len().saturating_add(1)))?;
-        for (key, value) in self.response {
+        for (key, value) in &self.response {
             map.serialize_entry(key, value)?;
         }
         map.serialize_entry("state", &self.state)?;
@@ -477,7 +1669,6 @@ enum SelectedRawState<'de> {
     Full(&'de RawValue),
     Keys(ProjectedRawState<'de>),
 }
-
 impl Serialize for SelectedRawState<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -537,13 +1728,186 @@ fn select_raw_state<'de>(
     state_json: &'de str,
     selection: &StateSelection<'_>,
 ) -> Result<SelectedRawState<'de>, HandlerError> {
-    match selection {
-        StateSelection::Full => serde_json::from_str::<&RawValue>(state_json)
-            .map(SelectedRawState::Full)
-            .map_err(|error| invalid_state_json(&error.to_string())),
-        StateSelection::Keys(keys) => {
-            project_raw_state(state_json, keys).map(SelectedRawState::Keys)
+    let state_keys = match selection {
+        StateSelection::Full => {
+            // The reserved inject key carries host HTML, never application
+            // state, so it must not reach the client here either. The
+            // candidate probe keeps the overwhelmingly common case - no
+            // reserved key - on the zero-copy passthrough.
+            if contains_reserved_state_key(state_json) {
+                return strip_reserved_raw_state(state_json).map(SelectedRawState::Keys);
+            }
+            return serde_json::from_str::<&RawValue>(state_json)
+                .map(SelectedRawState::Full)
+                .map_err(|error| invalid_state_json(&error.to_string()));
         }
+        StateSelection::Keys(keys) => keys.as_slice(),
+        // Key-ID projections are produced only by the streaming continuation,
+        // which serializes through `write_selected_state` and never reaches
+        // partial navigation's raw-JSON projection.
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Err(unexpected_key_id_selection());
+        }
+    };
+    project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
+}
+
+/// Detect literal or Unicode-escaped spellings of the top-level reserved key.
+///
+/// The fast candidate scan preserves the common no-match path. Structural
+/// depth is checked only when a candidate exists, so nested application keys
+/// do not force full-state reserialization.
+fn contains_reserved_state_key(state_json: &str) -> bool {
+    let bytes = state_json.as_bytes();
+    let mut search_start = 0;
+    while let Some(relative_index) = memchr2(b'$', b'\\', &bytes[search_start..]) {
+        let candidate = search_start + relative_index;
+        if candidate > 0
+            && bytes[candidate - 1] == b'"'
+            && matches_reserved_state_key(bytes, candidate)
+        {
+            return contains_top_level_reserved_state_key(bytes);
+        }
+        search_start = candidate + 1;
+    }
+    false
+}
+
+fn contains_top_level_reserved_state_key(bytes: &[u8]) -> bool {
+    let Some(mut cursor) = bytes.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return false;
+    };
+    if bytes[cursor] != b'{' {
+        return false;
+    }
+
+    cursor += 1;
+    let mut depth = 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                if depth == 1 && matches_reserved_state_key(bytes, cursor + 1) {
+                    return true;
+                }
+                cursor = skip_json_string(bytes, cursor + 1);
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                cursor += 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+                cursor += 1;
+            }
+            _ => cursor += 1,
+        }
+    }
+    false
+}
+
+fn skip_json_string(bytes: &[u8], mut cursor: usize) -> usize {
+    while let Some(relative_index) = memchr2(b'"', b'\\', &bytes[cursor..]) {
+        cursor += relative_index;
+        if bytes[cursor] == b'"' {
+            return cursor + 1;
+        }
+        cursor = (cursor + 2).min(bytes.len());
+    }
+    bytes.len()
+}
+
+fn matches_reserved_state_key(bytes: &[u8], mut cursor: usize) -> bool {
+    for expected in crate::STATE_INJECT_KEY.bytes() {
+        if bytes.get(cursor).is_some_and(|byte| *byte == expected) {
+            cursor += 1;
+        } else if matches_unicode_escape(bytes, cursor, expected) {
+            cursor += 6;
+        } else {
+            return false;
+        }
+    }
+
+    if bytes.get(cursor) != Some(&b'"') {
+        return false;
+    }
+    cursor += 1;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    bytes.get(cursor) == Some(&b':')
+}
+
+fn matches_unicode_escape(bytes: &[u8], cursor: usize, expected: u8) -> bool {
+    let Some(escape) = bytes.get(cursor..cursor.saturating_add(6)) else {
+        return false;
+    };
+    escape[..4] == *b"\\u00"
+        && decode_hex_nibble(escape[4]).is_some_and(|high| {
+            decode_hex_nibble(escape[5]).is_some_and(|low| (high << 4) | low == expected)
+        })
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Re-emit a raw state object with the reserved inject key removed.
+fn strip_reserved_raw_state(state_json: &str) -> Result<ProjectedRawState<'_>, HandlerError> {
+    let mut deserializer = serde_json::Deserializer::from_str(state_json);
+    let projected = ReservedFilteredRawStateSeed
+        .deserialize(&mut deserializer)
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    Ok(projected)
+}
+
+struct ReservedFilteredRawStateSeed;
+
+impl<'de> DeserializeSeed<'de> for ReservedFilteredRawStateSeed {
+    type Value = ProjectedRawState<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ReservedFilteredRawStateVisitor)
+    }
+}
+
+struct ReservedFilteredRawStateVisitor;
+
+impl<'de> Visitor<'de> for ReservedFilteredRawStateVisitor {
+    type Value = ProjectedRawState<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> = Vec::new();
+        while let Some(key) = map.next_key_seed(BorrowedString)? {
+            if key.as_ref() == crate::STATE_INJECT_KEY {
+                map.next_value_seed(ValidJson)?;
+                continue;
+            }
+            let value: &'de RawValue = map.next_value()?;
+            validate_json_inner(value.get()).map_err(serde::de::Error::custom)?;
+            entries.push((key, value));
+        }
+        Ok(ProjectedRawState { entries })
     }
 }
 
@@ -582,7 +1946,9 @@ impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
         let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
             Vec::with_capacity(self.state_keys.len());
         while let Some(key) = map.next_key_seed(BorrowedString)? {
-            if self.state_keys.binary_search(&key.as_ref()).is_err() {
+            if key.as_ref() == crate::STATE_INJECT_KEY
+                || self.state_keys.binary_search(&key.as_ref()).is_err()
+            {
                 map.next_value_seed(ValidJson)?;
                 continue;
             }
@@ -640,7 +2006,15 @@ impl<'de> Visitor<'de> for BorrowedStringVisitor {
 #[cold]
 #[inline(never)]
 fn invalid_state_json(message: &str) -> HandlerError {
-    HandlerError::Rendering(format!("invalid state JSON: {message}"))
+    HandlerError::InvalidState(message.to_string())
+}
+
+#[cold]
+#[inline(never)]
+fn unexpected_key_id_selection() -> HandlerError {
+    HandlerError::Invariant(
+        "streaming hydration key-ID projection reached partial navigation".to_string(),
+    )
 }
 
 #[cold]
@@ -655,18 +2029,14 @@ fn partial_response_not_object() -> HandlerError {
     HandlerError::Invariant("partial response must serialize as a JSON object".to_string())
 }
 
-/// Collect all route-reachable inventoryable components for the request path.
-pub(crate) fn collect_reachable_components_for_request(
+/// Collect request-reachable components in deterministic first-discovery order.
+pub(crate) fn collect_reachable_component_order_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     route_index: &CompiledRouteIndex,
-) -> HashSet<String> {
-    // Callers here need set semantics (`.contains`, plugin `&HashSet` API);
-    // discovery order is irrelevant for reachable-template emission.
+) -> Vec<String> {
     collect_inventoryable_components(protocol, entry_id, Some(request_path), false, route_index)
-        .into_iter()
-        .collect()
 }
 
 /// Filter components against the client's inventory bitfield using sequential indices.
@@ -683,6 +2053,21 @@ pub fn filter_needed_components(
     inventory_hex: &str,
     index: &HashMap<String, u32>,
 ) -> Result<(Vec<String>, String), HandlerError> {
+    let filtered = filter_components_with_inventory(component_names, inventory_hex, index)?;
+    Ok((filtered.needed, filtered.updated_inventory))
+}
+
+struct FilteredComponents {
+    needed: Vec<String>,
+    updated_inventory: String,
+    client_inventory: Vec<u8>,
+}
+
+fn filter_components_with_inventory(
+    component_names: &[String],
+    inventory_hex: &str,
+    index: &HashMap<String, u32>,
+) -> Result<FilteredComponents, HandlerError> {
     let client_inv = parse_inventory(inventory_hex)?;
     let mut updated_inv = client_inv.clone();
 
@@ -701,7 +2086,11 @@ pub fn filter_needed_components(
         }
     }
 
-    Ok((needed, encode_inventory(&updated_inv)))
+    Ok(FilteredComponents {
+        needed,
+        updated_inventory: encode_inventory(&updated_inv),
+        client_inventory: client_inv,
+    })
 }
 
 fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
@@ -709,11 +2098,102 @@ fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
 }
 
 #[derive(Debug)]
-struct QueuedFragment {
-    id: String,
+/// Interning arena for the route-base paths produced during a graph walk.
+///
+/// A walk queues one entry per graph edge but descends through only a handful
+/// of nested route levels, so every queued fragment used to carry its own
+/// `String` copy of a path shared by many siblings. Storing each distinct base
+/// once and referencing it by index makes [`QueuedFragment`] `Copy` and removes
+/// a heap allocation per queued edge.
+struct RouteBaseArena {
+    bases: Vec<String>,
+}
+
+impl RouteBaseArena {
+    /// Index of the implicit `/` root base, present in every arena.
+    const ROOT: u32 = 0;
+
+    fn new() -> Self {
+        Self {
+            bases: vec!["/".to_string()],
+        }
+    }
+
+    /// Position of `base` when it has already been interned.
+    ///
+    /// The linear scan is deliberate: route nesting is shallow (a handful of
+    /// levels), so scanning beats hashing and keeps the arena allocation-free
+    /// after the first sighting of each level.
+    fn find(&self, base: &str) -> Option<u32> {
+        // Arena length is bounded by route nesting depth.
+        #[allow(clippy::cast_possible_truncation)]
+        self.bases
+            .iter()
+            .position(|known| known == base)
+            .map(|position| position as u32)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn push(&mut self, base: String) -> u32 {
+        let id = self.bases.len() as u32;
+        self.bases.push(base);
+        id
+    }
+
+    /// Intern a borrowed `base`, reusing an existing slot when already known.
+    ///
+    /// Use [`Self::intern_owned`] when the caller already owns the path, so a
+    /// first sighting moves it instead of copying it.
+    fn intern(&mut self, base: &str) -> u32 {
+        match self.find(base) {
+            Some(id) => id,
+            None => self.push(base.to_string()),
+        }
+    }
+
+    /// Intern an owned `base`, moving it in on first sighting.
+    ///
+    /// `route_matcher::compute_route_base` already returns an owned `String`,
+    /// so taking it by value keeps a newly discovered level to the one
+    /// allocation the caller had to make anyway.
+    fn intern_owned(&mut self, base: String) -> u32 {
+        match self.find(&base) {
+            Some(id) => id,
+            None => self.push(base),
+        }
+    }
+
+    fn get(&self, id: u32) -> &str {
+        self.bases.get(id as usize).map_or("/", String::as_str)
+    }
+}
+
+/// One pending node in a fragment-graph walk.
+///
+/// `id` borrows the protocol's fragment name and `route_base` indexes a
+/// [`RouteBaseArena`], so queueing an edge copies 16 bytes instead of
+/// allocating two `String`s.
+#[derive(Clone, Copy)]
+struct QueuedFragment<'protocol> {
+    id: &'protocol str,
     inventoryable: bool,
     /// Base path for resolving relative route paths at this level.
-    route_base: String,
+    route_base: u32,
+}
+
+/// Key identifying an already-walked fragment.
+///
+/// Route-insensitive walks collapse every base into `None` so a fragment is
+/// visited once regardless of the path that reached it.
+type VisitedKey<'protocol> = (&'protocol str, Option<u32>);
+
+#[inline]
+fn mark_fragment_visited<'protocol>(
+    visited: &mut HashSet<VisitedKey<'protocol>>,
+    queued: &QueuedFragment<'protocol>,
+    route_sensitive: bool,
+) -> bool {
+    visited.insert((queued.id, route_sensitive.then_some(queued.route_base)))
 }
 
 /// Shared context for route child walkers, bundling common parameters
@@ -734,40 +2214,96 @@ struct ChildWalkCtx<'a> {
 /// Components are marked `inventoryable` when they have a corresponding entry
 /// in `protocol.components` with a non-empty template payload — these are the
 /// components whose client metadata the browser may need during navigation.
-fn collect_inventoryable_components(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
+fn collect_inventoryable_components<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    entry_id: &'protocol str,
     request_path: Option<&str>,
     root_inventoryable: bool,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
+    let mut arena = RouteBaseArena::new();
+    let stack = vec![QueuedFragment {
+        id: entry_id,
+        inventoryable: root_inventoryable,
+        route_base: RouteBaseArena::ROOT,
+    }];
+    collect_inventoryable_components_from_stack(
+        protocol,
+        request_path,
+        route_index,
+        stack,
+        &mut arena,
+    )
+}
+
+/// Collect the transitive client component surface rooted in this checkpoint's
+/// rendered tags. Conditional and empty-repeat branches are followed
+/// conservatively so a later client-side state change already has its metadata.
+///
+/// Roots arrive as startup-built component indexes so the caller's capture stays
+/// free of any protocol borrow; names are resolved here, on the uncommon
+/// request-aware path that already converts every root to an owned string.
+pub(crate) fn collect_reachable_components_from_roots<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    roots: &[(u32, Option<Box<str>>)],
+    reachability: &'protocol ComponentReachabilityIndex,
+    request_path: &str,
+    route_index: &CompiledRouteIndex,
+) -> Vec<String> {
+    let mut arena = RouteBaseArena::new();
+    let mut stack = Vec::with_capacity(roots.len());
+    for (root, route_base) in roots.iter().rev() {
+        let Some(name) = reachability.name(*root) else {
+            continue;
+        };
+        let route_base = match route_base.as_deref() {
+            Some(base) => arena.intern(base),
+            None => RouteBaseArena::ROOT,
+        };
+        stack.push(QueuedFragment {
+            id: name,
+            inventoryable: true,
+            route_base,
+        });
+    }
+    collect_inventoryable_components_from_stack(
+        protocol,
+        Some(request_path),
+        route_index,
+        stack,
+        &mut arena,
+    )
+}
+
+fn collect_inventoryable_components_from_stack<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    request_path: Option<&str>,
+    route_index: &CompiledRouteIndex,
+    mut stack: Vec<QueuedFragment<'protocol>>,
+    arena: &mut RouteBaseArena,
+) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
+    let route_sensitive = request_path.is_some();
     // Preserve first-discovery (document/traversal) order so Link-strategy
     // CSS `<link>` tags are emitted in source order, not alphabetically.
     // `seen_components` dedups; `component_ids` keeps order (a plain
     // `HashSet` would lose it).
     let mut seen_components = HashSet::new();
     let mut component_ids: Vec<String> = Vec::new();
-    let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
-        inventoryable: root_inventoryable,
-        route_base: "/".to_string(),
-    }];
-
     while let Some(queued) = stack.pop() {
         if queued.id.is_empty() {
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
-            component_ids.push(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id) {
+            component_ids.push(queued.id.to_string());
         }
 
-        if !visited_fragments.insert(queued.id.clone()) {
+        if !mark_fragment_visited(&mut visited_fragments, &queued, route_sensitive) {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
@@ -775,7 +2311,7 @@ fn collect_inventoryable_components(
             route_renderer::find_best_route_match(
                 &frag_list.fragments,
                 path,
-                &queued.route_base,
+                arena.get(queued.route_base),
                 route_index,
             )
         });
@@ -786,55 +2322,60 @@ fn collect_inventoryable_components(
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: true,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(QueuedFragment {
-                        id: for_loop.fragment_id.clone(),
+                        id: &for_loop.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(QueuedFragment {
-                        id: if_cond.fragment_id.clone(),
+                        id: &if_cond.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
+
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
-                        id: attr.template.clone(),
+                        id: &attr.template,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(QueuedFragment {
+                            id: &route_frag.content_fragment_id,
+                            inventoryable: false,
+                            route_base: queued.route_base,
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         // Compute new route base from consumed segments
-                        let child_route_base = if let Some((_, ref rm)) = matched_route {
-                            if let Some(path) = request_path {
-                                route_matcher::compute_route_base(path, rm.consumed_segments)
-                            } else {
-                                queued.route_base.clone()
-                            }
-                        } else {
-                            queued.route_base.clone()
+                        let child_route_base = match (&matched_route, request_path) {
+                            (Some((_, rm)), Some(path)) => arena.intern_owned(
+                                route_matcher::compute_route_base(path, rm.consumed_segments),
+                            ),
+                            _ => queued.route_base,
                         };
 
                         stack.push(QueuedFragment {
-                            id: route_frag.fragment_id.clone(),
+                            id: &route_frag.fragment_id,
                             inventoryable: protocol
                                 .components
                                 .get(&route_frag.fragment_id)
                                 .is_some_and(has_template_payload),
-                            route_base: child_route_base.clone(),
+                            route_base: child_route_base,
                         });
 
                         // Inventory pending/error components for the entire
@@ -846,7 +2387,7 @@ fn collect_inventoryable_components(
                         // the target route.
                         collect_route_boundary_components(
                             std::slice::from_ref(route_frag),
-                            &child_route_base,
+                            child_route_base,
                             protocol,
                             &mut stack,
                         );
@@ -858,9 +2399,10 @@ fn collect_inventoryable_components(
                             if let Some(path) = request_path {
                                 walk_route_children(
                                     &route_frag.children,
-                                    &child_route_base,
+                                    child_route_base,
                                     &mut stack,
-                                    &mut ChildWalkCtx {
+                                    arena,
+                                    &ChildWalkCtx {
                                         request_path: path,
                                         protocol,
                                         route_index,
@@ -911,58 +2453,66 @@ fn select_best_child_route(
 
 /// Walk nested route children to find matched routes and add their
 /// components to the inventory stack. Mirrors the handler's outlet rendering.
-fn walk_route_children(
-    children: &[WebUIFragmentRoute],
-    route_base: &str,
-    stack: &mut Vec<QueuedFragment>,
-    ctx: &mut ChildWalkCtx<'_>,
+fn walk_route_children<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
+    stack: &mut Vec<QueuedFragment<'protocol>>,
+    arena: &mut RouteBaseArena,
+    ctx: &ChildWalkCtx<'_>,
 ) {
     let mut current = children;
-    let mut base = route_base.to_string();
+    let mut base = route_base;
 
     loop {
-        let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-        else {
+        // Resolve the base before interning below so the arena's immutable
+        // borrow ends before the mutable one begins.
+        let matched =
+            select_best_child_route(current, ctx.request_path, arena.get(base), ctx.route_index);
+        let Some((idx, rm)) = matched else {
             break;
         };
-        let matched = &current[idx];
+        let Some(matched) = current.get(idx) else {
+            break;
+        };
         if matched.fragment_id.is_empty() {
             break;
         }
 
-        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
+        let child_base = arena.intern_owned(route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
 
         stack.push(QueuedFragment {
-            id: matched.fragment_id.clone(),
+            id: &matched.fragment_id,
             inventoryable: ctx
                 .protocol
                 .components
                 .get(&matched.fragment_id)
                 .is_some_and(has_template_payload),
-            route_base: child_base.clone(),
+            route_base: child_base,
         });
 
         if !matched.pending_component.is_empty() {
             stack.push(QueuedFragment {
-                id: matched.pending_component.clone(),
+                id: &matched.pending_component,
                 inventoryable: ctx
                     .protocol
                     .components
                     .get(&matched.pending_component)
                     .is_some_and(has_template_payload),
-                route_base: child_base.clone(),
+                route_base: child_base,
             });
         }
         if !matched.error_component.is_empty() {
             stack.push(QueuedFragment {
-                id: matched.error_component.clone(),
+                id: &matched.error_component,
                 inventoryable: ctx
                     .protocol
                     .components
                     .get(&matched.error_component)
                     .is_some_and(has_template_payload),
-                route_base: child_base.clone(),
+                route_base: child_base,
             });
         }
 
@@ -982,25 +2532,25 @@ fn walk_route_children(
 /// renders if that fetch fails, so the client must already hold these templates
 /// for any navigable sibling — not only the currently active route. The walk is
 /// iterative because the framework forbids recursion in core paths.
-fn collect_route_boundary_components(
-    routes: &[WebUIFragmentRoute],
-    route_base: &str,
+fn collect_route_boundary_components<'protocol>(
+    routes: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
     protocol: &WebUIProtocol,
-    stack: &mut Vec<QueuedFragment>,
+    stack: &mut Vec<QueuedFragment<'protocol>>,
 ) {
-    let mut remaining: Vec<&WebUIFragmentRoute> = routes.iter().collect();
+    let mut remaining: Vec<&'protocol WebUIFragmentRoute> = routes.iter().collect();
     while let Some(route) = remaining.pop() {
         for component in [&route.pending_component, &route.error_component] {
             if component.is_empty() {
                 continue;
             }
             stack.push(QueuedFragment {
-                id: component.clone(),
+                id: component,
                 inventoryable: protocol
                     .components
                     .get(component)
                     .is_some_and(has_template_payload),
-                route_base: route_base.to_string(),
+                route_base,
             });
         }
         remaining.extend(route.children.iter());
@@ -1020,25 +2570,26 @@ pub fn collect_nested_route_params(
     let protocol = protocol.protocol();
     let mut all_params = HashMap::new();
     let mut visited_fragments = HashSet::new();
+    let mut arena = RouteBaseArena::new();
     let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
+        id: entry_id,
         inventoryable: false,
-        route_base: "/".to_string(),
+        route_base: RouteBaseArena::ROOT,
     }];
 
     while let Some(queued) = stack.pop() {
-        if queued.id.is_empty() || !visited_fragments.insert(queued.id.clone()) {
+        if queued.id.is_empty() || !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
         let matched_route = route_renderer::find_best_route_match(
             &frag_list.fragments,
             request_path,
-            &queued.route_base,
+            arena.get(queued.route_base),
             route_index,
         );
 
@@ -1046,36 +2597,56 @@ pub fn collect_nested_route_params(
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    stack.push(QueuedFragment {
+                        id: &for_loop.fragment_id,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(QueuedFragment {
+                        id: &if_cond.fragment_id,
+                        inventoryable: false,
+                        route_base: queued.route_base,
+                    });
+                }
+
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
-                            // Collect params from this route level
-                            all_params.extend(rm.params.clone());
+                            // Collect params from this route level. Cloning
+                            // entry-wise avoids allocating a throwaway map to
+                            // move them out of.
+                            for (name, value) in &rm.params {
+                                all_params.insert(name.clone(), value.clone());
+                            }
 
-                            let child_route_base = route_matcher::compute_route_base(
-                                request_path,
-                                rm.consumed_segments,
-                            );
+                            let child_route_base =
+                                arena.intern_owned(route_matcher::compute_route_base(
+                                    request_path,
+                                    rm.consumed_segments,
+                                ));
 
                             stack.push(QueuedFragment {
-                                id: route_frag.fragment_id.clone(),
+                                id: &route_frag.fragment_id,
                                 inventoryable: false,
-                                route_base: child_route_base.clone(),
+                                route_base: child_route_base,
                             });
 
                             // Walk nested children to collect params from deeper levels
                             collect_params_from_children(
                                 &route_frag.children,
                                 request_path,
-                                &child_route_base,
+                                arena.get(child_route_base),
                                 &mut all_params,
                                 route_index,
                             );
@@ -1101,11 +2672,7 @@ fn collect_params_from_children(
     let mut current = children;
     let mut base = route_base.to_string();
 
-    loop {
-        let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index)
-        else {
-            break;
-        };
+    while let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index) {
         all_params.extend(rm.params);
         let matched = &current[idx];
         if matched.children.is_empty() {
@@ -1159,9 +2726,9 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
 /// Single-pass graph walk that collects both inventoryable component names
 /// and the matched route chain. Eliminates the duplicate graph traversal
 /// that previously existed in `render_partial`.
-fn collect_inventory_and_chain(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
+fn collect_inventory_and_chain<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    entry_id: &'protocol str,
     request_path: &str,
     index: &mut RequestProtocolIndex<'_>,
 ) -> (Vec<String>, Vec<RouteChainEntry>) {
@@ -1173,10 +2740,11 @@ fn collect_inventory_and_chain(
     let mut seen_components = HashSet::new();
     let mut component_ids: Vec<String> = Vec::new();
     let mut chain = Vec::new();
+    let mut arena = RouteBaseArena::new();
     let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
+        id: entry_id,
         inventoryable: false,
-        route_base: "/".to_string(),
+        route_base: RouteBaseArena::ROOT,
     }];
 
     while let Some(queued) = stack.pop() {
@@ -1184,22 +2752,22 @@ fn collect_inventory_and_chain(
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
-            component_ids.push(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id) {
+            component_ids.push(queued.id.to_string());
         }
 
-        if !visited_fragments.insert(queued.id.clone()) {
+        if !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
         let matched_route = route_renderer::find_best_route_match(
             &frag_list.fragments,
             request_path,
-            &queued.route_base,
+            arena.get(queued.route_base),
             index.route_index,
         );
 
@@ -1208,37 +2776,45 @@ fn collect_inventory_and_chain(
                 Some(Fragment::Component(component)) => {
                     // Inventory: components are inventoryable
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: true,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     // Inventory: follow control-flow edges conservatively
                     stack.push(QueuedFragment {
-                        id: for_loop.fragment_id.clone(),
+                        id: &for_loop.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(QueuedFragment {
-                        id: if_cond.fragment_id.clone(),
+                        id: &if_cond.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
+
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
-                        id: attr.template.clone(),
+                        id: &attr.template,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(QueuedFragment {
+                            id: &route_frag.content_fragment_id,
+                            inventoryable: false,
+                            route_base: queued.route_base,
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             // Chain: record matched route entry
@@ -1255,10 +2831,11 @@ fn collect_inventory_and_chain(
                                 error_component: route_frag.error_component.clone(),
                             });
 
-                            let child_route_base = route_matcher::compute_route_base(
-                                request_path,
-                                rm.consumed_segments,
-                            );
+                            let child_route_base =
+                                arena.intern_owned(route_matcher::compute_route_base(
+                                    request_path,
+                                    rm.consumed_segments,
+                                ));
 
                             // Inventory: follow matched route component
                             let is_inventoryable = protocol
@@ -1266,14 +2843,14 @@ fn collect_inventory_and_chain(
                                 .get(&route_frag.fragment_id)
                                 .is_some_and(has_template_payload);
                             stack.push(QueuedFragment {
-                                id: route_frag.fragment_id.clone(),
+                                id: &route_frag.fragment_id,
                                 inventoryable: is_inventoryable,
-                                route_base: child_route_base.clone(),
+                                route_base: child_route_base,
                             });
 
                             collect_route_boundary_components(
                                 std::slice::from_ref(route_frag),
-                                &child_route_base,
+                                child_route_base,
                                 protocol,
                                 &mut stack,
                             );
@@ -1282,10 +2859,13 @@ fn collect_inventory_and_chain(
                             if !route_frag.children.is_empty() {
                                 walk_children_for_inventory_and_chain(
                                     &route_frag.children,
-                                    &child_route_base,
-                                    &mut stack,
-                                    &mut chain,
-                                    &mut ChildWalkCtx {
+                                    child_route_base,
+                                    ChainWalkSinks {
+                                        stack: &mut stack,
+                                        chain: &mut chain,
+                                        arena: &mut arena,
+                                    },
+                                    &ChildWalkCtx {
                                         request_path,
                                         protocol,
                                         route_index: index.route_index,
@@ -1303,34 +2883,54 @@ fn collect_inventory_and_chain(
     (component_ids, chain)
 }
 
+/// Mutable sinks threaded through the inventory + chain child walk.
+///
+/// Bundled so the walk stays within the workspace's five-argument limit.
+struct ChainWalkSinks<'walk, 'protocol> {
+    stack: &'walk mut Vec<QueuedFragment<'protocol>>,
+    chain: &'walk mut Vec<RouteChainEntry>,
+    arena: &'walk mut RouteBaseArena,
+}
+
 /// Walk nested route children, collecting both inventory and chain entries.
-fn walk_children_for_inventory_and_chain(
-    children: &[WebUIFragmentRoute],
-    route_base: &str,
-    stack: &mut Vec<QueuedFragment>,
-    chain: &mut Vec<RouteChainEntry>,
-    ctx: &mut ChildWalkCtx<'_>,
+fn walk_children_for_inventory_and_chain<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
+    sinks: ChainWalkSinks<'_, 'protocol>,
+    ctx: &ChildWalkCtx<'_>,
 ) {
+    let ChainWalkSinks {
+        stack,
+        chain,
+        arena,
+    } = sinks;
     let mut current = children;
-    let mut base = route_base.to_string();
+    let mut base = route_base;
 
     loop {
-        let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-        else {
+        // Resolve the base before interning below so the arena's immutable
+        // borrow ends before the mutable one begins.
+        let matched =
+            select_best_child_route(current, ctx.request_path, arena.get(base), ctx.route_index);
+        let Some((idx, rm)) = matched else {
             break;
         };
-        let matched = &current[idx];
+        let Some(matched) = current.get(idx) else {
+            break;
+        };
         if matched.fragment_id.is_empty() {
             break;
         }
 
-        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
+        let child_base = arena.intern_owned(route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
 
         chain.push(RouteChainEntry {
             component: matched.fragment_id.clone(),
             path: matched.path.clone(),
-            params: rm.params.clone(),
+            params: rm.params,
             exact: matched.exact,
             allowed_query: matched.allowed_query.clone(),
             keep_alive: matched.keep_alive,
@@ -1341,13 +2941,13 @@ fn walk_children_for_inventory_and_chain(
         });
 
         stack.push(QueuedFragment {
-            id: matched.fragment_id.clone(),
+            id: &matched.fragment_id,
             inventoryable: ctx
                 .protocol
                 .components
                 .get(&matched.fragment_id)
                 .is_some_and(has_template_payload),
-            route_base: child_base.clone(),
+            route_base: child_base,
         });
 
         if matched.children.is_empty() {
@@ -1365,7 +2965,7 @@ fn walk_children_for_inventory_and_chain(
 /// Use [`render_partial`] for a complete JSON response.
 ///
 /// Returns a `serde_json::Value` object with fields:
-/// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
+/// - `componentStyles`: versioned tree-local resources and ordered closures
 /// - `templates`: client template metadata keyed by component tag (inventory-filtered)
 /// - `templateFunctions`: component-local condition closure arrays keyed by component tag
 /// - `inventory`: updated hex bitmask
@@ -1406,7 +3006,7 @@ fn render_partial(
 ) -> Result<Value, HandlerError> {
     let mut index = ProtocolIndex::new(protocol);
     let mut request_index = index.request_index();
-    let (mut response, state_selection) = render_partial_indexed_with_state(
+    let (mut response, state_selection, _) = render_partial_indexed_with_state(
         protocol,
         entry_id,
         request_path,
@@ -1429,7 +3029,7 @@ fn render_partial_indexed(
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
     render_partial_indexed_with_state(protocol, entry_id, request_path, inventory_hex, index)
-        .map(|(response, _)| response)
+        .map(|(response, _, _)| response)
 }
 
 fn render_partial_indexed_with_state<'a>(
@@ -1438,15 +3038,16 @@ fn render_partial_indexed_with_state<'a>(
     request_path: &str,
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
-) -> Result<(Value, StateSelection<'a>), HandlerError> {
+) -> Result<(Value, StateSelection<'a>, bool), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
+    let matched = route_chain_matches(&chain, request_path);
     let state_selection =
         crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
-    let (needed_names, updated_inv) =
-        filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&component_ids, inventory_hex, index.component_index)?;
 
     // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -1461,16 +3062,19 @@ fn render_partial_indexed_with_state<'a>(
         all_resolved_tags.extend(entry.cache_tags.iter().cloned());
     }
 
-    let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
-    let assets = collect_component_assets(protocol, &tag_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
     let mut result = serde_json::Map::with_capacity(7);
-    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
     if !all_resolved_tags.is_empty() {
@@ -1482,19 +3086,68 @@ fn render_partial_indexed_with_state<'a>(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok((Value::Object(result), state_selection))
+    Ok((Value::Object(result), state_selection, matched))
 }
 
-#[cfg(test)]
+/// A serializable navigation response with projected state and route-match status.
+///
+/// Returned by [`Protocol::prepare_partial`]. Its JSON representation preserves
+/// the complete partial-navigation schema; the match status is not serialized.
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+#[must_use]
+pub struct PartialNavigation {
+    response: PartialResponseWithState<Value>,
+    #[serde(skip)]
+    matched: bool,
+}
+
+impl PartialNavigation {
+    /// Whether the request matched an application route rather than only its shell.
+    #[must_use]
+    pub fn is_match(&self) -> bool {
+        self.matched
+    }
+}
+
+fn route_chain_matches(chain: &[RouteChainEntry], request_path: &str) -> bool {
+    if request_path
+        .split_once('?')
+        .map_or(request_path, |(path, _)| path)
+        == "/"
+    {
+        return !chain.is_empty();
+    }
+    match chain {
+        [] => false,
+        [only] => only.path != "/",
+        _ => true,
+    }
+}
+
 fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
-    let StateSelection::Keys(state_keys) = selection else {
-        return state;
+    let state_keys = match selection {
+        StateSelection::Full => {
+            let mut state = state;
+            if let Value::Object(state) = &mut state {
+                state.remove(crate::STATE_INJECT_KEY);
+            }
+            return state;
+        }
+        StateSelection::Keys(keys) => keys.as_slice(),
+        // Streaming's key-ID projection never reaches partial navigation.
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Value::Object(Map::new());
+        }
     };
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());
     };
     let mut projected = Map::with_capacity(state_keys.len().min(source.len()));
     for &key in state_keys {
+        if key == crate::STATE_INJECT_KEY {
+            continue;
+        }
         if let Some(value) = source.remove(key) {
             projected.insert(key.to_owned(), value);
         }
@@ -1593,27 +3246,36 @@ fn render_component_templates_indexed(
         .filter(|s| seen.insert(**s))
         .map(|s| (*s).to_string())
         .collect();
-    let (needed, updated_inv) =
-        filter_needed_components(&requested, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&requested, inventory_hex, index.component_index)?;
 
-    let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
-    let assets = collect_component_assets(protocol, &tag_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let mut result = serde_json::Map::with_capacity(4);
-    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     Ok(Value::Object(result))
 }
 
-/// Shared helper: collect templates and module CSS styles for a set of component tags.
+/// Shared helper: collect templates and style metadata for component tags.
 fn collect_component_assets(
     protocol: &WebUIProtocol,
     tags: &[&str],
+    client_inventory: &[u8],
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<ComponentAssets, HandlerError> {
-    let mut style_array = Vec::new();
+    let component_styles = collect_component_styles_for_inventory(
+        protocol,
+        tags.iter().copied(),
+        client_inventory,
+        index.component_index,
+    )?;
     let mut tmpl_map = serde_json::Map::new();
     let mut function_map = serde_json::Map::new();
 
@@ -1627,13 +3289,6 @@ fn collect_component_assets(
         };
         if !has_template_payload(component) {
             continue;
-        }
-        if !component.css.is_empty() {
-            // No nonce here — the per-request CSP nonce is attached
-            // client-side by the router when it materializes each
-            // importmap script tag into the DOM.
-            let tag_html = crate::css_module::build_importmap_tag(tag, &component.css, None);
-            style_array.push(Value::String(tag_html));
         }
         if !component.template_json.is_empty() {
             let template_value = cached_template_metadata(
@@ -1654,7 +3309,7 @@ fn collect_component_assets(
     }
 
     Ok(ComponentAssets {
-        styles: style_array,
+        component_styles,
         templates: tmpl_map,
         functions: function_map,
     })
@@ -1747,6 +3402,11 @@ pub struct RouteChainEntry {
     pub error_component: String,
 }
 
+pub(crate) struct RouteChainPlan {
+    pub(crate) entries: Vec<RouteChainEntry>,
+    pub(crate) document_style_targets: Vec<bool>,
+}
+
 impl RouteChainEntry {
     /// Serialize this entry to a JSON value ready for inclusion in a partial response.
     #[must_use]
@@ -1805,22 +3465,41 @@ impl RouteChainEntry {
 ///
 /// Walks the fragment graph from `entry_id`, follows the matched route at
 /// each nesting level, and returns a chain entry per matched level.
+#[cfg(test)]
 pub(crate) fn collect_route_chain(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<RouteChainEntry> {
+    collect_route_chain_plan(protocol, entry_id, request_path, route_index).entries
+}
+
+struct RouteChainWork {
+    id: String,
+    route_base: String,
+    targets_document: bool,
+}
+
+pub(crate) fn collect_route_chain_plan(
+    protocol: &WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    route_index: &CompiledRouteIndex,
+) -> RouteChainPlan {
     let mut chain = Vec::new();
+    let mut document_style_targets = Vec::new();
     let mut visited_fragments = HashSet::new();
-    let mut stack = vec![QueuedFragment {
+    let mut stack = vec![RouteChainWork {
         id: entry_id.to_string(),
-        inventoryable: false,
         route_base: "/".to_string(),
+        targets_document: !protocol.component_uses_shadow_dom(entry_id),
     }];
 
     while let Some(queued) = stack.pop() {
-        if queued.id.is_empty() || !visited_fragments.insert(queued.id.clone()) {
+        if queued.id.is_empty()
+            || !visited_fragments.insert((queued.id.clone(), queued.route_base.clone()))
+        {
             continue;
         }
 
@@ -1838,18 +3517,36 @@ pub(crate) fn collect_route_chain(
         for frag in &frag_list.fragments {
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
-                    stack.push(QueuedFragment {
+                    stack.push(RouteChainWork {
                         id: component.fragment_id.clone(),
-                        inventoryable: false,
                         route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document
+                            && !protocol.component_uses_shadow_dom(&component.fragment_id),
                     });
                 }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    stack.push(RouteChainWork {
+                        id: for_loop.fragment_id.clone(),
+                        route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document,
+                    });
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(RouteChainWork {
+                        id: if_cond.fragment_id.clone(),
+                        route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document,
+                    });
+                }
+
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
+                            let targets_document = queued.targets_document
+                                && !protocol.component_uses_shadow_dom(&route_frag.fragment_id);
                             chain.push(RouteChainEntry {
                                 component: route_frag.fragment_id.clone(),
                                 path: route_frag.path.clone(),
@@ -1862,23 +3559,29 @@ pub(crate) fn collect_route_chain(
                                 pending_component: route_frag.pending_component.clone(),
                                 error_component: route_frag.error_component.clone(),
                             });
+                            document_style_targets.push(targets_document);
 
                             let child_route_base = route_matcher::compute_route_base(
                                 request_path,
                                 rm.consumed_segments,
                             );
 
-                            stack.push(QueuedFragment {
+                            stack.push(RouteChainWork {
                                 id: route_frag.fragment_id.clone(),
-                                inventoryable: false,
                                 route_base: child_route_base.clone(),
+                                targets_document,
                             });
 
                             // Walk nested children iteratively
+                            let mut output = RouteChainOutput {
+                                entries: &mut chain,
+                                document_style_targets: &mut document_style_targets,
+                            };
                             collect_chain_from_children(
                                 &route_frag.children,
                                 &child_route_base,
-                                &mut chain,
+                                targets_document,
+                                &mut output,
                                 &mut ChildWalkCtx {
                                     request_path,
                                     protocol,
@@ -1893,25 +3596,36 @@ pub(crate) fn collect_route_chain(
         }
     }
 
-    chain
+    RouteChainPlan {
+        entries: chain,
+        document_style_targets,
+    }
+}
+
+struct RouteChainOutput<'a> {
+    entries: &'a mut Vec<RouteChainEntry>,
+    document_style_targets: &'a mut Vec<bool>,
 }
 
 /// Iteratively collect chain entries from nested route children.
 fn collect_chain_from_children(
     children: &[WebUIFragmentRoute],
     route_base: &str,
-    chain: &mut Vec<RouteChainEntry>,
+    targets_document: bool,
+    output: &mut RouteChainOutput<'_>,
     ctx: &mut ChildWalkCtx<'_>,
 ) {
-    let mut pending: Vec<(&[WebUIFragmentRoute], String)> =
-        vec![(children, route_base.to_string())];
+    let mut pending: Vec<(&[WebUIFragmentRoute], String, bool)> =
+        vec![(children, route_base.to_string(), targets_document)];
 
-    while let Some((current, base)) = pending.pop() {
+    while let Some((current, base, current_targets_document)) = pending.pop() {
         if let Some((idx, rm)) =
             select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
         {
             let matched = &current[idx];
-            chain.push(RouteChainEntry {
+            let matched_targets_document = current_targets_document
+                && !ctx.protocol.component_uses_shadow_dom(&matched.fragment_id);
+            output.entries.push(RouteChainEntry {
                 component: matched.fragment_id.clone(),
                 path: matched.path.clone(),
                 params: rm.params,
@@ -1923,10 +3637,11 @@ fn collect_chain_from_children(
                 pending_component: matched.pending_component.clone(),
                 error_component: matched.error_component.clone(),
             });
+            output.document_style_targets.push(matched_targets_document);
             if !matched.children.is_empty() {
                 let child_base =
                     route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
-                pending.push((&matched.children, child_base));
+                pending.push((&matched.children, child_base, matched_targets_document));
             }
         }
     }
@@ -1941,12 +3656,50 @@ mod tests {
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
 
     #[test]
+    fn protocol_caches_inline_style_resources_requiring_escape() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.set_css_strategy(CssStrategy::Style);
+        protocol.components.insert(
+            "safe-card".to_string(),
+            webui_protocol::ComponentData {
+                css: ".safe{color:green}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.components.insert(
+            "unsafe-card".to_string(),
+            webui_protocol::ComponentData {
+                css: ".unsafe{content:'</StYlE>'}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-safe-card-2".to_string(),
+            css: ".safe{color:green}.other{color:blue}".to_string(),
+            ..Default::default()
+        });
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-unsafe-card-2".to_string(),
+            css: ".unsafe{content:'</style>'}.other{color:blue}".to_string(),
+            ..Default::default()
+        });
+
+        let prepared = Protocol::new(protocol);
+        let resources = prepared.style_resources_requiring_escape();
+
+        assert_eq!(resources.len(), 2);
+        assert!(resources.contains("unsafe-card"));
+        assert!(resources.contains("_chunk-unsafe-card-2"));
+    }
+
+    #[test]
     fn protocol_decodes_once_and_exposes_tokens() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Prepared</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::with_tokens(fragments, vec!["colorBrand".to_string()]);
@@ -1958,18 +3711,226 @@ mod tests {
     }
 
     #[test]
+    fn continuation_state_plans_memoize_per_entry_without_locking() {
+        // Every response for an entry must read the same prepared plan through
+        // the slot table: no lock, no hash, and no per-response rebuild.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>plan</p>")],
+                contains_boundary: false,
+            },
+        );
+        let prepared = Protocol::new(WebUIProtocol::new(fragments));
+
+        let first = prepared.continuation_state_plan("index.html").unwrap();
+        let second = prepared.continuation_state_plan("index.html").unwrap();
+        assert!(
+            std::ptr::eq(first, second),
+            "a memoized plan must be borrowed, not rebuilt or cloned"
+        );
+        // The table reserves one cell per compiled record, so the cell must stay
+        // small enough that a large protocol's lazy table is a rounding error.
+        let cell = std::mem::size_of::<OnceLock<PreparedContinuationStatePlan>>();
+        assert!(
+            cell <= 40,
+            "continuation plan memo cell grew to {cell} bytes"
+        );
+
+        let barrier = Arc::new(Barrier::new(4));
+        let address = std::ptr::from_ref(first).addr();
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                let barrier = Arc::clone(&barrier);
+                let prepared = &prepared;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let plan = prepared.continuation_state_plan("index.html").unwrap();
+                    assert_eq!(
+                        std::ptr::from_ref(plan).addr(),
+                        address,
+                        "concurrent responses must share one initialization"
+                    );
+                    assert!(plan.resolve().is_ok());
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn continuation_state_plans_replay_captured_failures() {
+        // A malformed entry is diagnosed identically on every response, and an
+        // unknown entry still reports the missing record rather than a slot.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("missing-card")],
+                contains_boundary: false,
+            },
+        );
+        let prepared = Protocol::new(WebUIProtocol::new(fragments));
+
+        for _ in 0..2 {
+            match prepared
+                .continuation_state_plan("index.html")
+                .and_then(|plan| plan.resolve())
+                .err()
+            {
+                Some(HandlerError::MissingFragment(id)) => assert_eq!(id, "missing-card"),
+                other => panic!("expected a replayable missing-record failure, got {other:?}"),
+            }
+        }
+        match prepared.continuation_state_plan("absent.html").err() {
+            Some(HandlerError::MissingFragment(id)) => assert_eq!(id, "absent.html"),
+            other => panic!("expected a missing-entry diagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn component_reachability_interns_hydration_projections() {
+        // Streaming records collect their projection from component indexes, so
+        // the interned runs must reproduce the compiled per-component surface
+        // in lexicographic ID order.
+        let mut fragments = HashMap::new();
+        fragments.insert("keyed-card".to_string(), FragmentList::default());
+        fragments.insert("all-card".to_string(), FragmentList::default());
+        fragments.insert("bare-card".to_string(), FragmentList::default());
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "keyed-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["zebra".to_string(), "alpha".to_string()],
+                ..Default::default()
+            },
+        );
+        protocol.components.insert(
+            "all-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::All as i32,
+                ..Default::default()
+            },
+        );
+        let prepared = Protocol::new(protocol);
+        let index = prepared.component_reachability();
+        let component = prepared.component_index();
+
+        let mut ids = Vec::new();
+        assert!(
+            !index.extend_hydration_keys(component["keyed-card"], &mut ids),
+            "a keyed surface projects keys"
+        );
+        ids.sort_unstable();
+        let keys: Vec<&str> = ids
+            .iter()
+            .filter_map(|id| index.hydration_key(*id))
+            .collect();
+        assert_eq!(
+            keys,
+            ["alpha", "zebra"],
+            "sorted IDs must be lexicographically sorted keys"
+        );
+
+        let mut ids = Vec::new();
+        assert!(
+            index.extend_hydration_keys(component["all-card"], &mut ids),
+            "an ALL surface forces full state"
+        );
+        assert!(
+            index.extend_hydration_keys(component["bare-card"], &mut ids),
+            "a component without compiled metadata forces full state"
+        );
+    }
+
+    #[test]
+    fn protocol_retains_only_serialized_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.component_asset_style_preloads =
+            vec![webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec!["/lazy-panel.css".to_string()],
+            }];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_manifest().unwrap(),
+            r#"{"lazy-panel":["/lazy-panel.css"]}"#
+        );
+        assert!(prepared.component_asset_style_links().is_empty());
+    }
+
+    #[test]
+    fn protocol_precomputes_deduplicated_light_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for root in ["lazy-panel", "secondary-panel"] {
+            protocol.components.insert(
+                root.to_string(),
+                webui_protocol::ComponentData {
+                    uses_shadow_dom: false,
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.component_asset_style_preloads = vec![
+            webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec![
+                    "/lazy-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+            webui_protocol::ComponentAssetStylePreload {
+                root: "secondary-panel".to_string(),
+                style_hrefs: vec![
+                    "/secondary-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+        ];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert!(prepared
+            .component_asset_style_manifest()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_links(),
+            concat!(
+                r#"<link rel="stylesheet" href="/lazy-panel.css">"#,
+                r#"<link rel="stylesheet" href="/shared.css?theme=a&amp;mode=&quot;dark&quot;">"#,
+                r#"<link rel="stylesheet" href="/secondary-panel.css">"#,
+            )
+        );
+    }
+
+    #[test]
     fn protocol_partial_matches_direct_index_path() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -1991,12 +3952,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -2037,12 +4000,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -2055,7 +4020,7 @@ mod tests {
                     .iter()
                     .map(|key| (*key).to_string())
                     .collect(),
-                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_mode: Some(webui_protocol::StateProjectionMode::Keys as i32),
                 navigation_keys: hydration_keys
                     .iter()
                     .map(|key| (*key).to_string())
@@ -2070,7 +4035,7 @@ mod tests {
         let mut prepared = prepared_partial_protocol(&[]);
         let protocol = &mut prepared.protocol;
         if let Some(component) = protocol.components.get_mut("home-page") {
-            component.navigation_mode = webui_protocol::StateProjectionMode::All as i32;
+            component.navigation_mode = Some(webui_protocol::StateProjectionMode::All as i32);
             component.navigation_keys.clear();
         }
         prepared
@@ -2080,7 +4045,7 @@ mod tests {
     fn partial_state_serialization_preserves_validated_raw_json() {
         let prepared = prepared_partial_protocol(&["value"]);
         let output = prepared
-            .render_partial(
+            .render_partial_json(
                 r#"{"serverOnly":"drop","value":1e2}"#,
                 "index.html",
                 "/",
@@ -2095,10 +4060,52 @@ mod tests {
     }
 
     #[test]
+    fn partial_state_projection_strips_reserved_inject_key() {
+        let prepared = prepared_partial_protocol(&[crate::STATE_INJECT_KEY, "value"]);
+        let output = prepared
+            .render_partial_json(
+                r#"{"$webui":{"bodyEnd":"<script>secret</script>"},"serverOnly":"drop","value":1}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["state"], serde_json::json!({"value": 1}));
+        assert!(!output.contains("<script>secret</script>"), "{output}");
+    }
+
+    #[test]
+    fn parsed_partial_state_moves_selected_values_into_response() {
+        let prepared = prepared_partial_protocol(&[crate::STATE_INJECT_KEY, "value"]);
+        let output = prepared
+            .render_partial(
+                serde_json::json!({
+                    "$webui": {"bodyEnd": "<script>secret</script>"},
+                    "serverOnly": ["large", "discarded", "value"],
+                    "value": {"nested": "kept"}
+                }),
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(
+            parsed["state"],
+            serde_json::json!({"value": {"nested": "kept"}})
+        );
+        assert!(!output.contains("serverOnly"));
+        assert!(!output.contains("<script>secret</script>"), "{output}");
+    }
+
+    #[test]
     fn uncertain_partial_surface_preserves_complete_raw_state() {
         let prepared = prepared_full_state_partial_protocol();
         let output = prepared
-            .render_partial(
+            .render_partial_json(
                 r#"{"serverOnly":"keep","value":1e2}"#,
                 "index.html",
                 "/",
@@ -2109,11 +4116,79 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_partial_surface_strips_escaped_reserved_inject_key() {
+        let prepared = prepared_full_state_partial_protocol();
+        for state in [
+            r#"{"\u0024webui":{"bodyEnd":"<script>secret</script>"},"serverOnly":"keep","value":1}"#,
+            r#"{"$\u0077\u0065\u0062\u0075\u0069":{"bodyEnd":"<script>secret</script>"},"serverOnly":"keep","value":1}"#,
+        ] {
+            let output = prepared
+                .render_partial_json(state, "index.html", "/", "")
+                .unwrap();
+            let parsed: Value = serde_json::from_str(&output).unwrap();
+
+            assert_eq!(
+                parsed["state"],
+                serde_json::json!({"serverOnly": "keep", "value": 1})
+            );
+            assert!(!output.contains("<script>secret</script>"), "{output}");
+        }
+    }
+
+    #[test]
+    fn parsed_full_partial_state_strips_reserved_inject_key() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = prepared
+            .render_partial(
+                serde_json::json!({
+                    "$webui": {"bodyEnd": "<script>secret</script>"},
+                    "serverOnly": "keep",
+                    "value": 1
+                }),
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(
+            parsed["state"],
+            serde_json::json!({"serverOnly": "keep", "value": 1})
+        );
+        assert!(!output.contains("<script>secret</script>"), "{output}");
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_nested_reserved_key_bytes() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = prepared
+            .render_partial_json(
+                r#"{"outer": { "$webui": {"bodyEnd": "application data"} }, "value": 1e2}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+
+        assert!(
+            output.contains(
+                r#""state":{"outer": { "$webui": {"bodyEnd": "application data"} }, "value": 1e2}"#
+            ),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn partial_state_serialization_rejects_invalid_json() {
         let prepared = prepared_partial_protocol(&[]);
         let error = prepared
-            .render_partial(r#"{"broken":"#, "index.html", "/", "")
+            .render_partial_json(r#"{"broken":"#, "index.html", "/", "")
             .expect_err("invalid state JSON must fail");
+        assert!(
+            matches!(error, HandlerError::InvalidState(_)),
+            "host bindings classify caller state errors by variant, got {error:?}"
+        );
         assert!(error.to_string().contains("invalid state JSON"));
     }
 
@@ -2121,7 +4196,7 @@ mod tests {
     fn partial_state_serialization_emits_empty_state_without_client_components() {
         let prepared = Protocol::new(WebUIProtocol::default());
         let output = prepared
-            .render_partial(r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
+            .render_partial_json(r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
             .unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"], serde_json::json!({}));
@@ -2132,8 +4207,12 @@ mod tests {
         let prepared = prepared_partial_protocol(&["value"]);
         for state in [r#"{"value":1e9999}"#, r#"{"serverOnly":1e9999,"value":1}"#] {
             let error = prepared
-                .render_partial(state, "index.html", "/", "")
+                .render_partial_json(state, "index.html", "/", "")
                 .expect_err("out-of-range state numbers must fail");
+            assert!(
+                matches!(error, HandlerError::InvalidState(_)),
+                "host bindings classify caller state errors by variant, got {error:?}"
+            );
             assert!(error.to_string().contains("invalid state JSON"));
         }
     }
@@ -2142,7 +4221,7 @@ mod tests {
     fn partial_state_serialization_uses_last_duplicate_and_decodes_keys() {
         let prepared = prepared_partial_protocol(&["value"]);
         let output = prepared
-            .render_partial(r#"{"value":1,"va\u006cue":2}"#, "index.html", "/", "")
+            .render_partial_json(r#"{"value":1,"va\u006cue":2}"#, "index.html", "/", "")
             .unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"], serde_json::json!({"value": 2}));
@@ -2259,12 +4338,14 @@ mod tests {
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("card")],
+                contains_boundary: false,
             },
         );
 
@@ -2283,12 +4364,14 @@ mod tests {
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("card")],
+                contains_boundary: false,
             },
         );
 
@@ -2326,36 +4409,42 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "for-items"),
                     WebUIFragment::attribute_template("title", "attr-title"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-category-nav")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "for-items".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "attr-title".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("Products")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<article></article>")],
+                contains_boundary: false,
             },
         );
 
@@ -2383,6 +4472,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2405,36 +4495,43 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-search-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>grid</div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>detail</div>")],
+                contains_boundary: false,
             },
         );
 
@@ -2476,6 +4573,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2488,6 +4586,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2510,30 +4610,36 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-account-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-profile-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<profile></profile>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-order-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-order-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-order-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<detail></detail>")],
+                contains_boundary: false,
             },
         );
 
@@ -2580,6 +4686,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2592,6 +4699,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2604,30 +4713,35 @@ mod tests {
                     ),
                     WebUIFragment::for_loop("item", "items", "item-loop"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-filters".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-filter-panel")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "item-loop".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-item-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-filter-panel".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<filters></filters>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-item-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<item></item>")],
+                contains_boundary: false,
             },
         );
 
@@ -2662,6 +4776,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2674,18 +4789,22 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-search-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<grid></grid>")],
+                contains_boundary: false,
             },
         );
 
@@ -2751,6 +4870,8 @@ mod tests {
                     ],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         for id in [
@@ -2764,6 +4885,7 @@ mod tests {
                 id.to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw("<x></x>")],
+                    contains_boundary: false,
                 },
             );
         }
@@ -2784,62 +4906,176 @@ mod tests {
         }
 
         // Request the root path: neither "slow" nor "failing" is in the matched chain.
-        let reachable = collect_reachable_components_for_request(
+        let reachable = collect_reachable_component_order_for_request(
             &protocol,
             "index.html",
             "/",
             &CompiledRouteIndex::new(&protocol),
         );
         assert!(
-            reachable.contains("loading-skeleton"),
+            reachable.iter().any(|name| name == "loading-skeleton"),
             "pending component of an unmatched sibling route must be inventoried: {reachable:?}"
         );
         assert!(
-            reachable.contains("error-display"),
+            reachable.iter().any(|name| name == "error-display"),
             "error component of an unmatched sibling route must be inventoried: {reachable:?}"
         );
     }
 
     #[test]
-    fn test_render_partial_separates_module_styles_from_templates() {
+    fn component_reachability_propagates_route_dependency_to_parent() {
+        let protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "comp-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component("comp-b")],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "comp-b".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route("/", "page-a")],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "page-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                    contains_boundary: false,
+                },
+            ),
+        ]));
+        let component_index = build_component_index(&protocol);
+        let reachability = ComponentReachabilityIndex::new(&protocol, &component_index);
+
+        assert_eq!(
+            reachability.is_route_dependent(component_index["comp-a"]),
+            Some(true)
+        );
+        assert_eq!(
+            reachability.is_route_dependent(component_index["comp-b"]),
+            Some(true)
+        );
+        assert_eq!(
+            reachability.is_route_dependent(component_index["page-a"]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn request_reachability_visits_reused_route_component_at_each_base() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "shared-shell".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route("details", "detail-page")],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "detail-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Detail</p>")],
+                    contains_boundary: false,
+                },
+            ),
+        ]));
+        for tag in ["shared-shell", "detail-page"] {
+            protocol
+                .components
+                .entry(tag.to_string())
+                .or_default()
+                .template = "<template></template>".to_string();
+        }
+        let route_index = CompiledRouteIndex::new(&protocol);
+        let handler_protocol = Protocol::new(protocol.clone());
+        let reachability = handler_protocol.component_reachability();
+        let shell = handler_protocol.component_index()["shared-shell"];
+        let roots = [
+            (shell, Some(Box::from("/other"))),
+            (shell, Some(Box::from("/account"))),
+        ];
+
+        let reachable = collect_reachable_components_from_roots(
+            &protocol,
+            &roots,
+            reachability,
+            "/account/details",
+            &route_index,
+        );
+
+        assert!(
+            reachable.iter().any(|tag| tag == "detail-page"),
+            "the second route base must not be hidden by fragment-id deduplication: {reachable:?}"
+        );
+    }
+
+    #[test]
+    fn component_reachability_index_is_lazy() {
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([(
+            "comp-a".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>leaf</p>")],
+                contains_boundary: false,
+            },
+        )])));
+
+        assert!(protocol.component_reachability.get().is_none());
+        assert_eq!(
+            protocol
+                .component_reachability()
+                .is_route_dependent(protocol.component_index["comp-a"]),
+            Some(false)
+        );
+        assert!(protocol.component_reachability.get().is_some());
+    }
+
+    #[test]
+    fn test_render_partial_carries_module_css_in_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
-        assert_eq!(styles.len(), 1);
-        let style_html = styles[0].as_str().unwrap_or_default();
-        assert!(
-            style_html.starts_with(r#"<script type="importmap""#)
-                && style_html.contains(r#""my-page":"data:text/css,"#),
-            "module style entry should be an importmap registering the component specifier: {style_html}"
+        assert_eq!(partial["componentStyles"]["version"], 1);
+        assert_eq!(partial["componentStyles"]["strategy"], "module");
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({
+                "kind": "module",
+                "specifier": "my-page",
+                "css": ".page{color:red}"
+            })
         );
-        assert!(
-            style_html.contains(".page{color:red}"),
-            "module style entry should contain the CSS content verbatim inside the data: URI: {style_html}"
+        assert_eq!(
+            partial["componentStyles"]["closures"]["my-page"],
+            serde_json::json!(["my-page"])
         );
 
         // templates should contain only JSON-safe metadata
@@ -2849,27 +5085,80 @@ mod tests {
         assert_eq!(templates.len(), 1);
         let template = templates.get("my-page").expect("my-page template");
         assert_eq!(template["h"], "<p>page</p>");
+
+        let inventory = partial["inventory"].as_str().expect("inventory");
+        let repeated =
+            render_partial_metadata(&protocol, "index.html", "/", inventory, &mut index).unwrap();
+        assert!(repeated["templates"].as_object().unwrap().is_empty());
+        assert_eq!(
+            repeated["componentStyles"]["resources"],
+            serde_json::json!({}),
+            "inventoried style definitions must not be retransmitted"
+        );
+        assert_eq!(
+            repeated["componentStyles"]["closures"],
+            serde_json::json!({}),
+            "inventoried style closures must not be retransmitted"
+        );
     }
 
     #[test]
-    fn test_render_partial_link_strategy_has_empty_template_styles() {
-        // Link-strategy components have css_href but no css content.
-        // templateStyles should be empty; templates should contain metadata.
+    fn styled_protocol_without_closures_is_rejected() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component("legacy-page")],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "legacy-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Legacy</p>")],
+                    contains_boundary: false,
+                },
+            ),
+        ]);
+        protocol.components.insert(
+            "legacy-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Legacy</p>"}"#.to_string(),
+                css: ".legacy{display:block}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
+
+        let mut index = ProtocolIndex::new(&protocol);
+        let error = render_partial_metadata(&protocol, "index.html", "/", "", &mut index)
+            .expect_err("styled protocols require closure metadata");
+        assert!(error
+            .to_string()
+            .contains("component style closure metadata is required"));
+    }
+
+    #[test]
+    fn test_render_partial_link_strategy_uses_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
         let component = protocol
             .components
             .entry("my-page".to_string())
@@ -2877,90 +5166,79 @@ mod tests {
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css_href = "my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial["templates"]
             .as_object()
             .expect("templates should be an object");
 
-        assert!(
-            styles.is_empty(),
-            "Link strategy should produce empty templateStyles: {styles:?}"
-        );
         assert_eq!(templates.len(), 1, "should include template metadata");
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({"kind": "link", "href": "my-page.css"})
+        );
     }
 
     #[test]
-    fn test_render_partial_style_strategy_has_empty_template_styles() {
-        // Style-strategy components have CSS embedded in the template HTML
-        // (as <style>...</style>), not in component.css.
-        // templateStyles should be empty; templates should contain metadata.
+    fn test_render_partial_style_strategy_uses_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
-        // Style strategy: CSS is inside the template HTML, not in component.css
-        component.template_json = r#"{"h":"<style>.p{color:red}</style><p>page</p>"}"#.to_string();
-        // css is empty for Style strategy
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
+        component.css = ".p{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial["templates"]
             .as_object()
             .expect("templates should be an object");
 
-        assert!(
-            styles.is_empty(),
-            "Style strategy should produce empty templateStyles: {styles:?}"
-        );
         assert_eq!(templates.len(), 1, "should include template metadata");
-        assert!(
-            templates
-                .get("my-page")
-                .and_then(|template| template["h"].as_str())
-                .unwrap_or_default()
-                .contains("<style>"),
-            "Style strategy template should contain inline <style> tag"
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({"kind": "style", "css": ".p{color:red}"})
         );
     }
 
     #[test]
-    fn test_render_partial_empty_styles_for_no_css_components() {
+    fn test_render_partial_emits_empty_component_styles_for_no_css_components() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -2975,38 +5253,43 @@ mod tests {
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
-        assert!(
-            styles.is_empty(),
-            "templateStyles should be empty when components have no CSS"
+        assert_eq!(
+            partial["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            partial["componentStyles"]["closures"],
+            serde_json::json!({})
         );
     }
 
     #[test]
-    fn test_render_partial_sends_styles_even_when_templates_filtered_by_inventory() {
+    fn test_render_partial_filters_styles_with_template_inventory() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call to establish inventory
@@ -3015,15 +5298,8 @@ mod tests {
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
-        // Second call with the inventory — both templates and styles should be empty
-        // because the inventory covers this component.  The SSR handler emits all
-        // module style definitions in <head> for inventoried components, so the
-        // client already has the CSS definition.
         let partial2 =
             render_partial_metadata(&protocol, "index.html", "/", inv, &mut index).unwrap();
-        let styles = partial2["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial2["templates"]
             .as_object()
             .expect("templates should be an object");
@@ -3032,10 +5308,337 @@ mod tests {
             templates.is_empty(),
             "templates should be empty when inventory is full"
         );
-        assert!(
-            styles.is_empty(),
-            "module styles should be empty when inventory is full — SSR already placed them"
+        assert_eq!(
+            partial2["componentStyles"]["resources"],
+            serde_json::json!({})
         );
+        assert_eq!(
+            partial2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn component_style_delta_sends_missing_and_reuses_registered_closure_resources() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["page-b", "shared-card"] {
+            protocol.fragments.insert(
+                tag.to_string(),
+                FragmentList {
+                    fragments: Vec::new(),
+                    contains_boundary: false,
+                },
+            );
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.style_closures.insert(
+            "page-b".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["page-b".to_string(), "shared-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_closures.insert(
+            "shared-card".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["shared-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        let mut index = ProtocolIndex::new(&protocol);
+
+        let first_page =
+            render_component_templates(&protocol, &["page-b"], "", &mut index).unwrap();
+        assert!(first_page["componentStyles"]["resources"]["page-b"].is_object());
+        assert!(
+            first_page["componentStyles"]["resources"]["shared-card"].is_object(),
+            "a missing closure dependency must be sent with its new root"
+        );
+
+        let shared =
+            render_component_templates(&protocol, &["shared-card"], "", &mut index).unwrap();
+        let shared_inventory = shared["inventory"].as_str().unwrap_or_default();
+        let page = render_component_templates(&protocol, &["page-b"], shared_inventory, &mut index)
+            .unwrap();
+        assert_eq!(
+            page["componentStyles"]["closures"]["page-b"],
+            serde_json::json!(["page-b", "shared-card"])
+        );
+        assert!(page["componentStyles"]["resources"]["page-b"].is_object());
+        assert!(
+            page["componentStyles"]["resources"]
+                .get("shared-card")
+                .is_none(),
+            "a resource already covered by inventory must not be retransmitted"
+        );
+    }
+
+    #[test]
+    fn bundled_style_metadata_tracks_chunks_independently_and_covers_members() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "b-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+            protocol.style_closures.insert(
+                tag.to_string(),
+                webui_protocol::ComponentStyleClosure {
+                    component_tags: vec![tag.to_string()],
+                    style_chunks: Vec::new(),
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("index.html".to_string(), FragmentList::default());
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+                style_chunks: vec![0],
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-2".to_string(),
+            css: ".a-card{display:block}\n.b-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+        });
+
+        let initial =
+            collect_component_styles(&protocol, ["index.html", "a-card", "b-card"]).unwrap();
+        assert_eq!(
+            initial["resources"]["_chunk-a-card-2"]["members"],
+            serde_json::json!(["a-card", "b-card"])
+        );
+        assert_eq!(
+            initial["closures"],
+            serde_json::json!({ "index.html": ["_chunk-a-card-2"] }),
+            "member closures already covered by the requested tree must not duplicate CSS"
+        );
+        assert_eq!(
+            initial["resources"].as_object().map(serde_json::Map::len),
+            Some(1)
+        );
+
+        let component_index = build_component_index(&protocol);
+        let mut component_inventory = vec![0u8; component_index.len().div_ceil(8)];
+        for index in component_index.values() {
+            set_component(&mut component_inventory, *index);
+        }
+        let from_component_inventory = collect_component_styles_for_inventory(
+            &protocol,
+            ["index.html"],
+            &component_inventory,
+            &component_index,
+        )
+        .unwrap();
+        assert!(
+            from_component_inventory["resources"]["_chunk-a-card-2"].is_object(),
+            "component-template bits do not prove that the client registered a chunk"
+        );
+
+        let style_index = build_style_resource_index(&protocol);
+        let mut style_inventory = vec![0u8; style_index.len().div_ceil(8)];
+        set_component(&mut style_inventory, style_index["_chunk-a-card-2"]);
+        let from_style_inventory = collect_component_style_delta(
+            &protocol,
+            ["index.html"],
+            &style_inventory,
+            &style_index,
+        )
+        .unwrap();
+        assert_eq!(
+            from_style_inventory["resources"],
+            serde_json::json!({}),
+            "the exact style-resource inventory should suppress a registered chunk"
+        );
+        let chunk_index = protocol.style_chunk_index();
+        let borrowed = collect_borrowed_component_style_delta(
+            &protocol,
+            ["index.html"],
+            &style_inventory,
+            &style_index,
+            &chunk_index,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&borrowed).unwrap(),
+            serde_json::to_string(&from_style_inventory).unwrap(),
+            "the borrowed streaming serializer must preserve the canonical style payload bytes"
+        );
+    }
+
+    #[test]
+    fn borrowed_streaming_style_payload_matches_owned_for_every_strategy() {
+        for strategy in [
+            webui_protocol::CssStrategy::Link,
+            webui_protocol::CssStrategy::Style,
+            webui_protocol::CssStrategy::Module,
+        ] {
+            let mut protocol = WebUIProtocol::default();
+            protocol.set_css_strategy(strategy);
+            protocol
+                .fragments
+                .insert("index.html".to_string(), FragmentList::default());
+            protocol.components.insert(
+                "a-card".to_string(),
+                webui_protocol::ComponentData {
+                    css: ".a-card{display:block}".to_string(),
+                    css_href: "/a-card.css".to_string(),
+                    ..Default::default()
+                },
+            );
+            protocol.style_closures.insert(
+                "index.html".to_string(),
+                webui_protocol::ComponentStyleClosure {
+                    component_tags: vec!["a-card".to_string()],
+                    style_chunks: Vec::new(),
+                },
+            );
+
+            let style_index = build_component_index(&protocol);
+            let style_inventory = vec![0u8; style_index.len().div_ceil(8)];
+            let owned = collect_component_style_delta(
+                &protocol,
+                ["index.html"],
+                &style_inventory,
+                &style_index,
+            )
+            .unwrap();
+            let chunk_index = protocol.style_chunk_index();
+            let borrowed = collect_borrowed_component_style_delta(
+                &protocol,
+                ["index.html"],
+                &style_inventory,
+                &style_index,
+                &chunk_index,
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_string(&borrowed).unwrap(),
+                serde_json::to_string(&owned).unwrap(),
+                "borrowed payload differs for {strategy:?}"
+            );
+        }
+    }
+
+    /// A closure that lists members must still deliver the chunk that ships
+    /// them.
+    ///
+    /// Only closures the bundler treated as roots carry `style_chunks`; a plain
+    /// Light component keeps its member list. Delivering those members verbatim
+    /// re-ships bytes the covering chunk already contains, and leaves the
+    /// closure correct only if some other closure installs the chunk first.
+    /// Resolving each member through the chunk index removes both problems.
+    #[test]
+    fn member_closures_deliver_the_chunk_that_covers_them() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "b-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("lazy-panel".to_string(), FragmentList::default());
+        // Not a bundler root, so it keeps its member list.
+        protocol.style_closures.insert(
+            "lazy-panel".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-2".to_string(),
+            css: ".a-card{display:block}\n.b-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+        });
+
+        let styles = collect_component_styles(&protocol, ["lazy-panel"]).unwrap();
+        assert_eq!(
+            styles["closures"],
+            serde_json::json!({ "lazy-panel": ["_chunk-a-card-2"] }),
+            "both members resolve to one chunk, named once"
+        );
+        assert_eq!(
+            styles["resources"].as_object().map(serde_json::Map::len),
+            Some(1),
+            "the per-member stylesheets the chunk already contains are not re-shipped"
+        );
+        assert!(
+            styles["resources"]["_chunk-a-card-2"].is_object(),
+            "the closure carries the chunk itself, not a dependency on another closure"
+        );
+    }
+
+    /// A member with no covering chunk still delivers its own stylesheet.
+    #[test]
+    fn member_closures_fall_back_when_no_chunk_covers_them() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "solo-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("lazy-panel".to_string(), FragmentList::default());
+        protocol.style_closures.insert(
+            "lazy-panel".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "solo-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-1".to_string(),
+            css: ".a-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string()],
+        });
+
+        let styles = collect_component_styles(&protocol, ["lazy-panel"]).unwrap();
+        assert_eq!(
+            styles["closures"],
+            serde_json::json!({ "lazy-panel": ["_chunk-a-card-1", "solo-card"] }),
+            "cascade order is preserved across the chunked and unchunked members"
+        );
+        assert!(styles["resources"]["solo-card"].is_object());
     }
 
     #[test]
@@ -3051,6 +5654,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("app-shell")],
+                contains_boundary: false,
             },
         );
 
@@ -3069,6 +5673,8 @@ mod tests {
                     }),
                     WebUIFragment::component("cart-panel"),
                 ],
+
+                contains_boundary: false,
             },
         );
 
@@ -3077,18 +5683,21 @@ mod tests {
             "my-navbar".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav/>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "page-about".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>About</h1>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "cart-panel".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<aside>Cart</aside>")],
+                contains_boundary: false,
             },
         );
 
@@ -3189,18 +5798,22 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "compose-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3240,12 +5853,15 @@ mod tests {
                     exact: true,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "items-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3253,7 +5869,7 @@ mod tests {
             "items-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
-                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_mode: Some(webui_protocol::StateProjectionMode::Keys as i32),
                 navigation_keys: vec!["items".into(), "title".into()],
                 ..Default::default()
             },
@@ -3288,12 +5904,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("authored-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "authored-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Card</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3302,6 +5920,7 @@ mod tests {
             webui_protocol::ComponentData {
                 hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["title".into()],
+                navigation_mode: Some(webui_protocol::StateProjectionMode::None as i32),
                 ..Default::default()
             },
         );
@@ -3322,18 +5941,157 @@ mod tests {
     }
 
     #[test]
+    fn prepared_navigation_projects_owned_state_and_reports_matches() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/items".into(),
+                        fragment_id: "items-page".into(),
+                        exact: true,
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "items-page".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                    ..Default::default()
+                },
+            ),
+        ]));
+        protocol.components.insert(
+            "items-page".into(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_mode: Some(StateProjectionMode::Keys as i32),
+                navigation_keys: vec!["serverDerived".into(), "title".into()],
+                ..Default::default()
+            },
+        );
+        let protocol = Protocol::new(protocol);
+        let state = serde_json::json!({
+            "serverDerived": [1, 2],
+            "title": "Catalog",
+            "serverOnly": [3, 4],
+            "$webui": {"bodyEnd": "<script>host only</script>"}
+        });
+        let pointer = state["serverDerived"].as_array().unwrap().as_ptr();
+        assert!(protocol.matches_route("index.html", "/items"));
+        assert!(!protocol.matches_route("index.html", "/missing"));
+        let partial = protocol
+            .prepare_partial(state, "index.html", "/items", "")
+            .unwrap();
+        assert!(partial.is_match());
+        assert_eq!(
+            partial.response.state["serverDerived"]
+                .as_array()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+        let wire = serde_json::to_value(partial).unwrap();
+        assert_eq!(
+            wire["state"],
+            serde_json::json!({"serverDerived": [1, 2], "title": "Catalog"})
+        );
+        assert_eq!(wire["path"], "/items");
+        assert_eq!(wire["chain"][0]["component"], "items-page");
+        assert!(wire.get("matched").is_none());
+        let missing = protocol
+            .prepare_partial(Value::Null, "index.html", "/missing", "")
+            .unwrap();
+        assert!(!missing.is_match());
+    }
+
+    #[test]
+    fn prepared_navigation_matches_owned_and_raw_string_responses() {
+        let protocol = prepared_partial_protocol(&["value"]);
+        let state = serde_json::json!({
+            "value": {"label": "片", "count": 42},
+            "unused": ["discarded"],
+            "$webui": {"headEnd": "<meta name=\"host-only\">"}
+        });
+        let prepared = protocol
+            .prepare_partial(state.clone(), "index.html", "/", "")
+            .unwrap();
+        let bytes = serde_json::to_vec(&prepared).unwrap();
+        assert_eq!(
+            bytes,
+            protocol
+                .render_partial(state.clone(), "index.html", "/", "")
+                .unwrap()
+                .into_bytes()
+        );
+        assert_eq!(
+            bytes,
+            protocol
+                .render_partial_json(&state.to_string(), "index.html", "/", "")
+                .unwrap()
+                .into_bytes()
+        );
+    }
+
+    #[test]
+    fn prepared_navigation_filters_reserved_state_when_projection_is_unknown() {
+        let protocol = prepared_full_state_partial_protocol();
+        let response = protocol
+            .prepare_partial(
+                serde_json::json!({
+                    "value": 1,
+                    "dynamicField": [2, 3],
+                    "$webui": {"bodyEnd": "<script>host only</script>"}
+                }),
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let wire = serde_json::to_value(response).unwrap();
+        assert_eq!(
+            wire["state"],
+            serde_json::json!({"value": 1, "dynamicField": [2, 3]})
+        );
+    }
+
+    #[test]
+    fn prepared_navigation_keeps_state_for_resident_templates() {
+        let protocol = prepared_partial_protocol(&["value"]);
+        let first = protocol
+            .prepare_partial(Value::Null, "index.html", "/", "")
+            .unwrap();
+        let first = serde_json::to_value(first).unwrap();
+        let response = protocol
+            .prepare_partial(
+                serde_json::json!({"value": "updated", "unused": "drop"}),
+                "index.html",
+                "/",
+                first["inventory"].as_str().unwrap(),
+            )
+            .unwrap();
+        let wire = serde_json::to_value(response).unwrap();
+        assert!(wire["templates"].as_object().unwrap().is_empty());
+        assert_eq!(wire["state"], serde_json::json!({"value": "updated"}));
+    }
+
+    #[test]
     fn fully_static_scriptless_partial_emits_empty_state() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("static-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "static-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Static</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3341,6 +6099,7 @@ mod tests {
             "static-card".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Static</p>","th":1}"#.into(),
+                navigation_mode: Some(webui_protocol::StateProjectionMode::None as i32),
                 ..Default::default()
             },
         );
@@ -3364,36 +6123,32 @@ mod tests {
             "settings-dialog".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div class='dialog'>Settings</div>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("settings-dialog".to_string())
             .or_default();
         comp.template_json = r#"{"h":"<div>Settings</div>"}"#.to_string();
         comp.css = ".dialog{position:fixed}".to_string();
+        protocol.populate_style_closures(&["settings-dialog"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let result =
             render_component_templates(&protocol, &["settings-dialog"], "", &mut index).unwrap();
         let templates = result["templates"].as_object().expect("templates object");
-        let styles = result["templateStyles"].as_array().expect("styles array");
-
         assert_eq!(templates.len(), 1);
         assert_eq!(templates["settings-dialog"]["h"], "<div>Settings</div>");
-        assert_eq!(styles.len(), 1);
-        let style_html = styles[0].as_str().unwrap();
-        assert!(
-            style_html.starts_with(r#"<script type="importmap""#)
-                && style_html.contains(r#""settings-dialog":"data:text/css,"#),
-            "templateStyles entry should be an importmap registering settings-dialog: {style_html}"
-        );
-        // CSS content is embedded inside the data: URI verbatim — `{`, `}`,
-        // `\` are not in the percent-encode set.
-        assert!(
-            style_html.contains(".dialog{position:fixed}"),
-            "templateStyles entry should contain the CSS content verbatim: {style_html}"
+        assert_eq!(
+            result["componentStyles"]["resources"]["settings-dialog"],
+            serde_json::json!({
+                "kind": "module",
+                "specifier": "settings-dialog",
+                "css": ".dialog{position:fixed}"
+            })
         );
         assert!(
             index
@@ -3410,15 +6165,18 @@ mod tests {
             "my-dialog".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Dialog</div>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("my-dialog".to_string())
             .or_default();
         comp.template_json = r#"{"h":"<div>Dialog</div>"}"#.to_string();
         comp.css = ".d{color:red}".to_string();
+        protocol.populate_style_closures(&["my-dialog"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call: no inventory → should return the component
@@ -3431,7 +6189,14 @@ mod tests {
         let result2 =
             render_component_templates(&protocol, &["my-dialog"], inv, &mut index).unwrap();
         assert_eq!(result2["templates"].as_object().unwrap().len(), 0);
-        assert_eq!(result2["templateStyles"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            result2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            result2["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
     }
 
     #[test]
@@ -3443,7 +6208,10 @@ mod tests {
         let result =
             render_component_templates(&protocol, &["nonexistent-widget"], "", &mut index).unwrap();
         assert_eq!(result["templates"].as_object().unwrap().len(), 0);
-        assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            result["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
     }
 
     #[test]
@@ -3475,6 +6243,8 @@ mod tests {
                     ],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
 
@@ -3490,6 +6260,7 @@ mod tests {
                 name.to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw(format!("<p>{name}</p>"))],
+                    contains_boundary: false,
                 },
             );
         }
@@ -3637,18 +6408,22 @@ mod tests {
                     cache_tags: vec!["folders".to_string()],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mail-thread".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Thread</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3694,18 +6469,22 @@ mod tests {
                     }],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "compose-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3744,18 +6523,22 @@ mod tests {
                     }],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "reply-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Reply</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);

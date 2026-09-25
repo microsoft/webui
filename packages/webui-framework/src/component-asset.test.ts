@@ -4,8 +4,15 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
+import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
 import { getTemplate, type TemplateMeta } from './template.js';
 import { defineComponentAssets } from './component-asset.js';
+import { validateAsset } from './component-asset/asset.js';
+import {
+  installComponentStyles,
+  registerComponentStyles,
+  setCssModuleLoaderForTests,
+} from './element/styles.js';
 
 type GlobalName = 'window' | 'document';
 
@@ -42,29 +49,227 @@ function assetObjectModule(asset: unknown): string {
 }
 
 function componentAsset(templates: Record<string, TemplateMeta>): Record<string, unknown> {
+  const components = Object.keys(templates);
   return {
     type: 'webui-component-asset',
-    version: 1,
-    components: Object.keys(templates),
+    version: 3,
+    kind: 'root',
+    root: components[0],
+    components,
+    requiredComponents: components,
+    externalComponents: [],
+    imports: [],
+    componentStyles: emptyComponentStyles(),
     templates,
   };
 }
 
+function emptyComponentStyles(): Record<string, unknown> {
+  return { version: 1, strategy: 'style', resources: {}, closures: {} };
+}
+
 describe('component asset helpers', () => {
-  test('manifest preload registers templates and injects nonce importmaps', async () => {
-    const appended: ScriptMock[] = [];
-    const template: TemplateMeta = { h: '<p>Lazy</p>' };
-    const previousWindow = setGlobal('window', { __webui: { nonce: 'abc123' } });
+  test('generated style metadata is a no-op without browser globals', () => {
+    const previousWindow = setGlobal('window', undefined);
+    const previousDocument = setGlobal('document', undefined);
+
+    try {
+      assert.equal(takeGeneratedComponentAssetStyles('server-card'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('loads compiler-generated style metadata beside the authored asset', async () => {
+    const template: TemplateMeta = { h: '<p>Generated</p>' };
+    const asset = assetObjectModule(componentAsset({ 'generated-card': template }));
+    let removed = false;
+    const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
       baseURI: 'https://example.test/app/',
-      createElement(tag: string) {
-        assert.equal(tag, 'script');
-        return { type: '', nonce: '', textContent: '' };
+      getElementById(id: string) {
+        if (id === 'webui-data') return null;
+        assert.equal(id, 'webui-component-assets');
+        return {
+          textContent: JSON.stringify({
+            'generated-card': ['/generated-card.css'],
+          }),
+          remove() {
+            removed = true;
+          },
+        };
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'generated-card': { asset },
+      });
+      await assets.preload('generated-card').asset;
+
+      assert.equal(removed, true);
+      assert.deepEqual(window.__webui?.componentAssetStyles, {});
+      assert.deepEqual(getTemplate('generated-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('accepts a bundler-owned asset importer and invokes it once', async () => {
+    const template: TemplateMeta = { h: '<p>Bundled</p>' };
+    let imports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'bundled-card': {
+          asset: async () => {
+            imports += 1;
+            return {
+              default: componentAsset({ 'bundled-card': template }),
+            };
+          },
+        },
+      });
+      const first = assets.preload('bundled-card');
+      const second = assets.preload('bundled-card');
+      await Promise.all([first.asset, second.asset]);
+
+      assert.equal(first, second);
+      assert.equal(imports, 1);
+      assert.deepEqual(getTemplate('bundled-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('retries a rejected asset importer on the next preload', async () => {
+    const template: TemplateMeta = { h: '<p>Retry asset</p>' };
+    let imports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'retry-asset-card': {
+          asset: async () => {
+            imports += 1;
+            if (imports === 1) throw new Error('transient asset failure');
+            return {
+              default: componentAsset({ 'retry-asset-card': template }),
+            };
+          },
+        },
+      });
+      const first = assets.preload('retry-asset-card');
+      await assert.rejects(first.asset, /transient asset failure/);
+
+      const second = assets.preload('retry-asset-card');
+      assert.notEqual(second, first);
+      await second.asset;
+
+      assert.equal(imports, 2);
+      assert.deepEqual(getTemplate('retry-asset-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('retries a rejected authored module on the next preload', async () => {
+    const template: TemplateMeta = { h: '<p>Retry module</p>' };
+    let moduleImports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'retry-module-card': {
+          asset: assetObjectModule(componentAsset({ 'retry-module-card': template })),
+          module: async () => {
+            moduleImports += 1;
+            if (moduleImports === 1) throw new Error('transient module failure');
+          },
+        },
+      });
+      const first = assets.preload('retry-module-card');
+      await first.asset;
+      assert.ok(first.module);
+      await assert.rejects(first.module, /transient module failure/);
+
+      const second = assets.preload('retry-module-card');
+      assert.notEqual(second, first);
+      await second.asset;
+      assert.ok(second.module);
+      await second.module;
+
+      assert.equal(moduleImports, 2);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('enhanced asset styles install in closure order and deduplicate', async () => {
+    class StyleElement {
+      rel = '';
+      href = '';
+      textContent = '';
+      private readonly attributes = new Map<string, string>();
+
+      setAttribute(name: string, value: string): void {
+        this.attributes.set(name, value);
+      }
+
+      getAttribute(name: string): string | null {
+        return this.attributes.get(name) ?? null;
+      }
+    }
+
+    const markers: StyleElement[] = [];
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      createElement() {
+        return new StyleElement();
       },
       head: {
-        appendChild(script: ScriptMock) {
-          appended.push(script);
-          return script;
+        children: markers,
+        insertBefore(marker: StyleElement, before: StyleElement | null) {
+          const index = before ? markers.indexOf(before) : -1;
+          if (index === -1) markers.push(marker);
+          else markers.splice(index, 0, marker);
+          return marker;
         },
       },
       getElementById() {
@@ -77,16 +282,163 @@ describe('component asset helpers', () => {
 
     try {
       const assets = defineComponentAssets({
+        'asset-parent': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'asset-parent': { h: '<asset-child></asset-child>' },
+              'asset-child': { h: '<p>Child</p>' },
+            }),
+            version: 3,
+            componentStyles: {
+              version: 1,
+              strategy: 'style',
+              resources: {
+                'asset-parent': { kind: 'style', css: '.parent{}' },
+                'asset-child': { kind: 'style', css: '.child{}' },
+              },
+              closures: {
+                'asset-parent': ['asset-parent', 'asset-child'],
+                'asset-child': ['asset-child'],
+              },
+            },
+          }),
+        },
+      });
+
+      await assets.preload('asset-parent').asset;
+      await installComponentStyles('asset-parent', document);
+      await installComponentStyles('asset-parent', document);
+
+      assert.deepEqual(
+        markers.map(marker => marker.getAttribute('data-webui-resource')),
+        ['asset-parent', 'asset-child'],
+      );
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('validates the version boundary for componentStyles', () => {
+    const asset = componentAsset({ 'version-card': { h: '<p>Version</p>' } });
+    validateAsset(asset, 'root');
+
+    assert.throws(() => validateAsset({
+      ...asset,
+      version: 2,
+    }, 'root'), /Unsupported component asset version: 2/);
+
+    assert.throws(() => validateAsset({
+      ...asset,
+      componentStyles: undefined,
+    }, 'root'), /Version 3 component assets require componentStyles/);
+
+    assert.throws(() => validateAsset({
+      ...asset,
+      componentStyles: {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          'version-card': { kind: 'link', href: '/wrong.css' },
+        },
+        closures: {
+          'version-card': ['version-card'],
+        },
+      },
+    }, 'root'), /Invalid component style resource/);
+  });
+
+  test('rejects invalid version 3 styles before registering templates', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'invalid-v3-card': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'invalid-v3-card': { h: '<p>Must not register</p>' },
+            }),
+            version: 3,
+            componentStyles: {
+              version: 1,
+              strategy: 'style',
+              resources: {
+                'invalid-v3-card': { kind: 'link', href: '/wrong.css' },
+              },
+              closures: {
+                'invalid-v3-card': ['invalid-v3-card'],
+              },
+            },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('invalid-v3-card').asset,
+        /Invalid component style resource/,
+      );
+      assert.equal(getTemplate('invalid-v3-card'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('manifest preload registers templates and installs Module componentStyles with a nonce import map', async () => {
+    const appended: ScriptMock[] = [];
+    const template: TemplateMeta = { h: '<p>Lazy</p>' };
+    const previousWindow = setGlobal('window', { __webui: { nonce: 'abc123' } });
+    const previousDocument = setGlobal('document', {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      adoptedStyleSheets: [] as CSSStyleSheet[],
+      createElement(tag: string) {
+        assert.equal(tag, 'script');
+        return { type: '', nonce: '', textContent: '' };
+      },
+      head: {
+        children: [] as unknown[],
+        appendChild(script: ScriptMock) {
+          appended.push(script);
+          return script;
+        },
+      },
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+    setCssModuleLoaderForTests(() => Promise.resolve({ default: {} as CSSStyleSheet }));
+
+    try {
+      const assets = defineComponentAssets({
         'lazy-card': {
           asset: assetObjectModule({
             ...componentAsset({ 'lazy-card': template }),
-            templateStyles: [
-              '<script type="importmap">{"imports":{"lazy-card":"data:text/css,body%7B%7D"}}</script>',
-            ],
+            componentStyles: {
+              version: 1,
+              strategy: 'module',
+              resources: {
+                'lazy-card': { kind: 'module', specifier: 'lazy-card', css: 'body{}' },
+              },
+              closures: {
+                'lazy-card': ['lazy-card'],
+              },
+            },
           }),
         },
       });
       await assets.preload('lazy-card').asset;
+      await installComponentStyles('lazy-card', document);
 
       assert.equal(appended.length, 1);
       assert.equal(appended[0].type, 'importmap');
@@ -97,12 +449,58 @@ describe('component asset helpers', () => {
       );
       assert.deepEqual(getTemplate('lazy-card'), template);
     } finally {
+      setCssModuleLoaderForTests();
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }
   });
 
-  test('manifest preload registers template functions from the asset module', async () => {
+  test('manifest preload rejects malformed Module componentStyles', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'invalid-style-card': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'invalid-style-card': { h: '<p>Invalid style</p>' },
+            }),
+            componentStyles: {
+              version: 1,
+              strategy: 'module',
+              resources: {
+                'invalid-style-card': { kind: 'module', specifier: 'invalid-style-card' },
+              },
+              closures: {
+                'invalid-style-card': ['invalid-style-card'],
+              },
+            },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('invalid-style-card').asset,
+        /Invalid component style resource/,
+      );
+      assert.equal(window.__webui?.templates, undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('manifest preload embeds template functions without retaining the closure array', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
       baseURI: 'https://example.test/app/',
@@ -119,9 +517,21 @@ describe('component asset helpers', () => {
         'fn-card': {
           asset: assetModule(`{
             type: 'webui-component-asset',
-            version: 1,
+            version: 3,
+            kind: 'root',
+            root: 'fn-card',
             components: ['fn-card'],
-            templates: { 'fn-card': { h: '<p>Fn</p>' } },
+            requiredComponents: ['fn-card'],
+            externalComponents: [],
+            imports: [],
+            componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
+            templates: {
+              'fn-card': {
+                h: '<!--wc:0--><!--/wc-->',
+                b: [{ h: '<p>Fn</p>' }],
+                c: [[[0, ['ready']], 0, [[], 0]]]
+              }
+            },
             templateFunctions: { 'fn-card': [function(v,s){return !!v('ready',s);}] }
           }`),
         },
@@ -129,9 +539,9 @@ describe('component asset helpers', () => {
 
       await assets.preload('fn-card').asset;
 
-      const fns = window.__webui?.templateFns?.['fn-card'];
-      assert.equal(typeof fns?.[0], 'function');
-      assert.equal(getTemplate('fn-card')?.h, '<p>Fn</p>');
+      const template = getTemplate('fn-card');
+      assert.equal(typeof template?.c?.[0][0][0], 'function');
+      assert.equal(window.__webui?.templateFns, undefined);
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
@@ -141,6 +551,7 @@ describe('component asset helpers', () => {
   test('manifest preload reuses in-flight work and starts module plus data', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
       createElement() {
         return { type: '', nonce: '', textContent: '' };
@@ -163,12 +574,7 @@ describe('component asset helpers', () => {
     try {
       const assets = defineComponentAssets({
         'cached-card': {
-          asset: assetObjectModule({
-            ...componentAsset({ 'cached-card': { h: '<p>Cached</p>' } }),
-            templateStyles: [
-              '<script type="importmap">{"imports":{"cached-card":"data:text/css,body%7B%7D"}}</script>',
-            ],
-          }),
+          asset: assetObjectModule(componentAsset({ 'cached-card': { h: '<p>Cached</p>' } })),
           module: async () => {
             moduleCount += 1;
           },
@@ -349,7 +755,7 @@ describe('component asset helpers', () => {
     }
   });
 
-  test('manifest preload skips import when root template is already registered', async () => {
+  test('manifest preload imports the root graph when its root template is already registered', async () => {
     const previousWindow = setGlobal('window', {
       __webui: {
         styles: ['already-loaded'],
@@ -364,14 +770,428 @@ describe('component asset helpers', () => {
     });
 
     try {
+      const asset = JSON.stringify(componentAsset({
+        'already-loaded': { h: '<p>Already loaded</p>' },
+      }));
       const assets = defineComponentAssets({
         'already-loaded': {
-          asset: 'data:text/javascript,throw%20new%20Error(%22import%20should%20not%20run%22)',
+          asset: assetModule(
+            `(globalThis.__componentAssetImportCount = (globalThis.__componentAssetImportCount ?? 0) + 1, ${asset})`,
+          ),
         },
       });
       await assets.preload('already-loaded').asset;
 
       assert.equal(getTemplate('already-loaded')?.h, '<p>Already loaded</p>');
+      assert.equal(
+        (globalThis as typeof globalThis & { __componentAssetImportCount?: number })
+          .__componentAssetImportCount,
+        1,
+      );
+    } finally {
+      Reflect.deleteProperty(globalThis, '__componentAssetImportCount');
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('manifest preload rejects version 1 assets', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'legacy-card': {
+          asset: assetObjectModule({
+            type: 'webui-component-asset',
+            version: 1,
+            components: ['legacy-card'],
+            templates: { 'legacy-card': { h: '<p>Legacy</p>' } },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('legacy-card').asset,
+        /Unsupported component asset version: 1/,
+      );
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('manifest preload rejects an empty root graph', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'empty-card': {
+          asset: assetObjectModule({
+            type: 'webui-component-asset',
+            version: 3,
+            kind: 'root',
+            root: 'empty-card',
+            components: [],
+            requiredComponents: [],
+            externalComponents: [],
+            imports: [],
+            componentStyles: emptyComponentStyles(),
+            templates: {},
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('empty-card').asset,
+        /root <empty-card> must include itself in requiredComponents/,
+      );
+      assert.equal(getTemplate('empty-card'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('manifest preload rejects undeclared template payloads before registration', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'declared-card': {
+          asset: assetObjectModule({
+            type: 'webui-component-asset',
+            version: 3,
+            kind: 'root',
+            root: 'declared-card',
+            components: ['declared-card'],
+            requiredComponents: ['declared-card'],
+            externalComponents: [],
+            imports: [],
+            componentStyles: emptyComponentStyles(),
+            templates: { 'undeclared-card': { h: '<p>Wrong</p>' } },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('declared-card').asset,
+        /templates contain undeclared payload <undeclared-card>/,
+      );
+      assert.equal(getTemplate('undeclared-card'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('invalid condition indexes leave the whole template batch unregistered', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'condition-card': {
+          asset: assetModule(`{
+            type: 'webui-component-asset',
+            version: 3,
+            kind: 'root',
+            root: 'condition-card',
+            components: ['valid-child', 'condition-card'],
+            requiredComponents: ['valid-child', 'condition-card'],
+            externalComponents: [],
+            imports: [],
+            componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
+            templates: {
+              'valid-child': { h: '<p>Valid</p>' },
+              'condition-card': {
+                h: '<valid-child></valid-child>',
+                c: [[[1, ['ready']], 0, [[], 0]]]
+              }
+            },
+            templateFunctions: {
+              'condition-card': [function(v,s){return !!v('ready',s);}]
+            }
+          }`),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('condition-card').asset,
+        /Missing condition closure 1 for <condition-card>/,
+      );
+      assert.equal(window.__webui?.templates, undefined);
+      assert.equal(window.__webui?.templateFns, undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('asset conditions cannot reuse stale global closure arrays', async () => {
+    const previousWindow = setGlobal('window', {
+      __webui: {
+        templateFns: {
+          'stale-condition-card': [() => true],
+        },
+      },
+    });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'stale-condition-card': {
+          asset: assetObjectModule({
+            type: 'webui-component-asset',
+            version: 3,
+            kind: 'root',
+            root: 'stale-condition-card',
+            components: ['stale-condition-card'],
+            requiredComponents: ['stale-condition-card'],
+            externalComponents: [],
+            imports: [],
+            componentStyles: emptyComponentStyles(),
+            templates: {
+              'stale-condition-card': {
+                h: '<!--wc:0--><!--/wc-->',
+                b: [{ h: '<p>Ready</p>' }],
+                c: [[[0, ['ready']], 0, [[], 0]]],
+              },
+            },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('stale-condition-card').asset,
+        /Missing condition closure 0 for <stale-condition-card>/,
+      );
+      assert.equal(window.__webui?.templates, undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('concurrent manifest tags validate a shared asset URL independently', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    });
+    const sharedAssetUrl = assetObjectModule(componentAsset({
+      'first-url-panel': { h: '<p>First</p>' },
+    }));
+
+    try {
+      const first = defineComponentAssets({
+        'first-url-panel': { asset: sharedAssetUrl },
+      });
+      const second = defineComponentAssets({
+        'second-url-panel': { asset: sharedAssetUrl },
+      });
+      const results = await Promise.allSettled([
+        first.preload('first-url-panel').asset,
+        second.preload('second-url-panel').asset,
+      ]);
+
+      assert.equal(results[0].status, 'fulfilled');
+      assert.equal(results[1].status, 'rejected');
+      if (results[1].status === 'rejected') {
+        assert.match(
+          String(results[1].reason),
+          /expected <second-url-panel>.*exports <first-url-panel>/,
+        );
+      }
+      assert.equal(getTemplate('second-url-panel'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('concurrent roots import and register one shared chunk once', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    });
+
+    const chunkUrl = assetObjectModule({
+      type: 'webui-component-asset',
+      version: 3,
+      kind: 'chunk',
+      components: ['shared-detail'],
+      requiredComponents: ['shared-detail'],
+      externalComponents: [],
+      imports: [],
+      componentStyles: emptyComponentStyles(),
+      templates: { 'shared-detail': { h: '<p>Shared</p>' } },
+    });
+    const chunkUrlSource = JSON.stringify(chunkUrl);
+    const rootModule = (root: string) => assetModule(`{
+      type: 'webui-component-asset',
+      version: 3,
+      kind: 'root',
+      root: '${root}',
+      components: ['${root}'],
+      requiredComponents: ['${root}', 'shared-detail'],
+      externalComponents: [],
+      imports: [{
+        components: ['shared-detail'],
+        href: ${chunkUrlSource},
+        load: () => {
+          globalThis.__componentAssetChunkLoads =
+            (globalThis.__componentAssetChunkLoads ?? 0) + 1;
+          return import(${chunkUrlSource});
+        }
+      }],
+      componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
+      templates: { '${root}': { h: '<shared-detail></shared-detail>' } }
+    }`);
+
+    try {
+      const first = defineComponentAssets({
+        'first-panel': { asset: rootModule('first-panel') },
+      });
+      const second = defineComponentAssets({
+        'second-panel': { asset: rootModule('second-panel') },
+      });
+
+      await Promise.all([
+        first.preload('first-panel').asset,
+        second.preload('second-panel').asset,
+      ]);
+
+      assert.equal(
+        (globalThis as typeof globalThis & { __componentAssetChunkLoads?: number })
+          .__componentAssetChunkLoads,
+        1,
+      );
+      assert.equal(getTemplate('shared-detail')?.h, '<p>Shared</p>');
+      assert.equal(getTemplate('first-panel')?.h, '<shared-detail></shared-detail>');
+      assert.equal(getTemplate('second-panel')?.h, '<shared-detail></shared-detail>');
+    } finally {
+      Reflect.deleteProperty(globalThis, '__componentAssetChunkLoads');
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('accepts deferred closures with an exact external resource', async () => {
+    const document = {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    } as unknown as Document;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', document);
+
+    try {
+      registerComponentStyles({
+        version: 1,
+        strategy: 'style',
+        resources: {
+          'entry-bundle': {
+            kind: 'style',
+            css: '.entry{}',
+            members: ['entry-card', 'shared-card'],
+          },
+        },
+        closures: {
+          'index.html': ['entry-bundle'],
+        },
+      }, document);
+      const incomplete = {
+        ...componentAsset({ 'incomplete-lazy-card': { h: '<entry-card></entry-card>' } }),
+        componentStyles: {
+          version: 1,
+          strategy: 'style',
+          resources: {
+            'incomplete-lazy-card': { kind: 'style', css: '.lazy{}' },
+          },
+          closures: {
+            'incomplete-lazy-card': ['incomplete-lazy-card', 'entry-card'],
+          },
+        },
+      };
+      const incompleteAssets = defineComponentAssets({
+        'incomplete-lazy-card': { asset: assetObjectModule(incomplete) },
+      });
+      await assert.rejects(
+        incompleteAssets.preload('incomplete-lazy-card').asset,
+        /references missing resource "entry-card"/,
+      );
+
+      const asset = {
+        ...componentAsset({ 'lazy-card': { h: '<entry-card></entry-card>' } }),
+        componentStyles: {
+          version: 1,
+          strategy: 'style',
+          resources: {
+            'lazy-card': { kind: 'style', css: '.lazy{}' },
+            'entry-card': { kind: 'style', css: '.entry{}' },
+          },
+          closures: {
+            'lazy-card': ['lazy-card', 'entry-card'],
+          },
+        },
+      };
+      const assets = defineComponentAssets({
+        'lazy-card': { asset: assetObjectModule(asset) },
+      });
+
+      await assets.preload('lazy-card').asset;
+
+      assert.equal(getTemplate('lazy-card')?.h, '<entry-card></entry-card>');
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('missing entry prerequisites fail before root registration', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    });
+    const root = {
+      ...componentAsset({ 'external-root': { h: '<entry-owned></entry-owned>' } }),
+      requiredComponents: ['entry-owned', 'external-root'],
+      externalComponents: ['entry-owned'],
+    };
+
+    try {
+      const assets = defineComponentAssets({
+        'external-root': { asset: assetObjectModule(root) },
+      });
+
+      await assert.rejects(
+        assets.preload('external-root').asset,
+        /requires entry template <entry-owned>/,
+      );
+      assert.equal(getTemplate('external-root'), undefined);
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);

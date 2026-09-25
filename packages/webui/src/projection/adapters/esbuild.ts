@@ -29,12 +29,15 @@ import type {
   ModuleNode,
   ResolvedImport,
 } from "../graph.js";
+import { mapConcurrent } from "../concurrency.js";
+import { resolveBuildRoot } from "../build-root.js";
 import {
   ProjectionError,
   createDiagnostic,
 } from "../diagnostics.js";
 import type { ProjectionDiagnostic } from "../diagnostics.js";
 import {
+  compareUtf8,
   serializeManifestCanonical,
 } from "../manifest.js";
 import {
@@ -61,6 +64,17 @@ interface InputRecord {
   readonly packageName: string | undefined;
 }
 
+const MAX_CONCURRENT_SOURCE_READS = 64;
+const SOURCE_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
 let temporaryFileSequence = 0;
 
 /** Create the official esbuild projection plugin. */
@@ -156,7 +170,7 @@ async function emitProjectionManifest(
     result,
     outputIds
   );
-  const rootDir = commonAncestor([
+  const rootDir = resolveBuildRoot([
     manifestPath,
     ...records
       .filter((record) => record.kind === "file")
@@ -168,6 +182,11 @@ async function emitProjectionManifest(
     graph,
     membership,
     outputContents,
+    entryClosures: buildEntryClosures(
+      metafile,
+      outputIds,
+      build.initialOptions.publicPath
+    ),
     rootDir,
     manifestPath,
     bundlerName: "esbuild",
@@ -236,9 +255,30 @@ async function loadInputRecords(
   metafile: Metafile,
   packageCache: Map<string, string | undefined>
 ): Promise<InputRecord[]> {
-  const entries = Object.keys(metafile.inputs);
-  const records = await Promise.all(
-    entries.map(async (metafileId) => {
+  const entries = Object.keys(metafile.inputs).filter(
+    (metafileId) =>
+      metafile.inputs[metafileId]?.format !== undefined &&
+      (isStdinMetafileId(metafileId, build) ||
+        isProjectionSourceId(metafileId))
+  );
+  const records = await mapConcurrent(
+    entries,
+    MAX_CONCURRENT_SOURCE_READS,
+    async (metafileId) => {
+      const stdinSource = sourceForStdin(
+        metafileId,
+        build
+      );
+      if (stdinSource !== undefined) {
+        return {
+          metafileId,
+          moduleId: virtualModuleId(metafileId),
+          kind: "virtual" as const,
+          source: stdinSource,
+          packageName: undefined,
+        };
+      }
+
       const filePath = path.resolve(workingDirectory, metafileId);
       const source = await readPhysicalSource(filePath);
       if (source !== undefined) {
@@ -251,18 +291,14 @@ async function loadInputRecords(
         };
       }
 
-      const stdinSource = sourceForStdin(
-        metafileId,
-        build
-      );
       return {
         metafileId,
         moduleId: virtualModuleId(metafileId),
         kind: "virtual" as const,
-        source: stdinSource,
+        source: undefined,
         packageName: undefined,
       };
-    })
+    }
   );
   const resolved: InputRecord[] = [];
   for (const record of records) {
@@ -299,13 +335,20 @@ function sourceForStdin(
 ): string | undefined {
   const stdin = build.initialOptions.stdin;
   if (!stdin) return undefined;
-  const sourcefile = stdin.sourcefile ?? "<stdin>";
-  if (metafileId !== sourcefile && metafileId !== "<stdin>") {
-    return undefined;
-  }
+  if (!isStdinMetafileId(metafileId, build)) return undefined;
   return typeof stdin.contents === "string"
     ? stdin.contents
     : Buffer.from(stdin.contents).toString("utf8");
+}
+
+function isStdinMetafileId(
+  metafileId: string,
+  build: PluginBuild
+): boolean {
+  const stdin = build.initialOptions.stdin;
+  if (!stdin) return false;
+  const sourcefile = stdin.sourcefile ?? "<stdin>";
+  return metafileId === sourcefile || metafileId === "<stdin>";
 }
 
 function buildModuleGraph(
@@ -347,10 +390,13 @@ function resolvedImport(
   const target = entry.external
     ? undefined
     : recordByMetafileId.get(entry.path);
+  // Non-source inputs stay in esbuild's graph but are external to projection's
+  // JavaScript/TypeScript symbol graph.
+  const external = entry.external === true || target === undefined;
   return {
     specifier: entry.original ?? entry.path,
-    resolvedId: target?.moduleId,
-    external: entry.external === true,
+    resolvedId: external ? undefined : target.moduleId,
+    external,
     kind:
       entry.kind === "dynamic-import" ? "dynamic" : "static",
     ...packageNameProperty(
@@ -358,6 +404,12 @@ function resolvedImport(
         (entry.external ? packageNameFromSpecifier(entry.path) : undefined)
     ),
   };
+}
+
+function isProjectionSourceId(
+  moduleId: string
+): boolean {
+  return SOURCE_EXTENSIONS.has(path.extname(moduleId));
 }
 
 function packageNameProperty(
@@ -385,6 +437,74 @@ function buildMembership(
     outputs.set(outputId, members);
   }
   return { outputs };
+}
+
+/**
+ * Computes each entry output's transitive static import closure, largest-first.
+ *
+ * A browser that fetches an entry module must also fetch every chunk the entry
+ * reaches through static `import` statements before it can execute, and those
+ * chunks are invisible to the preload scanner because they are named only
+ * inside the entry's own bytes. Recording the closure here lets the handler
+ * emit `modulepreload` hints without a second bundler pass.
+ *
+ * Ordering is the point, not a detail: preloads are issued in document order
+ * over a shared connection, so a small chunk listed ahead of a large one
+ * delays the long pole. Only esbuild knows the byte counts, so it sorts.
+ */
+function buildEntryClosures(
+  metafile: Metafile,
+  outputIds: ReadonlyMap<string, string>,
+  publicPath: string | undefined
+): ReadonlyMap<string, ReadonlyArray<string>> {
+  const closures = new Map<string, ReadonlyArray<string>>();
+  for (const [outputPath, metadata] of Object.entries(metafile.outputs)) {
+    if (metadata.entryPoint === undefined) continue;
+    const entryId = outputIds.get(outputPath);
+    if (!entryId) continue;
+    if (publicPath) {
+      // A public path changes the URL written into emitted import specifiers,
+      // but the metafile still exposes local output paths. Until the manifest
+      // carries served URLs, retaining an empty owner is safer than synthesizing
+      // same-origin hrefs for potentially cross-origin chunks.
+      closures.set(entryId, []);
+      continue;
+    }
+
+    // Iterative worklist: an output import graph may contain cycles, and the
+    // repo bans recursion in graph walks.
+    const reached = new Set<string>([outputPath]);
+    const pending = [outputPath];
+    const members: string[] = [];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      const imports = metafile.outputs[current]?.imports;
+      if (!imports) continue;
+      for (const edge of imports) {
+        if (edge.kind !== "import-statement" || edge.external === true) {
+          continue;
+        }
+        if (reached.has(edge.path)) continue;
+        reached.add(edge.path);
+        pending.push(edge.path);
+        members.push(edge.path);
+      }
+    }
+    members.sort((left, right) => {
+      const bySize =
+        (metafile.outputs[right]?.bytes ?? 0) -
+        (metafile.outputs[left]?.bytes ?? 0);
+      return bySize !== 0 ? bySize : compareUtf8(left, right);
+    });
+
+    const resolved: string[] = [];
+    for (const member of members) {
+      const memberId = outputIds.get(member);
+      if (memberId) resolved.push(memberId);
+    }
+    closures.set(entryId, resolved);
+  }
+  return closures;
 }
 
 async function loadOutputContents(
@@ -469,40 +589,6 @@ function packageNameFromSpecifier(
 
 function virtualModuleId(metafileId: string): string {
   return `\0esbuild:${metafileId}`;
-}
-
-function commonAncestor(paths: ReadonlyArray<string>): string {
-  if (paths.length === 0) {
-    throw adapterError(
-      "esbuild produced no physical projection artifacts",
-      "Provide at least one physical output file."
-    );
-  }
-  let ancestor = path.dirname(path.resolve(paths[0]!));
-  for (let index = 1; index < paths.length; index++) {
-    const directory = path.dirname(path.resolve(paths[index]!));
-    while (!isWithin(ancestor, directory)) {
-      const parent = path.dirname(ancestor);
-      if (parent === ancestor) {
-        throw adapterError(
-          "projection inputs and outputs do not share a filesystem root",
-          "Keep one bundler invocation on a single filesystem volume."
-        );
-      }
-      ancestor = parent;
-    }
-  }
-  return ancestor;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative.length === 0 ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  );
 }
 
 function comparePaths(left: string, right: string): number {

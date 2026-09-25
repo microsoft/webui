@@ -13,12 +13,18 @@
 //!
 //!   # Render with WebUI Framework hydration markers
 //!   cargo run -- ../../app/contact-book-manager/dist/protocol.bin ../../app/contact-book-manager/data/state.json --plugin=webui
+//!
+//!   # Drive a progressive protocol through runtime boundary cursors
+//!   cargo run -- streaming-protocol.bin state.json --plugin=webui --streaming
 
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
+use std::io::Write;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{
+    BoundaryMode, FlushWriter, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
+};
 
 struct StdoutWriter;
 
@@ -34,11 +40,17 @@ impl ResponseWriter for StdoutWriter {
     }
 }
 
+impl FlushWriter for StdoutWriter {
+    fn flush(&mut self) -> webui_handler::Result<()> {
+        std::io::stdout().flush().map_err(Into::into)
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: {} <protocol.bin> <state.json> [--plugin=webui]",
+            "Usage: {} <protocol.bin> <state.json> [--plugin=webui] [--streaming]",
             args[0]
         );
         std::process::exit(1);
@@ -68,14 +80,41 @@ fn main() -> Result<()> {
         None => WebUIHandler::new(),
     };
     let mut writer = StdoutWriter;
-    handler
-        .render(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .context("Failed to render")?;
+    let options = RenderOptions::new("index.html", "/");
+    if args.iter().any(|argument| argument == "--streaming") {
+        render_streaming(&handler, &protocol, &state, &options, &mut writer)?;
+    } else {
+        handler
+            .render(&protocol, &state, &options, &mut writer)
+            .context("Failed to render")?;
+    }
 
+    Ok(())
+}
+
+fn render_streaming(
+    handler: &WebUIHandler,
+    protocol: &Protocol,
+    state: &serde_json::Value,
+    options: &RenderOptions<'_>,
+    writer: &mut StdoutWriter,
+) -> Result<()> {
+    let mut session = handler
+        .stream_response(protocol, options, writer)
+        .context("Failed to open streaming session")?;
+    let mut step = session.start(state).context("Failed to start stream")?;
+    while !step.done {
+        step = match step.boundary.as_ref() {
+            Some(boundary) => {
+                let instance_id = boundary.instance_id;
+                let owner = boundary.owner.clone();
+                let name = boundary.name.clone();
+                session
+                    .resume(instance_id, state, BoundaryMode::Final)
+                    .with_context(|| format!("Failed to resume boundary {owner}/{name}"))?
+            }
+            None => session.advance().context("Failed to advance stream")?,
+        };
+    }
     Ok(())
 }

@@ -29,4 +29,7 @@ export type {
   RouteActionResult,
   ActionCompleteEvent,
   StatefulElement,
+  ComponentStyleResource,
+  ComponentStyles,
 } from './types.js';
+export type { PartialResponse, RouteChainEntry } from './cache.js';

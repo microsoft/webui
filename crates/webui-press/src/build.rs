@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
-use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, WebUIHandler};
 use webui_tokens::TokenFile;
 
 use crate::bundler::{
@@ -25,8 +26,41 @@ use crate::bundler::{
 use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
+use crate::regions::RegionSet;
 use crate::state::{load_render_states, merge_page_state};
-use crate::types::{BuildStats, DocsConfig};
+use crate::types::{BuildStats, DocsConfig, PageDescriptor, ShowMode};
+
+webui_handler::define_string_response_writer!(StringWriter, buf);
+
+fn region_layout(page: &PageDescriptor) -> &str {
+    let layout = page.state["page"]["layout"].as_str().unwrap_or("doc");
+    if layout == "home" && !page.is_home {
+        "doc"
+    } else {
+        layout
+    }
+}
+
+fn template_css(template_dir: &Path, show: ShowMode) -> Result<String> {
+    if show == ShowMode::Content {
+        return Ok(include_str!("../template/docs.css").to_string());
+    }
+    let mut css = String::new();
+    for name in ["docs.css", "shell.css"] {
+        let path = template_dir.join(name);
+        match fs::read_to_string(&path) {
+            Ok(source) => css.push_str(&source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Io(format!(
+                    "Cannot read {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(css)
+}
 
 /// Persistent state held by the dev server across rebuilds. The dev
 /// server always performs a full rebuild on every watcher tick — the
@@ -216,30 +250,6 @@ fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
     Value::Object(map)
 }
 
-/// A writer that collects rendered HTML into a String buffer.
-struct StringWriter {
-    buf: String,
-}
-
-impl StringWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
-
 /// Build a documentation site from the given configuration.
 ///
 /// `config_dir` is the directory containing `config.json`. It is used to
@@ -287,6 +297,15 @@ pub fn build_docs_with_cache(
     // at `<basePath>`, so the same flat layout works.
     let site_dir = out_dir.to_path_buf();
 
+    // Per-page and 404 scratch directories follow the output volume so a whole
+    // Press build never spans two filesystem roots.
+    let scratch_root = crate::scratch::scratch_base(out_dir, config_dir).map_err(|e| {
+        Error::Io(format!(
+            "Cannot prepare the Press scratch directory for {}: {e}",
+            out_dir.display()
+        ))
+    })?;
+
     // Read custom CSS
     let custom_css = config
         .css
@@ -309,8 +328,8 @@ pub fn build_docs_with_cache(
     // the link tags change. We don't write the CSS files yet — that
     // happens after content processing succeeds, so a content failure
     // can't corrupt the previous valid output.
-    let base_css_src = template_dir.join("docs.css");
-    let has_base_css = base_css_src.exists();
+    let base_css = template_css(template_dir, config.show)?;
+    let has_base_css = !base_css.is_empty();
     let base_css_link = if has_base_css {
         format!("<link rel=\"stylesheet\" href=\"{base_path}docs.css\">")
     } else {
@@ -341,7 +360,8 @@ pub fn build_docs_with_cache(
     // to pay every keystroke.
     let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-    let pages = process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
+    let mut pages =
+        process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
@@ -370,6 +390,18 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
+    let regions = RegionSet::load(&config.regions, config_dir, template_html)?;
+    // Validate configured region names even when the selected presentation
+    // makes every shell region inactive. Authored page content is never filtered.
+    let regions = if config.show == ShowMode::Content {
+        RegionSet::load(
+            &Default::default(),
+            config_dir,
+            include_str!("../template/content.html").to_string(),
+        )?
+    } else {
+        regions
+    };
     let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
@@ -388,8 +420,8 @@ pub fn build_docs_with_cache(
     // because we clean before processing — but that order means a
     // failure leaves no output at all, never half-output).
     if has_base_css {
-        fs::copy(&base_css_src, site_dir.join("docs.css"))
-            .map_err(|e| Error::Io(format!("Cannot copy docs.css: {e}")))?;
+        fs::write(site_dir.join("docs.css"), &base_css)
+            .map_err(|e| Error::Io(format!("Cannot write docs.css: {e}")))?;
     }
     if has_theme_css {
         fs::write(site_dir.join("theme.css"), &custom_css)
@@ -429,6 +461,12 @@ pub fn build_docs_with_cache(
                     .extend(scripts);
             }
         }
+        for script_file in regions.script_files(region_layout(page)) {
+            explicit_page_scripts
+                .entry(page.path.clone())
+                .or_default()
+                .push(ScriptSource::File(script_file.to_string()));
+        }
     }
 
     // Collect scriptFile from customPages config.
@@ -456,7 +494,7 @@ pub fn build_docs_with_cache(
     );
 
     let template_script_path = template_dir.join("index.ts");
-    let template_script = if template_script_path.exists() {
+    let template_script = if config.show == ShowMode::All && template_script_path.exists() {
         Some(
             template_script_path
                 .canonicalize()
@@ -465,8 +503,9 @@ pub fn build_docs_with_cache(
     } else {
         None
     };
+    let template_shell = regions.template_shell();
     let root_component_scripts =
-        collect_component_scripts_for_html(&[template_html.as_str()], &component_script_index)?;
+        collect_component_scripts_for_html(&[template_shell.as_str()], &component_script_index)?;
     let root_bundle = if template_script.is_some() || !root_component_scripts.is_empty() {
         Some(RootBundleEntry {
             script_path: template_script,
@@ -487,8 +526,12 @@ pub fn build_docs_with_cache(
             .get(&page.path)
             .map(String::as_str)
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
+        let region_fragments = regions.html_fragments(region_layout(page));
+        let mut html_sources = Vec::with_capacity(region_fragments.len() + 1);
+        html_sources.push(content);
+        html_sources.extend(region_fragments);
         let mut component_scripts =
-            collect_component_scripts_for_html(&[content], &component_script_index)?;
+            collect_component_scripts_for_html(&html_sources, &component_script_index)?;
         if let Some(root) = &root_bundle {
             component_scripts.retain(|path| !root.component_scripts.contains(path));
         }
@@ -496,7 +539,6 @@ pub fn build_docs_with_cache(
         if component_scripts.is_empty() && explicit_scripts.is_empty() {
             continue;
         }
-
         let signature = page_bundle_signature(&component_scripts, &explicit_scripts, config_dir);
         if let Some(&id) = page_bundle_signatures.get(&signature) {
             page_bundle_ids.insert(page.path.clone(), id);
@@ -514,26 +556,39 @@ pub fn build_docs_with_cache(
         });
     }
 
-    let not_found_component_scripts =
-        collect_component_scripts_for_html(&[not_found_content.as_str()], &component_script_index)?;
-    let not_found_bundle_id = if not_found_component_scripts.is_empty() {
-        None
-    } else {
-        let signature = page_bundle_signature(&not_found_component_scripts, &[], config_dir);
-        if let Some(&id) = page_bundle_signatures.get(&signature) {
-            Some(id)
+    let not_found_region_fragments = regions.html_fragments("doc");
+    let mut not_found_sources = Vec::with_capacity(not_found_region_fragments.len() + 1);
+    not_found_sources.push(not_found_content.as_str());
+    not_found_sources.extend(not_found_region_fragments);
+    let mut not_found_component_scripts =
+        collect_component_scripts_for_html(&not_found_sources, &component_script_index)?;
+    if let Some(root) = &root_bundle {
+        not_found_component_scripts.retain(|path| !root.component_scripts.contains(path));
+    }
+    let not_found_scripts: Vec<ScriptSource> = regions
+        .script_files("doc")
+        .map(|path| ScriptSource::File(path.to_string()))
+        .collect();
+    let not_found_bundle_id =
+        if not_found_component_scripts.is_empty() && not_found_scripts.is_empty() {
+            None
         } else {
-            let id = page_bundles.len();
-            page_bundle_signatures.insert(signature, id);
-            page_bundles.push(PageBundleEntry {
-                id,
-                page_path: format!("{base_path}404/"),
-                component_scripts: not_found_component_scripts,
-                explicit_scripts: Vec::new(),
-            });
-            Some(id)
-        }
-    };
+            let signature =
+                page_bundle_signature(&not_found_component_scripts, &not_found_scripts, config_dir);
+            if let Some(&id) = page_bundle_signatures.get(&signature) {
+                Some(id)
+            } else {
+                let id = page_bundles.len();
+                page_bundle_signatures.insert(signature, id);
+                page_bundles.push(PageBundleEntry {
+                    id,
+                    page_path: format!("{base_path}404/"),
+                    component_scripts: not_found_component_scripts,
+                    explicit_scripts: not_found_scripts,
+                });
+                Some(id)
+            }
+        };
 
     // Start the one client bundle in parallel with per-page template parsing.
     // Each page blocks only when it reaches projection finalization.
@@ -549,10 +604,17 @@ pub fn build_docs_with_cache(
     let bundler_config = config.bundler.clone();
     let config_dir_for_bundle = config_dir.to_path_buf();
     let content_dir_for_bundle = PathBuf::from(&config.content_dir);
+    let base_path_for_bundle = base_path.to_string();
     let dev_mode = cache.dev_mode;
+    // Published before the projection completer wakes page builds. This keeps
+    // parsing overlapped with esbuild while making exact generated URLs
+    // available before each protocol is handed to the renderer.
+    let generated_preloads = Arc::new(OnceLock::new());
+    let generated_preloads_for_bundle = Arc::clone(&generated_preloads);
     let bundle_thread = BundleThread::spawn(move || {
         match bundle_assets(&BundleOptions {
             site_dir: &site_dir_for_bundle,
+            base_path: &base_path_for_bundle,
             node_modules: node_modules.as_deref(),
             root_bundle: root_bundle_for_bundle.as_ref(),
             page_bundles: &page_bundles_for_bundle,
@@ -562,6 +624,14 @@ pub fn build_docs_with_cache(
             content_dir: &content_dir_for_bundle,
         }) {
             Ok(result) => {
+                if generated_preloads_for_bundle
+                    .set(result.preloads.clone())
+                    .is_err()
+                {
+                    let message = "Generated preload metadata was published twice".to_string();
+                    projection_completer.complete(Err(message.clone()));
+                    return Err(Error::Build(message));
+                }
                 projection_completer.complete(Ok(result.projection.clone()));
                 Ok(result)
             }
@@ -586,7 +656,7 @@ pub fn build_docs_with_cache(
         std::sync::Mutex::new(HashMap::new());
 
     let page_start = Instant::now();
-    pages.par_iter().try_for_each(|page| -> Result<()> {
+    pages.par_iter_mut().try_for_each(|page| -> Result<()> {
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
 
@@ -596,11 +666,12 @@ pub fn build_docs_with_cache(
             .map(|s| s.as_str())
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
 
-        // Protect <pre> blocks from HTML parser whitespace normalization.
+        // Protect markdown code blocks before injecting content into the
+        // region-resolved template.
         let (protected, pre_blocks) = protect_pre_blocks(content);
-
-        // Substitute the raw signal in the template with the literal HTML.
-        let page_html = template_html.replace("{{{page.content}}}", &protected);
+        let page_html = regions
+            .render(region_layout(page))
+            .replace("{{{page.content}}}", &protected);
 
         // Per-page temp dir holding only this page's index.html — components
         // come exclusively from `component_sources`, which already includes
@@ -611,7 +682,7 @@ pub fn build_docs_with_cache(
         // builds (and successive rebuilds) can never collide and wipe
         // each other's in-progress files.
         let nonce = REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let page_tmp = std::env::temp_dir().join(format!(
+        let page_tmp = scratch_root.join(format!(
             "webui-press-page-{}-{:x}-{nonce:x}",
             std::process::id(),
             fxhash(&page.path),
@@ -624,7 +695,7 @@ pub fn build_docs_with_cache(
         fs::write(page_tmp.join("index.html"), &page_html)
             .map_err(|e| Error::Io(format!("Cannot write page temp: {e}")))?;
 
-        let build_result = webui::build(BuildOptions {
+        let mut build_result = webui::build(BuildOptions {
             app_dir: page_tmp.clone(),
             entry: "index.html".to_string(),
             plugin: Some(webui::Plugin::WebUI),
@@ -633,7 +704,16 @@ pub fn build_docs_with_cache(
             projection_manifests: vec![projection_source.clone()],
             ..BuildOptions::default()
         })
-        .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
+        .map_err(|e| Error::Build(format!("{}: {}", page.path, e.chain_message())))?;
+        let preloads = generated_preloads.get().ok_or_else(|| {
+            Error::Build("Generated preload metadata was not published".to_string())
+        })?;
+        let (hrefs, mut preload_warnings) = preloads.resolve(
+            &build_result.protocol.module_preloads,
+            page_bundle_ids.get(&page.path).copied(),
+        );
+        build_result.protocol.module_preloads = hrefs;
+        build_result.warnings.append(&mut preload_warnings);
 
         total_bytes.fetch_add(
             build_result.protocol_bytes.len(),
@@ -653,21 +733,18 @@ pub fn build_docs_with_cache(
             }
         }
 
-        let mut themed_state;
-        let render_state = if let Some(token_file) = token_file.as_ref() {
-            themed_state = page.state.clone();
-            inject_theme_tokens(&mut themed_state, token_file, &build_result.protocol.tokens)?;
-            &themed_state
-        } else {
-            &page.state
-        };
+        let layout = region_layout(page).to_string();
+        regions.apply_state(&layout, &mut page.state)?;
+        if let Some(token_file) = token_file.as_ref() {
+            inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
+        }
 
         let protocol = Protocol::new(build_result.protocol);
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
                 &protocol,
-                render_state,
+                &page.state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
             )
@@ -745,9 +822,13 @@ pub fn build_docs_with_cache(
         head_injection: &head_injection,
         global_state: render_states.global(),
     });
+    regions.apply_state("doc", &mut not_found_state)?;
 
-    let not_found_html = template_html.replace("{{{page.content}}}", &not_found_content);
-    let nf_tmp = std::env::temp_dir().join(format!(
+    let (protected_not_found, not_found_pre_blocks) = protect_pre_blocks(&not_found_content);
+    let not_found_html = regions
+        .render("doc")
+        .replace("{{{page.content}}}", &protected_not_found);
+    let nf_tmp = scratch_root.join(format!(
         "webui-press-404-{}-{:x}",
         std::process::id(),
         REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -758,7 +839,7 @@ pub fn build_docs_with_cache(
     fs::create_dir_all(&nf_tmp).map_err(|e| Error::Io(e.to_string()))?;
     fs::write(nf_tmp.join("index.html"), &not_found_html).map_err(|e| Error::Io(e.to_string()))?;
 
-    let nf_build = webui::build(BuildOptions {
+    let mut nf_build = webui::build(BuildOptions {
         app_dir: nf_tmp.clone(),
         entry: "index.html".to_string(),
         plugin: Some(webui::Plugin::WebUI),
@@ -767,7 +848,14 @@ pub fn build_docs_with_cache(
         projection_manifests: vec![projection_source],
         ..BuildOptions::default()
     })
-    .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+    .map_err(|e| Error::Build(format!("404 build failed: {}", e.chain_message())))?;
+    let preloads = generated_preloads
+        .get()
+        .ok_or_else(|| Error::Build("Generated preload metadata was not published".to_string()))?;
+    let (hrefs, mut preload_warnings) =
+        preloads.resolve(&nf_build.protocol.module_preloads, not_found_bundle_id);
+    nf_build.protocol.module_preloads = hrefs;
+    nf_build.warnings.append(&mut preload_warnings);
 
     if let Some(token_file) = token_file.as_ref() {
         inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;
@@ -799,7 +887,8 @@ pub fn build_docs_with_cache(
         )
         .map_err(|e| Error::Render(format!("404: {e}")))?;
 
-    fs::write(site_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
+    let not_found_output = restore_pre_blocks(&writer_404.buf, &not_found_pre_blocks);
+    fs::write(site_dir.join("404.html"), not_found_output).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
     print_success(cache, "Generated 404 page");
 
@@ -1457,6 +1546,24 @@ mod tests {
         assert_eq!(state["pageData"], Value::Null);
         assert_eq!(state["headTags"], "<meta name=\"docs\">");
         Ok(())
+    }
+
+    #[test]
+    fn custom_home_layout_uses_non_home_regions() {
+        let state = test_obj([("page", test_obj([("layout", string_value("home"))]))]);
+        let custom_page = PageDescriptor {
+            path: "/custom/".to_string(),
+            is_home: false,
+            state: state.clone(),
+        };
+        let home_page = PageDescriptor {
+            path: "/".to_string(),
+            is_home: true,
+            state,
+        };
+
+        assert_eq!(region_layout(&custom_page), "doc");
+        assert_eq!(region_layout(&home_page), "home");
     }
 
     // --- truncate_utf8 ---------------------------------------------------

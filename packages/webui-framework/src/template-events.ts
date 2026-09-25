@@ -14,7 +14,20 @@ import type { TemplateMeta } from './template.js';
 /** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
-/** Notify optional runtimes that templates have been registered. */
+/**
+ * Notify optional runtimes that templates have been registered.
+ *
+ * Styles are deliberately not announced here. This dispatcher runs only after
+ * the framework has already accepted them, so repeating them would ask every
+ * listener to register the same catalog twice. The router has its own
+ * dispatcher and *does* attach styles, but only when the framework bridge was
+ * absent — which is why {@link templateRegistrationDetail} still reads them.
+ */
+export interface TemplateRegistrationDetail {
+  templates?: Record<string, TemplateMeta>;
+  componentStyles?: unknown;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
+}
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
 ): void {
@@ -34,14 +47,26 @@ export function dispatchTemplatesRegistered(
 /** Read a template registration event payload without trusting arbitrary detail. */
 export function templateRegistrationDetail(event: Event): {
   templates?: Record<string, TemplateMeta>;
+  componentStyles?: unknown;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
 } | undefined {
-  const detail = (event as CustomEvent<{ templates?: unknown }>).detail;
+  const detail = (event as CustomEvent<{
+    templates?: unknown;
+    componentStyles?: unknown;
+    waitUntil?: unknown;
+  }>).detail;
   if (!detail || typeof detail !== 'object') return undefined;
   const templates = detail.templates;
   const payload = {
     templates: typeof templates === 'object' && templates !== null
       ? templates as Record<string, TemplateMeta>
       : undefined,
+    componentStyles: detail.componentStyles,
+    waitUntil: typeof detail.waitUntil === 'function'
+      ? detail.waitUntil as (promise: PromiseLike<unknown>) => void
+      : undefined,
   };
-  return payload.templates ? payload : undefined;
+  return payload.templates || payload.componentStyles !== undefined || payload.waitUntil
+    ? payload
+    : undefined;
 }

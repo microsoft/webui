@@ -8,6 +8,8 @@
 
 use std::borrow::Cow;
 
+use crate::{ResponseWriter, Result};
+
 /// Characters escaped and their replacements:
 ///
 /// * `&` → `&amp;`
@@ -57,9 +59,73 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+#[inline]
+fn is_style_end_tag(bytes: &[u8], index: usize) -> bool {
+    bytes[index] == b'<'
+        && bytes[index + 1] == b'/'
+        && bytes[index + 2].eq_ignore_ascii_case(&b's')
+        && bytes[index + 3].eq_ignore_ascii_case(&b't')
+        && bytes[index + 4].eq_ignore_ascii_case(&b'y')
+        && bytes[index + 5].eq_ignore_ascii_case(&b'l')
+        && bytes[index + 6].eq_ignore_ascii_case(&b'e')
+}
+
+/// Return whether CSS needs escaping before it is written into a `<style>`.
+pub(crate) fn style_text_needs_escape(css: &str) -> bool {
+    let bytes = css.as_bytes();
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if is_style_end_tag(bytes, index) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Write CSS into an HTML `<style>` raw-text element without allowing an
+/// authored, case-insensitive `</style` sequence to terminate the element.
+///
+/// Escaping only the slash (`<\/style`) preserves the CSS string value and
+/// keeps the ordinary path allocation-free.
+pub(crate) fn write_style_text(writer: &mut dyn ResponseWriter, css: &str) -> Result<()> {
+    let bytes = css.as_bytes();
+    let mut chunk_start = 0usize;
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if is_style_end_tag(bytes, index) {
+            writer.write(&css[chunk_start..index + 1])?;
+            writer.write("\\/")?;
+            chunk_start = index + 2;
+            index += 7;
+        } else {
+            index += 1;
+        }
+    }
+    writer.write(&css[chunk_start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct StyleWriter {
+        output: String,
+        writes: usize,
+    }
+
+    impl ResponseWriter for StyleWriter {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.output.push_str(content);
+            self.writes += 1;
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn no_escaping_returns_borrowed() {
@@ -177,6 +243,57 @@ mod tests {
         ];
         for (input, expected) in test_cases {
             assert_eq!(encode_safe(input), expected, "Failed for input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn style_text_preserves_normal_bytes_in_one_write() {
+        let mut writer = StyleWriter::default();
+        write_style_text(&mut writer, ".card{content:'normal / style'}").unwrap();
+        assert_eq!(writer.output, ".card{content:'normal / style'}");
+        assert_eq!(writer.writes, 1);
+    }
+
+    #[test]
+    fn style_text_escapes_mixed_case_end_tags() {
+        let mut writer = StyleWriter::default();
+        write_style_text(
+            &mut writer,
+            ".a{content:'</style>'}.b{content:'</StYlE attr>'}",
+        )
+        .unwrap();
+        assert_eq!(
+            writer.output,
+            ".a{content:'<\\/style>'}.b{content:'<\\/StYlE attr>'}"
+        );
+    }
+
+    #[test]
+    fn style_text_escape_detection_matches_writer() {
+        let cases = [
+            ("", false),
+            ("</styl", false),
+            ("< /style", false),
+            ("<\\/style", false),
+            ("</style", true),
+            ("prefix</STYLE>suffix", true),
+            ("a</StYlE attr>b", true),
+        ];
+
+        for (css, expected) in cases {
+            assert_eq!(
+                style_text_needs_escape(css),
+                expected,
+                "unexpected detection for {css:?}"
+            );
+
+            let mut writer = StyleWriter::default();
+            write_style_text(&mut writer, css).unwrap();
+            assert_eq!(
+                writer.output != css,
+                expected,
+                "writer and detector diverged for {css:?}"
+            );
         }
     }
 }

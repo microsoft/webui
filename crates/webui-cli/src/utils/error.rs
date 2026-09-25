@@ -44,6 +44,12 @@ pub enum CliError {
         /// The path that could not be read.
         path: String,
     },
+
+    /// The desktop sidecar backend could not be launched.
+    DesktopBinaryNotFound {
+        /// The binary name or path that failed to launch.
+        binary: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -56,6 +62,9 @@ impl fmt::Display for CliError {
                 write!(f, "Port {port} on 127.0.0.1 is already in use")
             }
             CliError::EntryReadFailed { path } => write!(f, "Failed to read entry file: {path}"),
+            CliError::DesktopBinaryNotFound { binary } => {
+                write!(f, "Desktop sidecar backend not found: {binary}")
+            }
         }
     }
 }
@@ -77,6 +86,9 @@ impl CliError {
             CliError::EntryReadFailed { .. } => {
                 "Use --entry <file> to specify a different entry file"
             }
+            CliError::DesktopBinaryNotFound { .. } => {
+                "Install WebUI desktop support or set WEBUI_DESKTOP_BINARY to the webui-desktop sidecar path"
+            }
         }
     }
 
@@ -89,7 +101,8 @@ impl CliError {
             CliError::AppFolderNotFound { .. }
             | CliError::StateFileNotFound { .. }
             | CliError::ServeDirNotFound { .. }
-            | CliError::EntryReadFailed { .. } => 66,
+            | CliError::EntryReadFailed { .. }
+            | CliError::DesktopBinaryNotFound { .. } => 66,
             // A required service (the port) is unavailable → EX_UNAVAILABLE.
             CliError::PortInUse { .. } => 69,
         }
@@ -119,7 +132,19 @@ pub fn exit_code(err: &anyhow::Error) -> i32 {
         return match web {
             webui::WebUIError::Parse { .. }
             | webui::WebUIError::Serialization(_)
-            | webui::WebUIError::InvalidBuildOptions(_) => 65,
+            | webui::WebUIError::InvalidBuildOptions(_)
+            | webui::WebUIError::ComponentAssets(_)
+            | webui::WebUIError::Projection(_) => 65,
+            // A component registration failure whose underlying cause is a file
+            // read is an I/O error; every other cause (an authoring/template
+            // mistake surfaced by a plugin source transform, an invalid or
+            // duplicate component name, malformed CSS) is a data error, matching
+            // the `Parse` classification.
+            webui::WebUIError::ComponentRegistration {
+                source: webui::ParserError::IO { .. },
+                ..
+            } => 74,
+            webui::WebUIError::ComponentRegistration { .. } => 65,
             webui::WebUIError::Io { .. } => 74,
             _ => 1,
         };
@@ -158,6 +183,34 @@ mod tests {
     fn exit_code_for_parse_error_is_dataerr() {
         let err: anyhow::Error = webui::WebUIError::InvalidBuildOptions("bad".into()).into();
         assert_eq!(exit_code(&err), 65);
+    }
+
+    #[test]
+    fn exit_code_for_registration_template_error_is_dataerr() {
+        let diag = webui::Diagnostic::error("invalid component source")
+            .code("invalid-component-source")
+            .component("file-card")
+            .position(3, 5);
+        let err: anyhow::Error = webui::WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".into(),
+            source: webui::ParserError::Template(Box::new(diag)),
+        }
+        .into();
+        assert_eq!(exit_code(&err), 65);
+    }
+
+    #[test]
+    fn exit_code_for_registration_io_error_is_ioerr() {
+        // A file-read failure during registration is an I/O error (74).
+        let err: anyhow::Error = webui::WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".into(),
+            source: webui::ParserError::IO {
+                context: "read".into(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "nope"),
+            },
+        }
+        .into();
+        assert_eq!(exit_code(&err), 74);
     }
 
     #[test]

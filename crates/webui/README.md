@@ -11,19 +11,19 @@ cargo add webui
 ## Quick Start
 
 ```rust
-use webui::{build, BuildOptions, DomStrategy};
+use webui::{build, BuildOptions};
 
 // Build a WebUI application from an app directory
 let result = build(BuildOptions {
     app_dir: "my-app/src".into(),
     entry: "index.html".into(),
-    dom: DomStrategy::Shadow,
     ..Default::default()
 })?;
 
 // result.protocol_bytes — serialized protocol (protobuf binary)
 // result.css_files — extracted component CSS files
-// result.component_asset_files — static `.webui.js` ESM component assets
+// result.component_asset_files — root/chunk `.webui.js` assets
+// result.metafile — optional esbuild-compatible graph JSON
 // result.stats — build timing and fragment counts
 ```
 
@@ -44,7 +44,7 @@ build_to_disk(
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
-        dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
+        dom: DomStrategy::Light,       // opt into global Light + authored Shadow islands
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -53,6 +53,13 @@ build_to_disk(
     Path::new("dist"),
 )?;
 ```
+
+Unwrapped components default to a generated open Shadow root. Set
+`dom: DomStrategy::Light` to render unwrapped components as authored/global
+Light DOM. A sole bare `<template>` is also an explicit Light wrapper and is
+unwrapped; a sole authored `<template shadowrootmode="open">` remains Shadow.
+Light CSS must use ordinary selectors: `:host`, `:host-context`, and `::slotted`
+are rejected with `unsupported-light-css`.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:
@@ -73,10 +80,20 @@ use the WebUI plugin:
 BuildOptions {
     app_dir: "src".into(),
     plugin: Some(Plugin::WebUI),
-    component_asset_roots: vec!["settings-dialog".into()],
+    component_asset_roots: vec![
+        "settings-dialog".into(),
+        "mail-thread".into(),
+    ],
+    metafile: true,
     ..BuildOptions::default()
 }
 ```
+
+Entry-reachable dependencies remain external to the asset graph, single-root
+dependencies stay inline, and dependencies shared by the same multi-root
+consumer set are emitted once as flat dynamic chunks. Asset-only component
+records are removed from `protocol.bin`. Component assets cannot be combined
+with `<route>`.
 
 `LegalComments::Inline` is the default and preserves legal CSS comments
 containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use
@@ -103,6 +120,43 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
+### Progressive Responses
+
+For host-paced `<boundary>` rendering, drive the four-state session directly:
+
+```rust
+use webui::{BoundaryMode, RenderOptions};
+
+let options = RenderOptions::new("index.html", "/");
+let mut response =
+    handler.stream_response(&protocol, &options, &mut writer)?;
+let mut step = response.start(&initial_state)?;
+
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state =
+                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            response.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        None => response.advance()?,
+    };
+}
+```
+
+| Method | Result |
+|---|---|
+| `start(state)` | Shell bytes through the first descriptor or terminal |
+| `resume(instance_id, state, mode)` | Only the pending occurrence through its checkpoint |
+| `advance()` | Following parent bytes through the next descriptor or terminal |
+| `update(instance_id, patch)` | Projected state for an updatable occurrence |
+
+A descriptor means call `resume`; no descriptor with `done == false` means call
+`advance`; `done == true` means complete. Boundary-only `resume` makes a
+checkpoint independently flushable. `advance` writes following parent or tail
+bytes, so no sibling boundary is needed. An update is valid between `resume` and
+`advance`.
+
 ### Inspect
 
 ```rust
@@ -121,9 +175,18 @@ For servers handling client-side navigation, produce a complete JSON partial:
 
 ```rust
 let partial = protocol.render_partial(
-    state_json, "index.html", "/users/42", inventory_hex,
+    state, "index.html", "/users/42", inventory_hex,
 )?;
 // Returns: { state, templates, inventory, path, chain }
+```
+
+Serialized host boundaries can call `render_partial_json()` to validate and
+project raw JSON without materializing a duplicate state tree:
+
+```rust
+let partial = protocol.render_partial_json(
+    state_json, "index.html", "/users/42", inventory_hex,
+)?;
 ```
 
 ## Types
@@ -137,7 +200,7 @@ let partial = protocol.render_partial(
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |
-| `CssStrategy` | CSS delivery mode (Link or Style) |
+| `CssStrategy` | CSS delivery mode (Link, Style, or Module) |
 | `WebUIError` | Error type for build/inspect operations |
 
 ## License

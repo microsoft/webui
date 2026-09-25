@@ -1,0 +1,17 @@
+:host {
+  display: block;
+}
+
+.panel {
+  display: grid;
+  gap: var(--spacing-s);
+  padding: var(--spacing-l);
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--border-radius-l);
+  background: var(--color-neutral-100);
+}
+
+h2,
+p {
+  margin: 0;
+}
