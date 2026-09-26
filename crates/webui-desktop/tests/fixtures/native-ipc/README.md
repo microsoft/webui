@@ -13,7 +13,7 @@ and uses the root workspace lockfile.
 From the repository root:
 
 ```sh
-python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py
+cargo xtask native-ipc
 ```
 
 The harness checks committed bindings with the real CLI generator's read-only
@@ -121,7 +121,7 @@ single fully asserted success report.
 ## CI preparation and commands
 
 Use the repository Rust toolchain, Node 22+, pnpm with the checked-in lockfile,
-Python 3.9+, and `protoc` on PATH, including its standard protobuf imports.
+and `protoc` on PATH, including its standard protobuf imports.
 The root CLI must include `cli`; the standalone fixture always enables `native`
 and `application-ipc`, and only its tooling runner enables `source`. Preparation
 from the repository root:
@@ -134,7 +134,7 @@ cargo fetch --locked
 
 The fetch seeds platform dependencies for the harness's offline locked build.
 Embedded SDK assets must already be current, as for the production SDK build.
-All three CI platforms run `python crates/webui-desktop/tests/acceptance.py`
+All three CI platforms run `cargo xtask desktop-acceptance`
 before example generation. This shared gate checks committed generated fixtures
 and embedded assets, generated Rust/TypeScript consumers, browser contracts in
 Chromium/Firefox/WebKit, and the isolated nonempty SDK feature matrix. It rejects
@@ -143,7 +143,7 @@ Chromium/Firefox/WebKit, and the isolated nonempty SDK feature matrix. It reject
 macOS requires Xcode command-line tools and an ordinary logged-in GUI session:
 
 ```sh
-python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+cargo xtask native-ipc --timeout 60
 ```
 
 Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime
@@ -152,7 +152,7 @@ Windows requires MSVC build tools, a Windows SDK, the WebView2 Evergreen Runtime
 `protoc.exe` on PATH and an interactive desktop-capable runner. In PowerShell:
 
 ```powershell
-python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+cargo xtask native-ipc --timeout 60
 ```
 
 Before typed IPC checks, Windows verifies that `fetch` remains native, response
@@ -169,7 +169,7 @@ standard sandbox-enabled WebKitGTK in a non-root CI account:
 
 ```sh
 GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
-  python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
+  cargo xtask native-ipc --timeout 60
 ```
 
 Ubuntu 24.04's AppArmor restriction on unprivileged user namespaces can make
@@ -186,12 +186,11 @@ user-namespace restriction to run this fixture.
 The existing GTK adapter disables page cache for IPC-enabled views. That does
 not constitute a Linux history pass until this real test runs there.
 
-Pure cross-platform planning, without starting any GUI or claiming native proof:
+Inspect platform paths without starting a GUI or claiming native proof:
 
 ```sh
-python3 -m unittest discover -s crates/webui-desktop/tests/fixtures/native-ipc -p test_plan.py -v
-python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --plan win32
-python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --plan linux
+cargo xtask native-ipc --plan win32
+cargo xtask native-ipc --plan linux
 ```
 
 ## Current verification boundary
@@ -203,7 +202,7 @@ Optimized source and runtime-only packaged modes, plus both release no-IPC
 modes, pass on the available macOS host. Both IPC runs observed two persisted
 history restores. Unhandled rejections remain failures even alongside a
 pass-shaped report; no terminal-code fallback was added. The fixture does not
-alter production cache/admission behavior. Windows and Linux executable/layout planning has unit
-coverage, but native Windows/Linux execution has not been performed locally.
+alter production cache/admission behavior. Native Windows/Linux execution has
+not been performed locally.
 Contact Book primary/error screenshots remain a separate product acceptance
 requirement; this protocol fixture does not provide them.

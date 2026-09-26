@@ -5,16 +5,14 @@ edition = "2021"
 publish = false
 
 [features]
-windows-app-sdk-tools = ["dep:sha2", "dep:windows-bindgen"]
+windows-app-sdk-tools = ["dep:windows-bindgen"]
 
 [dependencies]
 console = { workspace = true }
 ctrlc = { workspace = true }
 serde_json = { workspace = true }
 windows-bindgen = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
-
-[dev-dependencies]
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

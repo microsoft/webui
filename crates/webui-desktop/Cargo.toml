@@ -96,7 +96,7 @@ webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 prost = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.30" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.29" }
 
 [[test]]
 name = "ipc_contract"
