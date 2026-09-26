@@ -30,14 +30,11 @@ const templates: Record<string, TemplateMeta> = {
 export class TestRuntimeLife extends WebUIElement {
   @observable count = 0;
   hydratedCalls = 0;
-  propertyCalls: { first: boolean; connected: boolean }[] = [];
+  propertyCalls: { oldValue: unknown; value: number; connected: boolean }[] = [];
   attributeChanges: string[] = [];
 
-  protected override propertiesChanged(
-    _changes: ReadonlyMap<string, unknown>,
-    first: boolean,
-  ): void {
-    this.propertyCalls.push({ first, connected: this.isConnected });
+  countChanged(oldValue: unknown, value: number): void {
+    this.propertyCalls.push({ oldValue, value, connected: this.isConnected });
   }
 
   protected override hydratedCallback(): void {

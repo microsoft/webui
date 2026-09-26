@@ -54,12 +54,12 @@ Compile metadata        Inject SSR markers         existing DOM,
 Authored decorated setters store construction and pre-connection values
 without invoking user callbacks or reflecting host attributes. On connected
 hydration, own refs and DOM are wired before the initial authored
-`propertiesChanged` reconciliation, which sees field, attribute, and SSR
-state once. Detached streamed activation postpones this pass until connection.
-Live `@attr` reflection is synchronous and value-compared; author effects and
-targeted bindings coalesce across the microtask. The explicit `$flushUpdates`
-barrier runs author effects before template patches. A real disconnect defers
-effects until reconnection and does not repeat initial reconciliation.
+`nameChanged(oldValue, newValue)` callbacks, which see field, attribute, and SSR
+state once per decorated property with an undefined old value. Detached streamed
+activation postpones callbacks until connection. Live `@attr` reflection and
+per-property author callbacks are synchronous; targeted template bindings
+coalesce across the microtask. A real disconnect defers callbacks until
+reconnection and does not repeat initial reconciliation.
 
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 

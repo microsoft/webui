@@ -226,34 +226,27 @@ example in an event handler.
 
 ### React to Property Changes
 
-Override `propertiesChanged(changes, firstChange)` to synchronize component
-behavior with decorated properties:
+Implement a `<property>Changed(oldValue, newValue)` method to synchronize
+behavior with an `@attr` or `@observable` property:
 
 ```typescript
-protected override propertiesChanged(
-  changes: ReadonlyMap<string, unknown>,
-  firstChange: boolean,
-): void {
-  if (changes.has('disabled') || firstChange) {
-    this.internals.ariaDisabled = String(this.disabled);
-  }
+disabledChanged(_oldValue: boolean | undefined, newValue: boolean): void {
+  this.internals.ariaDisabled = String(newValue);
 }
 ```
 
-The hook runs once on first connection **after this component's DOM, event
-bindings, and `w-ref` fields are ready**, using final field, attribute, and SSR
-values. It does not run in the constructor or while hydration is deferred.
-`firstChange` is `true` for this initial pass. On later changes, multiple
-property assignments in one turn are combined into one call before the next
-template update. `changes` contains the first old value for each property
-whose final value differs; read the latest value from `this`. A disconnected
-component resumes pending changes when reconnected without repeating its
-initial pass. Constructor-created `ElementInternals` is available in this
-hook. For code that should run only once, whether properties changed or not,
-use `hydratedCallback()`.
-
-The former `nameChanged(old, new)` convention is removed. See the
-[reactive lifecycle migration guide](./reactive-lifecycle-migration).
+Each defined callback runs once on first connection **after this component's
+DOM, event bindings, and `w-ref` fields are ready**, with `undefined` as the
+initial old value and the final field, attribute, or SSR value as the new value.
+Callbacks do not run during construction or deferred hydration. After mounting,
+each assignment invokes its callback synchronously with the previous and new
+values; template bindings still batch in a microtask. Changes while disconnected
+are reconciled on reconnection without repeating the initial callback.
+Constructor-created `ElementInternals` is available in these callbacks.
+For work that runs only once regardless of property values, use
+`hydratedCallback()`. Constructor-time `isConnected` and uninitialized-internals
+guards can be removed when they only protected decorated-property callbacks;
+keep guards for optional resources or lazy descendants.
 
 ### Initial Hydration State
 

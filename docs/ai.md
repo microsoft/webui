@@ -818,7 +818,7 @@ transient user activation or closed-shadow click targets.
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
-| `protected propertiesChanged(changes, firstChange)` | Run after connected hydration once with initial values, then on batched decorated-property changes; `changes` maps names to first old values |
+| `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
@@ -873,11 +873,10 @@ exceptions do not retry it. Once a host has deferred, later state writes
 are retained and replayed; this exception does not make constructor or
 pre-`super.connectedCallback()` writes safe.
 
-`@attr` reflects immediately once connected and hydrated. The first
-`propertiesChanged(changes, true)` call runs after this element's refs are
-wired; later calls coalesce in a microtask. Old `nameChanged(old, new)`
-callbacks are no longer invoked. Migrate them using the
-[reactive lifecycle guide](/guide/concepts/reactive-lifecycle-migration).
+`@attr` reflects immediately once connected and hydrated.
+`nameChanged(oldValue, newValue)` runs after this element's refs are wired:
+once with `oldValue` undefined for initial state, then synchronously for each
+live assignment. Template bindings remain batched in a microtask.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a

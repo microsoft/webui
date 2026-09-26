@@ -26,6 +26,61 @@ test('hydratedCallback runs once for ordinary SSR, client mount, and reconnect',
   expect(calls).toEqual({ ssr: 1, client: 1 });
 });
 
+test('observable callbacks reconcile the final initial value and run live synchronously', async ({ page }) => {
+  await page.goto('/client-runtime/ordinary.html');
+  const result = await page.evaluate(() => {
+    const el = document.createElement('test-runtime-life') as TestRuntimeLife;
+    el.count = 2;
+    const beforeConnect = el.propertyCalls.length;
+    document.body.appendChild(el);
+    const initial = el.propertyCalls.slice();
+    el.count = 3;
+    const live = el.propertyCalls.slice();
+    el.remove();
+    el.count = 4;
+    el.count = 5;
+    const detached = el.propertyCalls.length;
+    document.body.appendChild(el);
+    return { beforeConnect, initial, live, detached, afterReconnect: el.propertyCalls };
+  });
+  expect(result).toEqual({
+    beforeConnect: 0,
+    initial: [{ oldValue: undefined, value: 2, connected: true }],
+    live: [
+      { oldValue: undefined, value: 2, connected: true },
+      { oldValue: 2, value: 3, connected: true },
+    ],
+    detached: 2,
+    afterReconnect: [
+      { oldValue: undefined, value: 2, connected: true },
+      { oldValue: 2, value: 3, connected: true },
+      { oldValue: 3, value: 5, connected: true },
+    ],
+  });
+});
+
+test('callback errors surface from live property assignments', async ({ page }) => {
+  await page.goto('/client-runtime/ordinary.html');
+  const result = await page.evaluate(() => {
+    const el = document.createElement('test-runtime-life') as TestRuntimeLife;
+    document.body.appendChild(el);
+    const proto = Object.getPrototypeOf(el) as { countChanged(old: unknown, value: number): void };
+    const original = proto.countChanged;
+    proto.countChanged = () => { throw new Error('reactive effect failed'); };
+    try {
+      try {
+        el.count = 7;
+        return { error: null, value: el.count };
+      } catch (error) {
+        return { error: (error as Error).message, value: el.count };
+      }
+    } finally {
+      proto.countChanged = original;
+    }
+  });
+  expect(result).toEqual({ error: 'reactive effect failed', value: 7 });
+});
+
 test('a throwing hydratedCallback is latched before author code runs', async ({ page }) => {
   await page.goto('/client-runtime/ordinary.html');
 
@@ -145,12 +200,13 @@ test('streamed activation fires once, including detached late definition', async
 
   expect(detached).toEqual({
     connected: false, outcome: 1, calls: 1, propertyCalls: 0,
-    afterConnect: [{ first: true, connected: true }],
+    afterConnect: [{ oldValue: undefined, value: 0, connected: true }],
   });
 });
 
 type TestRuntimeLife = HTMLElement & {
+  count: number;
   hydratedCalls: number;
   attributeChanges: string[];
-  propertyCalls: { first: boolean; connected: boolean }[];
+  propertyCalls: { oldValue: unknown; value: number; connected: boolean }[];
 };

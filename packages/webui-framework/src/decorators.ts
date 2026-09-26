@@ -259,6 +259,7 @@ function createReactiveProperty(
   attrDefinition?: AttrDefinition,
 ): void {
   const backingKey = `_${name}`;
+  const changedKey = `${name}Changed`;
 
   Object.defineProperty(proto, name, {
     get(this: ReactiveInstance) {
@@ -277,17 +278,34 @@ function createReactiveProperty(
       }
       this[backingKey] = newValue;
 
+      let canReflect = false;
       if (attrDefinition) {
-        const canReflect = this['$canReflectAttr'];
-        if (typeof canReflect === 'function' &&
-            (canReflect as () => boolean).call(this)) {
+        const checkReflection = this['$canReflectAttr'];
+        if (typeof checkReflection === 'function' &&
+            (checkReflection as () => boolean).call(this)) {
           reflectPropertyToAttribute(this, attrDefinition, newValue);
+          canReflect = true;
         }
       }
 
-      if (this['$hasPropertyEffects'] === true) {
-        (this['$recordPropertyChange'] as
-          (name: string, old: unknown) => void).call(this, name, oldValue);
+      const callback = this[changedKey];
+      if (typeof callback === 'function') {
+        if (
+          this['$authoredPhase'] === 1 &&
+          (!attrDefinition || canReflect)
+        ) {
+          (callback as (old: unknown, next: unknown) => void)
+            .call(this, oldValue, newValue);
+        } else {
+          const record = this['$recordPropertyChange'];
+          if (typeof record === 'function') {
+            (record as (name: string, old: unknown) => void)
+              .call(this, name, oldValue);
+          } else {
+            (callback as (old: unknown, next: unknown) => void)
+              .call(this, oldValue, newValue);
+          }
+        }
       }
 
       if (
@@ -304,8 +322,8 @@ function createReactiveProperty(
 }
 
 /**
- * Marks a property as observable. When the value changes the decorator will:
- * schedule targeted updates for bindings that reference the property.
+ * Marks a property as observable. Changes update targeted bindings and invoke
+ * `nameChanged(oldValue, newValue)` after the component is mounted.
  */
 export function observable(target: object, name: string): void {
   const ctor = (target as Record<string, unknown>).constructor as Function;

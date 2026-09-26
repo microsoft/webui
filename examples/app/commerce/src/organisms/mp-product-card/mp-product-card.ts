@@ -15,8 +15,8 @@ export class MpProductCard extends WebUIElement {
   @attr({ attribute: 'image-width' }) imageWidth = '640';
   @attr({ attribute: 'image-height' }) imageHeight = '640';
 
-  protected override propertiesChanged(changes: ReadonlyMap<string, unknown>): void {
-    if (changes.has('handle')) this.applyViewTransitionName();
+  handleChanged(): void {
+    this.applyViewTransitionName();
   }
 
   private applyViewTransitionName(): void {

@@ -19,81 +19,76 @@ test.describe('attr fixture', () => {
   test('reconciles initial properties after refs and internals exist', async ({ page }) => {
     await page.goto('/attr/fixture.html');
     const initial = await page.locator('test-attr').first().evaluate((host) =>
-      (host as unknown as { changeLog: { first: boolean; keys: string[]; refReady: boolean; internalsReady: boolean }[] }).changeLog,
+      (host as unknown as { changeLog: { name: string; oldValue: unknown; refReady: boolean; internalsReady: boolean }[] }).changeLog,
     );
-    expect(initial).toHaveLength(1);
-    expect(initial[0]).toMatchObject({
-      first: true,
-      refReady: true,
-      internalsReady: true,
-    });
-    expect(initial[0].keys).toContain('isActive');
+    expect(initial.map(({ name }) => name)).toEqual(['label', 'displayValue', 'isActive']);
+    for (const change of initial) {
+      expect(change).toMatchObject({
+        refReady: true,
+        internalsReady: true,
+      });
+      expect(change.oldValue).toBeUndefined();
+    }
   });
 
-  test('reflects synchronously but coalesces net property effects', async ({ page }) => {
+  test('reflects attributes and invokes each property callback synchronously', async ({ page }) => {
     await page.goto('/attr/fixture.html');
-    const result = await page.locator('test-attr').first().evaluate(async (host) => {
+    const result = await page.locator('test-attr').first().evaluate((host) => {
       const el = host as HTMLElement & {
         label: string;
         isActive: boolean;
-        changeLog: { first: boolean; keys: string[]; previousLabel: unknown }[];
+        changeLog: { name: string; oldValue: unknown; value: unknown; refReady: boolean; internalsReady: boolean }[];
       };
       const initialCount = el.changeLog.length;
       el.label = 'Intermediate';
       el.label = 'Final';
       el.isActive = true;
-      const attributeImmediately = el.getAttribute('label');
-      const boolImmediately = el.hasAttribute('is-active');
-      const callbacksImmediately = el.changeLog.length;
-      await new Promise<void>((resolve) => queueMicrotask(resolve));
       return {
-        attributeImmediately, boolImmediately, callbacksImmediately,
-        initialCount, newCalls: el.changeLog.slice(initialCount),
+        attributeImmediately: el.getAttribute('label'),
+        boolImmediately: el.hasAttribute('is-active'),
+        newCalls: el.changeLog.slice(initialCount),
       };
     });
     expect(result.attributeImmediately).toBe('Final');
     expect(result.boolImmediately).toBe(true);
-    expect(result.callbacksImmediately).toBe(result.initialCount);
-    expect(result.newCalls).toEqual([{
-      first: false,
-      keys: ['label', 'isActive'],
-      previousLabel: 'Status',
-      refReady: true,
-      internalsReady: true,
-    }]);
+    expect(result.newCalls).toEqual([
+      { name: 'label', oldValue: 'Status', value: 'Intermediate', refReady: true, internalsReady: true },
+      { name: 'label', oldValue: 'Intermediate', value: 'Final', refReady: true, internalsReady: true },
+      { name: 'isActive', oldValue: false, value: true, refReady: true, internalsReady: true },
+    ]);
   });
 
-  test('queues writes made inside propertiesChanged for the next transaction', async ({ page }) => {
+  test('invokes reentrant property callbacks without losing writes', async ({ page }) => {
     await page.goto('/attr/fixture.html');
-    const result = await page.locator('test-attr').first().evaluate(async (host) => {
+    const result = await page.locator('test-attr').first().evaluate((host) => {
       const el = host as HTMLElement & {
         label: string;
         displayValue: string;
-        changeLog: { first: boolean; keys: string[] }[];
-        propertiesChanged(changes: ReadonlyMap<string, unknown>, first: boolean): void;
+        changeLog: { name: string; oldValue: unknown; value: unknown }[];
+        labelChanged(oldValue: unknown, value: string): void;
       };
       const proto = Object.getPrototypeOf(el) as typeof el;
-      const original = proto.propertiesChanged;
-      proto.propertiesChanged = function (changes, first) {
-        original.call(this, changes, first);
-        if (changes.has('label')) this.displayValue = 'From callback';
+      const original = proto.labelChanged;
+      proto.labelChanged = function (oldValue, value) {
+        original.call(this, oldValue, value);
+        this.displayValue = 'From callback';
       };
       try {
         const initialCount = el.changeLog.length;
         el.label = 'Changed';
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
         return {
-          calls: el.changeLog.slice(initialCount).map(({ first, keys }) => ({ first, keys })),
+          calls: el.changeLog.slice(initialCount).map(({ name, oldValue, value }) =>
+            ({ name, oldValue, value })),
           displayValue: el.displayValue,
         };
       } finally {
-        proto.propertiesChanged = original;
+        proto.labelChanged = original;
       }
     });
     expect(result).toEqual({
       calls: [
-        { first: false, keys: ['label'] },
-        { first: false, keys: ['displayValue'] },
+        { name: 'label', oldValue: 'Status', value: 'Changed' },
+        { name: 'displayValue', oldValue: 'Ready', value: 'From callback' },
       ],
       displayValue: 'From callback',
     });
@@ -104,26 +99,60 @@ test.describe('attr fixture', () => {
     const result = await page.locator('test-attr').first().evaluate(async (host) => {
       const el = host as HTMLElement & {
         label: string;
-        changeLog: { first: boolean; keys: string[] }[];
+        changeLog: { name: string; oldValue: unknown; value: unknown }[];
       };
+      const initial = el.changeLog.length;
       el.remove();
       el.label = 'Detached';
       await new Promise<void>((resolve) => queueMicrotask(resolve));
       const whileDetached = el.changeLog.length;
       document.body.appendChild(el);
-      await new Promise<void>((resolve) => queueMicrotask(resolve));
       return {
-        whileDetached,
-        calls: el.changeLog.map(({ first, keys }) => ({ first, keys })),
+        initial, whileDetached,
+        calls: el.changeLog.slice(initial).map(({ name, oldValue, value }) =>
+          ({ name, oldValue, value })),
         role: el.getAttribute('role'),
       };
     });
-    expect(result.whileDetached).toBe(1);
-    expect(result.calls).toEqual([
-      { first: true, keys: ['label', 'displayValue', 'ctaHref', 'isActive', 'itemId', 'tag'] },
-      { first: false, keys: ['label'] },
-    ]);
+    expect(result.initial).toBe(3);
+    expect(result.whileDetached).toBe(3);
+    expect(result.calls).toEqual([{ name: 'label', oldValue: 'Status', value: 'Detached' }]);
     expect(result.role).toBe('status');
+  });
+
+  test('retains unprocessed disconnected callbacks after an effect throws', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const result = await page.locator('test-attr').first().evaluate((host) => {
+      const el = host as HTMLElement & {
+        label: string;
+        displayValue: string;
+        changeLog: { name: string; value: unknown }[];
+        labelChanged(oldValue: unknown, value: string): void;
+        $flushUpdates(): void;
+      };
+      const initialCount = el.changeLog.length;
+      el.remove();
+      el.label = 'Rejected';
+      el.displayValue = 'Retained';
+      const proto = Object.getPrototypeOf(el) as typeof el;
+      const original = proto.labelChanged;
+      proto.labelChanged = () => { throw new Error('reconnect effect failed'); };
+      let error: string | undefined;
+      try {
+        document.body.appendChild(el);
+      } catch (caught) {
+        error = (caught as Error).message;
+      } finally {
+        proto.labelChanged = original;
+      }
+      el.$flushUpdates();
+      return {
+        error,
+        calls: el.changeLog.slice(initialCount).map(({ name, value }) => ({ name, value })),
+      };
+    });
+    expect(result.calls).toEqual([{ name: 'displayValue', value: 'Retained' }]);
+    if (result.error !== undefined) expect(result.error).toBe('reconnect effect failed');
   });
 
   test('preserves an own property set before custom-element upgrade', async ({ page }) => {
@@ -145,19 +174,6 @@ test.describe('attr fixture', () => {
     expect(result).toEqual({
       property: 'Before upgrade', attribute: 'Before upgrade', upgraded: true,
     });
-  });
-
-  test('rejects old per-property callbacks in development', async ({ page }) => {
-    await page.goto('/attr/fixture.html');
-    const error = page.waitForEvent('pageerror');
-    await page.evaluate(() => {
-      const ctor = customElements.get('test-attr')!;
-      (ctor.prototype as HTMLElement & { labelChanged?: () => void }).labelChanged = () => {};
-      document.body.appendChild(document.createElement('test-attr'));
-    });
-    expect((await error).message).toContain(
-      'labelChanged is no longer called. Use propertiesChanged',
-    );
   });
 
   test.beforeEach(async ({ page }) => {

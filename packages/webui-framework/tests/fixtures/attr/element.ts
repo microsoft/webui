@@ -6,7 +6,7 @@ import { WebUIElement, attr, observable } from '../../../src/index.js';
 export class TestAttr extends WebUIElement {
   labelRef!: HTMLSpanElement;
   internals = this.attachInternals();
-  changeLog: { first: boolean; keys: string[]; previousLabel: unknown; refReady: boolean; internalsReady: boolean }[] = [];
+  changeLog: { name: string; oldValue: unknown; value: unknown; refReady: boolean; internalsReady: boolean }[] = [];
   @attr label = 'Status';
   @attr({ attribute: 'display-value' }) displayValue = 'Ready';
   @attr({ attribute: 'cta-href' }) ctaHref = '/checkout';
@@ -14,15 +14,28 @@ export class TestAttr extends WebUIElement {
   @observable itemId = '42';
   @observable tag = 'demo';
 
-  protected override propertiesChanged(changes: ReadonlyMap<string, unknown>, first: boolean): void {
+  private recordChange(name: string, oldValue: unknown, value: unknown): void {
     this.changeLog.push({
-      first,
-      keys: [...changes.keys()],
-      previousLabel: changes.get('label'),
+      name,
+      oldValue,
+      value,
       refReady: this.labelRef instanceof HTMLSpanElement,
       internalsReady: this.internals instanceof ElementInternals,
     });
-    if (changes.has('label')) this.setAttribute('role', 'status');
+  }
+
+  labelChanged(oldValue: unknown, value: string): void {
+    this.recordChange('label', oldValue, value);
+    this.setAttribute('role', 'status');
+  }
+
+  displayValueChanged(oldValue: unknown, value: string): void {
+    this.recordChange('displayValue', oldValue, value);
+  }
+
+  isActiveChanged(oldValue: unknown, value: boolean): void {
+    this.recordChange('isActive', oldValue, value);
+    this.internals.ariaChecked = String(value);
   }
 
   noop(): void {}
