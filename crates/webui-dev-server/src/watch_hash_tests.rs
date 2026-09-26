@@ -223,9 +223,12 @@ fn missing_non_file_and_oversized_inputs_have_no_digest() -> io::Result<()> {
 #[cfg(unix)]
 #[test]
 fn non_regular_socket_is_rejected() -> io::Result<()> {
-    let root = tempfile::tempdir()?;
+    let root = tempfile::tempdir_in(".")?;
     let path = root.path().join("socket");
-    let _listener = std::os::unix::net::UnixListener::bind(&path)?;
+    let relative = path
+        .strip_prefix(std::env::current_dir()?)
+        .map_err(io::Error::other)?;
+    let _listener = std::os::unix::net::UnixListener::bind(relative)?;
     assert_eq!(hash_file(&path, &mut [0_u8; HASH_BUFFER_SIZE]), None);
     Ok(())
 }

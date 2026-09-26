@@ -1353,29 +1353,43 @@ Restart desktop `run` after source changes; desktop `--watch` is not supported.
 
 Write a host crate only when you need dynamic route state or IPC. To generate a
 working progressive scaffold, use `webui desktop init ./my-app`; it creates the
-entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+entry template, package metadata, `webui-desktop.json`, and a packaged-vs-source
+Rust runner that shares the same app ID and window title. Existing
 files are protected unless `--force` is passed. Rust apps depend on
 `microsoft-webui-desktop` with `native` enabled and forward an opt-in `source`
 feature to `microsoft-webui-desktop/source`. There is no separate runner or
 compiler dependency. `webui desktop package` builds
 optimized runners without default features automatically. Select optional app
-capabilities with `webuiDesktop.runnerFeatures`; use `--debug` only for a debug
+capabilities with `--runner-features`; use `--debug` only for a debug
 package. Package targets are `macos-app`, `windows-portable`, and
 `linux-portable`; `all` writes all three layouts without cross-compiling the
-runner. Installer generation and signing are not supported. The
+runner. App-root packaging accepts `--source`, `--state`, `--assets`,
+`--build-script`, identity, and window flags without `webuiDesktop` in
+`package.json`. Put persistent package settings in app-root
+`webui-desktop.json` instead; explicit flags override them and legacy
+`webuiDesktop` is accepted only when the new file is absent. See the
+[CLI reference](./guide/cli/#webui-desktop).
+Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
+for live presentation changes from Rust; these do not change the stable app ID
+or packaged defaults. The background applies to the native surface, current
+document root, and later full-page renders. Width, height, titlebar style,
+background, and the remaining initial window options can all be set through
+`DesktopAppBuilder::window(WindowOptions { ... })` before `build()`. Live size
+changes use `set_size(width, height)`; titlebar style remains startup-only.
 On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
 symlink escapes; source hosts can set an absolute path for Dock artwork.
 `titlebar.height` sizes the application band; Windows caption buttons default
-to 32 DIPs independently. Set `webuiDesktop.captionButtonSize: "tall"` for
+to 32 DIPs independently. Pass `--caption-button-size tall` for
 48-DIP buttons without changing the application band height.
 For custom headers, mark the drag surface `webui-drag` and interactive children
 `webui-no-drag`; a double-click on the drag surface toggles maximize/restore.
 
 Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
-or set `webuiDesktop.projectionManifests` for app-root packaging. Rust source
+or use `--projection-manifest` for app-root packaging. Rust source
 hosts set `BuildOptions::projection_manifests`. Desktop and web share navigation
 state projection; unknown requirements keep the correctness-safe full-state
 fallback. Supplied manifests must be current and complete.

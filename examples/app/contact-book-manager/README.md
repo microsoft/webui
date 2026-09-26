@@ -77,7 +77,7 @@ and theme tokens remain available to the renderer.
 
 Both desktop build paths consume `dist/webui-projection.json` from
 `build:client`. Source mode supplies it through Rust build options; packaging
-uses `webuiDesktop.projectionManifests`. Keep the client build current before
+reads the path from `webui-desktop.json`. Keep the client build current before
 launching or packaging. Navigation sends the fields required by the active
 components, just as the browser host does; theme CSS remains available for full
 document rendering without being repeated as unused navigation state.
@@ -90,17 +90,19 @@ Build and launch a Contact Book desktop app in one command:
 PACKAGES=/tmp/contact-book-packages
 
 cd examples/app/contact-book-manager
-cargo run -p microsoft-webui-cli -- desktop package . \
-  --target macos-app \
-  --out "$PACKAGES"
+cargo run -p microsoft-webui-cli -- desktop package . --out "$PACKAGES"
 
 open "$PACKAGES/Contact-Book-Manager.app"
 ```
 
-The `webuiDesktop` config in `package.json` tells the sidecar to run
-`build:deps` and `build:client`, build the `contact-book-desktop` Rust runner,
-stage non-generated assets from `dist`, build the bundle, and package the
-runner-backed `.app`.
+`webui-desktop.json` selects the WebUI hydration plugin, client build scripts,
+projection manifest, icon, titlebar, window state, devtools, and stable app ID.
+Packaging runs the client builds, compiles the Rust runner, stages assets from
+`dist`, and creates the runner-backed `.app`. Explicit CLI flags override
+settings in that file; CLI paths are relative to the current directory. The
+Rust source host reads the same typed identity, theme, icon, and window options
+from the file. Its bundle test passes those options to
+`build_desktop_bundle` and packages with `package_desktop_bundle`.
 
 To inspect the packaged macOS app, enable Safari > Settings > Advanced > Show
 features for web developers, then open Safari's Develop menu while the app is

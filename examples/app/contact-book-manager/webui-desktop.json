@@ -1,0 +1,22 @@
+{
+  "app": "src",
+  "state": "data/state.json",
+  "assets": "dist",
+  "projectionManifests": ["dist/webui-projection.json"],
+  "theme": "@microsoft/webui-examples-theme",
+  "plugin": "webui",
+  "icon": "desktop/icon.icns",
+  "runnerCrate": "contact-book-desktop",
+  "packageManager": "pnpm",
+  "buildScripts": ["build:deps", "build:client"],
+  "appId": "com.microsoft.webui.contactbook",
+  "appName": "Contact Book Manager",
+  "appVersion": "1.0.0",
+  "title": "Contact Book Manager",
+  "width": 1200,
+  "height": 800,
+  "titlebar": { "style": "overlay", "height": 48 },
+  "background": "#f8fafc",
+  "rememberState": true,
+  "devtools": true
+}

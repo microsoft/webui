@@ -317,6 +317,35 @@ fn command_queue_bounds_individual_and_aggregate_title_bytes() {
 }
 
 #[test]
+fn background_update_changes_render_state_only_when_queued() {
+    let background = Arc::new(LiveBackground::default());
+    let handle = WindowHandle::with_background(Arc::clone(&background));
+    let color = "#334455cc".parse().unwrap();
+    assert_eq!(background.current(), None);
+    handle.set_background(color).unwrap();
+    assert_eq!(background.current(), Some(color));
+    assert_eq!(
+        handle.drain_commands(),
+        vec![WindowCommand::SetBackground(color)]
+    );
+
+    for _ in 0..MAX_QUEUED_WINDOW_COMMANDS {
+        handle.focus().unwrap();
+    }
+    assert_eq!(
+        handle.set_background("#fafafa".parse().unwrap()),
+        Err(WindowCommandError::QueueFull)
+    );
+    assert_eq!(background.current(), Some(color));
+    handle.close();
+    assert_eq!(
+        handle.set_background("#fefefe".parse().unwrap()),
+        Err(WindowCommandError::Closed)
+    );
+    assert_eq!(background.current(), Some(color));
+}
+
+#[test]
 fn command_close_rejects_senders_and_releases_wakeup_outside_lock() {
     struct SendOnDrop {
         handle: WindowHandle,

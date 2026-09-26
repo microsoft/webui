@@ -341,6 +341,10 @@ fn execute_commands(
     for command in handle.drain_commands() {
         match command {
             WindowCommand::SetTitle(title) => window.set_title(Some(&title)),
+            WindowCommand::SetBackground(color) => {
+                webview.set_background_color(&to_gdk_rgba(color));
+                update_document_background(webview, color);
+            }
             WindowCommand::SetSize { width, height } => {
                 window.set_default_size(safe_dimension(width, 1200), safe_dimension(height, 800))
             }
@@ -367,7 +371,6 @@ fn execute_commands(
             }
         }
     }
-    let _ = webview;
     let _ = events;
 }
 
@@ -411,7 +414,7 @@ fn install_events(
 
     connect_window_state_events(window, webview, &frame.events, state_store);
     super::state::connect_toplevel_state_events(window, webview, &frame.events);
-    connect_webview_events(webview, &frame.events);
+    connect_webview_events(webview, &frame.events, frame.runtime.live_background());
     connect_theme_events(webview, &frame.events);
     connect_message_handler(manager, window, webview, &frame.events);
 }
@@ -469,7 +472,11 @@ fn connect_theme_events(webview: &WebView, events: &crate::EventRegistry) {
     });
 }
 
-fn connect_webview_events(webview: &WebView, events: &crate::EventRegistry) {
+fn connect_webview_events(
+    webview: &WebView,
+    events: &crate::EventRegistry,
+    live_background: Arc<crate::window::LiveBackground>,
+) {
     let load_events = events.clone();
     webview.connect_load_changed(move |webview, load_event| {
         if load_event == LoadEvent::Finished {
@@ -479,6 +486,9 @@ fn connect_webview_events(webview: &WebView, events: &crate::EventRegistry) {
                     url: uri.to_string(),
                 };
                 dispatch_event(&load_events, webview, &event);
+                if let Some(color) = live_background.current() {
+                    update_document_background(webview, color);
+                }
             }
         }
     });
@@ -515,6 +525,20 @@ fn connect_webview_events(webview: &WebView, events: &crate::EventRegistry) {
         }
         true
     });
+}
+
+fn update_document_background(webview: &WebView, color: Rgba) {
+    webview.evaluate_javascript(
+        &crate::window::live_background_script(color),
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |result| {
+            if let Err(error) = result {
+                eprintln!("WebUI: failed to update the current document background: {error}");
+            }
+        },
+    );
 }
 
 /// SECURITY: WebKitGTK 6 (webkit6 0.6.1) exposes a registered message handler

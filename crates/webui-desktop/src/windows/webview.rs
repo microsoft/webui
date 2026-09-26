@@ -4,8 +4,9 @@
 //! WebView2 environment, controller, navigation policy, and script bridges.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
+use crate::window::LiveBackground;
 use crate::{
     DesktopEvent, DesktopHostMessage, EventRegistry, EventResponse, Rgba, WindowEffect,
     DRAG_REGION_SCRIPT,
@@ -262,6 +263,40 @@ pub(super) fn configure_controller_background(
     Ok(())
 }
 
+pub(super) fn update_background(
+    controller: &ICoreWebView2Controller,
+    webview: &ICoreWebView2,
+    color: Rgba,
+) -> Result<()> {
+    let controller = controller
+        .cast::<ICoreWebView2Controller2>()
+        .context("live background updates require a newer WebView2 Runtime; update WebView2")?;
+    let native = COREWEBVIEW2_COLOR {
+        A: color.a,
+        R: color.r,
+        G: color.g,
+        B: color.b,
+    };
+    // SAFETY: The UI thread owns the controller and the color is initialized POD.
+    unsafe { controller.SetDefaultBackgroundColor(native)? };
+
+    update_document_background(webview, color)
+}
+
+pub(super) fn update_document_background(webview: &ICoreWebView2, color: Rgba) -> Result<()> {
+    let script = CoTaskMemPWSTR::from(crate::window::live_background_script(color).as_str());
+    let completion = ExecuteScriptCompletedHandler::create(Box::new(|result, _| {
+        if let Err(error) = result {
+            eprintln!("WebUI: failed to update the current document background: {error}");
+        }
+        Ok(())
+    }));
+    // SAFETY: The live WebView2 interface retains the completion callback;
+    // the script buffer stays valid for the synchronous call that queues it.
+    unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &completion)? };
+    Ok(())
+}
+
 /// Install the host bridge and drag-region helper script on every document.
 pub(super) fn inject_drag_script(webview: &ICoreWebView2) -> Result<()> {
     add_document_script(webview, HOST_BRIDGE_SCRIPT)?;
@@ -336,6 +371,7 @@ pub(super) fn register_navigation_completed(
     webview: &ICoreWebView2,
     events: EventRegistry,
     hwnd: HWND,
+    live_background: Arc<LiveBackground>,
 ) -> Result<ICoreWebView2NavigationCompletedEventHandler> {
     let webview_for_uri = webview.clone();
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
@@ -353,6 +389,11 @@ pub(super) fn register_navigation_completed(
         };
         let _ = events.dispatch(&event);
         mirror_event(&webview_for_uri, &event);
+        if let Some(color) = live_background.current() {
+            if let Err(error) = update_document_background(&webview_for_uri, color) {
+                eprintln!("WebUI: failed to restore document background after navigation: {error}");
+            }
+        }
         Ok(())
     }));
     let mut token = 0_i64;

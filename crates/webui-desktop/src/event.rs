@@ -6,6 +6,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+use crate::window::LiveBackground;
+use crate::Rgba;
+
 /// Stable identity for a desktop window.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq, Hash)]
 #[serde(transparent)]
@@ -324,6 +327,8 @@ impl DesktopEvent {
 pub enum WindowCommand {
     /// Replace the native window title.
     SetTitle(String),
+    /// Replace the native pre-paint and web document background.
+    SetBackground(Rgba),
     /// Resize the window's content area, in logical pixels.
     SetSize { width: u32, height: u32 },
     /// Minimize the window to the dock or taskbar.
@@ -381,6 +386,7 @@ pub struct WindowHandle {
 #[derive(Default)]
 struct WindowHandleState {
     queue: Option<VecDeque<WindowCommand>>,
+    background: Option<Arc<LiveBackground>>,
     wakeup: Option<Arc<dyn Fn() + Send + Sync>>,
     queued_title_bytes: usize,
     wake_scheduled: bool,
@@ -388,6 +394,15 @@ struct WindowHandleState {
 }
 
 impl WindowHandle {
+    pub(crate) fn with_background(background: Arc<LiveBackground>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(WindowHandleState {
+                background: Some(background),
+                ..WindowHandleState::default()
+            })),
+        }
+    }
+
     /// Install the backend wakeup callback.
     ///
     /// Installing a callback while commands are queued schedules one wakeup.
@@ -458,6 +473,11 @@ impl WindowHandle {
                 });
             }
             state.queued_title_bytes += title_bytes;
+            if let WindowCommand::SetBackground(color) = command {
+                if let Some(background) = &state.background {
+                    background.set(color);
+                }
+            }
             state
                 .queue
                 .get_or_insert_with(VecDeque::new)
@@ -498,6 +518,10 @@ impl WindowHandle {
     /// Queue title update.
     pub fn set_title(&self, title: impl Into<String>) -> Result<(), WindowCommandError> {
         self.send(WindowCommand::SetTitle(title.into()))
+    }
+    /// Queue a native and document background update without changing the bundle manifest.
+    pub fn set_background(&self, color: Rgba) -> Result<(), WindowCommandError> {
+        self.send(WindowCommand::SetBackground(color))
     }
     /// Queue size update.
     pub fn set_size(&self, width: u32, height: u32) -> Result<(), WindowCommandError> {

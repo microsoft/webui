@@ -13,14 +13,21 @@ use std::sync::{
 };
 use webui_desktop::{
     build_desktop_bundle, BuildOptions, DesktopApp, DesktopBundleOptions, DesktopEvent,
-    DesktopProtocolResponse, DesktopShellConfig, DesktopSourceConfig, EventResponse, TitlebarStyle,
-    WindowHandle, WindowOptions,
+    DesktopProtocolResponse, DesktopShellConfig, DesktopSourceConfig, EventResponse, Rgba,
+    TitlebarStyle, WindowHandle, WindowOptions,
 };
 
 const SCRIPT: &str = r#"
 (async () => {
   const assert = (ok, message) => { if (!ok) throw new Error(message); };
   assert(document.querySelector('h1').textContent === 'No application IPC', 'SSR');
+  if (new URL(location.href).searchParams.has('afterBackground')) {
+    assert(getComputedStyle(document.documentElement)
+        .getPropertyValue('--webui-window-background').trim() === '#334455',
+        'new document lost the live background after navigation');
+    await fetch('/result', {method: 'POST', body: 'pass'});
+    return;
+  }
   assert(!('__webuiDesktopIpcV2' in globalThis), 'IPC bootstrap installed');
   assert(!('__webuiDesktopIpcReceiveV2' in globalThis), 'IPC receiver installed');
   assert(!window.webkit?.messageHandlers?.webuiDesktopIpc, 'IPC native handler installed');
@@ -34,7 +41,20 @@ const SCRIPT: &str = r#"
   assert(await response.text() === 'ordinary API', 'custom protocol API');
   const worker = await fetch('/api/worker');
   assert(worker.ok && (await worker.text()).startsWith('webui-app-'), 'API ran on native UI thread');
-  await fetch('/result', {method: 'POST', body: 'pass'});
+  const update = await fetch('/api/background', {method: 'POST'});
+  assert(update.ok, 'background command was rejected');
+  let current;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    current = getComputedStyle(document.documentElement)
+        .getPropertyValue('--webui-window-background').trim();
+    if (current === '#334455') break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert(current === '#334455', 'native command did not update the live document: ' + current);
+  const nextPage = await fetch('/');
+  assert(nextPage.ok && (await nextPage.text()).includes(
+      '--webui-window-background:#334455'), 'future document lost the background');
+  window.location.assign('/?afterBackground=1');
 })().catch(error => fetch('/result', {method: 'POST', body: String(error)}));
 "#;
 
@@ -103,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let passed = Arc::new(AtomicBool::new(false));
     let closed = Arc::new(AtomicBool::new(false));
     let result_window = Arc::clone(&window);
+    let background_window = Arc::clone(&window);
     let result_passed = Arc::clone(&passed);
     let ui_thread = std::thread::current().id();
     let frame = builder
@@ -126,6 +147,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if current.id() == ui_thread { 500 } else { 200 },
                 current.name().unwrap_or("unnamed"),
             ))
+        })?
+        .api_route("/api/background", move |_| {
+            let handle = background_window.get().ok_or_else(|| {
+                webui_desktop::DesktopError::UnsupportedRuntime {
+                    message: "native window is not ready for a background update".into(),
+                    help: "wait for the ready event before sending window commands".into(),
+                }
+            })?;
+            handle
+                .set_background(Rgba {
+                    r: 0x33,
+                    g: 0x44,
+                    b: 0x55,
+                    a: u8::MAX,
+                })
+                .map_err(|source| webui_desktop::DesktopError::Backend {
+                    source: Box::new(source),
+                })?;
+            Ok(DesktopProtocolResponse::text(200, "queued"))
         })?
         .api_route("/result", move |context| {
             let success = context.body == b"pass";

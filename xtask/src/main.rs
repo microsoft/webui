@@ -3,12 +3,14 @@
 
 mod build_examples;
 mod build_wasm;
+mod desktop_acceptance;
 mod desktop_tests;
 mod dev;
 mod e2e;
 mod e2e_approve;
 mod hotfix;
 mod license_headers;
+mod native_ipc;
 mod process;
 mod publish;
 mod release_version;
@@ -55,6 +57,14 @@ fn main() -> ExitCode {
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => run_steps(&[Step::TEST]),
         Some("test-desktop") => run_steps(&[Step::TEST_DESKTOP]),
+        Some("desktop-acceptance") => match desktop_acceptance::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("desktop acceptance failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("native-ipc") => native_ipc::run(&args[2..]),
         Some("build") => run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES]),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
@@ -142,6 +152,8 @@ fn usage() -> ExitCode {
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
            test-desktop  Run isolated desktop SDK feature combinations\n  \
+           desktop-acceptance  Run desktop SDK, binding, and browser contracts\n  \
+           native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \

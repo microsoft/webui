@@ -17,6 +17,15 @@ use super::{message, WINDOW_ID};
 pub(super) fn execute_window_command(hwnd: HWND, command: WindowCommand) {
     match command {
         WindowCommand::SetTitle(title) => set_title(hwnd, &title),
+        WindowCommand::SetBackground(color) => {
+            with_window_state(hwnd, |state| {
+                if let Err(error) =
+                    super::webview::update_background(&state.controller, &state.webview, color)
+                {
+                    eprintln!("WebUI: failed to update window background: {error}");
+                }
+            });
+        }
         WindowCommand::SetSize { width, height } => set_size(hwnd, width, height),
         WindowCommand::Minimize => show_window(hwnd, WindowsAndMessaging::SW_MINIMIZE),
         WindowCommand::Maximize => show_window(hwnd, WindowsAndMessaging::SW_MAXIMIZE),
