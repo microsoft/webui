@@ -266,6 +266,12 @@ function createReactiveProperty(
       return this[backingKey];
     },
     set(this: ReactiveInstance, newValue: unknown) {
+      const captured = this['$preUpgradeProperties'] as Map<string, unknown> | undefined;
+      // :defined stays false during an upgrade's constructor and field initializers.
+      if (captured?.has(name) && (this as unknown as HTMLElement).matches(':defined')) {
+        captured.delete(name);
+        if (captured.size === 0) this['$preUpgradeProperties'] = undefined;
+      }
       const oldValue = this[backingKey];
       if (Object.is(oldValue, newValue)) {
         if (this['$deferredSSR'] === true) {
@@ -280,7 +286,7 @@ function createReactiveProperty(
 
       let canReflect = false;
       if (attrDefinition) {
-        const checkReflection = this['$canReflectAttr'];
+        const checkReflection = this['$canRunAuthoredEffects'];
         if (typeof checkReflection === 'function' &&
             (checkReflection as () => boolean).call(this)) {
           reflectPropertyToAttribute(this, attrDefinition, newValue);
@@ -292,7 +298,7 @@ function createReactiveProperty(
       if (typeof callback === 'function') {
         if (
           this['$authoredPhase'] === 1 &&
-          (!attrDefinition || canReflect)
+          (attrDefinition ? canReflect : (this as unknown as HTMLElement).isConnected)
         ) {
           (callback as (old: unknown, next: unknown) => void)
             .call(this, oldValue, newValue);
@@ -420,9 +426,14 @@ function applyAttr(
         definition !== undefined &&
         (this as ReactiveInstance)[reflectingAttribute] !== attribute
       ) {
-        (this as Record<string, unknown>)[definition.property] = definition.boolean
-          ? newVal !== null
-          : newVal;
+        // Initial attribute reactions must not replace pre-upgrade own properties.
+        const captured = this['$preUpgradeProperties'];
+        if (captured) this['$preUpgradeProperties'] = undefined;
+        try {
+          this[definition.property] = definition.boolean ? newVal !== null : newVal;
+        } finally {
+          if (captured) this['$preUpgradeProperties'] = captured;
+        }
       }
 
       // Preserve any pre-existing attributeChangedCallback.

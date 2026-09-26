@@ -877,6 +877,8 @@ pre-`super.connectedCallback()` writes safe.
 `nameChanged(oldValue, newValue)` runs after this element's refs are wired:
 once with `oldValue` undefined for initial state, then synchronously for each
 live assignment. Template bindings remain batched in a microtask.
+Disconnected changes reconcile on reconnect. A throwing callback is not retried;
+`$flushUpdates()` or reconnect resumes other pending callbacks.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a

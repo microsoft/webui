@@ -235,7 +235,7 @@ disabledChanged(_oldValue: boolean | undefined, newValue: boolean): void {
 }
 ```
 
-Each defined callback runs once on first connection **after this component's
+Each initialized property with a callback is reconciled once **after this component's
 DOM, event bindings, and `w-ref` fields are ready**, with `undefined` as the
 initial old value and the final field, attribute, or SSR value as the new value.
 Callbacks do not run during construction or deferred hydration. After mounting,
@@ -247,6 +247,9 @@ For work that runs only once regardless of property values, use
 `hydratedCallback()`. Constructor-time `isConnected` and uninitialized-internals
 guards can be removed when they only protected decorated-property callbacks;
 keep guards for optional resources or lazy descendants.
+
+Callback errors propagate. The failed callback is not retried; call
+`$flushUpdates()` or reconnect the element to resume other pending callbacks.
 
 ### Initial Hydration State
 

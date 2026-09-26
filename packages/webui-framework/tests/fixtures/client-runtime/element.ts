@@ -3,6 +3,7 @@
 
 import {
   WebUIElement,
+  attr,
   observable,
   registerTemplateData,
   type TemplateMeta,
@@ -16,6 +17,10 @@ const templates: Record<string, TemplateMeta> = {
     ],
     tr: ['label'],
     ta: ['label'],
+    th: 1,
+  },
+  'test-runtime-effects': {
+    h: '<span></span>',
     th: 1,
   },
   'test-runtime-throw': {
@@ -51,6 +56,30 @@ export class TestRuntimeLife extends WebUIElement {
   }
 }
 
+export class TestRuntimeEffects extends WebUIElement {
+  @observable a = 0;
+  @observable b = 0;
+  @attr label = 'default';
+  calls: (
+    | { name: 'a' | 'b'; oldValue: number | undefined; value: number; connected: boolean }
+    | { name: 'hydrated'; connected: boolean }
+  )[] = [];
+  onAChange?: (oldValue: number | undefined, value: number) => void;
+
+  aChanged(oldValue: number | undefined, value: number): void {
+    this.calls.push({ name: 'a', oldValue, value, connected: this.isConnected });
+    this.onAChange?.(oldValue, value);
+  }
+
+  bChanged(oldValue: number | undefined, value: number): void {
+    this.calls.push({ name: 'b', oldValue, value, connected: this.isConnected });
+  }
+
+  protected override hydratedCallback(): void {
+    this.calls.push({ name: 'hydrated', connected: this.isConnected });
+  }
+}
+
 export class TestRuntimeThrow extends WebUIElement {
   hydratedCalls = 0;
 
@@ -77,6 +106,7 @@ if (!streaming && !routerLate) {
 }
 
 TestRuntimeLife.define('test-runtime-life');
+TestRuntimeEffects.define('test-runtime-effects');
 TestRuntimeThrow.define('test-runtime-throw');
 
 window.TestRuntimeLife = TestRuntimeLife;

@@ -18,7 +18,7 @@ class FakeElement {
   isConnected = false;
   private readonly attrs = new Map<string, string>();
 
-  $canReflectAttr(): boolean {
+  $canRunAuthoredEffects(): boolean {
     return this.$ready;
   }
 
