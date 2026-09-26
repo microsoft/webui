@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "source")]
+use anyhow::Context;
 use anyhow::Result;
 use serde_json::{Map, Value};
 #[cfg(feature = "source")]
@@ -15,7 +17,24 @@ use webui_desktop::{
     DesktopHttpMethod, DesktopProtocolResponse, EventResponse, RouteContext, RouteStateRegistry,
 };
 #[cfg(feature = "source")]
-use webui_desktop::{DesktopShellConfig, DesktopSourceConfig, TitlebarStyle, WindowOptions};
+use webui_desktop::{DesktopShellConfig, DesktopSourceConfig, WindowOptions};
+
+#[cfg(feature = "source")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactBookSettings {
+    app_id: String,
+    theme: String,
+    icon: PathBuf,
+    #[serde(flatten)]
+    window: WindowOptions,
+}
+
+#[cfg(feature = "source")]
+fn contact_book_settings() -> Result<ContactBookSettings> {
+    serde_json::from_str(include_str!("../../webui-desktop.json"))
+        .context("invalid Contact Book webui-desktop.json; correct its appId, theme, icon, or window settings")
+}
 
 mod state;
 use state::{load_state, read_state, SharedState};
@@ -56,6 +75,7 @@ fn main() -> Result<()> {
 
 #[cfg(feature = "source")]
 fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
+    let settings = contact_book_settings()?;
     let app_dir = app_root.join("src");
     let state_path = app_root.join("data/state.json");
     let assets = app_root.join("dist");
@@ -64,31 +84,21 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
     let mut config = DesktopSourceConfig::new(contact_book_build_options(app_dir));
     config.state = Some(seed);
     config.asset_root = Some(assets);
-    config.theme = Some(("@microsoft/webui-examples-theme".to_string(), app_root));
+    config.theme = Some((settings.theme, app_root));
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
-    config.window = contact_book_window()?;
+    config.window = settings.window;
     Ok(DesktopApp::from_source(config)
-        .app_id("com.microsoft.webui.contactbook")
+        .app_id(settings.app_id)
         .shell(DesktopShellConfig {
-            icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
+            icon_path: Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join(settings.icon),
+            ),
             ..DesktopShellConfig::default()
         })
         .build()?)
-}
-
-#[cfg(feature = "source")]
-fn contact_book_window() -> Result<WindowOptions> {
-    Ok(WindowOptions {
-        title: "Contact Book Manager".to_string(),
-        width: 1200,
-        height: 800,
-        devtools: true,
-        titlebar: TitlebarStyle::Overlay { height: 48 },
-        background: Some("#f8fafc".parse()?),
-        remember_state: true,
-        ..WindowOptions::default()
-    })
 }
 
 fn packaged_frame(resources: &std::path::Path) -> Result<DesktopFrame> {
@@ -660,6 +670,8 @@ fn not_found(id: &str) -> ContactApiError {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    #[cfg(feature = "source")]
+    use webui_desktop::TitlebarStyle;
 
     fn test_state() -> Value {
         serde_json::from_str(
@@ -795,6 +807,8 @@ mod tests {
         let fixture = source_fixture(&test_state());
         let app_root = fixture.path();
         let source = source_frame(app_root.to_path_buf()).unwrap();
+        let settings = contact_book_settings().unwrap();
+        assert_eq!(source.app_id(), Some(settings.app_id.as_str()));
         assert_eq!(
             source.window().titlebar,
             TitlebarStyle::Overlay { height: 48 }
@@ -814,14 +828,22 @@ mod tests {
             b"export {};"
         );
 
-        let window = contact_book_window().unwrap();
+        let window = settings.window;
         assert_eq!(window.titlebar, TitlebarStyle::Overlay { height: 48 });
         assert!(window.remember_state);
         let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns");
         assert!(std::fs::read(&icon).unwrap().starts_with(b"icns"));
         // Source launches have no `.app` bundle, so the Dock icon can only come
         // from the shell config the runner supplies at runtime.
-        assert_eq!(source.shell().icon_path.as_deref(), Some(icon.as_path()));
+        assert_eq!(
+            source.shell().icon_path.as_deref(),
+            Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("desktop/icon.icns")
+                    .as_path()
+            )
+        );
         let windows_icon = include_bytes!("../icon.ico");
         assert_eq!(&windows_icon[..4], &[0, 0, 1, 0]);
         assert!(windows_icon[4] >= 4);
@@ -832,7 +854,7 @@ mod tests {
             state_file: Some(app_root.join("data/state.json")),
             asset_root: Some(app_root.join("dist")),
             token_css: None,
-            app_id: "com.microsoft.webui.contactbook.test".to_string(),
+            app_id: settings.app_id,
             app_name: "Contact Book Manager".to_string(),
             version: "0.0.0".to_string(),
             publisher: "Microsoft".to_string(),
@@ -858,6 +880,7 @@ mod tests {
         );
 
         let packaged = packaged_frame(bundle.path()).unwrap();
+        assert_eq!(packaged.app_id(), source.app_id());
         assert_eq!(
             packaged.window().titlebar,
             TitlebarStyle::Overlay { height: 48 }

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,12 +15,14 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use expand_tilde::expand_tilde;
 use serde::de::DeserializeOwned;
 use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
+#[cfg(not(target_os = "macos"))]
+use webui_desktop::DesktopRuntime;
+#[cfg(any(not(target_os = "macos"), test))]
+use webui_desktop::DesktopSourceConfig;
 use webui_desktop::{
     build_desktop_bundle, package_desktop_bundle, DesktopBundleOptions, DesktopPackageOptions,
     DesktopPackageTarget, DesktopShellConfig, WindowOptions,
 };
-#[cfg(not(target_os = "macos"))]
-use webui_desktop::{DesktopRuntime, DesktopSourceConfig};
 
 mod init;
 mod ipc;
@@ -467,12 +470,8 @@ fn run_desktop(args: RunArgs) -> Result<()> {
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]
-    let mut config = DesktopSourceConfig::new(args.app.build_options(app_dir));
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
-        config.state_file = state_file;
-        config.asset_root = asset_root;
-        config.window = window.clone();
+        let config = source_config_for_run(&args, app_dir, state_file, asset_root, window.clone());
         let runtime =
             DesktopRuntime::from_source(config).with_context(|| "Desktop build failed")?;
         run_webview(Arc::new(runtime), window)
@@ -485,6 +484,22 @@ fn run_desktop(args: RunArgs) -> Result<()> {
             "desktop webview backend is not implemented on this platform yet"
         ))
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn source_config_for_run(
+    args: &RunArgs,
+    app_dir: PathBuf,
+    state_file: Option<PathBuf>,
+    asset_root: Option<PathBuf>,
+    window: WindowOptions,
+) -> DesktopSourceConfig {
+    let mut config = DesktopSourceConfig::new(args.app.build_options(app_dir.clone()));
+    config.state_file = state_file;
+    config.asset_root = asset_root;
+    config.window = window;
+    config.theme = args.theme.as_ref().map(|theme| (theme.clone(), app_dir));
+    config
 }
 
 #[cfg(target_os = "macos")]
@@ -758,6 +773,15 @@ fn create_app_package_plan(
         .or(config.entry)
         .unwrap_or_else(|| "index.html".to_string());
     let plugin = args.plugin.or(config.plugin);
+    if plugin.is_none()
+        && assets
+            .as_ref()
+            .is_some_and(|root| root.join("webui-projection.json").is_file())
+    {
+        return Err(anyhow::anyhow!(
+            "client projection metadata exists in the app assets, but no desktop plugin is configured; help: set \"plugin\": \"webui\" and \"projectionManifests\" in webui-desktop.json, or pass --plugin webui --projection-manifest <PATH>"
+        ));
+    }
     let generated_css = generated_css_names(&source_dir, &entry, plugin)?;
     let staged_assets = stage_app_assets(
         assets.as_ref(),
@@ -765,8 +789,15 @@ fn create_app_package_plan(
         generated_css.as_slice(),
         &projection_manifests,
     )?;
-    let theme = args.theme.as_deref().or(config.theme.as_deref());
-    let token_css = match theme {
+    let theme = match args.theme.as_deref() {
+        Some(theme) => Some(Cow::Borrowed(theme)),
+        None => config
+            .theme
+            .as_deref()
+            .map(|theme| package_theme(theme, &app_root))
+            .transpose()?,
+    };
+    let token_css = match theme.as_deref() {
         Some(theme) => Some(resolve_theme_for_source(
             theme,
             &source_dir,
@@ -818,71 +849,198 @@ fn create_app_package_plan(
     })
 }
 
+fn package_theme<'a>(theme: &'a str, app_root: &Path) -> Result<Cow<'a, str>> {
+    let path = Path::new(theme);
+    if path.is_absolute() {
+        return Ok(Cow::Borrowed(theme));
+    }
+    let rooted = app_root.join(path);
+    if rooted.is_file()
+        || theme.ends_with(".json")
+        || theme.starts_with("./")
+        || theme.starts_with("../")
+    {
+        let rooted = rooted.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "desktop theme path under {} is not UTF-8; help: use a UTF-8 app path or pass --theme with an absolute UTF-8 path",
+                app_root.display()
+            )
+        })?;
+        Ok(Cow::Owned(rooted.to_string()))
+    } else {
+        Ok(Cow::Borrowed(theme))
+    }
+}
+
 fn read_desktop_app_config(app_root: &Path) -> Result<DesktopAppPackageConfig> {
     let package_path = app_root.join("package.json");
-    if !package_path.is_file() {
-        return Ok(DesktopAppPackageConfig::default());
-    }
-    let text = fs::read_to_string(&package_path)
-        .with_context(|| format!("Failed to read {}", package_path.display()))?;
-    let package: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("Failed to parse {}", package_path.display()))?;
+    let package: serde_json::Value = if package_path.exists() {
+        let text = fs::read_to_string(&package_path)
+            .with_context(|| format!("Failed to read {}", package_path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format!("Failed to parse {}", package_path.display()))?
+    } else {
+        serde_json::Value::Null
+    };
     let mut config = DesktopAppPackageConfig {
         app_name: string_field(&package, "name").map(title_from_package_name),
         app_version: string_field(&package, "version"),
         ..DesktopAppPackageConfig::default()
     };
 
-    let Some(desktop) = package.get("webuiDesktop") else {
+    let config_path = app_root.join("webui-desktop.json");
+    let file_desktop = if config_path.exists() {
+        if package.get("webuiDesktop").is_some() {
+            return Err(anyhow::anyhow!(
+                "both {} and webuiDesktop in {} configure this app; help: move desktop settings into webui-desktop.json and remove webuiDesktop from package.json",
+                config_path.display(),
+                package_path.display()
+            ));
+        }
+        let text = fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+        Some(
+            serde_json::from_str::<serde_json::Value>(&text)
+                .with_context(|| format!("Failed to parse {}", config_path.display()))?,
+        )
+    } else {
+        None
+    };
+    let (desktop, origin) = if let Some(value) = &file_desktop {
+        let desktop = value.as_object().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} must contain a JSON object; help: put desktop settings at the top level",
+                config_path.display()
+            )
+        })?;
+        validate_desktop_config_fields(desktop, &config_path)?;
+        (Some(desktop), config_path.display().to_string())
+    } else {
+        (
+            package
+                .get("webuiDesktop")
+                .map(|value| {
+                    value.as_object().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "webuiDesktop in {} must be an object; help: remove it and pass desktop package flags, or use an object",
+                            package_path.display()
+                        )
+                    })
+                })
+                .transpose()?,
+            format!("webuiDesktop in {}", package_path.display()),
+        )
+    };
+    let Some(desktop) = desktop else {
         config.build_scripts = default_build_scripts(&package);
         return Ok(config);
     };
-    let desktop = desktop.as_object().ok_or_else(|| {
-        anyhow::anyhow!(
-            "webuiDesktop in {} must be an object; help: remove it and pass desktop package flags, or use an object",
-            package_path.display()
-        )
-    })?;
 
-    config.entry = desktop_field(desktop, "entry")?;
-    config.source = desktop_field::<PathBuf>(desktop, "app")?.or(desktop_field(desktop, "source")?);
-    config.state = desktop_field(desktop, "state")?;
-    config.assets = desktop_field(desktop, "assets")?;
+    config.entry = desktop_field(desktop, "entry", &origin)?;
+    config.source = desktop_field::<PathBuf>(desktop, "app", &origin)?
+        .or(desktop_field(desktop, "source", &origin)?);
+    config.state = desktop_field(desktop, "state", &origin)?;
+    config.assets = desktop_field(desktop, "assets", &origin)?;
     config.projection_manifests =
-        desktop_field(desktop, "projectionManifests")?.unwrap_or_default();
-    config.icon = desktop_field(desktop, "icon")?;
-    config.theme = desktop_field(desktop, "theme")?;
-    config.runner_crate = desktop_field(desktop, "runnerCrate")?;
-    config.runner_features = desktop_field(desktop, "runnerFeatures")?.unwrap_or_default();
+        desktop_field(desktop, "projectionManifests", &origin)?.unwrap_or_default();
+    config.icon = desktop_field(desktop, "icon", &origin)?;
+    config.theme = desktop_field(desktop, "theme", &origin)?;
+    config.runner_crate = desktop_field(desktop, "runnerCrate", &origin)?;
+    config.runner_features = desktop_field(desktop, "runnerFeatures", &origin)?.unwrap_or_default();
     config.runner_default_features =
-        desktop_field(desktop, "runnerDefaultFeatures")?.unwrap_or(false);
-    config.package_manager = desktop_field(desktop, "packageManager")?;
-    config.build_scripts =
-        desktop_field(desktop, "buildScripts")?.or_else(|| default_build_scripts(&package));
-    config.app_id = desktop_field(desktop, "appId")?;
-    config.app_name = desktop_field(desktop, "appName")?.or(config.app_name);
-    config.app_version = desktop_field(desktop, "appVersion")?.or(config.app_version);
-    config.publisher = desktop_field(desktop, "publisher")?;
-    config.title = desktop_field(desktop, "title")?;
+        desktop_field(desktop, "runnerDefaultFeatures", &origin)?.unwrap_or(false);
+    config.package_manager = desktop_field(desktop, "packageManager", &origin)?;
+    config.build_scripts = desktop_field(desktop, "buildScripts", &origin)?
+        .or_else(|| default_build_scripts(&package));
+    config.app_id = desktop_field(desktop, "appId", &origin)?;
+    config.app_name = desktop_field(desktop, "appName", &origin)?.or(config.app_name);
+    config.app_version = desktop_field(desktop, "appVersion", &origin)?.or(config.app_version);
+    config.publisher = desktop_field(desktop, "publisher", &origin)?;
+    config.title = desktop_field(desktop, "title", &origin)?;
     config.window_options = Some(
         serde_json::from_value(serde_json::Value::Object(desktop.clone()))
-            .with_context(|| "Invalid webuiDesktop window configuration")?,
+            .with_context(|| format!("invalid window configuration in {origin}; help: correct the window setting or pass its desktop package flag"))?,
     );
-    config.plugin = desktop_field::<String>(desktop, "plugin")?
+    config.plugin = desktop_field::<String>(desktop, "plugin", &origin)?
         .map(|raw| parse_plugin_value(&raw))
         .transpose()?;
     Ok(config)
 }
 
+fn validate_desktop_config_fields(
+    desktop: &serde_json::Map<String, serde_json::Value>,
+    path: &Path,
+) -> Result<()> {
+    for key in desktop.keys() {
+        if !matches!(
+            key.as_str(),
+            "entry"
+                | "app"
+                | "source"
+                | "state"
+                | "assets"
+                | "projectionManifests"
+                | "icon"
+                | "theme"
+                | "runnerCrate"
+                | "runnerFeatures"
+                | "runnerDefaultFeatures"
+                | "packageManager"
+                | "buildScripts"
+                | "appId"
+                | "appName"
+                | "appVersion"
+                | "publisher"
+                | "plugin"
+                | "title"
+                | "width"
+                | "height"
+                | "minWidth"
+                | "min_width"
+                | "minHeight"
+                | "min_height"
+                | "maxWidth"
+                | "max_width"
+                | "maxHeight"
+                | "max_height"
+                | "resizable"
+                | "maximized"
+                | "fullscreen"
+                | "alwaysOnTop"
+                | "always_on_top"
+                | "center"
+                | "background"
+                | "titlebar"
+                | "captionButtonSize"
+                | "caption_button_size"
+                | "effect"
+                | "rememberState"
+                | "remember_state"
+                | "devtools"
+        ) {
+            return Err(anyhow::anyhow!(
+                "unknown desktop setting '{key}' in {}; help: use a supported webui-desktop.json field or its desktop package flag",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn desktop_field<T: DeserializeOwned>(
     desktop: &serde_json::Map<String, serde_json::Value>,
     key: &str,
+    origin: &str,
 ) -> Result<Option<T>> {
     desktop
         .get(key)
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
-        .with_context(|| format!("invalid webuiDesktop.{key}; help: correct the field or pass its desktop package flag"))
+        .with_context(|| {
+            format!(
+                "invalid {origin}.{key}; help: correct the field or pass its desktop package flag"
+            )
+        })
 }
 
 fn resolve_package_projection_manifests(
@@ -1492,6 +1650,60 @@ mod tests {
     }
 
     #[test]
+    fn source_run_resolves_theme_on_all_platforms() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "src/index.html",
+            "<!doctype html><html><head><style>:root{/*{{{tokens.light}}}*/}h1{color:var(--brand)}</style></head><body><h1>Hello</h1></body></html>",
+        );
+        let app = dir.path().join("src");
+        let cli = Cli::try_parse_from([
+            "webui-desktop",
+            "run",
+            app.to_str().unwrap(),
+            "--theme",
+            "missing-tokens.json",
+        ])
+        .unwrap();
+        let Some(Commands::Run(args)) = cli.command else {
+            panic!("expected run command");
+        };
+        let config =
+            source_config_for_run(&args, app.clone(), None, None, WindowOptions::default());
+        assert_eq!(
+            config.theme,
+            Some(("missing-tokens.json".to_string(), app.clone()))
+        );
+        let error = webui_desktop::DesktopRuntime::from_source(config)
+            .err()
+            .unwrap()
+            .chain_message();
+        assert!(error.contains("resolving desktop theme"), "{error}");
+
+        write_file(
+            &app,
+            "tokens.json",
+            r##"{"themes":{"light":{"brand":"#0078d4"}}}"##,
+        );
+        let theme_path = app.join("tokens.json");
+        let cli = Cli::try_parse_from([
+            "webui-desktop",
+            "run",
+            app.to_str().unwrap(),
+            "--theme",
+            theme_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Some(Commands::Run(args)) = cli.command else {
+            panic!("expected run command");
+        };
+        let config = source_config_for_run(&args, app, None, None, WindowOptions::default());
+        let runtime = webui_desktop::DesktopRuntime::from_source(config).unwrap();
+        assert!(runtime.startup_html().contains("--brand: #0078d4;"));
+    }
+
+    #[test]
     fn parses_machine_readable_version_flag() {
         let cli = Cli::try_parse_from(["webui-desktop", "--webui-version"]);
         assert!(matches!(
@@ -1680,6 +1892,42 @@ mod tests {
         ] {
             write_file(dir.path(), "package.json", content);
             assert!(read_desktop_app_config(dir.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn standalone_config_rejects_conflicts_typos_and_invalid_settings() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "package.json",
+            r#"{"webuiDesktop":{"appId":"com.example.legacy"}}"#,
+        );
+        write_file(
+            dir.path(),
+            "webui-desktop.json",
+            r#"{"appId":"com.example.new"}"#,
+        );
+        let error = read_desktop_app_config(dir.path())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("both"));
+        assert!(error.contains("remove webuiDesktop"));
+
+        write_file(dir.path(), "package.json", r#"{"name":"app"}"#);
+        for (content, field) in [
+            (r#"{"rememberStat":true}"#, "rememberStat"),
+            (r#"{"rememberState":"yes"}"#, "window configuration"),
+            (r#"{"runnerFeatures":"tray"}"#, "runnerFeatures"),
+        ] {
+            write_file(dir.path(), "webui-desktop.json", content);
+            let error = read_desktop_app_config(dir.path())
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains(field), "{error}");
+            assert!(error.contains("help:"), "{error}");
         }
     }
 

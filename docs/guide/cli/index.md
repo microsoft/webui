@@ -587,9 +587,12 @@ webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>]
 webui desktop package <APP_ROOT|BUNDLE_DIR> --out <OUT_DIR> [--target <TARGET>] [APP_OPTIONS] [WINDOW_OPTIONS]
 ```
 
-`webui desktop init` creates a minimal `src/index.html`, `package.json`, and
-`desktop/` Rust runner. It refuses to replace existing generated files; pass
-`--force` when regenerating a scaffold.
+`webui desktop init` creates a minimal `src/index.html`, `package.json`,
+`webui-desktop.json`, and `desktop/` Rust runner. The generated source runner
+reads the same desktop settings file that app-root packaging uses, including
+the app ID and window title. Keep the app ID stable to retain persistent
+browser storage on Windows. Init refuses to replace existing generated files;
+pass `--force` when regenerating a scaffold.
 The runner is a standalone Cargo workspace with an optimized release profile.
 It depends on one desktop SDK and enables source compilation only when run with
 `--features source`.
@@ -627,7 +630,7 @@ Rust hosts use the same typed `WindowOptions` model, including `TitlebarStyle`,
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--source <DIR>` | App source directory (`webuiDesktop.app` or `source`) | `<APP_ROOT>/src` |
+| `--source <DIR>` | App source directory (`webui-desktop.json` `app` or `source`) | `<APP_ROOT>/src` |
 | `--state <FILE>`, `--assets <DIR>` | Startup state and static assets (`--servedir` aliases `--assets`) | `<APP_ROOT>/data/state.json`, `<APP_ROOT>/dist` if present |
 | `--entry <FILE>`, `--plugin <NAME>` | Entry template and framework plugin | `index.html`, none |
 | `--theme <VALUE>`, `--icon <FILE>` | Theme and app icon | none; `<APP_ROOT>/desktop/icon.png` if present |
@@ -636,20 +639,47 @@ Rust hosts use the same typed `WindowOptions` model, including `TitlebarStyle`,
 | `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
 | `--release` | Explicitly select the default optimized runner build | optimized by default |
 | `--debug` | Build a debug runner instead of an optimized release runner | `false` |
-| `--runner-features <FEATURES>` | Comma-separated Cargo features for the app runner (replaces legacy list) | legacy list or none |
-| `--no-runner-features` | Discard legacy runner features | `false` |
-| `--runner-default-features[=true\|false]` | Include the runner's default Cargo features | legacy setting or `false` |
-| `--build-script <NAME>` | Package script to run first, repeatable; replaces legacy script list | legacy list or detected `build:deps` and `build:client` scripts |
+| `--runner-features <FEATURES>` | Comma-separated Cargo features for the app runner (replaces configured list) | configured list or none |
+| `--no-runner-features` | Discard configured runner features | `false` |
+| `--runner-default-features[=true\|false]` | Include the runner's default Cargo features | configured setting or `false` |
+| `--build-script <NAME>` | Package script to run first, repeatable; replaces configured script list | configured list or detected `build:deps` and `build:client` scripts |
 | `--package-manager <COMMAND>` | Package manager used for build scripts | `pnpm` |
 | `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
 | `--no-web-build` | Skip web build scripts | `false` |
-| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | legacy list for app-root packaging, otherwise none |
+| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | configured list for app-root packaging, otherwise none |
 
-CLI file paths are relative to the working directory. Legacy
-`package.json` `webuiDesktop` paths remain relative to the app root.
-Explicit CLI values override legacy settings; repeatable build scripts,
-runner features, and projection manifests replace legacy lists. Existing
-desktop bundles are immutable: app-root flags are rejected for them, rather
+App-root packaging reads optional `webui-desktop.json` from the app root. Put
+the same settings previously used in `webuiDesktop` directly in this JSON
+object, without a wrapper:
+
+```json
+{
+  "app": "src",
+  "assets": "dist",
+  "projectionManifests": ["dist/webui-projection.json"],
+  "plugin": "webui",
+  "icon": "desktop/icon.icns",
+  "appId": "com.example.contacts",
+  "appName": "Contacts",
+  "title": "Contacts",
+  "titlebar": { "style": "overlay", "height": 48 },
+  "rememberState": true
+}
+```
+
+The file supports the app-root package flags above and every
+`WindowOptions` field, plus `entry`, `theme`, `buildScripts`,
+`packageManager`, `runnerCrate`, `runnerFeatures`, and
+`runnerDefaultFeatures`. File paths in the settings file, including JSON theme
+paths, are relative to the app root; npm theme names are resolved as packages.
+CLI paths are relative to the working directory. Explicit flags
+override the file, with repeated build scripts, runner features, and projection
+manifests replacing configured lists. Legacy `package.json` `webuiDesktop` is
+read only when no settings file exists; specifying both is an error. Move the
+legacy object into `webui-desktop.json` to migrate. Unknown settings in the
+new file are errors rather than silently ignored. `run` and `build` use their
+own explicit flags and Rust source configuration, not this app-root package
+file. Existing desktop bundles are immutable: app-root flags are rejected for them, rather
 than silently ignored. Run the client build first: missing, stale, or incomplete metadata is a
 build error, not a silent fallback. Without supplied manifests, unknown component
 requirements retain full state for correctness. Existing bundles must be rebuilt
@@ -683,8 +713,9 @@ Package a Rust-first desktop app root in one command:
 webui desktop package ./my-app --target macos-app --out ./packages
 ```
 
-For app roots, `webui desktop package` accepts explicit flags without
-`webuiDesktop` metadata. Legacy package configuration remains supported.
+For app roots, `webui desktop package` accepts explicit flags or
+`webui-desktop.json`, without `webuiDesktop` metadata. Legacy package
+configuration remains supported when the new file is absent.
 The command runs configured web build scripts, builds the app-specific Cargo runner crate
 with `--release --no-default-features`,
 stages non-generated assets, builds the bundle, and packages the runner-backed

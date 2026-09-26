@@ -25,7 +25,12 @@ cargo run --manifest-path desktop/Cargo.toml --features source
 Use a Rust host when you need route state, API handlers, typed IPC, or native
 window control. The generated runner loads packaged resources by default;
 `source` is an opt-in development feature. `desktop init` does not overwrite
-files unless you pass `--force`.
+files unless you pass `--force`. It generates `webui-desktop.json`; both its
+Rust source runner and `webui desktop package ./my-app --out ./packages` read
+the same identity and window settings from this file. For an existing app,
+set desktop package options with command flags or the app-root
+`webui-desktop.json`, not package.json. See the
+[desktop CLI reference](/guide/cli/#webui-desktop) for fields and precedence.
 
 | SDK feature | What it adds |
 | --- | --- |

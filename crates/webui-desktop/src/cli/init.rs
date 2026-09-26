@@ -70,6 +70,7 @@ pub(crate) fn execute(args: &InitArgs) -> Result<()> {
 fn generated_files(root: &Path) -> Result<Vec<(PathBuf, String)>> {
     Ok(vec![
         (root.join("package.json"), PACKAGE_JSON.to_string()),
+        (root.join("webui-desktop.json"), DESKTOP_CONFIG.to_string()),
         (root.join("src/index.html"), INDEX_HTML.to_string()),
         (root.join("desktop/Cargo.toml"), desktop_cargo_toml()?),
         (root.join("desktop/src/main.rs"), DESKTOP_MAIN.to_string()),
@@ -83,6 +84,13 @@ const PACKAGE_JSON: &str = r#"{
   "scripts": {
     "build": "webui build ./src --out ./dist"
   }
+}
+"#;
+
+const DESKTOP_CONFIG: &str = r#"{
+  "appId": "com.example.webui.desktop",
+  "appName": "WebUI Desktop App",
+  "title": "WebUI Desktop App"
 }
 "#;
 
@@ -118,7 +126,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-source = ["webui-desktop/source"]
+source = ["webui-desktop/source", "dep:serde", "dep:serde_json"]
 
 [workspace]
 
@@ -146,6 +154,8 @@ strip = true
         text.push('"');
     }
     text.push_str(", default-features = false, features = [\"native\"] }\n");
+    text.push_str("serde = { version = \"1.0\", features = [\"derive\"], optional = true }\n");
+    text.push_str("serde_json = { version = \"1.0\", optional = true }\n");
     Ok(text)
 }
 
@@ -154,11 +164,19 @@ const DESKTOP_MAIN: &str = r#"// Copyright (c) Microsoft Corporation.
 
 use std::process::ExitCode;
 
-#[cfg(not(feature = "source"))]
 use webui_desktop::DesktopError;
 #[cfg(feature = "source")]
 use webui_desktop::{BuildOptions, DesktopSourceConfig, WindowOptions};
 use webui_desktop::{DesktopApp, DesktopAppBuilder, Result};
+
+#[cfg(feature = "source")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopSettings {
+    app_id: String,
+    #[serde(flatten)]
+    window: WindowOptions,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -183,6 +201,14 @@ fn run() -> Result<()> {
 
 #[cfg(feature = "source")]
 fn source_app() -> Result<DesktopAppBuilder> {
+    let settings: DesktopSettings =
+        serde_json::from_str(include_str!("../../webui-desktop.json")).map_err(|source| {
+            DesktopError::Serialization {
+                context: "parsing webui-desktop.json; help: correct its appId and window settings"
+                    .to_string(),
+                source,
+            }
+        })?;
     let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("src");
@@ -191,11 +217,8 @@ fn source_app() -> Result<DesktopAppBuilder> {
         ..Default::default()
     };
     Ok(DesktopApp::from_source(DesktopSourceConfig::new(options))
-        .app_id("com.example.webui.desktop")
-        .window(WindowOptions {
-            title: "WebUI Desktop App".to_string(),
-            ..WindowOptions::default()
-        }))
+        .app_id(settings.app_id)
+        .window(settings.window))
 }
 
 #[cfg(not(feature = "source"))]
@@ -223,12 +246,13 @@ mod tests {
         assert!(!fs::read_to_string(temp.path().join("app/package.json"))
             .unwrap()
             .contains("webuiDesktop"));
+        assert!(temp.path().join("app/webui-desktop.json").is_file());
         assert!(temp.path().join("app/src/index.html").is_file());
         assert!(temp.path().join("app/desktop/src/main.rs").is_file());
         assert!(
             fs::read_to_string(temp.path().join("app/desktop/src/main.rs"))
                 .unwrap()
-                .contains("..Default::default()")
+                .contains("include_str!(\"../../webui-desktop.json\")")
         );
     }
 
@@ -250,7 +274,8 @@ mod tests {
     fn scaffold_is_runtime_only_with_an_explicit_release_profile() {
         let manifest = desktop_cargo_toml().unwrap();
         assert!(manifest.contains("default = []"));
-        assert!(manifest.contains("source = [\"webui-desktop/source\"]"));
+        assert!(manifest
+            .contains("source = [\"webui-desktop/source\", \"dep:serde\", \"dep:serde_json\"]"));
         assert!(manifest.contains("default-features = false, features = [\"native\"]"));
         assert!(manifest.contains("[workspace]"));
         assert!(manifest.contains("[profile.release]"));
@@ -302,15 +327,21 @@ mod tests {
         );
         let package = &metadata["packages"][0];
         let dependencies = package["dependencies"].as_array().unwrap();
-        assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0]["name"], "microsoft-webui-desktop");
-        assert_eq!(dependencies[0]["uses_default_features"], false);
-        assert_eq!(dependencies[0]["features"][0], "native");
+        assert_eq!(dependencies.len(), 3);
+        let desktop = dependencies
+            .iter()
+            .find(|dependency| dependency["name"] == "microsoft-webui-desktop")
+            .unwrap();
+        assert_eq!(desktop["uses_default_features"], false);
+        assert_eq!(desktop["features"][0], "native");
         assert!(package["features"]["default"]
             .as_array()
             .unwrap()
             .is_empty());
-        assert_eq!(package["features"]["source"][0], "webui-desktop/source");
+        assert!(package["features"]["source"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::from("webui-desktop/source")));
     }
 
     #[test]

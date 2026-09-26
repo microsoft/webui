@@ -107,6 +107,11 @@ name = "windows_portable_package"
 path = "tests/windows_portable_package.rs"
 required-features = ["source"]
 
+[[test]]
+name = "cli_package_e2e"
+path = "tests/cli_package_e2e.rs"
+required-features = ["cli"]
+
 [[bench]]
 name = "navigation"
 harness = false

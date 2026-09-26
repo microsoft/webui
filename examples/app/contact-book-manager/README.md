@@ -77,7 +77,7 @@ and theme tokens remain available to the renderer.
 
 Both desktop build paths consume `dist/webui-projection.json` from
 `build:client`. Source mode supplies it through Rust build options; packaging
-uses `--projection-manifest`. Keep the client build current before
+reads the path from `webui-desktop.json`. Keep the client build current before
 launching or packaging. Navigation sends the fields required by the active
 components, just as the browser host does; theme CSS remains available for full
 document rendering without being repeated as unused navigation state.
@@ -90,37 +90,18 @@ Build and launch a Contact Book desktop app in one command:
 PACKAGES=/tmp/contact-book-packages
 
 cd examples/app/contact-book-manager
-cargo run -p microsoft-webui-cli -- desktop package . \
-  --target macos-app \
-  --out "$PACKAGES" \
-  --build-script build:deps \
-  --build-script build:client \
-  --package-manager pnpm \
-  --source src \
-  --state data/state.json \
-  --assets dist \
-  --projection-manifest dist/webui-projection.json \
-  --theme @microsoft/webui-examples-theme \
-  --plugin webui \
-  --icon desktop/icon.icns \
-  --runner-crate contact-book-desktop \
-  --app-id com.microsoft.webui.contactbook \
-  --app-name "Contact Book Manager" \
-  --app-version 1.0.0 \
-  --title "Contact Book Manager" \
-  --width 1200 --height 800 \
-  --titlebar-style overlay --titlebar-height 48 \
-  --background '#f8fafc' \
-  --remember-state --devtools
+cargo run -p microsoft-webui-cli -- desktop package . --out "$PACKAGES"
 
 open "$PACKAGES/Contact-Book-Manager.app"
 ```
 
-These flags run the client builds, compile the Rust runner, stage non-generated
-assets from `dist`, build the bundle, and package the runner-backed `.app`.
-Paths supplied on the CLI are relative to the current directory. The Rust
-source host sets the matching window and app identity with `WindowOptions`
-and `DesktopAppBuilder`; its bundle test passes those typed options to
+`webui-desktop.json` selects the WebUI hydration plugin, client build scripts,
+projection manifest, icon, titlebar, window state, devtools, and stable app ID.
+Packaging runs the client builds, compiles the Rust runner, stages assets from
+`dist`, and creates the runner-backed `.app`. Explicit CLI flags override
+settings in that file; CLI paths are relative to the current directory. The
+Rust source host reads the same typed identity, theme, icon, and window options
+from the file. Its bundle test passes those options to
 `build_desktop_bundle` and packages with `package_desktop_bundle`.
 
 To inspect the packaged macOS app, enable Safari > Settings > Advanced > Show

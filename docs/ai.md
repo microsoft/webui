@@ -1353,7 +1353,8 @@ Restart desktop `run` after source changes; desktop `--watch` is not supported.
 
 Write a host crate only when you need dynamic route state or IPC. To generate a
 working progressive scaffold, use `webui desktop init ./my-app`; it creates the
-entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+entry template, package metadata, `webui-desktop.json`, and a packaged-vs-source
+Rust runner that shares the same app ID and window title. Existing
 files are protected unless `--force` is passed. Rust apps depend on
 `microsoft-webui-desktop` with `native` enabled and forward an opt-in `source`
 feature to `microsoft-webui-desktop/source`. There is no separate runner or
@@ -1364,7 +1365,10 @@ package. Package targets are `macos-app`, `windows-portable`, and
 `linux-portable`; `all` writes all three layouts without cross-compiling the
 runner. App-root packaging accepts `--source`, `--state`, `--assets`,
 `--build-script`, identity, and window flags without `webuiDesktop` in
-`package.json`; see the [CLI reference](./guide/cli/#webui-desktop).
+`package.json`. Put persistent package settings in app-root
+`webui-desktop.json` instead; explicit flags override them and legacy
+`webuiDesktop` is accepted only when the new file is absent. See the
+[CLI reference](./guide/cli/#webui-desktop).
 Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
