@@ -7,7 +7,8 @@ platform's native webview runtime and a usable GUI session.
 
 Prerequisites: current `target/debug/webui-desktop` CLI built with `cli`, existing
 `protoc`, and the repository's pinned `packages/webui-desktop/node_modules`
-dependencies. No root manifest entry is needed: this fixture has its own workspace.
+dependencies. The native runner is an example target of `microsoft-webui-desktop`
+and uses the root workspace lockfile.
 
 From the repository root:
 
@@ -19,7 +20,7 @@ The harness checks committed bindings with the real CLI generator's read-only
 check mode before compiling, so stale fixtures fail rather than being silently
 regenerated. After intentional generator changes, refresh both IPC fixtures with
 `WEBUI_UPDATE_IPC_FIXTURE=1 cargo test -p microsoft-webui-desktop-build --test generate fixture_matches_generator`.
-The harness compiles two optimized native Rust hosts with its committed lockfile
+The harness compiles two optimized native Rust hosts against the root lockfile
 offline: a source-enabled tooling runner and a runtime-only release consumer
 with no default features. It typechecks and bundles generated TypeScript against
 the SDK-reserved runtime asset. Source mode uses `DesktopApp::from_source`;
@@ -46,10 +47,6 @@ temporary runner, including the no-IPC example built under `target/release/examp
 It preflights all companions before copying and checks that portable packaging
 preserves their bytes. The Windows runtime bootstrap is required even when
 application IPC is disabled.
-Keep this fixture's registry dependency versions aligned with the root
-`Cargo.lock` when updating dependencies, so native acceptance exercises the same
-versions as the product build. Use `cargo update --manifest-path` with
-`--precise` rather than editing either lockfile.
 
 The protocol asserts:
 
@@ -132,7 +129,7 @@ from the repository root:
 ```sh
 pnpm install --frozen-lockfile
 cargo build --locked -p microsoft-webui-desktop --features cli --bin webui-desktop
-cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
+cargo fetch --locked
 ```
 
 The fetch seeds platform dependencies for the harness's offline locked build.
