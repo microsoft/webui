@@ -1346,8 +1346,14 @@ Before emitting WebUI code, confirm:
 For a desktop app, start with zero Rust:
 
 ```bash
+npm install @microsoft/webui @microsoft/webui-desktop
 webui desktop run ./src
 ```
+
+Use matching package versions and keep optional dependencies enabled to install
+the native desktop sidecar. Installing only `@microsoft/webui` does not include
+desktop support. A standalone Rust CLI can use a matching `webui-desktop`
+sidecar on `PATH`; see the [CLI reference](./guide/cli/#webui-desktop).
 
 Restart desktop `run` after source changes; desktop `--watch` is not supported.
 

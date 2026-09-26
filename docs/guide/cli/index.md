@@ -579,6 +579,17 @@ dependencies. The sidecar is resolved automatically from the installed desktop
 support package, next to the `webui` binary, or from the workspace during local
 development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 
+For a new npm project, install matching versions of both packages with optional
+dependencies enabled:
+
+```bash
+npm install @microsoft/webui @microsoft/webui-desktop
+```
+
+Running `webui desktop` without desktop support exits with a hint to install
+`@microsoft/webui-desktop`. A sidecar from a different WebUI version fails
+instead of silently running incompatible commands.
+
 ```bash
 webui desktop init [APP_ROOT] [--force]
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]

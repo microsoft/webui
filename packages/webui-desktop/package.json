@@ -1,9 +1,12 @@
 {
   "name": "@microsoft/webui-desktop",
   "version": "0.0.29",
-  "description": "Typed browser IPC runtime for the WebUI desktop SDK",
+  "description": "Opt-in native desktop CLI and typed browser IPC runtime for WebUI",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "webui-desktop": "./bin/webui-desktop"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -11,14 +14,23 @@
     }
   },
   "files": [
-    "dist/"
+    "dist/",
+    "bin/webui-desktop"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build.mjs",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc && tsc -p tsconfig.cli.json && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.cli.json --noEmit",
     "test": "pnpm build && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
   },
   "dependencies": {},
+  "optionalDependencies": {
+    "@microsoft/webui-desktop-darwin-arm64": "workspace:*",
+    "@microsoft/webui-desktop-darwin-x64": "workspace:*",
+    "@microsoft/webui-desktop-linux-arm64": "workspace:*",
+    "@microsoft/webui-desktop-linux-x64": "workspace:*",
+    "@microsoft/webui-desktop-win32-arm64": "workspace:*",
+    "@microsoft/webui-desktop-win32-x64": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",

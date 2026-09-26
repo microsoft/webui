@@ -62,6 +62,23 @@ Run the development server with `npm run dev` and build for production with `npm
 
 The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically - no Rust toolchain required.
 
+### Desktop support (opt-in)
+
+Install desktop support separately with the same version of both packages:
+
+```bash
+npm install @microsoft/webui @microsoft/webui-desktop
+npx webui desktop init ./my-app
+npx webui desktop run ./my-app/src
+```
+
+`@microsoft/webui-desktop` includes the browser IPC runtime and installs the
+matching native desktop sidecar for your OS and architecture through an optional
+platform package. Keep optional dependencies enabled. The base `@microsoft/webui`
+install does not include desktop binaries; desktop commands report the install
+step when support is missing. See [Desktop Apps](/guide/concepts/desktop.md)
+for building and packaging apps.
+
 ## Rust
 
 Rust users can install the CLI directly from crates.io:

@@ -55,8 +55,13 @@ fn run(args: &DesktopArgs) -> Result<()> {
                 return Ok(());
             }
         }
-    } else if try_sidecar_binary(OsString::from(DEFAULT_DESKTOP_BINARY).as_os_str(), args)? {
-        return Ok(());
+    } else {
+        if try_installed_sidecar(args)? {
+            return Ok(());
+        }
+        if try_sidecar_binary(OsString::from(DEFAULT_DESKTOP_BINARY).as_os_str(), args)? {
+            return Ok(());
+        }
     }
 
     if let Some(sibling) = sidecar_next_to_current_exe() {
@@ -75,6 +80,56 @@ fn run(args: &DesktopArgs) -> Result<()> {
         binary: display_binary,
     }
     .into())
+}
+
+fn try_installed_sidecar(args: &DesktopArgs) -> Result<bool> {
+    let invoked = std::env::args_os().next().and_then(|arg| {
+        let path = PathBuf::from(arg);
+        if path.components().count() == 1 && !path.is_absolute() {
+            return None;
+        }
+        if path.is_absolute() {
+            Some(path)
+        } else {
+            std::env::current_dir().ok().map(|cwd| cwd.join(path))
+        }
+    });
+    for start in [
+        invoked,
+        std::env::current_dir().ok(),
+        std::env::current_exe().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(script) = npm_sidecar_near(&start) {
+            let mut command = Command::new("node");
+            command.arg(&script);
+            if !verify_sidecar_version(command, script.clone())? {
+                return Ok(false);
+            }
+            let mut command = Command::new("node");
+            command.arg(script);
+            append_sidecar_args(&mut command, args);
+            return run_optional_command(&mut command);
+        }
+    }
+    Ok(false)
+}
+
+fn npm_sidecar_near(path: &Path) -> Option<PathBuf> {
+    for directory in path.ancestors() {
+        let modules = if directory.file_name() == Some(OsStr::new("node_modules")) {
+            directory.to_path_buf()
+        } else {
+            directory.join("node_modules")
+        };
+        let script = modules.join("@microsoft/webui-desktop/dist/cli.js");
+        if script.is_file() {
+            return Some(script);
+        }
+    }
+    None
 }
 
 fn has_format_arg(args: &[OsString]) -> bool {
@@ -129,6 +184,14 @@ fn verify_sidecar_version(mut command: Command, path: PathBuf) -> Result<bool> {
     command.arg(SIDECAR_VERSION_ARG);
     match command.output() {
         Ok(output) if sidecar_version_matches(output.status.success(), &output.stdout) => Ok(true),
+        Ok(output) if !output.status.success() && path.ends_with("dist/cli.js") => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            Err(anyhow::anyhow!(
+                "Desktop support could not start at {}: {}\nhelp: Reinstall @microsoft/webui-desktop with optional dependencies enabled.",
+                path.display(),
+                detail.trim()
+            ))
+        }
         Ok(output) => Err(anyhow::Error::msg(sidecar_version_skew_error(
             path,
             &output.stdout,
@@ -285,5 +348,41 @@ mod tests {
         let diagnostic = sidecar_version_skew_error(PathBuf::from("/tools/webui-desktop"), b"");
         assert!(diagnostic.contains("reported version: unavailable"));
         assert!(diagnostic.contains("help:"));
+    }
+
+    #[test]
+    fn finds_installed_desktop_package_from_direct_npm_bin_invocation() {
+        let root = tempfile::tempdir().expect("test project");
+        let script = root
+            .path()
+            .join("node_modules/@microsoft/webui-desktop/dist/cli.js");
+        fs::create_dir_all(script.parent().expect("script directory")).expect("script directory");
+        fs::write(&script, "").expect("desktop launcher");
+        let invoked = root.path().join("node_modules/.bin/webui");
+        assert_eq!(npm_sidecar_near(&invoked), Some(script.clone()));
+        assert_eq!(npm_sidecar_near(&root.path().join("src/app")), Some(script));
+    }
+
+    #[test]
+    fn finds_project_install_when_core_binary_is_in_pnpm_virtual_store() {
+        let root = tempfile::tempdir().expect("test project");
+        let script = root
+            .path()
+            .join("node_modules/@microsoft/webui-desktop/dist/cli.js");
+        fs::create_dir_all(script.parent().expect("script directory")).expect("script directory");
+        fs::write(&script, "").expect("desktop launcher");
+        let core = root.path().join(
+            "node_modules/.pnpm/@microsoft+webui@0.0.29/node_modules/@microsoft/webui/bin/webui",
+        );
+        assert_eq!(npm_sidecar_near(&core), Some(script));
+    }
+
+    #[test]
+    fn ignores_uninstalled_desktop_package() {
+        let root = tempfile::tempdir().expect("test project");
+        assert_eq!(
+            npm_sidecar_near(&root.path().join("node_modules/.bin/webui")),
+            None
+        );
     }
 }

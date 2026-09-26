@@ -87,7 +87,7 @@ impl CliError {
                 "Use --entry <file> to specify a different entry file"
             }
             CliError::DesktopBinaryNotFound { .. } => {
-                "Install WebUI desktop support or set WEBUI_DESKTOP_BINARY to the webui-desktop sidecar path"
+                "Run npm install @microsoft/webui-desktop (with optional dependencies), or set WEBUI_DESKTOP_BINARY to a matching webui-desktop executable"
             }
         }
     }

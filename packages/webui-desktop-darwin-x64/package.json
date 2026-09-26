@@ -1,0 +1,16 @@
+{
+  "name": "@microsoft/webui-desktop-darwin-x64",
+  "version": "0.0.29",
+  "description": "WebUI desktop sidecar for macOS x64",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "bin": {
+    "webui-desktop-native": "bin/webui-desktop"
+  },
+  "preferUnplugged": true,
+  "files": ["bin/webui-desktop"],
+  "publishConfig": {
+    "tag": "latest"
+  }
+}

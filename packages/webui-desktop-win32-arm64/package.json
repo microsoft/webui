@@ -1,0 +1,22 @@
+{
+  "name": "@microsoft/webui-desktop-win32-arm64",
+  "version": "0.0.29",
+  "description": "WebUI desktop sidecar for Windows ARM64",
+  "license": "MIT",
+  "os": ["win32"],
+  "cpu": ["arm64"],
+  "bin": {
+    "webui-desktop-native": "bin/webui-desktop.exe"
+  },
+  "preferUnplugged": true,
+  "files": [
+    "bin/webui-desktop.exe",
+    "bin/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+    "bin/Microsoft.WindowsAppSDK.LICENSE.txt",
+    "bin/Microsoft.WindowsAppSDK.NOTICES.txt",
+    "bin/Microsoft.WindowsAppSDK.PROVENANCE.json"
+  ],
+  "publishConfig": {
+    "tag": "latest"
+  }
+}

@@ -184,7 +184,7 @@ stages:
         script: |
           set -euo pipefail
           sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler
+          sudo apt-get install -y -q protobuf-compiler libgtk-4-dev libwebkitgtk-6.0-dev
           rustup toolchain install 1.93 --profile minimal
           rustup default 1.93
           export PNPM_HOME="$HOME/.local/share/pnpm"
@@ -265,13 +265,11 @@ stages:
         LinuxX64:
           targetTriple: x86_64-unknown-linux-gnu
           artifactName: stage-linux-x64
-          installArm64Linker: 'false'
           manylinuxCrossImage: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
           pythonNativeTest: 'true'
         LinuxArm64:
           targetTriple: aarch64-unknown-linux-gnu
           artifactName: stage-linux-arm64
-          installArm64Linker: 'true'
           manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
           pythonNativeTest: 'false'
     pool:
@@ -314,12 +312,7 @@ stages:
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
 
-          sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler
-          if [[ "$INSTALL_ARM64_LINKER" == true ]]; then
-            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-          fi
+          source scripts/setup-linux-desktop-target.sh "$TARGET_TRIPLE"
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
           # Natives build on the host, but the wheel must link an old glibc, so
@@ -332,7 +325,6 @@ stages:
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
-        INSTALL_ARM64_LINKER: $(installArm64Linker)
         TARGET_TRIPLE: $(targetTriple)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple))
