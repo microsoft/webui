@@ -323,7 +323,15 @@ fn build_runner(root: &Path, artifacts: &Path, plan: Plan, source: bool) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::parse_args;
+    use super::{parse_args, NO_IPC_MODES};
+
+    #[test]
+    fn no_ipc_acceptance_runs_all_four_modes() {
+        assert_eq!(
+            NO_IPC_MODES,
+            ["source", "bundle", "frameless-source", "frameless-bundle"]
+        );
+    }
 
     #[test]
     fn rejects_invalid_native_timeouts_and_plans() {
