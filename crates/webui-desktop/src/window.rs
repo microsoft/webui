@@ -3,6 +3,7 @@
 
 use std::fmt::{Display, Formatter, Write};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -20,16 +21,16 @@ pub struct WindowOptions {
     #[serde(default = "default_height")]
     pub height: u32,
     /// Minimum width, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "minWidth")]
     pub min_width: Option<u32>,
     /// Minimum height, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "minHeight")]
     pub min_height: Option<u32>,
     /// Maximum width, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "maxWidth")]
     pub max_width: Option<u32>,
     /// Maximum height, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "maxHeight")]
     pub max_height: Option<u32>,
     /// Whether the user can resize the window.
     #[serde(default = "default_resizable")]
@@ -41,12 +42,12 @@ pub struct WindowOptions {
     #[serde(default)]
     pub fullscreen: bool,
     /// Whether to keep the window above ordinary windows.
-    #[serde(default)]
+    #[serde(default, alias = "alwaysOnTop")]
     pub always_on_top: bool,
     /// Whether the native backend should center the initial window.
     #[serde(default = "default_center")]
     pub center: bool,
-    /// Solid background painted before web content makes its first paint.
+    /// Native pre-paint color and default document background.
     #[serde(default)]
     pub background: Option<Rgba>,
     /// Native titlebar presentation.
@@ -64,7 +65,7 @@ pub struct WindowOptions {
     #[serde(default)]
     pub effect: WindowEffect,
     /// Whether to persist validated window geometry between launches.
-    #[serde(default)]
+    #[serde(default, alias = "rememberState")]
     pub remember_state: bool,
     /// Whether to enable web inspector/devtools for development builds.
     #[serde(default)]
@@ -112,7 +113,7 @@ impl Default for WindowOptions {
     }
 }
 
-/// An RGBA color used for the native window's pre-paint background.
+/// An RGBA color used for the native and document window background.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rgba {
     /// Red component.
@@ -136,6 +137,25 @@ impl Display for Rgba {
                 self.r, self.g, self.b, self.a
             )
         }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LiveBackground(AtomicU64);
+
+impl LiveBackground {
+    pub(crate) fn set(&self, color: Rgba) {
+        let encoded = u64::from_be_bytes([0, 0, 0, 1, color.r, color.g, color.b, color.a]);
+        self.0.store(encoded, Ordering::Release);
+    }
+
+    pub(crate) fn current(&self) -> Option<Rgba> {
+        let encoded = self.0.load(Ordering::Acquire);
+        if encoded == 0 {
+            return None;
+        }
+        let [_, _, _, _, r, g, b, a] = encoded.to_be_bytes();
+        Some(Rgba { r, g, b, a })
     }
 }
 
@@ -381,6 +401,26 @@ pub fn window_css_block(window: &WindowOptions, platform: DesktopPlatform) -> St
     style
 }
 
+pub(crate) fn live_background_css(color: Rgba) -> String {
+    let mut style = String::with_capacity(106);
+    append_live_background_css(&mut style, color);
+    style
+}
+
+pub(crate) fn append_live_background_css(style: &mut String, color: Rgba) {
+    style.push_str("<style>:root{--webui-window-background:");
+    let _ = write!(style, "{color}");
+    style.push_str("}html{background:var(--webui-window-background)}</style>");
+}
+
+pub(crate) fn live_background_script(color: Rgba) -> String {
+    let mut script = String::with_capacity(155);
+    script.push_str("(()=>{const root=document.documentElement;if(root){root.style.setProperty('--webui-window-background','");
+    let _ = write!(script, "{color}");
+    script.push_str("');root.style.backgroundColor='var(--webui-window-background)'}})()");
+    script
+}
+
 /// Splice a precomputed window CSS block into rendered HTML in one linear scan.
 ///
 /// The block is placed inside `<head>` when present. Documents without a head
@@ -391,6 +431,10 @@ pub fn apply_window_css(html: String, block: &str) -> String {
     if block.is_empty() {
         return html;
     }
+    apply_window_css_ref(&html, block)
+}
+
+pub(crate) fn apply_window_css_ref(html: &str, block: &str) -> String {
     let position = html
         .find("</head>")
         .or_else(|| html.find("<body"))
@@ -406,6 +450,28 @@ pub fn apply_window_css(html: String, block: &str) -> String {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_background_preserves_transparency_and_updates_document_css() {
+        let background = LiveBackground::default();
+        assert_eq!(background.current(), None);
+        let transparent = "#00000000".parse().unwrap();
+        background.set(transparent);
+        assert_eq!(background.current(), Some(transparent));
+        let white = "#ffffffff".parse().unwrap();
+        background.set(white);
+        assert_eq!(background.current(), Some(white));
+
+        assert_eq!(
+            live_background_css(white),
+            "<style>:root{--webui-window-background:#ffffff}html{background:var(--webui-window-background)}</style>"
+        );
+        assert_eq!(
+            live_background_script(white),
+            "(()=>{const root=document.documentElement;if(root){root.style.setProperty('--webui-window-background','#ffffff');root.style.backgroundColor='var(--webui-window-background)'}})()"
+        );
+    }
+
     #[test]
     fn parses_rgba() {
         assert_eq!(
@@ -534,5 +600,22 @@ mod tests {
             .unwrap()
             .get("caption_button_size")
             .is_none());
+    }
+
+    #[test]
+    fn app_config_camel_case_window_settings_are_not_discarded() {
+        let options: WindowOptions = serde_json::from_str(
+            r#"{"minWidth":480,"minHeight":320,"maxWidth":1600,"maxHeight":1000,"alwaysOnTop":true,"rememberState":true}"#,
+        )
+        .unwrap();
+        assert_eq!(options.min_width, Some(480));
+        assert_eq!(options.min_height, Some(320));
+        assert_eq!(options.max_width, Some(1600));
+        assert_eq!(options.max_height, Some(1000));
+        assert!(options.always_on_top);
+        assert!(options.remember_state);
+        let manifest = serde_json::to_value(&options).unwrap();
+        assert_eq!(manifest["min_width"], 480);
+        assert_eq!(manifest["remember_state"], true);
     }
 }

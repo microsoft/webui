@@ -123,8 +123,12 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let _ipc_shutdown = ipc::Shutdown(Rc::clone(&ipc));
 
     let navigation_starting = webview::register_navigation_guard(&webview, frame.events.clone())?;
-    let navigation_completed =
-        webview::register_navigation_completed(&webview, frame.events.clone(), window_frame.hwnd)?;
+    let navigation_completed = webview::register_navigation_completed(
+        &webview,
+        frame.events.clone(),
+        window_frame.hwnd,
+        frame.runtime.live_background(),
+    )?;
     webview::inject_drag_script(&webview)?;
     app_window.install_metrics(&webview)?;
     let web_message_received = bridge::register_message_handler(

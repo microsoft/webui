@@ -4,9 +4,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-#[cfg(feature = "application-ipc")]
 use std::sync::Arc;
 
+use crate::window::{
+    append_live_background_css, apply_window_css_ref, live_background_css, LiveBackground,
+};
 use serde_json::Value;
 use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
@@ -134,6 +136,7 @@ pub struct DesktopRuntime {
     max_asset_bytes: u64,
     startup_html: String,
     window_css: String,
+    live_background: Arc<LiveBackground>,
     #[cfg(feature = "application-ipc")]
     ipc_registry: Arc<IpcRegistry>,
     #[cfg(feature = "application-ipc")]
@@ -205,6 +208,7 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
+            live_background: Arc::default(),
             #[cfg(feature = "application-ipc")]
             ipc_registry: Arc::new(config.ipc_registry),
             #[cfg(feature = "application-ipc")]
@@ -311,6 +315,7 @@ impl DesktopRuntime {
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             window_css,
+            live_background: Arc::default(),
             #[cfg(feature = "application-ipc")]
             ipc_registry: Arc::new(config.ipc_registry),
             #[cfg(feature = "application-ipc")]
@@ -373,34 +378,32 @@ impl DesktopRuntime {
 
             if request_path == "/" || request_path == "/index.html" {
                 if self.route_state.has_provider("/") {
-                    let html = apply_window_css(
-                        render_html(
-                            &self.protocol,
-                            &self.handler,
-                            &self.entry,
-                            "/",
-                            &self.state_for_request("/")?,
-                        )?,
-                        &self.window_css,
-                    );
-                    return Ok(DesktopProtocolResponse::html(html.into_bytes()));
-                }
-                return Ok(DesktopProtocolResponse::html(
-                    self.startup_html.as_bytes().to_vec(),
-                ));
-            }
-
-            if self.protocol.matches_route(&self.entry, request_path) {
-                let html = apply_window_css(
-                    render_html(
+                    let html = self.style_html(render_html(
                         &self.protocol,
                         &self.handler,
                         &self.entry,
-                        request_path,
-                        &self.state_for_request(request_path)?,
-                    )?,
-                    &self.window_css,
-                );
+                        "/",
+                        &self.state_for_request("/")?,
+                    )?);
+                    return Ok(DesktopProtocolResponse::html(html.into_bytes()));
+                }
+                let body = if let Some(color) = self.live_background.current() {
+                    apply_window_css_ref(&self.startup_html, &live_background_css(color))
+                        .into_bytes()
+                } else {
+                    self.startup_html.as_bytes().to_vec()
+                };
+                return Ok(DesktopProtocolResponse::html(body));
+            }
+
+            if self.protocol.matches_route(&self.entry, request_path) {
+                let html = self.style_html(render_html(
+                    &self.protocol,
+                    &self.handler,
+                    &self.entry,
+                    request_path,
+                    &self.state_for_request(request_path)?,
+                )?);
                 return Ok(DesktopProtocolResponse::html(html.into_bytes()));
             }
         }
@@ -410,8 +413,8 @@ impl DesktopRuntime {
 
     /// Return the construction-time HTML snapshot rendered for `/`.
     ///
-    /// This does not invoke route providers again. Use [`Self::handle_request`]
-    /// for a fresh provider-backed root response.
+    /// This does not invoke route providers or include later window-control
+    /// changes. Use [`Self::handle_request`] for the current document styling.
     #[must_use]
     pub fn startup_html(&self) -> &str {
         &self.startup_html
@@ -430,6 +433,20 @@ impl DesktopRuntime {
             });
         }
         Ok(())
+    }
+
+    pub(crate) fn live_background(&self) -> Arc<LiveBackground> {
+        Arc::clone(&self.live_background)
+    }
+
+    fn style_html(&self, html: String) -> String {
+        let Some(color) = self.live_background.current() else {
+            return apply_window_css(html, &self.window_css);
+        };
+        let mut block = String::with_capacity(self.window_css.len() + 106);
+        block.push_str(&self.window_css);
+        append_live_background_css(&mut block, color);
+        apply_window_css(html, &block)
     }
 
     #[cfg(feature = "application-ipc")]
@@ -835,6 +852,82 @@ mod tests {
         // custom properties as the startup document, or a custom titlebar
         // collapses as soon as the user navigates.
         assert!(html.contains("--webui-titlebar-inset-start"));
+    }
+
+    #[test]
+    fn live_background_updates_root_and_future_route_documents() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "index.html",
+            "<route path=\"/\" component=\"my-page\"><route path=\"favorites\" component=\"my-page\" exact /></route>",
+        );
+        write_file(dir.path(), "my-page.html", "<p>Contacts</p>");
+        let initial = "#101014".parse().unwrap();
+        let updated = "#334455cc".parse().unwrap();
+        let window = crate::WindowOptions {
+            background: Some(initial),
+            ..crate::WindowOptions::default()
+        };
+        let mut config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
+        config.window = window.clone();
+        let runtime = std::sync::Arc::new(DesktopRuntime::from_source(config).unwrap());
+        let frame = crate::DesktopFrame::new(std::sync::Arc::clone(&runtime), window).unwrap();
+
+        assert!(frame.runtime().startup_html().contains("#101014"));
+        frame.window_handle().set_background(updated).unwrap();
+        for path in ["/", "/favorites"] {
+            let response = runtime
+                .handle_request(&DesktopProtocolRequest::get(path))
+                .unwrap();
+            let body = response.body.as_bytes().unwrap();
+            let html = std::str::from_utf8(body.as_slice()).unwrap();
+            assert!(
+                html.contains("--webui-window-background:#334455cc"),
+                "live background was missing from {path}"
+            );
+            assert!(
+                html.rfind("#334455cc") > html.rfind("#101014"),
+                "the original background overrode the live setting on {path}"
+            );
+        }
+        frame
+            .window_handle()
+            .set_background("#abcdef".parse().unwrap())
+            .unwrap();
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest::get("/favorites"))
+            .unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap().as_slice()).unwrap();
+        assert!(html.contains("--webui-window-background:#abcdef"));
+        assert!(!html.contains("#334455cc"));
+    }
+
+    #[test]
+    fn live_background_adds_document_styling_when_none_was_configured() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "index.html",
+            "<!doctype html><html><head></head><body><main>Hello</main></body></html>",
+        );
+        let window = crate::WindowOptions::default();
+        let config = DesktopSourceConfig::new(build_options(dir.path().to_path_buf()));
+        let runtime = std::sync::Arc::new(DesktopRuntime::from_source(config).unwrap());
+        let frame = crate::DesktopFrame::new(std::sync::Arc::clone(&runtime), window).unwrap();
+
+        assert!(!runtime.startup_html().contains("--webui-window-background"));
+        frame
+            .window_handle()
+            .set_background("#aabbcc".parse().unwrap())
+            .unwrap();
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest::get("/"))
+            .unwrap();
+        let html = std::str::from_utf8(response.body.as_bytes().unwrap().as_slice()).unwrap();
+        assert!(html.contains(
+            "<style>:root{--webui-window-background:#aabbcc}html{background:var(--webui-window-background)}</style></head>"
+        ));
     }
 
     #[test]

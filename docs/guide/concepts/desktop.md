@@ -25,7 +25,12 @@ cargo run --manifest-path desktop/Cargo.toml --features source
 Use a Rust host when you need route state, API handlers, typed IPC, or native
 window control. The generated runner loads packaged resources by default;
 `source` is an opt-in development feature. `desktop init` does not overwrite
-files unless you pass `--force`.
+files unless you pass `--force`. It generates `webui-desktop.json`; both its
+Rust source runner and `webui desktop package ./my-app --out ./packages` read
+the same identity and window settings from this file. For an existing app,
+set desktop package options with command flags or the app-root
+`webui-desktop.json`, not package.json. See the
+[desktop CLI reference](/guide/cli/#webui-desktop) for fields and precedence.
 
 | SDK feature | What it adds |
 | --- | --- |
@@ -72,6 +77,24 @@ For development, replace `from_bundle` with
 rendering; configure the window on the builder so the first render and native
 frame agree.
 
+Every initial window field, including width, height, titlebar style,
+background, size limits, and devtools, can be set in Rust without a JSON file:
+
+```rust
+use webui_desktop::{DesktopApp, Rgba, TitlebarStyle, WindowOptions};
+
+let frame = DesktopApp::from_bundle("./desktop-bundle")?
+    .window(WindowOptions {
+        title: "Contacts".into(),
+        width: 1280,
+        height: 900,
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        background: Some(Rgba { r: 16, g: 16, b: 20, a: 255 }),
+        ..WindowOptions::default()
+    })
+    .build()?;
+```
+
 | API | Use |
 | --- | --- |
 | `DesktopApp::from_bundle`, `from_source` | Open a packaged bundle or compile source |
@@ -104,11 +127,41 @@ Callbacks run on the native UI thread. Return `EventResponse::Continue` for
 normal behavior. Only `WindowCloseRequested` and `NavigationRequested` can
 return `PreventDefault` to cancel the action. Do not block the UI thread.
 
-`frame.window_handle()` queues `set_title`, `set_size`, `minimize`, `maximize`,
-`unmaximize`, `fullscreen`, `center`, `focus`, `request_close`, `start_drag`,
-and `set_always_on_top`. A successful call means the command was accepted,
-not that the OS has completed it. Handle queue errors; `request_close` can
-still be cancelled by a Rust event handler.
+`frame.window_handle()` queues `set_title`, `set_background`, `set_size`,
+`minimize`, `maximize`, `unmaximize`, `fullscreen`, `center`, `focus`,
+`request_close`, `start_drag`, and `set_always_on_top`. A successful call
+means the command was accepted, not that the OS has completed it. Handle
+queue errors; `request_close` can still be cancelled by a Rust event handler.
+
+Set initial defaults with `WindowOptions` or desktop package flags. To
+respond to a theme change after launch, use the Rust event callback:
+
+```rust
+use webui_desktop::{DesktopEvent, EventResponse, Rgba};
+
+let handle = frame.window_handle().clone();
+frame.on_event(move |event| {
+    if let DesktopEvent::ThemeChanged { dark } = event {
+        let color = if *dark {
+            Rgba { r: 16, g: 16, b: 20, a: 255 }
+        } else {
+            Rgba { r: 250, g: 250, b: 250, a: 255 }
+        };
+        if let Err(error) = handle.set_background(color) {
+            eprintln!("Could not update window background: {error}");
+        }
+    }
+    EventResponse::Continue
+})?;
+```
+
+`set_background` updates the native under-page color, the current document's
+root background and CSS variable, and subsequent full document renders. App
+CSS that paints its own content still controls that content. `set_size` changes
+the live content size. Native titlebar style, caption-button size, visual
+effects, and shell settings are selected before `build()`; they cannot be
+switched on the live frame. Runtime changes do not modify the bundle manifest,
+app ID, or defaults on the next launch.
 
 The active web document can observe best-effort `CustomEvent`s on `window`:
 
@@ -138,36 +191,84 @@ Linux does not emit `window-moved`.
 
 ## Window and manifest
 
-Set window defaults in `webuiDesktop` in your app's `package.json`:
+Configure desktop packaging on the CLI without adding desktop fields to
+`package.json`:
 
-```json
-{
-  "webuiDesktop": {
-    "app": "src",
-    "state": "data/state.json",
-    "assets": "dist",
-    "projectionManifests": ["dist/webui-projection.json"],
-    "runnerCrate": "my-app-desktop",
-    "buildScripts": ["build:client"],
-    "appId": "com.example.contacts",
-    "appName": "Contacts",
-    "titlebar": { "style": "overlay", "height": 48 }
-  }
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages \
+  --source ./my-app/src --state ./my-app/data/state.json \
+  --assets ./my-app/dist \
+  --projection-manifest ./my-app/dist/webui-projection.json \
+  --build-script build:client \
+  --runner-crate my-app-desktop \
+  --app-id com.example.contacts --app-name Contacts \
+  --titlebar-style overlay --titlebar-height 48
+```
+
+CLI file paths are relative to the current directory. Client projection
+metadata must stay current. `desktop package` also accepts `--theme`,
+`--plugin`, `--icon`, identity, publisher, runner and window flags; see the
+[CLI reference](/guide/cli/#webui-desktop) for the full list. Rust hosts set the
+same window fields on `WindowOptions`, pass source and startup state through
+`DesktopSourceConfig`, and set identity and shell options on `DesktopAppBuilder`.
+For Rust-owned bundle creation and packaging, pass `DesktopBundleOptions` to
+`build_desktop_bundle` and `DesktopPackageOptions` to
+`package_desktop_bundle` (with the `source` feature):
+
+```rust
+use std::path::PathBuf;
+use webui_desktop::{
+    build_desktop_bundle, package_desktop_bundle, BuildOptions, DesktopBundleOptions,
+    DesktopPackageOptions, DesktopPackageTarget, DesktopShellConfig, TitlebarStyle, WindowOptions,
+};
+
+fn package(runner_exe: PathBuf) -> webui_desktop::Result<PathBuf> {
+    let bundle_dir = PathBuf::from("desktop-bundle");
+    build_desktop_bundle(DesktopBundleOptions {
+        build_options: BuildOptions {
+            app_dir: PathBuf::from("src"),
+            ..BuildOptions::default()
+        },
+        out_dir: bundle_dir.clone(),
+        state_file: Some(PathBuf::from("data/state.json")),
+        asset_root: Some(PathBuf::from("dist")),
+        token_css: None,
+        app_id: "com.example.contacts".into(),
+        app_name: "Contacts".into(),
+        version: "1.0.0".into(),
+        publisher: "Example".into(),
+        window: WindowOptions {
+            title: "Contacts".into(),
+            titlebar: TitlebarStyle::Overlay { height: 48 },
+            remember_state: true,
+            ..WindowOptions::default()
+        },
+        icon_file: Some(PathBuf::from("desktop/icon.icns")),
+        shell: DesktopShellConfig::default(),
+        package_targets: vec![DesktopPackageTarget::MacosApp],
+    })?;
+    Ok(package_desktop_bundle(DesktopPackageOptions {
+        bundle_dir,
+        out_dir: PathBuf::from("packages"),
+        target: DesktopPackageTarget::MacosApp,
+        runner_exe,
+    })?.output_path)
 }
 ```
 
-`app`, `state`, and `assets` are paths relative to the app root.
-`projectionManifests` supplies metadata from the client build; keep it current.
-Other options include `theme`, `plugin`, `icon`, `appVersion`, window dimensions,
-and `devtools`. Use the same `WindowOptions` fields in a Rust source host.
+Set `BuildOptions::plugin` and `projection_manifests` for interactive builds.
+`DesktopBundleOptions::token_css` accepts pre-resolved theme tokens. In a Rust
+build script or host tool, run any web build scripts and compile the chosen
+runner before calling these APIs; those build commands are not part of the
+desktop runtime.
 
 `WindowOptions` supports title and size limits, resize/maximize/fullscreen,
 always-on-top, centering, background, titlebar, effect, remembered geometry,
 and devtools. `titlebar.style` is `native`, `hidden-inset`, `overlay`, or `none`.
 For an overlay, `titlebar.height` sizes the application band. On Windows,
 caption buttons default to Standard (32 DIPs) independently of that height;
-set `webuiDesktop.captionButtonSize` to `"tall"` for 48-DIP buttons. The Rust
-field and bundle manifest key are `caption_button_size`. This setting has no
+pass `--caption-button-size tall` for 48-DIP buttons. The Rust field and bundle
+manifest key are `caption_button_size`. This setting has no
 effect on macOS or Linux.
 
 The built-in backends support native titlebars and custom titlebar styles.
@@ -276,7 +377,7 @@ application IPC and do not require `application-ipc`.
 
 ## Package and run
 
-For an app root with `webuiDesktop` metadata:
+For an app root:
 
 ```bash
 webui desktop package ./my-app --target windows-portable --out ./packages
@@ -297,7 +398,7 @@ Runtime 122.0.2365.46 or later, Windows App Runtime 1.8
 Redistributable. Use the current [Evergreen WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
 Linux builds need GTK4 and WebKitGTK 6 development packages.
 
-`webuiDesktop.icon` supplies the macOS `.icns` bundle icon and is copied into
+`--icon` supplies the macOS `.icns` bundle icon and is copied into
 portable resources. For the Windows executable and taskbar, embed an `.ico` as
 icon resource 1 in the Rust runner. On macOS, source-mode runners can supply
 an absolute `.icns` path through `DesktopShellConfig::icon_path` to show a Dock

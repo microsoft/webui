@@ -71,6 +71,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     let navigation_delegate = DesktopNavigationDelegate::new(
         mtm,
         ivars.events.clone(),
+        ivars.runtime.live_background(),
         #[cfg(feature = "application-ipc")]
         ivars.ipc.clone(),
     );
@@ -124,6 +125,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
 
     let _ = ivars.command_wake.set(super::commands::install_wakeup(
         &window,
+        &webview,
         &ivars.window_handle,
     ));
     window.makeKeyAndOrderFront(None);

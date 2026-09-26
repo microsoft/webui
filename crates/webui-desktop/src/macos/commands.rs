@@ -7,10 +7,17 @@ use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{WindowCommand, WindowHandle};
+use crate::window::live_background_script;
+use crate::{Rgba, WindowCommand, WindowHandle};
+use block2::RcBlock;
 use objc2::rc::Weak;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_foundation::{NSError, NSString};
+use objc2_web_kit::WKWebView;
+
+use super::effects::apply_background;
 
 thread_local! {
     static TARGETS: RefCell<HashMap<u64, Rc<dyn Fn()>>> = RefCell::new(HashMap::new());
@@ -74,8 +81,13 @@ fn dispatch_get_main_queue() -> *mut c_void {
     std::ptr::addr_of!(_dispatch_main_q).cast_mut()
 }
 
-pub(super) fn install_wakeup(window: &NSWindow, handle: &WindowHandle) -> CommandWake {
+pub(super) fn install_wakeup(
+    window: &NSWindow,
+    webview: &WKWebView,
+    handle: &WindowHandle,
+) -> CommandWake {
     let window = Weak::new(window);
+    let webview = Weak::new(webview);
     let commands = handle.clone();
     let target = register_target(Rc::new(move || {
         let Some(mtm) = MainThreadMarker::new() else {
@@ -84,9 +96,12 @@ pub(super) fn install_wakeup(window: &NSWindow, handle: &WindowHandle) -> Comman
         let Some(window) = window.load() else {
             return;
         };
+        let Some(webview) = webview.load() else {
+            return;
+        };
         let app = NSApplication::sharedApplication(mtm);
         for command in commands.drain_commands() {
-            execute_command(&window, command, &app);
+            execute_command(&window, &webview, command, &app);
         }
     }));
     // Only an opaque id enters the Send + Sync wake callback. The owning
@@ -118,10 +133,17 @@ fn drain_target(id: u64) {
     }
 }
 
-fn execute_command(window: &objc2_app_kit::NSWindow, command: WindowCommand, app: &NSApplication) {
+fn execute_command(
+    window: &NSWindow,
+    webview: &WKWebView,
+    command: WindowCommand,
+    app: &NSApplication,
+) {
     match command {
-        WindowCommand::SetTitle(title) => {
-            window.setTitle(&objc2_foundation::NSString::from_str(&title))
+        WindowCommand::SetTitle(title) => window.setTitle(&NSString::from_str(&title)),
+        WindowCommand::SetBackground(color) => {
+            apply_background(window, webview, Some(color));
+            update_document_background(webview, color);
         }
         WindowCommand::SetSize { width, height } => window.setContentSize(
             objc2_foundation::NSSize::new(f64::from(width), f64::from(height)),
@@ -157,5 +179,25 @@ fn execute_command(window: &objc2_app_kit::NSWindow, command: WindowCommand, app
                 let _: () = objc2::msg_send![window, setLevel: if value { 3_i64 } else { 0_i64 }];
             }
         }
+    }
+}
+
+pub(super) fn update_document_background(webview: &WKWebView, color: Rgba) {
+    let completion = RcBlock::new(|_: *mut AnyObject, error: *mut NSError| {
+        if !error.is_null() {
+            // SAFETY: WebKit keeps the error alive for this completion callback.
+            let error = unsafe { &*error };
+            eprintln!(
+                "WebUI: failed to update the current document background: {}",
+                error.localizedDescription()
+            );
+        }
+    });
+    // SAFETY: The live webview and completion are accessed on the main thread.
+    unsafe {
+        webview.evaluateJavaScript_completionHandler(
+            &NSString::from_str(&live_background_script(color)),
+            Some(&completion),
+        );
     }
 }

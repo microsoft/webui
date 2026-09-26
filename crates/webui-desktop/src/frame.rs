@@ -124,6 +124,7 @@ impl DesktopFrame {
         window: WindowOptions,
         #[cfg(feature = "application-ipc")] ipc_owner: IpcWindowOwner,
     ) -> Self {
+        let window_handle = WindowHandle::with_background(runtime.live_background());
         Self {
             #[cfg(feature = "native")]
             executor: Arc::default(),
@@ -132,7 +133,7 @@ impl DesktopFrame {
             window,
             shell: DesktopShellConfig::default(),
             events: EventRegistry::default(),
-            window_handle: WindowHandle::default(),
+            window_handle,
             #[cfg(feature = "application-ipc")]
             ipc_owner,
         }

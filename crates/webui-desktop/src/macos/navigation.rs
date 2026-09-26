@@ -5,6 +5,7 @@
 //! `about:` URLs used by WebKit internally) may load; everything else is
 //! denied by default and reported through `DesktopEvent::NavigationRequested`.
 
+use crate::window::LiveBackground;
 use crate::{DesktopEvent, EventRegistry, EventResponse, WindowId};
 use block2::DynBlock;
 use objc2::rc::Retained;
@@ -13,11 +14,13 @@ use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
 };
+use std::sync::Arc;
 
 use super::dispatch_event;
 
 pub(super) struct NavigationDelegateIvars {
     pub(super) events: EventRegistry,
+    live_background: Arc<LiveBackground>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     #[cfg(feature = "application-ipc")]
@@ -132,6 +135,9 @@ define_class!(
                     url,
                 },
             );
+            if let Some(color) = self.ivars().live_background.current() {
+                super::commands::update_document_background(web_view, color);
+            }
         }
     }
 );
@@ -153,10 +159,12 @@ impl DesktopNavigationDelegate {
     pub(super) fn new(
         mtm: MainThreadMarker,
         events: EventRegistry,
+        live_background: Arc<LiveBackground>,
         #[cfg(feature = "application-ipc")] ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars {
             events,
+            live_background,
             #[cfg(feature = "application-ipc")]
             ipc,
             #[cfg(feature = "application-ipc")]
