@@ -9,6 +9,8 @@ Prerequisites: current `target/debug/webui-desktop` CLI built with `cli`, existi
 `protoc`, and the repository's pinned `packages/webui-desktop/node_modules`
 dependencies. The native runner is an example target of `microsoft-webui-desktop`
 and uses the root workspace lockfile.
+It is excluded from the published desktop crate because its test utilities are
+workspace-local; published-crate example tests do not run this acceptance fixture.
 
 From the repository root:
 

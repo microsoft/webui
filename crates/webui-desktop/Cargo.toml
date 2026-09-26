@@ -10,6 +10,8 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "desktop", "webview", "ipc", "ssr"]
 categories = ["gui", "web-programming"]
+# The native acceptance fixture uses local-only test utilities; keep it out of the crate archive.
+exclude = ["tests/fixtures/native-ipc/**"]
 
 [lib]
 name = "webui_desktop"

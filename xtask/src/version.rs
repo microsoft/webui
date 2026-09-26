@@ -1103,7 +1103,7 @@ microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
     }
 
     #[test]
-    fn desktop_test_utils_stays_path_only_after_release_update() {
+    fn desktop_native_fixture_stays_local_after_release_update() {
         let dir = tempfile::TempDir::new().unwrap();
         let toml = dir.path().join("Cargo.toml");
         fs::write(&toml, include_str!("../../crates/webui-desktop/Cargo.toml")).unwrap();
@@ -1113,6 +1113,7 @@ microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
         assert!(
             content.contains(r#"microsoft-webui-test-utils = { path = "../webui-test-utils" }"#)
         );
+        assert!(content.contains(r#"exclude = ["tests/fixtures/native-ipc/**"]"#));
         assert!(content.contains(
             r#"microsoft-webui-handler = { path = "../webui-handler", version = "0.0.30" }"#
         ));
