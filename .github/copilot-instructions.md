@@ -142,8 +142,8 @@ exhaustive reference for its current implementation.
 
 - **Read it** before changing the architecture or an API that may cross a system boundary.
 - **Update it** when responsibilities, data flow, build/runtime boundaries, cross-layer invariants, or technology choices change. Revise existing sections instead of appending implementation notes.
-- **Do not add** exhaustive field tables, method signatures, error variants, marker byte layouts, bug-fix narratives, benchmarks, or dependency-specific workarounds. Put exact cross-language contracts in `specs/` alongside their defining source/schema and tests; keep public references focused on supported application APIs.
-- **Update the relevant `specs/` reference** when a streaming wire, projection identity, or desktop IPC admission contract changes without changing the overall architecture.
+- **Do not add** exhaustive field tables, method signatures, error variants, marker byte layouts, bug-fix narratives, benchmarks, or dependency-specific workarounds. Put focused subsystem and cross-language behavioral contracts in `specs/`, exact layouts and local details with their defining source/tests, and supported application APIs in public docs.
+- **Update the relevant `specs/` reference** when a subsystem contract changes without changing the overall architecture. Add a focused reference when a new cross-layer contract needs one; do not create a spec for a local implementation detail.
 - If an architectural claim disagrees with code, reconcile both. A new API, field, or error by itself does not require a DESIGN.md change.
 
 ---

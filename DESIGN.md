@@ -377,7 +377,8 @@ engineering another; they are not public application-authoring guides.
 | State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/guide/concepts/state-management/index.md`, `docs/guide/concepts/directives/if.md` |
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |
 | Progressive response wire and host-step invariants | [`specs/streaming.md`](specs/streaming.md); `crates/webui-handler/src/streaming/`, `packages/webui-framework/src/streaming-protocol.ts` |
-| Client template metadata, SSR markers, hydration, and routing | `packages/webui-framework/RENDERING.md`, `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `packages/webui-router/`, `docs/guide/concepts/{hydration,routing}.md` |
+| Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
+| Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
 | Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/guide/integrations/`, `docs/guide/cli/`, package READMEs, `examples/` |

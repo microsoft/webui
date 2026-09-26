@@ -3,11 +3,17 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 -->
 
-# Rendering & Hydration Internals
+# Hydration and rendering contract
 
-How `@microsoft/webui-framework` actually turns server-rendered HTML into a live, reactive DOM, and what it does on every keystroke after that.
+This internal reference describes how the parser, handler, and
+`@microsoft/webui-framework` agree on template metadata, SSR markers, DOM
+adoption, and reactive updates. [DESIGN.md](../DESIGN.md#browser-hydration)
+covers the architecture; defining source and tests own the exact executable
+behavior.
 
-This document is for framework contributors, plugin authors, and anyone debugging hydration. **If you just want to author components, read [`README.md`](./README.md) and the [Interactivity guide](https://microsoft.github.io/webui/guide/concepts/interactivity) instead.**
+This document is for framework contributors and plugin authors. For component
+authoring, read the [framework README](../packages/webui-framework/README.md)
+and the [Interactivity guide](../docs/guide/concepts/interactivity.md).
 
 ---
 
@@ -52,7 +58,8 @@ There is no flash of content, because the HTML was already on screen at step 2. 
 ## SSR markers
 
 The handler emits five structural marker forms and a numbered pair for each raw
-HTML binding. The client counterparts are defined in `src/element/markers.ts`:
+HTML binding. The client counterparts are defined in
+`packages/webui-framework/src/element/markers.ts`:
 
 | Marker | Meaning |
 |---|---|
@@ -310,7 +317,7 @@ Synchronous escape hatch. Call it when you need the DOM to reflect pending write
 
 ## Repeat reconciliation (`<for>`)
 
-Implemented in `src/element/diff.ts`.
+Implemented in `packages/webui-framework/src/element/diff.ts`.
 
 ### Positional mode (default)
 
@@ -438,7 +445,7 @@ or ShadowRoot. A ShadowRoot is a closure cut point.
 
 ## Performance instrumentation
 
-`src/lifecycle.ts` integrates with the [Performance API](https://developer.mozilla.org/en-US/docs/Web/API/Performance_API):
+`packages/webui-framework/src/lifecycle.ts` integrates with the [Performance API](https://developer.mozilla.org/en-US/docs/Web/API/Performance_API):
 
 | Mark | When |
 |---|---|
@@ -482,6 +489,8 @@ per-instance readiness.
 ---
 
 ## Module map
+
+The paths below are relative to `packages/webui-framework/`.
 
 ```
 src/
@@ -532,3 +541,14 @@ Everything else is internal and may change without notice.
 - `examples/app/contact-book-manager` — repeat block reconciliation
 - `examples/app/commerce` — larger composition, multiple components per page
 - [Interactivity guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — component-author view of the same machinery
+
+## Defining sources
+
+- [Parser metadata compilation](../crates/webui-parser/src/plugin/webui.rs)
+  and [handler SSR markers](../crates/webui-handler/src/plugin/webui.rs).
+- [Template and hydration runtime](../packages/webui-framework/src/template-element.ts),
+  [marker resolution](../packages/webui-framework/src/element/markers.ts),
+  and [repeat reconciliation](../packages/webui-framework/src/element/diff.ts).
+- [Framework tests](../packages/webui-framework/src/) and
+  [browser hydration guide](../docs/guide/concepts/hydration.md) for
+  executable coverage and supported application behavior.

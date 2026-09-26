@@ -5,8 +5,10 @@ browser coordinator. See [DESIGN.md](../DESIGN.md#progressive-streaming-hydratio
 for the architectural boundary, the
 [boundary guide](../docs/guide/concepts/directives/boundary.md) for authoring,
 and the [hydration guide](../docs/guide/concepts/hydration.md#progressive-streaming-hydration)
-for browser integration. Streaming HTML is opt-in; normal rendering and
-JSON/NDJSON navigation do not acquire its records or retained state.
+for browser integration. The [hydration contract](hydration.md) covers how
+complete streamed ranges adopt their SSR DOM. Streaming HTML is opt-in;
+normal rendering and JSON/NDJSON navigation do not acquire its records
+or retained state.
 
 ## One host-driven session
 

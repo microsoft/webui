@@ -14,12 +14,12 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 | CLI flags or commands | `docs/guide/cli/index.md` + `docs/ai.md` (Build and run section) |
 | Template syntax or directives | `docs/guide/concepts/directives/` + `docs/ai.md` |
 | Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/ai.md` |
-| Hydration markers or mechanism | `docs/guide/concepts/hydration.md`; `DESIGN.md` only if hydration architecture changes |
+| Hydration markers or mechanism | `specs/hydration.md` + producer/consumer tests; update `docs/guide/concepts/hydration.md` if user-visible, `DESIGN.md` only if hydration architecture changes |
 | Routing behavior | `docs/guide/concepts/routing.md` + `docs/ai.md` |
 | State management or path resolution | `docs/guide/concepts/state-management/index.md` |
 | Handler API (Rust, Node, FFI) | `docs/guide/concepts/handlers/` + `docs/guide/integrations.md` |
 | Protocol fields or fragment types | `crates/webui-protocol/proto/webui.proto` + consumers/tests; `DESIGN.md` only if the graph or ownership model changes |
-| Internal streaming, projection, or desktop IPC contract | Relevant `specs/` reference + producer/consumer tests; `DESIGN.md` only if the architecture changes |
+| Internal subsystem or cross-language contract | Relevant `specs/` reference + producer/consumer tests; `DESIGN.md` only if the architecture changes |
 | Plugin system (parser or handler) | `docs/guide/concepts/plugins/index.md`; `DESIGN.md` if plugin responsibilities change |
 | Performance characteristics | `docs/guide/concepts/performance.md` |
 | Public API (Rust crate, npm package) | Relevant handler/integration docs; `DESIGN.md` only if an architectural boundary changes |
@@ -39,10 +39,10 @@ WebUI. Update it in the same change only when modifying:
 
 Revise existing explanations instead of appending incident histories. Exact
 schemas, signatures, error codes, SSR marker layouts, metadata tuples, and
-regression details belong in the defining source and tests; preserve exact
-cross-language contracts in focused internal `specs/` references. A field or
-API change alone is not an architectural change. If an
-architectural claim and the code disagree, reconcile them.
+regression details belong in the defining source and tests; preserve focused
+subsystem and cross-language contracts in internal `specs/` references. A
+field or API change alone is not an architectural change. If an architectural
+claim and the code disagree, reconcile them.
 
 ## docs/ rules
 
@@ -68,7 +68,7 @@ point:
 Do not document private or `pub(crate)` items, internal callbacks, intermediate
 representations, cache algorithms, implementation sequencing, regression-test
 details, or dependency-specific workarounds in developer docs. Put system-level
-architecture in `DESIGN.md`, cross-language technical contracts in `specs/`,
+architecture in `DESIGN.md`, subsystem technical contracts in `specs/`,
 and implementation invariants and local rationale near code and tests.
 
 Rust `///` documentation comments are for exported public APIs only. Use `//`
