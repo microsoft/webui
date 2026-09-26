@@ -135,6 +135,14 @@ side effects. Per-subscription notification delivery preserves receipt order;
 disposing a subscription prevents queued callbacks from starting, not an
 already-running callback from finishing.
 
+WebKitGTK completion tasks publish their known terminal reason before cancellation
+can drop retained requests. Those requests retain only their own task epoch's
+first reason, never the replacement document's state. An adapter-owned
+cancellation returns that reason through the existing typed error response even
+when the renderer's closure control is still queued. Unexplained request or
+body-read failures remain transport failures; a later navigation must not
+retroactively reclassify them.
+
 Failures have stable `IpcErrorCode` categories and bounded plain-text
 `WireError` fields (`code`, `message`, `help`, optional application code).
 Credentials and foreign exception stacks must not cross as diagnostics:
