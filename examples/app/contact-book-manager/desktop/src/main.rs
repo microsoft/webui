@@ -67,7 +67,19 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
     config.theme = Some(("@microsoft/webui-examples-theme".to_string(), app_root));
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
-    config.window = WindowOptions {
+    config.window = contact_book_window()?;
+    Ok(DesktopApp::from_source(config)
+        .app_id("com.microsoft.webui.contactbook")
+        .shell(DesktopShellConfig {
+            icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
+            ..DesktopShellConfig::default()
+        })
+        .build()?)
+}
+
+#[cfg(feature = "source")]
+fn contact_book_window() -> Result<WindowOptions> {
+    Ok(WindowOptions {
         title: "Contact Book Manager".to_string(),
         width: 1200,
         height: 800,
@@ -76,14 +88,7 @@ fn source_frame(app_root: PathBuf) -> Result<DesktopFrame> {
         background: Some("#f8fafc".parse()?),
         remember_state: true,
         ..WindowOptions::default()
-    };
-    Ok(DesktopApp::from_source(config)
-        .app_id("com.microsoft.webui.contactbook")
-        .shell(DesktopShellConfig {
-            icon_path: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns")),
-            ..DesktopShellConfig::default()
-        })
-        .build()?)
+    })
 }
 
 fn packaged_frame(resources: &std::path::Path) -> Result<DesktopFrame> {
@@ -809,12 +814,9 @@ mod tests {
             b"export {};"
         );
 
-        let package: Value = serde_json::from_str(include_str!("../../package.json")).unwrap();
-        let window: WindowOptions =
-            serde_json::from_value(package["webuiDesktop"].clone()).unwrap();
+        let window = contact_book_window().unwrap();
         assert_eq!(window.titlebar, TitlebarStyle::Overlay { height: 48 });
-        let icon_path = package["webuiDesktop"]["icon"].as_str().unwrap();
-        assert_eq!(icon_path, "desktop/icon.icns");
+        assert!(window.remember_state);
         let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.icns");
         assert!(std::fs::read(&icon).unwrap().starts_with(b"icns"));
         // Source launches have no `.app` bundle, so the Dock icon can only come

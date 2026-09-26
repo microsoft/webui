@@ -82,16 +82,6 @@ const PACKAGE_JSON: &str = r#"{
   "private": true,
   "scripts": {
     "build": "webui build ./src --out ./dist"
-  },
-  "webuiDesktop": {
-    "app": "src",
-    "assets": "dist",
-    "runnerCrate": "webui-desktop-app",
-    "appId": "com.example.webui.desktop",
-    "appName": "WebUI Desktop App",
-    "title": "WebUI Desktop App",
-    "width": 1200,
-    "height": 800
   }
 }
 "#;
@@ -230,6 +220,9 @@ mod tests {
         })
         .unwrap();
         assert!(temp.path().join("app/package.json").is_file());
+        assert!(!fs::read_to_string(temp.path().join("app/package.json"))
+            .unwrap()
+            .contains("webuiDesktop"));
         assert!(temp.path().join("app/src/index.html").is_file());
         assert!(temp.path().join("app/desktop/src/main.rs").is_file());
         assert!(

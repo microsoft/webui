@@ -77,7 +77,7 @@ and theme tokens remain available to the renderer.
 
 Both desktop build paths consume `dist/webui-projection.json` from
 `build:client`. Source mode supplies it through Rust build options; packaging
-uses `webuiDesktop.projectionManifests`. Keep the client build current before
+uses `--projection-manifest`. Keep the client build current before
 launching or packaging. Navigation sends the fields required by the active
 components, just as the browser host does; theme CSS remains available for full
 document rendering without being repeated as unused navigation state.
@@ -92,15 +92,36 @@ PACKAGES=/tmp/contact-book-packages
 cd examples/app/contact-book-manager
 cargo run -p microsoft-webui-cli -- desktop package . \
   --target macos-app \
-  --out "$PACKAGES"
+  --out "$PACKAGES" \
+  --build-script build:deps \
+  --build-script build:client \
+  --package-manager pnpm \
+  --source src \
+  --state data/state.json \
+  --assets dist \
+  --projection-manifest dist/webui-projection.json \
+  --theme @microsoft/webui-examples-theme \
+  --plugin webui \
+  --icon desktop/icon.icns \
+  --runner-crate contact-book-desktop \
+  --app-id com.microsoft.webui.contactbook \
+  --app-name "Contact Book Manager" \
+  --app-version 1.0.0 \
+  --title "Contact Book Manager" \
+  --width 1200 --height 800 \
+  --titlebar-style overlay --titlebar-height 48 \
+  --background '#f8fafc' \
+  --remember-state --devtools
 
 open "$PACKAGES/Contact-Book-Manager.app"
 ```
 
-The `webuiDesktop` config in `package.json` tells the sidecar to run
-`build:deps` and `build:client`, build the `contact-book-desktop` Rust runner,
-stage non-generated assets from `dist`, build the bundle, and package the
-runner-backed `.app`.
+These flags run the client builds, compile the Rust runner, stage non-generated
+assets from `dist`, build the bundle, and package the runner-backed `.app`.
+Paths supplied on the CLI are relative to the current directory. The Rust
+source host sets the matching window and app identity with `WindowOptions`
+and `DesktopAppBuilder`; its bundle test passes those typed options to
+`build_desktop_bundle` and packages with `package_desktop_bundle`.
 
 To inspect the packaged macOS app, enable Safari > Settings > Advanced > Show
 features for web developers, then open Safari's Develop menu while the app is

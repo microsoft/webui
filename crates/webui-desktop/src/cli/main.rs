@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use expand_tilde::expand_tilde;
+use serde::de::DeserializeOwned;
 use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 use webui_desktop::{
     build_desktop_bundle, package_desktop_bundle, DesktopBundleOptions, DesktopPackageOptions,
@@ -23,6 +24,8 @@ use webui_desktop::{DesktopRuntime, DesktopSourceConfig};
 mod init;
 mod ipc;
 mod runner_build;
+mod window_args;
+use window_args::WindowArgs;
 
 #[derive(Parser)]
 #[command(name = "webui-desktop", about = "WebUI desktop runner and packager")]
@@ -141,7 +144,7 @@ struct BuildArgs {
 
 #[derive(Args)]
 struct PackageArgs {
-    /// Desktop bundle directory, or a WebUI app root with webuiDesktop config
+    /// Desktop bundle directory or WebUI app root
     bundle: PathBuf,
 
     /// Package layout, or `all` layouts (does not cross-compile the runner)
@@ -160,9 +163,48 @@ struct PackageArgs {
     #[arg(long)]
     theme: Option<String>,
 
+    /// App source directory (relative to the working directory)
+    #[arg(long)]
+    source: Option<PathBuf>,
+
+    /// Startup state file for app-root packaging
+    #[arg(long)]
+    state: Option<PathBuf>,
+
+    /// Static asset directory for app-root packaging
+    #[arg(long, alias = "servedir")]
+    assets: Option<PathBuf>,
+
+    /// Entry HTML file name for app-root packaging
+    #[arg(long)]
+    entry: Option<String>,
+
+    /// Framework plugin for app-root packaging
+    #[arg(long, value_enum)]
+    plugin: Option<webui::Plugin>,
+
     /// Optional app icon override for app-root packaging
     #[arg(long)]
     icon: Option<PathBuf>,
+
+    /// Reverse-DNS application identifier
+    #[arg(long)]
+    app_id: Option<String>,
+
+    /// Human-readable application name
+    #[arg(long)]
+    app_name: Option<String>,
+
+    /// Application version
+    #[arg(long)]
+    app_version: Option<String>,
+
+    /// Publisher name
+    #[arg(long)]
+    publisher: Option<String>,
+
+    #[command(flatten)]
+    window: WindowArgs,
 
     /// Cargo package name for the app-specific Rust desktop runner
     #[arg(long)]
@@ -181,8 +223,12 @@ struct PackageArgs {
     runner_features: Vec<String>,
 
     /// Include the runner's default Cargo features instead of the lean default
-    #[arg(long)]
-    runner_default_features: bool,
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    runner_default_features: Option<bool>,
+
+    /// Ignore runner features from legacy package configuration
+    #[arg(long, conflicts_with = "runner_features")]
+    no_runner_features: bool,
 
     /// Optional desktop bundle output directory to keep; defaults to a temporary bundle
     #[arg(long)]
@@ -191,6 +237,14 @@ struct PackageArgs {
     /// Skip configured web build scripts before building the desktop bundle
     #[arg(long)]
     no_web_build: bool,
+
+    /// Run a named package.json script before packaging (repeatable)
+    #[arg(long = "build-script", value_name = "NAME")]
+    build_scripts: Vec<String>,
+
+    /// Package manager used to run build scripts
+    #[arg(long)]
+    package_manager: Option<String>,
 
     /// Client projection manifests (repeatable; overrides package configuration)
     #[arg(long = "projection-manifest", value_name = "PATH")]
@@ -266,23 +320,29 @@ impl AppArgs {
     }
 }
 
-#[derive(Args)]
-struct WindowArgs {
-    /// Window title
-    #[arg(long, default_value = "WebUI")]
-    title: String,
-
-    /// Initial window width
-    #[arg(long, default_value_t = 1200)]
-    width: u32,
-
-    /// Initial window height
-    #[arg(long, default_value_t = 800)]
-    height: u32,
-
-    /// Enable web inspector/devtools for the desktop webview
-    #[arg(long)]
-    devtools: bool,
+impl PackageArgs {
+    fn has_app_root_overrides(&self) -> bool {
+        self.theme.is_some()
+            || self.source.is_some()
+            || self.state.is_some()
+            || self.assets.is_some()
+            || self.entry.is_some()
+            || self.plugin.is_some()
+            || self.icon.is_some()
+            || self.app_id.is_some()
+            || self.app_name.is_some()
+            || self.app_version.is_some()
+            || self.publisher.is_some()
+            || self.window.is_set()
+            || self.runner_crate.is_some()
+            || !self.runner_features.is_empty()
+            || self.runner_default_features.is_some()
+            || self.no_runner_features
+            || self.bundle_out.is_some()
+            || self.no_web_build
+            || !self.build_scripts.is_empty()
+            || self.package_manager.is_some()
+    }
 }
 
 #[derive(Default)]
@@ -305,9 +365,6 @@ struct DesktopAppPackageConfig {
     publisher: Option<String>,
     title: Option<String>,
     window_options: Option<WindowOptions>,
-    width: Option<u32>,
-    height: Option<u32>,
-    devtools: Option<bool>,
     plugin: Option<webui::Plugin>,
 }
 
@@ -391,6 +448,7 @@ fn run_desktop(args: RunArgs) -> Result<()> {
     let app_dir = canonicalize_existing_dir(&args.app.app, "app")?;
     let state_file = optional_existing_file(args.state.as_ref(), "state")?;
     let asset_root = optional_existing_dir(args.servedir.as_ref(), "serve directory")?;
+    let window = args.window.resolve(WindowOptions::default())?;
 
     print_header("WebUI Desktop");
     print_field("App", &app_dir.display());
@@ -401,14 +459,11 @@ fn run_desktop(args: RunArgs) -> Result<()> {
     if let Some(assets) = &asset_root {
         print_field("ServeDir", &assets.display());
     }
-    print_field(
-        "Window",
-        &format!("{}x{}", args.window.width, args.window.height),
-    );
+    print_field("Window", &format!("{}x{}", window.width, window.height));
 
     #[cfg(target_os = "macos")]
     {
-        run_macos_from_source(args, app_dir, state_file, asset_root)
+        run_macos_from_source(args, app_dir, state_file, asset_root, window)
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -417,9 +472,10 @@ fn run_desktop(args: RunArgs) -> Result<()> {
     {
         config.state_file = state_file;
         config.asset_root = asset_root;
+        config.window = window.clone();
         let runtime =
             DesktopRuntime::from_source(config).with_context(|| "Desktop build failed")?;
-        run_webview(Arc::new(runtime), &args.window)
+        run_webview(Arc::new(runtime), window)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -437,6 +493,7 @@ fn run_macos_from_source(
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
     asset_root: Option<PathBuf>,
+    window: WindowOptions,
 ) -> Result<()> {
     let temp_root = std::env::temp_dir().join(format!(
         "webui-desktop-run-{}-{}",
@@ -457,17 +514,10 @@ fn run_macos_from_source(
         asset_root,
         token_css,
         app_id: "com.microsoft.webui.desktop.run".to_string(),
-        app_name: args.window.title.clone(),
+        app_name: window.title.clone(),
         version: "0.0.0".to_string(),
         publisher: "Microsoft".to_string(),
-        window: WindowOptions {
-            title: args.window.title,
-            width: args.window.width,
-            height: args.window.height,
-            maximized: false,
-            devtools: args.window.devtools,
-            ..WindowOptions::default()
-        },
+        window,
         icon_file: None,
         shell: DesktopShellConfig::default(),
         package_targets: Vec::new(),
@@ -500,6 +550,7 @@ fn build_bundle(args: BuildArgs) -> Result<()> {
     let asset_root = optional_existing_dir(args.servedir.as_ref(), "serve directory")?;
     let out_dir = expand_path(&args.out, "output")?;
     let token_css = resolve_theme_css(args.theme.as_deref(), &args.app, &app_dir)?;
+    let window = args.window.resolve(WindowOptions::default())?;
 
     print_header("WebUI Desktop Build");
     print_field("App", &app_dir.display());
@@ -516,14 +567,7 @@ fn build_bundle(args: BuildArgs) -> Result<()> {
         app_name: args.app_name,
         version: args.app_version,
         publisher: args.publisher,
-        window: WindowOptions {
-            title: args.window.title,
-            width: args.window.width,
-            height: args.window.height,
-            maximized: false,
-            devtools: args.window.devtools,
-            ..WindowOptions::default()
-        },
+        window,
         icon_file: optional_existing_file(args.icon.as_ref(), "icon")?,
         shell: DesktopShellConfig::default(),
         package_targets: Vec::new(),
@@ -567,6 +611,11 @@ fn package_bundle(args: PackageArgs) -> Result<()> {
                 "--projection-manifest applies when compiling an app root; rebuild the desktop bundle with these manifests before packaging it"
             ));
         }
+        if args.has_app_root_overrides() {
+            return Err(anyhow::anyhow!(
+                "app configuration flags apply only when packaging an app root; help: rebuild the desktop bundle with these options, then package the bundle"
+            ));
+        }
         let bundle_dir = canonicalize_existing_dir(&args.bundle, "bundle")?;
         package_existing_bundle(args, bundle_dir)
     } else {
@@ -607,7 +656,13 @@ fn package_existing_bundle(args: PackageArgs, bundle_dir: PathBuf) -> Result<()>
 }
 
 fn package_app_root(args: PackageArgs, app_root: PathBuf) -> Result<()> {
-    let config = read_desktop_app_config(&app_root)?;
+    let mut config = read_desktop_app_config(&app_root)?;
+    if !args.build_scripts.is_empty() {
+        config.build_scripts = Some(args.build_scripts.clone());
+    }
+    if let Some(manager) = &args.package_manager {
+        config.package_manager = Some(manager.clone());
+    }
     if !args.no_web_build {
         run_web_build_scripts(&app_root, &config)?;
     }
@@ -675,24 +730,34 @@ fn create_app_package_plan(
     config: DesktopAppPackageConfig,
     temp_root: &Path,
 ) -> Result<AppPackagePlan> {
-    let source_dir = config_existing_dir(&app_root, config.source.as_ref(), "src", "app source")?;
+    let source_dir = match args.source.as_ref() {
+        Some(source) => canonicalize_existing_dir(source, "app source")?,
+        None => config_existing_dir(&app_root, config.source.as_ref(), "src", "app source")?,
+    };
     let projection_manifests = resolve_package_projection_manifests(args, &config, &app_root)?;
-    let state_file =
-        config_optional_file(&app_root, config.state.as_ref(), "data/state.json", "state")?;
-    let assets = config_optional_dir(&app_root, config.assets.as_ref(), "dist", "assets")?;
-    let icon_file = config_optional_file(
-        &app_root,
-        args.icon.as_ref().or(config.icon.as_ref()),
-        "desktop/icon.png",
-        "icon",
-    )?;
+    let state_file = match args.state.as_ref() {
+        Some(path) => optional_existing_file(Some(path), "state")?,
+        None => config_optional_file(&app_root, config.state.as_ref(), "data/state.json", "state")?,
+    };
+    let assets = match args.assets.as_ref() {
+        Some(path) => optional_existing_dir(Some(path), "assets")?,
+        None => config_optional_dir(&app_root, config.assets.as_ref(), "dist", "assets")?,
+    };
+    let icon_file = match args.icon.as_ref() {
+        Some(path) => optional_existing_file(Some(path), "icon")?,
+        None => config_optional_file(&app_root, config.icon.as_ref(), "desktop/icon.png", "icon")?,
+    };
     let runner_exe = resolve_package_runner(args, &app_root, &config)?;
     let bundle_dir = match args.bundle_out.as_ref() {
         Some(path) => expand_path(path, "bundle output")?,
         None => temp_root.join("bundle"),
     };
-    let entry = config.entry.unwrap_or_else(|| "index.html".to_string());
-    let plugin = config.plugin;
+    let entry = args
+        .entry
+        .clone()
+        .or(config.entry)
+        .unwrap_or_else(|| "index.html".to_string());
+    let plugin = args.plugin.or(config.plugin);
     let generated_css = generated_css_names(&source_dir, &entry, plugin)?;
     let staged_assets = stage_app_assets(
         assets.as_ref(),
@@ -711,25 +776,19 @@ fn create_app_package_plan(
         )?),
         None => None,
     };
-    let app_name = config
+    let app_name = args
         .app_name
         .clone()
+        .or(config.app_name)
         .unwrap_or_else(|| title_from_path(&app_root));
-    let app_id = config
+    let app_id = args
         .app_id
         .clone()
+        .or(config.app_id)
         .unwrap_or_else(|| default_app_id(&app_name));
-    let mut window = config.window_options.clone().unwrap_or_default();
-    window.title = config.title.clone().unwrap_or(app_name.clone());
-    if let Some(width) = config.width {
-        window.width = width;
-    }
-    if let Some(height) = config.height {
-        window.height = height;
-    }
-    if let Some(devtools) = config.devtools {
-        window.devtools = devtools;
-    }
+    let mut window = config.window_options.unwrap_or_default();
+    window.title = config.title.unwrap_or_else(|| app_name.clone());
+    let window = args.window.resolve(window)?;
 
     Ok(AppPackagePlan {
         app_root,
@@ -744,8 +803,16 @@ fn create_app_package_plan(
         token_css,
         app_id,
         app_name,
-        app_version: config.app_version.unwrap_or_else(|| "0.0.0".to_string()),
-        publisher: config.publisher.unwrap_or_else(|| "Microsoft".to_string()),
+        app_version: args
+            .app_version
+            .clone()
+            .or(config.app_version)
+            .unwrap_or_else(|| "0.0.0".to_string()),
+        publisher: args
+            .publisher
+            .clone()
+            .or(config.publisher)
+            .unwrap_or_else(|| "Microsoft".to_string()),
         window,
         plugin,
     })
@@ -766,61 +833,56 @@ fn read_desktop_app_config(app_root: &Path) -> Result<DesktopAppPackageConfig> {
         ..DesktopAppPackageConfig::default()
     };
 
-    let Some(desktop) = package
-        .get("webuiDesktop")
-        .and_then(serde_json::Value::as_object)
-    else {
+    let Some(desktop) = package.get("webuiDesktop") else {
         config.build_scripts = default_build_scripts(&package);
         return Ok(config);
     };
+    let desktop = desktop.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "webuiDesktop in {} must be an object; help: remove it and pass desktop package flags, or use an object",
+            package_path.display()
+        )
+    })?;
 
-    config.entry = string_field_in(desktop, "entry");
-    config.source = path_field(desktop, "app").or_else(|| path_field(desktop, "source"));
-    config.state = path_field(desktop, "state");
-    config.assets = path_field(desktop, "assets");
-    config.projection_manifests = desktop
-        .get("projectionManifests")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .with_context(|| "webuiDesktop.projectionManifests must be an array of file paths")?
-        .unwrap_or_default();
-    config.icon = path_field(desktop, "icon");
-    config.theme = string_field_in(desktop, "theme");
-    config.runner_crate = string_field_in(desktop, "runnerCrate");
-    config.runner_features = desktop
-        .get("runnerFeatures")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .with_context(|| "webuiDesktop.runnerFeatures must be an array of Cargo feature names")?
-        .unwrap_or_default();
-    config.runner_default_features = desktop
-        .get("runnerDefaultFeatures")
-        .map(|value| {
-            value.as_bool().ok_or_else(|| {
-                anyhow::anyhow!("webuiDesktop.runnerDefaultFeatures must be a boolean")
-            })
-        })
-        .transpose()?
-        .unwrap_or(false);
-    config.package_manager = string_field_in(desktop, "packageManager");
+    config.entry = desktop_field(desktop, "entry")?;
+    config.source = desktop_field::<PathBuf>(desktop, "app")?.or(desktop_field(desktop, "source")?);
+    config.state = desktop_field(desktop, "state")?;
+    config.assets = desktop_field(desktop, "assets")?;
+    config.projection_manifests =
+        desktop_field(desktop, "projectionManifests")?.unwrap_or_default();
+    config.icon = desktop_field(desktop, "icon")?;
+    config.theme = desktop_field(desktop, "theme")?;
+    config.runner_crate = desktop_field(desktop, "runnerCrate")?;
+    config.runner_features = desktop_field(desktop, "runnerFeatures")?.unwrap_or_default();
+    config.runner_default_features =
+        desktop_field(desktop, "runnerDefaultFeatures")?.unwrap_or(false);
+    config.package_manager = desktop_field(desktop, "packageManager")?;
     config.build_scripts =
-        string_array_field(desktop, "buildScripts").or_else(|| default_build_scripts(&package));
-    config.app_id = string_field_in(desktop, "appId");
-    config.app_name = string_field_in(desktop, "appName").or(config.app_name);
-    config.app_version = string_field_in(desktop, "appVersion").or(config.app_version);
-    config.publisher = string_field_in(desktop, "publisher");
-    config.title = string_field_in(desktop, "title");
+        desktop_field(desktop, "buildScripts")?.or_else(|| default_build_scripts(&package));
+    config.app_id = desktop_field(desktop, "appId")?;
+    config.app_name = desktop_field(desktop, "appName")?.or(config.app_name);
+    config.app_version = desktop_field(desktop, "appVersion")?.or(config.app_version);
+    config.publisher = desktop_field(desktop, "publisher")?;
+    config.title = desktop_field(desktop, "title")?;
     config.window_options = Some(
         serde_json::from_value(serde_json::Value::Object(desktop.clone()))
             .with_context(|| "Invalid webuiDesktop window configuration")?,
     );
-    config.width = u32_field(desktop, "width")?;
-    config.height = u32_field(desktop, "height")?;
-    config.devtools = desktop.get("devtools").and_then(serde_json::Value::as_bool);
-    config.plugin = string_field_in(desktop, "plugin")
+    config.plugin = desktop_field::<String>(desktop, "plugin")?
         .map(|raw| parse_plugin_value(&raw))
         .transpose()?;
     Ok(config)
+}
+
+fn desktop_field<T: DeserializeOwned>(
+    desktop: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<T>> {
+    desktop
+        .get(key)
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .with_context(|| format!("invalid webuiDesktop.{key}; help: correct the field or pass its desktop package flag"))
 }
 
 fn resolve_package_projection_manifests(
@@ -910,15 +972,18 @@ fn package_runner_options(
     args: &PackageArgs,
     config: &DesktopAppPackageConfig,
 ) -> runner_build::RunnerBuildOptions {
-    let mut features = config.runner_features.clone();
-    for feature in &args.runner_features {
-        if !features.contains(feature) {
-            features.push(feature.clone());
-        }
-    }
+    let features = if args.no_runner_features {
+        Vec::new()
+    } else if args.runner_features.is_empty() {
+        config.runner_features.clone()
+    } else {
+        args.runner_features.clone()
+    };
     runner_build::RunnerBuildOptions {
         release: args.release || !args.debug,
-        default_features: args.runner_default_features || config.runner_default_features,
+        default_features: args
+            .runner_default_features
+            .unwrap_or(config.runner_default_features),
         features,
     }
 }
@@ -1211,40 +1276,6 @@ fn string_field(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn string_field_in(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
-    map.get(key)
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-}
-
-fn path_field(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<PathBuf> {
-    string_field_in(map, key).map(PathBuf::from)
-}
-
-fn string_array_field(
-    map: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<Vec<String>> {
-    map.get(key)
-        .and_then(serde_json::Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-}
-
-fn u32_field(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<Option<u32>> {
-    let Some(value) = map.get(key).and_then(serde_json::Value::as_u64) else {
-        return Ok(None);
-    };
-    u32::try_from(value)
-        .map(Some)
-        .with_context(|| format!("desktop config field '{key}' is too large for u32"))
-}
-
 fn default_build_scripts(package: &serde_json::Value) -> Option<Vec<String>> {
     let scripts = package
         .get("scripts")
@@ -1324,24 +1355,13 @@ fn parse_package_targets(raw: &str) -> Result<Vec<DesktopPackageTarget>> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_webview(runtime: Arc<DesktopRuntime>, window: &WindowArgs) -> Result<()> {
-    webui_desktop::run_runtime(runtime, window_options(window)).map_err(Into::into)
+fn run_webview(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
+    webui_desktop::run_runtime(runtime, window).map_err(Into::into)
 }
 
 #[cfg(target_os = "windows")]
-fn run_webview(runtime: Arc<DesktopRuntime>, window: &WindowArgs) -> Result<()> {
-    webui_desktop::run_runtime(runtime, window_options(window)).map_err(Into::into)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn window_options(window: &WindowArgs) -> WindowOptions {
-    WindowOptions {
-        title: window.title.clone(),
-        width: window.width,
-        height: window.height,
-        devtools: window.devtools,
-        ..WindowOptions::default()
-    }
+fn run_webview(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
+    webui_desktop::run_runtime(runtime, window).map_err(Into::into)
 }
 
 fn canonicalize_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
@@ -1461,6 +1481,7 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use webui_desktop::{CaptionButtonSize, TitlebarStyle, WindowEffect};
 
     #[test]
     fn run_rejects_unimplemented_watch_instead_of_advertising_it() {
@@ -1634,9 +1655,10 @@ mod tests {
             config.app_id.as_deref(),
             Some("com.microsoft.webui.contactbook")
         );
-        assert_eq!(config.width, Some(1200));
-        assert_eq!(config.height, Some(800));
-        assert_eq!(config.devtools, Some(true));
+        let window = config.window_options.unwrap();
+        assert_eq!(window.width, 1200);
+        assert_eq!(window.height, 800);
+        assert!(window.devtools);
         assert_eq!(
             config.build_scripts.as_deref(),
             Some(["build:deps".to_string(), "build:client".to_string()].as_slice())
@@ -1651,10 +1673,222 @@ mod tests {
             r#"{"webuiDesktop":{"runnerFeatures":"tray"}}"#,
             r#"{"webuiDesktop":{"runnerFeatures":[1]}}"#,
             r#"{"webuiDesktop":{"runnerDefaultFeatures":"true"}}"#,
+            r#"{"webuiDesktop":{"rememberState":"true"}}"#,
+            r#"{"webuiDesktop":{"appId":42}}"#,
+            r#"{"webuiDesktop":{"buildScripts":[true]}}"#,
+            r#"{"webuiDesktop":false}"#,
         ] {
             write_file(dir.path(), "package.json", content);
             assert!(read_desktop_app_config(dir.path()).is_err());
         }
+    }
+
+    #[test]
+    fn window_flags_resolve_identically_for_run_build_and_package() {
+        let cli = Cli::try_parse_from(["webui-desktop", "run", "--devtools", "src"]).unwrap();
+        let Some(Commands::Run(run)) = cli.command else {
+            panic!("expected desktop run command");
+        };
+        assert_eq!(run.app.app, PathBuf::from("src"));
+        assert!(
+            run.window
+                .resolve(WindowOptions::default())
+                .unwrap()
+                .devtools
+        );
+        let flags = [
+            "--title",
+            "Customized",
+            "--width",
+            "900",
+            "--height",
+            "700",
+            "--min-width",
+            "400",
+            "--min-height",
+            "300",
+            "--max-width",
+            "1800",
+            "--max-height",
+            "1200",
+            "--resizable=false",
+            "--maximized",
+            "--fullscreen=false",
+            "--always-on-top",
+            "--center=false",
+            "--background",
+            "#123456",
+            "--titlebar-style",
+            "overlay",
+            "--titlebar-height",
+            "52",
+            "--caption-button-size",
+            "tall",
+            "--effect",
+            "vibrancy",
+            "--remember-state",
+            "--devtools=false",
+        ];
+        for prefix in [
+            vec!["webui-desktop", "run", "src"],
+            vec!["webui-desktop", "build", "src", "--out", "bundle"],
+            vec!["webui-desktop", "package", "app", "--out", "packages"],
+        ] {
+            let cli = Cli::try_parse_from(prefix.into_iter().chain(flags)).unwrap();
+            let overrides = match cli.command.unwrap() {
+                Commands::Run(args) => args.window,
+                Commands::Build(args) => args.window,
+                Commands::Package(args) => args.window,
+                _ => panic!("expected desktop command"),
+            };
+            let window = overrides.resolve(WindowOptions::default()).unwrap();
+            assert_eq!(window.title, "Customized");
+            assert_eq!((window.width, window.height), (900, 700));
+            assert_eq!(
+                (window.min_width, window.min_height),
+                (Some(400), Some(300))
+            );
+            assert_eq!(
+                (window.max_width, window.max_height),
+                (Some(1800), Some(1200))
+            );
+            assert!(!window.resizable);
+            assert!(window.maximized);
+            assert!(!window.fullscreen);
+            assert!(window.always_on_top);
+            assert!(!window.center);
+            assert_eq!(window.background.unwrap().to_string(), "#123456");
+            assert_eq!(window.titlebar, TitlebarStyle::Overlay { height: 52 });
+            assert_eq!(window.caption_button_size, CaptionButtonSize::Tall);
+            assert_eq!(window.effect, WindowEffect::Vibrancy);
+            assert!(window.remember_state);
+            assert!(!window.devtools);
+        }
+        let error = package_args(&["--titlebar-height", "48"])
+            .window
+            .resolve(WindowOptions::default())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("--titlebar-style overlay"));
+    }
+
+    #[test]
+    fn app_root_packages_cli_configuration_without_webui_desktop_metadata() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "app/package.json",
+            r#"{"name":"cli-example","version":"0.1.0"}"#,
+        );
+        write_file(
+            dir.path(),
+            "app/src/index.html",
+            "<!doctype html><html><head></head><body>Desktop</body></html>",
+        );
+        write_file(dir.path(), "app/state.json", "{}");
+        write_file(dir.path(), "app/dist/app.js", "export {};");
+        write_file(dir.path(), "app/icon.icns", "icns");
+        let app = dir.path().join("app");
+        let source = app.join("src");
+        let state = app.join("state.json");
+        let assets = app.join("dist");
+        let icon = app.join("icon.icns");
+        let mut args = package_args(&[
+            "--target",
+            "macos-app",
+            "--source",
+            source.to_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "--assets",
+            assets.to_str().unwrap(),
+            "--icon",
+            icon.to_str().unwrap(),
+            "--entry",
+            "index.html",
+            "--app-id",
+            "com.example.cli",
+            "--app-name",
+            "CLI Desktop",
+            "--app-version",
+            "2.3.4",
+            "--publisher",
+            "Example",
+            "--title",
+            "CLI Window",
+            "--width",
+            "960",
+            "--titlebar-style",
+            "overlay",
+            "--titlebar-height",
+            "48",
+            "--remember-state",
+            "--devtools",
+            "--no-web-build",
+        ]);
+        args.bundle = app;
+        args.out = dir.path().join("packages");
+        args.bundle_out = Some(dir.path().join("bundle"));
+        args.runner = Some(std::env::current_exe().unwrap());
+        package_bundle(args).unwrap();
+
+        let manifest = webui_desktop::DesktopBundleManifest::load(
+            &dir.path().join("bundle/manifest.webui-desktop.json"),
+        )
+        .unwrap();
+        assert_eq!(manifest.app_id, "com.example.cli");
+        assert_eq!(manifest.app_name, "CLI Desktop");
+        assert_eq!(manifest.version, "2.3.4");
+        assert_eq!(manifest.publisher, "Example");
+        assert_eq!(manifest.window.title, "CLI Window");
+        assert_eq!(manifest.window.width, 960);
+        assert!(manifest.window.remember_state);
+        assert!(manifest.window.devtools);
+        assert_eq!(
+            manifest.window.titlebar,
+            TitlebarStyle::Overlay { height: 48 }
+        );
+        assert!(manifest.shell.icon_path.is_some());
+        let contents = dir.path().join("packages/CLI-Desktop.app/Contents");
+        assert!(contents.join("Resources/AppIcon.icns").is_file());
+        let plist = fs::read_to_string(contents.join("Info.plist")).unwrap();
+        assert!(plist.contains("com.example.cli"));
+        assert!(contents.join("Resources/webui/assets/app.js").is_file());
+    }
+
+    #[test]
+    fn package_flags_override_legacy_window_and_runner_settings() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            "package.json",
+            r#"{"webuiDesktop":{"title":"Legacy","devtools":true,"rememberState":true,"minWidth":320,"runnerFeatures":["tray"],"runnerDefaultFeatures":true}}"#,
+        );
+        let config = read_desktop_app_config(dir.path()).unwrap();
+        let args = package_args(&[
+            "--title",
+            "New",
+            "--devtools=false",
+            "--remember-state=false",
+            "--min-width",
+            "480",
+            "--runner-features",
+            "native-dialogs",
+            "--runner-default-features=false",
+        ]);
+        let mut window = config.window_options.clone().unwrap();
+        window.title = config.title.clone().unwrap();
+        let window = args.window.resolve(window).unwrap();
+        assert_eq!(window.title, "New");
+        assert!(!window.devtools);
+        assert!(!window.remember_state);
+        assert_eq!(window.min_width, Some(480));
+        let runner = package_runner_options(&args, &config);
+        assert_eq!(runner.features, ["native-dialogs"]);
+        assert!(!runner.default_features);
+        let without_features =
+            package_runner_options(&package_args(&["--no-runner-features"]), &config);
+        assert!(without_features.features.is_empty());
     }
 
     #[test]
@@ -1737,6 +1971,10 @@ mod tests {
         args.bundle = dir.path().to_path_buf();
         let error = package_bundle(args).unwrap_err();
         assert!(error.to_string().contains("--projection-manifest"));
+        let mut args = package_args(&["--app-name", "New"]);
+        args.bundle = dir.path().to_path_buf();
+        let error = package_bundle(args).unwrap_err();
+        assert!(error.to_string().contains("app root"));
     }
 
     #[test]

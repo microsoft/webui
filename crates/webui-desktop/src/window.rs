@@ -20,16 +20,16 @@ pub struct WindowOptions {
     #[serde(default = "default_height")]
     pub height: u32,
     /// Minimum width, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "minWidth")]
     pub min_width: Option<u32>,
     /// Minimum height, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "minHeight")]
     pub min_height: Option<u32>,
     /// Maximum width, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "maxWidth")]
     pub max_width: Option<u32>,
     /// Maximum height, when supported by the native backend.
-    #[serde(default)]
+    #[serde(default, alias = "maxHeight")]
     pub max_height: Option<u32>,
     /// Whether the user can resize the window.
     #[serde(default = "default_resizable")]
@@ -41,7 +41,7 @@ pub struct WindowOptions {
     #[serde(default)]
     pub fullscreen: bool,
     /// Whether to keep the window above ordinary windows.
-    #[serde(default)]
+    #[serde(default, alias = "alwaysOnTop")]
     pub always_on_top: bool,
     /// Whether the native backend should center the initial window.
     #[serde(default = "default_center")]
@@ -64,7 +64,7 @@ pub struct WindowOptions {
     #[serde(default)]
     pub effect: WindowEffect,
     /// Whether to persist validated window geometry between launches.
-    #[serde(default)]
+    #[serde(default, alias = "rememberState")]
     pub remember_state: bool,
     /// Whether to enable web inspector/devtools for development builds.
     #[serde(default)]
@@ -534,5 +534,22 @@ mod tests {
             .unwrap()
             .get("caption_button_size")
             .is_none());
+    }
+
+    #[test]
+    fn app_config_camel_case_window_settings_are_not_discarded() {
+        let options: WindowOptions = serde_json::from_str(
+            r#"{"minWidth":480,"minHeight":320,"maxWidth":1600,"maxHeight":1000,"alwaysOnTop":true,"rememberState":true}"#,
+        )
+        .unwrap();
+        assert_eq!(options.min_width, Some(480));
+        assert_eq!(options.min_height, Some(320));
+        assert_eq!(options.max_width, Some(1600));
+        assert_eq!(options.max_height, Some(1000));
+        assert!(options.always_on_top);
+        assert!(options.remember_state);
+        let manifest = serde_json::to_value(&options).unwrap();
+        assert_eq!(manifest["min_width"], 480);
+        assert_eq!(manifest["remember_state"], true);
     }
 }

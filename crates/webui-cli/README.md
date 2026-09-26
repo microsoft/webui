@@ -151,10 +151,12 @@ webui desktop package ./desktop-bundle --target macos-app --out ./packages \
 ```
 
 The Rust packager currently writes runnable macOS `.app` bundles and portable
-folder layouts. For app roots, the sidecar reads `webuiDesktop` from
-`package.json`, runs configured web build scripts, builds the app-specific Cargo
-runner crate, stages non-generated assets, builds the bundle, and packages the
-runner-backed app. Use `--runner` for lower-level existing-bundle flows with
+folder layouts. For app roots, supply source, assets, build scripts, identity,
+window, and runner settings as `webui desktop package` flags; legacy
+`webuiDesktop` package metadata remains supported and explicit flags override it.
+The sidecar builds the app-specific Cargo runner crate, stages non-generated
+assets, builds the bundle, and packages the runner-backed app. Use `--runner`
+for lower-level existing-bundle flows with
 route providers or typed IPC commands; omitting it packages the generic sidecar
 for file-backed/static seed-state bundles. Installer targets return actionable
 missing-tool diagnostics until the platform packagers are enabled.

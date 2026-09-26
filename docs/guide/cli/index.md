@@ -582,9 +582,9 @@ development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
 ```bash
 webui desktop init [APP_ROOT] [--force]
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
-webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]...
-webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]...
-webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--debug] [--runner-features <FEATURES>] [--runner-default-features] [--bundle-out <DIR>] [--no-web-build] [--projection-manifest <PATH>]...
+webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]... [WINDOW_OPTIONS]
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [WINDOW_OPTIONS]
+webui desktop package <APP_ROOT|BUNDLE_DIR> --out <OUT_DIR> [--target <TARGET>] [APP_OPTIONS] [WINDOW_OPTIONS]
 ```
 
 `webui desktop init` creates a minimal `src/index.html`, `package.json`, and
@@ -610,25 +610,47 @@ is not supported.
 | `--app-name <NAME>` | Human-readable app name | `WebUI App` |
 | `--app-version <VERSION>` | App version stored in the bundle manifest | `0.0.0` |
 | `--publisher <NAME>` | Publisher stored in the bundle manifest | `Microsoft` |
-| `--title <TITLE>` | Default desktop window title | `WebUI` |
-| `--width <PX>` | Default desktop window width | `1200` |
-| `--height <PX>` | Default desktop window height | `800` |
-| `--devtools` | Enable web inspector/devtools for the packaged desktop webview | `false` |
-| `--theme <VALUE>` | Theme override for app-root packaging | `webuiDesktop.theme` |
-| `--icon <FILE>` | App icon override for app-root packaging | `webuiDesktop.icon` |
-| `--runner <PATH>` | App-specific runner executable for existing bundle packaging | sidecar runner |
+| `--title <TITLE>` | Desktop window title | `WebUI` for run/build; app name for app-root package |
+| `--width <PX>`, `--height <PX>` | Initial window dimensions | `1200`, `800` |
+| `--min-width <PX>`, `--min-height <PX>`, `--max-width <PX>`, `--max-height <PX>` | Window size limits | none |
+| `--resizable[=true\|false]`, `--maximized[=true\|false]`, `--fullscreen[=true\|false]`, `--always-on-top[=true\|false]`, `--center[=true\|false]` | Window behavior. A bare flag means `true`. | `true`, `false`, `false`, `false`, `true` |
+| `--background <#rrggbb\|#rrggbbaa>` | Pre-paint window color | none |
+| `--titlebar-style <native\|hidden-inset\|overlay\|none>` | Native titlebar presentation | `native` |
+| `--titlebar-height <PX>` | Overlay application band height; requires overlay style | `48` for explicit overlay |
+| `--caption-button-size <standard\|tall>` | Windows caption button size | `standard` |
+| `--effect <none\|vibrancy\|acrylic\|mica\|tabbed>` | Platform effect (subject to native support) | `none` |
+| `--remember-state[=true\|false]`, `--devtools[=true\|false]` | Remember geometry and enable the inspector. A bare flag means `true`. | `false`, `false` |
+
+`WINDOW_OPTIONS` above are available on `run`, `build`, and app-root `package`.
+Rust hosts use the same typed `WindowOptions` model, including `TitlebarStyle`,
+`CaptionButtonSize`, `WindowEffect`, and `Rgba`. App-root-only flags are:
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--source <DIR>` | App source directory (`webuiDesktop.app` or `source`) | `<APP_ROOT>/src` |
+| `--state <FILE>`, `--assets <DIR>` | Startup state and static assets (`--servedir` aliases `--assets`) | `<APP_ROOT>/data/state.json`, `<APP_ROOT>/dist` if present |
+| `--entry <FILE>`, `--plugin <NAME>` | Entry template and framework plugin | `index.html`, none |
+| `--theme <VALUE>`, `--icon <FILE>` | Theme and app icon | none; `<APP_ROOT>/desktop/icon.png` if present |
+| `--app-id <ID>`, `--app-name <NAME>`, `--app-version <VERSION>`, `--publisher <NAME>` | Bundle identity and publisher | derived from app name, package name, package version, `Microsoft` |
+| `--runner <PATH>` | Prebuilt app-specific runner; skips Cargo build for app roots | built app runner for app roots, sidecar for existing bundles |
 | `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
 | `--release` | Explicitly select the default optimized runner build | optimized by default |
 | `--debug` | Build a debug runner instead of an optimized release runner | `false` |
-| `--runner-features <FEATURES>` | Additional comma-separated Cargo features for the app-specific runner | `webuiDesktop.runnerFeatures` |
-| `--runner-default-features` | Include the runner's default Cargo features | `webuiDesktop.runnerDefaultFeatures`, otherwise `false` |
+| `--runner-features <FEATURES>` | Comma-separated Cargo features for the app runner (replaces legacy list) | legacy list or none |
+| `--no-runner-features` | Discard legacy runner features | `false` |
+| `--runner-default-features[=true\|false]` | Include the runner's default Cargo features | legacy setting or `false` |
+| `--build-script <NAME>` | Package script to run first, repeatable; replaces legacy script list | legacy list or detected `build:deps` and `build:client` scripts |
+| `--package-manager <COMMAND>` | Package manager used for build scripts | `pnpm` |
 | `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
-| `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
-| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | `webuiDesktop.projectionManifests` for app-root packaging, otherwise none |
+| `--no-web-build` | Skip web build scripts | `false` |
+| `--projection-manifest <PATH>` | Client projection metadata for `run`, `build`, or app-root packaging. Repeatable; requires the WebUI plugin. | legacy list for app-root packaging, otherwise none |
 
-Package configuration manifest paths are relative to the app root; CLI paths are
-relative to the working directory. Explicit CLI manifests replace the configured
-list. Run the client build first: missing, stale, or incomplete metadata is a
+CLI file paths are relative to the working directory. Legacy
+`package.json` `webuiDesktop` paths remain relative to the app root.
+Explicit CLI values override legacy settings; repeatable build scripts,
+runner features, and projection manifests replace legacy lists. Existing
+desktop bundles are immutable: app-root flags are rejected for them, rather
+than silently ignored. Run the client build first: missing, stale, or incomplete metadata is a
 build error, not a silent fallback. Without supplied manifests, unknown component
 requirements retain full state for correctness. Existing bundles must be rebuilt
 to change their projection metadata; manifest flags cannot modify them during
@@ -661,18 +683,17 @@ Package a Rust-first desktop app root in one command:
 webui desktop package ./my-app --target macos-app --out ./packages
 ```
 
-For app roots, `webui desktop package` reads `webuiDesktop` from `package.json`,
-runs configured web build scripts, builds the app-specific Cargo runner crate
+For app roots, `webui desktop package` accepts explicit flags without
+`webuiDesktop` metadata. Legacy package configuration remains supported.
+The command runs configured web build scripts, builds the app-specific Cargo runner crate
 with `--release --no-default-features`,
 stages non-generated assets, builds the bundle, and packages the runner-backed
-app. Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
-Use `--debug` for a debug package. To include optional application capabilities,
-set `webuiDesktop.runnerFeatures` to an array of Cargo feature names, or add
-`--runner-features tray,native-dialogs` if your runner declares those features.
-Use `runnerDefaultFeatures: true` or `--runner-default-features` only when the
+app. Use `--debug` for a debug package. To include optional application
+capabilities, pass `--runner-features tray,native-dialogs` if your runner
+declares those features. Use `--runner-default-features` only when the
 runner intentionally needs its default features in production. These build
 options do not change a prebuilt executable supplied with `--runner`.
-Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
+Pass `--icon` to supply an app icon; macOS packages use `.icns` icons
 as `CFBundleIconFile`, and portable layouts copy the icon into resources.
 Existing bundle packaging remains available:
 
