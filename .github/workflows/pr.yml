@@ -265,6 +265,7 @@ jobs:
         with:
           skip-build: 'true'
           rust-targets: ${{ matrix.platform.target }}
+          install-linux-desktop-dependencies: ${{ matrix.platform.target != 'aarch64-unknown-linux-gnu' }}
 
       - name: Build and export native package
         if: runner.os != 'Windows'

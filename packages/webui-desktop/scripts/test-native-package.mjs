@@ -33,9 +33,9 @@ try {
   const tarball = path.join(output, `microsoft-${packageName}-${manifest.version}.tgz`);
   const listed = spawnSync('tar', ['-tvzf', tarball], { encoding: 'utf8' });
   assert.equal(listed.status, 0, `${listed.stdout}\n${listed.stderr}`);
-  const lines = listed.stdout.split('\n');
+  const lines = listed.stdout.split('\n').map(line => line.trimEnd());
   const binaryLine = lines.find(line => line.endsWith(`package/bin/${binName}`));
-  assert(binaryLine, `packed ${packageName} is missing ${binName}`);
+  assert(binaryLine, `packed ${packageName} is missing ${binName}:\n${listed.stdout}`);
   if (binName === 'webui-desktop') {
     assert.match(binaryLine, /^-rwx/, `packed ${binName} is not executable`);
   } else {

@@ -15,6 +15,12 @@ elif [[ "$target" == aarch64-unknown-linux-gnu ]]; then
     echo "Linux ARM64 desktop cross-build requires an Ubuntu agent with a release codename" >&2
     return 1
   fi
+  for package in libgtk-4-dev libwebkitgtk-6.0-dev libpango1.0-dev; do
+    if dpkg-query -W -f='${Status}' "${package}:amd64" 2>/dev/null | grep -q 'install ok installed'; then
+      echo "Linux ARM64 desktop cross-build cannot co-install ${package}:amd64 with target development packages" >&2
+      return 1
+    fi
+  done
   sudo dpkg --add-architecture arm64
   sources=$(mktemp --suffix=.sources)
   cat > "$sources" <<EOF
