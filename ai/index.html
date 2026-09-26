@@ -757,27 +757,41 @@ component authors a sole top-level <code>&lt;template shadowrootmode="open"&gt;<
 unwrapped even when the build fallback is Shadow.</li></ul><h2 id="build-and-run">Build and run <a class="header-anchor" href="/webui/ai/#build-and-run" aria-label="Link to Build and run">#</a></h2><p>For a desktop app, start with zero Rust:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop run ./src
 </code></pre></code-block><p>Restart desktop <code>run</code> after source changes; desktop <code>--watch</code> is not supported.</p><p>Write a host crate only when you need dynamic route state or IPC. To generate a
 working progressive scaffold, use <code>webui desktop init ./my-app</code>; it creates the
-entry template, package metadata, and a packaged-vs-source Rust runner. Existing
+entry template, package metadata, <code>webui-desktop.json</code>, and a packaged-vs-source
+Rust runner that shares the same app ID and window title. Existing
 files are protected unless <code>--force</code> is passed. Rust apps depend on
 <code>microsoft-webui-desktop</code> with <code>native</code> enabled and forward an opt-in <code>source</code>
 feature to <code>microsoft-webui-desktop/source</code>. There is no separate runner or
 compiler dependency. <code>webui desktop package</code> builds
 optimized runners without default features automatically. Select optional app
-capabilities with <code>webuiDesktop.runnerFeatures</code>; use <code>--debug</code> only for a debug
+capabilities with <code>--runner-features</code>; use <code>--debug</code> only for a debug
 package. Package targets are <code>macos-app</code>, <code>windows-portable</code>, and
 <code>linux-portable</code>; <code>all</code> writes all three layouts without cross-compiling the
-runner. Installer generation and signing are not supported. The
+runner. App-root packaging accepts <code>--source</code>, <code>--state</code>, <code>--assets</code>,
+<code>--build-script</code>, identity, and window flags without <code>webuiDesktop</code> in
+<code>package.json</code>. Put persistent package settings in app-root
+<code>webui-desktop.json</code> instead; explicit flags override them and legacy
+<code>webuiDesktop</code> is accepted only when the new file is absent. See the
+<a href="/webui/guide/cli/#webui-desktop">CLI reference</a>.
+Installer generation and signing are not supported. The
 runtime-only build continues to support all <code>DesktopRuntime::from_bundle*</code>
 entry points. See the <a href="/webui/guide/concepts/desktop.md">desktop SDK guide</a> for
 source/bundle construction, window customization, and scoped event subscriptions.
+Use <code>frame.window_handle().set_title(...)</code> or <code>set_background(Rgba &#123; ... &#125;)</code>
+for live presentation changes from Rust; these do not change the stable app ID
+or packaged defaults. The background applies to the native surface, current
+document root, and later full-page renders. Width, height, titlebar style,
+background, and the remaining initial window options can all be set through
+<code>DesktopAppBuilder::window(WindowOptions &#123; ... &#125;)</code> before <code>build()</code>. Live size
+changes use <code>set_size(width, height)</code>; titlebar style remains startup-only.
 On macOS, bundle <code>shell.icon_path</code> must stay inside the bundle without <code>..</code> or
 symlink escapes; source hosts can set an absolute path for Dock artwork.
 <code>titlebar.height</code> sizes the application band; Windows caption buttons default
-to 32 DIPs independently. Set <code>webuiDesktop.captionButtonSize: "tall"</code> for
+to 32 DIPs independently. Pass <code>--caption-button-size tall</code> for
 48-DIP buttons without changing the application band height.
 For custom headers, mark the drag surface <code>webui-drag</code> and interactive children
 <code>webui-no-drag</code>; a double-click on the drag surface toggles maximize/restore.</p><p>Pass the client bundler's <code>--projection-manifest &lt;PATH&gt;</code> to desktop <code>run</code>/<code>build</code>,
-or set <code>webuiDesktop.projectionManifests</code> for app-root packaging. Rust source
+or use <code>--projection-manifest</code> for app-root packaging. Rust source
 hosts set <code>BuildOptions::projection_manifests</code>. Desktop and web share navigation
 state projection; unknown requirements keep the correctness-safe full-state
 fallback. Supplied manifests must be current and complete.</p><p>For application messages, define one proto3 contract and run

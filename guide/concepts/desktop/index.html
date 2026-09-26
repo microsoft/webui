@@ -88,7 +88,12 @@ cargo run --manifest-path desktop/Cargo.toml --features source
 </code></pre></code-block><p>Use a Rust host when you need route state, API handlers, typed IPC, or native
 window control. The generated runner loads packaged resources by default;
 <code>source</code> is an opt-in development feature. <code>desktop init</code> does not overwrite
-files unless you pass <code>--force</code>.</p><table><thead><tr><th>SDK feature</th><th>What it adds</th></tr></thead><tbody><tr><td>Default (none)</td><td>Bundles, rendering, route/API handlers, custom backends</td></tr><tr><td><code>native</code></td><td>System webview and <code>run_frame</code></td></tr><tr><td><code>source</code></td><td>Build from templates with <code>DesktopSourceConfig</code></td></tr><tr><td><code>application-ipc</code></td><td>Typed application messages</td></tr><tr><td><code>cli</code></td><td>Desktop CLI sidecar; not needed in an app runner</td></tr></tbody></table><p>For a native runner:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>[dependencies]
+files unless you pass <code>--force</code>. It generates <code>webui-desktop.json</code>; both its
+Rust source runner and <code>webui desktop package ./my-app --out ./packages</code> read
+the same identity and window settings from this file. For an existing app,
+set desktop package options with command flags or the app-root
+<code>webui-desktop.json</code>, not package.json. See the
+<a href="/webui/guide/cli/#webui-desktop">desktop CLI reference</a> for fields and precedence.</p><table><thead><tr><th>SDK feature</th><th>What it adds</th></tr></thead><tbody><tr><td>Default (none)</td><td>Bundles, rendering, route/API handlers, custom backends</td></tr><tr><td><code>native</code></td><td>System webview and <code>run_frame</code></td></tr><tr><td><code>source</code></td><td>Build from templates with <code>DesktopSourceConfig</code></td></tr><tr><td><code>application-ipc</code></td><td>Typed application messages</td></tr><tr><td><code>cli</code></td><td>Desktop CLI sidecar; not needed in an app runner</td></tr></tbody></table><p>For a native runner:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>[dependencies]
 webui-desktop = &#123; package = "microsoft-webui-desktop", version = "0.0.29", default-features = false, features = ["native"] &#125;
 serde_json = "1.0"
 
@@ -109,7 +114,20 @@ source = ["webui-desktop/source"]
 <code>source</code> feature. The same builder accepts <code>.state_value(...)</code>, <code>.route(...)</code>,
 <code>.window(...)</code>, <code>.shell(...)</code>, and IPC registrations. <code>build()</code> performs startup
 rendering; configure the window on the builder so the first render and native
-frame agree.</p><table><thead><tr><th>API</th><th>Use</th></tr></thead><tbody><tr><td><code>DesktopApp::from_bundle</code>, <code>from_source</code></td><td>Open a packaged bundle or compile source</td></tr><tr><td><code>DesktopAppBuilder</code></td><td>Register state, route/API/IPC handlers, window and shell options</td></tr><tr><td><code>DesktopFrame</code></td><td>Own the runtime, events, window handle, and shell configuration</td></tr><tr><td><code>DesktopRuntime</code></td><td>Render and handle requests without launching a window</td></tr><tr><td><code>DesktopFrameBackend</code>, <code>run_frame_with</code></td><td>Supply a custom backend</td></tr><tr><td><code>find_packaged_resources_dir()</code></td><td>Locate bundle resources next to a packaged runner</td></tr></tbody></table><p><code>.route("/contacts/:id", |ctx| ...)</code> receives route parameters through
+frame agree.</p><p>Every initial window field, including width, height, titlebar style,
+background, size limits, and devtools, can be set in Rust without a JSON file:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopApp, Rgba, TitlebarStyle, WindowOptions&#125;;
+
+<span class="hl-keyword">let</span> frame <span class="hl-keyword">=</span> DesktopApp::from_bundle(<span class="hl-string">"</span><span class="hl-string">./desktop-bundle</span><span class="hl-string">"</span>)<span class="hl-keyword">?</span>
+    .window(WindowOptions &#123;
+        title: <span class="hl-string">"</span><span class="hl-string">Contacts</span><span class="hl-string">"</span>.into(),
+        width: <span class="hl-property">1280</span>,
+        height: <span class="hl-property">900</span>,
+        titlebar: TitlebarStyle::Overlay &#123; height: <span class="hl-property">48</span> &#125;,
+        background: <span class="hl-property">Some</span>(Rgba &#123; r: <span class="hl-property">16</span>, g: <span class="hl-property">16</span>, b: <span class="hl-property">20</span>, a: <span class="hl-property">255</span> &#125;),
+        <span class="hl-keyword">..</span>WindowOptions::default()
+    &#125;)
+    .build()<span class="hl-keyword">?</span>;
+</code></pre></code-block><table><thead><tr><th>API</th><th>Use</th></tr></thead><tbody><tr><td><code>DesktopApp::from_bundle</code>, <code>from_source</code></td><td>Open a packaged bundle or compile source</td></tr><tr><td><code>DesktopAppBuilder</code></td><td>Register state, route/API/IPC handlers, window and shell options</td></tr><tr><td><code>DesktopFrame</code></td><td>Own the runtime, events, window handle, and shell configuration</td></tr><tr><td><code>DesktopRuntime</code></td><td>Render and handle requests without launching a window</td></tr><tr><td><code>DesktopFrameBackend</code>, <code>run_frame_with</code></td><td>Supply a custom backend</td></tr><tr><td><code>find_packaged_resources_dir()</code></td><td>Locate bundle resources next to a packaged runner</td></tr></tbody></table><p><code>.route("/contacts/:id", |ctx| ...)</code> receives route parameters through
 <code>ctx.param("id")</code>. Route providers run at startup and on subsequent HTML and
 partial navigations. <code>ApiRouteRegistry</code> handles custom-protocol endpoints such
 as <code>/api/contacts/:id</code> so client code can use ordinary <code>fetch</code>. Keep mutable
@@ -119,40 +137,106 @@ letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>, but cannot 
 the ID from their manifest.</p><h2 id="events-and-window-control">Events and window control <a class="header-anchor" href="/webui/guide/concepts/desktop/#events-and-window-control" aria-label="Link to Events and window control">#</a></h2><p>Register Rust event callbacks on the frame:</p><ul><li><code>frame.on_event(handler)?</code> keeps the handler for the frame's lifetime.</li><li><code>frame.subscribe(handler)?</code> returns an <code>EventSubscription</code>; keep the guard
 alive and drop it to unsubscribe.</li></ul><p>Callbacks run on the native UI thread. Return <code>EventResponse::Continue</code> for
 normal behavior. Only <code>WindowCloseRequested</code> and <code>NavigationRequested</code> can
-return <code>PreventDefault</code> to cancel the action. Do not block the UI thread.</p><p><code>frame.window_handle()</code> queues <code>set_title</code>, <code>set_size</code>, <code>minimize</code>, <code>maximize</code>,
-<code>unmaximize</code>, <code>fullscreen</code>, <code>center</code>, <code>focus</code>, <code>request_close</code>, <code>start_drag</code>,
-and <code>set_always_on_top</code>. A successful call means the command was accepted,
-not that the OS has completed it. Handle queue errors; <code>request_close</code> can
-still be cancelled by a Rust event handler.</p><p>The active web document can observe best-effort <code>CustomEvent</code>s on <code>window</code>:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-property">window</span>.addEventListener(<span class="hl-string">'</span><span class="hl-string">webui:window-resized</span><span class="hl-string">'</span>, event <span class="hl-keyword">=&gt;</span> &#123;
+return <code>PreventDefault</code> to cancel the action. Do not block the UI thread.</p><p><code>frame.window_handle()</code> queues <code>set_title</code>, <code>set_background</code>, <code>set_size</code>,
+<code>minimize</code>, <code>maximize</code>, <code>unmaximize</code>, <code>fullscreen</code>, <code>center</code>, <code>focus</code>,
+<code>request_close</code>, <code>start_drag</code>, and <code>set_always_on_top</code>. A successful call
+means the command was accepted, not that the OS has completed it. Handle
+queue errors; <code>request_close</code> can still be cancelled by a Rust event handler.</p><p>Set initial defaults with <code>WindowOptions</code> or desktop package flags. To
+respond to a theme change after launch, use the Rust event callback:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> webui_desktop::&#123;DesktopEvent, EventResponse, Rgba&#125;;
+
+<span class="hl-keyword">let</span> handle <span class="hl-keyword">=</span> frame.window_handle().clone();
+frame.on_event(<span class="hl-keyword">move</span> <span class="hl-keyword">|</span>event<span class="hl-keyword">|</span> &#123;
+    <span class="hl-keyword">if</span> <span class="hl-keyword">let</span> DesktopEvent::ThemeChanged &#123; dark &#125; <span class="hl-keyword">=</span> event &#123;
+        <span class="hl-keyword">let</span> color <span class="hl-keyword">=</span> <span class="hl-keyword">if</span> <span class="hl-keyword">*</span>dark &#123;
+            Rgba &#123; r: <span class="hl-property">16</span>, g: <span class="hl-property">16</span>, b: <span class="hl-property">20</span>, a: <span class="hl-property">255</span> &#125;
+        &#125; <span class="hl-keyword">else</span> &#123;
+            Rgba &#123; r: <span class="hl-property">250</span>, g: <span class="hl-property">250</span>, b: <span class="hl-property">250</span>, a: <span class="hl-property">255</span> &#125;
+        &#125;;
+        <span class="hl-keyword">if</span> <span class="hl-keyword">let</span> <span class="hl-property">Err</span>(error) <span class="hl-keyword">=</span> handle.set_background(color) &#123;
+            eprintln!(<span class="hl-string">"</span><span class="hl-string">Could not update window background: &#123;error&#125;</span><span class="hl-string">"</span>);
+        &#125;
+    &#125;
+    EventResponse::Continue
+&#125;)<span class="hl-keyword">?</span>;
+</code></pre></code-block><p><code>set_background</code> updates the native under-page color, the current document's
+root background and CSS variable, and subsequent full document renders. App
+CSS that paints its own content still controls that content. <code>set_size</code> changes
+the live content size. Native titlebar style, caption-button size, visual
+effects, and shell settings are selected before <code>build()</code>; they cannot be
+switched on the live frame. Runtime changes do not modify the bundle manifest,
+app ID, or defaults on the next launch.</p><p>The active web document can observe best-effort <code>CustomEvent</code>s on <code>window</code>:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-property">window</span>.addEventListener(<span class="hl-string">'</span><span class="hl-string">webui:window-resized</span><span class="hl-string">'</span>, event <span class="hl-keyword">=&gt;</span> &#123;
   <span class="hl-attr">console</span>.<span class="hl-property">log</span>(event.detail.width, event.detail.height);
 &#125;);
 </code></pre></code-block><table><thead><tr><th>Events</th><th><code>detail</code> fields beyond <code>type</code></th></tr></thead><tbody><tr><td><code>ready</code>, <code>exiting</code></td><td>None</td></tr><tr><td><code>window-resized</code></td><td><code>window_id</code>, <code>width</code>, <code>height</code></td></tr><tr><td><code>window-moved</code></td><td><code>window_id</code>, <code>x</code>, <code>y</code></td></tr><tr><td><code>window-maximized</code>, <code>window-unmaximized</code>, <code>window-minimized</code>, <code>window-restored</code></td><td><code>window_id</code></td></tr><tr><td><code>window-entered-fullscreen</code>, <code>window-left-fullscreen</code></td><td><code>window_id</code></td></tr><tr><td><code>window-focused</code>, <code>window-blurred</code>, <code>window-close-requested</code>, <code>window-closed</code></td><td><code>window_id</code></td></tr><tr><td><code>theme-changed</code></td><td><code>dark</code></td></tr><tr><td><code>scale-factor-changed</code></td><td><code>scale</code></td></tr><tr><td><code>navigation-requested</code>, <code>navigation-completed</code></td><td><code>window_id</code>, <code>url</code></td></tr></tbody></table><p>JavaScript names have the <code>webui:</code> prefix; Rust uses the corresponding
 <code>DesktopEvent</code> variants. Delivery is asynchronous and not replayed. <code>ready</code>
 means native initialization, not page hydration. JavaScript
 <code>preventDefault()</code> cannot cancel a native event; use the Rust callback.
-Linux does not emit <code>window-moved</code>.</p><h2 id="window-and-manifest">Window and manifest <a class="header-anchor" href="/webui/guide/concepts/desktop/#window-and-manifest" aria-label="Link to Window and manifest">#</a></h2><p>Set window defaults in <code>webuiDesktop</code> in your app's <code>package.json</code>:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&#123;
-  <span class="hl-string">"</span><span class="hl-string">webuiDesktop</span><span class="hl-string">"</span>: &#123;
-    <span class="hl-string">"</span><span class="hl-string">app</span><span class="hl-string">"</span>: "src",
-    <span class="hl-string">"</span><span class="hl-string">state</span><span class="hl-string">"</span>: "data/state.json",
-    <span class="hl-string">"</span><span class="hl-string">assets</span><span class="hl-string">"</span>: "dist",
-    <span class="hl-string">"</span><span class="hl-string">projectionManifests</span><span class="hl-string">"</span>: ["dist/webui-projection.json"],
-    <span class="hl-string">"</span><span class="hl-string">runnerCrate</span><span class="hl-string">"</span>: "my-app-desktop",
-    <span class="hl-string">"</span><span class="hl-string">buildScripts</span><span class="hl-string">"</span>: ["build:client"],
-    <span class="hl-string">"</span><span class="hl-string">appId</span><span class="hl-string">"</span>: "com.example.contacts",
-    <span class="hl-string">"</span><span class="hl-string">appName</span><span class="hl-string">"</span>: "Contacts",
-    <span class="hl-string">"</span><span class="hl-string">titlebar</span><span class="hl-string">"</span>: &#123; <span class="hl-string">"</span><span class="hl-string">style</span><span class="hl-string">"</span>: "overlay", <span class="hl-string">"</span><span class="hl-string">height</span><span class="hl-string">"</span>: <span class="hl-property">48</span> &#125;
-  &#125;
+Linux does not emit <code>window-moved</code>.</p><h2 id="window-and-manifest">Window and manifest <a class="header-anchor" href="/webui/guide/concepts/desktop/#window-and-manifest" aria-label="Link to Window and manifest">#</a></h2><p>Configure desktop packaging on the CLI without adding desktop fields to
+<code>package.json</code>:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./my-app --target macos-app --out ./packages \
+  --source ./my-app/src --state ./my-app/data/state.json \
+  --assets ./my-app/dist \
+  --projection-manifest ./my-app/dist/webui-projection.json \
+  --build-script build:client \
+  --runner-crate my-app-desktop \
+  --app-id com.example.contacts --app-name Contacts \
+  --titlebar-style overlay --titlebar-height 48
+</code></pre></code-block><p>CLI file paths are relative to the current directory. Client projection
+metadata must stay current. <code>desktop package</code> also accepts <code>--theme</code>,
+<code>--plugin</code>, <code>--icon</code>, identity, publisher, runner and window flags; see the
+<a href="/webui/guide/cli/#webui-desktop">CLI reference</a> for the full list. Rust hosts set the
+same window fields on <code>WindowOptions</code>, pass source and startup state through
+<code>DesktopSourceConfig</code>, and set identity and shell options on <code>DesktopAppBuilder</code>.
+For Rust-owned bundle creation and packaging, pass <code>DesktopBundleOptions</code> to
+<code>build_desktop_bundle</code> and <code>DesktopPackageOptions</code> to
+<code>package_desktop_bundle</code> (with the <code>source</code> feature):</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">use</span> std::path::PathBuf;
+<span class="hl-keyword">use</span> webui_desktop::&#123;
+    build_desktop_bundle, package_desktop_bundle, BuildOptions, DesktopBundleOptions,
+    DesktopPackageOptions, DesktopPackageTarget, DesktopShellConfig, TitlebarStyle, WindowOptions,
+&#125;;
+
+<span class="hl-keyword">fn</span> <span class="hl-attr">package</span>(runner_exe: PathBuf) -&gt; webui_desktop::Result&lt;PathBuf&gt; &#123;
+    <span class="hl-keyword">let</span> bundle_dir <span class="hl-keyword">=</span> PathBuf::from(<span class="hl-string">"</span><span class="hl-string">desktop-bundle</span><span class="hl-string">"</span>);
+    build_desktop_bundle(DesktopBundleOptions &#123;
+        build_options: BuildOptions &#123;
+            app_dir: PathBuf::from(<span class="hl-string">"</span><span class="hl-string">src</span><span class="hl-string">"</span>),
+            <span class="hl-keyword">..</span>BuildOptions::default()
+        &#125;,
+        out_dir: bundle_dir.clone(),
+        state_file: <span class="hl-property">Some</span>(PathBuf::from(<span class="hl-string">"</span><span class="hl-string">data/state.json</span><span class="hl-string">"</span>)),
+        asset_root: <span class="hl-property">Some</span>(PathBuf::from(<span class="hl-string">"</span><span class="hl-string">dist</span><span class="hl-string">"</span>)),
+        token_css: <span class="hl-property">None</span>,
+        app_id: <span class="hl-string">"</span><span class="hl-string">com.example.contacts</span><span class="hl-string">"</span>.into(),
+        app_name: <span class="hl-string">"</span><span class="hl-string">Contacts</span><span class="hl-string">"</span>.into(),
+        version: <span class="hl-string">"</span><span class="hl-string">1.0.0</span><span class="hl-string">"</span>.into(),
+        publisher: <span class="hl-string">"</span><span class="hl-string">Example</span><span class="hl-string">"</span>.into(),
+        window: WindowOptions &#123;
+            title: <span class="hl-string">"</span><span class="hl-string">Contacts</span><span class="hl-string">"</span>.into(),
+            titlebar: TitlebarStyle::Overlay &#123; height: <span class="hl-property">48</span> &#125;,
+            remember_state: <span class="hl-property">true</span>,
+            <span class="hl-keyword">..</span>WindowOptions::default()
+        &#125;,
+        icon_file: <span class="hl-property">Some</span>(PathBuf::from(<span class="hl-string">"</span><span class="hl-string">desktop/icon.icns</span><span class="hl-string">"</span>)),
+        shell: DesktopShellConfig::default(),
+        package_targets: vec![DesktopPackageTarget::MacosApp],
+    &#125;)<span class="hl-keyword">?</span>;
+    <span class="hl-property">Ok</span>(package_desktop_bundle(DesktopPackageOptions &#123;
+        bundle_dir,
+        out_dir: PathBuf::from(<span class="hl-string">"</span><span class="hl-string">packages</span><span class="hl-string">"</span>),
+        target: DesktopPackageTarget::MacosApp,
+        runner_exe,
+    &#125;)<span class="hl-keyword">?</span>.output_path)
 &#125;
-</code></pre></code-block><p><code>app</code>, <code>state</code>, and <code>assets</code> are paths relative to the app root.
-<code>projectionManifests</code> supplies metadata from the client build; keep it current.
-Other options include <code>theme</code>, <code>plugin</code>, <code>icon</code>, <code>appVersion</code>, window dimensions,
-and <code>devtools</code>. Use the same <code>WindowOptions</code> fields in a Rust source host.</p><p><code>WindowOptions</code> supports title and size limits, resize/maximize/fullscreen,
+</code></pre></code-block><p>Set <code>BuildOptions::plugin</code> and <code>projection_manifests</code> for interactive builds.
+<code>DesktopBundleOptions::token_css</code> accepts pre-resolved theme tokens. In a Rust
+build script or host tool, run any web build scripts and compile the chosen
+runner before calling these APIs; those build commands are not part of the
+desktop runtime.</p><p><code>WindowOptions</code> supports title and size limits, resize/maximize/fullscreen,
 always-on-top, centering, background, titlebar, effect, remembered geometry,
 and devtools. <code>titlebar.style</code> is <code>native</code>, <code>hidden-inset</code>, <code>overlay</code>, or <code>none</code>.
 For an overlay, <code>titlebar.height</code> sizes the application band. On Windows,
 caption buttons default to Standard (32 DIPs) independently of that height;
-set <code>webuiDesktop.captionButtonSize</code> to <code>"tall"</code> for 48-DIP buttons. The Rust
-field and bundle manifest key are <code>caption_button_size</code>. This setting has no
+pass <code>--caption-button-size tall</code> for 48-DIP buttons. The Rust field and bundle
+manifest key are <code>caption_button_size</code>. This setting has no
 effect on macOS or Linux.</p><p>The built-in backends support native titlebars and custom titlebar styles.
 Effects depend on the OS: macOS supports <code>vibrancy</code>, <code>acrylic</code>, <code>mica</code>, and
 <code>tabbed</code>; Windows supports the first three; Linux supports none. Native menus
@@ -210,7 +294,7 @@ acknowledge admission, not subscriber completion. Connections belong to a
 document: reconnect after a full navigation or a back/forward-cache restore.
 <code>IpcOptions::limits</code> configures message size and timeout (defaults: 1 MiB and
 30 seconds). There are no automatic retries.</p><p>Native <code>webui:*</code> lifecycle events and <code>webui-drag</code> window controls are not
-application IPC and do not require <code>application-ipc</code>.</p><h2 id="package-and-run">Package and run <a class="header-anchor" href="/webui/guide/concepts/desktop/#package-and-run" aria-label="Link to Package and run">#</a></h2><p>For an app root with <code>webuiDesktop</code> metadata:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./my-app --target windows-portable --out ./packages
+application IPC and do not require <code>application-ipc</code>.</p><h2 id="package-and-run">Package and run <a class="header-anchor" href="/webui/guide/concepts/desktop/#package-and-run" aria-label="Link to Package and run">#</a></h2><p>For an app root:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui desktop package ./my-app --target windows-portable --out ./packages
 </code></pre></code-block><p>Targets are <code>macos-app</code>, <code>windows-portable</code>, and <code>linux-portable</code>. The default
 build is an optimized, bundle-only runner; <code>--debug</code> builds a debug runner.
 <code>--target all</code> creates all three layouts but does not cross-compile the
@@ -222,7 +306,7 @@ Windows App SDK notices beside the runner. The target machine needs WebView2
 Runtime 122.0.2365.46 or later, Windows App Runtime 1.8
 (8000.946.1701.0 or later in that family), and the Visual C++
 Redistributable. Use the current <a href="https://developer.microsoft.com/microsoft-edge/webview2/">Evergreen WebView2 Runtime</a>.
-Linux builds need GTK4 and WebKitGTK 6 development packages.</p><p><code>webuiDesktop.icon</code> supplies the macOS <code>.icns</code> bundle icon and is copied into
+Linux builds need GTK4 and WebKitGTK 6 development packages.</p><p><code>--icon</code> supplies the macOS <code>.icns</code> bundle icon and is copied into
 portable resources. For the Windows executable and taskbar, embed an <code>.ico</code> as
 icon resource 1 in the Rust runner. On macOS, source-mode runners can supply
 an absolute <code>.icns</code> path through <code>DesktopShellConfig::icon_path</code> to show a Dock
