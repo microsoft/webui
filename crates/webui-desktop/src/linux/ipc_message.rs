@@ -70,7 +70,7 @@ pub(super) fn receive(state: &Rc<GtkIpc>, value: &jsc::Value, reply: &ScriptMess
                 .disconnect_authenticated(generation, &token)
                 .is_ok()
             {
-                state.disconnected(generation, IpcErrorCode::Closed);
+                state.disconnected(generation);
             }
             reply.return_value(&jsc::Value::new_undefined(&context));
         }

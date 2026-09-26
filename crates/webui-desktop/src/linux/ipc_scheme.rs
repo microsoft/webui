@@ -10,21 +10,17 @@ use webkit6::{prelude::*, URISchemeRequest};
 
 use super::ipc_input::{append, ReadBuffer, ReadLimits};
 use crate::ipc::{IpcBridge, IpcError, IpcErrorCode, OwnedIpcHttpRequest};
-use crate::native_ipc::NativeIpcRetirement;
 use crate::{DesktopHttpMethod, DesktopProtocolResponse};
 
 use super::ipc::GtkIpc;
 use super::ipc_control::error;
 use super::response::finish_ipc_request as finish_scheme_request;
 
-struct PendingRequest {
-    request: Option<URISchemeRequest>,
-    retirement: NativeIpcRetirement,
-}
+struct PendingRequest(Option<URISchemeRequest>);
 
 impl PendingRequest {
     fn finish(mut self, response: DesktopProtocolResponse) {
-        if let Some(request) = self.request.take() {
+        if let Some(request) = self.0.take() {
             finish_scheme_request(&request, response);
         }
     }
@@ -32,13 +28,13 @@ impl PendingRequest {
 
 impl Drop for PendingRequest {
     fn drop(&mut self) {
-        if let Some(request) = self.request.take() {
-            // GTK has no stop-scheme-task callback. This retained request
-            // belongs only to its original task epoch. Preserve native
-            // retirement even if the renderer's closed control is still queued;
-            // finish_error would turn known navigation into a network failure.
-            // Never deliver a late successful response on abandonment.
-            finish_scheme_request(&request, error_response(error(self.retirement.code())));
+        if let Some(request) = self.0.take() {
+            // GTK has no stop-scheme-task callback. Settle only this retained
+            // old request with cancellation on navigation/teardown, never send
+            // a late successful response into a replacement document.
+            let mut error =
+                glib::Error::new(gio::IOErrorEnum::Cancelled, "Desktop IPC request cancelled");
+            request.finish_error(&mut error);
         }
     }
 }
@@ -60,15 +56,12 @@ pub(super) fn handle(state: &Rc<GtkIpc>, request: &URISchemeRequest) -> bool {
             return true;
         }
     };
-    let tasks = Rc::clone(&state.tasks.borrow());
-    let pending = PendingRequest {
-        request: Some(request.clone()),
-        retirement: tasks.retirement(),
-    };
+    let pending = PendingRequest(Some(request.clone()));
     let stream = request.http_body();
     let navigation = input.navigation;
     let weak = Rc::downgrade(state);
     let bridge = state.bridge.clone();
+    let tasks = Rc::clone(&state.tasks.borrow());
     // Both the request and its response bytes have concrete owners across
     // every await. The driver polls only native I/O and bridge completions.
     let _ = tasks.spawn(async move {

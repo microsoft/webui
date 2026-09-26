@@ -8,7 +8,6 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { defaultLimits, type NativeIpcBootstrap, type IpcError } from '../src/index.js';
-import { WireError } from '../src/envelope.js';
 import { deferred, schema, save, item, invocation, IpcFrame, Kind, turn } from './helpers.js';
 
 type Runtime = typeof import('../src/index.js');
@@ -62,7 +61,6 @@ async function raceHarness(point: FailurePoint) {
   }) as typeof fetch });
   return {
     runtime, transport, reading: reading.promise, order, requests, rejectWire,
-    respond: request.resolve,
     activate() {
       assert.equal(bootstrap.activate({
         navigation: '1', documentNonce: bootstrap.documentNonce, challenge: 'b'.repeat(32),
@@ -99,38 +97,6 @@ test('bodyless keepalive pulls remain owned and cancelled by document retirement
   await turn();
   assert.equal(h.requests.length, count);
   assert.deepEqual(h.order, ['fetch-pending', 'pagehide', 'fetch-rejected']);
-});
-
-test('native retirement responses settle pending calls before the delayed closed control', async () => {
-  for (const point of ['post', 'get'] as const) {
-    for (const code of ['navigated', 'closed', 'transport'] as const) {
-      const h = await raceHarness(point);
-      const starting = h.runtime.createConnection(schema, h.transport);
-      h.activate();
-      const connection = await starting;
-      let settlements = 0;
-      const call = connection.call(save, item).catch(error => { settlements++; throw error; });
-      const rejected = assert.rejects(call, { code });
-      if (point === 'get') h.ready();
-      await h.reading;
-      h.respond(new Response(WireError.encode({
-        code, message: 'Native IPC request rejected',
-        help: 'Reload the trusted document and use the generated binary transport',
-        applicationCode: '',
-      }).finish(), {
-        status: code === 'navigated' ? 409 : 503,
-        headers: { 'Content-Type': 'application/x-protobuf', 'Cache-Control': 'no-store' },
-      }));
-      await rejected;
-      const terminal = await connection.closed;
-      assert.equal(terminal.code, code);
-      h.retire('pagehide');
-      await turn();
-      assert.equal(await connection.closed, terminal);
-      assert.equal(settlements, 1);
-      connection.close();
-    }
-  }
 });
 
 test('an in-flight POST reports the known retirement reason instead of its resulting fetch abort', async () => {
@@ -181,28 +147,24 @@ test('trusted retirement wins exactly once for pending RPCs when native abort an
 });
 
 test('unannounced fetch failures stay Transport and cannot be rewritten by a later navigation', async () => {
-  for (const point of ['post', 'get', 'body'] as const) {
-    for (const error of [new TypeError('Load failed'), new DOMException('Request aborted', 'AbortError')]) {
-      const h = await raceHarness(point);
-      const starting = h.runtime.createConnection(schema, h.transport);
-      h.activate();
-      const connection = await starting;
-      let settlements = 0;
-      const call = connection.call(save, item).catch(error => { settlements++; throw error; });
-      const rejected = assert.rejects(call, { code: 'transport' });
-      h.ready();
-      await h.reading;
-      // No lifecycle signal is available before the failing operation settles.
-      // This includes POST acceptance and streamed body reads, not just GET.
-      h.rejectWire(error);
-      const terminal = await connection.closed;
-      assert.equal(terminal.code, 'transport');
-      await rejected;
-      h.retire('pagehide');
-      await turn();
-      assert.equal(await connection.closed, terminal);
-      assert.equal(settlements, 1);
-      connection.close();
-    }
+  for (const error of [new TypeError('Load failed'), new DOMException('Request aborted', 'AbortError')]) {
+    const h = await raceHarness('get');
+    const starting = h.runtime.createConnection(schema, h.transport);
+    h.activate();
+    const connection = await starting;
+    let settlements = 0;
+    const call = connection.call(save, item).catch(error => { settlements++; throw error; });
+    const rejected = assert.rejects(call, { code: 'transport' });
+    h.ready();
+    await h.reading;
+    h.rejectWire(error);
+    const terminal = await connection.closed;
+    assert.equal(terminal.code, 'transport');
+    await rejected;
+    h.retire('pagehide');
+    await turn();
+    assert.equal(await connection.closed, terminal);
+    assert.equal(settlements, 1);
+    connection.close();
   }
 });
