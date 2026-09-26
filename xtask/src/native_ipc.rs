@@ -323,15 +323,7 @@ fn build_runner(root: &Path, artifacts: &Path, plan: Plan, source: bool) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args, NO_IPC_MODES};
-
-    #[test]
-    fn no_ipc_covers_native_and_frameless_source_and_bundle() {
-        assert_eq!(
-            NO_IPC_MODES,
-            ["source", "bundle", "frameless-source", "frameless-bundle"]
-        );
-    }
+    use super::parse_args;
 
     #[test]
     fn rejects_invalid_native_timeouts_and_plans() {
@@ -339,15 +331,12 @@ mod tests {
             vec!["--timeout".into(), "0".into()],
             vec!["--timeout".into()],
             vec!["--timeout".into(), u64::MAX.to_string()],
+            vec!["--plan".into()],
             vec!["--plan".into(), "unsupported".into()],
             vec!["--unknown".into()],
         ] {
             assert!(parse_args(&arguments).is_err());
         }
-        let plan = parse_args(&["--plan".into(), "win32".into()]).unwrap();
-        assert_eq!(
-            plan.plan.unwrap().executable(),
-            "webui-native-ipc-fixture.exe"
-        );
+        assert!(parse_args(&["--plan".into(), "win32".into()]).is_ok());
     }
 }

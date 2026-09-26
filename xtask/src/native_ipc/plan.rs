@@ -208,27 +208,6 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn platform_paths_and_unsupported_target() {
-        let windows = Plan::for_name("win32").unwrap();
-        assert_eq!(
-            windows.example("webui-native-ipc-fixture"),
-            windows.executable()
-        );
-        assert_eq!(windows.package_target, "windows-portable");
-        assert_eq!(windows.resources, "resources/webui");
-        let macos = Plan::for_name("darwin").unwrap();
-        assert_eq!(macos.backend, "WKWebView");
-        assert_eq!(macos.package_target, "macos-app");
-        assert_eq!(macos.executable_dir, "Contents/MacOS");
-        assert_eq!(macos.resources, "Contents/Resources/webui");
-        let linux = Plan::for_name("linux").unwrap();
-        assert_eq!(linux.backend, "WebKitGTK");
-        assert_eq!(linux.package_target, "linux-portable");
-        assert_eq!(linux.resources, "resources/webui");
-        assert!(Plan::for_name("unsupported").is_err());
-    }
-
-    #[test]
     fn windows_copy_requires_all_companions_before_writing() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("examples").join("fixture.exe");

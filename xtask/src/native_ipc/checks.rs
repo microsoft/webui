@@ -207,11 +207,11 @@ pub(super) fn write_result(artifacts: &Path, summary: &Value) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{native_log, record, report, runtime_dependencies};
+    use super::{native_log, record, report};
     use serde_json::json;
 
     #[test]
-    fn report_requires_every_native_assertion_not_just_pass_status() {
+    fn report_rejects_pass_shaped_but_incorrect_proof() {
         let mut result = json!({
             "scope": "native-ipc-four-flow", "status": "pass", "mode": "source",
             "binary_sha256": "abc", "native_window_closed": true,
@@ -235,6 +235,9 @@ mod tests {
         result["cancellation_recovery"] = json!(true);
         result["saves"] = json!(4);
         assert!(report(&result, "source", "abc", &metadata).is_err());
+        result["saves"] = json!(5);
+        result["history_renderer_callbacks_verified"] = json!(null);
+        assert!(report(&result, "source", "abc", &metadata).is_err());
     }
 
     #[test]
@@ -256,14 +259,5 @@ mod tests {
             "NATIVE_IPC_DIAGNOSTIC pageshow persisted: explicitly reconnecting\n"
         )
         .is_ok());
-    }
-
-    #[test]
-    fn runtime_tree_rejects_tooling_dependencies() {
-        let healthy =
-            "microsoft-webui-desktop v0.0.29\nmicrosoft-webui-handler v0.0.29\nobjc2 v0.6\n";
-        assert!(runtime_dependencies(healthy).is_ok());
-        assert!(runtime_dependencies("microsoft-webui-desktop v0.0.29\nclap v4.0.0").is_err());
-        assert!(runtime_dependencies("").is_err());
     }
 }

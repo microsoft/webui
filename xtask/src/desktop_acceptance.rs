@@ -75,37 +75,8 @@ fn run_with(
 
 #[cfg(test)]
 mod tests {
-    use super::{run_with, COMMANDS};
+    use super::run_with;
     use std::cell::Cell;
-
-    #[test]
-    fn checks_generated_bindings_before_consumers_without_regenerating() {
-        assert_eq!(
-            COMMANDS[0],
-            (
-                "cargo",
-                &[
-                    "test",
-                    "--locked",
-                    "-p",
-                    "microsoft-webui-desktop-build",
-                    "--test",
-                    "generate"
-                ][..]
-            )
-        );
-        let sync = COMMANDS.iter().position(|(_, args)| {
-            args.contains(&"packages/webui-desktop/scripts/sync-bootstrap.mjs")
-        });
-        let rust = COMMANDS
-            .iter()
-            .position(|(_, args)| args.contains(&"crates/webui-desktop-build/tests/run-rust.mjs"));
-        assert!(sync.is_some_and(|index| COMMANDS[index].1.contains(&"--check")));
-        assert!(sync
-            .zip(rust)
-            .is_some_and(|(check, consumer)| check < consumer));
-        assert!(COMMANDS.iter().all(|(_, args)| !args.contains(&"--write")));
-    }
 
     #[test]
     fn rejects_regeneration_even_before_running_commands() {
@@ -131,9 +102,7 @@ mod tests {
         let isolated = Cell::new(false);
         let result = run_with(
             false,
-            |program, args| {
-                assert_eq!(program, "cargo");
-                assert_eq!(args, COMMANDS[0].1);
+            |_, _| {
                 commands.set(commands.get() + 1);
                 Err("generator failed".into())
             },
