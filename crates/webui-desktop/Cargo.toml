@@ -96,7 +96,8 @@ webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 prost = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.29" }
+# This internal test helper follows the workspace version across releases.
+microsoft-webui-test-utils = { path = "../webui-test-utils" }
 
 [[test]]
 name = "ipc_contract"
