@@ -10,6 +10,8 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "desktop", "webview", "ipc", "ssr"]
 categories = ["gui", "web-programming"]
+# The native acceptance fixture uses local-only test utilities; keep it out of the crate archive.
+exclude = ["tests/fixtures/native-ipc/**"]
 
 [lib]
 name = "webui_desktop"
@@ -96,6 +98,8 @@ webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 prost = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
+# This internal test helper follows the workspace version across releases.
+microsoft-webui-test-utils = { path = "../webui-test-utils" }
 
 [[test]]
 name = "ipc_contract"
@@ -120,6 +124,11 @@ required-features = ["native"]
 name = "no-ipc-native"
 path = "tests/fixtures/no-ipc-native.rs"
 required-features = ["native", "source"]
+
+[[example]]
+name = "webui-native-ipc-fixture"
+path = "tests/fixtures/native-ipc/src/main.rs"
+required-features = ["native", "application-ipc"]
 
 [lints]
 workspace = true
