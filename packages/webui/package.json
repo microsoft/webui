@@ -16,7 +16,7 @@
   },
   "files": [
     "ai.md",
-    "bin/",
+    "bin/webui",
     "dist/index.*",
     "dist/install.*",
     "dist/platform.*",

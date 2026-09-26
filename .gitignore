@@ -19,6 +19,7 @@ publish/
 *.nupkg
 .last
 packages/webui/bin/webui
+packages/webui/bin/webui-native
 packages/webui/bin/webui.exe
 
 # Built from source by PR FFI checks.

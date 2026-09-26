@@ -8,11 +8,9 @@ import { resolve, platformKey, packageName } from "./platform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const binDir = path.resolve(__dirname, "..", "bin");
-const binName = process.platform === "win32" ? "webui.exe" : "webui";
+const binName = process.platform === "win32" ? "webui.exe" : "webui-native";
 const binDest = path.join(binDir, binName);
 
-// Locate the platform binary and copy it into bin/ so the package.json
-// "bin" entry points at a real native executable.
 try {
   const srcBin = resolve("bin");
   if (srcBin && fs.existsSync(srcBin)) {

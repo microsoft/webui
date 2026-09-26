@@ -70,10 +70,22 @@ test('fresh npm consumer requires opt-in desktop support and then uses its nativ
   t.after(() => rmSync(project, { recursive: true, force: true }));
   writeFileSync(path.join(project, 'package.json'), '{"private":true}');
 
+  const coreArchive = run('tar', ['-tzf', tarball('webui')], workspace);
+  success(coreArchive);
+  const coreFiles = coreArchive.stdout.split('\n').map(line => line.trim());
+  assert(coreFiles.includes('package/bin/webui'));
+  assert(!coreFiles.includes('package/bin/webui-native'));
+  assert(!coreFiles.includes('package/bin/webui.exe'));
+
   success(run('npm', [
     'install', '--offline', '--omit=optional', '--no-audit', '--no-fund',
     tarball('webui'), tarball(`webui-${native}`),
   ], project));
+  const installedBinary = path.join(
+    project, 'node_modules', '@microsoft', 'webui', 'bin',
+    process.platform === 'win32' ? 'webui.exe' : 'webui-native',
+  );
+  assert(existsSync(installedBinary), `missing installed core CLI binary: ${installedBinary}`);
   const coreManifest = JSON.parse(readFileSync(path.join(project, 'node_modules/@microsoft/webui/package.json'), 'utf8'));
   assert(!Object.keys(coreManifest.optionalDependencies).some(name => name.startsWith('@microsoft/webui-desktop')));
 
