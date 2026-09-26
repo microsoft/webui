@@ -77,6 +77,24 @@ For development, replace `from_bundle` with
 rendering; configure the window on the builder so the first render and native
 frame agree.
 
+Every initial window field, including width, height, titlebar style,
+background, size limits, and devtools, can be set in Rust without a JSON file:
+
+```rust
+use webui_desktop::{DesktopApp, Rgba, TitlebarStyle, WindowOptions};
+
+let frame = DesktopApp::from_bundle("./desktop-bundle")?
+    .window(WindowOptions {
+        title: "Contacts".into(),
+        width: 1280,
+        height: 900,
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        background: Some(Rgba { r: 16, g: 16, b: 20, a: 255 }),
+        ..WindowOptions::default()
+    })
+    .build()?;
+```
+
 | API | Use |
 | --- | --- |
 | `DesktopApp::from_bundle`, `from_source` | Open a packaged bundle or compile source |
@@ -109,11 +127,41 @@ Callbacks run on the native UI thread. Return `EventResponse::Continue` for
 normal behavior. Only `WindowCloseRequested` and `NavigationRequested` can
 return `PreventDefault` to cancel the action. Do not block the UI thread.
 
-`frame.window_handle()` queues `set_title`, `set_size`, `minimize`, `maximize`,
-`unmaximize`, `fullscreen`, `center`, `focus`, `request_close`, `start_drag`,
-and `set_always_on_top`. A successful call means the command was accepted,
-not that the OS has completed it. Handle queue errors; `request_close` can
-still be cancelled by a Rust event handler.
+`frame.window_handle()` queues `set_title`, `set_background`, `set_size`,
+`minimize`, `maximize`, `unmaximize`, `fullscreen`, `center`, `focus`,
+`request_close`, `start_drag`, and `set_always_on_top`. A successful call
+means the command was accepted, not that the OS has completed it. Handle
+queue errors; `request_close` can still be cancelled by a Rust event handler.
+
+Set initial defaults with `WindowOptions` or desktop package flags. To
+respond to a theme change after launch, use the Rust event callback:
+
+```rust
+use webui_desktop::{DesktopEvent, EventResponse, Rgba};
+
+let handle = frame.window_handle().clone();
+frame.on_event(move |event| {
+    if let DesktopEvent::ThemeChanged { dark } = event {
+        let color = if *dark {
+            Rgba { r: 16, g: 16, b: 20, a: 255 }
+        } else {
+            Rgba { r: 250, g: 250, b: 250, a: 255 }
+        };
+        if let Err(error) = handle.set_background(color) {
+            eprintln!("Could not update window background: {error}");
+        }
+    }
+    EventResponse::Continue
+})?;
+```
+
+`set_background` updates the native under-page color, the current document's
+root background and CSS variable, and subsequent full document renders. App
+CSS that paints its own content still controls that content. `set_size` changes
+the live content size. Native titlebar style, caption-button size, visual
+effects, and shell settings are selected before `build()`; they cannot be
+switched on the live frame. Runtime changes do not modify the bundle manifest,
+app ID, or defaults on the next launch.
 
 The active web document can observe best-effort `CustomEvent`s on `window`:
 

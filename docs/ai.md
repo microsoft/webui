@@ -1373,6 +1373,13 @@ Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
+for live presentation changes from Rust; these do not change the stable app ID
+or packaged defaults. The background applies to the native surface, current
+document root, and later full-page renders. Width, height, titlebar style,
+background, and the remaining initial window options can all be set through
+`DesktopAppBuilder::window(WindowOptions { ... })` before `build()`. Live size
+changes use `set_size(width, height)`; titlebar style remains startup-only.
 On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
 symlink escapes; source hosts can set an absolute path for Dock artwork.
 `titlebar.height` sizes the application band; Windows caption buttons default
