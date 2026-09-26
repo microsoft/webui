@@ -11,6 +11,12 @@ use std::{
 
 use crate::ipc::{IpcError, IpcErrorCode, IpcWake};
 
+#[cfg(any(target_os = "linux", test))]
+#[path = "native_ipc_retirement.rs"]
+mod retirement;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) use retirement::NativeIpcRetirement;
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 #[path = "native_ipc_reentrant_tests.rs"]
@@ -115,6 +121,8 @@ pub(crate) fn control_script(
 // bridge completion futures and native delivery callbacks may be submitted.
 pub(crate) struct NativeIpcTasks {
     inner: crate::native_tasks::NativeTasks,
+    #[cfg(any(target_os = "linux", test))]
+    retirement: NativeIpcRetirement,
 }
 
 impl NativeIpcTasks {
@@ -124,6 +132,8 @@ impl NativeIpcTasks {
                 Arc::new(move || wake.wake().is_ok()),
                 max_tasks,
             ),
+            #[cfg(any(target_os = "linux", test))]
+            retirement: NativeIpcRetirement::default(),
         }
     }
 
@@ -141,6 +151,19 @@ impl NativeIpcTasks {
     }
 
     pub(crate) fn close(&self) {
+        #[cfg(any(target_os = "linux", test))]
+        self.retirement.retire(IpcErrorCode::Closed);
+        self.inner.close();
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn retirement(&self) -> NativeIpcRetirement {
+        self.retirement.clone()
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn retire(&self, code: IpcErrorCode) {
+        self.retirement.retire(code);
         self.inner.close();
     }
 }

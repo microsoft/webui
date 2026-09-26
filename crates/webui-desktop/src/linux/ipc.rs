@@ -134,7 +134,7 @@ impl GtkIpc {
         let previous = self
             .tasks
             .replace(Rc::new(NativeIpcTasks::new(self.wake.clone(), 128)));
-        previous.close();
+        previous.retire(IpcErrorCode::Navigated);
     }
 
     fn navigation_started(&self) {
@@ -263,7 +263,7 @@ impl GtkIpc {
         }
     }
 
-    pub(super) fn disconnected(&self, generation: u64) {
+    pub(super) fn disconnected(&self, generation: u64, code: IpcErrorCode) {
         if !self
             .session
             .borrow()
@@ -277,15 +277,13 @@ impl GtkIpc {
         let previous = self
             .tasks
             .replace(Rc::new(NativeIpcTasks::new(self.wake.clone(), 128)));
-        previous.close();
+        previous.retire(code);
     }
 
     fn push_control(&self, control: NativeControl) {
-        let closed = matches!(control, NativeControl::Closed { .. });
-        let generation = match &control {
-            NativeControl::Ready { generation } | NativeControl::Closed { generation, .. } => {
-                *generation
-            }
+        let (generation, closed) = match &control {
+            NativeControl::Ready { generation } => (*generation, None),
+            NativeControl::Closed { generation, code } => (*generation, Some(*code)),
         };
         if !self
             .session
@@ -306,8 +304,8 @@ impl GtkIpc {
             return;
         };
         webview.evaluate_javascript(&script, None, None, None::<&gio::Cancellable>, |_| {});
-        if closed {
-            self.disconnected(generation);
+        if let Some(code) = closed {
+            self.disconnected(generation, code);
         }
     }
 
