@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path, PureWindowsPath, PurePosixPath
 from tempfile import TemporaryDirectory
 from run import (NO_IPC_MODES, WINDOWS_APP_SDK_FILES, assert_clean_native_log,
-                 assert_runtime_dependencies, copy_native_runner, platform_plan)
+                 assert_runtime_dependencies, copy_native_runner, platform_plan,
+                 runner_build_command)
 
 
 class PlatformPlanTests(unittest.TestCase):
@@ -23,6 +24,17 @@ class PlatformPlanTests(unittest.TestCase):
     def test_runtime_consumer_accepts_native_and_ipc_dependencies(self):
         assert_runtime_dependencies(["microsoft-webui-desktop", "microsoft-webui-handler",
                                      "prost", "futures-channel", "objc2", "webkit6", "webview2-com"])
+
+    def test_runners_use_root_workspace_lock_and_distinct_features(self):
+        command = runner_build_command(source=False)
+        self.assertEqual(
+            command,
+            ["cargo", "build", "--offline", "--locked", "--release",
+             "-p", "microsoft-webui-desktop", "--example", "webui-native-ipc-fixture",
+             "--no-default-features", "--features", "native,application-ipc"],
+        )
+        self.assertEqual(runner_build_command(source=True)[:-1], command[:-1])
+        self.assertEqual(runner_build_command(source=True)[-1], "native,application-ipc,source")
 
     def test_windows_portable(self):
         plan = platform_plan("win32")

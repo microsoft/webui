@@ -2206,6 +2206,7 @@ dependencies = [
  "microsoft-webui-desktop-build",
  "microsoft-webui-handler",
  "microsoft-webui-protocol",
+ "microsoft-webui-test-utils",
  "microsoft-webui-tokens",
  "mime_guess",
  "objc2",
