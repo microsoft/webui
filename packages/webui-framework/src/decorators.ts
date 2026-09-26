@@ -277,20 +277,17 @@ function createReactiveProperty(
       }
       this[backingKey] = newValue;
 
-      const canReflect = this['$canReflectAttr'];
-      if (
-        attrDefinition &&
-        typeof canReflect === 'function' &&
-        (canReflect as () => boolean).call(this)
-      ) {
-        reflectPropertyToAttribute(this, attrDefinition, newValue);
+      if (attrDefinition) {
+        const canReflect = this['$canReflectAttr'];
+        if (typeof canReflect === 'function' &&
+            (canReflect as () => boolean).call(this)) {
+          reflectPropertyToAttribute(this, attrDefinition, newValue);
+        }
       }
 
-      const record = this['$hasPropertyEffects'] === true
-        ? this['$recordPropertyChange']
-        : undefined;
-      if (typeof record === 'function') {
-        (record as (name: string, old: unknown) => void).call(this, name, oldValue);
+      if (this['$hasPropertyEffects'] === true) {
+        (this['$recordPropertyChange'] as
+          (name: string, old: unknown) => void).call(this, name, oldValue);
       }
 
       if (
