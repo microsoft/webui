@@ -30,7 +30,6 @@ function run(command, args, cwd, extraEnv = {}) {
     env: { ...env, ...extraEnv },
     encoding: 'utf8',
     shell: process.platform === 'win32' && (command === 'npm' || command === 'pnpm'),
-    windowsVerbatimArguments: process.platform === 'win32' && command === 'cmd.exe',
     timeout: 120_000,
   });
   assert(!result.error, `${command} failed to launch: ${result.error}`);
@@ -39,8 +38,10 @@ function run(command, args, cwd, extraEnv = {}) {
 
 function packageBin(cwd, name, args) {
   const bin = path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
+  assert(existsSync(bin), `missing installed CLI shim: ${bin}`);
   if (process.platform === 'win32') {
-    return run('cmd.exe', ['/d', '/s', '/c', `""${bin}" ${args.join(' ')}"`], cwd);
+    const quoted = [bin, ...args].map(arg => `'${arg.replaceAll("'", "''")}'`).join(' ');
+    return run('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `& ${quoted}; exit $LASTEXITCODE`], cwd);
   }
   return run(bin, args, cwd);
 }
