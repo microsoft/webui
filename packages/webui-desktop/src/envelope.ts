@@ -11,8 +11,8 @@
  * envelope: a far smaller runtime bundle, faster encode/decode, and a single
  * decode pass instead of a lenient-format pre-scan plus a full parse.
  * Application-defined message payloads remain arbitrary opaque bytes here and
- * are still validated generically (see `validation.ts`). See `DESIGN.md` for
- * the authoritative byte layout.
+ * are still validated generically (see `validation.ts`). The paired Rust
+ * codec in `crates/webui-desktop/src/ipc/wire.rs` defines the byte layout.
  */
 
 import { IpcError } from './errors.js';

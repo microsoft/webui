@@ -438,8 +438,8 @@ In this tutorial you:
 
 ## 10. Next Steps
 
-- [Hydration internals](https://github.com/microsoft/webui/blob/main/packages/webui-framework/RENDERING.md), deep dive into how the
-  framework re-attaches to server-rendered markup.
+- [Hydration](/guide/concepts/hydration) - learn how the framework re-attaches
+  to server-rendered markup.
 - [Routing](/guide/concepts/routing) – add multi-page navigation to your app.
 - [Commerce Example](https://github.com/microsoft/webui/tree/main/examples/app/commerce) –
   a more complex app with product listings, search, cart, and nested routing.

@@ -16,8 +16,8 @@
  * API do not receive peer-missing warnings. Importing this subpath without the
  * required peer produces `PROJ-P001` or `PROJ-P002`.
  *
- * See DESIGN.md §"Bundler-Neutral State Projection Compiler" for the
- * authoritative specification.
+ * See DESIGN.md for the build/runtime architecture; `graph.ts` and
+ * `manifest.ts` define the exact adapter and artifact contracts.
  */
 
 // Module graph types and adapter SPI

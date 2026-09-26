@@ -10,7 +10,7 @@ Read and internalize these instructions at the start of every session. They are 
 
 Before suggesting or applying **any** change, read these files - they are the ground truth:
 
-1. **`DESIGN.md`** - The living technical specification. Architecture, protocol schema, module contracts, and behavioral rules all live here. Treat every constraint in it as mandatory unless the user explicitly asks to change one.
+1. **`DESIGN.md`** - The living high-level architecture for reimplementing WebUI in another technology. Treat its architectural boundaries and invariants as mandatory; use protobuf, source, tests, internal `specs/`, and public docs for exact schemas, APIs, and behavior.
 2. **`Cargo.toml`** (workspace root) - Workspace members, dependency versions, and release profile.
 3. **`clippy.toml`** - Lint policy (bans `unwrap`/`expect`, caps cognitive complexity at 20, limits function arguments to 5).
 4. **`deny.toml`** - Allowed licenses and advisory ignore-list.
@@ -135,14 +135,16 @@ Every code change ships with tests. No exceptions.
 
 ---
 
-## DESIGN.md is the living specification
+## DESIGN.md is the living architecture
 
-`DESIGN.md` is not documentation - it **is** the specification. Code implements what `DESIGN.md` describes.
+`DESIGN.md` describes the architecture needed to rebuild this system, not an
+exhaustive reference for its current implementation.
 
-- **Read it** before any architectural or API change.
-- **Update it** in the same commit whenever you add, remove, or modify a public API, protocol field, fragment type, error variant, or behavioral contract.
-- Keep its Rust code examples conceptually compilable and in sync with real code.
-- If `DESIGN.md` and the code disagree, that is a bug - fix both.
+- **Read it** before changing the architecture or an API that may cross a system boundary.
+- **Update it** when responsibilities, data flow, build/runtime boundaries, cross-layer invariants, or technology choices change. Revise existing sections instead of appending implementation notes.
+- **Do not add** exhaustive field tables, method signatures, error variants, marker byte layouts, bug-fix narratives, benchmarks, or dependency-specific workarounds. Put focused subsystem and cross-language behavioral contracts in `specs/`, exact layouts and local details with their defining source/tests, and supported application APIs in public docs.
+- **Update the relevant `specs/` reference** when a subsystem contract changes without changing the overall architecture. Add a focused reference when a new cross-layer contract needs one; do not create a spec for a local implementation detail.
+- If an architectural claim disagrees with code, reconcile both. A new API, field, or error by itself does not require a DESIGN.md change.
 
 ---
 
@@ -280,7 +282,7 @@ Before finishing any task, confirm **all** of these:
 
 - [ ] `cargo xtask check` passes.
 - [ ] Changes include or update tests.
-- [ ] `DESIGN.md` is updated if any contract changed.
+- [ ] `DESIGN.md` is updated if the architecture changed.
 - [ ] `docs/` is updated if any user-facing behavior changed.
 - [ ] No new recursion or regex in core paths.
 - [ ] No new `unwrap`/`expect` in library code.

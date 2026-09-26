@@ -143,7 +143,7 @@ pub struct CommittedMainDocument {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Hello {
-    /// Must be exactly two.
+    /// Must match the current framework envelope version (`IPC_VERSION`, currently 3).
     pub wire_version: u32,
     /// Exact generated contract name.
     pub contract_name: String,

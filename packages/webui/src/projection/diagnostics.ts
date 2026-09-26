@@ -9,8 +9,7 @@
  * `snippet`, and `help`. No color in diagnostic data; color is added only
  * by the `webui-cli` output layer.
  *
- * See DESIGN.md §"Projection diagnostic codes" for the authoritative list
- * and conditions.
+ * The code list and conditions below are the source of truth.
  */
 
 /** All stable projection diagnostic codes grouped by category. */

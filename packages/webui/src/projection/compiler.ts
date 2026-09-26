@@ -14,8 +14,8 @@
  * proves exact reactive key sets by walking inheritance iteratively, and
  * emits a deterministic `ProjectionManifest`.
  *
- * See DESIGN.md §"Bundler-Neutral State Projection Compiler" for the
- * authoritative specification this module implements.
+ * See DESIGN.md for the build/runtime architecture; the conformance fixtures
+ * and manifest validator cover the exact compiler/consumer contract.
  */
 
 import * as path from "node:path";

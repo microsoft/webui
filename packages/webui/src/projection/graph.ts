@@ -8,8 +8,8 @@
  * The adapter SPI isolates bundler-specific semantics. The projection compiler
  * (`compiler.ts`) consumes only these interfaces, never bundler-specific APIs.
  *
- * See DESIGN.md §"Bundler-Neutral State Projection Compiler" for the
- * authoritative specification.
+ * See DESIGN.md for the build/runtime architecture. The interfaces below
+ * define the exact adapter contract.
  */
 
 /** Physical/virtual classification used for hashing and path validation. */
