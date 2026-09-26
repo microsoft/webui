@@ -51,6 +51,29 @@ Compile metadata        Inject SSR markers         existing DOM,
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 
+Authored decorated setters store construction and pre-connection values
+without invoking user callbacks or reflecting host attributes. On connected
+hydration, own refs and DOM are wired before the initial authored
+`nameChanged(oldValue, newValue)` callbacks, which see field, attribute, and SSR
+state once per decorated property with an undefined old value. Detached streamed
+activation postpones callbacks until connection. Live `@attr` reflection and
+per-property author callbacks are synchronous; targeted template bindings
+coalesce across the microtask. A real disconnect defers callbacks until
+reconnection and does not repeat initial reconciliation.
+
+Initial and reconnect delivery consume each pending property before invoking
+author code. A reentrant write to another pending property uses that property's
+original old value and replaces its pending delivery, rather than causing a
+second stale callback. A callback-triggered disconnect pauses the remaining
+work. Exceptions propagate without retrying the failed callback; unentered
+callbacks resume on an explicit flush or reconnect. Hydration notification is
+latched only when `hydratedCallback` is entered, separately from DOM mount
+completion.
+
+Captured pre-upgrade own properties survive constructor defaults and initial
+attribute reactions. An explicit property assignment after upgrade supersedes
+the captured value, including while the element remains detached.
+
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 
 ---

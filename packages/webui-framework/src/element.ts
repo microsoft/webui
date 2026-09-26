@@ -61,6 +61,9 @@ const RENDER_ATTR = 'w-render';
 const HYDRATE_EAGER = 'eager';
 const INTERACTION_HYDRATION = 3;
 const LAZY_RENDER_INTERACTION = 4;
+const AUTHORED_LIVE = 1;
+const AUTHORED_PENDING = 2;
+const AUTHORED_FLUSHING = 4;
 
 // ── Development build flag ──────────────────────────────────────
 // See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
@@ -101,6 +104,123 @@ function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
  */
 export class WebUIElement extends TemplateElement {
   private $lazyHydrationMode: LazyHydrationMode | undefined;
+  // Only LIVE dispatches directly. Pending/flushing effects retain their
+  // original old values, and disconnect clears LIVE without discarding them.
+  declare private $authoredPhase: number | undefined;
+  declare private $pendingPropertyChanges: Map<string, unknown> | undefined;
+  declare private $preUpgradeProperties: Map<string, unknown> | undefined;
+
+  constructor() {
+    super();
+    const names = getObservableNames(this.constructor as Function);
+    for (const name of names) {
+      if (!Object.prototype.hasOwnProperty.call(this, name)) continue;
+      (this.$preUpgradeProperties ??= new Map()).set(
+        name, (this as Record<string, unknown>)[name],
+      );
+      delete (this as Record<string, unknown>)[name];
+    }
+  }
+
+  override connectedCallback(): void {
+    const properties = this.$preUpgradeProperties;
+    if (properties) {
+      this.$preUpgradeProperties = undefined;
+      for (const [name, value] of properties) {
+        (this as Record<string, unknown>)[name] = value;
+      }
+    }
+    super.connectedCallback();
+  }
+
+  override $destroy(): void {
+    if (this.$authoredPhase !== undefined) this.$authoredPhase &= ~AUTHORED_LIVE;
+    super.$destroy();
+  }
+
+  $recordPropertyChange(name: string, oldValue: unknown): void {
+    if (this.$authoredPhase === undefined) return;
+    const changes = this.$pendingPropertyChanges;
+    if ((this.$authoredPhase & AUTHORED_LIVE) && this.$canRunAuthoredEffects()) {
+      if (changes?.has(name)) {
+        oldValue = changes.get(name);
+        changes.delete(name);
+      }
+      try {
+        this.$invokePropertyChange(name, oldValue);
+      } finally {
+        this.$releasePropertyChanges();
+      }
+    } else {
+      const queued = changes ?? (this.$pendingPropertyChanges = new Map());
+      if (!queued.has(name)) queued.set(name, oldValue);
+      this.$authoredPhase |= AUTHORED_PENDING;
+    }
+  }
+
+  protected override $reconcileAuthoredState(): boolean {
+    if (!this.$canRunAuthoredEffects()) return !this.$pendingPropertyChanges;
+    if (this.$authoredPhase === undefined) {
+      const names = getObservableNames(this.constructor as Function);
+      for (const name of names) {
+        if (typeof (this as Record<string, unknown>)[`${name}Changed`] !== 'function') continue;
+        this.$authoredPhase = AUTHORED_LIVE;
+        if (Object.prototype.hasOwnProperty.call(this, `_${name}`)) {
+          (this.$pendingPropertyChanges ??= new Map()).set(name, undefined);
+        }
+      }
+    }
+    if (this.$authoredPhase === undefined) return true;
+    this.$authoredPhase |= AUTHORED_LIVE;
+    if (this.$authoredPhase & AUTHORED_FLUSHING) return false;
+    if (this.$pendingPropertyChanges) {
+      this.$authoredPhase |= AUTHORED_PENDING;
+      this.$flushAuthoredChanges();
+    }
+    return !this.$pendingPropertyChanges;
+  }
+
+  override $flushUpdates(): void {
+    if (this.$pendingPropertyChanges) this.$notifyHydrated();
+    super.$flushUpdates();
+  }
+
+  private $flushAuthoredChanges(): void {
+    const changes = this.$pendingPropertyChanges;
+    if (!changes || !this.$canRunAuthoredEffects()) return;
+    this.$authoredPhase = AUTHORED_LIVE | AUTHORED_PENDING | AUTHORED_FLUSHING;
+    try {
+      for (const [name, oldValue] of changes) {
+        if (!this.$canRunAuthoredEffects()) {
+          this.$authoredPhase &= ~AUTHORED_LIVE;
+          break;
+        }
+        changes.delete(name);
+        this.$invokePropertyChange(name, oldValue);
+      }
+    } finally {
+      this.$authoredPhase &= ~AUTHORED_FLUSHING;
+      this.$releasePropertyChanges();
+    }
+  }
+
+  private $invokePropertyChange(name: string, oldValue: unknown): void {
+    const value = (this as Record<string, unknown>)[name];
+    if (Object.is(oldValue, value)) return;
+    const callback = (this as Record<string, unknown>)[`${name}Changed`];
+    if (typeof callback === 'function') {
+      (callback as (old: unknown, next: unknown) => void).call(this, oldValue, value);
+    }
+  }
+
+  private $releasePropertyChanges(): void {
+    const phase = this.$authoredPhase;
+    if (phase !== undefined && this.$pendingPropertyChanges?.size === 0 &&
+        !(phase & AUTHORED_FLUSHING)) {
+      this.$pendingPropertyChanges = undefined;
+      this.$authoredPhase = phase & ~AUTHORED_PENDING;
+    }
+  }
 
   protected override $shouldDeferSSRHydration(meta?: TemplateMeta): boolean {
     this.$lazyHydrationMode = this.$resolveLazyHydrationMode(meta);
@@ -196,6 +316,7 @@ export class WebUIElement extends TemplateElement {
   }
 
   override disconnectedCallback(): void {
+    if (this.$authoredPhase !== undefined) this.$authoredPhase &= ~AUTHORED_LIVE;
     if (this.$lazyHydrationMode !== undefined) {
       disconnectLazyHydration(this);
     }
@@ -215,7 +336,7 @@ export class WebUIElement extends TemplateElement {
   }
 
   protected override $syncAuthoredAttributes(): void {
-    syncAttrProperties(this, this.constructor as Function);
+    if (this.isConnected) syncAttrProperties(this, this.constructor as Function);
   }
 
   /** Dispatch a bubbling, composed custom event for parent communication. */

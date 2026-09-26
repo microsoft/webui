@@ -818,6 +818,7 @@ transient user activation or closed-shadow click targets.
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
+| `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
@@ -871,6 +872,13 @@ once after the first successful hydration or mount, and reconnects or callback
 exceptions do not retry it. Once a host has deferred, later state writes
 are retained and replayed; this exception does not make constructor or
 pre-`super.connectedCallback()` writes safe.
+
+`@attr` reflects immediately once connected and hydrated.
+`nameChanged(oldValue, newValue)` runs after this element's refs are wired:
+once with `oldValue` undefined for initial state, then synchronously for each
+live assignment. Template bindings remain batched in a microtask.
+Disconnected changes reconcile on reconnect. A throwing callback is not retried;
+`$flushUpdates()` or reconnect resumes other pending callbacks.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a

@@ -201,6 +201,9 @@ When build-time projection is enabled, `@attr` property names are included in
 initial state metadata. If SSR already emitted the corresponding host
 attribute, that attribute is authoritative during hydration. Projected state
 fills the property only when the host attribute is absent.
+After a component is connected and hydrated, assigning an `@attr` property
+reflects its host attribute synchronously. Before connection, values are stored
+and reflected on the first mount, never in the constructor.
 
 ### `@observable` - Reactive State
 
@@ -212,11 +215,41 @@ Use `@observable` for internal state that changes over time. When an observable 
 @observable isOpen = false;
 ```
 
-Observable changes are **synchronous and targeted** - only the specific DOM nodes bound to the changed property are updated.
+Observable values are readable immediately. Changes to bindings are targeted
+and batched in a microtask, so multiple assignments in one turn normally cause
+one DOM update. Call `$flushUpdates()` if code needs pending template updates
+synchronously.
 
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
+
+### React to Property Changes
+
+Implement a `<property>Changed(oldValue, newValue)` method to synchronize
+behavior with an `@attr` or `@observable` property:
+
+```typescript
+disabledChanged(_oldValue: boolean | undefined, newValue: boolean): void {
+  this.internals.ariaDisabled = String(newValue);
+}
+```
+
+Each initialized property with a callback is reconciled once **after this component's
+DOM, event bindings, and `w-ref` fields are ready**, with `undefined` as the
+initial old value and the final field, attribute, or SSR value as the new value.
+Callbacks do not run during construction or deferred hydration. After mounting,
+each assignment invokes its callback synchronously with the previous and new
+values; template bindings still batch in a microtask. Changes while disconnected
+are reconciled on reconnection without repeating the initial callback.
+Constructor-created `ElementInternals` is available in these callbacks.
+For work that runs only once regardless of property values, use
+`hydratedCallback()`. Constructor-time `isConnected` and uninitialized-internals
+guards can be removed when they only protected decorated-property callbacks;
+keep guards for optional resources or lazy descendants.
+
+Callback errors propagate. The failed callback is not retried; call
+`$flushUpdates()` or reconnect the element to resume other pending callbacks.
 
 ### Initial Hydration State
 

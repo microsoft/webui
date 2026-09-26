@@ -18,6 +18,10 @@ class FakeElement {
   isConnected = false;
   private readonly attrs = new Map<string, string>();
 
+  $canRunAuthoredEffects(): boolean {
+    return this.$ready;
+  }
+
   getAttribute(name: string): string | null {
     return this.attrs.get(name) ?? null;
   }

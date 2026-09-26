@@ -436,6 +436,9 @@ function hasAuthoredMember(instance: object, key: string): boolean {
   return false;
 }
 
+const MOUNTED = 1;
+const HYDRATION_NOTIFIED = 2;
+
 // ═══════════════════════════════════════════════════════════════════
 //  TemplateElement - compiled rendering core (no decorators / events / refs / emit)
 // ═══════════════════════════════════════════════════════════════════
@@ -461,7 +464,7 @@ export class TemplateElement extends HTMLElement {
   private $deferredClientMount = false;
   private $resetClientShadow = false;
   /** Retained across teardown so reconnect is never mistaken for fresh SSR. */
-  private $hasMounted = false;
+  private $mountPhase = 0;
   private $deferredSSR = false;
   private $activatingDeferredSSR = false;
   declare private $deferredAncestor: TemplateElement | undefined;
@@ -676,6 +679,8 @@ export class TemplateElement extends HTMLElement {
       hydrationStart();
       try {
         this.$ready = true;
+        this.$syncAuthoredAttributes();
+        this.$notifyHydrated();
         this.$update();
       } finally {
         hydrationEnd();
@@ -698,7 +703,7 @@ export class TemplateElement extends HTMLElement {
     // window has no `data-ws` and falls through to mount normally below — the
     // marker, not an empty-subtree heuristic, is what distinguishes the two.
     if (
-      !this.$hasMounted &&
+      !this.$mountPhase &&
       isStreamingHydrationMode() &&
       this.hasAttribute(STREAMED_HOST_ATTR)
     ) {
@@ -721,7 +726,7 @@ export class TemplateElement extends HTMLElement {
     // Under WebUI's loading contract, deferred scripts run after parsing and
     // blocking scripts follow every component instance they may upgrade.
     // Mount synchronously so super.connectedCallback() is the hydration boundary.
-    if (this.$hasMounted) {
+    if (this.$mountPhase) {
       this.$remount(meta);
     } else {
       this.$mount(meta, false);
@@ -1384,12 +1389,14 @@ export class TemplateElement extends HTMLElement {
   protected hydratedCallback(): void {
   }
 
-  private $notifyHydrated(): void {
-    if (this.$hasMounted) return;
-    // Latch before author code so an exception can never turn reconnect into a
-    // retry of a lifecycle that has already been entered.
-    this.$hasMounted = true;
-    this.hydratedCallback();
+  protected $notifyHydrated(): void {
+    if (!this.$mountPhase) this.$mountPhase = MOUNTED;
+    if (!this.$reconcileAuthoredState()) return;
+    if (this.$mountPhase === MOUNTED) {
+      // Latch only the callback being entered, not unrelated pending effects.
+      this.$mountPhase = HYDRATION_NOTIFIED;
+      this.hydratedCallback();
+    }
   }
 
   private $finishHydration(): void {
@@ -1605,7 +1612,19 @@ export class TemplateElement extends HTMLElement {
   /** Synchronously flush all queued path updates. Call this when you need
    *  the DOM to reflect pending property changes immediately. */
   $flushUpdates(): void {
+    if (this.$mountPhase === MOUNTED) this.$notifyHydrated();
     if (this.$pendingFlush) this.$flush();
+  }
+
+  /** Reconcile authored state; false postpones hydration notification. */
+  protected $reconcileAuthoredState(): boolean {
+    return true;
+  }
+
+  /** True only when this instance's own DOM has completed mounting. */
+  protected $canRunAuthoredEffects(): boolean {
+    return this.$hydrated && this.$root !== null && this.$ready &&
+      !this.$deferredClientMount && this.isConnected;
   }
 
   /** Flush all queued path updates. Handles re-entrant setter calls. */

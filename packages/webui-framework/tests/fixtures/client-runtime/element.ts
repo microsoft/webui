@@ -3,6 +3,8 @@
 
 import {
   WebUIElement,
+  attr,
+  observable,
   registerTemplateData,
   type TemplateMeta,
 } from '../../../src/index.js';
@@ -17,6 +19,10 @@ const templates: Record<string, TemplateMeta> = {
     ta: ['label'],
     th: 1,
   },
+  'test-runtime-effects': {
+    h: '<span></span>',
+    th: 1,
+  },
   'test-runtime-throw': {
     h: '<span></span>',
     th: 1,
@@ -27,8 +33,14 @@ const templates: Record<string, TemplateMeta> = {
 };
 
 export class TestRuntimeLife extends WebUIElement {
+  @observable count = 0;
   hydratedCalls = 0;
+  propertyCalls: { oldValue: unknown; value: number; connected: boolean }[] = [];
   attributeChanges: string[] = [];
+
+  countChanged(oldValue: unknown, value: number): void {
+    this.propertyCalls.push({ oldValue, value, connected: this.isConnected });
+  }
 
   protected override hydratedCallback(): void {
     this.hydratedCalls++;
@@ -41,6 +53,30 @@ export class TestRuntimeLife extends WebUIElement {
   ): void {
     super.attributeChangedCallback(name, oldValue, newValue);
     this.attributeChanges.push(name);
+  }
+}
+
+export class TestRuntimeEffects extends WebUIElement {
+  @observable a = 0;
+  @observable b = 0;
+  @attr label = 'default';
+  calls: (
+    | { name: 'a' | 'b'; oldValue: number | undefined; value: number; connected: boolean }
+    | { name: 'hydrated'; connected: boolean }
+  )[] = [];
+  onAChange?: (oldValue: number | undefined, value: number) => void;
+
+  aChanged(oldValue: number | undefined, value: number): void {
+    this.calls.push({ name: 'a', oldValue, value, connected: this.isConnected });
+    this.onAChange?.(oldValue, value);
+  }
+
+  bChanged(oldValue: number | undefined, value: number): void {
+    this.calls.push({ name: 'b', oldValue, value, connected: this.isConnected });
+  }
+
+  protected override hydratedCallback(): void {
+    this.calls.push({ name: 'hydrated', connected: this.isConnected });
   }
 }
 
@@ -70,6 +106,7 @@ if (!streaming && !routerLate) {
 }
 
 TestRuntimeLife.define('test-runtime-life');
+TestRuntimeEffects.define('test-runtime-effects');
 TestRuntimeThrow.define('test-runtime-throw');
 
 window.TestRuntimeLife = TestRuntimeLife;

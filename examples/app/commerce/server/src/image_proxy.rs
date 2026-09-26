@@ -148,7 +148,9 @@ mod tests {
     use super::{snap_width, ImageCache, SERVED_WIDTHS};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
     struct TestImagesDir {
         path: PathBuf,
@@ -156,9 +158,7 @@ mod tests {
 
     impl TestImagesDir {
         fn new() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
+            let unique = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
                 "webui-commerce-image-cache-{}-{unique}",
                 std::process::id()
@@ -223,6 +223,16 @@ mod tests {
             cache.len() * SERVED_WIDTHS.len(),
             "every stem should have a variant for each served width"
         );
+    }
+
+    #[test]
+    fn test_image_directories_do_not_share_files() {
+        let first = TestImagesDir::new();
+        let second = TestImagesDir::new();
+        assert_ne!(first.path(), second.path());
+        drop(first);
+        let cache = ImageCache::load(second.path()).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]

@@ -266,6 +266,12 @@ function createReactiveProperty(
       return this[backingKey];
     },
     set(this: ReactiveInstance, newValue: unknown) {
+      const captured = this['$preUpgradeProperties'] as Map<string, unknown> | undefined;
+      // :defined stays false during an upgrade's constructor and field initializers.
+      if (captured?.has(name) && (this as unknown as HTMLElement).matches(':defined')) {
+        captured.delete(name);
+        if (captured.size === 0) this['$preUpgradeProperties'] = undefined;
+      }
       const oldValue = this[backingKey];
       if (Object.is(oldValue, newValue)) {
         if (this['$deferredSSR'] === true) {
@@ -278,13 +284,34 @@ function createReactiveProperty(
       }
       this[backingKey] = newValue;
 
-      if (attrDefinition && this['$ready'] === true) {
-        reflectPropertyToAttribute(this, attrDefinition, newValue);
+      let canReflect = false;
+      if (attrDefinition) {
+        const checkReflection = this['$canRunAuthoredEffects'];
+        if (typeof checkReflection === 'function' &&
+            (checkReflection as () => boolean).call(this)) {
+          reflectPropertyToAttribute(this, attrDefinition, newValue);
+          canReflect = true;
+        }
       }
 
-      const cb = this[changedKey];
-      if (typeof cb === 'function') {
-        (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
+      const callback = this[changedKey];
+      if (typeof callback === 'function') {
+        if (
+          this['$authoredPhase'] === 1 &&
+          (attrDefinition ? canReflect : (this as unknown as HTMLElement).isConnected)
+        ) {
+          (callback as (old: unknown, next: unknown) => void)
+            .call(this, oldValue, newValue);
+        } else {
+          const record = this['$recordPropertyChange'];
+          if (typeof record === 'function') {
+            (record as (name: string, old: unknown) => void)
+              .call(this, name, oldValue);
+          } else {
+            (callback as (old: unknown, next: unknown) => void)
+              .call(this, oldValue, newValue);
+          }
+        }
       }
 
       if (
@@ -301,10 +328,8 @@ function createReactiveProperty(
 }
 
 /**
- * Marks a property as observable. When the value changes the decorator will:
- * 1. Call `this.<prop>Changed(oldValue, newValue)` if defined.
- * 2. Call `this.$update(name)` if the element is connected, targeting
- *    only bindings that reference this property.
+ * Marks a property as observable. Changes update targeted bindings and invoke
+ * `nameChanged(oldValue, newValue)` after the component is mounted.
  */
 export function observable(target: object, name: string): void {
   const ctor = (target as Record<string, unknown>).constructor as Function;
@@ -401,9 +426,14 @@ function applyAttr(
         definition !== undefined &&
         (this as ReactiveInstance)[reflectingAttribute] !== attribute
       ) {
-        (this as Record<string, unknown>)[definition.property] = definition.boolean
-          ? newVal !== null
-          : newVal;
+        // Initial attribute reactions must not replace pre-upgrade own properties.
+        const captured = this['$preUpgradeProperties'];
+        if (captured) this['$preUpgradeProperties'] = undefined;
+        try {
+          this[definition.property] = definition.boolean ? newVal !== null : newVal;
+        } finally {
+          if (captured) this['$preUpgradeProperties'] = captured;
+        }
       }
 
       // Preserve any pre-existing attributeChangedCallback.

@@ -274,6 +274,12 @@ ordinary descendants can mutate its SSR markers; successful first activation
 calls the authored hydration lifecycle once. Optional coordinators are loaded
 only when the application imports their entry points.
 
+Authored property state is separate from its effects. Construction may store
+values, but property callbacks wait for connection and this component's own
+DOM and refs. Live callbacks remain synchronous, while template updates
+coalesce independently. Disconnect pauses authored effects without losing the
+state needed to reconcile on reconnect.
+
 The framework treats compiled HTML and metadata as trusted output of its own
 compiler, not as arbitrary user HTML. Trusted Types support protects compiler
 sinks when available; it is not a sanitizer for triple-brace values or a
