@@ -100,8 +100,8 @@ jobs:
       - name: Install native IPC test display
         run: sudo apt-get install -y -qq apparmor dbus-x11 xvfb xauth
 
-      - name: Fetch native IPC test dependencies
-        run: cargo fetch --locked
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
       - name: Test release native IPC source/package and no-IPC
         run: |
@@ -153,8 +153,8 @@ jobs:
           cargo test -p microsoft-webui-desktop --no-default-features --features native
           cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
 
-      - name: Fetch native IPC test dependencies
-        run: cargo fetch --locked
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
       - name: Test release native IPC source/package and no-IPC
         run: python3 crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60
@@ -228,8 +228,8 @@ jobs:
       - name: Test native desktop SDK
         run: cargo test -p microsoft-webui-desktop --no-default-features --features native
 
-      - name: Fetch native IPC test dependencies
-        run: cargo fetch --locked
+      - name: Fetch native IPC fixture dependencies
+        run: cargo fetch --locked --manifest-path crates/webui-desktop/tests/fixtures/native-ipc/Cargo.toml
 
       - name: Test release native IPC source/package and no-IPC
         run: python crates/webui-desktop/tests/fixtures/native-ipc/run.py --timeout 60

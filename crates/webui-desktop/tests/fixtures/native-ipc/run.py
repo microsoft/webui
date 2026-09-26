@@ -98,19 +98,11 @@ def assert_runtime_dependencies(packages):
 
 def check_runtime_dependencies():
     tree = subprocess.check_output([
-        "cargo", "tree", "-p", "microsoft-webui-desktop", "--offline", "--locked",
-        "--no-default-features", "--features", "native,application-ipc",
-        "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
+        "cargo", "tree", "--offline", "--locked", "--manifest-path", str(FIXTURE / "Cargo.toml"),
+        "--no-default-features", "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
     ], cwd=ROOT, text=True)
     assert_runtime_dependencies(line.split()[0] for line in tree.splitlines() if line)
     return tree
-
-
-def runner_build_command(source):
-    features = "native,application-ipc,source" if source else "native,application-ipc"
-    return ["cargo", "build", "--offline", "--locked", "--release",
-            "-p", "microsoft-webui-desktop", "--example", "webui-native-ipc-fixture",
-            "--no-default-features", "--features", features]
 
 
 def no_ipc_run(artifacts, plan, timeout):
@@ -223,26 +215,26 @@ def main():
     execute(["node", ROOT / "packages/webui-desktop/node_modules/typescript/bin/tsc",
              "-p", FIXTURE / "tsconfig.json"])
     (artifacts / "runtime-dependencies.log").write_text(check_runtime_dependencies())
-    execute(runner_build_command(source=True), timeout=900)
+    build = ["cargo", "build", "--offline", "--locked", "--release", "--no-default-features",
+             "--manifest-path", FIXTURE / "Cargo.toml", "--target-dir", ROOT / "target"]
+    execute([*build, "--features", "source"], timeout=900)
     source_runner = artifacts / "source-runner"
     source_runner.mkdir()
     binary = source_runner / plan["executable"]
-    copy_native_runner(ROOT / "target/release/examples" / plan["executable"],
-                       binary, plan["platform"],
-                       companion_directory=ROOT / "target/release")
+    copy_native_runner(ROOT / "target/release" / plan["executable"],
+                       binary, plan["platform"])
     digest = sha256(binary)
     metadata = capture([binary, "metadata"], "NATIVE_METADATA ")
     for key in ["platform", "native_backend", "package_target"]:
         assert metadata[key] == plan[key], f"SDK {key} differs from platform plan"
     assert all(metadata[key] for key in ["application_ipc", "events", "window_controls"])
     assert metadata["source"] is True
-    execute(runner_build_command(source=False), timeout=900)
+    execute(build, timeout=900)
     runtime_runner = artifacts / "runtime-runner"
     runtime_runner.mkdir()
     runtime_binary = runtime_runner / plan["executable"]
-    copy_native_runner(ROOT / "target/release/examples" / plan["executable"],
-                       runtime_binary, plan["platform"],
-                       companion_directory=ROOT / "target/release")
+    copy_native_runner(ROOT / "target/release" / plan["executable"],
+                       runtime_binary, plan["platform"])
     runtime_digest = sha256(runtime_binary)
     runtime_metadata = capture([runtime_binary, "metadata"], "NATIVE_METADATA ")
     assert runtime_metadata == dict(metadata, source=False)

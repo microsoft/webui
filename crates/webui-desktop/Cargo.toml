@@ -96,7 +96,6 @@ webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 prost = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.30" }
 
 [[test]]
 name = "ipc_contract"
@@ -121,11 +120,6 @@ required-features = ["native"]
 name = "no-ipc-native"
 path = "tests/fixtures/no-ipc-native.rs"
 required-features = ["native", "source"]
-
-[[example]]
-name = "webui-native-ipc-fixture"
-path = "tests/fixtures/native-ipc/src/main.rs"
-required-features = ["native", "application-ipc"]
 
 [lints]
 workspace = true
