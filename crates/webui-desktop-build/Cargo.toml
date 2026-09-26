@@ -22,7 +22,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.29", features = ["application-ipc"] }
+microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.30", features = ["application-ipc"] }
 tempfile = { workspace = true }
 
 [lints]
