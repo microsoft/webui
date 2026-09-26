@@ -39,7 +39,7 @@ For a native runner:
 
 ```toml
 [dependencies]
-webui-desktop = { package = "microsoft-webui-desktop", version = "0.0.29", default-features = false, features = ["native"] }
+webui-desktop = { package = "microsoft-webui-desktop", version = "0.0.30", default-features = false, features = ["native"] }
 serde_json = "1.0"
 
 [features]

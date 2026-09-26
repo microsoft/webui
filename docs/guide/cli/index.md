@@ -698,7 +698,7 @@ default = []
 source = ["microsoft-webui-desktop/source"]
 
 [dependencies]
-microsoft-webui-desktop = { version = "0.0.29", features = ["native"] }
+microsoft-webui-desktop = { version = "0.0.30", features = ["native"] }
 ```
 
 `webui desktop package` builds this lean configuration automatically. For a

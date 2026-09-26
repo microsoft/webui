@@ -51,11 +51,11 @@ source = ["dep:microsoft-webui", "dep:sha2"]
 cli = ["native", "source", "dep:clap", "dep:console", "dep:expand-tilde", "dep:microsoft-webui-desktop-build"]
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "0.0.29", features = ["cli"], optional = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.29" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.29" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.29" }
-microsoft-webui-desktop-build = { path = "../webui-desktop-build", version = "0.0.29", optional = true }
+microsoft-webui = { path = "../webui", version = "0.0.30", features = ["cli"], optional = true }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.30" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.30" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.30" }
+microsoft-webui-desktop-build = { path = "../webui-desktop-build", version = "0.0.30", optional = true }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }
 serde = { workspace = true }

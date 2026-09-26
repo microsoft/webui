@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "bytes",
  "crossbeam-queue",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-desktop"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "anyhow",
  "block2",
@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-discovery"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "anyhow",
  "expand-tilde",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-expressions"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "microsoft-webui-protocol",
  "microsoft-webui-state",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-handler"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "memchr",
  "microsoft-webui-expressions",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-parser"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "clap",
  "html-escape",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-protocol"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "prost",
  "serde",
@@ -887,14 +887,14 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-state"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "microsoft-webui-test-utils"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "microsoft-webui-protocol",
  "serde_json",
@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-tokens"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "serde_json",
  "thiserror",

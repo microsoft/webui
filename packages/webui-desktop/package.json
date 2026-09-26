@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-desktop",
-  "version": "0.0.29",
+  "version": "0.0.30",
   "description": "Typed browser IPC runtime for the WebUI desktop SDK",
   "license": "MIT",
   "type": "module",
