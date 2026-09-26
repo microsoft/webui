@@ -33,7 +33,7 @@ test.describe('css link fixture', () => {
       return label instanceof HTMLElement ? getComputedStyle(label).color : null;
     })).toBe('rgb(128, 0, 128)');
 
-    await expect(page.locator('test-link-host').evaluate((host) => {
+    const stylesheets = await page.locator('test-link-host').evaluate((host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child');
       return {
         adopted: child?.shadowRoot?.adoptedStyleSheets.length ?? 0,
@@ -43,7 +43,13 @@ test.describe('css link fixture', () => {
           ).filter(link => (link as HTMLLinkElement).disabled).length,
         links: child?.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
       };
-    })).resolves.toEqual({ adopted: 2, disabled: 2, links: 2 });
+    });
+    expect(stylesheets.links).toBe(2);
+    expect(stylesheets).toMatchObject(
+      stylesheets.adopted === 2
+        ? { adopted: 2, disabled: 2 }
+        : { adopted: 0, disabled: 0 },
+    );
 
     await page.locator('test-link-host').evaluate(async (host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child') as

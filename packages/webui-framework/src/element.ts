@@ -101,6 +101,101 @@ function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
  */
 export class WebUIElement extends TemplateElement {
   private $lazyHydrationMode: LazyHydrationMode | undefined;
+  private $initialPropertiesPending = true;
+  private $propertyFlushScheduled = false;
+  private readonly $hasPropertyEffects =
+    this.propertiesChanged !== WebUIElement.prototype.propertiesChanged;
+  declare private $pendingPropertyChanges: Map<string, unknown> | undefined;
+  declare private $preUpgradeProperties: Map<string, unknown> | undefined;
+
+  constructor() {
+    super();
+    const names = getObservableNames(this.constructor as Function);
+    for (const name of names) {
+      if (!Object.prototype.hasOwnProperty.call(this, name)) continue;
+      (this.$preUpgradeProperties ??= new Map()).set(
+        name, (this as Record<string, unknown>)[name],
+      );
+      delete (this as Record<string, unknown>)[name];
+    }
+  }
+
+  override connectedCallback(): void {
+    const hadPendingChanges = this.$pendingPropertyChanges !== undefined;
+    const properties = this.$preUpgradeProperties;
+    if (properties) {
+      this.$preUpgradeProperties = undefined;
+      for (const [name, value] of properties) {
+        (this as Record<string, unknown>)[name] = value;
+      }
+    }
+    super.connectedCallback();
+    this.$reconcileAuthoredState();
+    if (hadPendingChanges) this.$flushAuthoredChanges();
+  }
+
+  /** Observe final decorated property values after a live update transaction. */
+  protected propertiesChanged(
+    _changes: ReadonlyMap<string, unknown>,
+    _firstChange: boolean,
+  ): void {
+  }
+
+  $canReflectAttr(): boolean {
+    return this.$canRunAuthoredEffects();
+  }
+
+  $recordPropertyChange(name: string, oldValue: unknown): void {
+    if (this.$initialPropertiesPending) return;
+    const changes = this.$pendingPropertyChanges ??= new Map();
+    if (!changes.has(name)) changes.set(name, oldValue);
+    if (this.$canRunAuthoredEffects() && !this.$propertyFlushScheduled) {
+      this.$propertyFlushScheduled = true;
+      queueMicrotask(() => {
+        this.$propertyFlushScheduled = false;
+        this.$flushAuthoredChanges();
+      });
+    }
+  }
+
+  protected override $reconcileAuthoredState(): void {
+    if (!this.$initialPropertiesPending || !this.$canRunAuthoredEffects()) return;
+    this.$initialPropertiesPending = false;
+    const names = getObservableNames(this.constructor as Function);
+    if (DEV) {
+      for (const name of names) {
+        if (typeof (this as Record<string, unknown>)[`${name}Changed`] === 'function') {
+          throw new Error(
+            `[WebUI] ${this.localName}.${name}Changed is no longer called. ` +
+            'Use propertiesChanged(changes, firstChange) instead.',
+          );
+        }
+      }
+    }
+    if (!this.$hasPropertyEffects) return;
+    const changes = new Map<string, unknown>();
+    for (const name of names) {
+      if (Object.prototype.hasOwnProperty.call(this, `_${name}`)) {
+        changes.set(name, undefined);
+      }
+    }
+    this.propertiesChanged(changes, true);
+  }
+
+  protected override $flushAuthoredChanges(): void {
+    if (!this.$canRunAuthoredEffects()) return;
+    this.$propertyFlushScheduled = false;
+    this.$reconcileAuthoredState();
+    const changes = this.$pendingPropertyChanges;
+    if (!changes) return;
+    this.$pendingPropertyChanges = undefined;
+    for (const [name, oldValue] of changes) {
+      if (Object.is(oldValue, (this as Record<string, unknown>)[name])) {
+        changes.delete(name);
+      }
+    }
+    if (changes.size) this.propertiesChanged(changes, false);
+  }
 
   protected override $shouldDeferSSRHydration(meta?: TemplateMeta): boolean {
     this.$lazyHydrationMode = this.$resolveLazyHydrationMode(meta);
@@ -215,7 +310,7 @@ export class WebUIElement extends TemplateElement {
   }
 
   protected override $syncAuthoredAttributes(): void {
-    syncAttrProperties(this, this.constructor as Function);
+    if (this.isConnected) syncAttrProperties(this, this.constructor as Function);
   }
 
   /** Dispatch a bubbling, composed custom event for parent communication. */

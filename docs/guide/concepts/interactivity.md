@@ -201,6 +201,9 @@ When build-time projection is enabled, `@attr` property names are included in
 initial state metadata. If SSR already emitted the corresponding host
 attribute, that attribute is authoritative during hydration. Projected state
 fills the property only when the host attribute is absent.
+After a component is connected and hydrated, assigning an `@attr` property
+reflects its host attribute synchronously. Before connection, values are stored
+and reflected on the first mount, never in the constructor.
 
 ### `@observable` - Reactive State
 
@@ -212,11 +215,45 @@ Use `@observable` for internal state that changes over time. When an observable 
 @observable isOpen = false;
 ```
 
-Observable changes are **synchronous and targeted** - only the specific DOM nodes bound to the changed property are updated.
+Observable values are readable immediately. Changes to bindings are targeted
+and batched in a microtask, so multiple assignments in one turn normally cause
+one DOM update. Call `$flushUpdates()` if code needs pending template updates
+synchronously.
 
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
+
+### React to Property Changes
+
+Override `propertiesChanged(changes, firstChange)` to synchronize component
+behavior with decorated properties:
+
+```typescript
+protected override propertiesChanged(
+  changes: ReadonlyMap<string, unknown>,
+  firstChange: boolean,
+): void {
+  if (changes.has('disabled') || firstChange) {
+    this.internals.ariaDisabled = String(this.disabled);
+  }
+}
+```
+
+The hook runs once on first connection **after this component's DOM, event
+bindings, and `w-ref` fields are ready**, using final field, attribute, and SSR
+values. It does not run in the constructor or while hydration is deferred.
+`firstChange` is `true` for this initial pass. On later changes, multiple
+property assignments in one turn are combined into one call before the next
+template update. `changes` contains the first old value for each property
+whose final value differs; read the latest value from `this`. A disconnected
+component resumes pending changes when reconnected without repeating its
+initial pass. Constructor-created `ElementInternals` is available in this
+hook. For code that should run only once, whether properties changed or not,
+use `hydratedCallback()`.
+
+The former `nameChanged(old, new)` convention is removed. See the
+[reactive lifecycle migration guide](./reactive-lifecycle-migration).
 
 ### Initial Hydration State
 

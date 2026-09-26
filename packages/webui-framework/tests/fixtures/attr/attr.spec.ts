@@ -4,6 +4,162 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('attr fixture', () => {
+  test('creating an element does not run property effects in the constructor', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const result = await page.evaluate(() => {
+      const host = document.createElement('test-attr');
+      const constructorAttributes = host.getAttributeNames();
+      const upgraded = host instanceof customElements.get('test-attr')!;
+      document.body.appendChild(host);
+      return { constructorAttributes, upgraded, role: host.getAttribute('role') };
+    });
+    expect(result).toEqual({ constructorAttributes: [], upgraded: true, role: 'status' });
+  });
+
+  test('reconciles initial properties after refs and internals exist', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const initial = await page.locator('test-attr').first().evaluate((host) =>
+      (host as unknown as { changeLog: { first: boolean; keys: string[]; refReady: boolean; internalsReady: boolean }[] }).changeLog,
+    );
+    expect(initial).toHaveLength(1);
+    expect(initial[0]).toMatchObject({
+      first: true,
+      refReady: true,
+      internalsReady: true,
+    });
+    expect(initial[0].keys).toContain('isActive');
+  });
+
+  test('reflects synchronously but coalesces net property effects', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const result = await page.locator('test-attr').first().evaluate(async (host) => {
+      const el = host as HTMLElement & {
+        label: string;
+        isActive: boolean;
+        changeLog: { first: boolean; keys: string[]; previousLabel: unknown }[];
+      };
+      const initialCount = el.changeLog.length;
+      el.label = 'Intermediate';
+      el.label = 'Final';
+      el.isActive = true;
+      const attributeImmediately = el.getAttribute('label');
+      const boolImmediately = el.hasAttribute('is-active');
+      const callbacksImmediately = el.changeLog.length;
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      return {
+        attributeImmediately, boolImmediately, callbacksImmediately,
+        initialCount, newCalls: el.changeLog.slice(initialCount),
+      };
+    });
+    expect(result.attributeImmediately).toBe('Final');
+    expect(result.boolImmediately).toBe(true);
+    expect(result.callbacksImmediately).toBe(result.initialCount);
+    expect(result.newCalls).toEqual([{
+      first: false,
+      keys: ['label', 'isActive'],
+      previousLabel: 'Status',
+      refReady: true,
+      internalsReady: true,
+    }]);
+  });
+
+  test('queues writes made inside propertiesChanged for the next transaction', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const result = await page.locator('test-attr').first().evaluate(async (host) => {
+      const el = host as HTMLElement & {
+        label: string;
+        displayValue: string;
+        changeLog: { first: boolean; keys: string[] }[];
+        propertiesChanged(changes: ReadonlyMap<string, unknown>, first: boolean): void;
+      };
+      const proto = Object.getPrototypeOf(el) as typeof el;
+      const original = proto.propertiesChanged;
+      proto.propertiesChanged = function (changes, first) {
+        original.call(this, changes, first);
+        if (changes.has('label')) this.displayValue = 'From callback';
+      };
+      try {
+        const initialCount = el.changeLog.length;
+        el.label = 'Changed';
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return {
+          calls: el.changeLog.slice(initialCount).map(({ first, keys }) => ({ first, keys })),
+          displayValue: el.displayValue,
+        };
+      } finally {
+        proto.propertiesChanged = original;
+      }
+    });
+    expect(result).toEqual({
+      calls: [
+        { first: false, keys: ['label'] },
+        { first: false, keys: ['displayValue'] },
+      ],
+      displayValue: 'From callback',
+    });
+  });
+
+  test('does not rerun initial effects on move or lose changes while disconnected', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const result = await page.locator('test-attr').first().evaluate(async (host) => {
+      const el = host as HTMLElement & {
+        label: string;
+        changeLog: { first: boolean; keys: string[] }[];
+      };
+      el.remove();
+      el.label = 'Detached';
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      const whileDetached = el.changeLog.length;
+      document.body.appendChild(el);
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      return {
+        whileDetached,
+        calls: el.changeLog.map(({ first, keys }) => ({ first, keys })),
+        role: el.getAttribute('role'),
+      };
+    });
+    expect(result.whileDetached).toBe(1);
+    expect(result.calls).toEqual([
+      { first: true, keys: ['label', 'displayValue', 'ctaHref', 'isActive', 'itemId', 'tag'] },
+      { first: false, keys: ['label'] },
+    ]);
+    expect(result.role).toBe('status');
+  });
+
+  test('preserves an own property set before custom-element upgrade', async ({ page }) => {
+    await page.addInitScript(() => {
+      const host = document.createElement('test-attr') as HTMLElement & { label: string };
+      host.label = 'Before upgrade';
+      (window as Window & { preUpgradeHost?: HTMLElement }).preUpgradeHost = host;
+    });
+    await page.goto('/attr/fixture.html');
+    const result = await page.evaluate(() => {
+      const host = (window as Window & { preUpgradeHost?: HTMLElement }).preUpgradeHost!;
+      document.body.appendChild(host);
+      return {
+        property: (host as HTMLElement & { label: string }).label,
+        attribute: host.getAttribute('label'),
+        upgraded: host instanceof customElements.get('test-attr')!,
+      };
+    });
+    expect(result).toEqual({
+      property: 'Before upgrade', attribute: 'Before upgrade', upgraded: true,
+    });
+  });
+
+  test('rejects old per-property callbacks in development', async ({ page }) => {
+    await page.goto('/attr/fixture.html');
+    const error = page.waitForEvent('pageerror');
+    await page.evaluate(() => {
+      const ctor = customElements.get('test-attr')!;
+      (ctor.prototype as HTMLElement & { labelChanged?: () => void }).labelChanged = () => {};
+      document.body.appendChild(document.createElement('test-attr'));
+    });
+    expect((await error).message).toContain(
+      'labelChanged is no longer called. Use propertiesChanged',
+    );
+  });
+
   test.beforeEach(async ({ page }) => {
     await page.goto('/attr/fixture.html');
     await page.waitForSelector('test-attr');

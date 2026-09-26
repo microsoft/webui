@@ -28,8 +28,8 @@ export class CbContactForm extends WebUIElement {
   @observable selectedGroup = '';
   @observable groups: string[] = [];
 
-  groupsChanged(): void {
-    if (!this.selectedGroup && this.groups.length > 0) {
+  protected override propertiesChanged(changes: ReadonlyMap<string, unknown>): void {
+    if (changes.has('groups') && !this.selectedGroup && this.groups.length > 0) {
       this.selectedGroup = this.groups[0] ?? '';
     }
   }

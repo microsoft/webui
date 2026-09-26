@@ -76,6 +76,13 @@ export class CounterCard extends WebUIElement {
 CounterCard.define('counter-card');
 ```
 
+Decorated properties are readable immediately. After the element connects
+and hydrates, `@attr` reflects to the host synchronously and template updates
+are batched. Use `protected propertiesChanged(changes, firstChange)` for
+property-dependent effects: its initial call has refs ready and later calls
+coalesce assignments. The old `nameChanged` convention is removed. See the
+[migration guide](https://microsoft.github.io/webui/guide/concepts/reactive-lifecycle-migration).
+
 ### `counter-card.html`
 
 ```html

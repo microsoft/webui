@@ -3,6 +3,7 @@
 
 import {
   WebUIElement,
+  observable,
   registerTemplateData,
   type TemplateMeta,
 } from '../../../src/index.js';
@@ -27,8 +28,17 @@ const templates: Record<string, TemplateMeta> = {
 };
 
 export class TestRuntimeLife extends WebUIElement {
+  @observable count = 0;
   hydratedCalls = 0;
+  propertyCalls: { first: boolean; connected: boolean }[] = [];
   attributeChanges: string[] = [];
+
+  protected override propertiesChanged(
+    _changes: ReadonlyMap<string, unknown>,
+    first: boolean,
+  ): void {
+    this.propertyCalls.push({ first, connected: this.isConnected });
+  }
 
   protected override hydratedCallback(): void {
     this.hydratedCalls++;

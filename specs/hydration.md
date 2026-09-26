@@ -51,6 +51,16 @@ Compile metadata        Inject SSR markers         existing DOM,
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 
+Authored decorated setters store construction and pre-connection values
+without invoking user callbacks or reflecting host attributes. On connected
+hydration, own refs and DOM are wired before the initial authored
+`propertiesChanged` reconciliation, which sees field, attribute, and SSR
+state once. Detached streamed activation postpones this pass until connection.
+Live `@attr` reflection is synchronous and value-compared; author effects and
+targeted bindings coalesce across the microtask. The explicit `$flushUpdates`
+barrier runs author effects before template patches. A real disconnect defers
+effects until reconnection and does not repeat initial reconciliation.
+
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 
 ---

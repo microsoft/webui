@@ -16,16 +16,15 @@ export class MpProductGallery extends WebUIElement {
   @observable images!: GalleryImage[];
   @observable activeIndex = 0;
 
-  handleChanged(): void {
-    this.applyViewTransitionName();
-  }
-
-  activeIndexChanged(): void {
-    const images = this.galleryImages();
-    const active = images[this.activeIndex];
-    if (active) {
-      this.activeGradient = active.gradient;
-      this.activeImageUrl = active.imageUrl;
+  protected override propertiesChanged(changes: ReadonlyMap<string, unknown>): void {
+    if (changes.has('handle')) this.applyViewTransitionName();
+    if (changes.has('activeIndex') || changes.has('images')) {
+      const images = this.galleryImages();
+      const active = images[this.activeIndex];
+      if (active) {
+        this.activeGradient = active.gradient;
+        this.activeImageUrl = active.imageUrl;
+      }
     }
   }
 

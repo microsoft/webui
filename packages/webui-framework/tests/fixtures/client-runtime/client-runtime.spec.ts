@@ -135,13 +135,22 @@ test('streamed activation fires once, including detached late definition', async
       connected: el.isConnected,
       outcome,
       calls: el.hydratedCalls,
+      propertyCalls: el.propertyCalls.length,
+      afterConnect: (() => {
+        document.body.appendChild(el);
+        return el.propertyCalls;
+      })(),
     };
   }, 'microsoft.webui.boundaryActivate');
 
-  expect(detached).toEqual({ connected: false, outcome: 1, calls: 1 });
+  expect(detached).toEqual({
+    connected: false, outcome: 1, calls: 1, propertyCalls: 0,
+    afterConnect: [{ first: true, connected: true }],
+  });
 });
 
 type TestRuntimeLife = HTMLElement & {
   hydratedCalls: number;
   attributeChanges: string[];
+  propertyCalls: { first: boolean; connected: boolean }[];
 };

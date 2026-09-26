@@ -259,7 +259,6 @@ function createReactiveProperty(
   attrDefinition?: AttrDefinition,
 ): void {
   const backingKey = `_${name}`;
-  const changedKey = `${name}Changed`;
 
   Object.defineProperty(proto, name, {
     get(this: ReactiveInstance) {
@@ -278,13 +277,20 @@ function createReactiveProperty(
       }
       this[backingKey] = newValue;
 
-      if (attrDefinition && this['$ready'] === true) {
+      const canReflect = this['$canReflectAttr'];
+      if (
+        attrDefinition &&
+        typeof canReflect === 'function' &&
+        (canReflect as () => boolean).call(this)
+      ) {
         reflectPropertyToAttribute(this, attrDefinition, newValue);
       }
 
-      const cb = this[changedKey];
-      if (typeof cb === 'function') {
-        (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
+      const record = this['$hasPropertyEffects'] === true
+        ? this['$recordPropertyChange']
+        : undefined;
+      if (typeof record === 'function') {
+        (record as (name: string, old: unknown) => void).call(this, name, oldValue);
       }
 
       if (
@@ -302,9 +308,7 @@ function createReactiveProperty(
 
 /**
  * Marks a property as observable. When the value changes the decorator will:
- * 1. Call `this.<prop>Changed(oldValue, newValue)` if defined.
- * 2. Call `this.$update(name)` if the element is connected, targeting
- *    only bindings that reference this property.
+ * schedule targeted updates for bindings that reference the property.
  */
 export function observable(target: object, name: string): void {
   const ctor = (target as Record<string, unknown>).constructor as Function;

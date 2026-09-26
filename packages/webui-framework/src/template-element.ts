@@ -676,6 +676,8 @@ export class TemplateElement extends HTMLElement {
       hydrationStart();
       try {
         this.$ready = true;
+        this.$syncAuthoredAttributes();
+        this.$reconcileAuthoredState();
         this.$update();
       } finally {
         hydrationEnd();
@@ -1389,6 +1391,7 @@ export class TemplateElement extends HTMLElement {
     // Latch before author code so an exception can never turn reconnect into a
     // retry of a lifecycle that has already been entered.
     this.$hasMounted = true;
+    this.$reconcileAuthoredState();
     this.hydratedCallback();
   }
 
@@ -1605,7 +1608,22 @@ export class TemplateElement extends HTMLElement {
   /** Synchronously flush all queued path updates. Call this when you need
    *  the DOM to reflect pending property changes immediately. */
   $flushUpdates(): void {
+    this.$flushAuthoredChanges();
     if (this.$pendingFlush) this.$flush();
+  }
+
+  /** Flush authored effects before bindings when synchronous state is requested. */
+  protected $flushAuthoredChanges(): void {
+  }
+
+  /** Reconcile authored state once own bindings and refs are ready. */
+  protected $reconcileAuthoredState(): void {
+  }
+
+  /** True only when this instance's own DOM has completed mounting. */
+  protected $canRunAuthoredEffects(): boolean {
+    return this.$hydrated && this.$root !== null && this.$ready &&
+      !this.$deferredClientMount && this.isConnected;
   }
 
   /** Flush all queued path updates. Handles re-entrant setter calls. */

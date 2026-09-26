@@ -818,6 +818,7 @@ transient user activation or closed-shadow click targets.
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
+| `protected propertiesChanged(changes, firstChange)` | Run after connected hydration once with initial values, then on batched decorated-property changes; `changes` maps names to first old values |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
@@ -871,6 +872,12 @@ once after the first successful hydration or mount, and reconnects or callback
 exceptions do not retry it. Once a host has deferred, later state writes
 are retained and replayed; this exception does not make constructor or
 pre-`super.connectedCallback()` writes safe.
+
+`@attr` reflects immediately once connected and hydrated. The first
+`propertiesChanged(changes, true)` call runs after this element's refs are
+wired; later calls coalesce in a microtask. Old `nameChanged(old, new)`
+callbacks are no longer invoked. Migrate them using the
+[reactive lifecycle guide](/guide/concepts/reactive-lifecycle-migration).
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a
