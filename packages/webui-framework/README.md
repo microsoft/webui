@@ -328,7 +328,7 @@ update that DOM, so the write is dropped and the runtime logs a
 `[WebUI] Hydration mismatch` warning naming the properties. Seed such values in
 the SSR state, or assign them from `hydratedCallback()`. The warning is
 development-only and is dead-code-eliminated from production bundles via the
-`__WEBUI_DEV__` compile-time flag (on by default; `webui-press build` sets it to
+`__WEBUI_DEV__` compile-time flag (on by default; `webui press build` sets it to
 `false`). See the
 [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
 

@@ -3,6 +3,7 @@
     "arm64"
   ],
   "description": "WebUI Press platform-specific binary for Windows ARM64",
+  "bin": { "webui-press-native": "bin/webui-press.exe" },
   "files": [
     "bin/webui-press.exe"
   ],

@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "webui-press build",
-    "start": "webui-press serve"
+    "build": "webui press build",
+    "start": "webui press serve"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",

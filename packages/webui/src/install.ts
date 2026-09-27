@@ -8,21 +8,23 @@ import { resolve, platformKey, packageName } from "./platform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const binDir = path.resolve(__dirname, "..", "bin");
-const binName = process.platform === "win32" ? "webui.exe" : "webui";
-const binDest = path.join(binDir, binName);
+const npmBinDest = path.join(binDir, "webui");
+const nativeBinDest = path.join(binDir, process.platform === "win32" ? "webui.exe" : "webui");
 
-// Locate the platform binary and copy it into bin/ so the package.json
-// "bin" entry points at a real native executable.
 try {
   const srcBin = resolve("bin");
   if (srcBin && fs.existsSync(srcBin)) {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.copyFileSync(srcBin, binDest);
-    fs.chmodSync(binDest, 0o755);
+    fs.copyFileSync(srcBin, npmBinDest);
+    fs.chmodSync(npmBinDest, 0o755);
+    if (nativeBinDest !== npmBinDest) {
+      fs.copyFileSync(srcBin, nativeBinDest);
+      fs.chmodSync(nativeBinDest, 0o755);
+    }
     process.exit(0);
   }
-} catch {
-  // Fall through to warning.
+} catch (error) {
+  console.warn(`[webui] Failed to install the native CLI: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 const key = platformKey();

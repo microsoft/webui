@@ -245,6 +245,116 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  desktop-npm-native:
+    name: Desktop npm native (${{ matrix.platform.target }})
+    runs-on: ${{ matrix.platform.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, package: webui-desktop-linux-x64, consumer: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest, package: webui-desktop-linux-arm64, consumer: false }
+          - { target: x86_64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-x64, consumer: true }
+          - { target: aarch64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-arm64, consumer: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, package: webui-desktop-win32-x64, consumer: true }
+          - { target: aarch64-pc-windows-msvc, os: windows-latest, package: webui-desktop-win32-arm64, consumer: false }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+          rust-targets: ${{ matrix.platform.target }}
+          install-linux-desktop-dependencies: ${{ matrix.platform.target != 'aarch64-unknown-linux-gnu' }}
+
+      - name: Build and export native package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            source scripts/setup-linux-desktop-target.sh "${{ matrix.platform.target }}"
+          fi
+          cargo xtask publish-build --target "${{ matrix.platform.target }}" \
+            --profile debug --native-only --output "$WEBUI_NATIVE_EXPORT_ROOT"
+        env:
+          WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
+
+      - name: Build and export Windows native package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo xtask publish-build --target "${{ matrix.platform.target }}" `
+            --profile debug --native-only --output "$env:WEBUI_NATIVE_EXPORT_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
+
+      - name: Verify staged and exported npm platform artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="packages/$NATIVE_PACKAGE"
+          pnpm --dir "$package" pack --pack-destination "$WEBUI_NATIVE_EXPORT_ROOT"
+          while IFS= read -r file; do
+            test -s "$package/$file"
+            cmp "$package/$file" "$WEBUI_NATIVE_EXPORT_ROOT/$package/$file"
+          done < <(jq -r '.files[]' "$package/package.json" | tr -d '\r')
+        env:
+          WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
+          NATIVE_PACKAGE: ${{ matrix.platform.package }}
+
+      - name: Verify fresh native CLI consumer
+        if: matrix.platform.consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @microsoft/webui build
+          pnpm --filter @microsoft/webui-desktop build
+          project="$(mktemp -d)"
+          version="$(jq -r .version packages/webui/package.json | tr -d '\r')"
+          platform="${NATIVE_PACKAGE#webui-desktop-}"
+          for name in webui "webui-$platform" webui-press "webui-press-$platform" webui-desktop "$NATIVE_PACKAGE"; do
+            pnpm --dir "packages/$name" pack --pack-destination "$project"
+          done
+          powershell=""
+          if [[ "$RUNNER_OS" == Windows ]]; then powershell="$(command -v pwsh)"; fi
+          cd "$project"
+          printf '{"private":true}\n' > package.json
+          npm install --offline --omit=optional --no-audit --no-fund \
+            "./microsoft-webui-$version.tgz" "./microsoft-webui-$platform-$version.tgz" \
+            "./microsoft-webui-press-$version.tgz" "./microsoft-webui-press-$platform-$version.tgz"
+          cli="./node_modules/@microsoft/webui/bin/webui"
+          if [[ "$RUNNER_OS" == Windows ]]; then cli="$cli.exe"; fi
+          unset WEBUI_BINARY_PATH WEBUI_DESKTOP_BINARY WEBUI_PRESS_BINARY_PATH
+          if PATH=/usr/bin:/bin "$cli" desktop init ./app 2>missing.log; then
+            echo "Desktop support unexpectedly available" >&2
+            exit 1
+          else
+            test "$?" -eq 66
+          fi
+          grep -q 'npm install @microsoft/webui-desktop' missing.log
+          npm install --offline --omit=optional --no-audit --no-fund \
+            "./microsoft-webui-desktop-$version.tgz" "./microsoft-$NATIVE_PACKAGE-$version.tgz"
+          export PATH=/usr/bin:/bin
+          if command -v node; then echo "Node is still on PATH" >&2; exit 1; fi
+          "$cli" desktop init ./app
+          "$cli" press --version
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            "$powershell" -NoProfile -Command "& ./node_modules/.bin/webui.cmd press --version; exit \$LASTEXITCODE"
+            "$powershell" -NoProfile -Command "& ./node_modules/.bin/webui.cmd desktop build ./app/src --out ./bundle; exit \$LASTEXITCODE"
+            target=windows-portable
+          else
+            ./node_modules/.bin/webui press --version
+            ./node_modules/.bin/webui desktop build ./app/src --out ./bundle
+            target=linux-portable
+            if [[ "$RUNNER_OS" == macOS ]]; then target=macos-app; fi
+          fi
+          test -s ./bundle/protocol.bin
+          "$cli" desktop package ./bundle --target "$target" --out ./packages
+        env:
+          NATIVE_PACKAGE: ${{ matrix.platform.package }}
+
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:
     name: E2E (Ubuntu)

@@ -7,6 +7,17 @@ the shipped app.
 
 ## Get started
 
+For an npm project, opt in to desktop support with matching package versions:
+
+```bash
+npm install @microsoft/webui @microsoft/webui-desktop
+```
+
+The desktop package installs the native sidecar for your platform without
+adding webview dependencies to the base `@microsoft/webui` package. Do not
+disable optional dependencies. A Rust CLI installation can instead use a
+matching `webui-desktop` executable on `PATH`.
+
 Run an existing app without writing a Rust host:
 
 ```bash

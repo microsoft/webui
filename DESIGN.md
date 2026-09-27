@@ -341,6 +341,11 @@ shared across concurrent requests. Host bindings must preserve the same
 render and state semantics without silently falling back to a different
 engine.
 
+Press and desktop are opt-in native command sidecars. The Rust CLI discovers
+their installed binaries, verifies compatible versions, and launches them
+directly rather than loading their dependencies into the core CLI. Package
+installation can use Node, but command dispatch has no JavaScript wrapper.
+
 ### Desktop boundary
 
 The desktop shell uses WebView2 on Windows, WKWebView on macOS, and
@@ -349,8 +354,9 @@ window, state providers, assets, and capabilities; OS-specific adapters own
 native lifecycle and FFI. Source builds and immutable bundles feed the same
 custom-protocol request dispatcher. Rust providers can supply route state and
 application API responses, so browser routing uses the same authoritative
-protocol as server deployments. The desktop CLI invokes a separate sidecar,
-keeping native webview dependencies out of the default CLI.
+protocol as server deployments. npm distributes desktop binaries only through
+an explicit desktop support install, keeping webview dependencies out of the
+default CLI.
 
 Optional application IPC is distinct from resource requests and window-control
 messages. Proto3 application contracts generate typed Rust and TypeScript

@@ -31,17 +31,19 @@ Most documentation site generators are JavaScript first. They run a Node.js serv
 ## Install
 
 ```bash
+npm install @microsoft/webui @microsoft/webui-press
+```
+
+For a Rust-only installation:
+
+```bash
+cargo install microsoft-webui-cli
 cargo install microsoft-webui-press
 ```
 
-Or as a workspace dependency:
-
-```toml
-[dependencies]
-microsoft-webui-press = "0.0.10"
-```
-
-The binary is named `webui-press`. If your docs site includes component `.ts` files or per-page bundled scripts, install esbuild in the docs project:
+Run `webui press` to invoke the native sidecar. Use matching versions of both
+packages and keep optional dependencies enabled. If your docs site includes
+component `.ts` files or per-page bundled scripts, install esbuild in the docs project:
 
 ```bash
 pnpm add -D esbuild
@@ -87,7 +89,7 @@ Hello from `webui-press`.
 EOF
 
 # 3. Build
-webui-press build
+webui press build
 # → dist/ ready to deploy
 ```
 
@@ -124,8 +126,8 @@ Every `.md` file under `contentDir` becomes a page automatically. The sidebar/na
 ## CLI
 
 ```
-webui-press build [OPTIONS]
-webui-press serve [OPTIONS]
+webui press build [OPTIONS]
+webui press serve [OPTIONS]
 
 Options:
   -c, --config <PATH>      Path to config.json [default: .webui-press/config.json]
@@ -136,14 +138,14 @@ Options:
 
 For `serve` only, `--shutdown-timeout <SECONDS>` opts in to a positive integer
 shutdown grace period. Without it, stopping waits for the active rebuild with
-no deadline. For example, `webui-press serve --shutdown-timeout 10` allows ten
+no deadline. For example, `webui press serve --shutdown-timeout 10` allows ten
 seconds after a stop request before terminating the owned server process tree;
 a second stop request escalates sooner. Forced shutdown returns nonzero and can
 leave incomplete outputs. Supervised mode reserves stdin and cannot forward
 interactive build input. See the [bounded shutdown reference](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
 for platform limits.
 
-Use `webui-press build --show=content` or `webui-press serve --show=content`
+Use `webui press build --show=content` or `webui press serve --show=content`
 for a shell-free gallery or documentation view. Omit the flag for the complete
 site, or set `"show": "content"` in config to make content mode the default.
 An explicit flag overrides config, including after live config reloads.
@@ -590,7 +592,7 @@ All root and page entries are bundled in one esbuild build. If ten pages import 
 
 Generated root and page entries also receive build-time `<link rel="modulepreload">` hints for their static-import closures. Hints preserve the bundler's size order and use the same cache-busting URLs as the generated scripts.
 
-`webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
+`webui press build` minifies bundled JavaScript. `webui press serve` skips minification for faster rebuilds during local development.
 
 ### Built-in components
 
@@ -731,7 +733,7 @@ This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui
 - **No regex in core paths.** Markdown processing, link normalization, and DSD pre-expansion are deterministic scanners.
 - **Buffer-first IO.** HTML output uses pre-sized `String` buffers and `push_str`, never `format!` in hot loops.
 - **Allocation-aware.** Hot data structures use `BTreeMap` (sorted, deterministic) over `HashMap` (non-deterministic, larger). Sidebar resolution is `O(prefixes)`, not `O(pages × prefixes)`.
-- **Dev server is full-rebuild on every change.** `webui-press serve` re-runs the entire build pipeline on every filesystem event rather than tracking per-file dependencies. This keeps the dev path simple, makes every refresh byte-identical to a `build`, and benchmarks at sub-second rebuilds for sites under a few hundred pages. The only state amortized across rebuilds is the `syntect` highlighter (~30–50 ms to load).
+- **Dev server is full-rebuild on every change.** `webui press serve` re-runs the entire build pipeline on every filesystem event rather than tracking per-file dependencies. This keeps the dev path simple, makes every refresh byte-identical to a `build`, and benchmarks at sub-second rebuilds for sites under a few hundred pages. The only state amortized across rebuilds is the `syntect` highlighter (~30–50 ms to load).
 
 If your build slows down, profile with `cargo flamegraph -p microsoft-webui-press --bin webui-press -- build`, every hot path is fair game for further optimization.
 
@@ -755,8 +757,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: cargo install microsoft-webui-press
-      - run: cd docs && webui-press build
+      - run: cargo install microsoft-webui-cli microsoft-webui-press
+      - run: cd docs && webui press build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/dist

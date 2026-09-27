@@ -30,6 +30,10 @@ inputs:
     description: Skip cargo build and build-examples steps
     required: false
     default: 'false'
+  install-linux-desktop-dependencies:
+    description: Install host GTK4 and WebKitGTK development packages on Linux
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -50,10 +54,10 @@ runs:
       # packages. Folded into the protoc step to avoid a second apt update.
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq \
-          protobuf-compiler \
-          libgtk-4-dev \
-          libwebkitgtk-6.0-dev
+        sudo apt-get install -y -qq protobuf-compiler
+        if [[ "${{ inputs.install-linux-desktop-dependencies }}" == "true" ]]; then
+          sudo apt-get install -y -qq libgtk-4-dev libwebkitgtk-6.0-dev
+        fi
 
     - name: Install protoc (macOS)
       if: runner.os == 'macOS'

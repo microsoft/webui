@@ -50,6 +50,11 @@ pub enum CliError {
         /// The binary name or path that failed to launch.
         binary: String,
     },
+    /// The WebUI Press sidecar could not be launched.
+    PressBinaryNotFound {
+        /// The binary name or path that failed to launch.
+        binary: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -64,6 +69,9 @@ impl fmt::Display for CliError {
             CliError::EntryReadFailed { path } => write!(f, "Failed to read entry file: {path}"),
             CliError::DesktopBinaryNotFound { binary } => {
                 write!(f, "Desktop sidecar backend not found: {binary}")
+            }
+            CliError::PressBinaryNotFound { binary } => {
+                write!(f, "Press sidecar backend not found: {binary}")
             }
         }
     }
@@ -87,7 +95,10 @@ impl CliError {
                 "Use --entry <file> to specify a different entry file"
             }
             CliError::DesktopBinaryNotFound { .. } => {
-                "Install WebUI desktop support or set WEBUI_DESKTOP_BINARY to the webui-desktop sidecar path"
+                "Run npm install @microsoft/webui-desktop (with optional dependencies), or set WEBUI_DESKTOP_BINARY to a matching webui-desktop executable"
+            }
+            CliError::PressBinaryNotFound { .. } => {
+                "Run npm install @microsoft/webui-press (with optional dependencies), or set WEBUI_PRESS_BINARY_PATH to a matching webui-press executable"
             }
         }
     }
@@ -102,7 +113,8 @@ impl CliError {
             | CliError::StateFileNotFound { .. }
             | CliError::ServeDirNotFound { .. }
             | CliError::EntryReadFailed { .. }
-            | CliError::DesktopBinaryNotFound { .. } => 66,
+            | CliError::DesktopBinaryNotFound { .. }
+            | CliError::PressBinaryNotFound { .. } => 66,
             // A required service (the port) is unavailable → EX_UNAVAILABLE.
             CliError::PortInUse { .. } => 69,
         }

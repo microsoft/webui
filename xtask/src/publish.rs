@@ -20,6 +20,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
+#[path = "../../crates/webui-desktop/runtime/deployment.rs"]
+mod desktop_deployment;
+
 // ── Platform mapping ────────────────────────────────────────────────────
 
 /// Mapping from Rust target triple to platform identifiers and binary filenames.
@@ -27,6 +30,7 @@ struct PlatformEntry {
     triple: &'static str,
     npm_package: &'static str,
     press_npm_package: &'static str,
+    desktop_npm_package: &'static str,
     nuget_rid: &'static str,
     ffi_lib: &'static str,
     node_addon: &'static str,
@@ -42,6 +46,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "x86_64-unknown-linux-gnu",
         npm_package: "webui-linux-x64",
         press_npm_package: "webui-press-linux-x64",
+        desktop_npm_package: "webui-desktop-linux-x64",
         nuget_rid: "linux-x64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
@@ -53,6 +58,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "aarch64-unknown-linux-gnu",
         npm_package: "webui-linux-arm64",
         press_npm_package: "webui-press-linux-arm64",
+        desktop_npm_package: "webui-desktop-linux-arm64",
         nuget_rid: "linux-arm64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
@@ -64,6 +70,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "x86_64-pc-windows-msvc",
         npm_package: "webui-win32-x64",
         press_npm_package: "webui-press-win32-x64",
+        desktop_npm_package: "webui-desktop-win32-x64",
         nuget_rid: "win-x64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
@@ -75,6 +82,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "aarch64-pc-windows-msvc",
         npm_package: "webui-win32-arm64",
         press_npm_package: "webui-press-win32-arm64",
+        desktop_npm_package: "webui-desktop-win32-arm64",
         nuget_rid: "win-arm64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
@@ -86,6 +94,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "x86_64-apple-darwin",
         npm_package: "webui-darwin-x64",
         press_npm_package: "webui-press-darwin-x64",
+        desktop_npm_package: "webui-desktop-darwin-x64",
         nuget_rid: "osx-x64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
@@ -97,6 +106,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         triple: "aarch64-apple-darwin",
         npm_package: "webui-darwin-arm64",
         press_npm_package: "webui-press-darwin-arm64",
+        desktop_npm_package: "webui-desktop-darwin-arm64",
         nuget_rid: "osx-arm64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
@@ -829,6 +839,10 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
         "microsoft-webui-node",
         "-p",
         "microsoft-webui-press",
+        "-p",
+        "microsoft-webui-desktop",
+        "--features",
+        "microsoft-webui-desktop/cli",
     ]);
     Ok(args)
 }
@@ -865,6 +879,12 @@ fn export_target(
                 safe_output_root
                     .join("packages")
                     .join(platform.press_npm_package),
+            ),
+            (
+                root.join("packages").join(platform.desktop_npm_package),
+                safe_output_root
+                    .join("packages")
+                    .join(platform.desktop_npm_package),
             ),
             (
                 root.join("dotnet")
@@ -1067,7 +1087,7 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         eprintln!(
             "  {} No build artifacts found. Build first:\n    {}",
             console::style("⚠").yellow(),
-            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli -p microsoft-webui-press").dim(),
+            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli -p microsoft-webui-press -p microsoft-webui-desktop --features microsoft-webui-desktop/cli").dim(),
         );
         return ExitCode::FAILURE;
     }
@@ -1152,6 +1172,30 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         label: "npm press cli",
     });
 
+    let desktop_binary = desktop_cli_binary(platform);
+    let desktop_dir = root
+        .join("packages")
+        .join(platform.desktop_npm_package)
+        .join("bin");
+    ok &= stage_file(&CopySpec {
+        src: &build_dir.join(desktop_binary),
+        dest_dir: &desktop_dir,
+        dest_name: desktop_binary,
+        label: "npm desktop cli",
+    });
+    if platform.cli_binary.ends_with(".exe") {
+        for name in
+            std::iter::once(desktop_deployment::BOOTSTRAP_DLL).chain(desktop_deployment::NOTICES)
+        {
+            ok &= stage_file(&CopySpec {
+                src: &build_dir.join(name),
+                dest_dir: &desktop_dir,
+                dest_name: name,
+                label: "npm desktop runtime",
+            });
+        }
+    }
+
     // npm: Node addon (renamed to webui.node)
     ok &= stage_file(&CopySpec {
         src: &build_dir.join(platform.node_addon),
@@ -1189,6 +1233,14 @@ fn press_cli_binary(platform: &PlatformEntry) -> &'static str {
     }
 }
 
+fn desktop_cli_binary(platform: &PlatformEntry) -> &'static str {
+    if platform.cli_binary.ends_with(".exe") {
+        "webui-desktop.exe"
+    } else {
+        "webui-desktop"
+    }
+}
+
 // ── Phase 2: npm packaging ──────────────────────────────────────────────
 
 /// Run `pnpm pack` in each `packages/*` directory and move tarballs to `publish/npm/`.
@@ -1213,21 +1265,6 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
             None,
         )
         .map_err(|e| format!("pnpm build @microsoft/{pkg_name} failed: {e}"))?;
-    }
-
-    let press_dir = packages_dir.join("webui-press");
-    if press_dir.join("package.json").exists() {
-        eprintln!(
-            "  {} Building {}",
-            console::style("·").dim(),
-            console::style("@microsoft/webui-press").bold(),
-        );
-        run_command_quiet(
-            "pnpm",
-            &["--filter", "@microsoft/webui-press", "build"],
-            None,
-        )
-        .map_err(|e| format!("pnpm build @microsoft/webui-press failed: {e}"))?;
     }
 
     // Pack each package
@@ -1853,9 +1890,21 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
         .python_version();
     validate_artifact_count(
         count_files_with_extension(&publish.join("npm"), "tgz"),
-        10,
+        23,
         "npm packages",
     )?;
+    for platform in PLATFORMS {
+        let tarball = publish.join("npm").join(format!(
+            "microsoft-{}-{version}.tgz",
+            platform.desktop_npm_package
+        ));
+        if !tarball.is_file() {
+            return Err(format!(
+                "missing desktop npm artifact {}",
+                tarball.display()
+            ));
+        }
+    }
     validate_artifact_count(
         count_files_with_extension(&publish.join("crates"), "crate"),
         17,
@@ -2161,6 +2210,12 @@ mod tests {
         assert_eq!(args[0], "build");
         assert!(!args.contains(&"--profile"));
         assert!(!args.contains(&"--release"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-p", "microsoft-webui-desktop"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--features", "microsoft-webui-desktop/cli"]));
     }
 
     #[test]
@@ -2177,6 +2232,7 @@ mod tests {
             triple: "aarch64-apple-darwin",
             npm_package: "webui-darwin-arm64",
             press_npm_package: "webui-press-darwin-arm64",
+            desktop_npm_package: "webui-desktop-darwin-arm64",
             nuget_rid: "osx-arm64",
             ffi_lib: "libwebui_ffi.dylib",
             node_addon: "libwebui_node.dylib",
@@ -2186,6 +2242,7 @@ mod tests {
         };
         assert_eq!(native_binary_name(&p), "webui-darwin-arm64");
         assert_eq!(press_cli_binary(&p), "webui-press");
+        assert_eq!(desktop_cli_binary(&p), "webui-desktop");
     }
 
     #[test]
@@ -2194,6 +2251,7 @@ mod tests {
             triple: "x86_64-pc-windows-msvc",
             npm_package: "webui-win32-x64",
             press_npm_package: "webui-press-win32-x64",
+            desktop_npm_package: "webui-desktop-win32-x64",
             nuget_rid: "win-x64",
             ffi_lib: "webui_ffi.dll",
             node_addon: "webui_node.dll",
@@ -2203,6 +2261,42 @@ mod tests {
         };
         assert_eq!(native_binary_name(&p), "webui-win32-x64.exe");
         assert_eq!(press_cli_binary(&p), "webui-press.exe");
+        assert_eq!(desktop_cli_binary(&p), "webui-desktop.exe");
+    }
+
+    #[test]
+    fn stages_windows_desktop_binary_with_bootstrap_and_notices() {
+        let root = tempfile::tempdir().expect("staging workspace");
+        let build_dir = root.path().join("build");
+        fs::create_dir_all(&build_dir).expect("build directory");
+        let platform = PLATFORMS
+            .iter()
+            .find(|platform| platform.triple == "aarch64-pc-windows-msvc")
+            .expect("Windows ARM64 target");
+        for name in [
+            platform.ffi_lib,
+            platform.node_addon,
+            platform.cli_binary,
+            press_cli_binary(platform),
+            desktop_cli_binary(platform),
+            desktop_deployment::BOOTSTRAP_DLL,
+        ]
+        .into_iter()
+        .chain(desktop_deployment::NOTICES)
+        {
+            fs::write(build_dir.join(name), name).expect("build artifact");
+        }
+        assert!(stage_platform(root.path(), platform, &build_dir));
+        let staged = root.path().join("packages/webui-desktop-win32-arm64/bin");
+        for name in std::iter::once(desktop_cli_binary(platform))
+            .chain(std::iter::once(desktop_deployment::BOOTSTRAP_DLL))
+            .chain(desktop_deployment::NOTICES)
+        {
+            assert_eq!(
+                fs::read_to_string(staged.join(name)).expect("staged desktop artifact"),
+                name
+            );
+        }
     }
 
     #[test]
@@ -2400,7 +2494,7 @@ mod tests {
         let root = tempfile::TempDir::new().expect("root should be created");
         let publish = root.path().join("publish");
         for (directory, extension, count) in [
-            ("npm", "tgz", 10),
+            ("npm", "tgz", 17),
             ("crates", "crate", 17),
             ("nuget", "nupkg", 8),
             ("nuget", "snupkg", 2),
@@ -2413,6 +2507,7 @@ mod tests {
                     .expect("artifact fixture should be written");
             }
         }
+        write_desktop_npm_fixtures(&publish.join("npm"), "1.2.3-hotfix.4");
         write_python_release_fixtures(&publish.join("python"), "1.2.3.post4");
 
         assert!(validate_release_artifact_counts(root.path(), "1.2.3-hotfix.4").is_ok());
@@ -2575,7 +2670,8 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 10, "tgz");
+        write_numbered_files(root.path().join("publish/npm"), 17, "tgz");
+        write_desktop_npm_fixtures(&root.path().join("publish/npm"), "1.2.3");
         write_numbered_files(root.path().join("publish/crates"), 17, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
@@ -2592,7 +2688,8 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
+        write_numbered_files(root.path().join("publish/npm"), 16, "tgz");
+        write_desktop_npm_fixtures(&root.path().join("publish/npm"), "1.2.3");
         write_numbered_files(root.path().join("publish/crates"), 17, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
@@ -2601,7 +2698,41 @@ mod tests {
         let error = validate_release_artifact_counts(root.path(), "1.2.3")
             .expect_err("missing npm package should fail validation");
 
-        assert!(error.contains("expected 10 npm packages, found 9"));
+        assert!(error.contains("expected 23 npm packages, found 22"));
+    }
+
+    #[test]
+    fn validate_release_artifact_counts_rejects_missing_desktop_target() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let npm = root.path().join("publish/npm");
+        fs::create_dir_all(&npm).expect("npm directory");
+        write_numbered_files(npm.clone(), 18, "tgz");
+        for platform in &PLATFORMS[1..] {
+            fs::write(
+                npm.join(format!(
+                    "microsoft-{}-1.2.3.tgz",
+                    platform.desktop_npm_package
+                )),
+                "desktop",
+            )
+            .expect("desktop fixture");
+        }
+        let error = validate_release_artifact_counts(root.path(), "1.2.3")
+            .expect_err("missing target must fail even when npm count matches");
+        assert!(error.contains("webui-desktop-linux-x64"), "{error}");
+    }
+
+    fn write_desktop_npm_fixtures(directory: &Path, version: &str) {
+        for platform in PLATFORMS {
+            fs::write(
+                directory.join(format!(
+                    "microsoft-{}-{version}.tgz",
+                    platform.desktop_npm_package
+                )),
+                "desktop",
+            )
+            .expect("desktop fixture");
+        }
     }
 
     fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
@@ -2689,6 +2820,8 @@ mod tests {
             .expect("package directory should be created");
         fs::create_dir_all(root.path().join("packages/webui-press-linux-x64/bin"))
             .expect("press package directory should be created");
+        fs::create_dir_all(root.path().join("packages/webui-desktop-linux-x64/bin"))
+            .expect("desktop package directory should be created");
         fs::create_dir_all(root.path().join("dotnet/runtimes/linux-x64/native"))
             .expect("runtime directory should be created");
         fs::write(root.path().join("publish/native/webui-linux-x64"), "cli")
@@ -2704,6 +2837,12 @@ mod tests {
             "press",
         )
         .expect("press package fixture should be written");
+        fs::write(
+            root.path()
+                .join("packages/webui-desktop-linux-x64/bin/webui-desktop"),
+            "desktop",
+        )
+        .expect("desktop package fixture should be written");
         fs::write(
             root.path()
                 .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so"),
@@ -2730,6 +2869,10 @@ mod tests {
         assert!(output
             .path()
             .join("packages/webui-press-linux-x64/bin/webui-press")
+            .is_file());
+        assert!(output
+            .path()
+            .join("packages/webui-desktop-linux-x64/bin/webui-desktop")
             .is_file());
         assert!(output
             .path()

@@ -1,7 +1,25 @@
 # @microsoft/webui-desktop
 
-Browser-only runtime for generated, bidirectional WebUI desktop IPC. It does not
-import Web Components, the framework, the router, or the Node addon.
+Opt-in native desktop CLI support and browser runtime for generated,
+bidirectional WebUI desktop IPC. `webui desktop` runs the native Rust sidecar
+directly, without a Node wrapper. The browser entry point does not import
+Web Components, the framework, the router, or the Node addon.
+
+## Desktop CLI
+
+Install matching versions of `@microsoft/webui` and this package:
+
+```bash
+npm install @microsoft/webui @microsoft/webui-desktop
+npx webui desktop init ./my-app
+npx webui desktop build ./my-app/src --out ./desktop-bundle
+npx webui desktop package ./desktop-bundle --out ./packages
+npx webui desktop run ./my-app/src
+```
+
+Keep optional dependencies enabled so npm installs the matching native desktop
+sidecar for your platform. Installing only `@microsoft/webui` keeps the base
+toolchain lean and reports how to add desktop support.
 
 ## Application use
 

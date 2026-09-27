@@ -9,17 +9,20 @@ output that can be deployed to GitHub Pages, a CDN, or any static host.
 Install the native CLI package:
 
 ```bash
-npm install @microsoft/webui-press
+npm install @microsoft/webui @microsoft/webui-press
 ```
 
 The package installs the matching platform-specific binary automatically for
 Windows, macOS, or Linux on x64 and arm64. After installation, run
-`webui-press build` or `webui-press serve` directly without compiling the Rust
-crate locally.
+`webui press build` or `webui press serve` directly without compiling the Rust
+crate locally. The installed command starts the native Rust executable without
+a Node wrapper; Node is used by npm during installation.
+
+Use matching package versions and keep optional dependencies enabled.
 
 ## Dev-server shutdown
 
-`webui-press serve --shutdown-timeout 10` opts in to a ten-second shutdown grace
+`webui press serve --shutdown-timeout 10` opts in to a ten-second shutdown grace
 period. Without the flag, stopping waits for the active rebuild without a
 deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
 See [bounded dev-server shutdown](/guide/cli/#bounded-dev-server-shutdown) for
@@ -31,8 +34,8 @@ The native `webui-press` binary supports the same display modes for static
 builds and live development:
 
 ```bash
-webui-press build --show=content
-webui-press serve --show=content
+webui press build --show=content
+webui press serve --show=content
 ```
 
 The default is `all`. Set `"show": "content"` in `.webui-press/config.json`
@@ -146,5 +149,5 @@ overlap as dotted prefixes, because one JSON value cannot own both `summary` and
 `home.*` applies to the generated home page. A custom page with
 `layout: "home"` retains the non-home shell and therefore uses `doc.*` regions.
 For complete template replacement, use
-`webui-press build --template <TEMPLATE_DIR>` or the equivalent `serve`
+`webui press build --template <TEMPLATE_DIR>` or the equivalent `serve`
 subcommand.

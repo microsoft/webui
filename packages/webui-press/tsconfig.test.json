@@ -1,11 +1,12 @@
 {
-  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "tests",
-    "outDir": "dist/tests",
-    "declaration": false,
-    "declarationMap": false,
-    "sourceMap": false
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
   },
   "include": ["tests"]
 }

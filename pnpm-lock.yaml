@@ -582,6 +582,37 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+    optionalDependencies:
+      '@microsoft/webui-desktop-darwin-arm64':
+        specifier: workspace:*
+        version: link:../webui-desktop-darwin-arm64
+      '@microsoft/webui-desktop-darwin-x64':
+        specifier: workspace:*
+        version: link:../webui-desktop-darwin-x64
+      '@microsoft/webui-desktop-linux-arm64':
+        specifier: workspace:*
+        version: link:../webui-desktop-linux-arm64
+      '@microsoft/webui-desktop-linux-x64':
+        specifier: workspace:*
+        version: link:../webui-desktop-linux-x64
+      '@microsoft/webui-desktop-win32-arm64':
+        specifier: workspace:*
+        version: link:../webui-desktop-win32-arm64
+      '@microsoft/webui-desktop-win32-x64':
+        specifier: workspace:*
+        version: link:../webui-desktop-win32-x64
+
+  packages/webui-desktop-darwin-arm64: {}
+
+  packages/webui-desktop-darwin-x64: {}
+
+  packages/webui-desktop-linux-arm64: {}
+
+  packages/webui-desktop-linux-x64: {}
+
+  packages/webui-desktop-win32-arm64: {}
+
+  packages/webui-desktop-win32-x64: {}
 
   packages/webui-examples-theme: {}
 
@@ -1404,7 +1435,7 @@ packages:
     engines: {node: '>= 18'}
 
   typescript@6.0.3:
-    resolution: {integrity: sha1-kCUdwAeRbpcnhsuU100VsYVXfSE=}
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 

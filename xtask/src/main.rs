@@ -865,8 +865,17 @@ impl Step {
     const DOCS: Self = Self {
         name: "docs",
         run: || {
-            // Build the standalone webui-press binary
-            run_command_quiet("cargo", &["build", "-p", "microsoft-webui-press"], None)?;
+            run_command_quiet(
+                "cargo",
+                &[
+                    "build",
+                    "-p",
+                    "microsoft-webui-cli",
+                    "-p",
+                    "microsoft-webui-press",
+                ],
+                None,
+            )?;
             // `@webui/docs...` builds the docs package AND all of its workspace
             // dependencies (e.g. `@microsoft/webui-framework`'s tsc compile)
             // so that esbuild can resolve their `exports` to real .js files.
