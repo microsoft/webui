@@ -28,6 +28,9 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Check crate packaging
+        run: cargo package -p 'microsoft-webui*' --no-verify --locked --target-dir "$RUNNER_TEMP/crate-packaging"
+
       - name: Clippy
         run: cargo clippy --workspace --features microsoft-webui-desktop/cli,contact-book-desktop/source -- -D warnings
 

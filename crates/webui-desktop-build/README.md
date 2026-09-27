@@ -145,6 +145,7 @@ silently fall back to another compiler or application DTO format.
 
 ```sh
 cargo test -p microsoft-webui-desktop-build
+cargo test -p microsoft-webui-desktop --no-default-features --features application-ipc --test codecs
 node crates/webui-desktop-build/tests/run-typescript.mjs
 node crates/webui-desktop-build/tests/run-rust.mjs
 ```
@@ -153,6 +154,6 @@ To deliberately regenerate the shared checked-in test fixture:
 
 ```sh
 WEBUI_UPDATE_IPC_FIXTURE=1 cargo test -p microsoft-webui-desktop-build --test generate shared_fixture_matches_generator
-WEBUI_UPDATE_IPC_FIXTURE=1 cargo test -p microsoft-webui-desktop-build --test codecs
+WEBUI_UPDATE_IPC_FIXTURE=1 cargo test -p microsoft-webui-desktop --no-default-features --features application-ipc --test codecs
 WEBUI_UPDATE_IPC_FIXTURE=1 node crates/webui-desktop-build/tests/run-typescript.mjs
 ```

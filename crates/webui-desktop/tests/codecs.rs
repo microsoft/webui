@@ -8,7 +8,7 @@ use webui_desktop::ipc::IpcCodec;
 
 #[allow(dead_code)]
 mod generated {
-    include!("../../webui-desktop/tests/fixtures/typed-ipc/rust/ipc_messages.rs");
+    include!("fixtures/typed-ipc/rust/ipc_messages.rs");
 }
 use generated::example::desktop::{item, Item};
 use generated::example::types::Metrics;
@@ -42,7 +42,7 @@ fn generated_codecs_preserve_extremes_and_golden_binary() {
     let item = sample();
     let bytes = item.encode_ipc();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../webui-desktop/tests/fixtures/typed-ipc/golden.bin");
+        .join("tests/fixtures/typed-ipc/golden.bin");
     if std::env::var_os("WEBUI_UPDATE_IPC_FIXTURE").is_some() {
         std::fs::write(&path, &bytes).unwrap();
     } else {

@@ -2232,7 +2232,6 @@ dependencies = [
 name = "microsoft-webui-desktop-build"
 version = "0.0.30"
 dependencies = [
- "microsoft-webui-desktop",
  "prost",
  "prost-reflect",
  "prost-types",
