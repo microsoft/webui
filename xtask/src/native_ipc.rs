@@ -238,6 +238,16 @@ fn preflight(root: &Path, fixture: &Path, artifacts: &Path, plan: Plan) -> Resul
         PREP_TIMEOUT,
     )?;
 
+    let mut navigation_test = Command::new("node");
+    navigation_test
+        .arg("--test")
+        .arg(fixture.join("history-navigation.test.mjs"));
+    process::run(
+        &mut navigation_test,
+        "native-ipc history navigation tests",
+        PREP_TIMEOUT,
+    )?;
+
     let mut tree = process::command(
         "cargo",
         &[

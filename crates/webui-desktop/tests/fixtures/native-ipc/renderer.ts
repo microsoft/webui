@@ -7,6 +7,7 @@ import type { AppConnection } from './generated/ts/ipc';
 import type { Item } from './generated/ts/application';
 import { checkAdmissionDelivery } from './admission';
 import { checkWindowsResources } from './windows-resources';
+import { HistoryNavigationHold, confirmHistoryNavigation } from './history-navigation';
 
 interface DocumentConnection {
   connection: AppConnection;
@@ -43,12 +44,7 @@ export async function run(restored = false): Promise<void> {
   if (!restored && !location.search && !location.hash) await checkWindowsResources();
   if (!restored && !location.search && !location.hash) await checkAdmissionDelivery();
   const retired = restored ? previousDocument : undefined;
-  if (restored) {
-    assert(retired, 'restored document lost its previous connection');
-    const terminal = await retired.connection.closed;
-    assert(['navigated', 'closed'].includes(terminal.code), 'old connection terminal reason');
-    await rejected(() => retired.connection.host.sessionGeneration(undefined), terminal.code);
-  }
+  if (restored) assert(retired, 'restored document lost its previous connection');
   const retiredCounts = retired ? { ...retired.counts } : undefined;
   const counts = { labels: 0, notifications: 0 };
   let labels = 0;
@@ -84,7 +80,7 @@ export async function run(restored = false): Promise<void> {
         await verifyHistoryConnection(connection, visit, retired, retiredCounts);
       }
     }
-    await runLifecycle(connection, stage);
+    await runLifecycle(connection, stage, retired);
     return;
   }
   await checkSameDocument(connection);
@@ -178,9 +174,9 @@ async function verifyHistoryConnection(
   await connection.host.historyVerified(proof);
 }
 
-async function runLifecycle(connection: AppConnection, stage: string): Promise<void> {
+async function runLifecycle(connection: AppConnection, stage: string, retired?: DocumentConnection): Promise<void> {
   if (stage === 'history-a' || stage === 'history-b') {
-    await runHistory(connection, stage);
+    await runHistory(connection, stage, retired);
     return;
   }
   if (stage === 'after-close') {
@@ -189,8 +185,8 @@ async function runLifecycle(connection: AppConnection, stage: string): Promise<v
     await connection.host.lifecycleCheck(item(0, 'close'));
     history.replaceState(null, '', '/?native-stage=history-a');
     sessionStorage.setItem('native-ipc-history', 'first-b');
-    await holdForNavigation(connection, 'history-forward');
-    location.assign('/?native-stage=history-b');
+    const hold = await holdForNavigation(connection, 'history-forward');
+    hold.navigate(() => location.assign('/?native-stage=history-b'));
     return;
   }
   assert(stage === 'after-navigation', 'unknown fixture stage');
@@ -251,35 +247,41 @@ async function checkSameDocument(connection: AppConnection): Promise<void> {
   history.replaceState(null, '', original);
 }
 
-async function holdForNavigation(connection: AppConnection, phase: string): Promise<void> {
+async function holdForNavigation(connection: AppConnection, phase: string): Promise<HistoryNavigationHold> {
   const ready = deferred();
+  const hold = new HistoryNavigationHold(phase, sessionStorage, window);
   connection.renderer.onChanged(value => {
     validate(value);
     assert(value.phase === phase, 'history probe phase');
     ready.resolve();
   });
   void connection.host.lifecycleHold(item(16384, phase)).catch(error => {
-    assert(error instanceof IpcError && ['navigated', 'closed'].includes(error.code),
+    assert(error instanceof IpcError && (['navigated', 'closed'].includes(error.code)
+      || (error.code === 'transport' && hold.recordTransport())),
       `history pending request error phase=${phase} code=${error?.code} name=${error?.name} message=${error?.message}`);
   });
   await ready.promise;
+  return hold;
 }
 
-async function runHistory(connection: AppConnection, stage: string): Promise<void> {
+async function runHistory(connection: AppConnection, stage: string, retired?: DocumentConnection): Promise<void> {
   const visit = sessionStorage.getItem('native-ipc-history');
   if (stage === 'history-b' && visit === 'first-b') {
     await connection.host.lifecycleCheck(item(0, 'history-forward'));
+    confirmHistoryNavigation(sessionStorage, 'history-forward', (await retired?.connection.closed)?.code);
     sessionStorage.setItem('native-ipc-history', 'back-a');
-    await holdForNavigation(connection, 'history-back');
-    history.back();
+    const hold = await holdForNavigation(connection, 'history-back');
+    hold.navigate(() => history.back());
   } else if (stage === 'history-a' && visit === 'back-a') {
     await connection.host.lifecycleCheck(item(0, 'history-back'));
+    confirmHistoryNavigation(sessionStorage, 'history-back', (await retired?.connection.closed)?.code);
     sessionStorage.setItem('native-ipc-history', 'return-b');
-    await holdForNavigation(connection, 'history-return');
-    history.forward();
+    const hold = await holdForNavigation(connection, 'history-return');
+    hold.navigate(() => history.forward());
   } else {
     assert(stage === 'history-b' && visit === 'return-b', 'history traversal state');
     await connection.host.lifecycleCheck(item(0, 'history-return'));
+    confirmHistoryNavigation(sessionStorage, 'history-return', (await retired?.connection.closed)?.code);
     sessionStorage.removeItem('native-ipc-history');
     // Native shutdown can revoke the document before event acceptance arrives.
     void connection.host.done(undefined).catch(error => {

@@ -85,6 +85,14 @@ The protocol asserts:
   `connection.closed` proxy. An unsettled native disconnect fails immediately.
 - Real `history.back()` and `history.forward()` between full documents, checking
   fresh generation, retired session rejection, and cancellation in each direction.
+  WebKitGTK can cancel the old document's IPC fetch after traversal starts but
+  before native `LoadEvent::Started` or trusted `pagehide` reaches the renderer.
+  That request remains a `transport` failure, not a retroactively rewritten
+  `navigated` error. The fixture accepts it only for an initiated history load
+  when trusted `pagehide` records the same phase and the next document proves
+  fresh admission and native cancellation/revocation through `LifecycleCheck`.
+  A transport failure before traversal, an untrusted/missing `pagehide`, a
+  mismatched phase, or an unretired host session still fails.
   On `pageshow.persisted`, the fixture explicitly calls `connectDesktop` again
   and awaits normal native admission. It does not authorize a second activation,
   replay requests, reload, or skip the traversal. Old JS connections must remain
@@ -187,6 +195,9 @@ user-namespace restriction to run this fixture.
 
 The existing GTK adapter disables page cache for IPC-enabled views. That does
 not constitute a Linux history pass until this real test runs there.
+The history cancellation ordering regression also runs without a GUI through
+`node --test crates/webui-desktop/tests/fixtures/native-ipc/history-navigation.test.mjs`;
+`cargo xtask native-ipc` runs it before the native modes.
 
 Inspect platform paths without starting a GUI or claiming native proof:
 
