@@ -3,6 +3,7 @@
     "arm64"
   ],
   "description": "WebUI Press platform-specific binary for macOS ARM64",
+  "bin": { "webui-press-native": "bin/webui-press" },
   "files": [
     "bin/webui-press"
   ],

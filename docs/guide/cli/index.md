@@ -25,20 +25,35 @@ cargo install microsoft-webui-cli
 
 ## Commands
 
-WebUI Press is a separate native binary. Both `webui-press build` and
-`webui-press serve` accept `--show=all|content` (default `all`) to generate
+WebUI Press is an opt-in native sidecar. Both `webui press build` and
+`webui press serve` accept `--show=all|content` (default `all`) to generate
 the complete site or only page content. See [WebUI Press](/guide/webui-press)
 for configuration, content-mode behavior, and template regions.
 
 ### Global options
 
-These flags work with any command:
+These flags apply to `webui` commands except Press, which supports human output only:
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--format <FORMAT>` | Output format: `human` (colorized terminal) or `json` (machine-readable diagnostics on stdout) | `human` |
 
 Use `--format json` in editors, CI, or AI/agent tooling that needs to parse build errors programmatically instead of scraping colorized terminal text. See [Error output and exit codes](#error-output-and-exit-codes).
+
+### `webui press`
+
+Run the native Press CLI after installing matching versions of
+`@microsoft/webui` and `@microsoft/webui-press`:
+
+```bash
+webui press build
+webui press serve --port 4000
+```
+
+The command starts Rust without a Node wrapper.
+Missing support reports the install command; incompatible
+versions fail explicitly. `WEBUI_PRESS_BINARY_PATH` overrides sidecar discovery.
+See [WebUI Press](/guide/webui-press) for configuration.
 
 ### `webui build`
 
@@ -392,11 +407,11 @@ The `APP` directory should contain your entry HTML and component files.
 
 #### Bounded dev-server shutdown
 
-Both `webui serve` and `webui-press serve` accept `--shutdown-timeout`:
+Both `webui serve` and `webui press serve` accept `--shutdown-timeout`:
 
 ```bash
 webui serve ./src --watch --shutdown-timeout 10
-webui-press serve --shutdown-timeout 10
+webui press serve --shutdown-timeout 10
 ```
 
 Without the flag, shutdown waits for the active rebuild to finish with no

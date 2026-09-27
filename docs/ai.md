@@ -1419,7 +1419,7 @@ npm install @microsoft/webui @microsoft/webui-press
 webui serve ./src --state ./data/state.json --plugin=webui --watch
 
 # Static documentation site
-webui-press build
+webui press build
 
 # Production build
 webui build ./src --out ./dist --plugin=webui
@@ -1428,6 +1428,9 @@ webui build ./src --out ./dist --plugin=webui
 webui inspect ./dist/protocol.bin
 ```
 
+`webui press` invokes the separately installed native Press sidecar.
+It launches Rust directly; Press does not support `--format json`.
+
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--dom <shadow|light>` (default `shadow`),
 `--css-bundle` (merge component stylesheets into shared chunks; not valid with
@@ -1435,7 +1438,7 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-On `webui serve` (with or without `--watch`) and `webui-press serve`, optionally
+On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
 retain the default wait for an active rebuild with no deadline. Forced shutdown
 returns nonzero and may leave incomplete outputs; supervised mode reserves
@@ -1477,7 +1480,7 @@ require registration imports or projection entries.
 
 ### WebUI Press
 
-Use native `webui-press build --show=content` or `webui-press serve --show=content`
+Use native `webui press build --show=content` or `webui press serve --show=content`
 to generate Markdown/examples/API panels without Press shell UI. Default mode
 is `all`; explicit CLI values override config `show` across live reloads.
 Content mode retains the complete document, themes, SSR, and hydration.
