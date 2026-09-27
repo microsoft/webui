@@ -1306,6 +1306,107 @@ fn blocked_retired_handlers_keep_input_credits_and_drop_never_joins_them() {
 }
 
 #[test]
+fn completed_admission_keeps_task_capacity_until_its_worker_returns() {
+    struct PausedWake {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl std::task::Wake for PausedWake {
+        fn wake(self: Arc<Self>) {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+        }
+    }
+    fn paused_wake() -> (std::task::Waker, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered, observed) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let waker = std::task::Waker::from(Arc::new(PausedWake {
+            entered,
+            release: Mutex::new(resume),
+        }));
+        (waker, observed, release)
+    }
+
+    let (release, wait) = mpsc::channel::<()>();
+    let wait = Arc::new(Mutex::new(wait));
+    let (started, observed) = mpsc::channel();
+    let mut registry = IpcRegistry::new(&SCHEMA);
+    registry
+        .register::<Save, _, _>(move |_, _| {
+            let _ = started.send(());
+            let _ = wait.lock().unwrap().recv();
+            async { Ok(()) }
+        })
+        .unwrap();
+    let mut options = IpcOptions::for_schema(&SCHEMA);
+    options.worker_threads = 2;
+    options
+        .limits
+        .max_worker_tasks_per_frame_including_retired_documents = 2;
+    let mut peer = Peer::new(registry, options);
+    eventually(|| peer.owner.window().stats().worker_tasks == 0);
+    assert_eq!(
+        peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
+        204
+    );
+    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    peer.navigation += 1;
+    peer.bridge.navigate(peer.navigation);
+    let proof = peer
+        .bridge
+        .begin_document(identity(peer.navigation), [2; 16])
+        .unwrap();
+    let mut ready = peer.owner.window().ready();
+    let (ready_waker, ready_entered, resume_ready) = paused_wake();
+    assert!(ready
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(&ready_waker))
+        .is_pending());
+    let mut admission = peer.bridge.admit(Admission {
+        hello: hello(),
+        proof,
+    });
+    ready_entered.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // Pause completion after publishing SessionInfo, not just session readiness.
+    let (admission_waker, admission_entered, resume_admission) = paused_wake();
+    assert!(admission
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(&admission_waker))
+        .is_pending());
+    resume_ready.send(()).unwrap();
+    admission_entered
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    peer.info = block_on(admission).unwrap();
+    block_on(ready).unwrap();
+    assert_eq!(peer.owner.window().stats().worker_tasks, 2);
+    let immediate_status = peer.post(peer.invocation(1, 1101, Kind::Request, Item::default()));
+
+    resume_admission.send(()).unwrap();
+    eventually(|| peer.owner.window().stats().worker_tasks == 1);
+    assert_eq!(
+        peer.post(peer.invocation(2, 1101, Kind::Request, Item::default())),
+        204
+    );
+    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(peer.owner.window().stats().worker_tasks, 2);
+    assert_eq!(
+        peer.post(peer.invocation(3, 1101, Kind::Request, Item::default())),
+        429
+    );
+    release.send(()).unwrap();
+    release.send(()).unwrap();
+    eventually(|| peer.owner.window().stats().worker_tasks == 0);
+    assert_eq!(immediate_status, 429);
+}
+
+#[test]
 fn task_capacity_rejects_new_work_across_retired_documents() {
     let (release, wait) = mpsc::channel::<()>();
     let wait = Arc::new(Mutex::new(wait));
@@ -1324,12 +1425,15 @@ fn task_capacity_rejects_new_work_across_retired_documents() {
         .limits
         .max_worker_tasks_per_frame_including_retired_documents = 2;
     let mut peer = Peer::new(registry, options);
+    eventually(|| peer.owner.window().stats().worker_tasks == 0);
     assert_eq!(
         peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
         204
     );
     observed.recv_timeout(Duration::from_secs(2)).unwrap();
     peer.navigate();
+    // Admission can resolve before its worker drops its own task permit.
+    eventually(|| peer.owner.window().stats().worker_tasks == 1);
     assert_eq!(
         peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
         204
