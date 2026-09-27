@@ -14,6 +14,10 @@ mod windows;
 
 const MAX_STATE_BYTES: u16 = 4096;
 const MAX_TEMP_ATTEMPTS: usize = 16;
+#[cfg(any(test, windows))]
+const MAX_WINDOWS_OPEN_ATTEMPTS: usize = 8;
+#[cfg(any(test, windows))]
+const WINDOWS_ACCESS_DENIED: i32 = 5;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Persisted window geometry supplied to and consumed by native backends.
@@ -125,12 +129,17 @@ impl WindowStateStore {
     }
     /// Load visible state, returning `None` for absent or stale geometry.
     ///
-    /// Malformed or oversized input returns a typed error.
+    /// Malformed or oversized input returns a typed error. On Windows, a
+    /// transient access denial during replacement is retried at most seven times.
     pub fn load_valid(
         &self,
         displays: &[DisplayBounds],
     ) -> Result<Option<WindowState>, WindowStateError> {
-        let file = match File::open(&self.path) {
+        #[cfg(windows)]
+        let opened = open_state_during_replacement(&self.path, |path| File::open(path));
+        #[cfg(not(windows))]
+        let opened = File::open(&self.path);
+        let file = match opened {
             Ok(file) => file,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => return Err(io_error("opening", &self.path, source)),
@@ -144,6 +153,22 @@ impl WindowStateStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+#[cfg(any(test, windows))]
+fn open_state_during_replacement(
+    path: &Path,
+    mut open: impl FnMut(&Path) -> std::io::Result<File>,
+) -> std::io::Result<File> {
+    for _ in 1..MAX_WINDOWS_OPEN_ATTEMPTS {
+        match open(path) {
+            Err(error) if error.raw_os_error() == Some(WINDOWS_ACCESS_DENIED) => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            result => return result,
+        }
+    }
+    open(path)
 }
 
 fn replace_state(source: &Path, destination: &Path) -> Result<(), WindowStateError> {
@@ -260,6 +285,61 @@ fn is_visible(state: &WindowState, displays: &[DisplayBounds]) -> bool {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn windows_transient_denial_during_state_open_is_retried() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = WindowStateStore::new(dir.path().join("state.json"));
+        let state = WindowState {
+            x: 10,
+            y: 10,
+            width: 800,
+            height: 600,
+            maximized: false,
+        };
+        store.save(&state).unwrap();
+        let attempts = Cell::new(0);
+        let file = open_state_during_replacement(store.path(), |path| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                File::open(path)
+            }
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(
+            serde_json::from_reader::<_, WindowState>(file).unwrap(),
+            state
+        );
+    }
+
+    #[test]
+    fn windows_persistent_denial_and_other_open_errors_are_reported() {
+        let path = Path::new("state.json");
+        let attempts = Cell::new(0);
+        let denied = open_state_during_replacement(path, |_| {
+            attempts.set(attempts.get() + 1);
+            Err(std::io::Error::from_raw_os_error(WINDOWS_ACCESS_DENIED))
+        })
+        .unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(WINDOWS_ACCESS_DENIED));
+        assert_eq!(attempts.get(), MAX_WINDOWS_OPEN_ATTEMPTS);
+
+        for code in [2, 32] {
+            attempts.set(0);
+            let error = open_state_during_replacement(path, |_| {
+                attempts.set(attempts.get() + 1);
+                Err(std::io::Error::from_raw_os_error(code))
+            })
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code));
+            assert_eq!(attempts.get(), 1);
+        }
+    }
+
     #[test]
     fn round_trip_and_reject_stale_geometry() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -342,6 +422,12 @@ mod tests {
             maximized: false,
         };
         store.save(&state).unwrap();
+        let displays = [DisplayBounds {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        }];
         std::thread::scope(|scope| {
             for index in 0..4 {
                 let store = &store;
@@ -358,8 +444,7 @@ mod tests {
                 });
             }
             for _ in 0..128 {
-                let saved: WindowState =
-                    serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+                let saved = store.load_valid(&displays).unwrap().unwrap();
                 assert_eq!(saved.width, state.width);
                 assert_eq!(saved.height, state.height);
             }
