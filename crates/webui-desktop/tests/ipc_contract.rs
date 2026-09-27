@@ -1306,6 +1306,73 @@ fn blocked_retired_handlers_keep_input_credits_and_drop_never_joins_them() {
 }
 
 #[test]
+fn admission_readiness_does_not_release_an_inflight_handshake_permit() {
+    struct PausedWake {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl std::task::Wake for PausedWake {
+        fn wake(self: Arc<Self>) {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        }
+    }
+
+    let mut options = IpcOptions::for_schema(&SCHEMA);
+    options
+        .limits
+        .max_worker_tasks_per_frame_including_retired_documents = 1;
+    let owner = IpcWindowOwner::new(
+        Arc::new(IpcRegistry::new(&SCHEMA)),
+        options,
+        IpcHost::Source {
+            origin: "webui://app".into(),
+        },
+    )
+    .unwrap();
+    let bridge = owner.bridge();
+    bridge.navigate(1);
+    let proof = bridge.begin_document(identity(1), [1; 16]).unwrap();
+    let mut ready = owner.window().ready();
+    let (entered, observed) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let waker = std::task::Waker::from(Arc::new(PausedWake {
+        entered,
+        release: Mutex::new(resume),
+    }));
+    let mut context = std::task::Context::from_waker(&waker);
+    assert!(ready.as_mut().poll(&mut context).is_pending());
+
+    let admission = bridge.admit(Admission {
+        hello: hello(),
+        proof,
+    });
+    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(owner.window().current_session().is_ok());
+    assert_eq!(owner.window().stats().worker_tasks, 1);
+    assert_eq!(
+        block_on(
+            owner
+                .window()
+                .current_session()
+                .unwrap()
+                .call::<Label>(Item::default(), CallOptions::default())
+        )
+        .unwrap_err()
+        .code,
+        IpcErrorCode::Overloaded
+    );
+    release.send(()).unwrap();
+    block_on(admission).unwrap();
+    block_on(ready).unwrap();
+    eventually(|| owner.window().stats().worker_tasks == 0);
+}
+
+#[test]
 fn task_capacity_rejects_new_work_across_retired_documents() {
     let (release, wait) = mpsc::channel::<()>();
     let wait = Arc::new(Mutex::new(wait));
@@ -1330,6 +1397,8 @@ fn task_capacity_rejects_new_work_across_retired_documents() {
     );
     observed.recv_timeout(Duration::from_secs(2)).unwrap();
     peer.navigate();
+    // Admission can resolve before its worker drops its own task permit.
+    eventually(|| peer.owner.window().stats().worker_tasks == 1);
     assert_eq!(
         peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
         204
