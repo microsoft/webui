@@ -291,29 +291,75 @@ jobs:
           WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
 
       - name: Verify staged and exported npm platform artifact
-        run: node packages/webui-desktop/scripts/test-native-package.mjs "${{ matrix.platform.package }}"
+        shell: bash
+        run: |
+          pnpm --dir "packages/${{ matrix.platform.package }}" pack --pack-destination "$WEBUI_NATIVE_EXPORT_ROOT"
+          node --input-type=module <<'JS'
+          import { readFileSync, statSync } from 'node:fs';
+          import path from 'node:path';
+          import assert from 'node:assert/strict';
+          const packageRoot = path.join('packages', process.env.NATIVE_PACKAGE);
+          for (const file of JSON.parse(readFileSync(path.join(packageRoot, 'package.json'))).files) {
+            assert(statSync(path.join(packageRoot, file)).size > 0);
+            assert.equal(statSync(path.join(packageRoot, file)).size,
+              statSync(path.join(process.env.WEBUI_NATIVE_EXPORT_ROOT, packageRoot, file)).size);
+          }
+          JS
         env:
           WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
+          NATIVE_PACKAGE: ${{ matrix.platform.package }}
 
       - name: Verify fresh npm desktop consumer
-        if: matrix.platform.consumer && runner.os != 'Windows'
+        if: matrix.platform.consumer
         shell: bash
         run: |
           set -euo pipefail
           pnpm --filter @microsoft/webui build
           pnpm --filter @microsoft/webui-desktop build
-          node packages/webui-desktop/scripts/test-npm-consumer.mjs --pack
-
-      - name: Verify fresh npm desktop consumer (Windows)
-        if: matrix.platform.consumer && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          pnpm --filter @microsoft/webui build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm --filter @microsoft/webui-desktop build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node packages/webui-desktop/scripts/test-npm-consumer.mjs --pack
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --input-type=module <<'JS'
+          import { spawnSync } from 'node:child_process';
+          import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import path from 'node:path';
+          import assert from 'node:assert/strict';
+          const workspace = process.cwd(), project = mkdtempSync(path.join(tmpdir(), 'desktop-consumer-'));
+          const version = JSON.parse(readFileSync('packages/webui/package.json')).version;
+          const win = process.platform === 'win32', platform = `${process.platform}-${process.arch}`;
+          function run(command, args, env = process.env, status = 0) {
+            const result = spawnSync(command, args, { cwd: project, env, encoding: 'utf8',
+              shell: win && ['npm', 'pnpm'].includes(command), timeout: 120000 });
+            assert.ifError(result.error);
+            assert.equal(result.status, status, result.stdout + result.stderr);
+            return result;
+          }
+          try {
+            writeFileSync(path.join(project, 'package.json'), '{"private":true}');
+            for (const name of ['webui', `webui-${platform}`, 'webui-desktop', `webui-desktop-${platform}`]) {
+              run('pnpm', ['--dir', path.join(workspace, 'packages', name), 'pack', '--pack-destination', project]);
+            }
+            const install = names => run('npm', ['install', '--offline', '--omit=optional', '--no-audit', '--no-fund',
+              ...names.map(name => path.join(project, `microsoft-${name}-${version}.tgz`))]);
+            install(['webui', `webui-${platform}`]);
+            const native = path.join(project, 'node_modules/@microsoft/webui/bin', win ? 'webui.exe' : 'webui');
+            const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+              !['path', 'webui_binary_path', 'webui_desktop_binary'].includes(key.toLowerCase())));
+            env.PATH = win ? path.join(process.env.SystemRoot, 'System32') : '/usr/bin:/bin';
+            assert.match(run(native, ['desktop', 'init', './app'], env, 66).stderr, /npm install @microsoft\/webui-desktop/);
+            install(['webui-desktop', `webui-desktop-${platform}`]);
+            run(native, ['desktop', 'init', './app'], env);
+            if (win) {
+              const powershell = run('where.exe', ['pwsh']).stdout.trim().split('\r\n')[0];
+              run(powershell, ['-NoProfile', '-Command', 'if (Get-Command node -ErrorAction SilentlyContinue) { exit 2 }; & ./node_modules/.bin/webui.cmd desktop build ./app/src --out ./bundle; exit $LASTEXITCODE'], env);
+            } else {
+              run(path.join(project, 'node_modules/.bin/webui'), ['desktop', 'build', './app/src', '--out', './bundle'], env);
+            }
+            assert(existsSync(path.join(project, 'bundle/protocol.bin')));
+            run('npm', ['exec', '--offline', '--', 'webui', 'desktop', 'package', './bundle', '--target',
+              { darwin: 'macos-app', linux: 'linux-portable', win32: 'windows-portable' }[process.platform], '--out', './packages']);
+          } finally {
+            rmSync(project, { recursive: true, force: true });
+          }
+          JS
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

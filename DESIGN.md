@@ -349,8 +349,10 @@ window, state providers, assets, and capabilities; OS-specific adapters own
 native lifecycle and FFI. Source builds and immutable bundles feed the same
 custom-protocol request dispatcher. Rust providers can supply route state and
 application API responses, so browser routing uses the same authoritative
-protocol as server deployments. The desktop CLI invokes a separate sidecar,
-keeping native webview dependencies out of the default CLI.
+protocol as server deployments. The Rust CLI discovers and invokes a
+version-matched native sidecar directly, keeping webview dependencies out of
+the default CLI. npm distributes desktop binaries only through an explicit
+desktop support install; Node is not part of command execution.
 
 Optional application IPC is distinct from resource requests and window-control
 messages. Proto3 application contracts generate typed Rust and TypeScript

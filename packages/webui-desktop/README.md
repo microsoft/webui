@@ -1,8 +1,9 @@
 # @microsoft/webui-desktop
 
 Opt-in native desktop CLI support and browser runtime for generated,
-bidirectional WebUI desktop IPC. The browser entry point does not import the
-Node launcher, Web Components, the framework, the router, or the Node addon.
+bidirectional WebUI desktop IPC. `webui desktop` runs the native Rust sidecar
+directly, without a Node wrapper. The browser entry point does not import
+Web Components, the framework, the router, or the Node addon.
 
 ## Desktop CLI
 

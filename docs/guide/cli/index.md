@@ -586,7 +586,8 @@ dependencies enabled:
 npm install @microsoft/webui @microsoft/webui-desktop
 ```
 
-Running `webui desktop` without desktop support exits with a hint to install
+`webui desktop` invokes the native Rust sidecar directly, without a Node wrapper.
+Running it without desktop support exits with a hint to install
 `@microsoft/webui-desktop`. A sidecar from a different WebUI version fails
 instead of silently running incompatible commands.
 

@@ -4,9 +4,6 @@
   "description": "Opt-in native desktop CLI and typed browser IPC runtime for WebUI",
   "license": "MIT",
   "type": "module",
-  "bin": {
-    "webui-desktop": "./bin/webui-desktop"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -14,12 +11,11 @@
     }
   },
   "files": [
-    "dist/",
-    "bin/webui-desktop"
+    "dist/"
   ],
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.cli.json && node scripts/build.mjs",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.cli.json --noEmit",
+    "build": "tsc && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "pnpm build && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
   },
   "dependencies": {},
