@@ -138,6 +138,12 @@ client, interactive components hydrate as islands.
 
 ## Project structure
 
+For a Rust host embedding an existing HTTP server, the opt-in macOS
+`LocalServerFrame::on_url_activation("myapp", handler)` receives bounded,
+host-only incoming custom-scheme URLs. It does not register the scheme with
+the OS, navigate the browser or prove cold/warm OS delivery. See the
+[desktop local-server guide](/guide/concepts/desktop#existing-http-application).
+
 ```
 my-app/
 |- src/

@@ -84,6 +84,8 @@ struct MacosLaunchOptions {
     lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
     frame_policy: Option<Arc<crate::frame_policy::FramePolicy>>,
+    #[cfg(feature = "local-server")]
+    url_activation: Option<Arc<crate::local_server::url_activation::ActivationSender>>,
     #[cfg(feature = "native-services")]
     native_services: Option<crate::NativeServices>,
     live_background: Arc<crate::window::LiveBackground>,
@@ -132,6 +134,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         lifetime: None,
         #[cfg(feature = "local-server")]
         frame_policy: None,
+        #[cfg(feature = "local-server")]
+        url_activation: None,
         #[cfg(feature = "native-services")]
         native_services: None,
         live_background: frame.runtime.live_background(),
@@ -163,6 +167,12 @@ pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<(
         local_url: Some(frame.options.url()),
         lifetime: Some(frame.lifetime().clone()),
         frame_policy: Some(Arc::clone(&frame.frame_policy)),
+        url_activation: frame
+            .url_activation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("URL activation registration unavailable"))?
+            .as_ref()
+            .map(Arc::clone),
         #[cfg(feature = "native-services")]
         native_services: frame
             .native_services
@@ -227,6 +237,10 @@ fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
         }
         #[cfg(feature = "local-server")]
         delegate.cancel_quit_deadline();
+        #[cfg(feature = "local-server")]
+        if let Some(sender) = &delegate.ivars().url_activation {
+            sender.close();
+        }
         #[cfg(feature = "local-server")]
         let window_closed = delegate.ivars().exiting.get();
         if let Some(wake) = delegate.ivars().command_wake.get() {

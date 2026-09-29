@@ -23,10 +23,17 @@ use crate::{
 
 #[cfg(feature = "application-ipc")]
 mod owned_ipc;
+pub(crate) mod url_activation;
 #[cfg(feature = "application-ipc")]
 pub use owned_ipc::bind_owned_local_server;
 #[cfg(feature = "application-ipc")]
 pub(crate) use owned_ipc::OwnedLocalServerIpc;
+#[cfg(target_os = "macos")]
+use url_activation::ActivationSender;
+pub use url_activation::{
+    UrlActivation, UrlActivationRegistrationError, MAX_URL_ACTIVATIONS_PER_BATCH,
+    MAX_URL_ACTIVATION_BYTES,
+};
 
 /// Suggested static URL for hosts that choose to mount the matching embedded
 /// local-only browser runtime. This is an asset route, never an IPC endpoint.
@@ -529,6 +536,8 @@ impl LocalServerAppBuilder {
             shell: self.shell,
             app_id: self.app_id,
             events: EventRegistry::default(),
+            #[cfg(target_os = "macos")]
+            url_activation: Mutex::new(None),
             window_handle: WindowHandle::with_background(std::sync::Arc::clone(&live_background)),
             live_background,
             frame_policy,
@@ -556,6 +565,8 @@ pub struct LocalServerFrame {
     pub(crate) shell: DesktopShellConfig,
     pub(crate) app_id: Option<String>,
     pub(crate) events: EventRegistry,
+    #[cfg(target_os = "macos")]
+    pub(crate) url_activation: Mutex<Option<Arc<ActivationSender>>>,
     pub(crate) window_handle: WindowHandle,
     pub(crate) live_background: std::sync::Arc<crate::window::LiveBackground>,
     pub(crate) frame_policy: std::sync::Arc<crate::frame_policy::FramePolicy>,
@@ -647,6 +658,49 @@ impl LocalServerFrame {
         self.events.on_event(handler)
     }
 
+    /// Register one trusted-host callback for incoming macOS custom-scheme URLs.
+    ///
+    /// The callback runs off the AppKit thread and receives only validated,
+    /// bounded URLs for this window. It must not pass the URL to page scripts
+    /// or native IPC without its own application authorization. This does not
+    /// register a scheme with the OS or forward launches from another instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an invalid scheme, duplicate registration,
+    /// unavailable worker, or an unsupported platform. Register before
+    /// [`run_local_server_frame`].
+    pub fn on_url_activation<F>(
+        &self,
+        scheme: &str,
+        handler: F,
+    ) -> std::result::Result<(), UrlActivationRegistrationError>
+    where
+        F: Fn(UrlActivation) + Send + 'static,
+    {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (scheme, handler);
+            Err(UrlActivationRegistrationError::Unsupported)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut slot = self
+                .url_activation
+                .lock()
+                .map_err(|_| UrlActivationRegistrationError::Unavailable)?;
+            if slot.is_some() {
+                return Err(UrlActivationRegistrationError::AlreadyRegistered);
+            }
+            *slot = Some(Arc::new(ActivationSender::register(
+                scheme,
+                self.lifetime().clone(),
+                handler,
+            )?));
+            Ok(())
+        }
+    }
+
     /// Register an event handler until the returned subscription is dropped.
     ///
     /// # Errors
@@ -665,6 +719,14 @@ impl LocalServerFrame {
 
 impl Drop for LocalServerFrame {
     fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(mut activation) = self.url_activation.lock() {
+                if let Some(sender) = activation.take() {
+                    sender.close();
+                }
+            }
+        }
         self.frame_policy.close();
         #[cfg(feature = "native-services")]
         {
@@ -792,6 +854,32 @@ mod tests {
         assert!(frame.window_handle().set_title("HTTP ready").is_ok());
         drop(subscription);
         drop(frame);
+    }
+
+    #[test]
+    fn url_activation_registration_is_single_owner_or_explicitly_unsupported() {
+        let origin = LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+        let (_owner, lifetime) = HostLifetime::new();
+        let frame = crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime))
+            .build()
+            .unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            assert!(matches!(
+                frame.on_url_activation("HTTP", |_| {}),
+                Err(UrlActivationRegistrationError::InvalidScheme)
+            ));
+            frame.on_url_activation("testapp", |_| {}).unwrap();
+            assert!(matches!(
+                frame.on_url_activation("testapp", |_| {}),
+                Err(UrlActivationRegistrationError::AlreadyRegistered)
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(matches!(
+            frame.on_url_activation("testapp", |_| {}),
+            Err(UrlActivationRegistrationError::Unsupported)
+        ));
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

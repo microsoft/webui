@@ -23,7 +23,7 @@ required-features = ["cli"]
 
 [features]
 default = []
-local-server = ["native", "objc2-web-kit?/WKNavigationResponse"]
+local-server = ["native", "dep:url", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
 application-ipc = [
     "dep:base64",
@@ -86,7 +86,7 @@ getrandom = { workspace = true, optional = true }
 libc = { workspace = true }
 objc2 = { workspace = true, optional = true }
 objc2-app-kit = { workspace = true, optional = true, features = ["std", "objc2-core-foundation", "NSApplication", "NSAppearance", "NSButton", "NSColor", "NSControl", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSVisualEffectView", "NSWindow"] }
-objc2-foundation = { workspace = true, optional = true, features = ["std", "block2", "NSData", "NSDictionary", "NSDistributedNotificationCenter", "NSURL", "NSURLRequest", "NSURLResponse", "NSString", "NSObject", "NSNotification", "NSGeometry", "NSValue", "NSTimer", "NSDate", "NSRunLoop"] }
+objc2-foundation = { workspace = true, optional = true, features = ["std", "block2", "NSData", "NSDictionary", "NSDistributedNotificationCenter", "NSURL", "NSURLRequest", "NSURLResponse", "NSString", "NSObject", "NSNotification", "NSOperation", "NSGeometry", "NSValue", "NSTimer", "NSDate", "NSRunLoop"] }
 objc2-web-kit = { workspace = true, optional = true, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKURLSchemeHandler", "WKURLSchemeTask", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript"] }
 block2 = { workspace = true, optional = true }
 
@@ -161,6 +161,11 @@ required-features = ["native", "source"]
 [[example]]
 name = "local-server-smoke"
 path = "tests/fixtures/local-server-smoke.rs"
+required-features = ["local-server"]
+
+[[example]]
+name = "local-url-activation"
+path = "tests/fixtures/local-url-activation.rs"
 required-features = ["local-server"]
 
 [[example]]
