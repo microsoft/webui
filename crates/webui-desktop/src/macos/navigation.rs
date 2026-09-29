@@ -12,7 +12,7 @@ use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 #[cfg(feature = "local-server")]
 use objc2_app_kit::NSWindowStyleMask;
-#[cfg(feature = "native-services")]
+#[cfg(any(feature = "native-services", feature = "local-server"))]
 use objc2_foundation::NSError;
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
@@ -29,8 +29,68 @@ pub(super) struct LocalNavigation {
     pub(super) origin: crate::LoopbackOrigin,
     pub(super) lifetime: crate::HostLifetime,
     pub(super) frame_policy: Arc<crate::frame_policy::FramePolicy>,
+    pub(super) control_gate: Option<std::rc::Rc<super::host_message::HostDocumentGate>>,
     #[cfg(feature = "native-services")]
     pub(super) services: Option<crate::NativeServices>,
+}
+
+#[cfg(feature = "local-server")]
+struct ControlNavigation {
+    gate: std::rc::Rc<super::host_message::HostDocumentGate>,
+    navigation: std::cell::RefCell<Option<Option<Retained<WKNavigation>>>>,
+    nil_policy: std::cell::Cell<NilNavigationPolicy>,
+}
+
+// WKNavigation can be nil for distinct cross-document Navigation API loads.
+// Once two nil starts have occurred, no native callback can distinguish any
+// later nil completion from an older delayed one. Keep that ambiguity for the
+// lifetime of this view; a pointer-identified navigation is still admissible.
+#[cfg(feature = "local-server")]
+#[derive(Clone, Copy, Default)]
+struct NilNavigationPolicy {
+    saw_nil: bool,
+    ambiguous: bool,
+}
+
+#[cfg(feature = "local-server")]
+impl NilNavigationPolicy {
+    fn started(&mut self, has_identity: bool) {
+        if !has_identity {
+            self.ambiguous |= self.saw_nil;
+            self.saw_nil = true;
+        }
+    }
+
+    fn matches<T>(&self, started: Option<Option<&T>>, callback: Option<&T>) -> bool {
+        if self.ambiguous && matches!((started, callback), (Some(None), None)) {
+            return false;
+        }
+        committed_navigation_matches(started, callback)
+    }
+}
+
+#[cfg(feature = "local-server")]
+impl ControlNavigation {
+    fn started(&self, navigation: Option<&WKNavigation>) {
+        let mut policy = self.nil_policy.get();
+        policy.started(navigation.is_some());
+        self.nil_policy.set(policy);
+        let previous = self
+            .navigation
+            .replace(Some(navigation.map(objc2::Message::retain)));
+        drop(previous);
+        self.gate.started();
+    }
+
+    fn matches(&self, callback: Option<&WKNavigation>) -> bool {
+        self.nil_policy.get().matches(
+            self.navigation
+                .borrow()
+                .as_ref()
+                .map(|value| value.as_deref()),
+            callback,
+        )
+    }
 }
 
 pub(super) struct NavigationDelegateIvars {
@@ -48,6 +108,8 @@ pub(super) struct NavigationDelegateIvars {
     services: Option<crate::NativeServices>,
     #[cfg(feature = "native-services")]
     geometry_navigation: std::cell::RefCell<Option<Option<Retained<WKNavigation>>>>,
+    #[cfg(feature = "local-server")]
+    control: Option<ControlNavigation>,
     #[cfg(feature = "application-ipc")]
     // Outer None: no pending navigation. Inner None: WebKit supplied a nil
     // identity (as it does for cross-document Navigation API navigations).
@@ -107,9 +169,17 @@ define_class!(
             },));
         }
 
-        #[cfg(any(feature = "application-ipc", feature = "native-services"))]
+        #[cfg(any(
+            feature = "application-ipc",
+            feature = "native-services",
+            feature = "local-server"
+        ))]
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         unsafe fn started(&self, _web_view: &WKWebView, navigation: Option<&WKNavigation>) {
+            #[cfg(feature = "local-server")]
+            if let Some(control) = &self.ivars().control {
+                control.started(navigation);
+            }
             #[cfg(feature = "native-services")]
             if let Some(services) = &self.ivars().services {
                 services.provisional_started();
@@ -148,7 +218,17 @@ define_class!(
                 }
                 return;
             }
-            #[cfg(not(feature = "application-ipc"))]
+            #[cfg(feature = "local-server")]
+            if let Some(control) = &self.ivars().control {
+                if control.matches(navigation) {
+                    control.gate.committed(web_view);
+                }
+            }
+            #[cfg(not(any(
+                feature = "local-server",
+                feature = "application-ipc",
+                feature = "native-services"
+            )))]
             let _ = navigation;
             #[cfg(feature = "native-services")]
             if let Some(services) = &self.ivars().services {
@@ -308,7 +388,7 @@ define_class!(
             }
         }
 
-        #[cfg(feature = "native-services")]
+        #[cfg(any(feature = "native-services", feature = "local-server"))]
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         unsafe fn failed_provisional(
             &self,
@@ -316,32 +396,41 @@ define_class!(
             navigation: Option<&WKNavigation>,
             _error: &NSError,
         ) {
-            let Some(services) = &self.ivars().services else {
-                return;
-            };
-            if !committed_navigation_matches(
-                self.ivars()
-                    .geometry_navigation
-                    .borrow()
-                    .as_ref()
-                    .map(|value| value.as_deref()),
-                navigation,
-            ) {
-                return;
+            #[cfg(feature = "local-server")]
+            if let Some(control) = &self.ivars().control {
+                if control.matches(navigation) {
+                    control.navigation.borrow_mut().take();
+                    control.gate.failed();
+                }
             }
-            self.ivars().geometry_navigation.borrow_mut().take();
-            // SAFETY: WKNavigationDelegate calls this on the owning view's
-            // main thread. A failed provisional load can leave the old page
-            // live, but only its exact previously finished URL can be restored.
-            let loading = unsafe { web_view.isLoading() };
-            let current = web_view
-                .URL()
-                .and_then(|url| url.absoluteString())
-                .map(|url| url.to_string());
-            services.provisional_failed(current.as_deref(), loading);
+            #[cfg(feature = "native-services")]
+            if let Some(services) = &self.ivars().services {
+                if !committed_navigation_matches(
+                    self.ivars()
+                        .geometry_navigation
+                        .borrow()
+                        .as_ref()
+                        .map(|value| value.as_deref()),
+                    navigation,
+                ) {
+                    return;
+                }
+                self.ivars().geometry_navigation.borrow_mut().take();
+                // SAFETY: WKNavigationDelegate calls this on the owning view's
+                // main thread. A failed provisional load can leave the old page
+                // live, but only its exact previously finished URL can be restored.
+                let loading = unsafe { web_view.isLoading() };
+                let current = web_view
+                    .URL()
+                    .and_then(|url| url.absoluteString())
+                    .map(|url| url.to_string());
+                services.provisional_failed(current.as_deref(), loading);
+            }
+            #[cfg(not(feature = "native-services"))]
+            let _ = web_view;
         }
 
-        #[cfg(feature = "native-services")]
+        #[cfg(any(feature = "native-services", feature = "local-server"))]
         #[unsafe(method(webView:didFailNavigation:withError:))]
         unsafe fn failed_committed(
             &self,
@@ -349,6 +438,16 @@ define_class!(
             navigation: Option<&WKNavigation>,
             _error: &NSError,
         ) {
+            #[cfg(feature = "local-server")]
+            if let Some(control) = &self.ivars().control {
+                // Even a failure after commit must not leave a command
+                // capability associated with an incomplete document.
+                if control.matches(navigation) {
+                    control.gate.failed();
+                    control.navigation.borrow_mut().take();
+                }
+            }
+            #[cfg(feature = "native-services")]
             if committed_navigation_matches(
                 self.ivars()
                     .geometry_navigation
@@ -370,14 +469,18 @@ fn navigation_lifetime_active(lifetime: Option<&crate::HostLifetime>) -> bool {
     lifetime.is_none_or(crate::HostLifetime::is_active)
 }
 
-#[cfg(any(feature = "application-ipc", feature = "native-services"))]
+#[cfg(any(
+    feature = "application-ipc",
+    feature = "native-services",
+    feature = "local-server"
+))]
 fn committed_navigation_matches<T>(started: Option<Option<&T>>, committed: Option<&T>) -> bool {
     match (started, committed) {
         (Some(Some(started)), Some(committed)) => std::ptr::eq(started, committed),
-        // Both notifications are native main-document callbacks. A nil commit
-        // is valid only after an observed nil start, never without a start or
-        // after a pointer-identified start. Epoch checks still guard every
-        // asynchronous nonce probe and activation against later navigations.
+        // This establishes only a candidate nil pair, not unique identity:
+        // the control gate's NilNavigationPolicy rejects it if earlier nil
+        // starts could still deliver indistinguishable late callbacks.
+        // Epoch checks separately guard asynchronous nonce probes.
         (Some(None), None) => true,
         _ => false,
     }
@@ -430,6 +533,14 @@ impl DesktopNavigationDelegate {
             frame_policy: local.as_ref().map(|local| Arc::clone(&local.frame_policy)),
             #[cfg(feature = "application-ipc")]
             ipc,
+            #[cfg(feature = "local-server")]
+            control: local.as_ref().and_then(|local| {
+                local.control_gate.as_ref().map(|gate| ControlNavigation {
+                    gate: std::rc::Rc::clone(gate),
+                    navigation: std::cell::RefCell::new(None),
+                    nil_policy: std::cell::Cell::new(NilNavigationPolicy::default()),
+                })
+            }),
             #[cfg(feature = "native-services")]
             services: local.and_then(|local| local.services),
             #[cfg(feature = "native-services")]
@@ -490,7 +601,11 @@ mod tests {
         assert!(navigation_lifetime_active(None));
     }
 
-    #[cfg(feature = "application-ipc")]
+    #[cfg(any(
+        feature = "application-ipc",
+        feature = "local-server",
+        feature = "native-services"
+    ))]
     #[test]
     fn nil_navigation_api_identity_requires_an_observed_matching_start() {
         let first = 1;
@@ -507,6 +622,41 @@ mod tests {
             Some(Some(&first)),
             Some(&first)
         ));
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn overlapping_nil_starts_reject_late_commit_and_failure_in_both_orders() {
+        for callbacks in [[true, false], [false, true]] {
+            let mut policy = NilNavigationPolicy::default();
+            policy.started(false);
+            assert!(policy.matches::<u8>(Some(None), None));
+            // Two distinct native starts with no WKNavigation pointer cannot
+            // pair either ensuing nil callback with the newer document.
+            policy.started(false);
+            let mut admitted = false;
+            let mut revoked_new_document = false;
+            for is_commit in callbacks {
+                if policy.matches::<u8>(Some(None), None) {
+                    if is_commit {
+                        admitted = true;
+                    } else {
+                        revoked_new_document = true;
+                    }
+                }
+            }
+            assert!(!admitted);
+            assert!(!revoked_new_document);
+
+            let identified = 7_u8;
+            policy.started(true);
+            assert!(!policy.matches(Some(Some(&identified)), None));
+            assert!(policy.matches(Some(Some(&identified)), Some(&identified)));
+            // Even after a provable pointer-identified document, an older
+            // queued nil callback can collide with a subsequent nil start.
+            policy.started(false);
+            assert!(!policy.matches::<u8>(Some(None), None));
+        }
     }
 
     #[test]

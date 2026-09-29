@@ -360,6 +360,10 @@ define_class!(
                 return;
             }
             #[cfg(feature = "local-server")]
+            if let Some(handler) = self.ivars().host_message_handler.get() {
+                handler.close();
+            }
+            #[cfg(feature = "local-server")]
             self.cancel_quit_deadline();
             #[cfg(feature = "local-server")]
             if let Some(sender) = &self.ivars().url_activation {
