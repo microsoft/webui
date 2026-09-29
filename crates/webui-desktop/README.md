@@ -35,6 +35,8 @@ There are no default features:
 - `source`: source compilation, bundle construction, and packaging APIs.
 - `packaging`: build-only layout for an already-compiled host and explicitly
   mapped resources, independent of `source`, `native`, and `cli`.
+- `verified-update`: host-only verification of an already-open staged release
+  file; independent of native windows, source compilation, and packaging.
 - `cli`: the `webui-desktop` tooling binary, including `native` and `source`.
 
 Apps normally enable `native` and opt into `source` only during development.
@@ -54,6 +56,19 @@ carrier. It does not grant native authority or preview navigation to subframes.
 Packaging supports macOS `.app` bundles and Windows/Linux portable directories,
 not installers, archives, or signing. Shell configuration exposes app icons,
 menus, and tray icons, subject to backend capabilities.
+
+## Staged release byte integrity
+
+With `verified-update`, the trusted Rust host can call
+`verified_update::verify_staged(file, &expected, &policy)` with an already-open
+`File`, independently authenticated expected metadata, and a policy derived
+from the installed host. Require user approval separately. The receipt retains
+the scanned handle, rewound to offset 0, and observed digest; it is not an
+installer or authorization to mutate the installed app. This check does not
+authenticate release provenance, prove identity inside an archive, or verify
+signatures/notarization. Signed installed apps and policies requiring these OS
+proofs fail closed.
+See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop#staged-release-byte-integrity).
 
 Consumers that own their HTTP server and sealed assets can use
 `package_precompiled_host` with the `packaging` feature instead of building a

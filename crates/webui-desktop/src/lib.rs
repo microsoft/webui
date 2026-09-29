@@ -8,6 +8,7 @@
 //! `native` for the platform webview, `source` for
 //! development compilation, and `cli` for the `webui-desktop` tooling binary.
 //! Enable `packaging` to lay out an already-compiled host without source compilation.
+//! Enable `verified-update` for host-only, staged-file byte integrity checks.
 
 #[cfg(test)]
 extern crate self as webui_desktop;
@@ -68,6 +69,8 @@ mod protocol;
 mod response_content;
 mod routes;
 mod runtime;
+#[cfg(feature = "verified-update")]
+pub mod verified_update;
 mod window;
 mod window_state;
 
