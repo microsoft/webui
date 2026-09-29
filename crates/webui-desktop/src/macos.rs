@@ -21,6 +21,8 @@ use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2::DefinedClass;
 use objc2_app_kit::NSApplication;
+#[cfg(feature = "local-server")]
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::{MainThreadMarker, NSString};
 use objc2_web_kit::WKWebView;
 
@@ -191,6 +193,42 @@ fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
             (app, delegate)
         });
         app.run();
+        #[cfg(feature = "local-server")]
+        let unexpected_local_stop = delegate.ivars().local_origin.is_some()
+            && !delegate.ivars().exiting.get()
+            // Startup abort explicitly detaches the window delegate and
+            // closes that window before stopping AppKit. A recorded Quit
+            // error does not: its live window retains this delegate, even
+            // when windowShouldClose vetoed the fallback close.
+            && delegate
+                .ivars()
+                .window
+                .get()
+                .is_some_and(|window| window.delegate().is_some());
+        #[cfg(feature = "local-server")]
+        if unexpected_local_stop {
+            // NSApplication::stop: can return without windowWillClose. Do not
+            // retire IPC, unregister the owner close wake, emit Exiting or
+            // release the frame's listener pin while its HTTP window lives.
+            // The AppKit run loop has already stopped, so this is a terminal
+            // fallback rather than a cancellable user close request.
+            if let Some(window) = delegate.ivars().window.get() {
+                window.close();
+                if !delegate.ivars().exiting.get() {
+                    eprintln!("WebUI: AppKit stopped without acknowledging local-server window close; waiting for native teardown before releasing the listener pin");
+                }
+                while !delegate.ivars().exiting.get() {
+                    app.run();
+                    if !delegate.ivars().exiting.get() {
+                        window.close();
+                    }
+                }
+            }
+        }
+        #[cfg(feature = "local-server")]
+        delegate.cancel_quit_deadline();
+        #[cfg(feature = "local-server")]
+        let window_closed = delegate.ivars().exiting.get();
         if let Some(wake) = delegate.ivars().command_wake.get() {
             wake.close();
         }
@@ -218,8 +256,58 @@ fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
             app.setMainMenu(None);
             return Err(error.into());
         }
+        #[cfg(feature = "local-server")]
+        if unexpected_local_stop {
+            app.setDelegate(None);
+            app.setMainMenu(None);
+            anyhow::bail!(
+                "local-server AppKit loop stopped before WindowClosed; native window was closed and IPC retired before returning"
+            );
+        }
+        #[cfg(feature = "local-server")]
+        if delegate.ivars().local_origin.is_some() && delegate.ivars().window.get().is_none() {
+            app.setDelegate(None);
+            app.setMainMenu(None);
+            anyhow::bail!("local-server AppKit loop returned without constructing a window");
+        }
+        #[cfg(feature = "local-server")]
+        if delegate.ivars().local_origin.is_some() && !window_closed {
+            app.setDelegate(None);
+            app.setMainMenu(None);
+            anyhow::bail!("local-server AppKit loop returned without WindowClosed");
+        }
+        #[cfg(feature = "local-server")]
+        if delegate.ivars().local_origin.is_some() {
+            app.setDelegate(None);
+            app.setMainMenu(None);
+        }
         Ok(())
     })
+}
+
+#[cfg(feature = "local-server")]
+fn stop_local_app(app: &NSApplication) {
+    // An AppKit `stop:` requested from a GCD command callback (rather than
+    // from a dequeued NSEvent) can leave `run` waiting for its next event.
+    // Wake the native event pump so the Rust host actually regains control.
+    app.stop(None);
+    if let Some(event) =
+        NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+            NSEventType::ApplicationDefined,
+            objc2_foundation::NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
+    {
+        app.postEvent_atStart(&event, true);
+    } else {
+        eprintln!("WebUI: AppKit could not create the local-server run-loop wake event");
+    }
 }
 
 fn devtools_enabled_by_env() -> bool {

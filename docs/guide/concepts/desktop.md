@@ -157,6 +157,28 @@ the HTTP server, and a missing carrier version does not fall back to HTTP.
 Keep the original listener and `HostLifetimeOwner` alive while the window runs.
 Let the native window close before waiting for server port quiescence;
 `run_local_server_frame` returns only after the SDK releases its listener pin.
+On macOS, ordinary window close, an explicit host close request, host-owner
+revocation, and AppKit Quit all return control to the Rust host rather than
+terminating the process. Quit (the default menu's Cmd+Q or `terminate:` action)
+requests the window's normal, cancellable close. A host
+`WindowCloseRequested` handler can return `PreventDefault`; a later Quit
+retries. Owner revocation instead closes the window even if ordinary close
+would be vetoed. Once `WindowClosed` and `Exiting` have been delivered and
+native IPC has retired, `run_local_server_frame` returns so the owning Rust
+host can shut down its backend and await worker/HTTP drain **off the UI
+thread**.
+If the native close cannot be queued or acknowledged within 15 seconds, the
+SDK records an error and tries the ordinary cancellable AppKit close directly.
+The Quit path does not return while a live window still owns the HTTP origin:
+if that fallback is vetoed, keep the listener bound and close the window before
+the recorded error is returned. This contract is for AppKit-driven Quit, not
+forced OS termination or `SIGKILL`, which cannot run host cleanup.
+If AppKit's event loop instead stops unexpectedly without closing the window,
+the SDK closes that window on the UI thread before retiring IPC or returning
+an error, including when an earlier Quit failed to queue a close and its
+fallback was vetoed. This terminal recovery is not an ordinary cancellable
+close request; the host still owns its backend shutdown after
+`run_local_server_frame` returns.
 Rust event callbacks and `window_handle()` remain available. Linux reports
 an error if local-server application IPC is requested because WebKitGTK cannot
 attribute native handler messages to a frame; unprivileged direct HTTP windows
