@@ -19,8 +19,13 @@ pub(super) fn register_message_handler(
     webview: &ICoreWebView2,
     hwnd: HWND,
     controls: bool,
+    #[cfg(feature = "local-server")] local_controls: Option<
+        std::rc::Rc<super::local_controls::LocalControls>,
+    >,
     #[cfg(feature = "application-ipc")] ipc: Weak<super::ipc::WindowsIpc>,
 ) -> Result<ICoreWebView2WebMessageReceivedEventHandler> {
+    #[cfg(feature = "local-server")]
+    let view = webview.clone();
     let handler = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             #[cfg(feature = "application-ipc")]
@@ -29,6 +34,10 @@ pub(super) fn register_message_handler(
             }
             if controls {
                 handle_host_message(hwnd, &args)?;
+            }
+            #[cfg(feature = "local-server")]
+            if let Some(local) = &local_controls {
+                local.message(&view, hwnd, &args)?;
             }
         }
         Ok(())

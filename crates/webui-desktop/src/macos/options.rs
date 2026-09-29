@@ -57,6 +57,21 @@ mod tests {
     }
 
     #[test]
+    fn overlay_retains_native_caption_controls_over_full_size_content() {
+        let style = native_window_style(&WindowOptions {
+            titlebar: TitlebarStyle::Overlay { height: 64 },
+            ..WindowOptions::default()
+        });
+        assert!(style.mask.contains(NSWindowStyleMask::Titled));
+        assert!(style.mask.contains(NSWindowStyleMask::Closable));
+        assert!(style.mask.contains(NSWindowStyleMask::Miniaturizable));
+        assert!(style.mask.contains(NSWindowStyleMask::FullSizeContentView));
+        assert!(style.transparent_titlebar);
+        assert!(style.hidden_title);
+        assert!(!style.frameless);
+    }
+
+    #[test]
     fn frameless_window_does_not_retain_standard_chrome() {
         let style = native_window_style(&WindowOptions {
             titlebar: TitlebarStyle::None,

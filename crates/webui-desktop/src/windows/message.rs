@@ -384,6 +384,12 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
 
 /// Publish the final close event and release the frame state.
 fn destroy_window(hwnd: HWND) {
+    #[cfg(feature = "local-server")]
+    with_window_state(hwnd, |state| {
+        if let Some(controls) = &state.local_controls {
+            controls.close();
+        }
+    });
     #[cfg(feature = "native-capture")]
     with_window_state(hwnd, |state| {
         if let Some(registration) = &state.capture_registration {
@@ -428,17 +434,38 @@ pub(super) fn set_controller_bounds(
 ) -> Result<()> {
     let size = get_window_size(hwnd);
     // SAFETY: `controller` is a live WebView2 controller for this window.
-    unsafe {
-        controller.SetBounds(RECT {
-            left: 0,
-            top: 0,
-            right: size.cx,
-            bottom: size.cy,
-        })?;
-    }
+    unsafe { controller.SetBounds(full_client_bounds(size))? };
     Ok(())
 }
 
+/// The overlay caption is native non-client input ABOVE this full client
+/// surface, not an additional WebView2-excluding strip.
+fn full_client_bounds(size: SIZE) -> RECT {
+    RECT {
+        left: 0,
+        top: 0,
+        right: size.cx,
+        bottom: size.cy,
+    }
+}
+
+#[cfg(test)]
+mod overlay_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn webview_fills_entire_client_even_under_native_caption() {
+        assert_eq!(
+            full_client_bounds(SIZE { cx: 1280, cy: 720 }),
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1280,
+                bottom: 720,
+            }
+        );
+    }
+}
 /// Return the window's current DPI for physical-to-logical conversion.
 ///
 /// `GetDpiForWindow` returns 0 for an invalid window; callers treat 0 as the

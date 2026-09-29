@@ -49,6 +49,13 @@ sources, not duplicated here.
   asynchronous owner-loss signal do not prove socket identity; attached
   daemons remain **ineligible**. Default
   local-server frames install no IPC bootstrap, handler, or data channel.
+- A custom-titlebar local-server frame on macOS or Windows may separately
+  install a bounded native window-control handler. It accepts only the exact
+  current main-frame origin of the live host and a fixed window command enum;
+  native-titlebar local frames install none. This handler is not application
+  IPC and carries no application data. Untrusted preview documents must use
+  their own cross-origin or opaque sandbox: a same-origin child that can run
+  script in its parent's realm shares that parent's browser authority.
 - WebKitGTK local-server handlers are registered in a private content world
   only. A top-frame-only mediator checks the current main origin and document
   capability before reaching them; a child document never gains the mediator

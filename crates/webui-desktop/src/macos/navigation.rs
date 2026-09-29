@@ -10,6 +10,8 @@ use crate::{DesktopEvent, EventRegistry, EventResponse, WindowId};
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+#[cfg(feature = "local-server")]
+use objc2_app_kit::NSWindowStyleMask;
 #[cfg(feature = "native-services")]
 use objc2_foundation::NSError;
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
@@ -259,6 +261,24 @@ define_class!(
                 .URL()
                 .and_then(|url| url.absoluteString())
                 .map_or_else(String::new, |value| value.to_string());
+            #[cfg(feature = "local-server")]
+            if self
+                .ivars()
+                .local_origin
+                .as_ref()
+                .is_some_and(|origin| origin.allows(&url))
+            {
+                if let Some(window) = web_view.window().filter(|window| {
+                    window
+                        .styleMask()
+                        .contains(NSWindowStyleMask::FullSizeContentView)
+                }) {
+                    super::commands::update_local_caption_insets(
+                        web_view,
+                        window.styleMask().contains(NSWindowStyleMask::FullScreen),
+                    );
+                }
+            }
             #[cfg(feature = "native-services")]
             if let Some(services) = &self.ivars().services {
                 if committed_navigation_matches(

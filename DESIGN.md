@@ -398,9 +398,15 @@ host may grant an exact local preview origin for unprivileged subframe loads
 without promoting it to main-document or native authority. Browser-created
 `about:blank` children may also exist. WebKitGTK cannot identify a navigation's
 target frame before requesting it, so a denied subframe request may still reach
-the HTTP server. No local-server page receives native window controls; native
-application IPC requires a separately proven owned listener and current main
-document. On Linux, a top-frame-only isolated content world mediates the
+the HTTP server. On macOS and Windows, a custom titlebar may expose bounded
+window controls only to the current main document of the verified, live
+local-server origin; native titlebars and separately sandboxed preview
+subframes receive none. An inherited-origin child able to script its parent
+shares the parent's browser authority and is not a boundary for untrusted
+content.
+This is independent of native application IPC, which requires a separately
+proven owned listener and current main document. On Linux, a top-frame-only
+isolated content world mediates the
 native data lane because WebKitGTK callbacks do not identify the sending
 frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop

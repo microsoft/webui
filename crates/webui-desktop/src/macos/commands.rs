@@ -254,6 +254,48 @@ pub(super) fn update_document_background(webview: &WKWebView, color: Rgba) {
     }
 }
 
+#[cfg(feature = "local-server")]
+fn local_caption_insets_script(fullscreen: bool) -> &'static str {
+    if fullscreen {
+        "document.documentElement?.style.setProperty('--webui-titlebar-inset-start','0px')"
+    } else {
+        "document.documentElement?.style.setProperty('--webui-titlebar-inset-start','78px')"
+    }
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn update_local_caption_insets(webview: &WKWebView, fullscreen: bool) {
+    let completion = RcBlock::new(|_: *mut AnyObject, error: *mut NSError| {
+        if !error.is_null() {
+            // SAFETY: WebKit keeps the error alive for this completion callback.
+            let error = unsafe { &*error };
+            eprintln!(
+                "WebUI: failed to update native caption insets: {}",
+                error.localizedDescription()
+            );
+        }
+    });
+    // SAFETY: This runs on the AppKit thread against the live main-frame view.
+    unsafe {
+        webview.evaluateJavaScript_completionHandler(
+            &NSString::from_str(local_caption_insets_script(fullscreen)),
+            Some(&completion),
+        );
+    }
+}
+
+#[cfg(all(test, feature = "local-server"))]
+mod local_caption_tests {
+    use super::local_caption_insets_script;
+
+    #[test]
+    fn fullscreen_releases_and_restores_native_caption_space() {
+        assert!(local_caption_insets_script(true).contains("'0px'"));
+        assert!(local_caption_insets_script(false).contains("'78px'"));
+        assert!(local_caption_insets_script(true).contains("--webui-titlebar-inset-start"));
+    }
+}
+
 #[cfg(all(test, feature = "native-clipboard"))]
 #[allow(clippy::disallowed_methods)]
 mod capture_close_tests {
