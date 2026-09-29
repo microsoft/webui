@@ -4,6 +4,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+#[cfg(feature = "native-picker")]
+use std::ffi::{CString, OsStr};
+#[cfg(feature = "native-picker")]
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
@@ -11,24 +15,28 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
-#[cfg(feature = "native-dialogs")]
+#[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
 use block2::RcBlock;
-
-#[cfg(feature = "native-dialogs")]
+#[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
 use objc2::rc::Retained;
 use objc2::rc::Weak as ObjcWeak;
-#[cfg(feature = "native-dialogs")]
+#[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSWindow;
 #[cfg(feature = "native-dialogs")]
-use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle, NSModalResponse,
-    NSModalResponseCancel,
-};
-#[cfg(feature = "native-dialogs")]
+use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle};
+#[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
+use objc2_app_kit::{NSModalResponse, NSModalResponseCancel};
+#[cfg(feature = "native-picker")]
+use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+#[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
 use objc2_foundation::NSString;
+#[cfg(feature = "native-picker")]
+use objc2_foundation::NSURL;
 use objc2_web_kit::WKWebView;
 
+#[cfg(feature = "native-picker")]
+use super::PickerPermit;
 use super::{ContentGeometry, GeometryRequest, Inner, NativeServiceError, ScreenRectPoints};
 
 const MAX_GEOMETRY_READS: usize = 16;
@@ -55,6 +63,8 @@ struct Target {
     window: ObjcWeak<NSWindow>,
     view: ObjcWeak<WKWebView>,
     owner: Weak<Inner>,
+    #[cfg(feature = "native-picker")]
+    active_picker: RefCell<Option<ActivePicker>>,
     #[cfg(feature = "native-dialogs")]
     active_dialog: RefCell<Option<ActiveDialog>>,
 }
@@ -64,6 +74,10 @@ pub(crate) struct Dispatch {
     closed: AtomicBool,
     queued: AtomicBool,
     pending: Mutex<Vec<Pending>>,
+    #[cfg(feature = "native-picker")]
+    picker: Mutex<Option<PickerSubmission>>,
+    #[cfg(feature = "native-picker")]
+    cancel_picker_id: AtomicU64,
     #[cfg(feature = "native-dialogs")]
     dialog: Mutex<Option<DialogSubmission>>,
     #[cfg(feature = "native-dialogs")]
@@ -84,6 +98,81 @@ struct ActiveDialog {
     id: u64,
     alert: Retained<NSAlert>,
     owner: Arc<crate::native_dialogs::DialogState>,
+}
+
+#[cfg(feature = "native-picker")]
+pub(super) struct PickerSubmission {
+    pub(super) id: u64,
+    pub(super) generation: u64,
+    pub(super) title: Option<String>,
+    pub(super) initial: Option<std::path::PathBuf>,
+    pub(super) slot: Weak<PickerSlot>,
+    pub(super) permit: Arc<PickerPermit>,
+}
+
+#[cfg(feature = "native-picker")]
+struct ActivePicker {
+    id: u64,
+    generation: u64,
+    panel: Retained<NSOpenPanel>,
+    slot: Weak<PickerSlot>,
+    _permit: Arc<PickerPermit>,
+}
+
+#[cfg(feature = "native-picker")]
+struct PickerState {
+    result: Option<Result<Option<std::path::PathBuf>, NativeServiceError>>,
+    waker: Option<Waker>,
+}
+
+#[cfg(feature = "native-picker")]
+pub(super) struct PickerSlot(Mutex<PickerState>);
+
+#[cfg(feature = "native-picker")]
+impl PickerSlot {
+    pub(super) fn new() -> Self {
+        Self(Mutex::new(PickerState {
+            result: None,
+            waker: None,
+        }))
+    }
+
+    fn complete(&self, result: Result<Option<std::path::PathBuf>, NativeServiceError>) {
+        let wake = if let Ok(mut state) = self.0.lock() {
+            if state.result.is_some() {
+                return;
+            }
+            state.result = Some(result);
+            state.waker.take()
+        } else {
+            None
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_complete(
+        &self,
+        result: Result<Option<std::path::PathBuf>, NativeServiceError>,
+    ) {
+        self.complete(result);
+    }
+
+    pub(super) fn poll(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<std::path::PathBuf>, NativeServiceError>> {
+        let Ok(mut state) = self.0.lock() else {
+            return Poll::Ready(Err(NativeServiceError::Unavailable));
+        };
+        if let Some(result) = state.result.take() {
+            return Poll::Ready(result);
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
 }
 
 struct Pending {
@@ -153,22 +242,37 @@ impl Registration {
     pub(crate) fn close(&self) {
         if !self.dispatch.closed.swap(true, Ordering::AcqRel) {
             self.dispatch.cancel_all(NativeServiceError::Closed);
+            #[cfg(feature = "native-picker")]
+            self.dispatch.cancel_queued_picker(None, true);
             #[cfg(feature = "native-dialogs")]
             self.dispatch.cancel_queued_dialog();
         }
         let target = TARGETS.with(|targets| targets.borrow_mut().remove(&self.dispatch.id));
-        #[cfg(feature = "native-dialogs")]
+        #[cfg(any(feature = "native-dialogs", feature = "native-picker"))]
         if let Some(target) = &target {
-            if let Some(owner) = target.owner.upgrade() {
-                owner.dialogs.notify_closed();
+            #[cfg(feature = "native-dialogs")]
+            {
+                if let Some(owner) = target.owner.upgrade() {
+                    owner.dialogs.notify_closed();
+                }
+                let active = target
+                    .active_dialog
+                    .borrow()
+                    .as_ref()
+                    .map(|active| active.alert.clone());
+                if let (Some(alert), Some(window)) = (active, target.window.load()) {
+                    window.endSheet_returnCode(&alert.window(), NSModalResponseCancel);
+                }
             }
-            let active = target
-                .active_dialog
-                .borrow()
-                .as_ref()
-                .map(|active| active.alert.clone());
-            if let (Some(alert), Some(window)) = (active, target.window.load()) {
-                window.endSheet_returnCode(&alert.window(), NSModalResponseCancel);
+            #[cfg(feature = "native-picker")]
+            let active = target.active_picker.borrow_mut().take();
+            #[cfg(feature = "native-picker")]
+            if let Some(active) = active {
+                if let Some(slot) = active.slot.upgrade() {
+                    slot.complete(Err(NativeServiceError::Closed));
+                }
+                // SAFETY: Registration is UI-local; AppKit owns the open sheet.
+                unsafe { active.panel.cancel(None) };
             }
         }
         drop(target);
@@ -187,6 +291,10 @@ pub(super) fn install(owner: &Arc<Inner>, window: &NSWindow, view: &WKWebView) -
         closed: AtomicBool::new(false),
         queued: AtomicBool::new(false),
         pending: Mutex::new(Vec::new()),
+        #[cfg(feature = "native-picker")]
+        picker: Mutex::new(None),
+        #[cfg(feature = "native-picker")]
+        cancel_picker_id: AtomicU64::new(0),
         #[cfg(feature = "native-dialogs")]
         dialog: Mutex::new(None),
         #[cfg(feature = "native-dialogs")]
@@ -197,6 +305,8 @@ pub(super) fn install(owner: &Arc<Inner>, window: &NSWindow, view: &WKWebView) -
         window: ObjcWeak::new(window),
         view: ObjcWeak::new(view),
         owner: Arc::downgrade(owner),
+        #[cfg(feature = "native-picker")]
+        active_picker: RefCell::new(None),
         #[cfg(feature = "native-dialogs")]
         active_dialog: RefCell::new(None),
     });
@@ -214,49 +324,62 @@ pub(super) fn install(owner: &Arc<Inner>, window: &NSWindow, view: &WKWebView) -
     }
 }
 
-pub(super) fn request(owner: &Arc<Inner>) -> Result<GeometryRequest, NativeServiceError> {
-    if owner.closed.load(Ordering::Acquire) || !owner.lifetime.is_active() {
-        return Err(NativeServiceError::Closed);
+#[cfg(feature = "native-picker")]
+pub(super) fn require_picker_window(owner: &Inner) -> Result<(), NativeServiceError> {
+    let active = owner
+        .geometry_dispatch
+        .lock()
+        .map_err(|_| NativeServiceError::Unavailable)?;
+    if active
+        .as_ref()
+        .is_none_or(|dispatch| dispatch.closed.load(Ordering::Acquire))
+    {
+        return Err(NativeServiceError::Unavailable);
     }
-    let epoch = owner.document_epoch.load(Ordering::Acquire);
-    if epoch == 0 || owner.committed_epoch.load(Ordering::Acquire) != epoch {
-        return Err(NativeServiceError::GeometryUnavailable);
-    }
+    Ok(())
+}
+
+#[cfg(feature = "native-picker")]
+pub(super) fn enqueue_picker(
+    owner: &Inner,
+    submission: PickerSubmission,
+) -> Result<(), NativeServiceError> {
     let dispatch = owner
         .geometry_dispatch
         .lock()
         .map_err(|_| NativeServiceError::Unavailable)?
         .as_ref()
         .cloned()
-        .ok_or(NativeServiceError::GeometryUnavailable)?;
-    let slot = Arc::new(GeometrySlot(Mutex::new(SlotState {
-        result: None,
-        waker: None,
-    })));
-    dispatch.enqueue(Pending {
-        slot: Arc::downgrade(&slot),
-        epoch,
-    })?;
-    Ok(GeometryRequest {
-        inner: Arc::clone(owner),
-        epoch,
-        slot,
-    })
+        .ok_or(NativeServiceError::Unavailable)?;
+    let mut picker = dispatch
+        .picker
+        .lock()
+        .map_err(|_| NativeServiceError::Unavailable)?;
+    if dispatch.closed.load(Ordering::Acquire) || !owner.lifetime.is_active() {
+        return Err(NativeServiceError::Closed);
+    }
+    if picker.is_some() {
+        return Err(NativeServiceError::PickerBusy);
+    }
+    *picker = Some(submission);
+    drop(picker);
+    dispatch.wake();
+    Ok(())
 }
 
-pub(super) fn cancel_pending(owner: &Inner, close: bool) {
+/// This is thread-safe: panel cancellation itself is posted to the main
+/// queue, never performed on a host worker or while holding an SDK lock.
+#[cfg(feature = "native-picker")]
+pub(super) fn cancel_picker(owner: &Inner, id: u64) {
     let dispatch = owner
         .geometry_dispatch
         .lock()
         .ok()
         .and_then(|active| active.as_ref().cloned());
     if let Some(dispatch) = dispatch {
-        if close {
-            dispatch.closed.store(true, Ordering::Release);
-            dispatch.cancel_all(NativeServiceError::Closed);
-        } else {
-            dispatch.cancel_all(NativeServiceError::Stale);
-        }
+        dispatch.cancel_queued_picker(Some(id), false);
+        dispatch.cancel_picker_id.store(id, Ordering::Release);
+        dispatch.wake();
     }
 }
 
@@ -322,36 +445,25 @@ impl Dispatch {
         }
     }
 
-    fn enqueue(&self, pending: Pending) -> Result<(), NativeServiceError> {
-        let mut queue = self
-            .pending
-            .lock()
-            .map_err(|_| NativeServiceError::Unavailable)?;
-        if self.closed.load(Ordering::Acquire) {
-            return Err(NativeServiceError::Closed);
-        }
-        if queue.len() >= MAX_GEOMETRY_READS {
-            return Err(NativeServiceError::Overloaded);
-        }
-        queue.push(pending);
-        drop(queue);
-        self.wake();
-        Ok(())
-    }
-
-    fn cancel_all(&self, error: NativeServiceError) {
-        let pending = self
-            .pending
-            .lock()
-            .map(|mut queue| std::mem::take(&mut *queue));
-        if let Ok(pending) = pending {
-            for item in pending {
-                if let Some(slot) = item.slot.upgrade() {
-                    slot.complete(Err(match error {
-                        NativeServiceError::Closed => NativeServiceError::Closed,
-                        _ => NativeServiceError::Stale,
-                    }));
-                }
+    #[cfg(feature = "native-picker")]
+    fn cancel_queued_picker(&self, id: Option<u64>, close: bool) {
+        let queued = self.picker.lock().ok().and_then(|mut picker| {
+            if picker
+                .as_ref()
+                .is_some_and(|pending| id.is_none_or(|id| id == pending.id))
+            {
+                picker.take()
+            } else {
+                None
+            }
+        });
+        if let Some(queued) = queued {
+            if let Some(slot) = queued.slot.upgrade() {
+                slot.complete(Err(if close {
+                    NativeServiceError::Closed
+                } else {
+                    NativeServiceError::Cancelled
+                }));
             }
         }
     }
@@ -470,6 +582,379 @@ impl Target {
         }
         alert.beginSheetModalForWindow_completionHandler(&window, Some(&callback));
     }
+
+    #[cfg(feature = "native-picker")]
+    fn drain_picker(this: &Rc<Self>) {
+        let canceled = this.dispatch.cancel_picker_id.swap(0, Ordering::AcqRel);
+        if let Some(panel) = this
+            .active_picker
+            .borrow()
+            .as_ref()
+            .filter(|active| active.id == canceled)
+            .map(|active| active.panel.clone())
+        {
+            // SAFETY: GCD invokes this on AppKit's main queue; a native
+            // response (not mere queue admission) completes the picker.
+            unsafe { panel.cancel(None) };
+        }
+        let pending = this
+            .dispatch
+            .picker
+            .lock()
+            .ok()
+            .and_then(|mut picker| picker.take());
+        if let Some(pending) = pending {
+            Self::start_picker(this, pending);
+        }
+    }
+
+    #[cfg(feature = "native-picker")]
+    fn start_picker(this: &Rc<Self>, pending: PickerSubmission) {
+        let Some(slot) = pending.slot.upgrade() else {
+            return;
+        };
+        let Some(owner) = this.owner.upgrade() else {
+            slot.complete(Err(NativeServiceError::Closed));
+            return;
+        };
+        if this.dispatch.closed.load(Ordering::Acquire)
+            || owner.closed.load(Ordering::Acquire)
+            || !owner.lifetime.is_active()
+        {
+            slot.complete(Err(NativeServiceError::Closed));
+            return;
+        }
+        if owner.generation.load(Ordering::Acquire) != pending.generation {
+            slot.complete(Err(NativeServiceError::Cancelled));
+            return;
+        }
+        if this.active_picker.borrow().is_some() {
+            slot.complete(Err(NativeServiceError::PickerBusy));
+            return;
+        }
+        let Some(window) = this.window.load() else {
+            slot.complete(Err(NativeServiceError::Closed));
+            return;
+        };
+        let Some(mtm) = MainThreadMarker::new() else {
+            slot.complete(Err(NativeServiceError::Unavailable));
+            return;
+        };
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseDirectories(true);
+        panel.setCanChooseFiles(false);
+        panel.setAllowsMultipleSelection(false);
+        if let Some(title) = pending.title.as_deref() {
+            panel.setTitle(Some(&NSString::from_str(title)));
+        }
+        if let Some(path) = pending.initial.as_ref() {
+            let Ok(bytes) = CString::new(path.as_os_str().as_bytes()) else {
+                slot.complete(Err(NativeServiceError::InvalidInitialDirectory));
+                return;
+            };
+            let Some(pointer) = std::ptr::NonNull::new(bytes.as_ptr().cast_mut()) else {
+                slot.complete(Err(NativeServiceError::InvalidInitialDirectory));
+                return;
+            };
+            // SAFETY: CString lives through the NSURL call; it preserves
+            // non-UTF-8 filesystem bytes without a lossy NSString conversion.
+            let url = unsafe {
+                NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
+                    pointer, true, None,
+                )
+            };
+            panel.setDirectoryURL(Some(&url));
+        }
+        let id = pending.id;
+        let weak_target = Rc::downgrade(this);
+        let callback = RcBlock::new(move |response: NSModalResponse| {
+            let Some(target) = weak_target.upgrade() else {
+                return;
+            };
+            let active = {
+                let mut current = target.active_picker.borrow_mut();
+                if current.as_ref().is_some_and(|active| active.id == id) {
+                    current.take()
+                } else {
+                    None
+                }
+            };
+            let Some(active) = active else { return };
+            active.panel.orderOut(None);
+            let result = target.picker_response(&active, response);
+            let slot = active.slot.upgrade();
+            let permit = Arc::clone(&active._permit);
+            complete_picker_after_release(&permit, active, slot, result);
+        });
+        *this.active_picker.borrow_mut() = Some(ActivePicker {
+            id,
+            generation: pending.generation,
+            panel: panel.clone(),
+            slot: pending.slot,
+            _permit: pending.permit,
+        });
+        panel.beginSheetModalForWindow_completionHandler(&window, &callback);
+    }
+
+    #[cfg(feature = "native-picker")]
+    fn picker_response(
+        &self,
+        active: &ActivePicker,
+        response: NSModalResponse,
+    ) -> Result<Option<std::path::PathBuf>, NativeServiceError> {
+        let owner = self.owner.upgrade().ok_or(NativeServiceError::Closed)?;
+        if self.dispatch.closed.load(Ordering::Acquire)
+            || owner.closed.load(Ordering::Acquire)
+            || !owner.lifetime.is_active()
+        {
+            return Err(NativeServiceError::Closed);
+        }
+        if owner.generation.load(Ordering::Acquire) != active.generation {
+            return Err(NativeServiceError::Cancelled);
+        }
+        if response == NSModalResponseCancel {
+            return Ok(None);
+        }
+        if response != NSModalResponseOK {
+            return Err(NativeServiceError::PickerFailure(format!(
+                "OS returned modal response {response:?}"
+            )));
+        }
+        let urls = active.panel.URLs();
+        if urls.count() != 1 {
+            return Err(NativeServiceError::InvalidSelection);
+        }
+        let url = urls
+            .firstObject()
+            .ok_or(NativeServiceError::InvalidSelection)?;
+        selected_directory(&url).map(Some)
+    }
+}
+
+#[cfg(feature = "native-picker")]
+fn selected_directory(url: &NSURL) -> Result<std::path::PathBuf, NativeServiceError> {
+    if !url.isFileURL() {
+        return Err(NativeServiceError::InvalidSelection);
+    }
+    let pointer = url.fileSystemRepresentation();
+    let limit = super::MAX_NATIVE_DOCUMENT_PATH_BYTES;
+    // SAFETY: NSURL retains a NUL-terminated filesystem representation while
+    // `url` lives. Inspect at most the permitted bytes plus one terminator
+    // before constructing a Rust path; never scan or copy an unbounded URL.
+    let length = unsafe { libc::strnlen(pointer.as_ptr(), limit + 1) };
+    if length == 0 || length > limit {
+        return Err(NativeServiceError::InvalidSelection);
+    }
+    // SAFETY: strnlen found a terminator within the checked NSURL buffer;
+    // these preceding bytes remain valid for this synchronous copy.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer.as_ptr().cast::<u8>(), length) };
+    let path = std::path::PathBuf::from(OsStr::from_bytes(bytes));
+    if !path.is_absolute() {
+        return Err(NativeServiceError::InvalidSelection);
+    }
+    Ok(path)
+}
+
+#[cfg(feature = "native-picker")]
+fn complete_picker_after_release<T>(
+    permit: &Arc<PickerPermit>,
+    native_reservation: T,
+    slot: Option<Arc<PickerSlot>>,
+    result: Result<Option<std::path::PathBuf>, NativeServiceError>,
+) {
+    // The native panel and its in-flight permit must leave scope before
+    // waking the Rust host. A resumed handler may immediately ask for the
+    // next picker without observing a spurious PickerBusy.
+    permit.release();
+    drop(native_reservation);
+    if let Some(slot) = slot {
+        slot.complete(result);
+    }
+}
+
+#[cfg(all(test, feature = "native-picker"))]
+mod picker_completion_tests {
+    use super::*;
+    use std::task::{Wake, Waker};
+
+    #[test]
+    fn selected_file_url_is_bounded_before_path_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let folder = tempfile::tempdir()?;
+        let path = CString::new(folder.path().as_os_str().as_bytes())?;
+        let pointer = std::ptr::NonNull::new(path.as_ptr().cast_mut()).ok_or("null path")?;
+        // SAFETY: The CString remains live for this Foundation constructor.
+        let url = unsafe {
+            NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
+                pointer, true, None,
+            )
+        };
+        assert_eq!(selected_directory(&url)?, folder.path());
+
+        let remote = NSURL::URLWithString(&NSString::from_str("https://example.invalid/"))
+            .ok_or("invalid remote fixture URL")?;
+        assert!(matches!(
+            selected_directory(&remote),
+            Err(NativeServiceError::InvalidSelection)
+        ));
+
+        let overlong = CString::new(format!(
+            "/{}",
+            "x".repeat(super::super::MAX_NATIVE_DOCUMENT_PATH_BYTES + 1)
+        ))?;
+        let pointer =
+            std::ptr::NonNull::new(overlong.as_ptr().cast_mut()).ok_or("null long path")?;
+        // SAFETY: The CString remains live and contains the entire oversized
+        // representation through this Foundation constructor.
+        let url = unsafe {
+            NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
+                pointer, true, None,
+            )
+        };
+        assert!(matches!(
+            selected_directory(&url),
+            Err(NativeServiceError::InvalidSelection)
+        ));
+        Ok(())
+    }
+
+    struct ReleaseFlag(Arc<AtomicBool>);
+    impl Drop for ReleaseFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    struct CheckWake(Arc<AtomicBool>, Arc<Inner>);
+    impl Wake for CheckWake {
+        fn wake(self: Arc<Self>) {
+            assert!(self.0.load(Ordering::Acquire));
+            assert!(!self.1.picker_busy.load(Ordering::Acquire));
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            assert!(self.0.load(Ordering::Acquire));
+            assert!(!self.1.picker_busy.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn panel_permit_is_released_before_completion_wakes_next_request() {
+        let released = Arc::new(AtomicBool::new(false));
+        let (_host, lifetime) = crate::HostLifetime::new();
+        let events = crate::EventRegistry::default();
+        let service =
+            match crate::native_services::NativeServices::new(&events, Arc::default(), lifetime) {
+                Ok(service) => service,
+                Err(error) => panic!("fixture setup: {error}"),
+            };
+        let owner = Arc::clone(&service.0);
+        owner.picker_busy.store(true, Ordering::Release);
+        let permit = Arc::new(PickerPermit::new(Arc::clone(&owner)));
+        let future_permit = Arc::clone(&permit);
+        let slot = Arc::new(PickerSlot::new());
+        let waker = Waker::from(Arc::new(CheckWake(
+            Arc::clone(&released),
+            Arc::clone(&owner),
+        )));
+        let mut context = Context::from_waker(&waker);
+        assert!(matches!(slot.poll(&mut context), Poll::Pending));
+        complete_picker_after_release(
+            &permit,
+            ReleaseFlag(Arc::clone(&released)),
+            Some(Arc::clone(&slot)),
+            Ok(None),
+        );
+        assert!(released.load(Ordering::Acquire));
+        assert!(!owner.picker_busy.load(Ordering::Acquire));
+        assert!(matches!(slot.poll(&mut context), Poll::Ready(Ok(None))));
+        // The awaitable's later Drop must not clear the next admission.
+        owner.picker_busy.store(true, Ordering::Release);
+        drop(future_permit);
+        drop(permit);
+        assert!(owner.picker_busy.load(Ordering::Acquire));
+    }
+}
+
+pub(super) fn request(owner: &Arc<Inner>) -> Result<GeometryRequest, NativeServiceError> {
+    if owner.closed.load(Ordering::Acquire) || !owner.lifetime.is_active() {
+        return Err(NativeServiceError::Closed);
+    }
+    let epoch = owner.document_epoch.load(Ordering::Acquire);
+    if epoch == 0 || owner.committed_epoch.load(Ordering::Acquire) != epoch {
+        return Err(NativeServiceError::GeometryUnavailable);
+    }
+    let dispatch = owner
+        .geometry_dispatch
+        .lock()
+        .map_err(|_| NativeServiceError::Unavailable)?
+        .as_ref()
+        .cloned()
+        .ok_or(NativeServiceError::GeometryUnavailable)?;
+    let slot = Arc::new(GeometrySlot(Mutex::new(SlotState {
+        result: None,
+        waker: None,
+    })));
+    dispatch.enqueue(Pending {
+        slot: Arc::downgrade(&slot),
+        epoch,
+    })?;
+    Ok(GeometryRequest {
+        inner: Arc::clone(owner),
+        epoch,
+        slot,
+    })
+}
+
+pub(super) fn cancel_pending(owner: &Inner, close: bool) {
+    let dispatch = owner
+        .geometry_dispatch
+        .lock()
+        .ok()
+        .and_then(|active| active.as_ref().cloned());
+    if let Some(dispatch) = dispatch {
+        if close {
+            dispatch.closed.store(true, Ordering::Release);
+            dispatch.cancel_all(NativeServiceError::Closed);
+        } else {
+            dispatch.cancel_all(NativeServiceError::Stale);
+        }
+    }
+}
+
+impl Dispatch {
+    fn enqueue(&self, pending: Pending) -> Result<(), NativeServiceError> {
+        let mut queue = self
+            .pending
+            .lock()
+            .map_err(|_| NativeServiceError::Unavailable)?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(NativeServiceError::Closed);
+        }
+        if queue.len() >= MAX_GEOMETRY_READS {
+            return Err(NativeServiceError::Overloaded);
+        }
+        queue.push(pending);
+        drop(queue);
+        self.wake();
+        Ok(())
+    }
+
+    fn cancel_all(&self, error: NativeServiceError) {
+        let pending = self
+            .pending
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue));
+        if let Ok(pending) = pending {
+            for item in pending {
+                if let Some(slot) = item.slot.upgrade() {
+                    slot.complete(Err(match error {
+                        NativeServiceError::Closed => NativeServiceError::Closed,
+                        _ => NativeServiceError::Stale,
+                    }));
+                }
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn drain(context: *mut c_void) {
@@ -490,6 +975,8 @@ unsafe extern "C" fn drain(context: *mut c_void) {
                 }
             }
         }
+        #[cfg(feature = "native-picker")]
+        Target::drain_picker(&target);
         #[cfg(feature = "native-dialogs")]
         Target::drain_dialog(&target);
     }

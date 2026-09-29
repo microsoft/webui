@@ -50,6 +50,7 @@ set desktop package options with command flags or the app-root
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
+| `native-picker` | Opt-in macOS directory picker for the trusted Rust host (includes `native-services`; no renderer grant) |
 | `native-dialogs` | Trusted Rust-host live error and confirmation dialogs on macOS and Windows (includes `native-services`; no renderer grant) |
 | `native-capture` | Host-only bounded visible webview PNG on macOS and Windows (includes `native-services`) |
 | `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
@@ -318,12 +319,10 @@ an error, including when an earlier Quit failed to queue a close and its
 fallback was vetoed. This terminal recovery is not an ordinary cancellable
 close request; the host still owns its backend shutdown after
 `run_local_server_frame` returns.
-Rust event callbacks and `window_handle()` remain available. On Linux,
-WebKitGTK callbacks cannot attribute a native message to a frame. The local
-carrier therefore mediates through a private, top-frame-only content world
-bound to the current document; it does not authorize child frames, enable
-preview grants, or change the bundled IPC path. Existing bundled/source apps
-still run there.
+Rust event callbacks and `window_handle()` remain available. On Linux, an
+owned local-server frame can use the same generated IPC connection; child
+frames receive no native authority, and preview subframe grants remain
+unsupported. Existing bundled/source apps still run there.
 The current macOS webview uses an ephemeral website data store, even with a
 stable app ID; this mode does not migrate or persist existing browser cookies.
 
@@ -378,10 +377,41 @@ loading or recall an OS launch already in progress. At most one open can be
 in flight per window; even a navigation **request later prevented** by a host
 handler cancels a pending OS open. Window close and host retirement also
 cancel it. Do not synchronously wait for this future on the native UI
-thread. No workers or timers start unless an opener or theme change
-is requested.
+thread. No workers or timers start unless an opener or theme change is
+requested.
 
-Directory selection is not provided by this dialog feature.
+With `native-picker`, a trusted macOS Rust host can request one OS-owned
+directory selection without exposing arbitrary filesystem access to the
+renderer:
+
+```rust
+use webui_desktop::{DirectoryPickerOptions, DirectorySelection, NativeServiceError, NativeServices};
+use std::path::Path;
+
+async fn choose_logs(services: &NativeServices, known_folder: &Path)
+    -> Result<Option<std::path::PathBuf>, NativeServiceError>
+{
+    let options = DirectoryPickerOptions::new()
+        .title("Choose a log folder")?
+        .initial_directory(known_folder)?;
+    match services.pick_directory(options)?.await? {
+        DirectorySelection::Selected(path) => Ok(Some(path)),
+        DirectorySelection::Cancelled => Ok(None),
+    }
+}
+```
+
+The builder checks the single-line title (at most 120 UTF-8 bytes) and
+absolute starting-path syntax (at most 4,096 bytes); filesystem validation
+runs on a bounded worker before any sheet appears. The selected directory is
+checked again off the UI thread and returned as a canonical absolute path
+without lossy text conversion. The host must still decide whether that path
+is authorized. At most one picker can be pending per window; the async sheet
+reports **actual OS completion**, explicit user cancellation, failure, or a
+120-second deadline. Navigation requests and window close cancel pending
+selection where the OS permits; the host must not block the UI thread while
+awaiting it. Windows and Linux return `PickerUnsupported`. Actual selection
+through the native panel has not yet been verified with a user.
 
 With the separate `native-dialogs` feature, the trusted Rust host can show
 one window-owned native sheet or Task Dialog during the live local-server
@@ -413,9 +443,10 @@ message 500, labels 40 each. Empty, control, bidi and multiline text is
 rejected. Never pass a raw `Error::to_string()` or error chain into a dialog.
 Navigation, host revocation, close and a ten-second logical deadline cancel
 the future; a native dialog already running retains its per-window Busy
-reservation until the OS acknowledges dismissal. This feature does not grant directory
-selection. Hosts must not wait synchronously on the window UI thread or
-assume queue admission means a user response.
+reservation until the OS acknowledges dismissal. When `native-picker` is also
+enabled on macOS, this reservation also excludes the native directory picker.
+Hosts must not wait synchronously on the window UI thread or assume queue
+admission means a user response.
 `DialogError` distinguishes invalid copy, Busy, Navigated, Closed, Timeout,
 Unavailable, and numeric OS failure. Linux returns `Unsupported`. The native
 modal interaction has not been executed in this environment.
