@@ -393,8 +393,10 @@ host revocation cannot authenticate a replacement at that address; privileged
 document admission requires a separately verified process/generation identity
 or live authenticated channel.
 This first native mode admits only same-origin top-level document navigation;
-popups and subframe document commits are denied, though browser-created
-`about:blank` children may exist. WebKitGTK cannot identify a navigation's
+popups and subframe document commits are denied by default. A Mac or Windows
+host may grant an exact local preview origin for unprivileged subframe loads
+without promoting it to main-document or native authority. Browser-created
+`about:blank` children may also exist. WebKitGTK cannot identify a navigation's
 target frame before requesting it, so a denied subframe request may still reach
 the HTTP server. No local-server page receives native window controls; native
 application IPC requires a separately proven owned listener and current main

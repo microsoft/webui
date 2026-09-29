@@ -80,6 +80,8 @@ struct MacosLaunchOptions {
     local_url: Option<String>,
     #[cfg(feature = "local-server")]
     lifetime: Option<crate::HostLifetime>,
+    #[cfg(feature = "local-server")]
+    frame_policy: Option<Arc<crate::frame_policy::FramePolicy>>,
     live_background: Arc<crate::window::LiveBackground>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<ipc::MacIpc>>,
@@ -124,6 +126,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         local_url: None,
         #[cfg(feature = "local-server")]
         lifetime: None,
+        #[cfg(feature = "local-server")]
+        frame_policy: None,
         live_background: frame.runtime.live_background(),
         #[cfg(feature = "application-ipc")]
         ipc: frame
@@ -152,6 +156,7 @@ pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<(
         local_origin: Some(frame.origin().clone()),
         local_url: Some(frame.options.url()),
         lifetime: Some(frame.lifetime().clone()),
+        frame_policy: Some(Arc::clone(&frame.frame_policy)),
         live_background: Arc::clone(&frame.live_background),
         #[cfg(feature = "application-ipc")]
         ipc: frame.ipc_bridge().map(|bridge| {

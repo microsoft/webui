@@ -27,6 +27,8 @@ pub(super) struct NavigationDelegateIvars {
     local_origin: Option<crate::LoopbackOrigin>,
     #[cfg(feature = "local-server")]
     lifetime: Option<crate::HostLifetime>,
+    #[cfg(feature = "local-server")]
+    frame_policy: Option<Arc<crate::frame_policy::FramePolicy>>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     #[cfg(feature = "application-ipc")]
@@ -60,16 +62,25 @@ define_class!(
                 // SAFETY: WebKit provides the response for the duration of
                 // this synchronous policy callback on the UI thread.
                 unsafe {
-                    response.isForMainFrame()
-                        && response
-                            .response()
-                            .URL()
-                            .and_then(|url| url.absoluteString())
-                            .is_some_and(|url| {
-                                self.ivars().lifetime.as_ref().is_some_and(|lifetime| {
-                                    lifetime.allows_navigation(origin, &url.to_string())
-                                })
-                            })
+                    response
+                        .response()
+                        .URL()
+                        .and_then(|url| url.absoluteString())
+                        .is_some_and(|url| {
+                            let url = url.to_string();
+                            self.ivars()
+                                .lifetime
+                                .as_ref()
+                                .is_some_and(crate::HostLifetime::is_active)
+                                && if response.isForMainFrame() {
+                                    origin.allows(&url)
+                                } else {
+                                    self.ivars()
+                                        .frame_policy
+                                        .as_ref()
+                                        .is_some_and(|policy| policy.allows(&url))
+                                }
+                        })
                 }
             });
             decision_handler.call((if allowed {
@@ -141,18 +152,29 @@ define_class!(
                 .URL()
                 .as_deref()
                 .map_or(WKNavigationActionPolicy::Cancel, |url| {
-                    let event = DesktopEvent::NavigationRequested {
-                        window_id: WindowId::PRIMARY,
-                        url: url
-                            .absoluteString()
-                            .map_or_else(String::new, |value| value.to_string()),
-                    };
-                    let permitted = self.allowed_navigation(url, navigation_action)
-                        && dispatch_event(&self.ivars().events, web_view, event)
-                            == EventResponse::Continue;
                     #[cfg(feature = "local-server")]
-                    let permitted =
-                        permitted && navigation_lifetime_active(self.ivars().lifetime.as_ref());
+                    let report = self.ivars().local_origin.is_none()
+                        || navigation_action
+                            .targetFrame()
+                            .is_some_and(|frame| frame.isMainFrame());
+                    #[cfg(not(feature = "local-server"))]
+                    let report = true;
+                    let permitted = self.allowed_navigation(url, navigation_action)
+                        && (!report
+                            || dispatch_event(
+                                &self.ivars().events,
+                                web_view,
+                                DesktopEvent::NavigationRequested {
+                                    window_id: WindowId::PRIMARY,
+                                    url: url
+                                        .absoluteString()
+                                        .map_or_else(String::new, |value| value.to_string()),
+                                },
+                            ) == EventResponse::Continue);
+                    #[cfg(feature = "local-server")]
+                    let permitted = permitted
+                        && navigation_lifetime_active(self.ivars().lifetime.as_ref())
+                        && self.allowed_navigation(url, navigation_action);
                     if permitted {
                         WKNavigationActionPolicy::Allow
                     } else {
@@ -236,17 +258,25 @@ impl DesktopNavigationDelegate {
     fn allowed_navigation(&self, url: &NSURL, action: &WKNavigationAction) -> bool {
         #[cfg(feature = "local-server")]
         if let Some(origin) = &self.ivars().local_origin {
-            // SAFETY: WebKit supplies this live navigation action during the
-            // synchronous delegate callback; both identities are native-owned.
-            return unsafe {
-                action
-                    .targetFrame()
-                    .is_some_and(|frame| frame.isMainFrame())
-            } && url.absoluteString().is_some_and(|value| {
-                self.ivars()
-                    .lifetime
-                    .as_ref()
-                    .is_some_and(|lifetime| lifetime.allows_navigation(origin, &value.to_string()))
+            // SAFETY: WebKit supplies this live target during the synchronous
+            // policy callback; nil targets (including popups) are never grants.
+            let Some(target) = (unsafe { action.targetFrame() }) else {
+                return false;
+            };
+            return url.absoluteString().is_some_and(|value| {
+                let url = value.to_string();
+                // SAFETY: WebKit retains the frame for this policy callback.
+                if unsafe { target.isMainFrame() } {
+                    self.ivars()
+                        .lifetime
+                        .as_ref()
+                        .is_some_and(|lifetime| lifetime.allows_navigation(origin, &url))
+                } else {
+                    self.ivars()
+                        .frame_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.allows(&url))
+                }
             });
         }
         let _ = action;
@@ -260,6 +290,7 @@ impl DesktopNavigationDelegate {
         #[cfg(feature = "local-server")] local: Option<(
             crate::LoopbackOrigin,
             crate::HostLifetime,
+            Arc<crate::frame_policy::FramePolicy>,
         )>,
         #[cfg(feature = "application-ipc")] ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     ) -> Retained<Self> {
@@ -267,9 +298,11 @@ impl DesktopNavigationDelegate {
             events,
             live_background,
             #[cfg(feature = "local-server")]
-            local_origin: local.as_ref().map(|(origin, _)| origin.clone()),
+            local_origin: local.as_ref().map(|(origin, _, _)| origin.clone()),
             #[cfg(feature = "local-server")]
-            lifetime: local.map(|(_, lifetime)| lifetime),
+            lifetime: local.as_ref().map(|(_, lifetime, _)| lifetime.clone()),
+            #[cfg(feature = "local-server")]
+            frame_policy: local.map(|(_, _, policy)| policy),
             #[cfg(feature = "application-ipc")]
             ipc,
             #[cfg(feature = "application-ipc")]

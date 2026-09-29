@@ -521,6 +521,7 @@ impl LocalServerAppBuilder {
             })
             .transpose()?;
         let live_background = std::sync::Arc::default();
+        let frame_policy = crate::frame_policy::FramePolicy::new(self.options.lifetime.clone());
         Ok(LocalServerFrame {
             options: self.options,
             window: self.window,
@@ -530,8 +531,11 @@ impl LocalServerAppBuilder {
             events: EventRegistry::default(),
             window_handle: WindowHandle::with_background(std::sync::Arc::clone(&live_background)),
             live_background,
+            frame_policy,
             #[cfg(feature = "native")]
             executor: std::sync::Arc::default(),
+            #[cfg(feature = "native-services")]
+            native_services: Mutex::new(None),
             #[cfg(feature = "application-ipc")]
             ipc_owner,
         })
@@ -554,13 +558,50 @@ pub struct LocalServerFrame {
     pub(crate) events: EventRegistry,
     pub(crate) window_handle: WindowHandle,
     pub(crate) live_background: std::sync::Arc<crate::window::LiveBackground>,
+    pub(crate) frame_policy: std::sync::Arc<crate::frame_policy::FramePolicy>,
     #[cfg(feature = "native")]
     pub(crate) executor: std::sync::Arc<crate::execution::ApplicationExecutor>,
+    #[cfg(feature = "native-services")]
+    pub(crate) native_services: Mutex<Option<crate::native_services::NativeServices>>,
     #[cfg(feature = "application-ipc")]
     pub(crate) ipc_owner: Option<IpcWindowOwner>,
 }
 
 impl LocalServerFrame {
+    /// Borrow a weak handle for exact unprivileged local iframe origins.
+    ///
+    /// A grant never makes a subframe a native IPC or window-control principal.
+    #[must_use]
+    pub fn frame_policy(&self) -> crate::FramePolicyHandle {
+        self.frame_policy.handle()
+    }
+
+    /// Obtain trusted-host OS openers for this window. No renderer global or
+    /// IPC grant is installed; retaining the handle does not keep the window alive.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the event registry cannot install lifecycle cancellation.
+    #[cfg(feature = "native-services")]
+    pub fn native_services(
+        &self,
+    ) -> std::result::Result<crate::NativeServices, crate::NativeServiceError> {
+        let mut cached = self
+            .native_services
+            .lock()
+            .map_err(|_| crate::NativeServiceError::Unavailable)?;
+        if let Some(services) = cached.as_ref() {
+            return Ok(services.clone());
+        }
+        let services = crate::NativeServices::new(
+            &self.events,
+            std::sync::Arc::clone(&self.executor),
+            self.lifetime().clone(),
+        )?;
+        *cached = Some(services.clone());
+        Ok(services)
+    }
+
     /// Borrow the weak application IPC handle, if explicitly enabled.
     #[cfg(all(
         feature = "application-ipc",
@@ -624,6 +665,15 @@ impl LocalServerFrame {
 
 impl Drop for LocalServerFrame {
     fn drop(&mut self) {
+        self.frame_policy.close();
+        #[cfg(feature = "native-services")]
+        {
+            if let Ok(mut services) = self.native_services.lock() {
+                if let Some(services) = services.take() {
+                    services.close();
+                }
+            }
+        }
         #[cfg(feature = "application-ipc")]
         if let Some(owner) = &self.ipc_owner {
             owner.close();

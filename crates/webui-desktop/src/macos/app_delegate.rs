@@ -45,6 +45,8 @@ pub(super) struct AppDelegateIvars {
     #[cfg(feature = "local-server")]
     pub(in crate::macos) lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
+    pub(in crate::macos) frame_policy: Option<std::sync::Arc<crate::frame_policy::FramePolicy>>,
+    #[cfg(feature = "local-server")]
     pub(in crate::macos) owner_close_wake: OnceCell<super::commands::CommandWake>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) owner_close_registration:
@@ -295,6 +297,8 @@ impl DesktopAppDelegate {
             local_url: options.local_url,
             #[cfg(feature = "local-server")]
             lifetime: options.lifetime,
+            #[cfg(feature = "local-server")]
+            frame_policy: options.frame_policy,
             #[cfg(feature = "local-server")]
             owner_close_wake: OnceCell::new(),
             #[cfg(feature = "local-server")]

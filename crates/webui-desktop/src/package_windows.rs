@@ -10,7 +10,12 @@ use crate::error::{DesktopError, Result};
 #[path = "../runtime/deployment.rs"]
 mod deployment;
 
-pub(super) fn validate_inputs(runner: &Path, output: &Path) -> Result<Vec<PathBuf>> {
+#[cfg(feature = "packaging")]
+pub(crate) fn bootstrap_name() -> &'static str {
+    deployment::BOOTSTRAP_DLL
+}
+
+pub(crate) fn validate_inputs(runner: &Path, output: &Path) -> Result<Vec<PathBuf>> {
     require_file(runner)?;
     let directory = runner
         .parent()

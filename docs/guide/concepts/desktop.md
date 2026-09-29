@@ -49,6 +49,7 @@ set desktop package options with command flags or the app-root
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
+| `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
@@ -116,11 +117,26 @@ accepted (for example, `127.0.0.1` or `[::1]`; all bound IPv4 `127/8`
 addresses are valid, but `localhost` and wildcard addresses are not).
 Initial paths must start with a single `/`; top-level navigation outside that
 exact origin is cancelled. macOS and Windows deny network-backed subframe
-navigation; on Linux, WebKitGTK denies the subframe document response, but a
-request can reach the HTTP server before that decision. Do not use GET requests
-with side effects as a frame-isolation mechanism. Popups are denied, though a
-browser-created `about:blank` child may still exist. No subframe receives a
-native grant.
+navigation by default. To load a local preview, retain the result of
+the exact-origin grant while its iframe is in use:
+
+```rust
+let grant = frame.frame_policy().allow_unprivileged_origin(
+    HttpFrameOrigin::from_localhost_subdomain(host, port)?,
+)?;
+```
+
+Only that exact lowercase `.localhost` subdomain and port may load as a
+subframe; dropping the grant prevents later document loads but does not retract
+an in-flight request. The grant never promotes the preview to a top-level app
+document or gives it native IPC or window controls. Linux currently rejects
+these grants: WebKitGTK denies subframe document responses, but a request may
+reach the HTTP server before that decision. Do not use GET requests with side
+effects as a frame-isolation mechanism. Popups are denied, though a
+browser-created `about:blank` child may still exist. Downloads and permissions
+are not granted by this API; the behavior of sandbox-allowed preview downloads
+still requires product qualification. Do not infer macOS 13 compatibility for
+`.localhost` subdomains from results on newer systems.
 Custom titlebar styles are rejected; use the native titlebar.
 The browser fetches ordinary HTTP resources directly; this is not a network
 egress sandbox. Page-originated native window controls are unavailable. Application IPC is
@@ -147,6 +163,41 @@ attribute native handler messages to a frame; unprivileged direct HTTP windows
 and existing bundled/source apps still run there.
 The current macOS webview uses an ephemeral website data store, even with a
 stable app ID; this mode does not migrate or persist existing browser cookies.
+
+### Trusted-host OS openers
+
+An opt-in `native-services` Rust host can call `frame.native_services()?` to
+obtain a `NativeServices` handle for its own window. This installs only a
+Rust lifecycle subscription; it does **not** add a page global, a renderer
+bridge, or an IPC grant. To expose a specific action to a page, authorize it
+separately through an explicitly generated application IPC registry. Never
+forward an arbitrary renderer-supplied file path to the document opener.
+
+```rust
+use webui_desktop::{NativeServiceError, NativeServices};
+
+async fn open_help(services: &NativeServices) -> Result<(), NativeServiceError> {
+    services.open_url("https://example.com/help")?.await
+}
+```
+
+`open_url` parses an absolute HTTP(S) URL (maximum 2,048 bytes), requiring a
+host and rejecting credentials, controls, and other schemes. `open_document`
+accepts a trusted host-provided absolute local regular `.txt`, `.log`, `.md`,
+`.csv`, `.json`, or `.pdf` path (maximum 4,096 bytes); it checks/canonicalizes
+the file on a worker, rejects final symlinks and directories, and opens it
+with the OS document handler. Do not pass sensitive files without explicit
+host authorization. Both methods return
+an awaitable `NativeOpen`: creating it means bounded worker admission, while
+awaiting it reports the OS opener's response, failure, cancellation, or a
+10-second deadline. It cannot guarantee that the external browser finished
+loading or recall an OS launch already in progress. At most one open can be
+in flight per window; navigation, window close, and host retirement invalidate
+pending work. Do not synchronously wait for this future on the native UI
+thread. No workers or timers start unless an opener is called.
+
+Directory selection and native message/confirmation dialogs are **not**
+provided by this host API yet.
 
 ## Rust API
 
@@ -355,6 +406,75 @@ Set `BuildOptions::plugin` and `projection_manifests` for interactive builds.
 build script or host tool, run any web build scripts and compile the chosen
 runner before calling these APIs; those build commands are not part of the
 desktop runtime.
+
+### Precompiled host layout
+
+An application that owns its Rust HTTP server and sealed WebUI assets can
+package **only** its already-compiled host and explicitly mapped resources.
+Enable `microsoft-webui-desktop`'s `packaging` feature; it does not enable
+`source`, `native`, a Node host, or runtime work:
+
+```rust
+use std::path::PathBuf;
+use webui_desktop::{
+    package_precompiled_host, DesktopPackageTarget, PrecompiledHostOptions,
+    PrecompiledResource, ResourceKind,
+};
+
+fn layout() -> webui_desktop::Result<PathBuf> {
+    let options = PrecompiledHostOptions::new(
+        PathBuf::from("target/release/player"),
+        DesktopPackageTarget::MacosApp,
+        PathBuf::from("packages"),
+    )?
+    .identity("com.example.player", "Player", "1.0.0")?
+    .target_triple("aarch64-apple-darwin")?
+    .icon("icon.icns")?
+    .add_resource(PrecompiledResource::new(
+        "target/release/worker",
+        "workers/worker",
+        ResourceKind::Executable,
+    )?)?
+    .add_resource(PrecompiledResource::new(
+        "dist/sealed.webui",
+        "sealed/webui.bundle",
+        ResourceKind::Data,
+    )?)?;
+    let result = package_precompiled_host(options)?;
+    Ok(result.output_path)
+}
+```
+
+On macOS, the host and mapped executables go under `Contents/MacOS`, while
+data and the optional `.icns` icon go under `Contents/Resources`; an
+`Info.plist` records the supplied identity. Windows and Linux portable layouts
+put executables at the package root and data in `resources`. The result also
+reports the copied host, resource, and icon paths for consumer-owned packagers.
+Each mapping is a single file, not a directory; enumerate a sealed asset tree
+explicitly if needed. Destinations must be safe relative paths without `.` or
+`..`, and collisions (including case-only differences) are rejected.
+
+The target triple must match the requested layout and the Mach-O, PE, or ELF
+architecture of the host and native mapped resources. On Unix, executable
+inputs must have an execute bit. Input symlinks, input/output overlap, missing
+files, and any existing package path fail before writing; a copy-time I/O
+failure may leave a partial *new* directory for the caller to remove. Windows
+portable packaging additionally requires the matching native Windows build's
+bootstrap DLL, license, notices, and provenance beside the host; it copies
+those deployment files but does **not** install the shared Windows App Runtime,
+Visual C++ Redistributable, or WebView2. There is no installer, DMG, ZIP,
+NSIS, signing, or updater publication API in this layout slice. The existing
+`source`/CLI bundle package flow remains unchanged.
+
+Inputs are held open from validation through copying, and copied bytes and
+native headers are checked before success. On Unix, new output files are
+created exclusively relative to a private directory handle. On Windows,
+directory creation remains path-based; **use an output parent not writable by
+untrusted concurrent processes**. A directory-swap attacker with write access
+to that parent can otherwise redirect a Windows destination despite exclusive
+file creation. This layout API is not a sandbox or an installer security
+boundary. Keep the output parent trusted on every platform so the returned
+path cannot be renamed or replaced after packaging completes.
 
 `WindowOptions` supports title and size limits, resize/maximize/fullscreen,
 always-on-top, centering, background, titlebar, effect, remembered geometry,

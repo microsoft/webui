@@ -144,6 +144,15 @@ pub enum DesktopError {
         input_label: &'static str,
     },
 
+    /// An already-compiled host package input is invalid or unsafe.
+    #[error("invalid precompiled desktop package: {message}; help: {help}")]
+    PackageValidation {
+        /// Specific rejected input.
+        message: String,
+        /// Actionable correction.
+        help: &'static str,
+    },
+
     /// Bundle manifest serialization failed.
     #[error("failed to serialize desktop bundle manifest")]
     ManifestSerialization(#[source] serde_json::Error),
@@ -192,6 +201,7 @@ impl DesktopError {
             DesktopError::OutputPathOverlap { .. } => {
                 Some("Choose an output directory outside the app, bundle, state, asset, and runner paths")
             }
+            DesktopError::PackageValidation { help, .. } => Some(help),
             DesktopError::UnsupportedRuntime { help, .. } => Some(help.as_str()),
             _ => None,
         }
