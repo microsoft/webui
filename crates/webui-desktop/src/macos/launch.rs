@@ -205,11 +205,16 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         match super::commands::install_owner_close(
             &window,
             lifetime,
-            #[cfg(feature = "native-services")]
+            #[cfg(feature = "native-capture")]
             ivars
                 .native_services
                 .as_ref()
-                .map(crate::NativeServices::native_resources_for_revoke),
+                .map(crate::NativeServices::capture_for_revoke),
+            #[cfg(feature = "native-clipboard")]
+            ivars
+                .native_services
+                .as_ref()
+                .map(crate::NativeServices::clipboard_for_revoke),
         ) {
             Ok((wake, registration)) => {
                 let _ = ivars.owner_close_wake.set(wake);

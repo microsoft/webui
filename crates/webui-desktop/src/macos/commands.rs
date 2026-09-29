@@ -123,18 +123,19 @@ fn schedule_drain(id: u64) {
 
 #[cfg(feature = "local-server")]
 fn owner_close_callback(
-    #[cfg(feature = "native-services")] resources: Option<(
-        Arc<crate::capture::CaptureState>,
-        Arc<crate::clipboard::ClipboardState>,
-    )>,
+    #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
     schedule: impl Fn() + Send + Sync + 'static,
 ) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || {
-        #[cfg(feature = "native-services")]
-        if let Some((capture, clipboard)) = &resources {
+        #[cfg(feature = "native-capture")]
+        if let Some(capture) = &capture {
             // This runs synchronously under HostLifetime's close lock. Never
             // invoke a Rust Future waker or wait for AppKit here.
             capture.close();
+        }
+        #[cfg(feature = "native-clipboard")]
+        if let Some(clipboard) = &clipboard {
             clipboard.close_silent();
         }
         schedule();
@@ -145,10 +146,8 @@ fn owner_close_callback(
 pub(super) fn install_owner_close(
     window: &NSWindow,
     lifetime: &crate::HostLifetime,
-    #[cfg(feature = "native-services")] resources: Option<(
-        Arc<crate::capture::CaptureState>,
-        Arc<crate::clipboard::ClipboardState>,
-    )>,
+    #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
 ) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
     let window = Weak::new(window);
     let state = lifetime.clone();
@@ -163,8 +162,10 @@ pub(super) fn install_owner_close(
     }));
     let id = target.id;
     let registration = lifetime.register_close(owner_close_callback(
-        #[cfg(feature = "native-services")]
-        resources,
+        #[cfg(feature = "native-capture")]
+        capture,
+        #[cfg(feature = "native-clipboard")]
+        clipboard,
         move || schedule_drain(id),
     ))?;
     Ok((target, registration))
@@ -253,7 +254,7 @@ pub(super) fn update_document_background(webview: &WKWebView, color: Rgba) {
     }
 }
 
-#[cfg(all(test, feature = "native-services"))]
+#[cfg(all(test, feature = "native-clipboard"))]
 #[allow(clippy::disallowed_methods)]
 mod capture_close_tests {
     use super::*;
@@ -275,7 +276,8 @@ mod capture_close_tests {
         let during_wake_clipboard = Arc::clone(&clipboard);
         let _registration = lifetime
             .register_close(owner_close_callback(
-                Some((capture, clipboard)),
+                Some(capture),
+                Some(clipboard),
                 move || {
                     assert_eq!(during_wake.test_retained_len(), 0);
                     assert!(during_wake_clipboard.test_is_closed());
@@ -293,5 +295,30 @@ mod capture_close_tests {
         assert_eq!(observed.test_retained_len(), 0);
         assert!(observed_clipboard.test_is_closed());
         assert_eq!(queued.load(Ordering::Acquire), 2);
+    }
+}
+
+#[cfg(all(test, feature = "native-capture", not(feature = "native-clipboard")))]
+#[allow(clippy::disallowed_methods)]
+mod capture_only_close_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn capture_only_owner_revoke_discards_png_before_native_close_wake() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let capture = crate::capture::CaptureState::new(lifetime.clone(), 18);
+        capture.test_store_retained(25_000);
+        let observed = Arc::clone(&capture);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let callback_wakes = Arc::clone(&wakes);
+        let _registration = lifetime
+            .register_close(owner_close_callback(Some(capture), move || {
+                assert_eq!(observed.test_retained_len(), 0);
+                callback_wakes.fetch_add(1, Ordering::AcqRel);
+            }))
+            .unwrap();
+        owner.revoke().unwrap();
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
     }
 }

@@ -159,7 +159,7 @@ pub struct CapturedContent {
     pub png_bytes: usize,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "native-clipboard"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureToken {
     pub(crate) window_generation: u64,
@@ -168,7 +168,7 @@ pub(crate) struct CaptureToken {
     pub(crate) revision: u64,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "native-clipboard"))]
 impl CapturedContent {
     pub(crate) fn token(&self) -> CaptureToken {
         CaptureToken {
@@ -349,7 +349,7 @@ impl CaptureState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-clipboard"))]
     pub(crate) fn test_store_retained_png(&self, png: &[u8]) {
         self.test_store_retained(png.len());
         if let Ok(mut state) = self.state.lock() {
@@ -368,7 +368,7 @@ impl CaptureState {
             .unwrap_or(0)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-clipboard"))]
     pub(crate) fn test_content(&self) -> Option<CapturedContent> {
         self.state.lock().ok().and_then(|state| {
             state.retained.as_ref().map(|retained| CapturedContent {
@@ -793,6 +793,7 @@ impl CaptureState {
         }
     }
 
+    #[cfg(feature = "native-clipboard")]
     #[allow(clippy::rc_buffer)]
     pub(crate) fn lease_png(&self, token: CaptureToken) -> Result<Arc<Vec<u8>>, CaptureError> {
         if !self.lifetime.is_active() {
@@ -821,6 +822,7 @@ impl CaptureState {
 
     /// Revalidate a capture token and run only a non-blocking admission
     /// update while the resource lock is held. Never call AppKit from `work`.
+    #[cfg(feature = "native-clipboard")]
     pub(crate) fn with_valid_token<R>(
         &self,
         token: CaptureToken,
@@ -993,19 +995,13 @@ mod tests {
     fn reads_are_credited_and_window_identity_retake_release_are_enforced() {
         let (owner, _host) = new_owner();
         let mut request = pending(&owner, 1);
-        let encoded = png(25_000, 320, 200);
-        let encoded_allocation = encoded.as_ptr();
-        owner.complete(1, 1, Ok((320, 200, encoded)));
+        owner.complete(1, 1, Ok((320, 200, png(25_000, 320, 200))));
         let Poll::Ready(Ok(content)) =
             Pin::new(&mut request).poll(&mut Context::from_waker(Waker::noop()))
         else {
             panic!("test capture should complete");
         };
         drop(request);
-        let first_lease = owner.lease_png(content.token()).unwrap();
-        let second_lease = owner.lease_png(content.token()).unwrap();
-        assert!(Arc::ptr_eq(&first_lease, &second_lease));
-        assert_eq!(first_lease.as_ptr(), encoded_allocation);
         let first = owner.read(&content, 0).unwrap();
         assert_eq!(first.bytes.len(), MAX_WEB_CAPTURE_CHUNK_BYTES);
         assert!(!first.eof);
@@ -1026,6 +1022,27 @@ mod tests {
             owner.read(&content, 0),
             Err(CaptureError::Released)
         ));
+    }
+
+    #[cfg(feature = "native-clipboard")]
+    #[test]
+    fn retained_arc_moves_encoded_vec_and_lease_identity_survives_release() {
+        let (owner, _host) = new_owner();
+        let mut request = pending(&owner, 1);
+        let encoded = png(25_000, 320, 200);
+        let encoded_allocation = encoded.as_ptr();
+        owner.complete(1, 1, Ok((320, 200, encoded)));
+        let Poll::Ready(Ok(content)) =
+            Pin::new(&mut request).poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("test capture should complete");
+        };
+        drop(request);
+        let first_lease = owner.lease_png(content.token()).unwrap();
+        let second_lease = owner.lease_png(content.token()).unwrap();
+        assert!(Arc::ptr_eq(&first_lease, &second_lease));
+        assert_eq!(first_lease.as_ptr(), encoded_allocation);
+        owner.release(&content).unwrap();
         assert!(matches!(
             owner.lease_png(content.token()),
             Err(CaptureError::Released)

@@ -27,9 +27,9 @@ use objc2_foundation::{MainThreadMarker, NSString};
 use objc2_web_kit::WKWebView;
 
 mod app_delegate;
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-capture")]
 pub(crate) mod capture;
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-clipboard")]
 pub(crate) mod clipboard;
 mod commands;
 mod effects;
