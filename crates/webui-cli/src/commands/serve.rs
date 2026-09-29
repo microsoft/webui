@@ -5,7 +5,9 @@ mod host;
 mod metafile;
 mod streaming_api;
 
+use actix_web::body::BoxBody;
 use actix_web::dev::Service;
+use actix_web::dev::{ServiceFactory, ServiceRequest, ServiceResponse};
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use clap::Args;
@@ -421,45 +423,10 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     });
     let lr_data = livereload.map(web::Data::new);
 
-    let has_api_proxy = server_context.api_port.is_some();
-
     let server_result = actix_web::rt::System::new()
         .block_on(async move {
             let mut server = HttpServer::new(move || {
-                let host_policy = host_policy.clone();
-                let mut app = App::new()
-                    .wrap_fn(move |req, service| {
-                        if host_policy.allows(req.request()) {
-                            Either::Left(service.call(req))
-                        } else {
-                            Either::Right(std::future::ready(Ok(req.into_response(
-                                HttpResponse::BadRequest().body("Invalid Host header"),
-                            ))))
-                        }
-                    })
-                    .app_data(server_context.clone())
-                    .route("/", web::get().to(handle_index))
-                    .route("/index.html", web::get().to(handle_index));
-
-                if let Some(lr) = &lr_data {
-                    app = app
-                        .app_data(lr.clone())
-                        .route(HMR_ENDPOINT, web::get().to(sse_handler));
-                }
-
-                if has_api_proxy {
-                    app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
-                }
-
-                app = app
-                    .route(
-                        "/_webui/templates",
-                        web::get().to(handle_component_templates),
-                    )
-                    .route("/{tail:.*}", web::get().to(handle_asset))
-                    .default_service(web::route().to(handle_not_found));
-
-                app
+                serve_app(server_context.clone(), lr_data.clone(), host_policy.clone())
             });
             if control.is_some() {
                 server = server.disable_signals();
@@ -481,6 +448,52 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     }
     server_result?;
     Ok(())
+}
+
+fn serve_app(
+    context: web::Data<ServerContext>,
+    livereload: Option<web::Data<LiveReload>>,
+    host_policy: host::HostPolicy,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse<BoxBody>,
+        Error = actix_web::Error,
+        InitError = (),
+    >,
+> {
+    let has_api_proxy = context.api_port.is_some();
+    let mut app = App::new()
+        .wrap_fn(move |req, service| {
+            if host_policy.allows(req.request()) {
+                Either::Left(service.call(req))
+            } else {
+                Either::Right(std::future::ready(Ok(req.into_response(
+                    HttpResponse::BadRequest().body("Invalid Host header"),
+                ))))
+            }
+        })
+        .app_data(context)
+        .route("/", web::get().to(handle_index))
+        .route("/index.html", web::get().to(handle_index));
+
+    if let Some(lr) = livereload {
+        app = app
+            .app_data(lr)
+            .route(HMR_ENDPOINT, web::get().to(sse_handler));
+    }
+
+    if has_api_proxy {
+        app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
+    }
+
+    app.route(
+        "/_webui/templates",
+        web::get().to(handle_component_templates),
+    )
+    .route("/{tail:.*}", web::get().to(handle_asset))
+    .default_service(web::route().to(handle_not_found))
 }
 
 fn ensure_local_port_available(port: u16) -> Result<()> {
@@ -2366,29 +2379,11 @@ mod tests {
     async fn test_foreign_host_cannot_reach_server_routes_or_api_proxy() {
         let (port, handle, captured_targets) = start_request_target_server();
         let host_policy = host::HostPolicy::new(3000, &[]).unwrap();
-        let app = actix_test::init_service(
-            App::new()
-                .wrap_fn(move |req, service| {
-                    if host_policy.allows(req.request()) {
-                        Either::Left(service.call(req))
-                    } else {
-                        Either::Right(std::future::ready(Ok(req.into_response(
-                            HttpResponse::BadRequest().body("Invalid Host header"),
-                        ))))
-                    }
-                })
-                .app_data(test_server_context(port))
-                .app_data(web::Data::new(LiveReload::new(HMR_ENDPOINT)))
-                .route("/", web::get().to(handle_index))
-                .route("/index.html", web::get().to(handle_index))
-                .route(HMR_ENDPOINT, web::get().to(sse_handler))
-                .route(
-                    "/_webui/templates",
-                    web::get().to(handle_component_templates),
-                )
-                .route("/api/{tail:.*}", web::route().to(handle_api_proxy))
-                .route("/{tail:.*}", web::get().to(handle_asset)),
-        )
+        let app = actix_test::init_service(serve_app(
+            test_server_context(port),
+            Some(web::Data::new(LiveReload::new(HMR_ENDPOINT))),
+            host_policy,
+        ))
         .await;
 
         let allowed = actix_test::call_service(
