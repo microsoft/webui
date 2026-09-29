@@ -173,6 +173,11 @@ path = "tests/fixtures/native-geometry.rs"
 required-features = ["native-services"]
 
 [[example]]
+name = "native-theme"
+path = "tests/fixtures/native-theme.rs"
+required-features = ["native-services"]
+
+[[example]]
 name = "local-server-ipc"
 path = "tests/fixtures/native-ipc/local-server.rs"
 required-features = ["native", "local-server", "application-ipc"]

@@ -52,7 +52,7 @@ mod response;
 mod scheme;
 mod state;
 mod tasks;
-mod theme;
+pub(crate) mod theme;
 mod tray;
 
 /// Scheme and authority the macOS backend serves app content from, with no
@@ -337,7 +337,7 @@ fn startup_url() -> String {
 }
 
 /// Dispatch a lifecycle event to Rust callbacks and mirror it to the JS side.
-fn dispatch_event(
+pub(crate) fn dispatch_event(
     events: &EventRegistry,
     webview: &WKWebView,
     event: DesktopEvent,

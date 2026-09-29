@@ -56,6 +56,8 @@ mod native_services;
     )
 ))]
 mod native_tasks;
+#[cfg(feature = "native-services")]
+mod native_theme;
 mod navigation;
 #[cfg(any(feature = "source", feature = "packaging"))]
 mod package;
@@ -124,6 +126,8 @@ pub use native_services::{
     ContentGeometry, GeometryRequest, NativeOpen, NativeServiceError, NativeServices,
     ScreenRectPoints, MAX_NATIVE_DOCUMENT_PATH_BYTES, MAX_NATIVE_URL_BYTES,
 };
+#[cfg(feature = "native-services")]
+pub use native_theme::{ThemeMode, ThemeRequest, ThemeState};
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};

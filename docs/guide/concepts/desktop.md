@@ -191,6 +191,26 @@ stable app ID; this mode does not migrate or persist existing browser cookies.
 
 ### Trusted-host OS openers
 
+The same opt-in `native-services` capability supports a host-owned macOS
+appearance override. From a non-UI thread, call
+`services.set_theme(ThemeMode::Dark)?.await?` (or `Light` / `System`).
+The returned `ThemeState { mode, dark }` reports the requested preference
+and this window's effective native appearance. `System` removes the
+window override and follows the OS; Light/Dark set the window/titlebar
+appearance and WKWebView's `prefers-color-scheme` follows that window. The
+existing `DesktopEvent::ThemeChanged { dark }` reflects effective appearance
+changes, but events can be missed by a new document or connection. Query
+`services.current_theme()?` when admitting one rather than relying on a
+prior event. Before native attachment it returns `ThemeUnavailable`; after
+closure it returns `Closed`. Only one theme change can be queued at once;
+navigation, host-owner revocation, and close cancel a queued change. A
+ten-second timeout requires checking the current snapshot before retrying.
+Windows and Linux
+currently return `ThemeUnsupported` for both operations instead of
+pretending to set a coherent native/webview theme. This does not persist
+preferences or inject styles: the Rust host stores its choice and renders
+the corresponding SSR/CSS; it does not confer renderer IPC access.
+
 An opt-in `native-services` Rust host can call `frame.native_services()?` to
 obtain a `NativeServices` handle for its own window. This installs only a
 Rust lifecycle subscription; it does **not** add a page global, a renderer
@@ -220,7 +240,8 @@ loading or recall an OS launch already in progress. At most one open can be
 in flight per window; even a navigation **request later prevented** by a host
 handler cancels a pending OS open. Window close and host retirement also
 cancel it. Do not synchronously wait for this future on the native UI
-thread. No workers or timers start unless an opener is called.
+thread. No workers or timers start unless an opener or theme change
+is requested.
 
 Directory selection and native message/confirmation dialogs are **not**
 provided by this host API yet.

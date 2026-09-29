@@ -6,7 +6,7 @@
 use crate::{DesktopEvent, EventRegistry};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSAppearance, NSAppearanceNameDarkAqua, NSApplication};
+use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua};
 use objc2_foundation::{
     NSArray, NSDistributedNotificationCenter, NSNotification, NSObject, NSObjectProtocol, NSString,
 };
@@ -14,11 +14,10 @@ use objc2_web_kit::WKWebView;
 
 use super::dispatch_event;
 
-/// Return whether the effective application appearance is a dark variant.
+/// Return whether this webview's effective appearance is a dark variant.
 #[must_use]
-pub(super) fn is_dark_appearance(mtm: MainThreadMarker) -> bool {
-    let app = NSApplication::sharedApplication(mtm);
-    appearance_is_dark(&app.effectiveAppearance())
+pub(crate) fn is_dark_view(view: &WKWebView) -> bool {
+    appearance_is_dark(&view.effectiveAppearance())
 }
 
 fn appearance_is_dark(appearance: &NSAppearance) -> bool {
@@ -33,6 +32,8 @@ fn appearance_is_dark(appearance: &NSAppearance) -> bool {
 pub(super) struct ThemeObserverIvars {
     events: EventRegistry,
     webview: Retained<WKWebView>,
+    #[cfg(feature = "native-services")]
+    controller: Option<std::sync::Arc<crate::native_theme::platform::Controller>>,
 }
 
 define_class!(
@@ -48,8 +49,14 @@ define_class!(
     impl DesktopThemeObserver {
         #[unsafe(method(desktopThemeChanged:))]
         fn desktop_theme_changed(&self, _notification: &NSNotification) {
-            let dark = is_dark_appearance(self.mtm());
             let ivars = self.ivars();
+            let dark = is_dark_view(&ivars.webview);
+            #[cfg(feature = "native-services")]
+            if let Some(controller) = &ivars.controller {
+                if !controller.observe(dark) {
+                    return;
+                }
+            }
             dispatch_event(&ivars.events, &ivars.webview, DesktopEvent::ThemeChanged { dark });
         }
     }
@@ -60,22 +67,38 @@ impl DesktopThemeObserver {
         mtm: MainThreadMarker,
         events: EventRegistry,
         webview: Retained<WKWebView>,
+        #[cfg(feature = "native-services")] controller: Option<
+            std::sync::Arc<crate::native_theme::platform::Controller>,
+        >,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ThemeObserverIvars { events, webview });
+        let this = Self::alloc(mtm).set_ivars(ThemeObserverIvars {
+            events,
+            webview,
+            #[cfg(feature = "native-services")]
+            controller,
+        });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
     }
 }
 
-/// Install a distributed-notification observer for AppKit interface-theme
-/// changes and dispatch an initial `ThemeChanged` event so JS state starts in
-/// sync with the native appearance.
+/// Observe AppKit interface-theme changes and dispatch an initial effective
+/// appearance event for this specific view, not the process-global appearance.
 pub(super) fn install_theme_observer(
     mtm: MainThreadMarker,
     events: EventRegistry,
     webview: Retained<WKWebView>,
+    #[cfg(feature = "native-services")] controller: Option<
+        std::sync::Arc<crate::native_theme::platform::Controller>,
+    >,
 ) -> Retained<DesktopThemeObserver> {
-    let observer = DesktopThemeObserver::new(mtm, events.clone(), webview.clone());
+    let observer = DesktopThemeObserver::new(
+        mtm,
+        events.clone(),
+        webview.clone(),
+        #[cfg(feature = "native-services")]
+        controller,
+    );
     let center = NSDistributedNotificationCenter::defaultCenter();
     let name = NSString::from_str("AppleInterfaceThemeChangedNotification");
     // SAFETY: `observer` is retained for the app lifetime by its OnceCell
@@ -92,7 +115,7 @@ pub(super) fn install_theme_observer(
         &events,
         &webview,
         DesktopEvent::ThemeChanged {
-            dark: is_dark_appearance(mtm),
+            dark: is_dark_view(&webview),
         },
     );
     observer
@@ -109,5 +132,9 @@ mod tests {
         let dark_aqua = unsafe { NSAppearanceNameDarkAqua };
         let appearance = NSAppearance::appearanceNamed(dark_aqua).unwrap();
         assert!(appearance_is_dark(&appearance));
+        // SAFETY: NSAppearanceNameAqua is a static AppKit constant.
+        let aqua = unsafe { objc2_app_kit::NSAppearanceNameAqua };
+        let appearance = NSAppearance::appearanceNamed(aqua).unwrap();
+        assert!(!appearance_is_dark(&appearance));
     }
 }

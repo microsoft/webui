@@ -1405,6 +1405,12 @@ returns an error.
 On macOS and Windows, an exact `.localhost` preview subdomain needs an
 unprivileged `frame.frame_policy()` grant; it never gains native IPC or
 window controls. Linux currently denies preview subframe document commits.
+With `native-services`, a trusted macOS Rust host can await
+`services.set_theme(ThemeMode::Light | ThemeMode::Dark | ThemeMode::System)`
+and query `services.current_theme()` for the effective native appearance
+of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
+the host persists preferences and owns SSR CSS. No renderer grant is added.
+See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
 For an already-compiled Rust host that owns its sealed WebUI assets and
 workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
 and call `package_precompiled_host` with its host executable, target triple,
