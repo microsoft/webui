@@ -6,6 +6,8 @@
 use std::future::Future;
 use std::pin::Pin;
 #[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::{Arc, Condvar, Mutex, Weak};
 #[cfg(target_os = "macos")]
 use std::task::Waker;
@@ -15,6 +17,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW: usize = 8;
 
 /// Hard maximum final raster width, measured in pixels after backing scale.
 pub const MAX_WEB_CAPTURE_WIDTH: u32 = 1600;
@@ -128,6 +132,9 @@ pub enum CaptureError {
     /// macOS adapter cannot schedule this main-thread request.
     #[error("WK content capture scheduler is unavailable")]
     Scheduler,
+    /// Earlier capture deadline workers have not finished exiting.
+    #[error("WK capture deadline capacity is exhausted; retry after pending work settles")]
+    Overloaded,
     /// Only WK on macOS has a proven content snapshot adapter.
     #[error("visible web-content capture is supported only on macOS")]
     Unsupported,
@@ -260,6 +267,16 @@ impl DeadlineTimer {
 }
 
 #[cfg(target_os = "macos")]
+struct TimerReservation(Arc<CaptureState>);
+
+#[cfg(target_os = "macos")]
+impl Drop for TimerReservation {
+    fn drop(&mut self) {
+        self.0.active_timer_threads.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(target_os = "macos")]
 struct Retained {
     id: u64,
     epoch: u64,
@@ -287,6 +304,7 @@ struct State {
 pub(crate) struct CaptureState {
     window_generation: u64,
     lifetime: crate::HostLifetime,
+    active_timer_threads: AtomicUsize,
     state: Mutex<State>,
     dispatch: Mutex<Option<Arc<crate::macos::capture::Dispatch>>>,
 }
@@ -297,6 +315,7 @@ impl CaptureState {
         Arc::new(Self {
             window_generation,
             lifetime,
+            active_timer_threads: AtomicUsize::new(0),
             state: Mutex::new(State {
                 epoch: 0,
                 revision: 0,
@@ -383,6 +402,7 @@ impl CaptureState {
             result: None,
             waker: None,
         })));
+        let reservation = self.reserve_timer()?;
         let deadline = Instant::now() + CAPTURE_DEADLINE;
         let timer = DeadlineTimer::new();
         let (id, epoch) = {
@@ -415,9 +435,9 @@ impl CaptureState {
             });
             (id, state.epoch)
         };
-        if Self::start_deadline(self, &timer, id, epoch, deadline).is_err() {
+        if let Err(error) = Self::start_deadline(self, &timer, id, epoch, deadline, reservation) {
             self.abort_unsubmitted(id);
-            return Err(CaptureError::Scheduler);
+            return Err(error);
         }
         if let Err(error) = dispatch.submit(id, epoch, options) {
             self.abort_unsubmitted(id);
@@ -433,18 +453,29 @@ impl CaptureState {
         })
     }
 
+    fn reserve_timer(self: &Arc<Self>) -> Result<TimerReservation, CaptureError> {
+        self.active_timer_threads
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW).then_some(count + 1)
+            })
+            .map_err(|_| CaptureError::Overloaded)?;
+        Ok(TimerReservation(Arc::clone(self)))
+    }
+
     fn start_deadline(
         owner: &Arc<Self>,
         timer: &Arc<DeadlineTimer>,
         id: u64,
         epoch: u64,
         deadline: Instant,
+        reservation: TimerReservation,
     ) -> Result<(), CaptureError> {
         let timer = Arc::clone(timer);
         let weak_owner = Arc::downgrade(owner);
         std::thread::Builder::new()
             .name("webui-capture-deadline".into())
             .spawn(move || {
+                let _reservation = reservation;
                 let Ok(finished) = timer.finished.lock() else {
                     return;
                 };
@@ -1129,7 +1160,8 @@ mod tests {
             Arc::clone(&active.timer)
         };
         hung.deadline = deadline;
-        CaptureState::start_deadline(&owner, &timer, 1, 1, deadline).unwrap();
+        let reservation = owner.reserve_timer().unwrap();
+        CaptureState::start_deadline(&owner, &timer, 1, 1, deadline, reservation).unwrap();
         let until = Instant::now() + Duration::from_secs(2);
         while !owner
             .state
@@ -1166,6 +1198,7 @@ mod tests {
             2,
             1,
             Instant::now() + Duration::from_millis(50),
+            owner.reserve_timer().unwrap(),
         )
         .unwrap();
         owner.complete_if_current(2, 1, || Ok((320, 200, png(25_000, 320, 200))));
@@ -1174,6 +1207,38 @@ mod tests {
             Pin::new(&mut fast).poll(&mut Context::from_waker(Waker::noop())),
             Poll::Ready(Ok(_))
         ));
+    }
+
+    #[test]
+    fn deadline_worker_capacity_recovers_after_completion() {
+        let (owner, _host) = new_owner();
+        let reservations = (0..MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW)
+            .map(|_| owner.reserve_timer().unwrap())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            owner.reserve_timer(),
+            Err(CaptureError::Overloaded)
+        ));
+        assert_eq!(
+            owner.active_timer_threads.load(Ordering::Acquire),
+            MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW
+        );
+        drop(reservations);
+        assert_eq!(owner.active_timer_threads.load(Ordering::Acquire), 0);
+
+        let timer = DeadlineTimer::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reservation = owner.reserve_timer().unwrap();
+        CaptureState::start_deadline(&owner, &timer, 99, 1, deadline, reservation).unwrap();
+        timer.finish();
+        let until = Instant::now() + Duration::from_secs(1);
+        while owner.active_timer_threads.load(Ordering::Acquire) != 0 {
+            assert!(
+                Instant::now() < until,
+                "deadline reservation was not released"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
