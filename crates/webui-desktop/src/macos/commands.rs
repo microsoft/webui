@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "local-server")]
+use std::sync::Arc;
 
 use crate::window::live_background_script;
 use crate::{Rgba, WindowCommand, WindowHandle};
@@ -117,6 +119,27 @@ fn schedule_drain(id: u64) {
     // SAFETY: `context` owns an id until `drain_on_main_queue` reconstructs
     // it. Grand Central Dispatch invokes that callback exactly once on the main queue.
     unsafe { dispatch_async_f(dispatch_get_main_queue(), context, drain_on_main_queue) };
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn install_owner_close(
+    window: &NSWindow,
+    lifetime: &crate::HostLifetime,
+) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
+    let window = Weak::new(window);
+    let state = lifetime.clone();
+    let target = register_target(Rc::new(move || {
+        if !state.is_active() {
+            if let Some(window) = window.load() {
+                // Unlike performClose, this bypasses cancellable close
+                // requests once the authenticated owner is gone.
+                window.close();
+            }
+        }
+    }));
+    let id = target.id;
+    let registration = lifetime.register_close(Arc::new(move || schedule_drain(id)))?;
+    Ok((target, registration))
 }
 
 unsafe extern "C" fn drain_on_main_queue(context: *mut c_void) {

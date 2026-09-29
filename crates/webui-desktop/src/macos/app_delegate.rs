@@ -37,7 +37,21 @@ use super::{dispatch_event, MacosLaunchOptions};
 
 pub(super) struct AppDelegateIvars {
     pub(in crate::macos) executor: std::sync::Arc<crate::execution::ApplicationExecutor>,
-    pub(in crate::macos) runtime: std::sync::Arc<crate::DesktopRuntime>,
+    pub(in crate::macos) runtime: Option<std::sync::Arc<crate::DesktopRuntime>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) local_origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) local_url: Option<String>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) lifetime: Option<crate::HostLifetime>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) owner_close_wake: OnceCell<super::commands::CommandWake>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) owner_close_registration:
+        std::cell::RefCell<Option<crate::local_server::HostCloseRegistration>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) startup_error: std::cell::RefCell<Option<crate::DesktopError>>,
+    pub(in crate::macos) live_background: std::sync::Arc<crate::window::LiveBackground>,
     pub(in crate::macos) command_wake: OnceCell<super::commands::CommandWake>,
     #[cfg(feature = "application-ipc")]
     pub(in crate::macos) ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
@@ -234,6 +248,12 @@ define_class!(
             if let Some(wake) = self.ivars().command_wake.get() {
                 wake.close();
             }
+            #[cfg(feature = "local-server")]
+            if let Some(wake) = self.ivars().owner_close_wake.get() {
+                wake.close();
+            }
+            #[cfg(feature = "local-server")]
+            self.ivars().owner_close_registration.borrow_mut().take();
             #[cfg(feature = "application-ipc")]
             if let Some(ipc) = &self.ivars().ipc {
                 ipc.close();
@@ -269,6 +289,19 @@ impl DesktopAppDelegate {
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
             executor: options.executor,
             runtime: options.runtime,
+            #[cfg(feature = "local-server")]
+            local_origin: options.local_origin,
+            #[cfg(feature = "local-server")]
+            local_url: options.local_url,
+            #[cfg(feature = "local-server")]
+            lifetime: options.lifetime,
+            #[cfg(feature = "local-server")]
+            owner_close_wake: OnceCell::new(),
+            #[cfg(feature = "local-server")]
+            owner_close_registration: std::cell::RefCell::new(None),
+            #[cfg(feature = "local-server")]
+            startup_error: std::cell::RefCell::new(None),
+            live_background: options.live_background,
             command_wake: OnceCell::new(),
             #[cfg(feature = "application-ipc")]
             ipc: options.ipc,

@@ -354,7 +354,7 @@ non-streaming output does not acquire streaming markers or state.
 | `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
 | C FFI, .NET, Python, WASM | Load a protocol once and expose the same logical rendering, partial, token, and streaming capabilities with host-native ownership and errors. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs and share a validated client projection across page builds. |
-| `webui-desktop` | Package the compiled artifact and run it through a native webview and Rust host without an embedded HTTP server. |
+| `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
 
 FFI uses opaque handles and explicit ownership; .NET wraps those lifetimes in
 safe handles, Python uses a direct PyO3 binding, and Node uses a native addon.
@@ -371,14 +371,33 @@ installation can use Node, but command dispatch has no JavaScript wrapper.
 ### Desktop boundary
 
 The desktop shell uses WebView2 on Windows, WKWebView on macOS, and
-WebKitGTK on Linux. One platform-neutral frame owns the compiled protocol,
-window, state providers, assets, and capabilities; OS-specific adapters own
-native lifecycle and FFI. Source builds and immutable bundles feed the same
-custom-protocol request dispatcher. Rust providers can supply route state and
-application API responses, so browser routing uses the same authoritative
-protocol as server deployments. npm distributes desktop binaries only through
-an explicit desktop support install, keeping webview dependencies out of the
-default CLI.
+WebKitGTK on Linux. For source and immutable bundle inputs, a frame owns
+the compiled protocol, window, state providers, assets, and capabilities;
+both inputs feed the same custom-protocol request dispatcher. Rust providers
+can supply route state and application API responses, so browser routing uses
+the same authoritative protocol as server deployments. An opt-in local-server
+frame instead owns native window/event state and navigates directly to the
+trusted host's already-bound exact loopback HTTP origin. It does not compile,
+load a second protocol, render, or proxy that server's responses. The host
+retains listener ownership and authenticates any attached process; loopback
+syntax alone is not authentication. A separate, weak frame lifetime is revoked
+by the verified host owner before releasing its listener/connection; native
+navigation and pre-script document checks reject that lifetime while the UI
+closes asynchronously. Failure to schedule native close is surfaced for
+deliberate retry; revocation alone cannot guarantee window destruction.
+An owned host keeps its bound listener through window
+closure, since admission revocation alone cannot retract already-issued
+HTTP requests. Attached-owner loss does not terminate that daemon, but cannot
+prevent a daemon from releasing its port before observation. Exact origin and
+host revocation cannot authenticate a replacement at that address; privileged
+document admission requires a separately verified process/generation identity
+or live authenticated channel.
+This first native mode admits only same-origin top-level document navigation;
+network-backed subframe navigation and popups are denied, though browser-created
+`about:blank` children may exist. No page receives native controls or IPC.
+OS adapters own native lifecycle and FFI. npm distributes desktop
+binaries only through an explicit desktop support install, keeping webview
+dependencies out of the default CLI.
 
 Optional application IPC is distinct from resource requests and window-control
 messages. Proto3 application contracts generate typed Rust and TypeScript

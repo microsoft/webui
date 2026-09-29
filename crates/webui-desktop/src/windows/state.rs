@@ -36,17 +36,25 @@ pub(super) struct FrameState {
     pub(super) application_tasks: std::rc::Rc<super::tasks::ApplicationTasks>,
     /// Native IPC adapter, with weak core facade and UI-local completions.
     #[cfg(feature = "application-ipc")]
-    pub(super) ipc: std::rc::Rc<super::ipc::WindowsIpc>,
+    pub(super) ipc: Option<std::rc::Rc<super::ipc::WindowsIpc>>,
     /// WebView2 controller that hosts the app content.
     pub(super) controller: ICoreWebView2Controller,
     /// Retained navigation policy handler.
     pub(super) _navigation_starting: ICoreWebView2NavigationStartingEventHandler,
+    #[cfg(feature = "local-server")]
+    pub(super) _local_navigation: Option<super::webview::LocalNavigationGuards>,
+    #[cfg(feature = "local-server")]
+    pub(super) _owner_close_registration: Option<crate::local_server::HostCloseRegistration>,
+    #[cfg(feature = "local-server")]
+    pub(super) local_lifetime: Option<crate::HostLifetime>,
+    #[cfg(feature = "local-server")]
+    pub(super) owner_close_cookie: Option<usize>,
     /// Retained navigation completion handler.
     pub(super) _navigation_completed: ICoreWebView2NavigationCompletedEventHandler,
     /// Retained script-message handler.
-    pub(super) _web_message_received: ICoreWebView2WebMessageReceivedEventHandler,
+    pub(super) _web_message_received: Option<ICoreWebView2WebMessageReceivedEventHandler>,
     /// Retained resource interception handler.
-    pub(super) _web_resource_requested: ICoreWebView2WebResourceRequestedEventHandler,
+    pub(super) _web_resource_requested: Option<ICoreWebView2WebResourceRequestedEventHandler>,
     /// Lifecycle event registry shared with app code.
     pub(super) events: EventRegistry,
     /// Sendable command queue drained on the UI thread.

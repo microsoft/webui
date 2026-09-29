@@ -406,6 +406,51 @@ fn platform_run_frame(frame: DesktopFrame) -> Result<()> {
     })
 }
 
+#[cfg(feature = "local-server")]
+pub(crate) fn platform_run_local_server_frame(frame: crate::LocalServerFrame) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::run_local_server_frame(frame).map_err(local_backend_error)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows::run_local_server_frame(frame).map_err(local_backend_error)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = frame;
+        Err(DesktopError::UnsupportedRuntime {
+            message: "local-server native frames are unavailable on this target".to_string(),
+            help: "Use macOS or Windows, or the existing bundled native frame".to_string(),
+        })
+    }
+}
+
+#[cfg(all(
+    feature = "local-server",
+    any(target_os = "macos", target_os = "windows")
+))]
+fn local_backend_error(source: anyhow::Error) -> DesktopError {
+    match source.downcast::<DesktopError>() {
+        Ok(desktop) => desktop,
+        Err(source) => DesktopError::Backend {
+            source: source.into(),
+        },
+    }
+}
+
+#[cfg(feature = "local-server")]
+pub(crate) fn local_platform_capabilities() -> DesktopFrameCapabilities {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        platform_capabilities()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        DesktopFrameCapabilities::default()
+    }
+}
+
 #[cfg(all(feature = "native", target_os = "linux"))]
 fn platform_run_frame(frame: DesktopFrame) -> Result<()> {
     crate::linux::run_frame(frame).map_err(|source| DesktopError::Backend {

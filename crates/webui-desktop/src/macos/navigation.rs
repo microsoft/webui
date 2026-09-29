@@ -14,6 +14,8 @@ use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
 };
+#[cfg(feature = "local-server")]
+use objc2_web_kit::{WKNavigationResponse, WKNavigationResponsePolicy};
 use std::sync::Arc;
 
 use super::dispatch_event;
@@ -21,6 +23,10 @@ use super::dispatch_event;
 pub(super) struct NavigationDelegateIvars {
     pub(super) events: EventRegistry,
     live_background: Arc<LiveBackground>,
+    #[cfg(feature = "local-server")]
+    local_origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")]
+    lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     #[cfg(feature = "application-ipc")]
@@ -42,6 +48,37 @@ define_class!(
     // SAFETY: Method signatures match WKNavigationDelegate.
     #[allow(non_snake_case)]
     unsafe impl WKNavigationDelegate for DesktopNavigationDelegate {
+        #[cfg(feature = "local-server")]
+        #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+        unsafe fn webView_decidePolicyForNavigationResponse_decisionHandler(
+            &self,
+            _web_view: &WKWebView,
+            response: &WKNavigationResponse,
+            decision_handler: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
+        ) {
+            let allowed = self.ivars().local_origin.as_ref().is_none_or(|origin| {
+                // SAFETY: WebKit provides the response for the duration of
+                // this synchronous policy callback on the UI thread.
+                unsafe {
+                    response.isForMainFrame()
+                        && response
+                            .response()
+                            .URL()
+                            .and_then(|url| url.absoluteString())
+                            .is_some_and(|url| {
+                                self.ivars().lifetime.as_ref().is_some_and(|lifetime| {
+                                    lifetime.allows_navigation(origin, &url.to_string())
+                                })
+                            })
+                }
+            });
+            decision_handler.call((if allowed {
+                WKNavigationResponsePolicy::Allow
+            } else {
+                WKNavigationResponsePolicy::Cancel
+            },));
+        }
+
         #[cfg(feature = "application-ipc")]
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         unsafe fn started(&self, _web_view: &WKWebView, navigation: Option<&WKNavigation>) {
@@ -55,9 +92,27 @@ define_class!(
             }
         }
 
-        #[cfg(feature = "application-ipc")]
+        #[cfg(any(feature = "local-server", feature = "application-ipc"))]
         #[unsafe(method(webView:didCommitNavigation:))]
         unsafe fn committed(&self, web_view: &WKWebView, navigation: Option<&WKNavigation>) {
+            #[cfg(feature = "local-server")]
+            if self
+                .ivars()
+                .lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.is_active())
+            {
+                // SAFETY: WebKit invokes this callback on its main-thread view;
+                // stop before a retired owner's document can proceed.
+                unsafe { web_view.stopLoading() };
+                if let Some(window) = web_view.window() {
+                    window.close();
+                }
+                return;
+            }
+            #[cfg(not(feature = "application-ipc"))]
+            let _ = navigation;
+            #[cfg(feature = "application-ipc")]
             if let Some(ipc) = &self.ivars().ipc {
                 let matches = committed_navigation_matches(
                     self.ivars()
@@ -92,10 +147,13 @@ define_class!(
                             .absoluteString()
                             .map_or_else(String::new, |value| value.to_string()),
                     };
-                    if is_allowed_navigation_url(url)
+                    let permitted = self.allowed_navigation(url, navigation_action)
                         && dispatch_event(&self.ivars().events, web_view, event)
-                            == EventResponse::Continue
-                    {
+                            == EventResponse::Continue;
+                    #[cfg(feature = "local-server")]
+                    let permitted =
+                        permitted && navigation_lifetime_active(self.ivars().lifetime.as_ref());
+                    if permitted {
                         WKNavigationActionPolicy::Allow
                     } else {
                         WKNavigationActionPolicy::Cancel
@@ -123,6 +181,20 @@ define_class!(
             web_view: &WKWebView,
             _navigation: Option<&WKNavigation>,
         ) {
+            #[cfg(feature = "local-server")]
+            if self
+                .ivars()
+                .lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.is_active())
+            {
+                // SAFETY: The live view is still on WebKit's main thread.
+                unsafe { web_view.stopLoading() };
+                if let Some(window) = web_view.window() {
+                    window.close();
+                }
+                return;
+            }
             let url = web_view
                 .URL()
                 .and_then(|url| url.absoluteString())
@@ -142,6 +214,11 @@ define_class!(
     }
 );
 
+#[cfg(feature = "local-server")]
+fn navigation_lifetime_active(lifetime: Option<&crate::HostLifetime>) -> bool {
+    lifetime.is_none_or(crate::HostLifetime::is_active)
+}
+
 #[cfg(feature = "application-ipc")]
 fn committed_navigation_matches<T>(started: Option<Option<&T>>, committed: Option<&T>) -> bool {
     match (started, committed) {
@@ -156,15 +233,43 @@ fn committed_navigation_matches<T>(started: Option<Option<&T>>, committed: Optio
 }
 
 impl DesktopNavigationDelegate {
+    fn allowed_navigation(&self, url: &NSURL, action: &WKNavigationAction) -> bool {
+        #[cfg(feature = "local-server")]
+        if let Some(origin) = &self.ivars().local_origin {
+            // SAFETY: WebKit supplies this live navigation action during the
+            // synchronous delegate callback; both identities are native-owned.
+            return unsafe {
+                action
+                    .targetFrame()
+                    .is_some_and(|frame| frame.isMainFrame())
+            } && url.absoluteString().is_some_and(|value| {
+                self.ivars()
+                    .lifetime
+                    .as_ref()
+                    .is_some_and(|lifetime| lifetime.allows_navigation(origin, &value.to_string()))
+            });
+        }
+        let _ = action;
+        is_allowed_navigation_url(url)
+    }
+
     pub(super) fn new(
         mtm: MainThreadMarker,
         events: EventRegistry,
         live_background: Arc<LiveBackground>,
+        #[cfg(feature = "local-server")] local: Option<(
+            crate::LoopbackOrigin,
+            crate::HostLifetime,
+        )>,
         #[cfg(feature = "application-ipc")] ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars {
             events,
             live_background,
+            #[cfg(feature = "local-server")]
+            local_origin: local.as_ref().map(|(origin, _)| origin.clone()),
+            #[cfg(feature = "local-server")]
+            lifetime: local.map(|(_, lifetime)| lifetime),
             #[cfg(feature = "application-ipc")]
             ipc,
             #[cfg(feature = "application-ipc")]
@@ -201,6 +306,27 @@ pub(super) fn trusted_app_url(url: &NSURL) -> bool {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn synchronous_navigation_handler_retirement_cancels_its_own_request() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let events = EventRegistry::default();
+        events
+            .on_event(move |_| {
+                assert!(owner.revoke().is_ok());
+                EventResponse::Continue
+            })
+            .unwrap();
+        assert!(navigation_lifetime_active(Some(&lifetime)));
+        let response = events.dispatch(&DesktopEvent::NavigationRequested {
+            window_id: WindowId::PRIMARY,
+            url: "http://127.0.0.1:3456/deep".into(),
+        });
+        assert_eq!(response, EventResponse::Continue);
+        assert!(!navigation_lifetime_active(Some(&lifetime)));
+        assert!(navigation_lifetime_active(None));
+    }
 
     #[cfg(feature = "application-ipc")]
     #[test]
