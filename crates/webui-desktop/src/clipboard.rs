@@ -6,22 +6,22 @@
 
 use std::future::Future;
 use std::pin::Pin;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::{Arc, Condvar, Mutex, Weak};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::task::Waker;
 use std::task::{Context, Poll};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use crate::capture::{CaptureState, CaptureToken};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const CLIPBOARD_DEADLINE: Duration = Duration::from_secs(10);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_CLIPBOARD_DEADLINE_THREADS_PER_WINDOW: usize = 8;
 
 /// A host-owned native PNG clipboard write failure. Failed OS writes leave
@@ -29,8 +29,8 @@ const MAX_CLIPBOARD_DEADLINE_THREADS_PER_WINDOW: usize = 8;
 #[non_exhaustive]
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ClipboardError {
-    /// macOS is the only proven native adapter.
-    #[error("native PNG clipboard writes are supported only on macOS")]
+    /// This platform has no native PNG clipboard adapter.
+    #[error("native PNG clipboard writes are unsupported on this platform")]
     Unsupported,
     /// The capture no longer belongs to this window and document.
     #[error("captured PNG was released, replaced, or belongs to another window")]
@@ -47,17 +47,17 @@ pub enum ClipboardError {
     /// The native operation did not acknowledge within its bounded deadline.
     #[error("native PNG clipboard write did not complete within ten seconds")]
     Timeout,
-    /// AppKit refused to commit the PNG under its public pasteboard type.
-    #[error("AppKit rejected the PNG clipboard write")]
+    /// The native clipboard refused the PNG format or bytes.
+    #[error("native clipboard rejected the PNG write")]
     Rejected,
-    /// Another writer changed the pasteboard before readback completed.
-    #[error("the native pasteboard changed during PNG write verification")]
+    /// Another writer holds or changed the clipboard.
+    #[error("the native clipboard is unavailable or changed during PNG verification")]
     Contended,
-    /// The pasteboard failed a complete byte-for-byte PNG readback.
-    #[error("native PNG pasteboard readback did not match captured bytes")]
+    /// Native readback failed or differed from the captured PNG.
+    #[error("native PNG clipboard readback did not match captured bytes")]
     Readback,
     /// The captured resource lacks a valid bounded PNG representation.
-    #[error("captured PNG is empty or exceeds the native byte budget")]
+    #[error("captured PNG is invalid or exceeds the native byte budget")]
     InvalidData,
     /// The native UI scheduler or timer could not admit this operation.
     #[error("native clipboard scheduler is unavailable")]
@@ -65,18 +65,43 @@ pub enum ClipboardError {
     /// Too many previous clipboard deadline threads have not exited yet.
     #[error("native clipboard deadline capacity is exhausted; retry after pending work settles")]
     Overloaded,
+    /// A native clipboard or memory operation failed.
+    #[error("native PNG clipboard {operation} failed with OS code {code}")]
+    Os {
+        /// Native operation which failed.
+        operation: &'static str,
+        /// Numeric OS error, never page-provided text.
+        code: u32,
+    },
 }
 
-#[cfg(target_os = "macos")]
+/// Validate only the logical PNG bytes; HGLOBAL may reserve extra trailing
+/// capacity which must not be read as part of the encoded resource.
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn valid_png_bytes(png: &[u8]) -> bool {
+    (36..=crate::MAX_WEB_CAPTURE_PNG_BYTES).contains(&png.len())
+        && png.starts_with(b"\x89PNG\r\n\x1a\n")
+        && png.ends_with(b"\0\0\0\0IEND\xaeB`\x82")
+}
+
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn matches_logical_png(expected: &[u8], observed: &[u8], allocation: usize) -> bool {
+    valid_png_bytes(expected)
+        && allocation >= expected.len()
+        && observed.len() == expected.len()
+        && expected == observed
+}
+
+#[cfg(any(target_os = "macos", windows))]
 struct Slot(Mutex<SlotState>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct SlotState {
     result: Option<Result<(), ClipboardError>>,
     waker: Option<Waker>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Slot {
     fn complete(&self, result: Result<(), ClipboardError>) {
         let wake = if let Ok(mut state) = self.0.lock() {
@@ -105,13 +130,13 @@ impl Slot {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct DeadlineTimer {
     finished: Mutex<bool>,
     changed: Condvar,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl DeadlineTimer {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -128,7 +153,7 @@ impl DeadlineTimer {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Active {
     id: u64,
     token: CaptureToken,
@@ -140,33 +165,36 @@ struct Active {
     slot: Weak<Slot>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct TimerReservation(Arc<ClipboardState>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for TimerReservation {
     fn drop(&mut self) {
         self.0.active_timer_threads.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct State {
     closed: bool,
     next_id: u64,
     active: Option<Active>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) struct ClipboardState {
     lifetime: crate::HostLifetime,
     capture: Arc<CaptureState>,
     state: Mutex<State>,
+    #[cfg(target_os = "macos")]
     dispatch: Mutex<Option<Arc<crate::macos::clipboard::Dispatch>>>,
+    #[cfg(windows)]
+    target: AtomicUsize,
     active_timer_threads: AtomicUsize,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl ClipboardState {
     pub(crate) fn new(lifetime: crate::HostLifetime, capture: Arc<CaptureState>) -> Arc<Self> {
         Arc::new(Self {
@@ -177,23 +205,32 @@ impl ClipboardState {
                 next_id: 0,
                 active: None,
             }),
+            #[cfg(target_os = "macos")]
             dispatch: Mutex::new(None),
+            #[cfg(windows)]
+            target: AtomicUsize::new(0),
             active_timer_threads: AtomicUsize::new(0),
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn attach(&self, dispatch: Arc<crate::macos::clipboard::Dispatch>) {
         if let Ok(mut attached) = self.dispatch.lock() {
             *attached = Some(dispatch);
         }
     }
 
-    #[cfg(test)]
+    #[cfg(windows)]
+    pub(crate) fn attach_window(&self, hwnd: usize) {
+        self.target.store(hwnd, Ordering::Release);
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn test_is_closed(&self) -> bool {
         self.state.lock().is_ok_and(|state| state.closed)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn test_claim(&self, token: CaptureToken) -> Result<u64, ClipboardError> {
         let slot = Arc::new(Slot(Mutex::new(SlotState {
             result: None,
@@ -219,6 +256,7 @@ impl ClipboardState {
         // Arc is cloned for validation only, not a full PNG copy or a queued
         // lease. The UI callback borrows a fresh Arc after revalidation.
         drop(self.capture.lease_png(token).map_err(map_capture_error)?);
+        #[cfg(target_os = "macos")]
         let dispatch = self
             .dispatch
             .lock()
@@ -244,7 +282,15 @@ impl ClipboardState {
             self.abort_unsubmitted(id);
             return Err(ClipboardError::Scheduler);
         }
-        if let Err(error) = dispatch.submit(id) {
+        #[cfg(target_os = "macos")]
+        let submitted = dispatch.submit(id);
+        #[cfg(windows)]
+        let submitted = crate::windows::clipboard::submit(
+            Arc::clone(self),
+            id,
+            self.target.load(Ordering::Acquire),
+        );
+        if let Err(error) = submitted {
             self.abort_unsubmitted(id);
             return Err(error);
         }
@@ -383,8 +429,8 @@ impl ClipboardState {
         self.capture.lease_png(token).map_err(map_capture_error)
     }
 
-    /// The only admission boundary for AppKit mutation. Called after NSData
-    /// has copied the bounded PNG and immediately before clearContents.
+    /// Admission boundary immediately before native clipboard mutation.
+    /// Called after preparing bounded bytes and before replacing contents.
     /// Cancelling a queued request wins this lock; writing cannot be retracted.
     pub(crate) fn begin_write(&self, id: u64) -> Result<(), ClipboardError> {
         let mut state = self.state.lock().map_err(|_| ClipboardError::Scheduler)?;
@@ -407,7 +453,7 @@ impl ClipboardState {
         }
         // This nested, non-blocking admission update is atomic with respect
         // to capture release/retake: cancellation before transition wins.
-        // Both locks are released before the subsequent AppKit mutation.
+        // Both locks are released before the subsequent native mutation.
         self.capture
             .with_valid_token(active.token, || active.writing = true)
             .map_err(map_capture_error)?;
@@ -502,7 +548,7 @@ impl ClipboardState {
 
     pub(crate) fn close_silent(&self) {
         // Also called under HostLifetime's callback lock. No host Future
-        // waker or AppKit call may be invoked in this synchronous path.
+        // waker or OS clipboard call may be invoked in this synchronous path.
         if let Ok(mut state) = self.state.lock() {
             state.closed = true;
             if let Some(active) = state.active.as_mut() {
@@ -536,7 +582,7 @@ impl ClipboardState {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn map_capture_error(error: crate::CaptureError) -> ClipboardError {
     match error {
         crate::CaptureError::Closed => ClipboardError::Closed,
@@ -546,20 +592,20 @@ fn map_capture_error(error: crate::CaptureError) -> ClipboardError {
 }
 
 /// Awaitable native clipboard acknowledgement. A successful result means
-/// AppKit accepted `public.png` and immediate readback matched the PNG.
+/// The OS accepted the registered PNG format and immediate readback matched.
 #[must_use = "await OS write and verified PNG readback before any host URL opener"]
 pub struct ClipboardRequest {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     owner: Arc<ClipboardState>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     slot: Arc<Slot>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     id: u64,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     token: CaptureToken,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     deadline: Instant,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     delivered: bool,
 }
 
@@ -567,7 +613,7 @@ impl Future for ClipboardRequest {
     type Output = Result<(), ClipboardError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             let this = self.get_mut();
             if !this.owner.lifetime.is_active() {
@@ -592,7 +638,7 @@ impl Future for ClipboardRequest {
                 other => other,
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (self, cx);
             Poll::Ready(Err(ClipboardError::Unsupported))
@@ -602,7 +648,7 @@ impl Future for ClipboardRequest {
 
 impl Drop for ClipboardRequest {
     fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if !self.delivered {
             self.owner.abandon(self.id);
         }
@@ -617,6 +663,50 @@ mod tests {
     use std::task::Waker;
 
     static NEXT_GENERATION: AtomicU64 = AtomicU64::new(41);
+
+    #[test]
+    fn png_readback_compares_only_bounded_logical_bytes_not_global_padding() {
+        let png = crate::macos::clipboard::TEST_PNG;
+        assert!(valid_png_bytes(&png));
+        assert!(matches_logical_png(&png, &png, png.len() + 15));
+        assert!(!matches_logical_png(&png, &png, png.len() - 1));
+        let mut corrupt = png;
+        corrupt[30] ^= 1;
+        assert!(!matches_logical_png(&png, &corrupt, png.len() + 15));
+        assert!(!valid_png_bytes(&[0; 36]));
+        let too_large = vec![0; crate::MAX_WEB_CAPTURE_PNG_BYTES + 1];
+        assert!(!valid_png_bytes(&too_large));
+    }
+
+    #[test]
+    fn irreversible_write_gate_rejects_released_retaken_and_cancelled_tokens() {
+        let (capture, clipboard, _host, content) = setup();
+        let initial = pending(&clipboard, content.token());
+        assert_eq!(clipboard.begin_write(initial.id), Ok(()));
+        clipboard.complete(initial.id, Err(ClipboardError::Rejected));
+        let next = pending(&clipboard, content.token());
+        capture.release(&content).unwrap();
+        assert_eq!(
+            clipboard.begin_write(next.id),
+            Err(ClipboardError::Released)
+        );
+        clipboard.complete(next.id, Err(ClipboardError::Released));
+        let (capture, clipboard, _host, current) = setup();
+        let resized = pending(&clipboard, current.token());
+        capture.viewport_changed();
+        assert_eq!(
+            clipboard.begin_write(resized.id),
+            Err(ClipboardError::Released)
+        );
+        clipboard.complete(resized.id, Err(ClipboardError::Released));
+        let (_capture, clipboard, _host, current) = setup();
+        let cancelled = pending(&clipboard, current.token());
+        clipboard.navigation_changed();
+        assert_eq!(
+            clipboard.begin_write(cancelled.id),
+            Err(ClipboardError::Cancelled)
+        );
+    }
 
     fn setup() -> (
         Arc<CaptureState>,

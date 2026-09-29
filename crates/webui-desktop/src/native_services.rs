@@ -159,7 +159,7 @@ struct Inner {
     document_epoch: AtomicU64,
     #[cfg(all(windows, feature = "native-capture"))]
     navigation_id: AtomicU64,
-    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
     clipboard: Arc<crate::clipboard::ClipboardState>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
@@ -243,7 +243,7 @@ impl NativeServices {
         #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
 
-        #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+        #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
         let clipboard =
             crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
         let inner = Arc::new(Inner {
@@ -273,7 +273,7 @@ impl NativeServices {
             document_epoch: AtomicU64::new(0),
             #[cfg(all(windows, feature = "native-capture"))]
             navigation_id: AtomicU64::new(0),
-            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+            #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
             clipboard,
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
@@ -299,6 +299,8 @@ impl NativeServices {
                     | DesktopEvent::ScaleFactorChanged { .. } => {
                         #[cfg(all(windows, feature = "native-capture"))]
                         inner.capture.viewport_changed();
+                        #[cfg(all(windows, feature = "native-clipboard"))]
+                        inner.clipboard.cancel_invalidated();
                         #[cfg(target_os = "macos")]
                         {
                             inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
@@ -415,7 +417,7 @@ impl NativeServices {
                 return Err(crate::CaptureError::Closed);
             }
             let request = self.0.capture.begin(options)?;
-            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+            #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
             self.0.clipboard.cancel_invalidated();
             Ok(request)
         }
@@ -464,7 +466,7 @@ impl NativeServices {
         #[cfg(any(target_os = "macos", windows))]
         {
             self.0.capture.release(content)?;
-            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+            #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
             self.0.clipboard.cancel_token(content.token());
             Ok(())
         }
@@ -475,9 +477,9 @@ impl NativeServices {
         }
     }
 
-    /// Write one currently retained PNG to the macOS general clipboard.
-    /// The returned future resolves only after AppKit acknowledges the
-    /// `public.png` write and immediate byte-for-byte readback. The trusted
+    /// Write one currently retained PNG to the native clipboard. The returned
+    /// future resolves only after native acknowledgement and immediate
+    /// byte-for-byte readback. The trusted
     /// host must await success before any separately validated URL opener;
     /// no issue navigation or renderer method is installed by this API.
     ///
@@ -491,11 +493,11 @@ impl NativeServices {
         &self,
         content: &crate::CapturedContent,
     ) -> Result<crate::ClipboardRequest, crate::ClipboardError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.0.clipboard.begin(content)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = content;
             Err(crate::ClipboardError::Unsupported)
@@ -583,6 +585,8 @@ impl NativeServices {
         };
         self.0.navigation_id.store(navigation_id, Ordering::Release);
         self.0.capture.invalidate(epoch + 1, false);
+        #[cfg(feature = "native-clipboard")]
+        self.0.clipboard.navigation_changed();
     }
 
     #[cfg(all(windows, feature = "native-capture"))]
@@ -594,6 +598,16 @@ impl NativeServices {
         {
             self.0.capture.finished(epoch);
         }
+    }
+
+    #[cfg(all(windows, feature = "native-clipboard"))]
+    pub(crate) fn clipboard_for_revoke(&self) -> Arc<crate::clipboard::ClipboardState> {
+        Arc::clone(&self.0.clipboard)
+    }
+
+    #[cfg(all(windows, feature = "native-clipboard"))]
+    pub(crate) fn attach_clipboard(&self, hwnd: usize) {
+        self.0.clipboard.attach_window(hwnd);
     }
 
     #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
@@ -802,6 +816,8 @@ impl Inner {
             self.closed.store(true, Ordering::Release);
             #[cfg(all(windows, feature = "native-capture"))]
             self.capture.close();
+            #[cfg(all(windows, feature = "native-clipboard"))]
+            self.clipboard.close_silent();
             #[cfg(target_os = "macos")]
             {
                 self.committed_epoch.store(0, Ordering::Release);

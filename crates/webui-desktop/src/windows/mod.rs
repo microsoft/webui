@@ -18,6 +18,8 @@ mod app_sdk;
 mod bridge;
 #[cfg(feature = "native-capture")]
 pub(crate) mod capture;
+#[cfg(feature = "native-clipboard")]
+pub(crate) mod clipboard;
 mod command;
 mod create;
 mod event;
@@ -234,6 +236,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
         .as_ref()
         .map(|services| capture::install(&services.capture_for_revoke(), window_frame.hwnd))
         .transpose()?;
+    #[cfg(feature = "native-clipboard")]
+    if let Some(services) = &capture_services {
+        services.attach_clipboard(window_frame.hwnd.0 as usize);
+    }
     #[cfg(feature = "application-ipc")]
     let ipc = match &frame {
         FrameContent::Bundle(bundle) => Some(ipc::WindowsIpc::new(
@@ -358,6 +364,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
             let capture = capture_services
                 .as_ref()
                 .map(|services| services.capture_for_revoke());
+            #[cfg(feature = "native-clipboard")]
+            let clipboard = capture_services
+                .as_ref()
+                .map(|services| services.clipboard_for_revoke());
             Some(local.lifetime().register_close_fallible(Arc::new(move || {
                 #[cfg(feature = "native-capture")]
                 if let Some(capture) = &capture {
@@ -365,6 +375,11 @@ fn run_content(frame: FrameContent) -> Result<()> {
                     // the asynchronous close wake and without waking Futures
                     // under HostLifetime's close lock.
                     capture.close();
+                }
+                #[cfg(feature = "native-clipboard")]
+                if let Some(clipboard) = &clipboard {
+                    // No future wake under HostLifetime's close lock.
+                    clipboard.close_silent();
                 }
                 let hwnd = windows::Win32::Foundation::HWND(handle as *mut std::ffi::c_void);
                 post_owner_lost(hwnd, cookie)
@@ -387,6 +402,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "native-clipboard")]
+        clipboard: capture_services
+            .as_ref()
+            .map(|services| services.clipboard_for_revoke()),
         #[cfg(feature = "local-server")]
         local_controls,
         #[cfg(feature = "native-capture")]

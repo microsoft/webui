@@ -475,15 +475,17 @@ strict-Clippy-checked for x64 and ARM64, but has not been exercised on a
 Windows runtime; no iframe paint or platform parity is claimed. No
 clipboard or issue-opening workflow is implied by this API.
 
-### Explicit macOS PNG clipboard write
+### Explicit macOS and Windows PNG clipboard write
 
 With `native-clipboard` enabled, a trusted host can pass a **still-retained** `CapturedContent` to
 `services.write_capture_to_clipboard(&capture)?.await?`. This explicit action
-replaces the user's general clipboard contents with `public.png`; it is
+replaces the user's general clipboard contents with PNG bytes (`public.png`
+on macOS; the registered `PNG` format, **not** `CF_DIB`, on Windows); it is
 never invoked by capture, by the page, or by an IPC grant by default.
-The future reports success only after AppKit accepts the bytes and immediate
-same-type readback matches the PNG while the pasteboard change count remains
-stable. Do not interpret request admission as completion:
+The future reports success only after the native write, immediate same-format
+readback of the bounded logical PNG bytes, and successful clipboard close.
+macOS also checks that the pasteboard change count remains stable. Do not
+interpret request admission as completion:
 
 ```rust
 use webui_desktop::{CapturedContent, ClipboardError, NativeServices};
@@ -501,18 +503,27 @@ validated URL opener; the SDK does **not** open an issue or browser tab.
 The capture must still belong to this exact window/document and remain
 retained. One clipboard write may be pending per window. Navigation,
 retake, release, owner revocation and close cancel pending work before the
-native write. After the bounded NSData copy, a synchronized final token and
-deadline check occurs immediately before AppKit clears the pasteboard:
+native write. After the bounded NSData copy (macOS) or `GMEM_MOVEABLE` allocation
+(Windows), a synchronized final token and deadline check occurs immediately
+before clearing the native clipboard:
 queued cancellation wins that transition. An OS write already in progress
 cannot be recalled, but its late result cannot report success to a new document.
 An OS refusal or ten-second deadline leaves the captured PNG available for
 an explicit retry **if the document and resource remain live**; navigation,
-release and retake invalidate it. Windows and Linux return `Unsupported`.
+release and retake invalidate it. On Windows the OS write runs off the WebView2
+STA, accepts at most 12 MiB of encoded PNG bytes, and frees its allocation on
+pre-transfer failure. `GlobalSize` can include allocator padding; readback
+compares only the resource's logical PNG length. A timed-out native call keeps
+this window's Busy reservation until it returns; no thread is killed, no broad
+retries are made, and the SDK cannot restore earlier clipboard contents after
+clearing them. Linux returns `Unsupported`.
 
 The native write/readback helper has been exercised with a unique **private**
-macOS pasteboard, not a user's general clipboard. The latter remains a
-platform-permission/contention qualification gap: a host must handle
-`Rejected`, `Contended`, `Readback`, `Cancelled`, `Timeout` and `Overloaded` explicitly
+macOS pasteboard, not a user's general clipboard. Windows x64/ARM64 has been
+cross-compiled, not run against a Windows clipboard. Actual OS contention,
+owner-window lifetime and PNG readback therefore remain runtime qualification
+gaps. A host must handle `Rejected`, `Contended`, `Readback`, `Os`, `Cancelled`,
+`Timeout` and `Overloaded` explicitly
 and never claim clipboard completion on those outcomes. An OS refusal after
 clearing the general pasteboard can leave it empty; tell the user and allow
 an explicit retry rather than opening an issue URL on failure.

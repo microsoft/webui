@@ -161,7 +161,7 @@ pub struct CapturedContent {
     pub png_bytes: usize,
 }
 
-#[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureToken {
     pub(crate) window_generation: u64,
@@ -170,7 +170,7 @@ pub(crate) struct CaptureToken {
     pub(crate) revision: u64,
 }
 
-#[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
 impl CapturedContent {
     pub(crate) fn token(&self) -> CaptureToken {
         CaptureToken {
@@ -844,7 +844,7 @@ impl CaptureState {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
     #[allow(clippy::rc_buffer)]
     pub(crate) fn lease_png(&self, token: CaptureToken) -> Result<Arc<Vec<u8>>, CaptureError> {
         if !self.lifetime.is_active() {
@@ -873,7 +873,7 @@ impl CaptureState {
 
     /// Revalidate a capture token and run only a non-blocking admission
     /// update while the resource lock is held. Never call AppKit from `work`.
-    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
     pub(crate) fn with_valid_token<R>(
         &self,
         token: CaptureToken,
