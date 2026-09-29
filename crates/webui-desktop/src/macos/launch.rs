@@ -209,7 +209,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             ivars
                 .native_services
                 .as_ref()
-                .map(crate::NativeServices::capture_for_revoke),
+                .map(crate::NativeServices::native_resources_for_revoke),
         ) {
             Ok((wake, registration)) => {
                 let _ = ivars.owner_close_wake.set(wake);

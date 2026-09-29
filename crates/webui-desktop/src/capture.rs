@@ -152,6 +152,27 @@ pub struct CapturedContent {
     pub png_bytes: usize,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureToken {
+    pub(crate) window_generation: u64,
+    pub(crate) id: u64,
+    pub(crate) epoch: u64,
+    pub(crate) revision: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl CapturedContent {
+    pub(crate) fn token(&self) -> CaptureToken {
+        CaptureToken {
+            window_generation: self.window_generation,
+            id: self.id,
+            epoch: self.epoch,
+            revision: self.revision,
+        }
+    }
+}
+
 /// A bounded native PNG read. Generated IPC methods remain an explicit host
 /// choice and must credit one chunk at a time within their aggregate budgets.
 #[derive(Debug)]
@@ -243,7 +264,11 @@ struct Retained {
     id: u64,
     epoch: u64,
     revision: u64,
-    png: Vec<u8>,
+    // Intentionally retain the encoder's exact-sized Vec allocation by
+    // moving only its header into Arc; Arc<[u8]>::from(Vec) copies the
+    // entire (potentially multi-MiB) PNG at this boundary.
+    #[allow(clippy::rc_buffer)]
+    png: Arc<Vec<u8>>,
 }
 
 #[cfg(target_os = "macos")]
@@ -300,8 +325,18 @@ impl CaptureState {
                 id: 1,
                 epoch: 1,
                 revision: 0,
-                png: vec![0; bytes],
+                png: Arc::new(vec![0; bytes]),
             });
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_store_retained_png(&self, png: &[u8]) {
+        self.test_store_retained(png.len());
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(retained) = state.retained.as_mut() {
+                retained.png = Arc::new(png.to_vec());
+            }
         }
     }
 
@@ -312,6 +347,21 @@ impl CaptureState {
             .ok()
             .and_then(|state| state.retained.as_ref().map(|retained| retained.png.len()))
             .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_content(&self) -> Option<CapturedContent> {
+        self.state.lock().ok().and_then(|state| {
+            state.retained.as_ref().map(|retained| CapturedContent {
+                window_generation: self.window_generation,
+                id: retained.id,
+                epoch: retained.epoch,
+                revision: retained.revision,
+                width: 1,
+                height: 1,
+                png_bytes: retained.png.len(),
+            })
+        })
     }
 
     pub(crate) fn begin(
@@ -540,7 +590,7 @@ impl CaptureState {
                         id,
                         epoch,
                         revision: active.revision,
-                        png,
+                        png: Arc::new(png),
                     });
                 }
                 Ok(content)
@@ -713,6 +763,61 @@ impl CaptureState {
         }
     }
 
+    #[allow(clippy::rc_buffer)]
+    pub(crate) fn lease_png(&self, token: CaptureToken) -> Result<Arc<Vec<u8>>, CaptureError> {
+        if !self.lifetime.is_active() {
+            self.close();
+            return Err(CaptureError::Closed);
+        }
+        let state = self.state.lock().map_err(|_| CaptureError::Scheduler)?;
+        if state.closed {
+            return Err(CaptureError::Closed);
+        }
+        state
+            .retained
+            .as_ref()
+            .filter(|retained| {
+                token.window_generation == self.window_generation
+                    && token.id == retained.id
+                    && token.epoch == retained.epoch
+                    && token.revision == retained.revision
+                    && token.epoch == state.epoch
+                    && token.revision == state.revision
+                    && state.finished
+            })
+            .map(|retained| Arc::clone(&retained.png))
+            .ok_or(CaptureError::Released)
+    }
+
+    /// Revalidate a capture token and run only a non-blocking admission
+    /// update while the resource lock is held. Never call AppKit from `work`.
+    pub(crate) fn with_valid_token<R>(
+        &self,
+        token: CaptureToken,
+        work: impl FnOnce() -> R,
+    ) -> Result<R, CaptureError> {
+        if !self.lifetime.is_active() {
+            return Err(CaptureError::Closed);
+        }
+        let state = self.state.lock().map_err(|_| CaptureError::Scheduler)?;
+        if state.closed {
+            return Err(CaptureError::Closed);
+        }
+        if !state.finished
+            || state.epoch != token.epoch
+            || state.revision != token.revision
+            || token.window_generation != self.window_generation
+            || state.retained.as_ref().is_none_or(|retained| {
+                retained.id != token.id
+                    || retained.epoch != token.epoch
+                    || retained.revision != token.revision
+            })
+        {
+            return Err(CaptureError::Released);
+        }
+        Ok(work())
+    }
+
     fn abandon(&self, id: u64) {
         if let Ok(mut state) = self.state.lock() {
             if let Some(active) = state.active.as_mut().filter(|active| active.id == id) {
@@ -858,13 +963,19 @@ mod tests {
     fn reads_are_credited_and_window_identity_retake_release_are_enforced() {
         let (owner, _host) = new_owner();
         let mut request = pending(&owner, 1);
-        owner.complete(1, 1, Ok((320, 200, png(25_000, 320, 200))));
+        let encoded = png(25_000, 320, 200);
+        let encoded_allocation = encoded.as_ptr();
+        owner.complete(1, 1, Ok((320, 200, encoded)));
         let Poll::Ready(Ok(content)) =
             Pin::new(&mut request).poll(&mut Context::from_waker(Waker::noop()))
         else {
             panic!("test capture should complete");
         };
         drop(request);
+        let first_lease = owner.lease_png(content.token()).unwrap();
+        let second_lease = owner.lease_png(content.token()).unwrap();
+        assert!(Arc::ptr_eq(&first_lease, &second_lease));
+        assert_eq!(first_lease.as_ptr(), encoded_allocation);
         let first = owner.read(&content, 0).unwrap();
         assert_eq!(first.bytes.len(), MAX_WEB_CAPTURE_CHUNK_BYTES);
         assert!(!first.eof);
@@ -885,6 +996,12 @@ mod tests {
             owner.read(&content, 0),
             Err(CaptureError::Released)
         ));
+        assert!(matches!(
+            owner.lease_png(content.token()),
+            Err(CaptureError::Released)
+        ));
+        assert!(Arc::ptr_eq(&first_lease, &second_lease));
+        assert_eq!(first_lease.len(), content.png_bytes);
     }
 
     #[test]

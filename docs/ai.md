@@ -1425,6 +1425,10 @@ The macOS trusted host can also request a bounded, visible WK content PNG
 after its own preview-readiness handshake, then read/release the opaque
 resource in paced chunks. No renderer or screen-capture permission is added.
 See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos).
+A macOS trusted host may separately await a `public.png` clipboard write
+for that still-retained capture before any host-controlled URL opener; no
+issue-opening or renderer grant is automatic. See
+[explicit PNG clipboard write](./guide/concepts/desktop.md#explicit-macos-png-clipboard-write).
 For an already-compiled Rust host that owns its sealed WebUI assets and
 workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
 and call `package_precompiled_host` with its host executable, target triple,
