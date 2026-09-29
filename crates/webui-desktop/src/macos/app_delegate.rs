@@ -10,6 +10,8 @@
 //! `NSObject`/`NSApplicationDelegate`/`NSWindowDelegate` trait implementation
 //! that AppKit calls into directly.
 
+#[cfg(feature = "local-server")]
+use std::cell::RefCell;
 use std::cell::{Cell, OnceCell};
 
 use crate::{
@@ -17,12 +19,17 @@ use crate::{
     WindowStateStore,
 };
 use objc2::rc::{autoreleasepool, Retained};
+#[cfg(feature = "local-server")]
+use objc2::sel;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::NSApplicationTerminateReply;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSStatusItem, NSWindow,
     NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
+#[cfg(feature = "local-server")]
+use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 use objc2_web_kit::WKWebView;
 
 use super::geometry::{clamp_coordinate, clamp_dimension};
@@ -58,6 +65,10 @@ pub(super) struct AppDelegateIvars {
         std::cell::RefCell<Option<crate::local_server::HostCloseRegistration>>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) startup_error: std::cell::RefCell<Option<crate::DesktopError>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) quit_close_pending: Cell<bool>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) quit_close_deadline: RefCell<Option<Retained<NSTimer>>>,
     pub(in crate::macos) live_background: std::sync::Arc<crate::window::LiveBackground>,
     pub(in crate::macos) command_wake: OnceCell<super::commands::CommandWake>,
     #[cfg(feature = "application-ipc")]
@@ -97,6 +108,7 @@ define_class!(
     unsafe impl NSObjectProtocol for DesktopAppDelegate {}
 
     // SAFETY: Method signatures match NSApplicationDelegate.
+    #[allow(non_snake_case)]
     unsafe impl NSApplicationDelegate for DesktopAppDelegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, notification: &NSNotification) {
@@ -113,6 +125,73 @@ define_class!(
                 app.activateIgnoringOtherApps(true);
             });
         }
+
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn applicationShouldTerminate(&self, app: &NSApplication) -> NSApplicationTerminateReply {
+            // A bundled app keeps AppKit's existing termination behavior. A
+            // local HTTP host must instead regain control after WindowClosed
+            // to retire its IPC pin and drain its own server off this thread.
+            #[cfg(feature = "local-server")]
+            if self.ivars().local_origin.is_some() {
+                if self.ivars().exiting.get() {
+                    super::stop_local_app(app);
+                    return NSApplicationTerminateReply::TerminateCancel;
+                }
+                if self.ivars().quit_close_pending.get() {
+                    return NSApplicationTerminateReply::TerminateCancel;
+                }
+                if self.ivars().window.get().is_none() {
+                    self.ivars().startup_error.replace(Some(local_quit_error(
+                        "AppKit Quit arrived before the local-server window was ready",
+                    )));
+                    super::stop_local_app(app);
+                    return NSApplicationTerminateReply::TerminateCancel;
+                }
+                self.ivars().quit_close_pending.set(true);
+                // The command runs on the next main-queue turn, outside
+                // applicationShouldTerminate's AppKit dispatch stack. Queueing
+                // is not proof that windowShouldClose accepted the request.
+                if let Err(error) = self.ivars().window_handle.request_close() {
+                    self.ivars().startup_error.replace(Some(local_quit_error(&format!(
+                        "AppKit Quit could not queue the window close: {error}"
+                    ))));
+                    // A failed queue admission must not unwind the frame and
+                    // release its listener pin while the native window lives.
+                    // Try AppKit's ordinary cancellable close on this thread;
+                    // if vetoed, wait for a later successful close to return
+                    // the recorded error to the host.
+                    if let Some(window) = self.ivars().window.get() {
+                        window.performClose(None);
+                    }
+                    if !self.ivars().exiting.get() {
+                        self.ivars().quit_close_pending.set(false);
+                    }
+                } else {
+                    let timer = unsafe {
+                        NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                            15.0,
+                            self,
+                            sel!(localQuitCloseTimedOut:),
+                            None,
+                            false,
+                        )
+                    };
+                    // Keep the deadline active during AppKit's event-tracking
+                    // modes, not only the default run-loop mode.
+                    // SAFETY: This timer and run loop both belong to the
+                    // proven AppKit main thread.
+                    unsafe {
+                        NSRunLoop::currentRunLoop()
+                            .addTimer_forMode(&timer, NSRunLoopCommonModes);
+                    }
+                    self.ivars().quit_close_deadline.replace(Some(timer));
+                }
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
+            #[cfg(not(feature = "local-server"))]
+            let _ = app;
+            NSApplicationTerminateReply::TerminateNow
+        }
     }
 
     // SAFETY: Method signatures match NSWindowDelegate.
@@ -120,7 +199,7 @@ define_class!(
     unsafe impl NSWindowDelegate for DesktopAppDelegate {
         #[unsafe(method(windowShouldClose:))]
         fn windowShouldClose(&self, _window: &NSWindow) -> bool {
-            !matches!(
+            let allowed = !matches!(
                 dispatch_for_delegate(
                     self,
                     DesktopEvent::WindowCloseRequested {
@@ -128,7 +207,14 @@ define_class!(
                     }
                 ),
                 EventResponse::PreventDefault
-            )
+            );
+            #[cfg(feature = "local-server")]
+            if !allowed {
+                // A veto ends this attempt, not the session. A later Cmd+Q
+                // must be able to make a fresh request.
+                self.cancel_quit_deadline();
+            }
+            allowed
         }
 
         #[unsafe(method(windowDidResize:))]
@@ -252,6 +338,8 @@ define_class!(
             if self.ivars().exiting.replace(true) {
                 return;
             }
+            #[cfg(feature = "local-server")]
+            self.cancel_quit_deadline();
             if let Some(wake) = self.ivars().command_wake.get() {
                 wake.close();
             }
@@ -278,10 +366,49 @@ define_class!(
             );
             dispatch_for_delegate(self, DesktopEvent::Exiting);
             // SAFETY: Called on the main thread by AppKit while the shared app exists.
-            NSApplication::sharedApplication(self.mtm()).terminate(None);
+            let app = NSApplication::sharedApplication(self.mtm());
+            #[cfg(feature = "local-server")]
+            if self.ivars().local_origin.is_some() {
+                super::stop_local_app(&app);
+                return;
+            }
+            app.terminate(None);
+        }
+    }
+
+    impl DesktopAppDelegate {
+        #[cfg(feature = "local-server")]
+        #[unsafe(method(localQuitCloseTimedOut:))]
+        fn local_quit_close_timed_out(&self, _timer: &NSTimer) {
+            if !self.ivars().quit_close_pending.get() || self.ivars().exiting.get() {
+                return;
+            }
+            self.ivars().quit_close_deadline.borrow_mut().take();
+            self.ivars().startup_error.replace(Some(local_quit_error(
+                "AppKit Quit window close was not acknowledged within 15 seconds",
+            )));
+            // The queue wake was not a close acknowledgement. Try a direct
+            // cancellable AppKit close, but never return a frame with a live
+            // window and unpinned HTTP origin. A veto keeps the session alive.
+            if let Some(window) = self.ivars().window.get() {
+                window.performClose(None);
+            }
+            if self.ivars().quit_close_pending.get() && !self.ivars().exiting.get() {
+                self.ivars().quit_close_pending.set(false);
+                eprintln!("WebUI: AppKit Quit close remains unacknowledged; keep the listener bound and close the window before retiring the host");
+            }
         }
     }
 );
+
+#[cfg(feature = "local-server")]
+fn local_quit_error(message: &str) -> crate::DesktopError {
+    crate::DesktopError::Backend {
+        source: Box::new(std::io::Error::other(format!(
+            "{message}; keep the listener bound until WindowClosed and inspect the native close failure"
+        ))),
+    }
+}
 
 pub(super) fn dispatch_for_delegate(
     delegate: &DesktopAppDelegate,
@@ -295,6 +422,14 @@ pub(super) fn dispatch_for_delegate(
 }
 
 impl DesktopAppDelegate {
+    #[cfg(feature = "local-server")]
+    pub(super) fn cancel_quit_deadline(&self) {
+        self.ivars().quit_close_pending.set(false);
+        if let Some(timer) = self.ivars().quit_close_deadline.borrow_mut().take() {
+            timer.invalidate();
+        }
+    }
+
     pub(super) fn new(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Retained<Self> {
         let maximized = options.options.maximized;
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
@@ -318,6 +453,10 @@ impl DesktopAppDelegate {
             owner_close_registration: std::cell::RefCell::new(None),
             #[cfg(feature = "local-server")]
             startup_error: std::cell::RefCell::new(None),
+            #[cfg(feature = "local-server")]
+            quit_close_pending: Cell::new(false),
+            #[cfg(feature = "local-server")]
+            quit_close_deadline: RefCell::new(None),
             live_background: options.live_background,
             command_wake: OnceCell::new(),
             #[cfg(feature = "application-ipc")]

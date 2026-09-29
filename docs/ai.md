@@ -1383,6 +1383,12 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+On macOS, ordinary local-server window close, owner revocation, and AppKit
+Quit return to the Rust host after `WindowClosed` and IPC retirement, so it
+can drain its backend off the UI thread. Quit is cancellable. See the
+[desktop SDK guide](./guide/concepts/desktop.md) for veto, retry, and failure
+behavior, including terminal window teardown before an unexpected AppKit stop
+returns an error.
 On macOS and Windows, an exact `.localhost` preview subdomain needs an
 unprivileged `frame.frame_policy()` grant; it never gains native IPC or
 window controls. Linux currently denies preview subframe document commits.
