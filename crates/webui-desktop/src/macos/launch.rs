@@ -154,7 +154,21 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     {
         let _ = ivars.tray_item.set(tray);
     }
-    let theme_observer = install_theme_observer(mtm, ivars.events.clone(), webview.clone());
+    #[cfg(feature = "native-services")]
+    if let Some(services) = &ivars.native_services {
+        let registration = services.attach_theme(&window, &webview);
+        let _ = ivars.theme_registration.set(registration);
+    }
+    let theme_observer = install_theme_observer(
+        mtm,
+        ivars.events.clone(),
+        webview.clone(),
+        #[cfg(feature = "native-services")]
+        ivars
+            .native_services
+            .as_ref()
+            .map(crate::NativeServices::theme_controller),
+    );
     let _ = ivars.theme_observer.set(theme_observer);
 
     let _ = ivars.command_wake.set(super::commands::install_wakeup(

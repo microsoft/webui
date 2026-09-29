@@ -17,6 +17,7 @@ use crate::{
     DesktopEvent, EventRegistrationError, EventRegistry, EventResponse, EventSubscription,
     HostLifetime,
 };
+use crate::{ThemeMode, ThemeRequest, ThemeState};
 
 /// Maximum UTF-8 URL input, in bytes.
 pub const MAX_NATIVE_URL_BYTES: usize = 2048;
@@ -115,6 +116,18 @@ pub enum NativeServiceError {
     /// Navigation, geometry change, or teardown superseded this snapshot.
     #[error("native content geometry became stale; request a fresh snapshot")]
     Stale,
+    /// The selected native backend has no proven per-window theme override.
+    #[error("native theme override is not supported on this platform")]
+    ThemeUnsupported,
+    /// Native appearance cannot be read before the window is attached.
+    #[error("native theme is unavailable until the window is attached")]
+    ThemeUnavailable,
+    /// Only one theme change may be queued per window.
+    #[error("a native theme change is already pending for this window")]
+    ThemeBusy,
+    /// AppKit did not acknowledge an appearance change within ten seconds.
+    #[error("native theme change timed out after 10 seconds; read current_theme before retrying")]
+    ThemeTimeout,
 }
 
 struct Inner {
@@ -144,6 +157,8 @@ struct Inner {
     active_timers: std::sync::atomic::AtomicUsize,
     timer: Mutex<Option<Weak<Timer>>>,
     registration: Mutex<Option<EventSubscription>>,
+    #[cfg(target_os = "macos")]
+    theme: Arc<crate::native_theme::platform::Controller>,
 }
 
 struct Busy(Arc<Inner>);
@@ -208,6 +223,9 @@ impl NativeServices {
         if !lifetime.is_active() {
             return Err(NativeServiceError::Closed);
         }
+        #[cfg(target_os = "macos")]
+        let theme =
+            crate::native_theme::platform::Controller::new(events.clone(), lifetime.clone());
         let inner = Arc::new(Inner {
             executor,
             lifetime,
@@ -233,6 +251,8 @@ impl NativeServices {
             active_timers: std::sync::atomic::AtomicUsize::new(0),
             timer: Mutex::new(None),
             registration: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            theme,
         });
         let weak = Arc::downgrade(&inner);
         let subscription = events.subscribe(move |event| {
@@ -333,6 +353,65 @@ impl NativeServices {
         {
             Err(NativeServiceError::Unsupported)
         }
+    }
+
+    /// Schedule an opt-in appearance override on this window's native UI
+    /// thread. The resulting state reflects the window's effective appearance.
+    /// This does not save the host preference or grant renderer IPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ThemeUnsupported` on Windows/Linux, or a typed closed, busy,
+    /// unavailable, or scheduling error. Await for acknowledgement or timeout.
+    pub fn set_theme(&self, mode: ThemeMode) -> Result<ThemeRequest, NativeServiceError> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.0.closed.load(Ordering::Acquire) || !self.0.lifetime.is_active() {
+                return Err(NativeServiceError::Closed);
+            }
+            self.0.theme.set(mode)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = mode;
+            Err(NativeServiceError::ThemeUnsupported)
+        }
+    }
+
+    /// Return the latest effective native appearance, including for a newly
+    /// admitted document that missed an earlier `ThemeChanged` event.
+    /// Host-rendered CSS remains the application's responsibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ThemeUnsupported` on Windows/Linux and `ThemeUnavailable`
+    /// until the macOS native window has attached.
+    pub fn current_theme(&self) -> Result<ThemeState, NativeServiceError> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.0.closed.load(Ordering::Acquire) || !self.0.lifetime.is_active() {
+                return Err(NativeServiceError::Closed);
+            }
+            self.0.theme.snapshot()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(NativeServiceError::ThemeUnsupported)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn attach_theme(
+        &self,
+        window: &objc2_app_kit::NSWindow,
+        view: &objc2_web_kit::WKWebView,
+    ) -> crate::native_theme::platform::Registration {
+        self.0.theme.attach(window, view)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn theme_controller(&self) -> Arc<crate::native_theme::platform::Controller> {
+        Arc::clone(&self.0.theme)
     }
 
     #[cfg(target_os = "macos")]
@@ -507,6 +586,15 @@ impl NativeServices {
 
 impl Inner {
     fn cancel_open(&self, close: bool) {
+        #[cfg(target_os = "macos")]
+        self.theme.cancel(
+            if close {
+                NativeServiceError::Closed
+            } else {
+                NativeServiceError::Cancelled
+            },
+            close,
+        );
         if close {
             self.closed.store(true, Ordering::Release);
             #[cfg(target_os = "macos")]
@@ -770,6 +858,52 @@ mod tests {
             assert!(matches!(
                 validate_document(&link),
                 Err(NativeServiceError::InvalidDocument)
+            ));
+        }
+    }
+
+    #[test]
+    fn theme_requires_attached_supported_window_and_host_lifetime() {
+        let (services, _events, owner) = services();
+        #[cfg(target_os = "macos")]
+        {
+            assert!(matches!(
+                services.current_theme(),
+                Err(NativeServiceError::ThemeUnavailable)
+            ));
+            assert!(matches!(
+                services.set_theme(ThemeMode::Dark),
+                Err(NativeServiceError::ThemeUnavailable)
+            ));
+            assert_eq!(
+                ThemeState {
+                    mode: ThemeMode::System,
+                    dark: false
+                }
+                .mode,
+                ThemeMode::System
+            );
+            assert_ne!(ThemeMode::Light, ThemeMode::Dark);
+            drop(owner);
+            assert!(matches!(
+                services.current_theme(),
+                Err(NativeServiceError::Closed)
+            ));
+            assert!(matches!(
+                services.set_theme(ThemeMode::Light),
+                Err(NativeServiceError::Closed)
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = owner;
+            assert!(matches!(
+                services.current_theme(),
+                Err(NativeServiceError::ThemeUnsupported)
+            ));
+            assert!(matches!(
+                services.set_theme(ThemeMode::System),
+                Err(NativeServiceError::ThemeUnsupported)
             ));
         }
     }
