@@ -23,7 +23,12 @@ use crate::{ThemeMode, ThemeRequest, ThemeState};
 pub const MAX_NATIVE_URL_BYTES: usize = 2048;
 /// Maximum local path representation, in bytes (not the document's size).
 pub const MAX_NATIVE_DOCUMENT_PATH_BYTES: usize = 4096;
+/// Maximum UTF-8 native picker title, in bytes.
+#[cfg(feature = "native-picker")]
+pub const MAX_DIRECTORY_PICKER_TITLE_BYTES: usize = 120;
 const OPEN_DEADLINE: Duration = Duration::from_secs(10);
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+const PICKER_DEADLINE: Duration = Duration::from_secs(120);
 // An OS opener can return before its timer thread has observed the shutdown
 // signal. Bound those short-lived leftovers even under a rapid host retry loop.
 const MAX_DEADLINE_THREADS_PER_WINDOW: usize = 8;
@@ -68,6 +73,73 @@ pub struct ContentGeometry {
     pub page_zoom: f64,
     /// Live WKWebView magnification property, not an inferred CSS transform.
     pub magnification: f64,
+}
+
+/// Checked host-only configuration for one native folder selection.
+///
+/// Fields are private: the host, not a renderer, chooses the title and
+/// initial directory. Filesystem validation runs asynchronously before any
+/// OS dialog is created.
+#[derive(Clone, Debug, Default)]
+#[cfg(feature = "native-picker")]
+pub struct DirectoryPickerOptions {
+    title: Option<String>,
+    initial_directory: Option<PathBuf>,
+}
+
+#[cfg(feature = "native-picker")]
+impl DirectoryPickerOptions {
+    /// Use the platform's default picker title and starting directory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a bounded, single-line title.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty, control-containing or overlong titles.
+    pub fn title(mut self, title: impl Into<String>) -> Result<Self, NativeServiceError> {
+        let title = title.into();
+        if title.is_empty()
+            || title.len() > MAX_DIRECTORY_PICKER_TITLE_BYTES
+            || title.chars().any(char::is_control)
+        {
+            return Err(NativeServiceError::InvalidPickerTitle);
+        }
+        self.title = Some(title);
+        Ok(self)
+    }
+
+    /// Set a trusted host-provided absolute starting directory. This accepts
+    /// non-UTF-8 paths without replacement; existence is checked off the UI
+    /// thread before opening the dialog.
+    ///
+    /// # Errors
+    ///
+    /// Rejects relative, NUL-containing or overlong paths.
+    pub fn initial_directory(
+        mut self,
+        directory: impl Into<PathBuf>,
+    ) -> Result<Self, NativeServiceError> {
+        let path = directory.into();
+        if !valid_directory_path(&path) {
+            return Err(NativeServiceError::InvalidInitialDirectory);
+        }
+        self.initial_directory = Some(path);
+        Ok(self)
+    }
+}
+
+/// One OS-owned directory-picking outcome. Cancellation is not an error.
+#[derive(Debug, Eq, PartialEq)]
+#[cfg(feature = "native-picker")]
+pub enum DirectorySelection {
+    /// A verified absolute directory selected by the user.
+    Selected(PathBuf),
+    /// The user dismissed the native dialog without selecting anything.
+    Cancelled,
 }
 
 /// Failure to validate, schedule, or complete a native OS open.
@@ -116,6 +188,34 @@ pub enum NativeServiceError {
     /// Navigation, geometry change, or teardown superseded this snapshot.
     #[error("native content geometry became stale; request a fresh snapshot")]
     Stale,
+    /// Picker title is invalid.
+    #[cfg(feature = "native-picker")]
+    #[error("directory picker title must be one line of 1-120 UTF-8 bytes")]
+    InvalidPickerTitle,
+    /// Initial directory is not a valid, existing absolute directory.
+    #[cfg(feature = "native-picker")]
+    #[error("initial directory must be an existing absolute directory of at most 4096 bytes")]
+    InvalidInitialDirectory,
+    /// The OS returned no valid single directory.
+    #[cfg(feature = "native-picker")]
+    #[error("native picker returned no valid absolute directory")]
+    InvalidSelection,
+    /// A picker is already pending for this owning window.
+    #[cfg(feature = "native-picker")]
+    #[error("a directory picker is already active for this window")]
+    PickerBusy,
+    /// The native UI does not support this picker.
+    #[cfg(feature = "native-picker")]
+    #[error("directory picker is not implemented on this platform")]
+    PickerUnsupported,
+    /// The native picker did not complete by its deadline.
+    #[cfg(feature = "native-picker")]
+    #[error("directory picker timed out after 120 seconds")]
+    PickerTimeout,
+    /// The OS could not show or complete the directory picker.
+    #[cfg(feature = "native-picker")]
+    #[error("native directory picker failed: {0}")]
+    PickerFailure(String),
     /// The selected native backend has no proven per-window theme override.
     #[error("native theme override is not supported on this platform")]
     ThemeUnsupported,
@@ -161,6 +261,12 @@ struct Inner {
     navigation_id: AtomicU64,
     #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
     clipboard: Arc<crate::clipboard::ClipboardState>,
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    picker_busy: AtomicBool,
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    picker_id: AtomicU64,
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    picker_timer: Mutex<Option<Weak<Timer>>>,
     #[cfg(feature = "native-dialogs")]
     dialogs: Arc<crate::native_dialogs::DialogState>,
     busy: AtomicBool,
@@ -175,6 +281,44 @@ struct Busy(Arc<Inner>);
 impl Drop for Busy {
     fn drop(&mut self) {
         self.0.busy.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+struct PickerPermit {
+    owner: Arc<Inner>,
+    released: AtomicBool,
+    #[cfg(feature = "native-dialogs")]
+    modal: Mutex<Option<crate::native_dialogs::state::ModalPermit>>,
+}
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+impl PickerPermit {
+    fn new(owner: Arc<Inner>) -> Self {
+        Self {
+            owner,
+            released: AtomicBool::new(false),
+            #[cfg(feature = "native-dialogs")]
+            modal: Mutex::new(None),
+        }
+    }
+
+    fn release(&self) {
+        // An OS completion may publish while the awaitable still owns its
+        // permit. Clear the busy bit exactly once so its later Drop cannot
+        // accidentally clear a *new* picker's admission.
+        if !self.released.swap(true, Ordering::AcqRel) {
+            #[cfg(feature = "native-dialogs")]
+            if let Ok(mut modal) = self.modal.lock() {
+                modal.take();
+            }
+            self.owner.picker_busy.store(false, Ordering::Release);
+        }
+    }
+}
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+impl Drop for PickerPermit {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -244,7 +388,6 @@ impl NativeServices {
             .map_err(|_| NativeServiceError::Unavailable)?;
         #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
-
         #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
         let clipboard =
             crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
@@ -282,6 +425,12 @@ impl NativeServices {
             navigation_id: AtomicU64::new(0),
             #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
             clipboard,
+            #[cfg(all(target_os = "macos", feature = "native-picker"))]
+            picker_busy: AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", feature = "native-picker"))]
+            picker_id: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", feature = "native-picker"))]
+            picker_timer: Mutex::new(None),
             #[cfg(feature = "native-dialogs")]
             dialogs,
             busy: AtomicBool::new(false),
@@ -513,6 +662,32 @@ impl NativeServices {
         }
     }
 
+    /// Select exactly one directory through the OS-owned dialog. Only the
+    /// trusted Rust host may call this; a renderer receives no native grant.
+    /// Await the returned operation from a non-UI thread for OS completion,
+    /// an explicit user cancellation, or a typed error.
+    ///
+    /// # Errors
+    ///
+    /// Rejects retired windows, invalid initial directories, busy dialogs,
+    /// work overload, or unsupported platforms before showing any dialog.
+    /// A returned future can fail on OS error, navigation, close, or deadline.
+    #[cfg(feature = "native-picker")]
+    pub fn pick_directory(
+        &self,
+        options: DirectoryPickerOptions,
+    ) -> Result<DirectoryPick, NativeServiceError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.start_picker(options)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = options;
+            Err(NativeServiceError::PickerUnsupported)
+        }
+    }
+
     /// Schedule an opt-in appearance override on this window's native UI
     /// thread. The resulting state reflects the window's effective appearance.
     /// This does not save the host preference or grant renderer IPC.
@@ -570,6 +745,134 @@ impl NativeServices {
     #[cfg(target_os = "macos")]
     pub(crate) fn theme_controller(&self) -> Arc<crate::native_theme::platform::Controller> {
         Arc::clone(&self.0.theme)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    fn start_picker(
+        &self,
+        options: DirectoryPickerOptions,
+    ) -> Result<DirectoryPick, NativeServiceError> {
+        let inner = &self.0;
+        if inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            return Err(NativeServiceError::Closed);
+        }
+        platform::require_picker_window(inner)?;
+        let generation = inner.generation.load(Ordering::Acquire);
+        if inner.picker_busy.swap(true, Ordering::AcqRel) {
+            return Err(NativeServiceError::PickerBusy);
+        }
+        let permit = Arc::new(PickerPermit::new(Arc::clone(inner)));
+        #[cfg(feature = "native-dialogs")]
+        {
+            let modal = inner
+                .dialogs
+                .claim_modal()
+                .map_err(|_| NativeServiceError::PickerBusy)?;
+            *permit
+                .modal
+                .lock()
+                .map_err(|_| NativeServiceError::Unavailable)? = Some(modal);
+        }
+        let id = self.finish_picker_claim(generation)?;
+        inner
+            .active_timers
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_DEADLINE_THREADS_PER_WINDOW).then_some(count + 1)
+            })
+            .map_err(|_| NativeServiceError::Overloaded)?;
+        let timer_reservation = TimerReservation(Arc::clone(inner));
+        let timer = Arc::new(Timer {
+            state: Mutex::new(TimerState::default()),
+            changed: Condvar::new(),
+        });
+        let deadline = Instant::now() + PICKER_DEADLINE;
+        let timeout = Arc::clone(&timer);
+        let weak_owner = Arc::downgrade(inner);
+        std::thread::Builder::new()
+            .name("webui-directory-picker-deadline".into())
+            .spawn(move || {
+                let _reservation = timer_reservation;
+                let Ok(state) = timeout.state.lock() else {
+                    return;
+                };
+                let Ok((state, _)) =
+                    timeout
+                        .changed
+                        .wait_timeout_while(state, PICKER_DEADLINE, |state| !state.finished)
+                else {
+                    return;
+                };
+                if !state.finished {
+                    drop(state);
+                    if let Some(owner) = weak_owner.upgrade() {
+                        platform::cancel_picker(&owner, id);
+                    }
+                    timeout.wake();
+                }
+            })
+            .map_err(|_| NativeServiceError::Unavailable)?;
+        if let Ok(mut active) = inner.picker_timer.lock() {
+            *active = Some(Arc::downgrade(&timer));
+        }
+        let worker_permit = Arc::clone(&permit);
+        let initial = options.initial_directory.clone();
+        let preflight = match inner.executor.submit(move || {
+            let _permit = worker_permit;
+            initial
+                .as_deref()
+                .map(|path| checked_directory(path, true))
+                .transpose()
+        }) {
+            Ok(work) => work,
+            Err(error) => {
+                timer.finish();
+                return Err(work_error(error));
+            }
+        };
+        if inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            timer.finish();
+            return Err(NativeServiceError::Closed);
+        }
+        if inner.generation.load(Ordering::Acquire) != generation {
+            timer.finish();
+            return Err(NativeServiceError::Cancelled);
+        }
+        Ok(DirectoryPick {
+            inner: Arc::clone(inner),
+            generation,
+            id,
+            deadline,
+            timer,
+            _permit: permit,
+            stage: PickerStage::Preflight { options, preflight },
+        })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    fn finish_picker_claim(&self, generation: u64) -> Result<u64, NativeServiceError> {
+        let inner = &self.0;
+        // Navigation may race the busy-bit claim. Neither a stale generation
+        // nor a retired host may enter the timer/worker/UI admission path.
+        if inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            return Err(NativeServiceError::Closed);
+        }
+        if inner.generation.load(Ordering::Acquire) != generation {
+            return Err(NativeServiceError::Cancelled);
+        }
+        let id = inner
+            .picker_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| NativeServiceError::Unavailable)?
+            + 1;
+        if inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            return Err(NativeServiceError::Closed);
+        }
+        if inner.generation.load(Ordering::Acquire) != generation {
+            return Err(NativeServiceError::Cancelled);
+        }
+        Ok(id)
     }
 
     #[cfg(all(target_os = "macos", feature = "native-capture"))]
@@ -892,9 +1195,19 @@ impl Inner {
             }
         }
         self.generation.fetch_add(1, Ordering::AcqRel);
+        #[cfg(all(target_os = "macos", feature = "native-picker"))]
+        if self.picker_busy.load(Ordering::Acquire) {
+            platform::cancel_picker(self, self.picker_id.load(Ordering::Acquire));
+        }
         if let Ok(timer) = self.timer.lock() {
             if let Some(timer) = timer.as_ref().and_then(Weak::upgrade) {
                 timer.wake();
+            }
+            #[cfg(all(target_os = "macos", feature = "native-picker"))]
+            if let Ok(timer) = self.picker_timer.lock() {
+                if let Some(timer) = timer.as_ref().and_then(Weak::upgrade) {
+                    timer.wake();
+                }
             }
         }
     }
@@ -952,6 +1265,166 @@ impl GeometryRegistration {
         #[cfg(feature = "native-capture")]
         self.capture.close();
         self.geometry.close();
+    }
+}
+
+/// Awaitable result of one native directory panel. Admission does not imply
+/// the user chose a directory. Dropping it cancels a pending sheet where the
+/// OS permits, without synchronously waiting on the native UI thread.
+#[must_use = "await the native picker result; queue admission is not selection"]
+#[cfg(feature = "native-picker")]
+pub struct DirectoryPick {
+    #[cfg(target_os = "macos")]
+    inner: Arc<Inner>,
+    #[cfg(target_os = "macos")]
+    generation: u64,
+    #[cfg(target_os = "macos")]
+    id: u64,
+    #[cfg(target_os = "macos")]
+    deadline: Instant,
+    #[cfg(target_os = "macos")]
+    timer: Arc<Timer>,
+    #[cfg(target_os = "macos")]
+    _permit: Arc<PickerPermit>,
+    #[cfg(target_os = "macos")]
+    stage: PickerStage,
+}
+
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+enum PickerStage {
+    Preflight {
+        options: DirectoryPickerOptions,
+        preflight: Completion<Result<Option<PathBuf>, NativeServiceError>>,
+    },
+    Panel(Arc<platform::PickerSlot>),
+    Verify(Completion<Result<PathBuf, NativeServiceError>>),
+    Done,
+}
+
+#[cfg(feature = "native-picker")]
+impl Future for DirectoryPick {
+    type Output = Result<DirectorySelection, NativeServiceError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self, cx);
+            Poll::Ready(Err(NativeServiceError::PickerUnsupported))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let this = self.get_mut();
+            if this.inner.closed.load(Ordering::Acquire) || !this.inner.lifetime.is_active() {
+                platform::cancel_picker(&this.inner, this.id);
+                return Poll::Ready(Err(NativeServiceError::Closed));
+            }
+            if this.inner.generation.load(Ordering::Acquire) != this.generation {
+                platform::cancel_picker(&this.inner, this.id);
+                return Poll::Ready(Err(NativeServiceError::Cancelled));
+            }
+            if Instant::now() >= this.deadline {
+                platform::cancel_picker(&this.inner, this.id);
+                return Poll::Ready(Err(NativeServiceError::PickerTimeout));
+            }
+            if let Ok(mut state) = this.timer.state.lock() {
+                state.waker = Some(cx.waker().clone());
+            }
+            // A lifecycle cancellation may have raced waker registration.
+            if this.inner.closed.load(Ordering::Acquire)
+                || !this.inner.lifetime.is_active()
+                || this.inner.generation.load(Ordering::Acquire) != this.generation
+                || Instant::now() >= this.deadline
+            {
+                cx.waker().wake_by_ref();
+            }
+            loop {
+                match &mut this.stage {
+                    PickerStage::Preflight { options, preflight } => {
+                        let initial = match Pin::new(preflight).poll(cx) {
+                            Poll::Pending => return Poll::Pending,
+                            Poll::Ready(Err(error)) => return Poll::Ready(Err(work_error(error))),
+                            Poll::Ready(Ok(Err(error))) => return Poll::Ready(Err(error)),
+                            Poll::Ready(Ok(Ok(initial))) => initial,
+                        };
+                        if this.inner.generation.load(Ordering::Acquire) != this.generation {
+                            return Poll::Ready(Err(NativeServiceError::Cancelled));
+                        }
+                        let slot = Arc::new(platform::PickerSlot::new());
+                        platform::enqueue_picker(
+                            &this.inner,
+                            platform::PickerSubmission {
+                                id: this.id,
+                                generation: this.generation,
+                                title: options.title.clone(),
+                                initial,
+                                slot: Arc::downgrade(&slot),
+                                permit: Arc::clone(&this._permit),
+                            },
+                        )?;
+                        this.stage = PickerStage::Panel(slot);
+                    }
+                    PickerStage::Panel(slot) => match slot.poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                        Poll::Ready(Ok(None)) => {
+                            this.stage = PickerStage::Done;
+                            if this.inner.closed.load(Ordering::Acquire)
+                                || !this.inner.lifetime.is_active()
+                            {
+                                return Poll::Ready(Err(NativeServiceError::Closed));
+                            }
+                            if this.inner.generation.load(Ordering::Acquire) != this.generation {
+                                return Poll::Ready(Err(NativeServiceError::Cancelled));
+                            }
+                            return Poll::Ready(Ok(DirectorySelection::Cancelled));
+                        }
+                        Poll::Ready(Ok(Some(path))) => {
+                            let worker_permit = Arc::clone(&this._permit);
+                            let work = this
+                                .inner
+                                .executor
+                                .submit(move || {
+                                    let _permit = worker_permit;
+                                    checked_directory(&path, false)
+                                })
+                                .map_err(work_error)?;
+                            this.stage = PickerStage::Verify(work);
+                        }
+                    },
+                    PickerStage::Verify(work) => {
+                        let result = match Pin::new(work).poll(cx) {
+                            Poll::Pending => return Poll::Pending,
+                            Poll::Ready(Err(error)) => return Poll::Ready(Err(work_error(error))),
+                            Poll::Ready(Ok(result)) => result,
+                        };
+                        this.stage = PickerStage::Done;
+                        if this.inner.closed.load(Ordering::Acquire)
+                            || !this.inner.lifetime.is_active()
+                        {
+                            return Poll::Ready(Err(NativeServiceError::Closed));
+                        }
+                        if this.inner.generation.load(Ordering::Acquire) != this.generation {
+                            return Poll::Ready(Err(NativeServiceError::Cancelled));
+                        }
+                        return Poll::Ready(result.map(DirectorySelection::Selected));
+                    }
+                    PickerStage::Done => return Poll::Ready(Err(NativeServiceError::Unavailable)),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-picker")]
+impl Drop for DirectoryPick {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.timer.finish();
+            if !matches!(self.stage, PickerStage::Done) {
+                platform::cancel_picker(&self.inner, self.id);
+            }
+        }
     }
 }
 
@@ -1013,6 +1486,34 @@ fn work_error(error: WorkError) -> NativeServiceError {
         WorkError::Closed => NativeServiceError::Closed,
         WorkError::Overloaded => NativeServiceError::Overloaded,
     }
+}
+
+#[cfg(feature = "native-picker")]
+fn valid_directory_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path.as_os_str().len() <= MAX_NATIVE_DOCUMENT_PATH_BYTES
+        && !path.as_os_str().as_encoded_bytes().contains(&0)
+}
+
+#[cfg(all(target_os = "macos", feature = "native-picker"))]
+fn checked_directory(path: &Path, initial: bool) -> Result<PathBuf, NativeServiceError> {
+    let invalid = || {
+        if initial {
+            NativeServiceError::InvalidInitialDirectory
+        } else {
+            NativeServiceError::InvalidSelection
+        }
+    };
+    if !valid_directory_path(path) {
+        return Err(invalid());
+    }
+    let canonical = path.canonicalize().map_err(|_| invalid())?;
+    if !valid_directory_path(&canonical)
+        || !canonical.metadata().is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err(invalid());
+    }
+    Ok(canonical)
 }
 
 fn validate_url(input: &str) -> Result<String, NativeServiceError> {
@@ -1089,6 +1590,42 @@ mod tests {
         let (owner, lifetime) = HostLifetime::new();
         let services = NativeServices::new(&events, Arc::default(), lifetime).unwrap();
         (services, events, owner)
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        not(feature = "native-picker"),
+        not(feature = "native-dialogs"),
+        not(feature = "native-capture"),
+        not(feature = "native-clipboard")
+    ))]
+    #[test]
+    fn services_only_state_has_no_picker_reservation_or_timer() {
+        // 64-bit macOS services-only layout. Picker admission adds 32 bytes;
+        // a regression here means optional state leaked into this feature.
+        assert_eq!(std::mem::size_of::<Inner>(), 216);
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        feature = "native-dialogs",
+        feature = "native-picker"
+    ))]
+    #[test]
+    fn native_modal_reservation_blocks_picker_and_dialog_until_native_ack() {
+        let (services, _events, _host) = services();
+        let owner = Arc::clone(&services.0);
+        owner.picker_busy.store(true, Ordering::Release);
+        let picker = Arc::new(PickerPermit::new(Arc::clone(&owner)));
+        *picker.modal.lock().unwrap() = Some(owner.dialogs.claim_modal().unwrap());
+        assert!(matches!(
+            owner.dialogs.claim_modal(),
+            Err(crate::DialogError::Busy)
+        ));
+        picker.release();
+        assert!(!owner.picker_busy.load(Ordering::Acquire));
+        assert!(owner.dialogs.claim_modal().is_ok());
+        drop(picker);
     }
 
     #[cfg(all(windows, feature = "native-capture"))]
@@ -1232,6 +1769,44 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native-picker")]
+    #[test]
+    fn directory_picker_options_are_checked_without_showing_a_dialog() {
+        let default = DirectoryPickerOptions::new();
+        assert!(default.title.is_none());
+        assert!(default.initial_directory.is_none());
+        assert!(matches!(
+            DirectoryPickerOptions::new().title(""),
+            Err(NativeServiceError::InvalidPickerTitle)
+        ));
+        assert!(matches!(
+            DirectoryPickerOptions::new().title("bad\nline"),
+            Err(NativeServiceError::InvalidPickerTitle)
+        ));
+        assert!(matches!(
+            DirectoryPickerOptions::new().title("a".repeat(MAX_DIRECTORY_PICKER_TITLE_BYTES + 1)),
+            Err(NativeServiceError::InvalidPickerTitle)
+        ));
+        assert_eq!(
+            DirectoryPickerOptions::new()
+                .title("Controlled selection")
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Controlled selection")
+        );
+        assert!(matches!(
+            DirectoryPickerOptions::new().initial_directory("relative/path"),
+            Err(NativeServiceError::InvalidInitialDirectory)
+        ));
+        assert!(matches!(
+            DirectoryPickerOptions::new()
+                .initial_directory(std::env::temp_dir().join("a".repeat(4096))),
+            Err(NativeServiceError::InvalidInitialDirectory)
+        ));
+        assert_eq!(DirectorySelection::Cancelled, DirectorySelection::Cancelled);
+    }
+
     #[test]
     fn theme_requires_attached_supported_window_and_host_lifetime() {
         let (services, _events, owner) = services();
@@ -1276,6 +1851,88 @@ mod tests {
                 Err(NativeServiceError::ThemeUnsupported)
             ));
         }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    #[test]
+    fn directory_picker_rejects_unattached_window_and_checks_non_utf8_directories() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let (services, _events, _owner) = services();
+        assert!(matches!(
+            services.pick_directory(DirectoryPickerOptions::new()),
+            Err(NativeServiceError::Unavailable)
+        ));
+        assert!(!services.0.picker_busy.load(Ordering::Acquire));
+        assert_eq!(services.0.active_timers.load(Ordering::Acquire), 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(OsStr::from_bytes(b"nonutf8-\xff"));
+        let options = DirectoryPickerOptions::new()
+            .initial_directory(&path)
+            .unwrap();
+        assert_eq!(options.initial_directory.as_deref(), Some(path.as_path()));
+        // APFS/macOS rejects non-UTF-8 filenames with EILSEQ; preserve the
+        // host bytes, then fail explicitly rather than replacing them.
+        assert!(matches!(
+            checked_directory(&path, true),
+            Err(NativeServiceError::InvalidInitialDirectory)
+        ));
+        let valid = dir.path().join("controlled-directory");
+        std::fs::create_dir(&valid).unwrap();
+        assert_eq!(
+            checked_directory(&valid, true).unwrap(),
+            valid.canonicalize().unwrap()
+        );
+        assert!(matches!(
+            checked_directory(&dir.path().join("missing"), true),
+            Err(NativeServiceError::InvalidInitialDirectory)
+        ));
+        assert!(matches!(
+            checked_directory(&dir.path().join("missing"), false),
+            Err(NativeServiceError::InvalidSelection)
+        ));
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, b"fixture").unwrap();
+        assert!(matches!(
+            checked_directory(&file, true),
+            Err(NativeServiceError::InvalidInitialDirectory)
+        ));
+        let slot = platform::PickerSlot::new();
+        slot.test_complete(Ok(None));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(slot.poll(&mut context), Poll::Ready(Ok(None))));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-picker"))]
+    #[test]
+    fn navigation_between_picker_claim_and_identity_cannot_admit_a_dialog() {
+        let (services, events, _owner) = services();
+        let generation = services.0.generation.load(Ordering::Acquire);
+        assert!(!services.0.picker_busy.swap(true, Ordering::AcqRel));
+        let permit = Arc::new(PickerPermit::new(Arc::clone(&services.0)));
+        let _ = events.dispatch(&DesktopEvent::NavigationRequested {
+            window_id: crate::WindowId::PRIMARY,
+            url: "http://127.0.0.1/next".into(),
+        });
+        assert!(matches!(
+            services.finish_picker_claim(generation),
+            Err(NativeServiceError::Cancelled)
+        ));
+        assert_eq!(services.0.picker_id.load(Ordering::Acquire), 0);
+        assert_eq!(services.0.active_timers.load(Ordering::Acquire), 0);
+        drop(permit);
+        assert!(!services.0.picker_busy.load(Ordering::Acquire));
+    }
+
+    #[cfg(all(not(target_os = "macos"), feature = "native-picker"))]
+    #[test]
+    fn directory_picker_explicitly_rejects_unsupported_platforms() {
+        let (services, _events, _owner) = services();
+        assert!(matches!(
+            services.pick_directory(DirectoryPickerOptions::new()),
+            Err(NativeServiceError::PickerUnsupported)
+        ));
     }
 
     #[test]

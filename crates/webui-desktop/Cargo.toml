@@ -33,6 +33,13 @@ startup-failure = [
 ]
 local-server = ["native", "dep:url", "dep:getrandom", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
+native-picker = [
+    "native-services",
+    "objc2-app-kit?/NSOpenPanel",
+    "objc2-app-kit?/NSSavePanel",
+    "objc2-app-kit?/NSPanel",
+    "objc2-app-kit?/block2",
+]
 native-dialogs = ["native-services", "objc2-app-kit?/NSAlert", "objc2-app-kit?/block2"]
 native-capture = [
     "native-services",
@@ -212,6 +219,11 @@ required-features = ["native-services"]
 name = "native-capture"
 path = "tests/fixtures/native-capture.rs"
 required-features = ["native-capture"]
+
+[[example]]
+name = "native-directory"
+path = "tests/fixtures/native-directory.rs"
+required-features = ["native-picker"]
 
 [[example]]
 name = "startup-failure"

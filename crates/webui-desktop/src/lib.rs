@@ -152,6 +152,10 @@ pub use native_services::{
     ContentGeometry, GeometryRequest, NativeOpen, NativeServiceError, NativeServices,
     ScreenRectPoints, MAX_NATIVE_DOCUMENT_PATH_BYTES, MAX_NATIVE_URL_BYTES,
 };
+#[cfg(feature = "native-picker")]
+pub use native_services::{
+    DirectoryPick, DirectoryPickerOptions, DirectorySelection, MAX_DIRECTORY_PICKER_TITLE_BYTES,
+};
 #[cfg(feature = "native-services")]
 pub use native_theme::{ThemeMode, ThemeRequest, ThemeState};
 pub use navigation::is_allowed_navigation_url;
