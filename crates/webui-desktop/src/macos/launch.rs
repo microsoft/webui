@@ -129,7 +129,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     window.setDelegate(Some(ProtocolObject::from_ref(delegate)));
 
     let menu_webview = webview.clone();
-    let menu = build_main_menu(mtm, &ivars.shell.menus, move |script| {
+    let menu = build_main_menu(mtm, &window, &ivars.shell.menus, move |script| {
         // SAFETY: AppKit invokes menu actions on the main thread; the receiver
         // retains this webview until the owning native menu is torn down.
         unsafe {

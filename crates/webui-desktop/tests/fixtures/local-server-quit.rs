@@ -183,6 +183,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(mtm) = MainThreadMarker::new() else {
                     return EventResponse::Continue;
                 };
+                if std::env::var_os("WEBUI_REQUIRE_WINDOW_MENU").is_some() {
+                    let app = NSApplication::sharedApplication(mtm);
+                    let root = app.mainMenu();
+                    eprintln!("QUIT_FIXTURE_MENU_COUNT={}", root.as_ref().map_or(0, |menu| menu.numberOfItems()));
+                    let window_menu = root
+                        .filter(|menu| menu.numberOfItems() > 2)
+                        .and_then(|menu| menu.itemAtIndex(2))
+                        .and_then(|item| item.submenu());
+                    eprintln!("QUIT_FIXTURE_WINDOW_MENU={}", window_menu.as_ref().map_or_else(|| "missing".to_string(), |menu| menu.title().to_string()));
+                    if window_menu
+                        .as_ref()
+                        .is_none_or(|menu| menu.title().to_string() != "Window")
+                    {
+                        eprintln!("QUIT_FIXTURE_MISSING_WINDOW_MENU");
+                        std::process::exit(9);
+                    }
+                    let roles = ["Close Window", "Minimize", "Zoom", "Bring All to Front"];
+                    if window_menu.as_ref().is_none_or(|menu| {
+                        let mut matched = 0;
+                        for index in 0..menu.numberOfItems().min(32) {
+                            if menu.itemAtIndex(index).is_some_and(|item| {
+                                item.title().to_string() == roles[matched]
+                            }) {
+                                matched += 1;
+                                if matched == roles.len() {
+                                    break;
+                                }
+                            }
+                        }
+                        matched != roles.len()
+                    }) {
+                        eprintln!("QUIT_FIXTURE_WINDOW_MENU_ROLES_MISSING");
+                        std::process::exit(9);
+                    }
+                    if test_mode == "window-close" {
+                        let Some(window_menu) = window_menu.filter(|menu| menu.numberOfItems() > 0) else {
+                            eprintln!("QUIT_FIXTURE_MISSING_WINDOW_CLOSE");
+                            std::process::exit(9);
+                        };
+                        let callback = RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+                            window_menu.performActionForItemAtIndex(0);
+                        });
+                        // SAFETY: This fixture schedules a native menu action on
+                        // AppKit's main run loop after the window becomes key.
+                        unsafe {
+                            let _ = NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                                0.4, false, &callback,
+                            );
+                        }
+                        return EventResponse::Continue;
+                    }
+                }
                 if test_mode == "window-close" {
                     if let Err(error) = commands.request_close() {
                         eprintln!("QUIT_FIXTURE_WINDOW_COMMAND_FAILED {error}");

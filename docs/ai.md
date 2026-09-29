@@ -1410,6 +1410,8 @@ background, and the remaining initial window options can all be set through
 changes use `set_size(width, height)`; titlebar style remains startup-only.
 On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
 symlink escapes; source hosts can set an absolute path for Dock artwork.
+Without custom menus, macOS supplies native App, Edit, and Window roles;
+the Window actions target this app's own window.
 `titlebar.height` sizes the application band; Windows caption buttons default
 to 32 DIPs independently. Pass `--caption-button-size tall` for
 48-DIP buttons without changing the application band height.
