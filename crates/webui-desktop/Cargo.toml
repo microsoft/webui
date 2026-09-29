@@ -53,6 +53,7 @@ native = [
     "dep:webkit6",
 ]
 source = ["dep:microsoft-webui", "dep:sha2"]
+verified-update = ["dep:sha2"]
 packaging = ["dep:libc"]
 cli = ["native", "source", "dep:clap", "dep:console", "dep:expand-tilde", "dep:microsoft-webui-desktop-build"]
 

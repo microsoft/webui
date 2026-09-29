@@ -51,6 +51,7 @@ set desktop package options with command flags or the app-root
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
 | `source` | Build from templates with `DesktopSourceConfig` |
+| `verified-update` | Host-only staged-file SHA-256/size check; no native, source or packaging dependency |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
 
@@ -67,6 +68,41 @@ source = ["webui-desktop/source"]
 ```
 
 Enable `application-ipc` separately if you use generated messages.
+
+### Staged release byte integrity
+
+An opt-in Rust host can verify bytes of an **already-open** staged file with
+the standalone `verified-update` feature, independent of `native`, `source`,
+and `packaging`. The host must independently authenticate release metadata and
+obtain user approval; neither is provided by this API.
+
+```rust
+use webui_desktop::verified_update::{
+    verify_staged, ExpectedUpdate, InstalledUpdatePolicy, ReleaseVersion,
+};
+
+let installed = InstalledUpdatePolicy::new(
+    ReleaseVersion::parse(installed_version)?, installed_app_id, installed_target,
+    max_staged_bytes, installed_trust,
+)?;
+let expected = ExpectedUpdate::new(
+    ReleaseVersion::parse(release_version)?, release_app_id, release_target,
+    release_bytes, release_sha256,
+)?;
+let receipt = verify_staged(open_file, &expected, &installed)?;
+```
+
+`open_file` must be a host-owned `std::fs::File`, never a renderer-supplied
+path. `installed_*` values and the nonzero size cap come from the **installed
+host**; `release_*` values come from authenticated metadata, never an
+unauthenticated mirror. Versions use canonical numeric `major.minor.patch`.
+The receipt holds the same opened handle at offset 0 with observed length and
+SHA-256, not a verified path or install permission. The check rejects mismatched identity,
+target, version, size, or digest; signed installed apps and policies requiring
+publisher signatures/notarization fail closed. Unsigned/ad-hoc installations
+receive only authenticated-release byte integrity. The SDK does **not**
+authenticate provenance, prove app ID/architecture inside opaque archives,
+verify OS signatures/notarization, or install/update anything.
 
 ### Existing HTTP application
 
