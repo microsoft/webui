@@ -12,7 +12,7 @@ use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::SystemTime;
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 
 const SCAN_BYTES: usize = 64 * 1024;
@@ -112,6 +112,43 @@ impl ExpectedUpdate {
             target_triple: target_triple.to_owned(),
             byte_len,
             sha256,
+        })
+    }
+}
+
+/// SHA-512 expectation from independently authenticated, target-bound release metadata.
+///
+/// Do not construct this from bytes hashed from the staged download itself:
+/// that would establish no release provenance.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ExpectedUpdateSha512 {
+    version: ReleaseVersion,
+    app_id: String,
+    target_triple: String,
+    byte_len: u64,
+    sha512: [u8; 64],
+}
+
+impl ExpectedUpdateSha512 {
+    /// Construct a SHA-512 expectation after authenticating every release field.
+    pub fn new(
+        version: ReleaseVersion,
+        app_id: &str,
+        target_triple: &str,
+        byte_len: u64,
+        sha512: [u8; 64],
+    ) -> Result<Self, UpdateError> {
+        validate_identity(app_id, target_triple)?;
+        if byte_len == 0 {
+            return Err(UpdateError::InvalidLength);
+        }
+        Ok(Self {
+            version,
+            app_id: app_id.to_owned(),
+            target_triple: target_triple.to_owned(),
+            byte_len,
+            sha512,
         })
     }
 }
@@ -244,6 +281,53 @@ impl StagedIntegrityReceipt {
     }
 }
 
+/// SHA-512 observation over the retained, rewound opened handle, not install authority.
+///
+/// The file cursor is at offset 0 on return, but subsequent reads or writes can
+/// move it or change the bytes. No SHA-256 assertion is made on this path.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct StagedSha512IntegrityReceipt {
+    file: File,
+    version: ReleaseVersion,
+    app_id: String,
+    target_triple: String,
+    byte_len: u64,
+    sha512: [u8; 64],
+}
+
+impl StagedSha512IntegrityReceipt {
+    /// Borrow the exact opened handle, rewound to offset 0 when verified, not a path.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
+    /// Version from the authenticated release expectation.
+    pub fn version(&self) -> ReleaseVersion {
+        self.version
+    }
+
+    /// App ID from the authenticated release expectation, not proof of archive contents.
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    /// Target from the authenticated release expectation, not proof of archive contents.
+    pub fn target_triple(&self) -> &str {
+        &self.target_triple
+    }
+
+    /// Number of bytes scanned and checked against the expected size.
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    /// Observed SHA-512 digest matched to independently authenticated expected metadata.
+    pub fn sha512(&self) -> [u8; 64] {
+        self.sha512
+    }
+}
+
 /// Actionable failure in policy validation or staged-file verification.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -290,6 +374,9 @@ pub enum UpdateError {
     /// Observed and authenticated hashes differ.
     #[error("staged file SHA-256 differs from authenticated metadata: discard the artifact")]
     DigestMismatch,
+    /// Observed and authenticated SHA-512 hashes differ.
+    #[error("staged file SHA-512 differs from authenticated metadata: discard the artifact")]
+    Sha512Mismatch,
     /// Metadata, seek, or read operation failed.
     #[error("failed {context} on staged handle")]
     Io {
@@ -323,11 +410,101 @@ pub fn verify_staged(
 }
 
 fn verify_with_chunk(
-    mut file: File,
+    file: File,
     expected: &ExpectedUpdate,
     policy: &InstalledUpdatePolicy,
-    mut after_chunk: impl FnMut(u64),
+    after_chunk: impl FnMut(u64),
 ) -> Result<StagedIntegrityReceipt, UpdateError> {
+    let (file, byte_len, digest) = scan_with_chunk::<Sha256>(
+        file,
+        ExpectedFields {
+            version: expected.version,
+            app_id: &expected.app_id,
+            target_triple: &expected.target_triple,
+            byte_len: expected.byte_len,
+        },
+        DigestExpectation {
+            bytes: &expected.sha256,
+            mismatch: UpdateError::DigestMismatch,
+        },
+        policy,
+        after_chunk,
+    )?;
+    Ok(StagedIntegrityReceipt {
+        file,
+        version: expected.version,
+        app_id: expected.app_id.clone(),
+        target_triple: expected.target_triple.clone(),
+        byte_len,
+        sha256: digest.into(),
+    })
+}
+
+/// Verify SHA-512 bytes of an already-open file against independently authenticated
+/// release metadata and an installed-host policy.
+///
+/// The receipt retains the same opened handle, rewound to offset 0. This does
+/// not authenticate the release metadata, prove archive contents/signatures,
+/// or install an update. Never use a hash computed from the downloaded file as
+/// the expected hash: the caller must authenticate its target-bound provenance.
+pub fn verify_staged_sha512(
+    file: File,
+    expected: &ExpectedUpdateSha512,
+    policy: &InstalledUpdatePolicy,
+) -> Result<StagedSha512IntegrityReceipt, UpdateError> {
+    verify_sha512_with_chunk(file, expected, policy, |_| {})
+}
+
+fn verify_sha512_with_chunk(
+    file: File,
+    expected: &ExpectedUpdateSha512,
+    policy: &InstalledUpdatePolicy,
+    after_chunk: impl FnMut(u64),
+) -> Result<StagedSha512IntegrityReceipt, UpdateError> {
+    let (file, byte_len, digest) = scan_with_chunk::<Sha512>(
+        file,
+        ExpectedFields {
+            version: expected.version,
+            app_id: &expected.app_id,
+            target_triple: &expected.target_triple,
+            byte_len: expected.byte_len,
+        },
+        DigestExpectation {
+            bytes: &expected.sha512,
+            mismatch: UpdateError::Sha512Mismatch,
+        },
+        policy,
+        after_chunk,
+    )?;
+    Ok(StagedSha512IntegrityReceipt {
+        file,
+        version: expected.version,
+        app_id: expected.app_id.clone(),
+        target_triple: expected.target_triple.clone(),
+        byte_len,
+        sha512: digest.into(),
+    })
+}
+
+struct ExpectedFields<'a> {
+    version: ReleaseVersion,
+    app_id: &'a str,
+    target_triple: &'a str,
+    byte_len: u64,
+}
+
+struct DigestExpectation<'a> {
+    bytes: &'a [u8],
+    mismatch: UpdateError,
+}
+
+fn scan_with_chunk<D: Digest>(
+    mut file: File,
+    expected: ExpectedFields<'_>,
+    digest_expectation: DigestExpectation<'_>,
+    policy: &InstalledUpdatePolicy,
+    mut after_chunk: impl FnMut(u64),
+) -> Result<(File, u64, sha2::digest::Output<D>), UpdateError> {
     if expected.byte_len > policy.max_bytes {
         return Err(UpdateError::SizeLimitExceeded);
     }
@@ -363,7 +540,7 @@ fn verify_with_chunk(
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|err| io("seeking staged handle", err))?;
-    let mut hasher = Sha256::new();
+    let mut hasher = D::new();
     let mut buf = vec![0u8; SCAN_BYTES];
     let mut count = 0u64;
     while count < expected.byte_len {
@@ -404,20 +581,14 @@ fn verify_with_chunk(
     if count != expected.byte_len || has_extra {
         return Err(UpdateError::LengthMismatch);
     }
-    let sha256: [u8; 32] = hasher.finalize().into();
-    if sha256 != expected.sha256 {
-        return Err(UpdateError::DigestMismatch);
+    let digest = hasher.finalize();
+    let observed: &[u8] = digest.as_ref();
+    if observed != digest_expectation.bytes {
+        return Err(digest_expectation.mismatch);
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|err| io("rewinding verified staged handle", err))?;
-    Ok(StagedIntegrityReceipt {
-        file,
-        version: expected.version,
-        app_id: expected.app_id.clone(),
-        target_triple: expected.target_triple.clone(),
-        byte_len: count,
-        sha256,
-    })
+    Ok((file, count, digest))
 }
 
 fn same_snapshot(
@@ -655,6 +826,165 @@ mod tests {
             writer_barrier.wait();
         });
         let result = verify_with_chunk(
+            File::open(dir.path().join("staged")).unwrap(),
+            &expected,
+            &policy(),
+            |count| {
+                if count == SCAN_BYTES as u64 {
+                    barrier.wait();
+                    barrier.wait();
+                }
+            },
+        );
+        writer.join().unwrap();
+        assert!(matches!(result, Err(UpdateError::FileChanged)));
+    }
+
+    fn expected_sha512(bytes: &[u8]) -> ExpectedUpdateSha512 {
+        ExpectedUpdateSha512::new(
+            version("2.0.0"),
+            ID,
+            TARGET,
+            bytes.len() as u64,
+            Sha512::digest(bytes).into(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sha512_receipt_retains_rewound_handle_and_sha512_only() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("artifact.zip");
+        std::fs::write(&path, b"opaque bytes").unwrap();
+        let receipt = verify_staged_sha512(
+            File::open(&path).unwrap(),
+            &expected_sha512(b"opaque bytes"),
+            &policy(),
+        )
+        .unwrap();
+        assert_eq!(receipt.version(), version("2.0.0"));
+        assert_eq!(receipt.app_id(), ID);
+        assert_eq!(receipt.target_triple(), TARGET);
+        assert_eq!(receipt.byte_len(), 12);
+        let expected_digest: [u8; 64] = Sha512::digest(b"opaque bytes").into();
+        assert_eq!(receipt.sha512(), expected_digest);
+        let mut file = receipt.file();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"opaque bytes");
+    }
+
+    #[test]
+    fn sha512_rejects_wrong_digest_size_identity_version_and_unproven_signature() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("artifact");
+        std::fs::write(&path, b"contents").unwrap();
+        let check = |expected: &ExpectedUpdateSha512, policy: &InstalledUpdatePolicy| {
+            verify_staged_sha512(File::open(&path).unwrap(), expected, policy)
+        };
+        assert!(matches!(
+            ExpectedUpdateSha512::new(version("2.0.0"), ID, TARGET, 0, [0; 64]),
+            Err(UpdateError::InvalidLength)
+        ));
+        assert!(matches!(
+            ExpectedUpdateSha512::new(version("2.0.0"), "invalid", TARGET, 8, [0; 64]),
+            Err(UpdateError::InvalidAppId)
+        ));
+        let wrong_digest =
+            ExpectedUpdateSha512::new(version("2.0.0"), ID, TARGET, 8, [0; 64]).unwrap();
+        assert!(matches!(
+            check(&wrong_digest, &policy()),
+            Err(UpdateError::Sha512Mismatch)
+        ));
+        let wrong_size =
+            ExpectedUpdateSha512::new(version("2.0.0"), ID, TARGET, 9, [0; 64]).unwrap();
+        assert!(matches!(
+            check(&wrong_size, &policy()),
+            Err(UpdateError::LengthMismatch)
+        ));
+        let oversized =
+            InstalledUpdatePolicy::new(version("1.0.0"), ID, TARGET, 1, InstalledTrust::Unsigned)
+                .unwrap();
+        assert!(matches!(
+            check(&expected_sha512(b"contents"), &oversized),
+            Err(UpdateError::SizeLimitExceeded)
+        ));
+        for old in ["1.0.0", "0.9.9"] {
+            let e = ExpectedUpdateSha512::new(version(old), ID, TARGET, 8, [0; 64]).unwrap();
+            assert!(matches!(
+                check(&e, &policy()),
+                Err(UpdateError::VersionNotNewer)
+            ));
+        }
+        let app = ExpectedUpdateSha512::new(version("2.0.0"), "com.other.app", TARGET, 8, [0; 64])
+            .unwrap();
+        assert!(matches!(
+            check(&app, &policy()),
+            Err(UpdateError::AppIdMismatch)
+        ));
+        for target in ["x86_64-apple-darwin", "aarch64-pc-windows-msvc"] {
+            let arch = ExpectedUpdateSha512::new(version("2.0.0"), ID, target, 8, [0; 64]).unwrap();
+            assert!(matches!(
+                check(&arch, &policy()),
+                Err(UpdateError::TargetMismatch)
+            ));
+        }
+        for trust in [InstalledTrust::PublisherSigned, InstalledTrust::Notarized] {
+            let signed =
+                InstalledUpdatePolicy::new(version("1.0.0"), ID, TARGET, 100, trust).unwrap();
+            assert!(matches!(
+                check(&expected_sha512(b"contents"), &signed),
+                Err(UpdateError::UnverifiableTrust)
+            ));
+        }
+        for required in [
+            RequiredTrust::PublisherSignature,
+            RequiredTrust::Notarization,
+        ] {
+            assert!(matches!(
+                check(&expected_sha512(b"contents"), &policy().require(required)),
+                Err(UpdateError::UnverifiableTrust)
+            ));
+        }
+    }
+
+    #[test]
+    fn sha512_path_swap_keeps_the_original_opened_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("staged");
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&path, b"original").unwrap();
+        std::fs::write(&replacement, b"malicious").unwrap();
+        let open = File::open(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        let receipt = verify_staged_sha512(open, &expected_sha512(b"original"), &policy()).unwrap();
+        let mut file = receipt.file();
+        let mut retained = Vec::new();
+        file.read_to_end(&mut retained).unwrap();
+        assert_eq!(retained, b"original");
+        assert_eq!(std::fs::read(&path).unwrap(), b"malicious");
+    }
+
+    #[test]
+    fn sha512_detects_in_place_mutation_after_first_chunk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("staged");
+        let bytes = vec![0x61; SCAN_BYTES * 3];
+        std::fs::write(&path, &bytes).unwrap();
+        let expected = expected_sha512(&bytes);
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = barrier.clone();
+        let writer = std::thread::spawn(move || {
+            let mut writer = OpenOptions::new().write(true).open(path).unwrap();
+            writer_barrier.wait();
+            writer.write_all(b"changed").unwrap();
+            writer.flush().unwrap();
+            writer
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000))
+                .unwrap();
+            writer_barrier.wait();
+        });
+        let result = verify_sha512_with_chunk(
             File::open(dir.path().join("staged")).unwrap(),
             &expected,
             &policy(),

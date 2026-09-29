@@ -68,6 +68,11 @@ installer or authorization to mutate the installed app. This check does not
 authenticate release provenance, prove identity inside an archive, or verify
 signatures/notarization. Signed installed apps and policies requiring these OS
 proofs fail closed.
+For authenticated SHA-512 expectations, use `ExpectedUpdateSha512::new` and
+`verify_staged_sha512`, which returns a SHA-512-only receipt. A digest computed
+from the downloaded candidate is not an authenticated expected digest; do not
+wire product updates until provenance, archive/signature, and installer approval
+are separately established.
 See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop#staged-release-byte-integrity).
 
 Consumers that own their HTTP server and sealed assets can use

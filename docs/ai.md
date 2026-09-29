@@ -1399,8 +1399,10 @@ On macOS and Windows, an exact `.localhost` preview subdomain needs an
 unprivileged `frame.frame_policy()` grant; it never gains native IPC or
 window controls. Linux currently denies preview subframe document commits.
 For Rust-hosted staged release bytes, `verified-update` provides a host-only
-SHA-256/size check, not provenance authentication, archive-identity/signature
-proof, or installation. See
+SHA-256 or SHA-512/size check from independently authenticated expected metadata
+(`ExpectedUpdate` or `ExpectedUpdateSha512`). A digest of the download is not an
+authenticated expectation; neither path proves provenance, archive identity,
+signature, or install safety. See
 [staged release byte integrity](/guide/concepts/desktop#staged-release-byte-integrity).
 With `native-services`, a trusted macOS Rust host can await
 `services.set_theme(ThemeMode::Light | ThemeMode::Dark | ThemeMode::System)`

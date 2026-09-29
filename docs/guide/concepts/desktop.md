@@ -51,7 +51,7 @@ set desktop package options with command flags or the app-root
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
 | `source` | Build from templates with `DesktopSourceConfig` |
-| `verified-update` | Host-only staged-file SHA-256/size check; no native, source or packaging dependency |
+| `verified-update` | Host-only staged-file SHA-256 or SHA-512/size check; no native, source or packaging dependency |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
 
@@ -92,17 +92,36 @@ let expected = ExpectedUpdate::new(
 let receipt = verify_staged(open_file, &expected, &installed)?;
 ```
 
+If the authenticated release metadata specifies SHA-512 rather than SHA-256,
+use the **distinct** expectation and receipt; this path makes no SHA-256 claim:
+
+```rust
+use webui_desktop::verified_update::{verify_staged_sha512, ExpectedUpdateSha512};
+
+let sha512_expected = ExpectedUpdateSha512::new(
+    ReleaseVersion::parse(release_version)?, release_app_id, release_target,
+    release_bytes, authenticated_release_sha512,
+)?;
+let receipt = verify_staged_sha512(open_file, &sha512_expected, &installed)?;
+let verified_sha512 = receipt.sha512();
+```
+
 `open_file` must be a host-owned `std::fs::File`, never a renderer-supplied
 path. `installed_*` values and the nonzero size cap come from the **installed
 host**; `release_*` values come from authenticated metadata, never an
-unauthenticated mirror. Versions use canonical numeric `major.minor.patch`.
-The receipt holds the same opened handle at offset 0 with observed length and
-SHA-256, not a verified path or install permission. The check rejects mismatched identity,
-target, version, size, or digest; signed installed apps and policies requiring
-publisher signatures/notarization fail closed. Unsigned/ad-hoc installations
+unauthenticated mirror. A digest computed from the downloaded candidate is
+**not** an authenticated expected digest. Versions use canonical numeric
+`major.minor.patch`.
+Each receipt holds the same opened handle at offset 0 with observed length and
+only its verified algorithm's digest, not a verified path or install permission.
+The check rejects mismatched identity, target, version, size, or digest.
+Signed installed apps and policies requiring publisher signatures/notarization
+fail closed. Unsigned/ad-hoc installations
 receive only authenticated-release byte integrity. The SDK does **not**
 authenticate provenance, prove app ID/architecture inside opaque archives,
-verify OS signatures/notarization, or install/update anything.
+verify OS signatures/notarization, or install/update anything. Do not wire a
+product update flow until provider provenance and archive, signature, and
+installer approval are separately established.
 
 ### Existing HTTP application
 
