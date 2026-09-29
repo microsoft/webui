@@ -821,7 +821,13 @@ for schema generation, the four message flows, and connection lifetime.</p><code
 
 <span class="hl-comment">#</span><span class="hl-comment"> Inspect the compiled protocol</span><span class="hl-comment">
 </span>webui inspect ./dist/protocol.bin
-</code></pre></code-block><p><code>webui press</code> invokes the separately installed native Press sidecar.
+</code></pre></code-block><p><code>webui serve</code> listens on IPv4 loopback on a nonzero <code>--port</code> (port 0 is
+rejected). It accepts <code>127.0.0.1</code>, <code>localhost</code>, and subdomains such as
+<code>play.xbox.localhost</code> on its port. For a reverse proxy that forwards a custom
+Host, add an exact <code>--allowed-host dev.example[:port]</code> (repeatable); only add
+names you control.
+Other Hosts are rejected before the app or API proxy handles them. See the
+<a href="/webui/guide/cli/#webui-serve">serve CLI reference</a> for details.</p><p><code>webui press</code> invokes the separately installed native Press sidecar.
 It launches Rust directly; Press does not support <code>--format json</code>.</p><p>Common flags on both commands: <code>--entry</code>, <code>--css &lt;link|style|module&gt;</code>,
 <code>--dom &lt;shadow|light&gt;</code> (default <code>shadow</code>),
 <code>--css-bundle</code> (merge component stylesheets into shared chunks; not valid with
