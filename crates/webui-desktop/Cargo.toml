@@ -23,6 +23,14 @@ required-features = ["cli"]
 
 [features]
 default = []
+# Host-only pre-frame native error display; deliberately independent of native.
+startup-failure = [
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "dep:windows",
+    "objc2-app-kit?/NSAlert",
+]
 local-server = ["native", "dep:url", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
 native-capture = [
@@ -118,6 +126,11 @@ criterion = { workspace = true }
 # This internal test helper follows the workspace version across releases.
 microsoft-webui-test-utils = { path = "../webui-test-utils" }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+block2 = { workspace = true }
+# Only the controlled native acceptance fixture clicks AppKit's OK button.
+objc2-app-kit = { workspace = true, features = ["NSActionCell", "NSButtonCell", "NSCell"] }
+
 [[test]]
 name = "ipc_contract"
 path = "tests/public_api/ipc.rs"
@@ -194,6 +207,11 @@ required-features = ["native-services"]
 name = "native-capture"
 path = "tests/fixtures/native-capture.rs"
 required-features = ["native-capture"]
+
+[[example]]
+name = "startup-failure"
+path = "tests/fixtures/startup-failure.rs"
+required-features = ["startup-failure"]
 
 [[example]]
 name = "native-theme"

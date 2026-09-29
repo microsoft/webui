@@ -1402,6 +1402,17 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+For a failure **before** creating a local-server frame, a Rust host can opt
+into the independent `startup-failure` feature and call
+`StartupFailure::new(title, summary, help)` followed by
+`present_startup_failure(&failure)` on the macOS main thread (or a Windows
+host thread), before creating a frame. Supply only
+short checked user-safe copy, not the raw error or its chain; first persist the
+original failure in a durable host log, handle alert errors separately, and
+still return the original failure. The native alert returns only after OK
+acknowledgement. Linux returns `Unsupported`. No webview, renderer
+grant, or automatic hook is added. See
+[before-frame startup failures](./guide/concepts/desktop.md#before-frame-startup-failures).
 On macOS, ordinary local-server window close, owner revocation, and AppKit
 Quit return to the Rust host after `WindowClosed` and IPC retirement, so it
 can drain its backend off the UI thread. Quit is cancellable. See the

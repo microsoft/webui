@@ -52,6 +52,7 @@ set desktop package options with command flags or the app-root
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
 | `native-capture` | Host-only visible WK content PNG, including bounded native capture resources (includes `native-services`) |
 | `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
+| `startup-failure` | Explicit host-only, pre-frame native startup error alert on macOS and Windows; independent of `local-server`, `native`, and `source` |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `verified-update` | Host-only staged-file SHA-256 or SHA-512/size check; no native, source or packaging dependency |
 | `application-ipc` | Typed application messages |
@@ -70,6 +71,32 @@ source = ["webui-desktop/source"]
 ```
 
 Enable `application-ipc` separately if you use generated messages.
+
+### Before-frame startup failures
+
+If a GUI-launched Rust host fails before creating a frame, stderr may be
+invisible. The opt-in `startup-failure` feature provides a host-only native
+alert, independent of `local-server` and `native`:
+
+```rust
+use webui_desktop::{present_startup_failure, StartupFailure};
+
+let notice = StartupFailure::new(
+    "Unable to open the application",
+    "A required local runtime is unavailable.",
+    "Check your installation, then restart the application.",
+)?;
+let presentation = present_startup_failure(&notice);
+```
+
+Call on the macOS main thread before `LocalServerAppBuilder::build()`;
+Windows accepts a host thread before the frame exists.
+Supply explicit, bounded, user-safe title, summary and recovery help, never
+raw errors, paths or credentials. Persist the original failure to a durable
+host log first, report any `presentation` error separately, and return the
+**original** startup error whether the alert appears or not. The alert returns
+only after its OK button is acknowledged. Linux returns `Unsupported`;
+no WebView, renderer grant or automatic error hook is added.
 
 ### Staged release byte integrity
 
