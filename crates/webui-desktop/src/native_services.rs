@@ -26,6 +26,48 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(10);
 // An OS opener can return before its timer thread has observed the shutdown
 // signal. Bound those short-lived leftovers even under a rapid host retry loop.
 const MAX_DEADLINE_THREADS_PER_WINDOW: usize = 8;
+#[cfg(target_os = "macos")]
+static NEXT_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Global Cocoa screen coordinates in points, with a bottom-left origin.
+/// These are native points, **not** CSS pixels or backing pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenRectPoints {
+    /// Left edge in the global Cocoa screen coordinate system.
+    pub x: f64,
+    /// Bottom edge in the global Cocoa screen coordinate system.
+    pub y: f64,
+    /// Width in native screen points.
+    pub width: f64,
+    /// Height in native screen points.
+    pub height: f64,
+}
+
+/// Read-only native content geometry sampled from the live macOS WKWebView.
+///
+/// `page_zoom` and `magnification` are observations, not a proven mapping
+/// from CSS `getBoundingClientRect()` or `visualViewport` to screen points.
+/// The backing scale is *not* a multiplier for CSS coordinates. Re-measure
+/// the DOM anchor after layout or viewport changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContentGeometry {
+    /// Generation of this native window; changes when a new frame is created.
+    pub window_generation: u64,
+    /// Native main-document validity epoch; changes on actual provisional
+    /// starts, even when the previous document survives a failed load.
+    pub document_epoch: u64,
+    /// Increases on native geometry notifications, document changes, and
+    /// observed zoom changes. A later snapshot may have a different revision.
+    pub revision: u64,
+    /// WKWebView bounds converted through its window into global screen points.
+    pub screen_rect: ScreenRectPoints,
+    /// Live NSWindow backing scale (screen pixels per native point).
+    pub backing_scale: f64,
+    /// Live WKWebView pageZoom property, not an inferred CSS transform.
+    pub page_zoom: f64,
+    /// Live WKWebView magnification property, not an inferred CSS transform.
+    pub magnification: f64,
+}
 
 /// Failure to validate, schedule, or complete a native OS open.
 #[derive(Debug, thiserror::Error)]
@@ -64,13 +106,40 @@ pub enum NativeServiceError {
     /// Lifecycle cancellation could not be registered.
     #[error("native lifecycle registration failed: {0}")]
     Registration(#[from] EventRegistrationError),
+    /// The selected platform has no native content geometry adapter.
+    #[error("native content geometry is currently supported only on macOS")]
+    Unsupported,
+    /// No verified, finished main document or live native view is available.
+    #[error("native content geometry is unavailable until the main document finishes loading")]
+    GeometryUnavailable,
+    /// Navigation, geometry change, or teardown superseded this snapshot.
+    #[error("native content geometry became stale; request a fresh snapshot")]
+    Stale,
 }
 
 struct Inner {
     executor: Arc<ApplicationExecutor>,
     lifetime: HostLifetime,
     closed: AtomicBool,
+    #[cfg(target_os = "macos")]
+    window_generation: u64,
+    /// OS-opener cancellation generation: navigation *requests* cancel opens
+    /// even if the page later prevents that request.
     generation: AtomicU64,
+    #[cfg(target_os = "macos")]
+    document_epoch: AtomicU64,
+    #[cfg(target_os = "macos")]
+    committed_epoch: AtomicU64,
+    #[cfg(target_os = "macos")]
+    geometry_revision: AtomicU64,
+    #[cfg(target_os = "macos")]
+    committed_url: Mutex<Option<String>>,
+    #[cfg(target_os = "macos")]
+    last_page_zoom: AtomicU64,
+    #[cfg(target_os = "macos")]
+    last_magnification: AtomicU64,
+    #[cfg(target_os = "macos")]
+    geometry_dispatch: Mutex<Option<Arc<platform::Dispatch>>>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
     timer: Mutex<Option<Weak<Timer>>>,
@@ -143,7 +212,23 @@ impl NativeServices {
             executor,
             lifetime,
             closed: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
+            window_generation: NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed),
             generation: AtomicU64::new(0),
+            #[cfg(target_os = "macos")]
+            document_epoch: AtomicU64::new(0),
+            #[cfg(target_os = "macos")]
+            committed_epoch: AtomicU64::new(0),
+            #[cfg(target_os = "macos")]
+            geometry_revision: AtomicU64::new(0),
+            #[cfg(target_os = "macos")]
+            committed_url: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            last_page_zoom: AtomicU64::new(1_f64.to_bits()),
+            #[cfg(target_os = "macos")]
+            last_magnification: AtomicU64::new(1_f64.to_bits()),
+            #[cfg(target_os = "macos")]
+            geometry_dispatch: Mutex::new(None),
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
             timer: Mutex::new(None),
@@ -153,8 +238,20 @@ impl NativeServices {
         let subscription = events.subscribe(move |event| {
             if let Some(inner) = weak.upgrade() {
                 match event {
-                    DesktopEvent::NavigationRequested { .. } => inner.cancel(false),
-                    DesktopEvent::WindowClosed { .. } | DesktopEvent::Exiting => inner.cancel(true),
+                    DesktopEvent::NavigationRequested { .. } => inner.cancel_open(false),
+                    DesktopEvent::WindowClosed { .. } | DesktopEvent::Exiting => {
+                        inner.cancel_open(true);
+                    }
+                    DesktopEvent::WindowMoved { .. }
+                    | DesktopEvent::WindowResized { .. }
+                    | DesktopEvent::WindowMaximized { .. }
+                    | DesktopEvent::WindowUnmaximized { .. }
+                    | DesktopEvent::WindowEnteredFullscreen { .. }
+                    | DesktopEvent::WindowLeftFullscreen { .. }
+                    | DesktopEvent::ScaleFactorChanged { .. } => {
+                        #[cfg(target_os = "macos")]
+                        inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+                    }
                     _ => {}
                 }
             }
@@ -172,7 +269,8 @@ impl NativeServices {
     /// The returned future resolves after the OS opener responds, **not** on
     /// queue admission or after the browser has loaded the page. Do not block
     /// a native UI callback waiting for it. Navigation/window close cancels
-    /// queued work; an OS launch already handed off cannot be recalled.
+    /// queued work (including a subsequently prevented navigation request);
+    /// an OS launch already handed off cannot be recalled.
     ///
     /// # Errors
     ///
@@ -204,6 +302,7 @@ impl NativeServices {
         {
             return Err(NativeServiceError::InvalidDocument);
         }
+
         #[cfg(windows)]
         if path.to_string_lossy().starts_with(r"\\") || path.to_string_lossy().starts_with("//") {
             return Err(NativeServiceError::InvalidDocument);
@@ -213,6 +312,36 @@ impl NativeServices {
             let path = validate_document(&path)?;
             platform::open_document(&path)
         })
+    }
+
+    /// Schedule one read-only snapshot on the native UI thread. Await the
+    /// result from a non-UI thread; never synchronously wait inside a native
+    /// callback. No document content, DOM coordinates, or secrets are read.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` on Windows/Linux, `GeometryUnavailable` before
+    /// a finished main document, and bounded-capacity/closed errors when the
+    /// native window cannot accept a read. The future may resolve `Stale`
+    /// if navigation or teardown races its completion.
+    pub fn content_geometry(&self) -> Result<GeometryRequest, NativeServiceError> {
+        #[cfg(target_os = "macos")]
+        {
+            platform::request(&self.0)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(NativeServiceError::Unsupported)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn attach_geometry(
+        &self,
+        window: &objc2_app_kit::NSWindow,
+        view: &objc2_web_kit::WKWebView,
+    ) -> GeometryRegistration {
+        platform::install(&self.0, window, view)
     }
 
     fn start(
@@ -297,17 +426,96 @@ impl NativeServices {
     }
 
     pub(crate) fn close(&self) {
-        self.0.cancel(true);
+        self.0.cancel_open(true);
         if let Ok(mut registration) = self.0.registration.lock() {
             registration.take();
         }
     }
+
+    /// Only WebKit's *actual* main-frame provisional start retires geometry.
+    /// Policy requests rejected by Rust handlers leave the old page usable.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn provisional_started(&self) {
+        let inner = &self.0;
+        if inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            return;
+        }
+        inner.document_epoch.fetch_add(1, Ordering::AcqRel);
+        inner.committed_epoch.store(0, Ordering::Release);
+        inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+        platform::cancel_pending(inner, false);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn navigation_committed(&self) {
+        // After a real document commit, the previous page is no longer a
+        // restoration candidate even if the new document later fails.
+        if let Ok(mut url) = self.0.committed_url.lock() {
+            url.take();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn navigation_finished(&self, url: &str) {
+        let inner = &self.0;
+        if url.is_empty()
+            || url.len() > MAX_NATIVE_URL_BYTES
+            || inner.closed.load(Ordering::Acquire)
+            || !inner.lifetime.is_active()
+        {
+            return;
+        }
+        let epoch = inner.document_epoch.load(Ordering::Acquire);
+        if epoch == 0 {
+            return;
+        }
+        let Ok(mut committed_url) = inner.committed_url.lock() else {
+            return;
+        };
+        *committed_url = Some(url.to_owned());
+        inner.committed_epoch.store(epoch, Ordering::Release);
+        inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Restore availability only after the matching provisional navigation
+    /// failed and WebKit proves the *same* old document URL is still live.
+    /// A new monotonic epoch prevents old queued geometry from being replayed.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn provisional_failed(&self, observed_url: Option<&str>, loading: bool) -> bool {
+        let inner = &self.0;
+        if loading || inner.closed.load(Ordering::Acquire) || !inner.lifetime.is_active() {
+            return false;
+        }
+        let Some(observed_url) = observed_url else {
+            return false;
+        };
+        let Ok(committed_url) = inner.committed_url.lock() else {
+            return false;
+        };
+        if committed_url.as_deref() != Some(observed_url) {
+            return false;
+        }
+        let epoch = inner.document_epoch.load(Ordering::Acquire);
+        if epoch == 0 {
+            return false;
+        }
+        inner.committed_epoch.store(epoch, Ordering::Release);
+        inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+        true
+    }
 }
 
 impl Inner {
-    fn cancel(&self, close: bool) {
+    fn cancel_open(&self, close: bool) {
         if close {
             self.closed.store(true, Ordering::Release);
+            #[cfg(target_os = "macos")]
+            {
+                self.committed_epoch.store(0, Ordering::Release);
+                self.document_epoch.fetch_add(1, Ordering::AcqRel);
+                self.geometry_revision.fetch_add(1, Ordering::AcqRel);
+                platform::cancel_pending(self, true);
+            }
         }
         self.generation.fetch_add(1, Ordering::AcqRel);
         if let Ok(timer) = self.timer.lock() {
@@ -317,6 +525,44 @@ impl Inner {
         }
     }
 }
+
+/// Awaitable native geometry read. The result is checked again at delivery:
+/// a navigation, window close, or native geometry event makes it stale.
+#[must_use = "await the UI-thread read; scheduling is not a geometry snapshot"]
+pub struct GeometryRequest {
+    #[cfg(target_os = "macos")]
+    inner: Arc<Inner>,
+    #[cfg(target_os = "macos")]
+    epoch: u64,
+    #[cfg(target_os = "macos")]
+    slot: Arc<platform::GeometrySlot>,
+}
+
+impl Future for GeometryRequest {
+    type Output = Result<ContentGeometry, NativeServiceError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(target_os = "macos")]
+        {
+            let this = self.get_mut();
+            if this.inner.closed.load(Ordering::Acquire) || !this.inner.lifetime.is_active() {
+                return Poll::Ready(Err(NativeServiceError::Closed));
+            }
+            if this.inner.document_epoch.load(Ordering::Acquire) != this.epoch {
+                return Poll::Ready(Err(NativeServiceError::Stale));
+            }
+            this.slot.poll(cx, &this.inner)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self, cx);
+            Poll::Ready(Err(NativeServiceError::Unsupported))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) use platform::Registration as GeometryRegistration;
 
 /// Awaitable completion of an OS opener call (not browser load completion).
 /// Dropping it cancels queued work but cannot retract an already-issued OS call.
@@ -438,6 +684,7 @@ fn validate_document(path: &Path) -> Result<PathBuf, NativeServiceError> {
 
 #[cfg(target_os = "macos")]
 #[path = "macos/services.rs"]
+#[allow(unsafe_code)]
 mod platform;
 
 #[cfg(test)]
@@ -647,6 +894,164 @@ mod tests {
             Err(NativeServiceError::Closed)
         ));
         drop(owner);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn geometry_requires_committed_document_and_tracks_native_revision() {
+        let (services, events, _owner) = services();
+        assert!(matches!(
+            services.content_geometry(),
+            Err(NativeServiceError::GeometryUnavailable)
+        ));
+        services.provisional_started();
+        let epoch = services.0.document_epoch.load(Ordering::Acquire);
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), 0);
+        let revision = services.0.geometry_revision.load(Ordering::Acquire);
+        services.navigation_finished("http://127.0.0.1/document");
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), epoch);
+        let _ = events.dispatch(&DesktopEvent::WindowMoved {
+            window_id: crate::WindowId::PRIMARY,
+            x: 100,
+            y: 200,
+        });
+        assert!(services.0.geometry_revision.load(Ordering::Acquire) > revision);
+        let _ = events.dispatch(&DesktopEvent::NavigationRequested {
+            window_id: crate::WindowId::PRIMARY,
+            url: "http://127.0.0.1/next".into(),
+        });
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), epoch);
+        services.provisional_started();
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), 0);
+        services.close();
+        assert!(services.0.closed.load(Ordering::Acquire));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn geometry_is_explicitly_unsupported_without_a_mac_window() {
+        let (services, _events, _owner) = services();
+        assert!(matches!(
+            services.content_geometry(),
+            Err(NativeServiceError::Unsupported)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prevented_request_does_not_retire_the_finished_geometry_document() {
+        let (services, events, _owner) = services();
+        services.provisional_started();
+        services.navigation_finished("http://127.0.0.1/current");
+        let committed = services.0.committed_epoch.load(Ordering::Acquire);
+        assert_ne!(committed, 0);
+        let (release, receiver) = std::sync::mpsc::channel();
+        let pending_open = services
+            .start(move || {
+                let _ = receiver.recv_timeout(Duration::from_secs(2));
+                Ok(())
+            })
+            .unwrap();
+        events
+            .on_event(|event| {
+                if matches!(event, DesktopEvent::NavigationRequested { .. }) {
+                    EventResponse::PreventDefault
+                } else {
+                    EventResponse::Continue
+                }
+            })
+            .unwrap();
+        let response = events.dispatch(&DesktopEvent::NavigationRequested {
+            window_id: crate::WindowId::PRIMARY,
+            url: "http://127.0.0.1/prevented".into(),
+        });
+        assert_eq!(response, EventResponse::PreventDefault);
+        assert_eq!(
+            services.0.committed_epoch.load(Ordering::Acquire),
+            committed,
+            "a denied request never started a native navigation"
+        );
+        assert_eq!(services.0.document_epoch.load(Ordering::Acquire), committed);
+        assert_ne!(
+            services.0.generation.load(Ordering::Acquire),
+            0,
+            "OS openers still cancel on navigation requests"
+        );
+        assert!(matches!(
+            wait(pending_open),
+            Err(NativeServiceError::Cancelled)
+        ));
+        let _ = release.send(());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_provisional_restores_only_the_verified_old_document() {
+        let (services, _events, _owner) = services();
+        services.provisional_started();
+        services.navigation_finished("http://127.0.0.1/current");
+        let old_epoch = services.0.document_epoch.load(Ordering::Acquire);
+        services.provisional_started();
+        let next = services.0.document_epoch.load(Ordering::Acquire);
+        assert!(next > old_epoch);
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), 0);
+        assert!(!services.provisional_failed(Some("http://127.0.0.1/other"), false));
+        assert!(!services.provisional_failed(Some("http://127.0.0.1/current"), true));
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), 0);
+        assert!(services.provisional_failed(Some("http://127.0.0.1/current"), false));
+        assert_eq!(services.0.committed_epoch.load(Ordering::Acquire), next);
+        services.provisional_started();
+        services.navigation_committed();
+        assert!(!services.provisional_failed(Some("http://127.0.0.1/current"), false));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn geometry_result_rejects_later_move_and_navigation() {
+        let (services, events, _owner) = services();
+        services.provisional_started();
+        services.navigation_finished("http://127.0.0.1/document");
+        let epoch = services.0.document_epoch.load(Ordering::Acquire);
+        let revision = services.0.geometry_revision.load(Ordering::Acquire);
+        let slot = Arc::new(platform::GeometrySlot::test_slot());
+        slot.complete(Ok(ContentGeometry {
+            window_generation: services.0.window_generation,
+            document_epoch: epoch,
+            revision,
+            screen_rect: ScreenRectPoints {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 80.0,
+            },
+            backing_scale: 2.0,
+            page_zoom: 1.0,
+            magnification: 1.0,
+        }));
+        let mut request = GeometryRequest {
+            inner: Arc::clone(&services.0),
+            epoch,
+            slot,
+        };
+        let _ = events.dispatch(&DesktopEvent::WindowResized {
+            window_id: crate::WindowId::PRIMARY,
+            width: 300,
+            height: 200,
+        });
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut request).poll(&mut context),
+            Poll::Ready(Err(NativeServiceError::Stale))
+        ));
+        let _ = events.dispatch(&DesktopEvent::NavigationRequested {
+            window_id: crate::WindowId::PRIMARY,
+            url: "http://127.0.0.1/next".into(),
+        });
+        services.provisional_started();
+        assert!(matches!(
+            Pin::new(&mut request).poll(&mut context),
+            Poll::Ready(Err(NativeServiceError::Stale))
+        ));
     }
 
     #[cfg(target_os = "macos")]

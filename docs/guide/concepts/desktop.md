@@ -192,12 +192,33 @@ an awaitable `NativeOpen`: creating it means bounded worker admission, while
 awaiting it reports the OS opener's response, failure, cancellation, or a
 10-second deadline. It cannot guarantee that the external browser finished
 loading or recall an OS launch already in progress. At most one open can be
-in flight per window; navigation, window close, and host retirement invalidate
-pending work. Do not synchronously wait for this future on the native UI
+in flight per window; even a navigation **request later prevented** by a host
+handler cancels a pending OS open. Window close and host retirement also
+cancel it. Do not synchronously wait for this future on the native UI
 thread. No workers or timers start unless an opener is called.
 
 Directory selection and native message/confirmation dialogs are **not**
 provided by this host API yet.
+
+On macOS, `services.content_geometry()?.await` reads a live `ContentGeometry`
+snapshot on the AppKit main thread. Its `screen_rect` is the **WKWebView
+content bounds**, converted through its window into global Cocoa screen
+**points with a bottom-left origin**, not an `NSWindow` frame, CSS pixels, or
+backing pixels. The snapshot also reports the native window generation,
+main-document validity epoch, revision, backing scale, `WKWebView.pageZoom`, and
+`WKWebView.magnification`. Windows and Linux return `Unsupported`; before a
+main document finishes, macOS returns `GeometryUnavailable`. A prevented
+navigation request does not retire the still-live document. An **actual**
+main-frame provisional start invalidates pending reads; after a canceled
+provisional load, the old document is usable only when WebKit reports its
+previously finished URL still live. Navigation or close racing the async read
+returns `Stale` or `Closed`. Move, resize,
+fullscreen, backing-scale, and observed zoom changes invalidate revisions.
+Re-read the snapshot and remeasure the DOM anchor after layout or viewport
+changes. **Do not multiply CSS `getBoundingClientRect()` values by backing
+scale:** the mapping from CSS and `visualViewport` at non-default WebKit zoom
+to Cocoa points has not been established. No renderer script or native IPC
+grant is installed by this API.
 
 ## Rust API
 
