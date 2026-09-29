@@ -19,6 +19,8 @@ use super::state::{save_window_state, set_window_state, with_window_state, Frame
 use super::webview::mirror_event;
 #[cfg(feature = "application-ipc")]
 use super::IPC_WAKE_MESSAGE;
+#[cfg(feature = "local-server")]
+use super::OWNER_LOST_MESSAGE;
 use super::{WAKE_MESSAGE, WINDOW_ID};
 
 /// Pump native messages until the window closes.
@@ -70,7 +72,7 @@ pub(super) extern "system" fn window_proc(
         IPC_WAKE_MESSAGE => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
             // Release the native state borrow before polling COM completions.
-            if let Some(ipc) = ipc {
+            if let Some(Some(ipc)) = ipc {
                 ipc.drain(w_param.0);
             }
             LRESULT(0)
@@ -78,13 +80,32 @@ pub(super) extern "system" fn window_proc(
         #[cfg(feature = "application-ipc")]
         WindowsAndMessaging::WM_TIMER => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
-            if let Some(ipc) = ipc {
+            if let Some(Some(ipc)) = ipc {
                 ipc.expire_hello(w_param.0);
             }
             LRESULT(0)
         }
         WAKE_MESSAGE => {
             drain_commands(hwnd);
+            LRESULT(0)
+        }
+        #[cfg(feature = "local-server")]
+        OWNER_LOST_MESSAGE => {
+            let retired = super::state::with_window_state_result(hwnd, |state| {
+                crate::local_server::should_close_for_cookie(
+                    state.local_lifetime.as_ref(),
+                    state.owner_close_cookie,
+                    w_param.0,
+                )
+            })
+            .unwrap_or(false);
+            if retired {
+                // SAFETY: A retired local frame must close regardless of
+                // cancellable callbacks or a saturated window-command queue.
+                if let Err(error) = unsafe { WindowsAndMessaging::DestroyWindow(hwnd) } {
+                    eprintln!("WebUI: failed to close retired local-server window: {error}");
+                }
+            }
             LRESULT(0)
         }
         WindowsAndMessaging::WM_NCCALCSIZE => non_client_calc_size(hwnd, msg, w_param, l_param),
@@ -347,7 +368,7 @@ fn destroy_window(hwnd: HWND) {
     #[cfg(feature = "application-ipc")]
     {
         let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
-        if let Some(ipc) = ipc {
+        if let Some(Some(ipc)) = ipc {
             ipc.close();
         }
     }

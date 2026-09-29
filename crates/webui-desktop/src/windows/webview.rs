@@ -18,12 +18,18 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2NavigationStartingEventHandler,
     ICoreWebView2WebMessageReceivedEventArgs, COREWEBVIEW2_COLOR,
 };
+#[cfg(feature = "local-server")]
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2ContentLoadingEventHandler, ICoreWebView2NewWindowRequestedEventHandler,
+};
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
 };
+#[cfg(feature = "local-server")]
+use webview2_com::{ContentLoadingEventHandler, NewWindowRequestedEventHandler};
 use windows::core::{Error as WindowsError, Interface, Result as WindowsResult, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, HWND};
 use windows::Win32::Graphics::Dwm::{
@@ -171,10 +177,21 @@ pub(super) fn configure_settings(webview: &ICoreWebView2, devtools: bool) -> Res
 pub(super) fn register_navigation_guard(
     webview: &ICoreWebView2,
     events: EventRegistry,
+    #[cfg(feature = "local-server")] local_origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")] local_lifetime: Option<crate::HostLifetime>,
 ) -> Result<ICoreWebView2NavigationStartingEventHandler> {
     let webview_for_events = webview.clone();
     let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
+            #[cfg(feature = "local-server")]
+            if local_lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.is_active())
+            {
+                // SAFETY: The callback receives live native navigation arguments.
+                unsafe { args.SetCancel(true)? };
+                return Ok(());
+            }
             // SAFETY: WebView2 passes a live args interface for the callback's
             // duration; the URL is copied out before the callback returns.
             let uri = read_pwstr(|out| unsafe { args.Uri(out) })?;
@@ -184,7 +201,24 @@ pub(super) fn register_navigation_guard(
             };
             let prevented = events.dispatch(&event) == EventResponse::PreventDefault;
             mirror_event(&webview_for_events, &event);
-            if prevented || !is_allowed_navigation_url(&uri) {
+            let allowed = {
+                #[cfg(feature = "local-server")]
+                {
+                    local_origin.as_ref().map_or_else(
+                        || is_allowed_navigation_url(&uri),
+                        |origin| {
+                            local_lifetime
+                                .as_ref()
+                                .is_some_and(|lifetime| lifetime.allows_navigation(origin, &uri))
+                        },
+                    )
+                }
+                #[cfg(not(feature = "local-server"))]
+                {
+                    is_allowed_navigation_url(&uri)
+                }
+            };
+            if prevented || !allowed {
                 // SAFETY: Same live args interface as above.
                 unsafe { args.SetCancel(true)? };
             }
@@ -196,6 +230,66 @@ pub(super) fn register_navigation_guard(
     // which stores it in the window state for the lifetime of the window.
     unsafe { webview.add_NavigationStarting(&handler, &mut token)? };
     Ok(handler)
+}
+
+/// Keep every non-main document and popup out of the first local-server mode.
+#[cfg(feature = "local-server")]
+pub(super) struct LocalNavigationGuards {
+    _frames: ICoreWebView2NavigationStartingEventHandler,
+    _popups: ICoreWebView2NewWindowRequestedEventHandler,
+    _content: ICoreWebView2ContentLoadingEventHandler,
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn register_local_frame_guards(
+    webview: &ICoreWebView2,
+    hwnd: HWND,
+    lifetime: crate::HostLifetime,
+    owner_close_cookie: usize,
+) -> Result<LocalNavigationGuards> {
+    let frames = NavigationStartingEventHandler::create(Box::new(|_sender, args| {
+        if let Some(args) = args {
+            // SAFETY: WebView2 supplies a live event argument in this callback.
+            unsafe { args.SetCancel(true)? };
+        }
+        Ok(())
+    }));
+    let popups = NewWindowRequestedEventHandler::create(Box::new(|_sender, args| {
+        if let Some(args) = args {
+            // SAFETY: WebView2 supplies a live event argument in this callback.
+            unsafe { args.SetHandled(true)? };
+        }
+        Ok(())
+    }));
+    let view = webview.clone();
+    let handle = hwnd.0 as usize;
+    let content = ContentLoadingEventHandler::create(Box::new(move |_sender, _args| {
+        if !lifetime.is_active() {
+            // SAFETY: The callback runs on the live WebView2 UI thread. Stop
+            // the in-flight document before its scripts can run, then close
+            // independently of the bounded native command queue.
+            if let Err(error) = unsafe { view.Stop() } {
+                eprintln!("WebUI: failed to stop retired local-server document: {error}");
+            }
+            let hwnd = HWND(handle as *mut std::ffi::c_void);
+            if let Err(error) = super::post_owner_lost(hwnd, owner_close_cookie) {
+                eprintln!("WebUI: failed to schedule retired local-server window close: {error}");
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0_i64;
+    // SAFETY: Both handlers are retained by the returned guard for the view lifetime.
+    unsafe {
+        webview.add_FrameNavigationStarting(&frames, &mut token)?;
+        webview.add_NewWindowRequested(&popups, &mut token)?;
+        webview.add_ContentLoading(&content, &mut token)?;
+    }
+    Ok(LocalNavigationGuards {
+        _frames: frames,
+        _popups: popups,
+        _content: content,
+    })
 }
 
 /// Apply the requested backdrop effect, degrading silently on older Windows.
@@ -372,9 +466,28 @@ pub(super) fn register_navigation_completed(
     events: EventRegistry,
     hwnd: HWND,
     live_background: Arc<LiveBackground>,
+    #[cfg(feature = "local-server")] owner: Option<(crate::HostLifetime, usize)>,
 ) -> Result<ICoreWebView2NavigationCompletedEventHandler> {
     let webview_for_uri = webview.clone();
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
+        #[cfg(feature = "local-server")]
+        if owner
+            .as_ref()
+            .is_some_and(|(lifetime, _)| !lifetime.is_active())
+        {
+            // SAFETY: The view is live for this UI-thread native callback.
+            if let Err(error) = unsafe { webview_for_uri.Stop() } {
+                eprintln!("WebUI: failed to stop retired local-server document: {error}");
+            }
+            if let Some((_, cookie)) = owner.as_ref() {
+                if let Err(error) = super::post_owner_lost(hwnd, *cookie) {
+                    eprintln!(
+                        "WebUI: failed to schedule retired local-server window close: {error}"
+                    );
+                }
+            }
+            return Ok(());
+        }
         super::state::with_window_state(hwnd, |state| {
             if let Err(error) = state.app_window.publish_metrics(&state.webview) {
                 eprintln!("WebUI: failed to publish native titlebar measurements: {error}");
@@ -415,7 +528,11 @@ fn is_allowed_navigation_url(url: &str) -> bool {
 /// and dynamic app routes; packaged assets are already served by the runtime.
 pub(super) fn navigate_to_startup_url(webview: &ICoreWebView2) -> Result<()> {
     let url = startup_url();
-    let url = CoTaskMemPWSTR::from(url.as_str());
+    navigate_to_url(webview, &url)
+}
+
+pub(super) fn navigate_to_url(webview: &ICoreWebView2, url: &str) -> Result<()> {
+    let url = CoTaskMemPWSTR::from(url);
     // SAFETY: `webview` is live and the URL buffer outlives this call.
     unsafe { webview.Navigate(*url.as_ref().as_pcwstr())? };
     Ok(())

@@ -61,26 +61,33 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         window.center();
     }
 
-    let scheme_handler = DesktopSchemeHandler::new(
-        mtm,
-        std::sync::Arc::clone(&ivars.runtime),
-        std::sync::Arc::clone(&ivars.executor),
-        #[cfg(feature = "application-ipc")]
-        ivars.ipc.clone(),
-    );
+    let scheme_handler = ivars.runtime.as_ref().map(|runtime| {
+        DesktopSchemeHandler::new(
+            mtm,
+            std::sync::Arc::clone(runtime),
+            std::sync::Arc::clone(&ivars.executor),
+            #[cfg(feature = "application-ipc")]
+            ivars.ipc.clone(),
+        )
+    });
     let navigation_delegate = DesktopNavigationDelegate::new(
         mtm,
         ivars.events.clone(),
-        ivars.runtime.live_background(),
+        std::sync::Arc::clone(&ivars.live_background),
+        #[cfg(feature = "local-server")]
+        ivars.local_origin.clone().zip(ivars.lifetime.clone()),
         #[cfg(feature = "application-ipc")]
         ivars.ipc.clone(),
     );
-    let host_message_handler = DesktopHostMessageHandler::new(mtm);
+    let host_message_handler = ivars
+        .runtime
+        .as_ref()
+        .map(|_| DesktopHostMessageHandler::new(mtm));
     let webview = build_webview(
         mtm,
         &ivars.options,
-        &scheme_handler,
-        &host_message_handler,
+        scheme_handler.as_ref(),
+        host_message_handler.as_ref(),
         rect,
     );
     #[cfg(feature = "application-ipc")]
@@ -110,7 +117,10 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     install_app_icon(
         app,
         ivars.shell.icon_path.as_deref(),
-        ivars.runtime.bundle_root(),
+        ivars
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.bundle_root()),
     );
     if let Some(tray) = ivars
         .shell
@@ -128,15 +138,72 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         &webview,
         &ivars.window_handle,
     ));
-    window.makeKeyAndOrderFront(None);
-    load_startup_url(&webview);
-
-    dispatch_event(&ivars.events, &webview, DesktopEvent::Ready);
-    let _ = ivars.window.set(window);
-    let _ = ivars.webview.set(webview);
-    let _ = ivars.scheme_handler.set(scheme_handler);
+    let local_url = {
+        #[cfg(feature = "local-server")]
+        {
+            ivars.local_url.as_deref()
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            None
+        }
+    };
+    let _ = ivars.window.set(window.clone());
+    let _ = ivars.webview.set(webview.clone());
+    if let Some(scheme_handler) = scheme_handler {
+        let _ = ivars.scheme_handler.set(scheme_handler);
+    }
     let _ = ivars.navigation_delegate.set(navigation_delegate);
-    let _ = ivars.host_message_handler.set(host_message_handler);
+    if let Some(host_message_handler) = host_message_handler {
+        let _ = ivars.host_message_handler.set(host_message_handler);
+    }
+    #[cfg(feature = "local-server")]
+    if let Some(lifetime) = &ivars.lifetime {
+        match super::commands::install_owner_close(&window, lifetime) {
+            Ok((wake, registration)) => {
+                let _ = ivars.owner_close_wake.set(wake);
+                ivars.owner_close_registration.replace(Some(registration));
+            }
+            Err(error) => {
+                abort_local_startup(delegate, app, &window, error);
+                return;
+            }
+        }
+        if !lifetime.is_active() {
+            abort_local_startup(delegate, app, &window, crate::local_server::retired_host());
+            return;
+        }
+    }
+    window.makeKeyAndOrderFront(None);
+    load_startup_url(&webview, local_url);
+    #[cfg(feature = "local-server")]
+    if ivars
+        .lifetime
+        .as_ref()
+        .is_some_and(|lifetime| !lifetime.is_active())
+    {
+        // SAFETY: This is the UI thread and the view is live. A revoke between
+        // the last admission check and load cannot leave a pending document.
+        unsafe { webview.stopLoading() };
+        abort_local_startup(delegate, app, &window, crate::local_server::retired_host());
+        return;
+    }
+    dispatch_event(&ivars.events, &webview, DesktopEvent::Ready);
+}
+
+#[cfg(feature = "local-server")]
+fn abort_local_startup(
+    delegate: &DesktopAppDelegate,
+    app: &NSApplication,
+    window: &DesktopWindow,
+    error: crate::DesktopError,
+) {
+    delegate.ivars().startup_error.replace(Some(error));
+    // Skip the normal windowWillClose termination path: no document was
+    // admitted, so AppKit must return the recoverable startup error.
+    window.setDelegate(None);
+    window.close();
+    app.stop(None);
 }
 
 fn initial_content_rect(options: &WindowOptions, restored: Option<&WindowState>) -> NSRect {
@@ -184,8 +251,8 @@ pub(super) fn persist_window_state_if_enabled(delegate: &DesktopAppDelegate) {
 fn build_webview(
     mtm: MainThreadMarker,
     options: &WindowOptions,
-    scheme_handler: &Retained<DesktopSchemeHandler>,
-    host_message_handler: &Retained<DesktopHostMessageHandler>,
+    scheme_handler: Option<&Retained<DesktopSchemeHandler>>,
+    host_message_handler: Option<&Retained<DesktopHostMessageHandler>>,
     rect: NSRect,
 ) -> Retained<WKWebView> {
     // SAFETY: WKWebViewConfiguration::new and WKWebView initialization must
@@ -195,30 +262,34 @@ fn build_webview(
         // SAFETY: The handler object lives for the app lifetime via the
         // `scheme_handler` OnceCell in the caller, and WebKit calls it only on
         // the main thread for the registered custom scheme.
-        config.setURLSchemeHandler_forURLScheme(
-            Some(ProtocolObject::from_ref(&**scheme_handler)),
-            &NSString::from_str("webui"),
-        );
+        if let Some(scheme_handler) = scheme_handler {
+            config.setURLSchemeHandler_forURLScheme(
+                Some(ProtocolObject::from_ref(&**scheme_handler)),
+                &NSString::from_str("webui"),
+            );
+        }
         config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
         let content = config.userContentController();
-        let mut source = String::with_capacity(DRAG_REGION_SCRIPT.len() + 88);
-        source.push_str(
+        if let Some(host_message_handler) = host_message_handler {
+            let mut source = String::with_capacity(DRAG_REGION_SCRIPT.len() + 88);
+            source.push_str(
             "window.webuiHostPostMessage=m=>window.webkit.messageHandlers.webuiHost.postMessage(m);",
         );
-        source.push_str(DRAG_REGION_SCRIPT);
-        let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
-            WKUserScript::alloc(mtm),
-            &NSString::from_str(&source),
-            WKUserScriptInjectionTime::AtDocumentStart,
-            true,
-        );
-        content.addUserScript(&script);
-        content.addScriptMessageHandler_name(
-            ProtocolObject::from_ref(&**host_message_handler),
-            &NSString::from_str("webuiHost"),
-        );
+            source.push_str(DRAG_REGION_SCRIPT);
+            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+                WKUserScript::alloc(mtm),
+                &NSString::from_str(&source),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+            );
+            content.addUserScript(&script);
+            content.addScriptMessageHandler_name(
+                ProtocolObject::from_ref(&**host_message_handler),
+                &NSString::from_str("webuiHost"),
+            );
+        }
         #[cfg(feature = "application-ipc")]
-        if let Some(ipc) = scheme_handler.ipc_state() {
+        if let Some(ipc) = scheme_handler.and_then(|handler| handler.ipc_state()) {
             let handler = super::ipc_message::DesktopIpcMessageHandler::new(mtm, ipc);
             content.addScriptMessageHandlerWithReply_contentWorld_name(
                 ProtocolObject::from_ref(&*handler),
@@ -248,8 +319,9 @@ fn build_webview(
     }
 }
 
-fn load_startup_url(webview: &WKWebView) {
-    if let Some(url) = NSURL::URLWithString(&NSString::from_str(&startup_url())) {
+fn load_startup_url(webview: &WKWebView, local_url: Option<&str>) {
+    let startup = local_url.map_or_else(startup_url, str::to_string);
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(&startup)) {
         let request = NSURLRequest::requestWithURL(&url);
         // SAFETY: The request URL uses the registered custom scheme.
         unsafe {

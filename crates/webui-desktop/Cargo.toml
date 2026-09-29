@@ -23,6 +23,7 @@ required-features = ["cli"]
 
 [features]
 default = []
+local-server = ["native", "objc2-web-kit?/WKNavigationResponse"]
 application-ipc = [
     "dep:futures-channel",
     "dep:futures-executor",
@@ -132,6 +133,11 @@ required-features = ["native"]
 name = "no-ipc-native"
 path = "tests/fixtures/no-ipc-native.rs"
 required-features = ["native", "source"]
+
+[[example]]
+name = "local-server-smoke"
+path = "tests/fixtures/local-server-smoke.rs"
+required-features = ["local-server"]
 
 [[example]]
 name = "webui-native-ipc-fixture"

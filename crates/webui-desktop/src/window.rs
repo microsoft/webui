@@ -413,6 +413,7 @@ pub(crate) fn append_live_background_css(style: &mut String, color: Rgba) {
     style.push_str("}html{background:var(--webui-window-background)}</style>");
 }
 
+#[cfg(any(test, feature = "native"))]
 pub(crate) fn live_background_script(color: Rgba) -> String {
     let mut script = String::with_capacity(155);
     script.push_str("(()=>{const root=document.documentElement;if(root){root.style.setProperty('--webui-window-background','");

@@ -2,8 +2,9 @@
 
 WebUI desktop apps render the same templates as browser apps in a native window.
 They use WebView2 on Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux.
-No Electron, bundled browser, Node runtime, or localhost server is needed in
-the shipped app.
+Bundled/source apps need no Electron, bundled browser, Node runtime, or
+localhost server. An opt-in Rust host can instead load its existing loopback
+HTTP server directly in the same native window.
 
 ## Get started
 
@@ -47,6 +48,7 @@ set desktop package options with command flags or the app-root
 | --- | --- |
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
 | `native` | System webview and `run_frame` |
+| `local-server` | Native window for an existing loopback HTTP origin (includes `native`; no source compiler or IPC grant) |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
@@ -64,6 +66,67 @@ source = ["webui-desktop/source"]
 ```
 
 Enable `application-ipc` separately if you use generated messages.
+
+### Existing HTTP application
+
+An application that already owns a loopback HTTP listener can use the opt-in
+`local-server` feature on macOS or Windows. Pass the **bound** socket address;
+keep that listener running until the window exits. The Rust host must verify
+the identity of any externally owned server before creating a frame; an IP
+address and port do not authenticate it. No source build, bundle loading,
+response proxy, or second render occurs.
+
+```rust
+use webui_desktop::{DesktopApp, HostLifetime, LoopbackOrigin, LocalServerOptions, Result};
+use std::net::SocketAddr;
+
+fn show_existing_server(bound_address: SocketAddr) -> Result<()> {
+    let origin = LoopbackOrigin::from_socket_addr(bound_address)?;
+    let (owner, lifetime) = HostLifetime::new();
+    let options = LocalServerOptions::new(origin, lifetime)
+        .initial_path("/app?view=home")?;
+    let frame = DesktopApp::from_local_server(options).build()?;
+    let result = webui_desktop::run_local_server_frame(frame);
+    drop(owner);
+    result
+}
+```
+
+The trusted host retains `HostLifetimeOwner` alongside its listener or verified
+attached-daemon connection. Call `owner.revoke()` **before** releasing that
+listener/connection; dropping the owner also revokes it. An owned host must
+keep its listener bound until `WindowClosed`/`Exiting` because native close is
+asynchronous and already-issued HTTP requests may still be in flight. A
+revoked frame rejects new navigation, stops pending document loading and
+schedules native window close without waiting for the window command queue.
+Check the result of `owner.revoke()`: if native wake delivery fails, admission
+remains retired but the window may stay open. Keep the listener bound, call
+`owner.retry_close()` deliberately and wait for `WindowClosed`/`Exiting`;
+a successful wake is not a close acknowledgement. Dropping an owner after a
+wake failure retries once and logs any remaining failure.
+Revoking an attached frame does not terminate the daemon. An attached daemon
+can release its port before the desktop observes its loss, so this API is not
+a network egress or port-rebind barrier. A bound IP address is not a daemon
+identity check; the host must authenticate the daemon before constructing
+this lifetime.
+Use a separate lifetime per running native window.
+
+Only an IP-literal loopback HTTP origin with an explicit nonzero port is
+accepted (for example, `127.0.0.1` or `[::1]`; all bound IPv4 `127/8`
+addresses are valid, but `localhost` and wildcard addresses are not).
+Initial paths must start with a single `/`; top-level navigation outside that
+exact origin is cancelled. Network-backed subframe navigation and popups are
+denied in this first mode, but a browser-created `about:blank` child may still
+exist. No subframe receives a native grant.
+Custom titlebar styles are rejected; use the native titlebar.
+The browser fetches ordinary HTTP resources directly; this is not a network
+egress sandbox. Page-originated native controls and application IPC are
+unavailable even if `application-ipc` is compiled into the binary. Rust event
+callbacks and `window_handle()` remain available. Linux reports unsupported
+from `LocalServerAppBuilder::build()` for this frame; existing bundled/source
+apps still run there.
+The current macOS webview uses an ephemeral website data store, even with a
+stable app ID; this mode does not migrate or persist existing browser cookies.
 
 ## Rust API
 

@@ -38,6 +38,8 @@ mod icon_path;
 pub mod ipc;
 #[cfg(feature = "application-ipc")]
 mod ipc_assets;
+#[cfg(feature = "local-server")]
+mod local_server;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod native_ipc;
 #[cfg(all(
@@ -95,6 +97,11 @@ pub use frame::{
 pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
 #[cfg(feature = "application-ipc")]
 pub use ipc::{IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION};
+#[cfg(feature = "local-server")]
+pub use local_server::{
+    run_local_server_frame, HostCloseError, HostLifetime, HostLifetimeOwner, LocalServerAppBuilder,
+    LocalServerFrame, LocalServerOptions, LoopbackOrigin,
+};
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};

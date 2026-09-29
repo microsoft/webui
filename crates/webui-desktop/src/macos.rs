@@ -71,7 +71,14 @@ use app_delegate::DesktopAppDelegate;
 /// Options threaded from a [`DesktopFrame`] into [`DesktopAppDelegate::new`].
 struct MacosLaunchOptions {
     executor: Arc<crate::execution::ApplicationExecutor>,
-    runtime: Arc<DesktopRuntime>,
+    runtime: Option<Arc<DesktopRuntime>>,
+    #[cfg(feature = "local-server")]
+    local_origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")]
+    local_url: Option<String>,
+    #[cfg(feature = "local-server")]
+    lifetime: Option<crate::HostLifetime>,
+    live_background: Arc<crate::window::LiveBackground>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<ipc::MacIpc>>,
     title: Retained<NSString>,
@@ -105,37 +112,62 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
     let state_store =
         WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
-    run_app(mtm, frame, state_store)
+    let window = frame.window.clone();
+    let options = MacosLaunchOptions {
+        executor: Arc::clone(&frame.executor),
+        runtime: Some(Arc::clone(&frame.runtime)),
+        #[cfg(feature = "local-server")]
+        local_origin: None,
+        #[cfg(feature = "local-server")]
+        local_url: None,
+        #[cfg(feature = "local-server")]
+        lifetime: None,
+        live_background: frame.runtime.live_background(),
+        #[cfg(feature = "application-ipc")]
+        ipc: frame
+            .ipc_bridge()
+            .is_enabled()
+            .then(|| ipc::MacIpc::new(frame.ipc_bridge())),
+        title: NSString::from_str(&window.title),
+        options: window,
+        shell: frame.shell.clone(),
+        events: frame.events.clone(),
+        window_handle: frame.window_handle.clone(),
+        state_store,
+    };
+    run_app(mtm, options)
 }
 
-fn run_app(
-    mtm: MainThreadMarker,
-    frame: DesktopFrame,
-    state_store: Option<WindowStateStore>,
-) -> Result<()> {
-    let window = frame.window.clone();
+#[cfg(feature = "local-server")]
+pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<()> {
+    frame.lifetime().require_active()?;
+    let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
+    let state_store =
+        WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
+    let options = MacosLaunchOptions {
+        executor: Arc::clone(&frame.executor),
+        runtime: None,
+        local_origin: Some(frame.origin().clone()),
+        local_url: Some(frame.options.url()),
+        lifetime: Some(frame.lifetime().clone()),
+        live_background: Arc::clone(&frame.live_background),
+        #[cfg(feature = "application-ipc")]
+        ipc: None,
+        title: NSString::from_str(&frame.window.title),
+        options: frame.window.clone(),
+        shell: frame.shell.clone(),
+        events: frame.events.clone(),
+        window_handle: frame.window_handle.clone(),
+        state_store,
+    };
+    run_app(mtm, options)
+}
+
+fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
     autoreleasepool(|_| {
         let (app, delegate) = autoreleasepool(|_| {
             let app = NSApplication::sharedApplication(mtm);
-            let title = NSString::from_str(&window.title);
-            let delegate = DesktopAppDelegate::new(
-                mtm,
-                MacosLaunchOptions {
-                    executor: Arc::clone(&frame.executor),
-                    runtime: Arc::clone(&frame.runtime),
-                    #[cfg(feature = "application-ipc")]
-                    ipc: frame
-                        .ipc_bridge()
-                        .is_enabled()
-                        .then(|| ipc::MacIpc::new(frame.ipc_bridge())),
-                    title,
-                    options: window,
-                    shell: frame.shell.clone(),
-                    events: frame.events.clone(),
-                    window_handle: frame.window_handle.clone(),
-                    state_store,
-                },
-            );
+            let delegate = DesktopAppDelegate::new(mtm, options);
             app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             (app, delegate)
         });
@@ -143,14 +175,30 @@ fn run_app(
         if let Some(wake) = delegate.ivars().command_wake.get() {
             wake.close();
         }
+        #[cfg(feature = "local-server")]
+        {
+            if let Some(wake) = delegate.ivars().owner_close_wake.get() {
+                wake.close();
+            }
+            delegate
+                .ivars()
+                .owner_close_registration
+                .borrow_mut()
+                .take();
+        }
         #[cfg(feature = "application-ipc")]
         if let Some(ipc) = &delegate.ivars().ipc {
             ipc.close();
         }
         if !delegate.ivars().exiting.replace(true) {
-            let _ = frame.events.dispatch(&DesktopEvent::Exiting);
+            let _ = delegate.ivars().events.dispatch(&DesktopEvent::Exiting);
         }
-        // Keep the owning frame alive until AppKit and its callbacks finish.
+        #[cfg(feature = "local-server")]
+        if let Some(error) = delegate.ivars().startup_error.borrow_mut().take() {
+            app.setDelegate(None);
+            app.setMainMenu(None);
+            return Err(error.into());
+        }
         Ok(())
     })
 }
