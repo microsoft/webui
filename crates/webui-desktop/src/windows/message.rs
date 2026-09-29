@@ -12,6 +12,8 @@ use windows::Win32::Graphics::Gdi;
 use windows::Win32::UI::HiDpi;
 use windows::Win32::UI::WindowsAndMessaging::{self, MSG};
 
+#[cfg(feature = "native-capture")]
+use super::capture::CAPTURE_WAKE_MESSAGE;
 use super::command::execute_window_command;
 use super::event::{logical_dimension, physical_to_logical, size_event_transition};
 use super::nonclient::{initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame};
@@ -68,6 +70,15 @@ pub(super) extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        #[cfg(feature = "native-capture")]
+        CAPTURE_WAKE_MESSAGE => {
+            with_window_state(hwnd, |state| {
+                if let Some(registration) = &state.capture_registration {
+                    registration.drain(w_param.0, &state.webview, hwnd);
+                }
+            });
+            LRESULT(0)
+        }
         #[cfg(feature = "application-ipc")]
         IPC_WAKE_MESSAGE => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
@@ -118,6 +129,12 @@ pub(super) extern "system" fn window_proc(
             LRESULT(0)
         }
         WindowsAndMessaging::WM_DPICHANGED => {
+            #[cfg(feature = "native-capture")]
+            with_window_state(hwnd, |state| {
+                if let Some(registration) = &state.capture_registration {
+                    registration.owner_viewport_changed();
+                }
+            });
             apply_suggested_rect(hwnd, l_param);
             refresh_frame(hwnd);
             dispatch_scale_changed(hwnd, w_param);
@@ -367,6 +384,12 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
 
 /// Publish the final close event and release the frame state.
 fn destroy_window(hwnd: HWND) {
+    #[cfg(feature = "native-capture")]
+    with_window_state(hwnd, |state| {
+        if let Some(registration) = &state.capture_registration {
+            registration.close();
+        }
+    });
     #[cfg(feature = "application-ipc")]
     {
         let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());

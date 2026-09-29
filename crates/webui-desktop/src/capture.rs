@@ -1,23 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Trusted-host, per-window WK content capture. No renderer bridge is installed.
+//! Trusted-host, per-window native web-content capture. No renderer bridge is installed.
 
 use std::future::Future;
 use std::pin::Pin;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::{Arc, Condvar, Mutex, Weak};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::task::Waker;
 use std::task::{Context, Poll};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(10);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW: usize = 8;
 
 /// Hard maximum final raster width, measured in pixels after backing scale.
@@ -31,8 +31,9 @@ pub const MAX_WEB_CAPTURE_PNG_BYTES: usize = 12 * 1024 * 1024;
 /// One native binary chunk returned to a trusted host for paced IPC delivery.
 pub const MAX_WEB_CAPTURE_CHUNK_BYTES: usize = 20 * 1024;
 
-/// Host-chosen, validated limits on one visible-content snapshot. Smaller
-/// dimensions downsample the whole viewport; they never crop or upscale it.
+/// Host-chosen, validated limits on one visible-content snapshot. macOS
+/// downscales the whole viewport; Windows rejects oversized viewports because
+/// WebView2 CapturePreview cannot downsample. Neither adapter crops or upscales.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureOptions {
     pub(crate) max_width: u32,
@@ -58,6 +59,7 @@ impl CaptureOptions {
     }
 
     /// Set final pixel bounds, at most 1600×1200; no crop or upscaling.
+    /// Windows rejects a viewport above these bounds before native capture.
     ///
     /// # Errors
     ///
@@ -96,8 +98,8 @@ pub enum CaptureError {
     /// The options exceed SDK memory or raster limits.
     #[error("capture bounds must be nonzero and within 1600×1200 pixels and 12 MiB PNG")]
     InvalidOptions,
-    /// An earlier WK callback is still in flight, including a cancelled one.
-    #[error("a WK content snapshot is already in flight on this window")]
+    /// An earlier native callback is still in flight, including a cancelled one.
+    #[error("a native content snapshot is already in flight on this window")]
     Busy,
     /// The native view has no finished and attached main document.
     #[error("visible web content is unavailable before a finished main document")]
@@ -108,8 +110,8 @@ pub enum CaptureError {
     /// A navigation or dropped request invalidated a pending snapshot.
     #[error("content snapshot was superseded by navigation or cancellation")]
     Cancelled,
-    /// WebKit did not acknowledge the snapshot before its deadline.
-    #[error("WK content snapshot did not complete within ten seconds")]
+    /// The native webview did not acknowledge the snapshot before its deadline.
+    #[error("native content snapshot did not complete within ten seconds")]
     Timeout,
     /// The opaque resource was released, retaken, or belongs to another window.
     #[error("captured content is no longer retained by this window")]
@@ -117,34 +119,34 @@ pub enum CaptureError {
     /// Offset lies beyond the retained PNG.
     #[error("PNG read offset exceeds the encoded content length")]
     InvalidOffset,
-    /// Public WK reported no complete image or its aspect ratio was invalid.
-    #[error("WK did not return a complete visible viewport image")]
+    /// The native webview returned no complete viewport image.
+    #[error("native webview did not return a complete visible viewport image")]
     Incomplete,
     /// Raster dimensions, raw bytes, or PNG size exceed checked bounds.
-    #[error("WK content snapshot exceeds the configured raster or PNG budget")]
+    #[error("native content snapshot exceeds the configured raster or PNG budget")]
     TooLarge,
     /// Native rendering or PNG conversion failed.
-    #[error("WK content capture failed: {0}")]
+    #[error("native content capture failed: {0}")]
     Native(String),
-    /// Numeric WK error; page-provided NSError text is never allocated.
-    #[error("WK content snapshot failed with native error code {0}")]
+    /// Numeric native error; page-provided diagnostic text is never allocated.
+    #[error("native content snapshot failed with error code {0}")]
     NativeCode(isize),
-    /// macOS adapter cannot schedule this main-thread request.
-    #[error("WK content capture scheduler is unavailable")]
+    /// The native adapter cannot schedule this owning-thread request.
+    #[error("native content capture scheduler is unavailable")]
     Scheduler,
     /// Earlier capture deadline workers have not finished exiting.
-    #[error("WK capture deadline capacity is exhausted; retry after pending work settles")]
+    #[error("native capture deadline capacity is exhausted; retry after pending work settles")]
     Overloaded,
-    /// Only WK on macOS has a proven content snapshot adapter.
-    #[error("visible web-content capture is supported only on macOS")]
+    /// No native capture adapter exists on this platform.
+    #[error("visible web-content capture is unsupported on this platform")]
     Unsupported,
 }
 
 /// Opaque metadata for at most one retained native PNG per window. It does
 /// not own an extra byte copy, and its identity cannot target another window.
-// Non-macOS adapters return Unsupported, so their opaque identity is never
+// Other adapters return Unsupported, so their opaque identity is never
 // constructed or inspected on those targets.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 #[derive(Debug)]
 pub struct CapturedContent {
     window_generation: u64,
@@ -192,16 +194,16 @@ pub struct CapturedContentChunk {
     pub eof: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Slot(Mutex<SlotState>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct SlotState {
     result: Option<Result<CapturedContent, CaptureError>>,
     waker: Option<Waker>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Slot {
     fn complete(&self, result: Result<CapturedContent, CaptureError>) {
         let wake = if let Ok(mut state) = self.0.lock() {
@@ -230,7 +232,7 @@ impl Slot {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Active {
     id: u64,
     epoch: u64,
@@ -243,13 +245,13 @@ struct Active {
     slot: Weak<Slot>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct DeadlineTimer {
     finished: Mutex<bool>,
     changed: Condvar,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl DeadlineTimer {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -266,17 +268,17 @@ impl DeadlineTimer {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct TimerReservation(Arc<CaptureState>);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for TimerReservation {
     fn drop(&mut self) {
         self.0.active_timer_threads.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct Retained {
     id: u64,
     epoch: u64,
@@ -288,7 +290,7 @@ struct Retained {
     png: Arc<Vec<u8>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct State {
     epoch: u64,
     revision: u64,
@@ -300,16 +302,19 @@ struct State {
 }
 
 /// A private, bounded resource owner for one exact native window generation.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) struct CaptureState {
     window_generation: u64,
     lifetime: crate::HostLifetime,
     active_timer_threads: AtomicUsize,
     state: Mutex<State>,
+    #[cfg(target_os = "macos")]
     dispatch: Mutex<Option<Arc<crate::macos::capture::Dispatch>>>,
+    #[cfg(windows)]
+    dispatch: Mutex<Option<Arc<crate::windows::capture::Dispatch>>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl CaptureState {
     pub(crate) fn new(lifetime: crate::HostLifetime, window_generation: u64) -> Arc<Self> {
         Arc::new(Self {
@@ -329,13 +334,21 @@ impl CaptureState {
         })
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn attach(&self, dispatch: Arc<crate::macos::capture::Dispatch>) {
         if let Ok(mut attached) = self.dispatch.lock() {
             *attached = Some(dispatch);
         }
     }
 
-    #[cfg(test)]
+    #[cfg(windows)]
+    pub(crate) fn attach(&self, dispatch: Arc<crate::windows::capture::Dispatch>) {
+        if let Ok(mut attached) = self.dispatch.lock() {
+            *attached = Some(dispatch);
+        }
+    }
+
+    #[cfg(all(test, target_os = "macos", feature = "native-capture"))]
     pub(crate) fn test_store_retained(&self, bytes: usize) {
         if let Ok(mut state) = self.state.lock() {
             state.epoch = 1;
@@ -349,7 +362,7 @@ impl CaptureState {
         }
     }
 
-    #[cfg(all(test, feature = "native-clipboard"))]
+    #[cfg(all(test, target_os = "macos", feature = "native-clipboard"))]
     pub(crate) fn test_store_retained_png(&self, png: &[u8]) {
         self.test_store_retained(png.len());
         if let Ok(mut state) = self.state.lock() {
@@ -359,7 +372,7 @@ impl CaptureState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos", feature = "native-capture"))]
     pub(crate) fn test_retained_len(&self) -> usize {
         self.state
             .lock()
@@ -368,7 +381,12 @@ impl CaptureState {
             .unwrap_or(0)
     }
 
-    #[cfg(all(test, feature = "native-clipboard"))]
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_finished(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.finished)
+    }
+
+    #[cfg(all(test, target_os = "macos", feature = "native-clipboard"))]
     pub(crate) fn test_content(&self) -> Option<CapturedContent> {
         self.state.lock().ok().and_then(|state| {
             state.retained.as_ref().map(|retained| CapturedContent {
@@ -521,10 +539,12 @@ impl CaptureState {
         } else {
             None
         };
+        #[cfg(windows)]
+        self.discard_windows_stream(Some(id));
         if let Some(slot) = slot {
             slot.complete(Err(CaptureError::Timeout));
         }
-        // Keep the native reservation until WebKit actually calls back.
+        // Keep the native reservation until the native API actually calls back.
     }
 
     pub(crate) fn current(&self, id: u64, epoch: u64) -> bool {
@@ -633,15 +653,21 @@ impl CaptureState {
     }
 
     pub(crate) fn invalidate(&self, epoch: u64, closed: bool) {
+        #[cfg(windows)]
+        let mut active_id = None;
         let slot = if let Ok(mut state) = self.state.lock() {
             state.epoch = epoch;
             state.finished = false;
             state.closed |= closed;
             state.retained = None;
             // Reservation remains until the native callback returns. Even
-            // dropping/cancelling the Rust future cannot overlap WK snapshots.
+            // dropping/cancelling the Rust future cannot overlap native snapshots.
             if let Some(active) = state.active.as_ref() {
                 active.timer.finish();
+                #[cfg(windows)]
+                {
+                    active_id = Some(active.id);
+                }
             }
             state
                 .active
@@ -650,6 +676,10 @@ impl CaptureState {
         } else {
             None
         };
+        #[cfg(windows)]
+        if let Some(id) = active_id {
+            self.discard_windows_stream(Some(id));
+        }
         if let Some(slot) = slot {
             slot.complete(Err(if closed {
                 CaptureError::Closed
@@ -671,6 +701,17 @@ impl CaptureState {
             None
         };
         drop(retained);
+        #[cfg(windows)]
+        self.discard_windows_stream(None);
+    }
+
+    #[cfg(windows)]
+    fn discard_windows_stream(&self, expected_id: Option<u64>) {
+        if let Ok(dispatch) = self.dispatch.lock() {
+            if let Some(dispatch) = dispatch.as_ref() {
+                dispatch.discard_stream(expected_id);
+            }
+        }
     }
 
     pub(crate) fn notify_closed(&self) {
@@ -690,6 +731,8 @@ impl CaptureState {
     }
 
     pub(crate) fn viewport_changed(&self) {
+        #[cfg(windows)]
+        let mut active_id = None;
         let slot = if let Ok(mut state) = self.state.lock() {
             let Some(revision) = state.revision.checked_add(1) else {
                 drop(state);
@@ -700,6 +743,10 @@ impl CaptureState {
             state.retained = None;
             if let Some(active) = state.active.as_ref() {
                 active.timer.finish();
+                #[cfg(windows)]
+                {
+                    active_id = Some(active.id);
+                }
             }
             state
                 .active
@@ -708,6 +755,10 @@ impl CaptureState {
         } else {
             None
         };
+        #[cfg(windows)]
+        if let Some(id) = active_id {
+            self.discard_windows_stream(Some(id));
+        }
         if let Some(slot) = slot {
             slot.complete(Err(CaptureError::Cancelled));
         }
@@ -793,7 +844,7 @@ impl CaptureState {
         }
     }
 
-    #[cfg(feature = "native-clipboard")]
+    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
     #[allow(clippy::rc_buffer)]
     pub(crate) fn lease_png(&self, token: CaptureToken) -> Result<Arc<Vec<u8>>, CaptureError> {
         if !self.lifetime.is_active() {
@@ -822,7 +873,7 @@ impl CaptureState {
 
     /// Revalidate a capture token and run only a non-blocking admission
     /// update while the resource lock is held. Never call AppKit from `work`.
-    #[cfg(feature = "native-clipboard")]
+    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
     pub(crate) fn with_valid_token<R>(
         &self,
         token: CaptureToken,
@@ -851,10 +902,16 @@ impl CaptureState {
     }
 
     fn abandon(&self, id: u64) {
+        #[cfg(windows)]
+        let mut abandoned = false;
         if let Ok(mut state) = self.state.lock() {
             if let Some(active) = state.active.as_mut().filter(|active| active.id == id) {
                 active.abandoned = true;
                 active.timer.finish();
+                #[cfg(windows)]
+                {
+                    abandoned = true;
+                }
             }
             if state
                 .retained
@@ -864,23 +921,27 @@ impl CaptureState {
                 state.retained = None;
             }
         }
+        #[cfg(windows)]
+        if abandoned {
+            self.discard_windows_stream(Some(id));
+        }
     }
 }
 
-/// Awaitable completion of one public WK visible-content snapshot.
-#[must_use = "await WK completion before reading the returned opaque resource"]
+/// Awaitable completion of one native visible-content snapshot.
+#[must_use = "await native completion before reading the returned opaque resource"]
 pub struct CaptureRequest {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     owner: Arc<CaptureState>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     slot: Arc<Slot>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     id: u64,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     epoch: u64,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     deadline: Instant,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     delivered: bool,
 }
 
@@ -888,7 +949,7 @@ impl Future for CaptureRequest {
     type Output = Result<CapturedContent, CaptureError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             let this = self.get_mut();
             if !this.owner.lifetime.is_active() {
@@ -912,7 +973,7 @@ impl Future for CaptureRequest {
                 other => other,
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (self, cx);
             Poll::Ready(Err(CaptureError::Unsupported))
@@ -922,14 +983,14 @@ impl Future for CaptureRequest {
 
 impl Drop for CaptureRequest {
     fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if !self.delivered {
             self.owner.abandon(self.id);
         }
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
@@ -1024,7 +1085,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "native-clipboard")]
+    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
     #[test]
     fn retained_arc_moves_encoded_vec_and_lease_identity_survives_release() {
         let (owner, _host) = new_owner();

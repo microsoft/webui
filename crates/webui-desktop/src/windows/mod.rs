@@ -16,6 +16,8 @@
 
 mod app_sdk;
 mod bridge;
+#[cfg(feature = "native-capture")]
+pub(crate) mod capture;
 mod command;
 mod create;
 mod event;
@@ -208,6 +210,16 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window().devtools)?;
+    #[cfg(feature = "native-capture")]
+    let capture_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-capture")]
+    let capture_registration = capture_services
+        .as_ref()
+        .map(|services| capture::install(&services.capture_for_revoke(), window_frame.hwnd))
+        .transpose()?;
     #[cfg(feature = "application-ipc")]
     let ipc = match &frame {
         FrameContent::Bundle(bundle) => Some(ipc::WindowsIpc::new(
@@ -235,6 +247,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
     let navigation_starting = webview::register_navigation_guard(
         &webview,
         frame.events().clone(),
+        #[cfg(feature = "native-capture")]
+        capture_services.clone(),
         #[cfg(feature = "local-server")]
         match &frame {
             FrameContent::Bundle(_) => None,
@@ -267,11 +281,15 @@ fn run_content(frame: FrameContent) -> Result<()> {
         frame.events().clone(),
         window_frame.hwnd,
         frame.background(),
-        #[cfg(feature = "local-server")]
-        owner_close_cookie.and_then(|cookie| match &frame {
-            FrameContent::Bundle(_) => None,
-            FrameContent::Local(local) => Some((local.lifetime().clone(), cookie)),
-        }),
+        webview::CompletionOwner {
+            #[cfg(feature = "native-capture")]
+            capture: capture_services.clone(),
+            #[cfg(feature = "local-server")]
+            lifetime: owner_close_cookie.and_then(|cookie| match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some((local.lifetime().clone(), cookie)),
+            }),
+        },
     )?;
     if matches!(&frame, FrameContent::Bundle(_)) {
         webview::inject_drag_script(&webview)?;
@@ -319,7 +337,18 @@ fn run_content(frame: FrameContent) -> Result<()> {
         (FrameContent::Bundle(_), _) => None,
         (FrameContent::Local(local), Some(cookie)) => {
             let handle = window_frame.hwnd.0 as usize;
+            #[cfg(feature = "native-capture")]
+            let capture = capture_services
+                .as_ref()
+                .map(|services| services.capture_for_revoke());
             Some(local.lifetime().register_close_fallible(Arc::new(move || {
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &capture {
+                    // Retire bytes synchronously on owner revocation, before
+                    // the asynchronous close wake and without waking Futures
+                    // under HostLifetime's close lock.
+                    capture.close();
+                }
                 let hwnd = windows::Win32::Foundation::HWND(handle as *mut std::ffi::c_void);
                 post_owner_lost(hwnd, cookie)
             }))?)
@@ -341,6 +370,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "native-capture")]
+        capture_registration,
         _navigation_starting: navigation_starting,
         #[cfg(feature = "local-server")]
         _local_navigation: local_navigation,

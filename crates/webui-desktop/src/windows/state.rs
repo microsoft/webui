@@ -39,6 +39,8 @@ pub(super) struct FrameState {
     pub(super) ipc: Option<std::rc::Rc<super::ipc::WindowsIpc>>,
     /// WebView2 controller that hosts the app content.
     pub(super) controller: ICoreWebView2Controller,
+    #[cfg(feature = "native-capture")]
+    pub(super) capture_registration: Option<super::capture::Registration>,
     /// Retained navigation policy handler.
     pub(super) _navigation_starting: ICoreWebView2NavigationStartingEventHandler,
     #[cfg(feature = "local-server")]

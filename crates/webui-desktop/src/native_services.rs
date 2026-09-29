@@ -27,7 +27,7 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(10);
 // An OS opener can return before its timer thread has observed the shutdown
 // signal. Bound those short-lived leftovers even under a rapid host retry loop.
 const MAX_DEADLINE_THREADS_PER_WINDOW: usize = 8;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(windows, feature = "native-capture")))]
 static NEXT_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Global Cocoa screen coordinates in points, with a bottom-left origin.
@@ -153,8 +153,12 @@ struct Inner {
     last_magnification: AtomicU64,
     #[cfg(target_os = "macos")]
     geometry_dispatch: Mutex<Option<Arc<platform::Dispatch>>>,
-    #[cfg(all(target_os = "macos", feature = "native-capture"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
     capture: Arc<crate::capture::CaptureState>,
+    #[cfg(all(windows, feature = "native-capture"))]
+    document_epoch: AtomicU64,
+    #[cfg(all(windows, feature = "native-capture"))]
+    navigation_id: AtomicU64,
     #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
     clipboard: Arc<crate::clipboard::ClipboardState>,
     busy: AtomicBool,
@@ -232,8 +236,13 @@ impl NativeServices {
             crate::native_theme::platform::Controller::new(events.clone(), lifetime.clone());
         #[cfg(target_os = "macos")]
         let window_generation = NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed);
-        #[cfg(all(target_os = "macos", feature = "native-capture"))]
+        #[cfg(all(windows, feature = "native-capture"))]
+        let window_generation = NEXT_WINDOW_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| NativeServiceError::Unavailable)?;
+        #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
+
         #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
         let clipboard =
             crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
@@ -258,8 +267,12 @@ impl NativeServices {
             last_magnification: AtomicU64::new(1_f64.to_bits()),
             #[cfg(target_os = "macos")]
             geometry_dispatch: Mutex::new(None),
-            #[cfg(all(target_os = "macos", feature = "native-capture"))]
+            #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
             capture,
+            #[cfg(all(windows, feature = "native-capture"))]
+            document_epoch: AtomicU64::new(0),
+            #[cfg(all(windows, feature = "native-capture"))]
+            navigation_id: AtomicU64::new(0),
             #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
             clipboard,
             busy: AtomicBool::new(false),
@@ -284,6 +297,8 @@ impl NativeServices {
                     | DesktopEvent::WindowEnteredFullscreen { .. }
                     | DesktopEvent::WindowLeftFullscreen { .. }
                     | DesktopEvent::ScaleFactorChanged { .. } => {
+                        #[cfg(all(windows, feature = "native-capture"))]
+                        inner.capture.viewport_changed();
                         #[cfg(target_os = "macos")]
                         {
                             inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
@@ -376,16 +391,16 @@ impl NativeServices {
         }
     }
 
-    /// Capture only the visible WKWebView content in a bounded, opaque PNG
+    /// Capture only visible native webview content in a bounded, opaque PNG
     /// resource owned by this window and its currently finished main document.
-    /// The view snapshot includes already-painted, explicitly allowed preview
-    /// iframes; the host must establish its own iframe readiness before capture.
+    /// The host must establish iframe readiness separately; this API does not
+    /// guarantee that embedded frames have painted.
     /// This installs no renderer global or grant and needs no screen permission.
     ///
     /// # Errors
     ///
-    /// Returns `Unsupported` on Windows/Linux; on macOS rejects unavailable,
-    /// busy, closed and stale windows and an incomplete or oversized WK result.
+    /// Returns `Unsupported` on Linux; on macOS/Windows rejects unavailable,
+    /// busy, closed and stale windows and an incomplete or oversized native result.
     /// Its future times out after ten seconds; a hung native callback retains
     /// its Busy reservation rather than permitting overlapping snapshots.
     #[cfg(feature = "native-capture")]
@@ -393,18 +408,18 @@ impl NativeServices {
         &self,
         options: crate::CaptureOptions,
     ) -> Result<crate::CaptureRequest, crate::CaptureError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             if self.0.closed.load(Ordering::Acquire) || !self.0.lifetime.is_active() {
                 self.0.capture.close();
                 return Err(crate::CaptureError::Closed);
             }
             let request = self.0.capture.begin(options)?;
-            #[cfg(feature = "native-clipboard")]
+            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
             self.0.clipboard.cancel_invalidated();
             Ok(request)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = options;
             Err(crate::CaptureError::Unsupported)
@@ -424,11 +439,11 @@ impl NativeServices {
         content: &crate::CapturedContent,
         offset: usize,
     ) -> Result<crate::CapturedContentChunk, crate::CaptureError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.0.capture.read(content, offset)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = (content, offset);
             Err(crate::CaptureError::Unsupported)
@@ -446,14 +461,14 @@ impl NativeServices {
         &self,
         content: &crate::CapturedContent,
     ) -> Result<(), crate::CaptureError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.0.capture.release(content)?;
-            #[cfg(feature = "native-clipboard")]
+            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
             self.0.clipboard.cancel_token(content.token());
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = content;
             Err(crate::CaptureError::Unsupported)
@@ -549,6 +564,36 @@ impl NativeServices {
     #[cfg(all(target_os = "macos", feature = "native-capture"))]
     pub(crate) fn capture_for_revoke(&self) -> Arc<crate::capture::CaptureState> {
         Arc::clone(&self.0.capture)
+    }
+
+    #[cfg(all(windows, feature = "native-capture"))]
+    pub(crate) fn capture_for_revoke(&self) -> Arc<crate::capture::CaptureState> {
+        Arc::clone(&self.0.capture)
+    }
+
+    #[cfg(all(windows, feature = "native-capture"))]
+    pub(crate) fn capture_navigation_started(&self, navigation_id: u64) {
+        let Ok(epoch) =
+            self.0
+                .document_epoch
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+        else {
+            self.0.capture.close();
+            return;
+        };
+        self.0.navigation_id.store(navigation_id, Ordering::Release);
+        self.0.capture.invalidate(epoch + 1, false);
+    }
+
+    #[cfg(all(windows, feature = "native-capture"))]
+    pub(crate) fn capture_navigation_finished(&self, navigation_id: u64) {
+        let epoch = self.0.document_epoch.load(Ordering::Acquire);
+        if epoch != 0
+            && navigation_id != 0
+            && self.0.navigation_id.load(Ordering::Acquire) == navigation_id
+        {
+            self.0.capture.finished(epoch);
+        }
     }
 
     #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
@@ -755,6 +800,8 @@ impl Inner {
         );
         if close {
             self.closed.store(true, Ordering::Release);
+            #[cfg(all(windows, feature = "native-capture"))]
+            self.capture.close();
             #[cfg(target_os = "macos")]
             {
                 self.committed_epoch.store(0, Ordering::Release);
@@ -965,6 +1012,29 @@ mod tests {
         let (owner, lifetime) = HostLifetime::new();
         let services = NativeServices::new(&events, Arc::default(), lifetime).unwrap();
         (services, events, owner)
+    }
+
+    #[cfg(all(windows, feature = "native-capture"))]
+    #[test]
+    fn windows_capture_needs_matching_successful_navigation_and_retires_on_revoke() {
+        let (services, _events, host) = services();
+        let capture = services.capture_for_revoke();
+        assert!(!capture.test_finished());
+        services.capture_navigation_started(11);
+        services.capture_navigation_finished(10);
+        assert!(!capture.test_finished());
+        services.capture_navigation_finished(11);
+        assert!(capture.test_finished());
+        services.capture_navigation_started(12);
+        services.capture_navigation_finished(11);
+        assert!(!capture.test_finished());
+        services.capture_navigation_finished(12);
+        assert!(capture.test_finished());
+        host.revoke().unwrap();
+        assert!(matches!(
+            services.capture_web_content(crate::CaptureOptions::new()),
+            Err(crate::CaptureError::Closed)
+        ));
     }
 
     #[cfg(target_os = "macos")]

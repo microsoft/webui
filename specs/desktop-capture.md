@@ -1,4 +1,24 @@
-# Host-owned macOS visible-content capture
+# Host-owned visible-content capture
+
+## Windows x64/ARM64 adapter
+
+Windows WebView2 0.39.1 `ICoreWebView2::CapturePreview(PNG, IStream, completion)`
+runs on the owning window STA. The host schedules via a generation-checked,
+payload-free window wake, not page IPC. A custom writable COM stream caps
+cumulative source writes and resident output to the configured PNG limit
+(never above 12 MiB); its buffer is moved, not copied, into the existing
+per-window captured-content resource on native completion. Full physical
+viewport bounds are checked against the 1600×1200 / RGBA hard limit and
+host-selected options before WebView2 encodes. Unlike WKSnapshot, WebView2's
+CapturePreview offers no downsampling, so an oversized viewport is rejected,
+not cropped. PNG signature, IHDR dimensions, and terminal IEND are checked
+before retention. Navigation, viewport change, close and owner revocation
+cancel delivery and discard pending stream bytes; native work keeps the busy
+reservation until its callback returns, even after the 10-second logical
+deadline. No Windows GUI execution or preview-iframe pixel verification has
+been performed. Linux remains unsupported.
+
+## macOS adapter and observed evidence
 
 The local-server frame's opt-in `native-capture` capability (which includes
 `native-services`) can create one opaque
@@ -43,8 +63,8 @@ reject stale, cross-window or released resources.
 No generated IPC method is installed automatically. A host that grants one
 must independently authenticate/authorize each operation, pace chunk reads
 with transport credit and account for encoded bytes within its existing IPC
-limits. A complete PNG never belongs in one IPC JSON response. Windows and
-Linux return explicit `Unsupported`, not a screen-capture fallback.
+limits. A complete PNG never belongs in one IPC JSON response. Linux returns
+explicit `Unsupported`, not a screen-capture fallback.
 
 The controlled **macOS 27 ARM64** fixture under
 `crates/webui-desktop/tests/fixtures/native-capture*` observed actual colored

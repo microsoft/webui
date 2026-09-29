@@ -406,8 +406,10 @@ frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.
-An opt-in macOS local-server host may retain one bounded, native PNG of its
-visible WKWebView viewport per window/document epoch. The intended content
+An opt-in macOS or Windows local-server host may retain one bounded, native
+PNG of its visible webview viewport per window/document epoch. Windows uses
+the owning WebView2 STA and a bounded writable COM stream; Mac uses WKWebView.
+The intended content
 boundary is the current web view, not OS windows or a scroll document; hosts
 must establish allowed preview-frame readiness independently. The tested
 platform evidence and limits live in `specs/desktop-capture.md`. Navigation
