@@ -20,6 +20,9 @@ pub(super) struct HostPolicy {
 
 impl HostPolicy {
     pub(super) fn new(port: u16, hosts: &[String]) -> Result<Self, CliError> {
+        if port == 0 {
+            return Err(CliError::InvalidServePort);
+        }
         let mut additional = Vec::with_capacity(hosts.len());
         for host in hosts {
             let Some((name, specified_port)) = parse_authority(host) else {
@@ -48,9 +51,7 @@ impl HostPolicy {
             return false;
         };
 
-        let default_port = port == Some(self.port)
-            || (self.port == 80 && port.is_none())
-            || (self.port == 0 && port.is_some());
+        let default_port = port == Some(self.port) || (self.port == 80 && port.is_none());
         if default_port && is_loopback_name(name) {
             return true;
         }
@@ -58,7 +59,7 @@ impl HostPolicy {
             allowed.name.eq_ignore_ascii_case(name)
                 && match allowed.port {
                     Some(required) => port == Some(required),
-                    None => port.is_none() || port == Some(self.port) || self.port == 0,
+                    None => port.is_none() || port == Some(self.port),
                 }
         })
     }
@@ -210,15 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_bind_preserves_hostname_check() {
-        let policy = HostPolicy::new(0, &[]).unwrap();
-        let accepted = TestRequest::default()
-            .insert_header((HOST, "play.xbox.localhost:49152"))
-            .to_http_request();
-        assert!(policy.allows(&accepted));
-        let rejected = TestRequest::default()
-            .insert_header((HOST, "attacker.example:49152"))
-            .to_http_request();
-        assert!(!policy.allows(&rejected));
+    fn rejects_zero_port_with_or_without_extra_hosts() {
+        for hosts in [vec![], vec!["project.example".into()]] {
+            assert!(matches!(
+                HostPolicy::new(0, &hosts),
+                Err(CliError::InvalidServePort)
+            ));
+        }
     }
 }

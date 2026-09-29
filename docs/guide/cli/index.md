@@ -387,7 +387,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
 | `--watch` | Enable file watching + HMR | `false` |
 | `--shutdown-timeout <SECONDS>` | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` | *(none)* |
-| `--port <PORT>` | Port to bind the development server | `3000` |
+| `--port <PORT>` | Port to bind the development server (1-65535; port 0 is rejected) | `3000` |
 | `--allowed-host <HOST[:PORT]>` | Permit an additional exact hostname or authority, for example when a reverse proxy forwards a custom Host. Repeatable; URLs and wildcards are not accepted. | *(none)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |

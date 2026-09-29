@@ -49,8 +49,8 @@ pub struct ServeArgs {
     #[command(flatten)]
     pub app_args: AppArgs,
 
-    /// Port to bind the development server to
-    #[arg(long, default_value_t = 3000)]
+    /// Nonzero port to bind the development server to
+    #[arg(long, default_value_t = 3000, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: u16,
 
     /// Additional exact Host authority to accept (repeatable). Use a hostname,

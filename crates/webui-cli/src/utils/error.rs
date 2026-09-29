@@ -39,6 +39,9 @@ pub enum CliError {
         port: u16,
     },
 
+    /// `--port 0` cannot be used with listening-port Host validation.
+    InvalidServePort,
+
     /// An `--allowed-host` value is not a valid exact HTTP Host authority.
     InvalidAllowedHost {
         /// The rejected value.
@@ -72,6 +75,7 @@ impl fmt::Display for CliError {
             CliError::PortInUse { port } => {
                 write!(f, "Port {port} on 127.0.0.1 is already in use")
             }
+            CliError::InvalidServePort => write!(f, "Invalid --port: 0 is not supported"),
             CliError::InvalidAllowedHost { host } => {
                 write!(f, "Invalid --allowed-host value: {host}")
             }
@@ -100,6 +104,7 @@ impl CliError {
                 "Stop the process using that port, or rerun with --port <free-port>. Previous dev \
                  sessions may have left a server running."
             }
+            CliError::InvalidServePort => "Pass an explicit --port between 1 and 65535",
             CliError::InvalidAllowedHost { .. } => {
                 "Pass an exact DNS hostname, optionally followed by :port; URLs and wildcards are not allowed"
             }
@@ -130,7 +135,7 @@ impl CliError {
             // A required service (the port) is unavailable → EX_UNAVAILABLE.
             CliError::PortInUse { .. } => 69,
             // Invalid flag value → usage error.
-            CliError::InvalidAllowedHost { .. } => 2,
+            CliError::InvalidServePort | CliError::InvalidAllowedHost { .. } => 2,
         }
     }
 }
@@ -194,6 +199,10 @@ mod tests {
         let port = CliError::PortInUse { port: 3000 };
         assert_eq!(port.exit_code(), 69);
         assert!(port.hint().contains("--port"));
+
+        let invalid_port = CliError::InvalidServePort;
+        assert_eq!(invalid_port.exit_code(), 2);
+        assert!(invalid_port.hint().contains("1 and 65535"));
 
         let host = CliError::InvalidAllowedHost {
             host: "*.example.com".into(),

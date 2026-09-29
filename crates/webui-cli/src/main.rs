@@ -103,4 +103,20 @@ mod tests {
         assert!(Cli::try_parse_from(["webui", "build", "--allowed-host", "dev.example"]).is_err());
         Ok(())
     }
+
+    #[test]
+    fn serve_rejects_zero_port_before_startup() {
+        assert!(Cli::try_parse_from(["webui", "serve", "--port", "0"]).is_err());
+        assert!(Cli::try_parse_from([
+            "webui",
+            "serve",
+            "--allowed-host",
+            "project.example",
+            "--port",
+            "0"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["webui", "serve", "--port", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["webui", "serve", "--port", "65535"]).is_ok());
+    }
 }
