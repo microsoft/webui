@@ -51,7 +51,13 @@ sources, not duplicated here.
   local-server frames install no IPC bootstrap, handler, or data channel.
 - A custom-titlebar local-server frame on macOS or Windows may separately
   install a bounded native window-control handler. It accepts only the exact
-  current main-frame origin of the live host and a fixed window command enum;
+  current main-frame document of the live host and a fixed window command enum;
+  the macOS overlay binds its bounded command envelope to a fresh
+  document-start nonce probed after the matching native navigation commits.
+  Native provisional starts, reloads, close and owner loss invalidate that
+  admission before a queued message can affect a replacement document. A
+  failed navigation does not restore the old document's control capability
+  based on URL equality.
   native-titlebar local frames install none. This handler is not application
   IPC and carries no application data. Untrusted preview documents must use
   their own cross-origin or opaque sandbox: a same-origin child that can run

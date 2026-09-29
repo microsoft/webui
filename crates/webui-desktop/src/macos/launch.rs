@@ -77,28 +77,6 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             ivars.ipc.clone(),
         )
     });
-    let navigation_delegate = DesktopNavigationDelegate::new(
-        mtm,
-        ivars.events.clone(),
-        std::sync::Arc::clone(&ivars.live_background),
-        #[cfg(feature = "local-server")]
-        ivars
-            .local_origin
-            .clone()
-            .zip(ivars.lifetime.clone())
-            .zip(ivars.frame_policy.clone())
-            .map(
-                |((origin, lifetime), policy)| super::navigation::LocalNavigation {
-                    origin,
-                    lifetime,
-                    frame_policy: policy,
-                    #[cfg(feature = "native-services")]
-                    services: ivars.native_services.clone(),
-                },
-            ),
-        #[cfg(feature = "application-ipc")]
-        ivars.ipc.clone(),
-    );
     let host_message_handler = if ivars.runtime.is_some() {
         Some(DesktopHostMessageHandler::new(mtm))
     } else {
@@ -123,6 +101,31 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             None
         }
     };
+    let navigation_delegate = DesktopNavigationDelegate::new(
+        mtm,
+        ivars.events.clone(),
+        std::sync::Arc::clone(&ivars.live_background),
+        #[cfg(feature = "local-server")]
+        ivars
+            .local_origin
+            .clone()
+            .zip(ivars.lifetime.clone())
+            .zip(ivars.frame_policy.clone())
+            .map(
+                |((origin, lifetime), policy)| super::navigation::LocalNavigation {
+                    origin,
+                    lifetime,
+                    frame_policy: policy,
+                    control_gate: host_message_handler
+                        .as_ref()
+                        .and_then(|handler| handler.local_gate()),
+                    #[cfg(feature = "native-services")]
+                    services: ivars.native_services.clone(),
+                },
+            ),
+        #[cfg(feature = "application-ipc")]
+        ivars.ipc.clone(),
+    );
     let webview = build_webview(
         mtm,
         &ivars.options,
@@ -134,6 +137,10 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         },
         rect,
     );
+    #[cfg(feature = "local-server")]
+    if let Some(handler) = &host_message_handler {
+        handler.attach(&webview);
+    }
     #[cfg(feature = "application-ipc")]
     if let Some(ipc) = &ivars.ipc {
         ipc.attach(&webview);
@@ -348,10 +355,23 @@ fn build_webview(
         config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
         let content = config.userContentController();
         if let Some(host_message_handler) = handlers.host {
-            let mut source = String::with_capacity(DRAG_REGION_SCRIPT.len() + 88);
-            source.push_str(
-            "window.webuiHostPostMessage=m=>window.webkit.messageHandlers.webuiHost.postMessage(m);",
-        );
+            #[cfg(feature = "local-server")]
+            let local_controls = host_message_handler.local_gate().is_some();
+            #[cfg(not(feature = "local-server"))]
+            let local_controls = false;
+            let wrapper = if local_controls {
+                // One fresh nonce per real main document, not once per window.
+                // A failed crypto initialization installs no command helper.
+                "(()=>{'use strict';const b=crypto.getRandomValues(new Uint8Array(16));let n='';\
+                 for(const x of b)n+=x.toString(16).padStart(2,'0');\
+                 const p=m=>window.webkit.messageHandlers.webuiHost.postMessage(JSON.stringify({nonce:n,command:m}));\
+                 Object.defineProperty(p,'documentNonce',{value:n});\
+                 Object.defineProperty(window,'webuiHostPostMessage',{value:Object.freeze(p),writable:false,configurable:false});})();"
+            } else {
+                "window.webuiHostPostMessage=m=>window.webkit.messageHandlers.webuiHost.postMessage(m);"
+            };
+            let mut source = String::with_capacity(DRAG_REGION_SCRIPT.len() + wrapper.len());
+            source.push_str(wrapper);
             source.push_str(DRAG_REGION_SCRIPT);
             let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 WKUserScript::alloc(mtm),

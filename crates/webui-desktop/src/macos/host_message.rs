@@ -5,22 +5,226 @@
 //! for native window actions (drag, minimize, toggle-maximize, close).
 
 use crate::DesktopHostMessage;
+#[cfg(feature = "local-server")]
+use block2::RcBlock;
 use objc2::rc::Retained;
+#[cfg(feature = "local-server")]
+use objc2::rc::Weak;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSApplication, NSWindow};
+#[cfg(feature = "local-server")]
+use objc2_foundation::NSError;
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSString, NSURL};
+#[cfg(feature = "local-server")]
+use objc2_web_kit::WKWebView;
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
+#[cfg(feature = "local-server")]
+use std::{cell::RefCell, rc::Rc};
 
 /// A valid host command has at most 256 UTF-8 bytes, and therefore no more
 /// UTF-16 code units. This cheap native bound precedes any Rust allocation;
 /// `DesktopHostMessage::from_json` remains the authoritative byte/command check.
 const MAX_MESSAGE_UTF16_UNITS: usize = 256;
+const MAX_LOCAL_MESSAGE_UTF16_UNITS: usize = 384;
+
+// The native epoch is not a renderer credential. It prevents a queued message
+// from an older main-document realm being accepted after a real navigation.
+#[cfg(feature = "local-server")]
+#[derive(Default)]
+struct HostDocumentState {
+    epoch: u64,
+    committed: bool,
+    nonce: Option<[u8; 16]>,
+    closed: bool,
+}
+
+#[cfg(feature = "local-server")]
+impl HostDocumentState {
+    fn started(&mut self) -> Option<u64> {
+        if self.closed {
+            return None;
+        }
+        let Some(epoch) = self.epoch.checked_add(1) else {
+            self.close();
+            return None;
+        };
+        self.epoch = epoch;
+        self.invalidate();
+        Some(epoch)
+    }
+
+    fn committed(&mut self, epoch: u64) -> bool {
+        if self.closed || self.epoch == 0 || self.epoch != epoch || self.committed {
+            return false;
+        }
+        self.committed = true;
+        true
+    }
+
+    fn admit(&mut self, epoch: u64, nonce: [u8; 16]) -> bool {
+        if self.closed || !self.committed || self.epoch != epoch || self.nonce.is_some() {
+            return false;
+        }
+        self.nonce = Some(nonce);
+        true
+    }
+
+    fn accepts(&self, nonce: &[u8; 16]) -> bool {
+        !self.closed && self.committed && self.nonce.as_ref() == Some(nonce)
+    }
+
+    fn invalidate(&mut self) {
+        self.committed = false;
+        self.nonce = None;
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
+        self.invalidate();
+    }
+}
+
+#[cfg(feature = "local-server")]
+pub(super) struct HostDocumentGate {
+    state: RefCell<HostDocumentState>,
+    view: RefCell<Weak<WKWebView>>,
+    origin: crate::LoopbackOrigin,
+    lifetime: crate::HostLifetime,
+}
+
+#[cfg(feature = "local-server")]
+impl HostDocumentGate {
+    fn new(origin: crate::LoopbackOrigin, lifetime: crate::HostLifetime) -> Rc<Self> {
+        Rc::new(Self {
+            state: RefCell::new(HostDocumentState::default()),
+            view: RefCell::new(Weak::default()),
+            origin,
+            lifetime,
+        })
+    }
+
+    pub(super) fn attach(&self, view: &WKWebView) {
+        *self.view.borrow_mut() = Weak::new(view);
+    }
+
+    pub(super) fn started(&self) {
+        self.state.borrow_mut().started();
+    }
+
+    pub(super) fn failed(&self) {
+        self.state.borrow_mut().invalidate();
+    }
+
+    pub(super) fn close(&self) {
+        self.state.borrow_mut().close();
+    }
+
+    fn current(&self, nonce: &[u8; 16]) -> bool {
+        self.lifetime.is_active() && self.state.borrow().accepts(nonce)
+    }
+
+    fn trusted_view(&self, view: &WKWebView) -> bool {
+        let attached = self
+            .view
+            .borrow()
+            .load()
+            .is_some_and(|attached| std::ptr::eq(&*attached, view));
+        if !self.lifetime.is_active() || !attached || view.window().is_none() {
+            return false;
+        }
+        // SAFETY: WKWebView.URL is read on the owning AppKit main thread.
+        (unsafe { view.URL() }).is_some_and(|url| {
+            url.user().is_none()
+                && url.password().is_none()
+                && url.absoluteString().is_some_and(|value| {
+                    self.lifetime
+                        .allows_navigation(&self.origin, &value.to_string())
+                })
+        })
+    }
+
+    pub(super) fn accepts(&self, view: &WKWebView, nonce: &[u8; 16]) -> bool {
+        self.trusted_view(view) && self.current(nonce)
+    }
+
+    pub(super) fn committed(self: &Rc<Self>, view: &WKWebView) {
+        if !self.trusted_view(view) {
+            return;
+        }
+        let epoch = {
+            let mut state = self.state.borrow_mut();
+            let epoch = state.epoch;
+            if !state.committed(epoch) {
+                return;
+            }
+            epoch
+        };
+        let weak = Rc::downgrade(self);
+        let callback = RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            let Some(gate) = weak.upgrade() else { return };
+            let Some(view) = gate.view.borrow().load() else {
+                return;
+            };
+            if !error.is_null() || !gate.trusted_view(&view) {
+                return;
+            }
+            // SAFETY: WebKit owns the result throughout this main-thread callback.
+            let nonce = unsafe { value.as_ref() }
+                .and_then(|value| value.downcast_ref::<NSString>())
+                .and_then(|value| bounded_message(value, 32))
+                .and_then(|value| parse_nonce(&value));
+            if let Some(nonce) = nonce {
+                gate.state.borrow_mut().admit(epoch, nonce);
+            }
+        });
+        // SAFETY: The native commit and this main-frame evaluation belong to
+        // the exact registered WKWebView; a later navigation fails the epoch
+        // check before the asynchronous result can be admitted.
+        unsafe {
+            view.evaluateJavaScript_completionHandler(
+                ns_string!("window===window.top?window.webuiHostPostMessage?.documentNonce:null"),
+                Some(&callback),
+            );
+        }
+    }
+}
+
+#[cfg(feature = "local-server")]
+fn parse_nonce(text: &str) -> Option<[u8; 16]> {
+    fn digit(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            _ => None,
+        }
+    }
+    if text.len() != 32 {
+        return None;
+    }
+    let mut nonce = [0_u8; 16];
+    for (pair, byte) in text.as_bytes().as_chunks::<2>().0.iter().zip(&mut nonce) {
+        *byte = digit(pair[0])? * 16 + digit(pair[1])?;
+    }
+    Some(nonce)
+}
+
+#[cfg(feature = "local-server")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalHostMessage {
+    nonce: String,
+    command: String,
+}
 
 #[derive(Default)]
 pub(super) struct HostMessageHandlerIvars {
     #[cfg(feature = "local-server")]
-    local: Option<(crate::LoopbackOrigin, crate::HostLifetime)>,
+    local: Option<(
+        crate::LoopbackOrigin,
+        crate::HostLifetime,
+        Rc<HostDocumentGate>,
+    )>,
 }
 
 define_class!(
@@ -42,10 +246,21 @@ define_class!(
             _controller: &WKUserContentController,
             message: &WKScriptMessage,
         ) {
-            let Some(window) = trusted_host_window(message, self.ivars()) else {
+            let Some((window, view)) = trusted_host_window(message, self.ivars()) else {
                 return;
             };
+            #[cfg(not(feature = "local-server"))]
+            let _ = &view;
             let body = message.body();
+            #[cfg(feature = "local-server")]
+            if let Some((_, _, gate)) = &self.ivars().local {
+                if let Some((nonce, command)) = decode_local_host_message(&body) {
+                    if gate.accepts(&view, &nonce) {
+                        run_host_message(command, &window, self.mtm());
+                    }
+                }
+                return;
+            }
             if let Some(command) = decode_host_message(&body) {
                 run_host_message(command, &window, self.mtm());
             }
@@ -56,7 +271,7 @@ define_class!(
 fn trusted_host_window(
     message: &WKScriptMessage,
     ivars: &HostMessageHandlerIvars,
-) -> Option<Retained<NSWindow>> {
+) -> Option<(Retained<NSWindow>, Retained<objc2_web_kit::WKWebView>)> {
     // SAFETY: These are WebKit's native sender and current-document identities,
     // not values supplied in the renderer's message body.
     unsafe {
@@ -68,7 +283,7 @@ fn trusted_host_window(
         let url = view.URL()?;
         let origin = frame.securityOrigin();
         #[cfg(feature = "local-server")]
-        let allowed = if let Some((local_origin, lifetime)) = &ivars.local {
+        let allowed = if let Some((local_origin, lifetime, _)) = &ivars.local {
             trusted_local_frame(
                 true,
                 FrameOrigin {
@@ -103,7 +318,7 @@ fn trusted_host_window(
         if !allowed {
             return None;
         }
-        view.window()
+        view.window().map(|window| (window, view))
     }
 }
 
@@ -150,18 +365,34 @@ fn trusted_local_frame(
 
 fn decode_host_message(body: &AnyObject) -> Option<DesktopHostMessage> {
     let text = body.downcast_ref::<NSString>()?;
+    DesktopHostMessage::from_json(&bounded_message(text, MAX_MESSAGE_UTF16_UNITS)?).ok()
+}
+
+fn bounded_message(text: &NSString, max_units: usize) -> Option<String> {
     let length = text.length();
-    if length == 0 || length > MAX_MESSAGE_UTF16_UNITS {
+    if length == 0 || length > max_units {
         return None;
     }
     // NSString can contain unpaired surrogates. Copy bounded code units through
     // Foundation's safe getter, then validate without its infallible UTF-8 path.
-    let mut units = [0_u16; MAX_MESSAGE_UTF16_UNITS];
+    let mut units = [0_u16; MAX_LOCAL_MESSAGE_UTF16_UNITS];
     for (index, unit) in units[..length].iter_mut().enumerate() {
         *unit = text.characterAtIndex(index);
     }
-    let json = String::from_utf16(&units[..length]).ok()?;
-    DesktopHostMessage::from_json(&json).ok()
+    String::from_utf16(&units[..length]).ok()
+}
+
+#[cfg(feature = "local-server")]
+fn decode_local_host_message(body: &AnyObject) -> Option<([u8; 16], DesktopHostMessage)> {
+    let text = body.downcast_ref::<NSString>()?;
+    let json = bounded_message(text, MAX_LOCAL_MESSAGE_UTF16_UNITS)?;
+    if json.len() > 512 {
+        return None;
+    }
+    let payload: LocalHostMessage = serde_json::from_str(&json).ok()?;
+    let nonce = parse_nonce(&payload.nonce)?;
+    let command = DesktopHostMessage::from_json(&payload.command).ok()?;
+    Some((nonce, command))
 }
 
 fn run_host_message(command: DesktopHostMessage, window: &NSWindow, mtm: MainThreadMarker) {
@@ -189,12 +420,35 @@ impl DesktopHostMessageHandler {
         origin: crate::LoopbackOrigin,
         lifetime: crate::HostLifetime,
     ) -> Retained<Self> {
+        let gate = HostDocumentGate::new(origin.clone(), lifetime.clone());
         Self::from_ivars(
             mtm,
             HostMessageHandlerIvars {
-                local: Some((origin, lifetime)),
+                local: Some((origin, lifetime, gate)),
             },
         )
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn local_gate(&self) -> Option<Rc<HostDocumentGate>> {
+        self.ivars()
+            .local
+            .as_ref()
+            .map(|(_, _, gate)| Rc::clone(gate))
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn attach(&self, view: &WKWebView) {
+        if let Some(gate) = self.local_gate() {
+            gate.attach(view);
+        }
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn close(&self) {
+        if let Some(gate) = self.local_gate() {
+            gate.close();
+        }
     }
 
     fn from_ivars(mtm: MainThreadMarker, ivars: HostMessageHandlerIvars) -> Retained<Self> {
@@ -439,5 +693,102 @@ mod tests {
             &lifetime
         ));
         Ok(())
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn same_origin_stale_command_cannot_cross_navigation_or_reload() {
+        let (_owner, lifetime) = crate::HostLifetime::new();
+        let origin =
+            crate::LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+        let scheme = NSString::from_str("http");
+        let host = NSString::from_str("127.0.0.1");
+        let current = NSURL::URLWithString(&NSString::from_str("http://127.0.0.1:3456/b")).unwrap();
+        // The old URL-only rule authorizes the /a command against /b.
+        assert!(trusted_local_frame(
+            true,
+            FrameOrigin {
+                scheme: &scheme,
+                host: &host,
+                port: 3456,
+            },
+            &current,
+            &origin,
+            &lifetime,
+        ));
+        let mut gate = HostDocumentState::default();
+        let first = gate.started().unwrap();
+        assert!(gate.committed(first));
+        assert!(gate.admit(first, [1; 16]));
+        assert!(gate.accepts(&[1; 16]));
+
+        let second = gate.started().unwrap();
+        assert!(gate.committed(second));
+        assert!(gate.admit(second, [2; 16]));
+        assert!(!gate.accepts(&[1; 16]));
+        assert!(gate.accepts(&[2; 16]));
+
+        let reload = gate.started().unwrap();
+        assert!(!gate.admit(second, [3; 16]));
+        assert!(gate.committed(reload));
+        assert!(gate.admit(reload, [3; 16]));
+        assert!(!gate.accepts(&[2; 16]));
+        gate.close();
+        assert!(!gate.accepts(&[3; 16]));
+        assert!(gate.started().is_none());
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn late_probe_failed_commit_and_owner_revocation_fail_closed() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let origin =
+            crate::LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+        let gate = HostDocumentGate::new(origin, lifetime);
+        let first = gate.state.borrow_mut().started().unwrap();
+        assert!(gate.state.borrow_mut().committed(first));
+        let second = gate.state.borrow_mut().started().unwrap();
+        assert!(!gate.state.borrow_mut().admit(first, [1; 16]));
+        assert!(!gate.current(&[1; 16]));
+        assert!(gate.state.borrow_mut().committed(second));
+        assert!(gate.state.borrow_mut().admit(second, [2; 16]));
+        assert!(gate.current(&[2; 16]));
+        gate.failed();
+        assert!(!gate.current(&[2; 16]));
+        let third = gate.state.borrow_mut().started().unwrap();
+        assert!(gate.state.borrow_mut().committed(third));
+        assert!(gate.state.borrow_mut().admit(third, [3; 16]));
+        owner.revoke().unwrap();
+        assert!(!gate.current(&[3; 16]));
+        gate.close();
+        assert!(!gate.current(&[3; 16]));
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn local_envelope_rejects_legacy_malformed_and_oversize_messages() {
+        autoreleasepool(|_| {
+            let valid = NSString::from_str(
+                r#"{"nonce":"01010101010101010101010101010101","command":"\"close\""}"#,
+            );
+            assert!(matches!(
+                decode_local_host_message(&valid),
+                Some((nonce, DesktopHostMessage::Close)) if nonce == [1; 16]
+            ));
+            for payload in [
+                r#""close""#,
+                r#"{"nonce":"01010101010101010101010101010101","command":"close"}"#,
+                r#"{"nonce":"GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG","command":"\"close\""}"#,
+                r#"{"nonce":"01010101010101010101010101010101","command":"\"close\"","extra":1}"#,
+                r#"{"nonce":"01010101010101010101010101010101","command":"\"unknown\""}"#,
+            ] {
+                assert!(decode_local_host_message(&NSString::from_str(payload)).is_none());
+            }
+            assert!(decode_local_host_message(&NSString::from_str(
+                &"x".repeat(MAX_LOCAL_MESSAGE_UTF16_UNITS + 1)
+            ))
+            .is_none());
+            assert!(decode_local_host_message(&native_utf16(&[b'{' as u16, 0xd800])).is_none());
+        });
     }
 }
