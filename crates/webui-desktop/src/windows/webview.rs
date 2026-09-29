@@ -174,18 +174,30 @@ pub(super) fn configure_settings(webview: &ICoreWebView2, devtools: bool) -> Res
 
 /// Route navigations through the app event registry while keeping the
 /// app-origin allowlist as the final, non-overridable authority.
+pub(super) struct NavigationGuardContext {
+    #[cfg(feature = "native-capture")]
+    pub(super) capture: Option<crate::NativeServices>,
+    #[cfg(feature = "local-server")]
+    pub(super) controls: Option<std::rc::Rc<super::local_controls::LocalControls>>,
+    #[cfg(feature = "local-server")]
+    pub(super) origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")]
+    pub(super) lifetime: Option<crate::HostLifetime>,
+}
+
 pub(super) fn register_navigation_guard(
     webview: &ICoreWebView2,
     events: EventRegistry,
-    #[cfg(feature = "native-capture")] capture: Option<crate::NativeServices>,
-    #[cfg(feature = "local-server")] local_origin: Option<crate::LoopbackOrigin>,
-    #[cfg(feature = "local-server")] local_lifetime: Option<crate::HostLifetime>,
+    context: NavigationGuardContext,
 ) -> Result<ICoreWebView2NavigationStartingEventHandler> {
     let webview_for_events = webview.clone();
+    #[cfg(not(feature = "local-server"))]
+    let _ = &context;
     let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             #[cfg(feature = "local-server")]
-            if local_lifetime
+            if context
+                .lifetime
                 .as_ref()
                 .is_some_and(|lifetime| !lifetime.is_active())
             {
@@ -205,10 +217,11 @@ pub(super) fn register_navigation_guard(
             let allowed = {
                 #[cfg(feature = "local-server")]
                 {
-                    local_origin.as_ref().map_or_else(
+                    context.origin.as_ref().map_or_else(
                         || is_allowed_navigation_url(&uri),
                         |origin| {
-                            local_lifetime
+                            context
+                                .lifetime
                                 .as_ref()
                                 .is_some_and(|lifetime| lifetime.allows_navigation(origin, &uri))
                         },
@@ -223,8 +236,15 @@ pub(super) fn register_navigation_guard(
                 // SAFETY: Same live args interface as above.
                 unsafe { args.SetCancel(true)? };
             } else {
+                #[cfg(feature = "local-server")]
+                if let Some(controls) = &context.controls {
+                    let mut navigation_id = 0;
+                    // SAFETY: The main-document args belong to this STA.
+                    unsafe { args.NavigationId(&mut navigation_id)? };
+                    controls.start(navigation_id);
+                }
                 #[cfg(feature = "native-capture")]
-                if let Some(capture) = &capture {
+                if let Some(capture) = &context.capture {
                     let mut navigation_id = 0;
                     // SAFETY: These live event arguments belong to this STA.
                     if let Err(error) = unsafe { args.NavigationId(&mut navigation_id) } {
@@ -482,6 +502,8 @@ pub(super) struct CompletionOwner {
     #[cfg(feature = "native-capture")]
     pub(super) capture: Option<crate::NativeServices>,
     #[cfg(feature = "local-server")]
+    pub(super) controls: Option<std::rc::Rc<super::local_controls::LocalControls>>,
+    #[cfg(feature = "local-server")]
     pub(super) lifetime: Option<(crate::HostLifetime, usize)>,
 }
 
@@ -515,19 +537,27 @@ pub(super) fn register_navigation_completed(
             }
             return Ok(());
         }
-        #[cfg(feature = "native-capture")]
-        if let (Some(capture), Some(args)) = (&owner.capture, &args) {
+        #[cfg(feature = "local-server")]
+        if let Some(args) = &args {
+            // SAFETY: WebView2 supplies this live result on the owning STA.
             let mut success = windows::core::BOOL::default();
             let mut navigation_id = 0;
             // SAFETY: These live event arguments belong to this STA.
             unsafe { args.IsSuccess(&mut success)? };
             if success.as_bool() {
-                // SAFETY: The native ID rejects completions from older navigations.
+                // SAFETY: Matching the completed native navigation ID prevents
+                // an older completion from making a newer epoch capturable.
                 unsafe { args.NavigationId(&mut navigation_id)? };
-                capture.capture_navigation_finished(navigation_id);
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &owner.capture {
+                    capture.capture_navigation_finished(navigation_id);
+                }
+                if let Some(controls) = &owner.controls {
+                    controls.completed(&webview_for_uri, navigation_id);
+                }
             }
         }
-        #[cfg(not(feature = "native-capture"))]
+        #[cfg(not(feature = "local-server"))]
         let _ = &args;
         super::state::with_window_state(hwnd, |state| {
             if let Err(error) = state.app_window.publish_metrics(&state.webview) {

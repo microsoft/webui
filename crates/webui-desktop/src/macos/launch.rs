@@ -99,10 +99,30 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         #[cfg(feature = "application-ipc")]
         ivars.ipc.clone(),
     );
-    let host_message_handler = ivars
-        .runtime
-        .as_ref()
-        .map(|_| DesktopHostMessageHandler::new(mtm));
+    let host_message_handler = if ivars.runtime.is_some() {
+        Some(DesktopHostMessageHandler::new(mtm))
+    } else {
+        #[cfg(feature = "local-server")]
+        {
+            ivars
+                .local_origin
+                .clone()
+                .zip(ivars.lifetime.clone())
+                .filter(|_| {
+                    matches!(
+                        ivars.options.titlebar,
+                        crate::TitlebarStyle::HiddenInset | crate::TitlebarStyle::Overlay { .. }
+                    )
+                })
+                .map(|(origin, lifetime)| {
+                    DesktopHostMessageHandler::for_local_server(mtm, origin, lifetime)
+                })
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            None
+        }
+    };
     let webview = build_webview(
         mtm,
         &ivars.options,

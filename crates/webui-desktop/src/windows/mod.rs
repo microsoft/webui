@@ -33,6 +33,8 @@ mod ipc_deadline;
 mod ipc_http;
 #[cfg(feature = "application-ipc")]
 mod ipc_policy;
+#[cfg(feature = "local-server")]
+mod local_controls;
 mod message;
 mod nonclient;
 mod protocol;
@@ -210,6 +212,18 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window().devtools)?;
+    #[cfg(feature = "local-server")]
+    let local_controls = match &frame {
+        FrameContent::Local(local)
+            if !matches!(frame.window().titlebar, crate::TitlebarStyle::Native) =>
+        {
+            Some(local_controls::LocalControls::new(
+                local.origin().clone(),
+                local.lifetime().clone(),
+            ))
+        }
+        _ => None,
+    };
     #[cfg(feature = "native-capture")]
     let capture_services = match &frame {
         FrameContent::Bundle(_) => None,
@@ -247,17 +261,21 @@ fn run_content(frame: FrameContent) -> Result<()> {
     let navigation_starting = webview::register_navigation_guard(
         &webview,
         frame.events().clone(),
-        #[cfg(feature = "native-capture")]
-        capture_services.clone(),
-        #[cfg(feature = "local-server")]
-        match &frame {
-            FrameContent::Bundle(_) => None,
-            FrameContent::Local(local) => Some(local.origin().clone()),
-        },
-        #[cfg(feature = "local-server")]
-        match &frame {
-            FrameContent::Bundle(_) => None,
-            FrameContent::Local(local) => Some(local.lifetime().clone()),
+        webview::NavigationGuardContext {
+            #[cfg(feature = "native-capture")]
+            capture: capture_services.clone(),
+            #[cfg(feature = "local-server")]
+            controls: local_controls.clone(),
+            #[cfg(feature = "local-server")]
+            origin: match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some(local.origin().clone()),
+            },
+            #[cfg(feature = "local-server")]
+            lifetime: match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some(local.lifetime().clone()),
+            },
         },
     )?;
     #[cfg(feature = "local-server")]
@@ -285,6 +303,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
             #[cfg(feature = "native-capture")]
             capture: capture_services.clone(),
             #[cfg(feature = "local-server")]
+            controls: local_controls.clone(),
+            #[cfg(feature = "local-server")]
             lifetime: owner_close_cookie.and_then(|cookie| match &frame {
                 FrameContent::Bundle(_) => None,
                 FrameContent::Local(local) => Some((local.lifetime().clone(), cookie)),
@@ -293,26 +313,23 @@ fn run_content(frame: FrameContent) -> Result<()> {
     )?;
     if matches!(&frame, FrameContent::Bundle(_)) {
         webview::inject_drag_script(&webview)?;
-        app_window.install_metrics(&webview)?;
     }
-    // This handler executes native window commands without a committed HTTP
-    // document proof. Never register it for local-server content, even when
-    // application-ipc is compiled in; P4 must establish that authority first.
+    // Local-server controls are a separate, document-nonce-bound host bridge,
+    // never the packaged app's unconditional native command path.
+    app_window.install_metrics(&webview)?;
     let controls = matches!(&frame, FrameContent::Bundle(_));
-    let web_message_received = if controls || {
-        #[cfg(feature = "application-ipc")]
-        {
-            ipc.is_some()
-        }
-        #[cfg(not(feature = "application-ipc"))]
-        {
-            false
-        }
-    } {
+    let needs_message_handler = controls;
+    #[cfg(feature = "local-server")]
+    let needs_message_handler = needs_message_handler || local_controls.is_some();
+    #[cfg(feature = "application-ipc")]
+    let needs_message_handler = needs_message_handler || ipc.is_some();
+    let web_message_received = if needs_message_handler {
         Some(bridge::register_message_handler(
             &webview,
             window_frame.hwnd,
             controls,
+            #[cfg(feature = "local-server")]
+            local_controls.clone(),
             #[cfg(feature = "application-ipc")]
             ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
         )?)
@@ -370,6 +387,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "local-server")]
+        local_controls,
         #[cfg(feature = "native-capture")]
         capture_registration,
         _navigation_starting: navigation_starting,

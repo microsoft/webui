@@ -172,8 +172,9 @@ pub use startup_failure::{
     MAX_STARTUP_HELP_BYTES, MAX_STARTUP_SUMMARY_BYTES, MAX_STARTUP_TITLE_BYTES,
 };
 pub use window::{
-    apply_window_css, window_css_block, CaptionButtonSize, DesktopPlatform, Rgba, RgbaParseError,
-    TitlebarStyle, WindowEffect, WindowInsets, WindowOptions,
+    apply_window_css, window_css_block, window_css_block_with_nonce, CaptionButtonSize,
+    DesktopPlatform, Rgba, RgbaParseError, TitlebarStyle, WindowCssNonceError, WindowEffect,
+    WindowInsets, WindowOptions,
 };
 pub use window_state::{DisplayBounds, WindowState, WindowStateError, WindowStateStore};
 

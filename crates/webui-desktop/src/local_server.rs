@@ -349,7 +349,7 @@ impl LoopbackOrigin {
         })
     }
 
-    #[cfg(all(feature = "application-ipc", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn matches_security_origin(&self, scheme: &str, host: &str, port: isize) -> bool {
         if scheme != "http" || port <= 0 {
             return false;
@@ -500,10 +500,11 @@ impl LocalServerAppBuilder {
         self.options.lifetime.require_active()?;
         let capabilities = crate::frame::local_platform_capabilities();
         crate::validate_frame_capabilities(&self.window, &self.shell, capabilities)?;
-        if !matches!(self.window.titlebar, crate::TitlebarStyle::Native) {
+        if matches!(self.window.titlebar, crate::TitlebarStyle::None) {
             return Err(DesktopError::UnsupportedRuntime {
-                message: "local-server frames currently require a native titlebar".to_string(),
-                help: "Use TitlebarStyle::Native; custom titlebar presentation is not wired to local HTTP documents".to_string(),
+                message: "local-server frames cannot use a frameless titlebar".to_string(),
+                help: "Use a native titlebar or native controls over full-bleed content"
+                    .to_string(),
             });
         }
         if !cfg!(any(
@@ -554,9 +555,9 @@ impl LocalServerAppBuilder {
 /// Owner of the local-server window, its event callbacks and native commands.
 ///
 /// The trusted host must retain its verified listener for this frame's entire
-/// lifetime. The frame does not authenticate the HTTP server or expose
-/// page-originated native window controls. Application IPC remains disabled
-/// unless the builder was explicitly given the owned listener and generated
+/// lifetime. The frame does not authenticate the HTTP server. Custom
+/// titlebars enable only bounded window controls for the exact main document,
+/// not application IPC; the latter requires the owned listener and generated
 /// grants.
 pub struct LocalServerFrame {
     pub(crate) options: LocalServerOptions,
@@ -884,18 +885,59 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
-    fn local_server_rejects_unwired_custom_titlebar() {
+    fn local_server_accepts_native_controls_over_full_bleed_content() {
+        for titlebar in [
+            crate::TitlebarStyle::HiddenInset,
+            crate::TitlebarStyle::Overlay { height: 48 },
+        ] {
+            let origin =
+                LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+            let (_owner, lifetime) = HostLifetime::new();
+            let window = WindowOptions {
+                titlebar: titlebar.clone(),
+                ..WindowOptions::default()
+            };
+            let frame =
+                crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime))
+                    .window(window.clone())
+                    .build()
+                    .unwrap();
+            assert_eq!(frame.window.titlebar, titlebar);
+            let css = crate::window_css_block(&window, crate::DesktopPlatform::current());
+            assert!(css.contains("[webui-drag]"));
+            assert!(css.contains("--webui-titlebar-inset-start:"));
+            assert!(css.contains("--webui-titlebar-height:"));
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn local_server_rejects_fully_frameless_titlebar() {
         let origin = LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
         let (_owner, lifetime) = HostLifetime::new();
-        let result =
+        assert!(matches!(
             crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime))
                 .window(WindowOptions {
-                    titlebar: crate::TitlebarStyle::Overlay { height: 48 },
+                    titlebar: crate::TitlebarStyle::None,
                     ..WindowOptions::default()
                 })
-                .build();
+                .build(),
+            Err(DesktopError::UnsupportedRuntime { .. })
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_server_does_not_advertise_unavailable_linux_titlebar_controls() {
+        let origin = LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+        let (_owner, lifetime) = HostLifetime::new();
         assert!(matches!(
-            result,
+            crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime))
+                .window(WindowOptions {
+                    titlebar: crate::TitlebarStyle::Overlay { height: 64 },
+                    ..WindowOptions::default()
+                })
+                .build(),
             Err(DesktopError::UnsupportedRuntime { .. })
         ));
     }

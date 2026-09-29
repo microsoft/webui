@@ -332,6 +332,8 @@ define_class!(
         }
         #[unsafe(method(windowDidEnterFullScreen:))]
         fn windowDidEnterFullScreen(&self, _notification: &NSNotification) {
+            #[cfg(feature = "local-server")]
+            self.update_local_caption_insets(true);
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowEnteredFullscreen {
@@ -341,6 +343,8 @@ define_class!(
         }
         #[unsafe(method(windowDidExitFullScreen:))]
         fn windowDidExitFullScreen(&self, _notification: &NSNotification) {
+            #[cfg(feature = "local-server")]
+            self.update_local_caption_insets(false);
             dispatch_for_delegate(
                 self,
                 DesktopEvent::WindowLeftFullscreen {
@@ -448,6 +452,31 @@ pub(super) fn dispatch_for_delegate(
 }
 
 impl DesktopAppDelegate {
+    #[cfg(feature = "local-server")]
+    fn update_local_caption_insets(&self, fullscreen: bool) {
+        let ivars = self.ivars();
+        if !matches!(
+            ivars.options.titlebar,
+            crate::TitlebarStyle::HiddenInset | crate::TitlebarStyle::Overlay { .. }
+        ) || !ivars
+            .lifetime
+            .as_ref()
+            .is_some_and(crate::HostLifetime::is_active)
+        {
+            return;
+        }
+        let Some((origin, webview)) = ivars.local_origin.as_ref().zip(ivars.webview.get()) else {
+            return;
+        };
+        // SAFETY: AppKit supplies this callback on the owning window's UI thread.
+        if (unsafe { webview.URL() })
+            .and_then(|url| url.absoluteString())
+            .is_some_and(|url| origin.allows(&url.to_string()))
+        {
+            super::commands::update_local_caption_insets(webview, fullscreen);
+        }
+    }
+
     #[cfg(feature = "local-server")]
     fn receive_open_urls(&self, urls: &NSArray<NSURL>) {
         use crate::local_server::url_activation::{reject, Rejection};

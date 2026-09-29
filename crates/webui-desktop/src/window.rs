@@ -375,9 +375,65 @@ const DRAG_REGION_CSS: &str =
 /// [`crate::DRAG_REGION_SCRIPT`] regardless of titlebar style.
 #[must_use]
 pub fn window_css_block(window: &WindowOptions, platform: DesktopPlatform) -> String {
+    window_css_block_inner(window, platform, None)
+}
+
+/// Error when a host-supplied CSP nonce cannot be placed in a style attribute.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum WindowCssNonceError {
+    /// The nonce is empty, too long, or not a Base64/Base64URL token.
+    #[error("invalid CSP style nonce; help: supply a Base64 or Base64URL token of at most 128 ASCII characters from the current response")]
+    Invalid,
+}
+
+/// Build a trusted window style block for a response with nonce-only `style-src`.
+///
+/// The HTTP host generates and authenticates the per-response nonce; this
+/// helper only validates its attribute-safe syntax. It does not modify a
+/// response, disable CSP, or grant renderer authority.
+///
+/// # Errors
+///
+/// Rejects an empty, oversized, or non-Base64 nonce.
+pub fn window_css_block_with_nonce(
+    window: &WindowOptions,
+    platform: DesktopPlatform,
+    nonce: &str,
+) -> Result<String, WindowCssNonceError> {
+    let bytes = nonce.as_bytes();
+    let data_len = bytes
+        .iter()
+        .position(|byte| *byte == b'=')
+        .unwrap_or(bytes.len());
+    if data_len == 0
+        || bytes.len() > 128
+        || data_len % 4 == 1
+        || bytes.len() - data_len > 2
+        || (data_len != bytes.len() && !bytes.len().is_multiple_of(4))
+        || !bytes[..data_len]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_'))
+        || bytes[data_len..].iter().any(|byte| *byte != b'=')
+    {
+        return Err(WindowCssNonceError::Invalid);
+    }
+    Ok(window_css_block_inner(window, platform, Some(nonce)))
+}
+
+fn window_css_block_inner(
+    window: &WindowOptions,
+    platform: DesktopPlatform,
+    nonce: Option<&str>,
+) -> String {
     let insets = WindowInsets::for_style(&window.titlebar, platform);
-    let mut style = String::with_capacity(320);
-    style.push_str("<style>");
+    let mut style = String::with_capacity(320 + nonce.map_or(0, str::len));
+    if let Some(nonce) = nonce {
+        style.push_str("<style nonce=\"");
+        style.push_str(nonce);
+        style.push_str("\">");
+    } else {
+        style.push_str("<style>");
+    }
     style.push_str(DRAG_REGION_CSS);
     if matches!(window.titlebar, TitlebarStyle::Native) && window.background.is_none() {
         style.push_str("</style>");
@@ -540,6 +596,37 @@ mod tests {
         assert!(block.contains("[webui-drag]"));
         assert!(!block.contains("--webui-titlebar-inset-start"));
         assert!(!block.contains("--webui-window-background"));
+    }
+
+    #[test]
+    fn window_css_nonce_is_per_response_and_attribute_safe() {
+        let window = WindowOptions {
+            titlebar: TitlebarStyle::Overlay { height: 64 },
+            ..WindowOptions::default()
+        };
+        let css =
+            window_css_block_with_nonce(&window, DesktopPlatform::Windows, "aB02-_/+").unwrap();
+        assert!(css.starts_with("<style nonce=\"aB02-_/+\">"));
+        assert!(css.contains("--webui-titlebar-inset-end:138px"));
+        assert_eq!(
+            css.replacen("<style nonce=\"aB02-_/+\">", "<style>", 1),
+            window_css_block(&window, DesktopPlatform::Windows)
+        );
+        for invalid in [
+            "",
+            "a",
+            "abc=def",
+            "abcd===",
+            "====",
+            "bad value",
+            "bad\" onload=\"x",
+            "a".repeat(129).as_str(),
+        ] {
+            assert_eq!(
+                window_css_block_with_nonce(&window, DesktopPlatform::Windows, invalid),
+                Err(WindowCssNonceError::Invalid)
+            );
+        }
     }
 
     #[test]

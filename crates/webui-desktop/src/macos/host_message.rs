@@ -7,7 +7,7 @@
 use crate::DesktopHostMessage;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{NSApplication, NSWindow};
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
@@ -17,8 +17,11 @@ use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentContro
 /// `DesktopHostMessage::from_json` remains the authoritative byte/command check.
 const MAX_MESSAGE_UTF16_UNITS: usize = 256;
 
-#[derive(Debug, Default)]
-pub(super) struct HostMessageHandlerIvars;
+#[derive(Default)]
+pub(super) struct HostMessageHandlerIvars {
+    #[cfg(feature = "local-server")]
+    local: Option<(crate::LoopbackOrigin, crate::HostLifetime)>,
+}
 
 define_class!(
     // SAFETY: Handler is an NSObject subclass with no Drop implementation.
@@ -39,7 +42,7 @@ define_class!(
             _controller: &WKUserContentController,
             message: &WKScriptMessage,
         ) {
-            let Some(window) = trusted_host_window(message) else {
+            let Some(window) = trusted_host_window(message, self.ivars()) else {
                 return;
             };
             let body = message.body();
@@ -50,7 +53,10 @@ define_class!(
     }
 );
 
-fn trusted_host_window(message: &WKScriptMessage) -> Option<Retained<NSWindow>> {
+fn trusted_host_window(
+    message: &WKScriptMessage,
+    ivars: &HostMessageHandlerIvars,
+) -> Option<Retained<NSWindow>> {
     // SAFETY: These are WebKit's native sender and current-document identities,
     // not values supplied in the renderer's message body.
     unsafe {
@@ -61,13 +67,40 @@ fn trusted_host_window(message: &WKScriptMessage) -> Option<Retained<NSWindow>> 
         let view = message.webView()?;
         let url = view.URL()?;
         let origin = frame.securityOrigin();
-        if !trusted_host_frame(
-            true,
-            &origin.protocol(),
-            &origin.host(),
-            origin.port(),
-            &url,
-        ) {
+        #[cfg(feature = "local-server")]
+        let allowed = if let Some((local_origin, lifetime)) = &ivars.local {
+            trusted_local_frame(
+                true,
+                FrameOrigin {
+                    scheme: &origin.protocol(),
+                    host: &origin.host(),
+                    port: origin.port(),
+                },
+                &url,
+                local_origin,
+                lifetime,
+            )
+        } else {
+            trusted_host_frame(
+                true,
+                &origin.protocol(),
+                &origin.host(),
+                origin.port(),
+                &url,
+            )
+        };
+        #[cfg(not(feature = "local-server"))]
+        let allowed = {
+            let _ = ivars;
+            trusted_host_frame(
+                true,
+                &origin.protocol(),
+                &origin.host(),
+                origin.port(),
+                &url,
+            )
+        };
+        if !allowed {
             return None;
         }
         view.window()
@@ -85,6 +118,34 @@ fn trusted_host_frame(
         && host.isEqualToString(ns_string!("app"))
         && port == 0
         && super::navigation::trusted_app_url(current_url)
+}
+
+#[cfg(feature = "local-server")]
+struct FrameOrigin<'a> {
+    scheme: &'a NSString,
+    host: &'a NSString,
+    port: isize,
+}
+
+#[cfg(feature = "local-server")]
+fn trusted_local_frame(
+    main: bool,
+    frame: FrameOrigin<'_>,
+    current_url: &NSURL,
+    origin: &crate::LoopbackOrigin,
+    lifetime: &crate::HostLifetime,
+) -> bool {
+    main && frame.scheme.length() == 4
+        && frame.host.length() > 0
+        && frame.host.length() <= 45
+        && origin.matches_security_origin(
+            &frame.scheme.to_string(),
+            &frame.host.to_string(),
+            frame.port,
+        )
+        && current_url
+            .absoluteString()
+            .is_some_and(|url| lifetime.allows_navigation(origin, &url.to_string()))
 }
 
 fn decode_host_message(body: &AnyObject) -> Option<DesktopHostMessage> {
@@ -119,7 +180,25 @@ fn run_host_message(command: DesktopHostMessage, window: &NSWindow, mtm: MainThr
 
 impl DesktopHostMessageHandler {
     pub(super) fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(HostMessageHandlerIvars);
+        Self::from_ivars(mtm, HostMessageHandlerIvars::default())
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn for_local_server(
+        mtm: MainThreadMarker,
+        origin: crate::LoopbackOrigin,
+        lifetime: crate::HostLifetime,
+    ) -> Retained<Self> {
+        Self::from_ivars(
+            mtm,
+            HostMessageHandlerIvars {
+                local: Some((origin, lifetime)),
+            },
+        )
+    }
+
+    fn from_ivars(mtm: MainThreadMarker, ivars: HostMessageHandlerIvars) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ivars);
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
     }
@@ -284,5 +363,81 @@ mod tests {
                 &app
             ));
         });
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn local_host_controls_require_owning_main_origin_and_live_server(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let origin = crate::LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse()?)?;
+        let scheme = NSString::from_str("http");
+        let host = NSString::from_str("127.0.0.1");
+        let own = NSURL::URLWithString(&NSString::from_str("http://127.0.0.1:3456/settings"))
+            .ok_or("own URL")?;
+        let preview = NSURL::URLWithString(&NSString::from_str(
+            "http://p-lease.preview.localhost:3456/",
+        ))
+        .ok_or("preview URL")?;
+        let credentialed = NSURL::URLWithString(&NSString::from_str("http://user@127.0.0.1:3456/"))
+            .ok_or("credentialed URL")?;
+        let frame = || FrameOrigin {
+            scheme: &scheme,
+            host: &host,
+            port: 3456,
+        };
+        assert!(trusted_local_frame(true, frame(), &own, &origin, &lifetime));
+        assert!(!trusted_local_frame(
+            false,
+            frame(),
+            &own,
+            &origin,
+            &lifetime
+        ));
+        assert!(!trusted_local_frame(
+            true,
+            frame(),
+            &preview,
+            &origin,
+            &lifetime
+        ));
+        assert!(!trusted_local_frame(
+            true,
+            frame(),
+            &credentialed,
+            &origin,
+            &lifetime
+        ));
+        assert!(!trusted_local_frame(
+            true,
+            FrameOrigin {
+                scheme: &scheme,
+                host: &NSString::from_str("127.0.0.2"),
+                port: 3456,
+            },
+            &own,
+            &origin,
+            &lifetime
+        ));
+        assert!(!trusted_local_frame(
+            true,
+            FrameOrigin {
+                scheme: &scheme,
+                host: &host,
+                port: 3457,
+            },
+            &own,
+            &origin,
+            &lifetime
+        ));
+        owner.revoke()?;
+        assert!(!trusted_local_frame(
+            true,
+            frame(),
+            &own,
+            &origin,
+            &lifetime
+        ));
+        Ok(())
     }
 }

@@ -1389,6 +1389,17 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+On macOS and Windows, a local-server host can set
+`WindowOptions.titlebar = TitlebarStyle::Overlay { height }` to float native
+controls over web content. Include
+`window_css_block(&window, DesktopPlatform::current())` in the host-rendered
+document head, and use `[webui-drag]` with `[webui-no-drag]` on interactive
+children. No separate titlebar strip or application IPC grant is required;
+window controls use a fixed, main-document-only command set. Linux
+local-server frames require the native titlebar.
+For nonce-only `style-src`, pass the current response nonce to
+`window_css_block_with_nonce(&window, DesktopPlatform::current(), nonce)?`
+instead of disabling CSP or rewriting a response.
 For a failure **before** creating a local-server frame, a Rust host can opt
 into the independent `startup-failure` feature and call
 `StartupFailure::new(title, summary, help)` followed by
@@ -1421,10 +1432,13 @@ and query `services.current_theme()` for the effective native appearance
 of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
 the host persists preferences and owns SSR CSS. No renderer grant is added.
 See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
-With `native-capture`, the macOS trusted host can request a bounded, visible WK content PNG
+With `native-capture`, the macOS or Windows trusted host can request a bounded,
+visible webview PNG (WK snapshot or WebView2 `CapturePreview` on its owning STA)
 after its own preview-readiness handshake, then read/release the opaque
-resource in paced chunks. No renderer or screen-capture permission is added.
-See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos).
+resource in paced chunks. Windows rejects oversized viewports before native
+capture and has no verified runtime/iframe-pixel evidence. No renderer or
+screen-capture permission is added.
+See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos-and-windows).
 A macOS trusted host with `native-clipboard` may separately await a `public.png` clipboard write
 for that still-retained capture before any host-controlled URL opener; no
 issue-opening or renderer grant is automatic. See

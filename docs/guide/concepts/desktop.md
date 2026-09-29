@@ -251,9 +251,32 @@ browser-created `about:blank` child may still exist. Downloads and permissions
 are not granted by this API; the behavior of sandbox-allowed preview downloads
 still requires product qualification. Do not infer macOS 13 compatibility for
 `.localhost` subdomains from results on newer systems.
-Custom titlebar styles are rejected; use the native titlebar.
+On macOS and Windows, a local-server frame can use
+`TitlebarStyle::HiddenInset` or `TitlebarStyle::Overlay { height }` to place
+native caption controls over full-bleed web content. The host should compute
+`window_css_block(&window, DesktopPlatform::current())` once for the same
+`WindowOptions` passed to `.window(window)` and include that trusted style
+in its own full-document HTML `<head>`. The SDK does not rewrite the HTTP
+response. With a nonce-restricted `style-src`, instead call
+`window_css_block_with_nonce(&window, DesktopPlatform::current(), nonce)?`
+using the current HTTP response's trusted CSP nonce; the native host does
+not infer or reuse that nonce. Windows evaluates its private drag helper
+through WebView2 rather than injecting an
+HTML `<script>` node, and denies controls if the current document does not
+acknowledge installation. Apply `--webui-titlebar-inset-start` and
+`--webui-titlebar-inset-end` as padding inside the application header,
+not as a separate titlebar strip; `--webui-titlebar-height` is the requested
+header height. Mark draggable header space `webui-drag` and interactive
+controls `webui-no-drag`. Preview subframes at their own sandboxed origin
+cannot issue these commands; do not put untrusted content in a same-origin
+child that can script its parent. In particular, an inherited-origin
+`about:blank` child shares its parent's browser authority; neither native
+sender checks nor an unexposed JavaScript control nonce can make it an
+untrusted isolation boundary. Use a distinct origin and opaque sandbox for
+untrusted previews. Linux requires the native titlebar.
 The browser fetches ordinary HTTP resources directly; this is not a network
-egress sandbox. Page-originated native window controls are unavailable. Application IPC is
+egress sandbox. With a custom titlebar, bounded native window controls are
+limited to the exact main document. They are not application IPC, which is
 also disabled unless an owned macOS, Windows or Linux host explicitly calls
 `LocalServerAppBuilder::application_ipc(&listener, registry, options)` before
 `build()`, with its **retained bound TCP listener** and generated schema
