@@ -87,7 +87,15 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             .clone()
             .zip(ivars.lifetime.clone())
             .zip(ivars.frame_policy.clone())
-            .map(|((origin, lifetime), policy)| (origin, lifetime, policy)),
+            .map(
+                |((origin, lifetime), policy)| super::navigation::LocalNavigation {
+                    origin,
+                    lifetime,
+                    frame_policy: policy,
+                    #[cfg(feature = "native-services")]
+                    services: ivars.native_services.clone(),
+                },
+            ),
         #[cfg(feature = "application-ipc")]
         ivars.ipc.clone(),
     );
@@ -166,6 +174,11 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     };
     let _ = ivars.window.set(window.clone());
     let _ = ivars.webview.set(webview.clone());
+    #[cfg(feature = "native-services")]
+    if let Some(services) = &ivars.native_services {
+        let registration = services.attach_geometry(&window, &webview);
+        let _ = ivars.geometry_registration.set(registration);
+    }
     if let Some(scheme_handler) = scheme_handler {
         let _ = ivars.scheme_handler.set(scheme_handler);
     }

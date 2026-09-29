@@ -161,6 +161,11 @@ path = "tests/fixtures/local-server-smoke.rs"
 required-features = ["local-server"]
 
 [[example]]
+name = "native-geometry"
+path = "tests/fixtures/native-geometry.rs"
+required-features = ["native-services"]
+
+[[example]]
 name = "local-server-ipc"
 path = "tests/fixtures/native-ipc/local-server.rs"
 required-features = ["native", "local-server", "application-ipc"]

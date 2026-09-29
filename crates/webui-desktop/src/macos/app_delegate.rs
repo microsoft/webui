@@ -46,6 +46,11 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) frame_policy: Option<std::sync::Arc<crate::frame_policy::FramePolicy>>,
+    #[cfg(feature = "native-services")]
+    pub(in crate::macos) native_services: Option<crate::NativeServices>,
+    #[cfg(feature = "native-services")]
+    pub(in crate::macos) geometry_registration:
+        OnceCell<crate::native_services::GeometryRegistration>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) owner_close_wake: OnceCell<super::commands::CommandWake>,
     #[cfg(feature = "local-server")]
@@ -250,6 +255,10 @@ define_class!(
             if let Some(wake) = self.ivars().command_wake.get() {
                 wake.close();
             }
+            #[cfg(feature = "native-services")]
+            if let Some(registration) = self.ivars().geometry_registration.get() {
+                registration.close();
+            }
             #[cfg(feature = "local-server")]
             if let Some(wake) = self.ivars().owner_close_wake.get() {
                 wake.close();
@@ -299,6 +308,10 @@ impl DesktopAppDelegate {
             lifetime: options.lifetime,
             #[cfg(feature = "local-server")]
             frame_policy: options.frame_policy,
+            #[cfg(feature = "native-services")]
+            native_services: options.native_services,
+            #[cfg(feature = "native-services")]
+            geometry_registration: OnceCell::new(),
             #[cfg(feature = "local-server")]
             owner_close_wake: OnceCell::new(),
             #[cfg(feature = "local-server")]

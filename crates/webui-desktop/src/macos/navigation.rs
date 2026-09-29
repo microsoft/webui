@@ -10,6 +10,8 @@ use crate::{DesktopEvent, EventRegistry, EventResponse, WindowId};
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+#[cfg(feature = "native-services")]
+use objc2_foundation::NSError;
 use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSURL};
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKWebView,
@@ -19,6 +21,15 @@ use objc2_web_kit::{WKNavigationResponse, WKNavigationResponsePolicy};
 use std::sync::Arc;
 
 use super::dispatch_event;
+
+#[cfg(feature = "local-server")]
+pub(super) struct LocalNavigation {
+    pub(super) origin: crate::LoopbackOrigin,
+    pub(super) lifetime: crate::HostLifetime,
+    pub(super) frame_policy: Arc<crate::frame_policy::FramePolicy>,
+    #[cfg(feature = "native-services")]
+    pub(super) services: Option<crate::NativeServices>,
+}
 
 pub(super) struct NavigationDelegateIvars {
     pub(super) events: EventRegistry,
@@ -31,6 +42,10 @@ pub(super) struct NavigationDelegateIvars {
     frame_policy: Option<Arc<crate::frame_policy::FramePolicy>>,
     #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    #[cfg(feature = "native-services")]
+    services: Option<crate::NativeServices>,
+    #[cfg(feature = "native-services")]
+    geometry_navigation: std::cell::RefCell<Option<Option<Retained<WKNavigation>>>>,
     #[cfg(feature = "application-ipc")]
     // Outer None: no pending navigation. Inner None: WebKit supplied a nil
     // identity (as it does for cross-document Navigation API navigations).
@@ -90,9 +105,19 @@ define_class!(
             },));
         }
 
-        #[cfg(feature = "application-ipc")]
+        #[cfg(any(feature = "application-ipc", feature = "native-services"))]
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         unsafe fn started(&self, _web_view: &WKWebView, navigation: Option<&WKNavigation>) {
+            #[cfg(feature = "native-services")]
+            if let Some(services) = &self.ivars().services {
+                services.provisional_started();
+                let previous = self
+                    .ivars()
+                    .geometry_navigation
+                    .replace(Some(navigation.map(objc2::Message::retain)));
+                drop(previous);
+            }
+            #[cfg(feature = "application-ipc")]
             if let Some(ipc) = &self.ivars().ipc {
                 ipc.navigation_started();
                 let previous = self
@@ -123,6 +148,19 @@ define_class!(
             }
             #[cfg(not(feature = "application-ipc"))]
             let _ = navigation;
+            #[cfg(feature = "native-services")]
+            if let Some(services) = &self.ivars().services {
+                if committed_navigation_matches(
+                    self.ivars()
+                        .geometry_navigation
+                        .borrow()
+                        .as_ref()
+                        .map(|value| value.as_deref()),
+                    navigation,
+                ) {
+                    services.navigation_committed();
+                }
+            }
             #[cfg(feature = "application-ipc")]
             if let Some(ipc) = &self.ivars().ipc {
                 let matches = committed_navigation_matches(
@@ -201,7 +239,7 @@ define_class!(
         unsafe fn webView_didFinishNavigation(
             &self,
             web_view: &WKWebView,
-            _navigation: Option<&WKNavigation>,
+            navigation: Option<&WKNavigation>,
         ) {
             #[cfg(feature = "local-server")]
             if self
@@ -221,6 +259,22 @@ define_class!(
                 .URL()
                 .and_then(|url| url.absoluteString())
                 .map_or_else(String::new, |value| value.to_string());
+            #[cfg(feature = "native-services")]
+            if let Some(services) = &self.ivars().services {
+                if committed_navigation_matches(
+                    self.ivars()
+                        .geometry_navigation
+                        .borrow()
+                        .as_ref()
+                        .map(|value| value.as_deref()),
+                    navigation,
+                ) {
+                    self.ivars().geometry_navigation.borrow_mut().take();
+                    services.navigation_finished(&url);
+                }
+            }
+            #[cfg(not(feature = "native-services"))]
+            let _ = navigation;
             dispatch_event(
                 &self.ivars().events,
                 web_view,
@@ -233,6 +287,61 @@ define_class!(
                 super::commands::update_document_background(web_view, color);
             }
         }
+
+        #[cfg(feature = "native-services")]
+        #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
+        unsafe fn failed_provisional(
+            &self,
+            web_view: &WKWebView,
+            navigation: Option<&WKNavigation>,
+            _error: &NSError,
+        ) {
+            let Some(services) = &self.ivars().services else {
+                return;
+            };
+            if !committed_navigation_matches(
+                self.ivars()
+                    .geometry_navigation
+                    .borrow()
+                    .as_ref()
+                    .map(|value| value.as_deref()),
+                navigation,
+            ) {
+                return;
+            }
+            self.ivars().geometry_navigation.borrow_mut().take();
+            // SAFETY: WKNavigationDelegate calls this on the owning view's
+            // main thread. A failed provisional load can leave the old page
+            // live, but only its exact previously finished URL can be restored.
+            let loading = unsafe { web_view.isLoading() };
+            let current = web_view
+                .URL()
+                .and_then(|url| url.absoluteString())
+                .map(|url| url.to_string());
+            services.provisional_failed(current.as_deref(), loading);
+        }
+
+        #[cfg(feature = "native-services")]
+        #[unsafe(method(webView:didFailNavigation:withError:))]
+        unsafe fn failed_committed(
+            &self,
+            _web_view: &WKWebView,
+            navigation: Option<&WKNavigation>,
+            _error: &NSError,
+        ) {
+            if committed_navigation_matches(
+                self.ivars()
+                    .geometry_navigation
+                    .borrow()
+                    .as_ref()
+                    .map(|value| value.as_deref()),
+                navigation,
+            ) {
+                self.ivars().geometry_navigation.borrow_mut().take();
+                // A committed page that failed to finish has no verified
+                // geometry document; stay unavailable rather than guessing.
+            }
+        }
     }
 );
 
@@ -241,7 +350,7 @@ fn navigation_lifetime_active(lifetime: Option<&crate::HostLifetime>) -> bool {
     lifetime.is_none_or(crate::HostLifetime::is_active)
 }
 
-#[cfg(feature = "application-ipc")]
+#[cfg(any(feature = "application-ipc", feature = "native-services"))]
 fn committed_navigation_matches<T>(started: Option<Option<&T>>, committed: Option<&T>) -> bool {
     match (started, committed) {
         (Some(Some(started)), Some(committed)) => std::ptr::eq(started, committed),
@@ -287,24 +396,24 @@ impl DesktopNavigationDelegate {
         mtm: MainThreadMarker,
         events: EventRegistry,
         live_background: Arc<LiveBackground>,
-        #[cfg(feature = "local-server")] local: Option<(
-            crate::LoopbackOrigin,
-            crate::HostLifetime,
-            Arc<crate::frame_policy::FramePolicy>,
-        )>,
+        #[cfg(feature = "local-server")] local: Option<LocalNavigation>,
         #[cfg(feature = "application-ipc")] ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NavigationDelegateIvars {
             events,
             live_background,
             #[cfg(feature = "local-server")]
-            local_origin: local.as_ref().map(|(origin, _, _)| origin.clone()),
+            local_origin: local.as_ref().map(|local| local.origin.clone()),
             #[cfg(feature = "local-server")]
-            lifetime: local.as_ref().map(|(_, lifetime, _)| lifetime.clone()),
+            lifetime: local.as_ref().map(|local| local.lifetime.clone()),
             #[cfg(feature = "local-server")]
-            frame_policy: local.map(|(_, _, policy)| policy),
+            frame_policy: local.as_ref().map(|local| Arc::clone(&local.frame_policy)),
             #[cfg(feature = "application-ipc")]
             ipc,
+            #[cfg(feature = "native-services")]
+            services: local.and_then(|local| local.services),
+            #[cfg(feature = "native-services")]
+            geometry_navigation: std::cell::RefCell::new(None),
             #[cfg(feature = "application-ipc")]
             ipc_navigation: std::cell::RefCell::new(None),
         });
