@@ -8,8 +8,8 @@ use crate::DesktopHostMessage;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::NSApplication;
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_foundation::{ns_string, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 /// A valid host command has at most 256 UTF-8 bytes, and therefore no more
@@ -39,13 +39,53 @@ define_class!(
             _controller: &WKUserContentController,
             message: &WKScriptMessage,
         ) {
+            let Some(window) = trusted_host_window(message) else {
+                return;
+            };
             let body = message.body();
             if let Some(command) = decode_host_message(&body) {
-                run_host_message(command, self.mtm());
+                run_host_message(command, &window, self.mtm());
             }
         }
     }
 );
+
+fn trusted_host_window(message: &WKScriptMessage) -> Option<Retained<NSWindow>> {
+    // SAFETY: These are WebKit's native sender and current-document identities,
+    // not values supplied in the renderer's message body.
+    unsafe {
+        let frame = message.frameInfo();
+        if !frame.isMainFrame() {
+            return None;
+        }
+        let view = message.webView()?;
+        let url = view.URL()?;
+        let origin = frame.securityOrigin();
+        if !trusted_host_frame(
+            true,
+            &origin.protocol(),
+            &origin.host(),
+            origin.port(),
+            &url,
+        ) {
+            return None;
+        }
+        view.window()
+    }
+}
+
+fn trusted_host_frame(
+    main: bool,
+    scheme: &NSString,
+    host: &NSString,
+    port: isize,
+    current_url: &NSURL,
+) -> bool {
+    main && scheme.isEqualToString(ns_string!("webui"))
+        && host.isEqualToString(ns_string!("app"))
+        && port == 0
+        && super::navigation::trusted_app_url(current_url)
+}
 
 fn decode_host_message(body: &AnyObject) -> Option<DesktopHostMessage> {
     let text = body.downcast_ref::<NSString>()?;
@@ -63,11 +103,8 @@ fn decode_host_message(body: &AnyObject) -> Option<DesktopHostMessage> {
     DesktopHostMessage::from_json(&json).ok()
 }
 
-fn run_host_message(command: DesktopHostMessage, mtm: MainThreadMarker) {
+fn run_host_message(command: DesktopHostMessage, window: &NSWindow, mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
-    let Some(window) = app.keyWindow() else {
-        return;
-    };
     match command {
         DesktopHostMessage::StartDrag => {
             if let Some(event) = app.currentEvent() {
@@ -206,6 +243,46 @@ mod tests {
                 decode_host_message(&native_utf16(&[0x0022, 0xd83d, 0xde00, 0x0022])).is_none()
             );
             assert!(decode_host_message(&native_utf16(&[0xd83d, 0xde00])).is_none());
+        });
+    }
+
+    #[test]
+    fn host_commands_require_the_current_app_main_frame() {
+        autoreleasepool(|_| {
+            let scheme = NSString::from_str("webui");
+            let host = NSString::from_str("app");
+            let app = objc2_foundation::NSURL::URLWithString(&NSString::from_str("webui://app/"))
+                .unwrap();
+            let preview =
+                objc2_foundation::NSURL::URLWithString(&NSString::from_str("https://other.test/"))
+                    .unwrap();
+            let credentialed =
+                objc2_foundation::NSURL::URLWithString(&NSString::from_str("webui://user@app/"))
+                    .unwrap();
+            let wrong_port =
+                objc2_foundation::NSURL::URLWithString(&NSString::from_str("webui://app:80/"))
+                    .unwrap();
+
+            assert!(trusted_host_frame(true, &scheme, &host, 0, &app));
+            assert!(!trusted_host_frame(false, &scheme, &host, 0, &app));
+            assert!(!trusted_host_frame(true, &scheme, &host, 0, &preview));
+            assert!(!trusted_host_frame(true, &scheme, &host, 0, &credentialed));
+            assert!(!trusted_host_frame(true, &scheme, &host, 0, &wrong_port));
+            assert!(!trusted_host_frame(true, &scheme, &host, 443, &app));
+            assert!(!trusted_host_frame(
+                true,
+                &NSString::from_str("https"),
+                &host,
+                0,
+                &app
+            ));
+            assert!(!trusted_host_frame(
+                true,
+                &scheme,
+                &NSString::from_str("app.evil"),
+                0,
+                &app
+            ));
         });
     }
 }

@@ -118,6 +118,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         })?
+        .api_route("/fixture-platform", |_| {
+            Ok(webui_desktop::DesktopProtocolResponse::new(
+                200,
+                "text/plain",
+                platform::metadata().0.as_bytes().to_vec(),
+            ))
+        })?
+        .api_route("/fixture-host-guard-observed", {
+            let observed_host = Arc::clone(&host);
+            move |_| {
+                let observed = observed_host.observe_host_guard();
+                Ok(webui_desktop::DesktopProtocolResponse::new(
+                    if observed { 200 } else { 409 },
+                    "text/plain",
+                    if observed {
+                        b"observed".to_vec()
+                    } else {
+                        b"not-macos".to_vec()
+                    },
+                ))
+            }
+        })?
+        .api_route("/fixture-main-host-close-ready", {
+            let ready_host = Arc::clone(&host);
+            move |_| {
+                let ready = ready_host.prepare_main_host_close();
+                Ok(webui_desktop::DesktopProtocolResponse::new(
+                    if ready { 200 } else { 409 },
+                    "text/plain",
+                    if ready {
+                        b"ready".to_vec()
+                    } else {
+                        b"not-ready".to_vec()
+                    },
+                ))
+            }
+        })?
         .api_route("/fixture-diagnostic", move |context| {
             eprintln!(
                 "NATIVE_IPC_DIAGNOSTIC {}",

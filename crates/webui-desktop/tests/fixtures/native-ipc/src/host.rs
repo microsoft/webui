@@ -49,6 +49,7 @@ pub struct Host {
     report: Mutex<Option<Report>>,
     done: AtomicBool,
     reported: AtomicBool,
+    host_guard_observed: AtomicBool,
     window: Arc<OnceLock<WindowHandle>>,
 }
 
@@ -68,8 +69,24 @@ impl Host {
             report: Mutex::new(None),
             done: AtomicBool::new(false),
             reported: AtomicBool::new(false),
+            host_guard_observed: AtomicBool::new(false),
             window,
         }
+    }
+
+    pub fn observe_host_guard(&self) -> bool {
+        if crate::platform::metadata().0 != "darwin" {
+            return false;
+        }
+        self.host_guard_observed.store(true, Ordering::SeqCst);
+        true
+    }
+
+    pub fn prepare_main_host_close(&self) -> bool {
+        let done = self.done.load(Ordering::SeqCst);
+        let guard = self.host_guard_observed.load(Ordering::SeqCst);
+        eprintln!("NATIVE_IPC_MAIN_CLOSE_READY done={done} guard={guard}");
+        done && guard
     }
 
     pub fn report_closed(&self, mode: &str) {
@@ -80,6 +97,12 @@ impl Host {
             return;
         };
         if !self.done.load(Ordering::SeqCst) {
+            return;
+        }
+        if crate::platform::metadata().0 == "darwin"
+            && !self.host_guard_observed.load(Ordering::SeqCst)
+        {
+            eprintln!("NATIVE_IPC_FAILURE macOS subframe guard was not observed");
             return;
         }
         if self.reported.swap(true, Ordering::SeqCst) {
@@ -111,6 +134,8 @@ impl Host {
                 "void_rpc_completed": report.void_completed,
                 "notification_acceptance_not_completion": report.notification_accepted,
                 "native_window_closed": true,
+                "wk_subframe_host_guard": self.host_guard_observed.load(Ordering::SeqCst),
+                "wk_main_frame_host_close": crate::platform::metadata().0 == "darwin",
                 "full_document_navigation": self.lifecycle.complete(),
                 "connection_close_and_recovery": self.lifecycle.complete(),
                 "retired_session_rejected": self.lifecycle.complete(),
@@ -291,11 +316,18 @@ impl HostHandler for Host {
                     ));
                 }
                 self.done.store(true, Ordering::SeqCst);
-                self.window
-                    .get()
-                    .ok_or_else(|| failure("window missing"))?
-                    .request_close()
-                    .map_err(|_| failure("native close rejected"))
+                if crate::platform::metadata().0 == "darwin" {
+                    // The only normal macOS close after Done is the main
+                    // document's direct webuiHost command; the native
+                    // WindowClosed event is required for a passing report.
+                    Ok(())
+                } else {
+                    self.window
+                        .get()
+                        .ok_or_else(|| failure("window missing"))?
+                        .request_close()
+                        .map_err(|_| failure("native close rejected"))
+                }
             });
         Box::pin(async move { result })
     }
