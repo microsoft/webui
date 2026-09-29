@@ -82,6 +82,8 @@ pub(super) extern "system" fn window_proc(
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
             if let Some(Some(ipc)) = ipc {
                 ipc.expire_hello(w_param.0);
+                #[cfg(feature = "local-server")]
+                ipc.expire_data(w_param.0);
             }
             LRESULT(0)
         }

@@ -12,7 +12,7 @@ if ((mode !== '--check' && mode !== '--write') || !target) {
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const destination = resolve(target);
 if (mode === '--write') await mkdir(destination, { recursive: true });
-for (const name of ['native-bootstrap.js', 'desktop-runtime.js']) {
+for (const name of ['native-bootstrap.js', 'desktop-runtime.js', 'local-native-bootstrap.js', 'local-desktop-runtime.js']) {
   const source = await readFile(resolve(dist, name));
   if (mode === '--write') {
     await writeFile(resolve(destination, name), source);

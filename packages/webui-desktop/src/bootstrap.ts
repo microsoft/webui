@@ -4,7 +4,7 @@
 import { errorCode, IpcError, ipcError } from './errors.js';
 import { defaultLimits, validateLimits, type IpcLimits } from './limits.js';
 import { projectHello } from './hello.js';
-import type { DocumentActivation, Hello, NativeControl, NativeIpcBootstrap, SessionInfo, Subscription } from './types.js';
+import type { DocumentActivation, Hello, NativeControl, NativeIpcBootstrap, NativeDataLane, SessionInfo, Subscription } from './types.js';
 
 /** Native-only adapter surface. Application DTOs never pass through this channel. */
 export interface NativeChannel {
@@ -39,7 +39,7 @@ interface BootstrapEpoch {
   retire(): void;
 }
 
-function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): BootstrapEpoch {
+function createBootstrapEpoch(channel: NativeChannel, dataLane?: NativeDataLane, retiredGeneration = 0n): BootstrapEpoch {
   let documentNonce = '';
   for (const byte of crypto.getRandomValues(new Uint8Array(16))) documentNonce += byte.toString(16).padStart(2, '0');
   let activation: Readonly<DocumentActivation> | undefined;
@@ -48,6 +48,7 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
   let attempted = false;
   let closed = false;
   let admitted: { generation: string; token: string } | undefined;
+  let admittedCarrier = false;
   let lastGeneration = retiredGeneration;
   let pending: { resolve(value: SessionInfo): void; reject(error: IpcError): void; timer: ReturnType<typeof setTimeout> } | undefined;
   const callId = '1';
@@ -63,6 +64,7 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
     if (!admitted) return;
     const value = admitted;
     admitted = undefined;
+    admittedCarrier = false;
     postDisconnect(value);
   }
   function matchesProof(message: Record<string, unknown>, proof: Readonly<DocumentActivation>): boolean {
@@ -115,14 +117,22 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
       if (!generation(message.generation)) throw new IpcError('invalid-frame');
       if (!isHex(message.token, 32)) throw new IpcError('invalid-frame');
       admitted = { generation: message.generation, token: message.token };
+      const requested = activation.nativeCarrierVersion;
+      if (requested === 1 ? message.nativeCarrierVersion !== 1 : message.nativeCarrierVersion !== undefined) {
+        throw new IpcError('unsupported-version');
+      }
       if (BigInt(message.generation) <= retiredGeneration) throw new IpcError('navigated');
       lastGeneration = BigInt(message.generation);
       const limits = record(message.limits) as unknown as IpcLimits;
       validateLimits(limits);
+      admittedCarrier = requested === 1;
       const current = pending;
       pending = undefined;
       clearTimeout(current.timer);
-      current.resolve({ generation: message.generation, token: message.token, limits: Object.freeze({ ...limits }) });
+      current.resolve({
+        generation: message.generation, token: message.token, limits: Object.freeze({ ...limits }),
+        ...(admittedCarrier ? { nativeCarrierVersion: 1 as const } : {}),
+      });
     } catch (error) { fail(ipcError(error, 'invalid-frame')); }
   }
 
@@ -130,9 +140,14 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
     documentNonce,
     activate(proof): boolean {
       if (closed || !proof || proof.documentNonce !== documentNonce ||
-          !generation(proof.navigation, true) || !isHex(proof.challenge, 32)) return false;
-      if (activation) return activation.navigation === proof.navigation && activation.challenge === proof.challenge;
-      activation = Object.freeze({ navigation: proof.navigation, documentNonce, challenge: proof.challenge });
+          !generation(proof.navigation, true) || !isHex(proof.challenge, 32) ||
+          (proof.nativeCarrierVersion !== undefined && (proof.nativeCarrierVersion !== 1 || !dataLane))) return false;
+      if (activation) return activation.navigation === proof.navigation && activation.challenge === proof.challenge &&
+        activation.nativeCarrierVersion === proof.nativeCarrierVersion;
+      activation = Object.freeze({
+        navigation: proof.navigation, documentNonce, challenge: proof.challenge,
+        ...(proof.nativeCarrierVersion === 1 ? { nativeCarrierVersion: 1 as const } : {}),
+      });
       const resume = activateWait;
       activateWait = undefined;
       resume?.();
@@ -195,6 +210,7 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
       listener = undefined;
       disconnectNative();
     },
+    get nativeData() { return !closed && admittedCarrier ? dataLane : undefined; },
   };
   return {
     bootstrap: Object.freeze(bootstrap),
@@ -205,6 +221,7 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
       const value = admitted?.generation ?? '0';
       closed = true;
       pending = undefined;
+      admittedCarrier = false;
       listener = undefined;
       activation = undefined;
       activateWait = undefined;
@@ -218,8 +235,8 @@ function createBootstrapEpoch(channel: NativeChannel, retiredGeneration = 0n): B
 }
 
 /** Normalize reply-capable WK/GTK and correlated WebView2 controls for one epoch. */
-export function createNativeBootstrap(channel: NativeChannel): NativeIpcBootstrap {
-  return createBootstrapEpoch(channel).bootstrap;
+export function createNativeBootstrap(channel: NativeChannel, dataLane?: NativeDataLane): NativeIpcBootstrap {
+  return createBootstrapEpoch(channel, dataLane).bootstrap;
 }
 
 /** Install only from the main-frame native document-start bootstrap. */
@@ -227,16 +244,18 @@ export function installNativeBootstrap(
   target: object,
   channel: NativeChannel,
   subscribePageHide?: (listener: (persisted: boolean) => void) => void,
+  dataLane?: NativeDataLane,
 ): NativeIpcBootstrap {
   if ('__webuiDesktopIpcV2' in target) throw new IpcError('invalid-frame', 'Conflicting IPC bootstrap.');
   if (!Object.isExtensible(target)) throw new IpcError('invalid-frame', 'IPC bootstrap target is not extensible.');
-  let current = createBootstrapEpoch(channel);
+  let current = createBootstrapEpoch(channel, dataLane);
   const bootstrap: NativeIpcBootstrap = Object.freeze({
     get documentNonce() { return current.bootstrap.documentNonce; },
     activate: (proof: DocumentActivation) => current.bootstrap.activate(proof),
     hello: (hello: Hello) => current.bootstrap.hello(hello),
     subscribeControl: (listener: (control: NativeControl) => void) => current.bootstrap.subscribeControl(listener),
     disconnect: (generation: string, token: string) => current.bootstrap.disconnect(generation, token),
+    get nativeData() { return current.bootstrap.nativeData; },
   });
   Object.defineProperty(target, '__webuiDesktopIpcV2', { value: bootstrap, writable: false, configurable: false });
   subscribePageHide?.(persisted => {
@@ -245,7 +264,7 @@ export function installNativeBootstrap(
     finally {
       // Prepare before BFCache freezes the realm; native restore probes can
       // precede pageshow. Only admission state changes, never old connections.
-      if (persisted) current = createBootstrapEpoch(channel, previous.generation);
+      if (persisted) current = createBootstrapEpoch(channel, dataLane, previous.generation);
     }
   });
   return bootstrap;

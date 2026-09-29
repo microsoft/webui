@@ -3,20 +3,61 @@
 
 //! Direct loopback HTTP content for an opt-in native window.
 
+#[cfg(feature = "application-ipc")]
+use std::net::TcpListener;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+#[cfg(all(
+    feature = "application-ipc",
+    any(target_os = "macos", target_os = "windows")
+))]
+use crate::ipc::{IpcBridge, IpcWindow};
+#[cfg(feature = "application-ipc")]
+use crate::ipc::{IpcHost, IpcOptions, IpcRegistry, IpcWindowOwner};
 use crate::{
     DesktopError, DesktopEvent, DesktopShellConfig, EventRegistrationError, EventRegistry,
     EventResponse, EventSubscription, Result, WindowHandle, WindowOptions,
 };
 
+#[cfg(feature = "application-ipc")]
+mod owned_ipc;
+#[cfg(feature = "application-ipc")]
+pub use owned_ipc::bind_owned_local_server;
+#[cfg(feature = "application-ipc")]
+pub(crate) use owned_ipc::OwnedLocalServerIpc;
+
+/// Suggested static URL for hosts that choose to mount the matching embedded
+/// local-only browser runtime. This is an asset route, never an IPC endpoint.
+#[cfg(all(
+    feature = "application-ipc",
+    any(target_os = "macos", target_os = "windows")
+))]
+pub const LOCAL_IPC_RUNTIME_PATH: &str = "/_webui/ipc/local-runtime.js";
+
+/// Borrow the dedicated local IPC browser bundle without copying its bytes.
+///
+/// Hosts may serve these bytes at [`LOCAL_IPC_RUNTIME_PATH`] with
+/// `text/javascript; charset=utf-8`, or bundle
+/// `@microsoft/webui-desktop/native` in their own application assets instead.
+/// The SDK does not proxy or intercept the host's listener. This file
+/// contains no session credentials; application IPC messages stay on the
+/// separate private native lane.
+#[cfg(all(
+    feature = "application-ipc",
+    any(target_os = "macos", target_os = "windows")
+))]
+#[must_use]
+pub fn local_ipc_runtime_asset() -> &'static [u8] {
+    crate::ipc_assets::LOCAL_BROWSER_RUNTIME
+}
+
 #[derive(Clone)]
 enum CloseCallback {
     #[cfg(any(target_os = "macos", test))]
     Native(Arc<dyn Fn() + Send + Sync>),
-    #[cfg(any(target_os = "windows", test))]
+    #[cfg(any(target_os = "windows", target_os = "linux", test))]
     Fallible(Arc<dyn Fn() -> std::result::Result<(), HostCloseError> + Send + Sync>),
 }
 
@@ -25,7 +66,7 @@ impl CloseCallback {
         match (self, other) {
             #[cfg(any(target_os = "macos", test))]
             (Self::Native(left), Self::Native(right)) => Arc::ptr_eq(left, right),
-            #[cfg(any(target_os = "windows", test))]
+            #[cfg(any(target_os = "windows", target_os = "linux", test))]
             (Self::Fallible(left), Self::Fallible(right)) => Arc::ptr_eq(left, right),
             #[cfg(test)]
             _ => false,
@@ -39,7 +80,7 @@ impl CloseCallback {
                 callback();
                 Ok(())
             }
-            #[cfg(any(target_os = "windows", test))]
+            #[cfg(any(target_os = "windows", target_os = "linux", test))]
             Self::Fallible(callback) => callback(),
         }
     }
@@ -109,7 +150,7 @@ impl Drop for HostCloseRegistration {
 
 impl HostLifetime {
     /// Create a one-owner lifetime and a weak frame capability.
-    #[must_use]
+    #[must_use = "retain the returned owner until its local-server window closes"]
     pub fn new() -> (HostLifetimeOwner, Self) {
         let inner = Arc::new(HostLifetimeInner {
             active: AtomicBool::new(true),
@@ -150,7 +191,7 @@ impl HostLifetime {
         self.install_close(CloseCallback::Native(callback))
     }
 
-    #[cfg(any(target_os = "windows", test))]
+    #[cfg(any(target_os = "windows", target_os = "linux", test))]
     pub(crate) fn register_close_fallible(
         &self,
         callback: Arc<dyn Fn() -> std::result::Result<(), HostCloseError> + Send + Sync>,
@@ -300,6 +341,25 @@ impl LoopbackOrigin {
                 && !url.bytes().any(|byte| byte.is_ascii_control())
         })
     }
+
+    #[cfg(all(feature = "application-ipc", target_os = "macos"))]
+    pub(crate) fn matches_security_origin(&self, scheme: &str, host: &str, port: isize) -> bool {
+        if scheme != "http" || port <= 0 {
+            return false;
+        }
+        let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        else {
+            return false;
+        };
+        let Ok(port) = u16::try_from(port) else {
+            return false;
+        };
+        LoopbackOrigin::from_socket_addr(SocketAddr::new(ip, port))
+            .is_ok_and(|origin| origin == *self)
+    }
 }
 
 /// Startup URL configuration for a server the trusted host already owns.
@@ -361,6 +421,8 @@ pub struct LocalServerAppBuilder {
     window: WindowOptions,
     shell: DesktopShellConfig,
     app_id: Option<String>,
+    #[cfg(feature = "application-ipc")]
+    ipc: Option<(OwnedLocalServerIpc, IpcRegistry, IpcOptions)>,
 }
 
 impl LocalServerAppBuilder {
@@ -370,6 +432,8 @@ impl LocalServerAppBuilder {
             window: WindowOptions::default(),
             shell: DesktopShellConfig::default(),
             app_id: None,
+            #[cfg(feature = "application-ipc")]
+            ipc: None,
         }
     }
 
@@ -394,6 +458,32 @@ impl LocalServerAppBuilder {
         self
     }
 
+    /// Enable generated application IPC only for this exact owned listener.
+    ///
+    /// The host must own and retain the listener and its lifetime owner until
+    /// the window closes. Passing only an address or attached-daemon loss
+    /// signal cannot grant IPC. The SDK duplicates the socket so an accidental
+    /// early drop cannot permit another process to rebind the IPC origin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a listener on another address or a retired host.
+    #[cfg(feature = "application-ipc")]
+    pub fn application_ipc(
+        mut self,
+        listener: &TcpListener,
+        registry: IpcRegistry,
+        options: IpcOptions,
+    ) -> Result<Self> {
+        let owned = OwnedLocalServerIpc::from_listener(
+            listener,
+            &self.options.origin,
+            &self.options.lifetime,
+        )?;
+        self.ipc = Some((owned, registry, options));
+        Ok(self)
+    }
+
     /// Build the owning window without contacting or authenticating the server.
     ///
     /// # Errors
@@ -409,13 +499,27 @@ impl LocalServerAppBuilder {
                 help: "Use TitlebarStyle::Native; custom titlebar presentation is not wired to local HTTP documents".to_string(),
             });
         }
-        if !cfg!(any(target_os = "macos", target_os = "windows")) {
+        if !cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )) {
             return Err(DesktopError::UnsupportedRuntime {
                 message: "local-server native frames are not supported on this target".to_string(),
-                help: "Use macOS or Windows, or run an existing bundled/source frame on Linux"
-                    .to_string(),
+                help: "Use macOS, Windows or Linux with a native webview runtime".to_string(),
             });
         }
+        #[cfg(feature = "application-ipc")]
+        let ipc_owner = self
+            .ipc
+            .map(|(owned, registry, options)| {
+                IpcWindowOwner::new(
+                    Arc::new(registry),
+                    options,
+                    IpcHost::LocalOwned(Arc::new(owned)),
+                )
+            })
+            .transpose()?;
         let live_background = std::sync::Arc::default();
         Ok(LocalServerFrame {
             options: self.options,
@@ -428,6 +532,8 @@ impl LocalServerAppBuilder {
             live_background,
             #[cfg(feature = "native")]
             executor: std::sync::Arc::default(),
+            #[cfg(feature = "application-ipc")]
+            ipc_owner,
         })
     }
 }
@@ -435,8 +541,10 @@ impl LocalServerAppBuilder {
 /// Owner of the local-server window, its event callbacks and native commands.
 ///
 /// The trusted host must retain its verified listener for this frame's entire
-/// lifetime. This frame neither authenticates the server nor exposes IPC or
-/// page-originated native window controls.
+/// lifetime. The frame does not authenticate the HTTP server or expose
+/// page-originated native window controls. Application IPC remains disabled
+/// unless the builder was explicitly given the owned listener and generated
+/// grants.
 pub struct LocalServerFrame {
     pub(crate) options: LocalServerOptions,
     pub(crate) window: WindowOptions,
@@ -448,9 +556,28 @@ pub struct LocalServerFrame {
     pub(crate) live_background: std::sync::Arc<crate::window::LiveBackground>,
     #[cfg(feature = "native")]
     pub(crate) executor: std::sync::Arc<crate::execution::ApplicationExecutor>,
+    #[cfg(feature = "application-ipc")]
+    pub(crate) ipc_owner: Option<IpcWindowOwner>,
 }
 
 impl LocalServerFrame {
+    /// Borrow the weak application IPC handle, if explicitly enabled.
+    #[cfg(all(
+        feature = "application-ipc",
+        any(target_os = "macos", target_os = "windows")
+    ))]
+    #[must_use]
+    pub fn ipc(&self) -> Option<IpcWindow> {
+        self.ipc_owner.as_ref().map(IpcWindowOwner::window)
+    }
+
+    #[cfg(all(
+        feature = "application-ipc",
+        any(target_os = "macos", target_os = "windows")
+    ))]
+    pub(crate) fn ipc_bridge(&self) -> Option<IpcBridge> {
+        self.ipc_owner.as_ref().map(IpcWindowOwner::bridge)
+    }
     /// Borrow the canonical HTTP origin.
     #[must_use]
     pub fn origin(&self) -> &LoopbackOrigin {
@@ -497,6 +624,10 @@ impl LocalServerFrame {
 
 impl Drop for LocalServerFrame {
     fn drop(&mut self) {
+        #[cfg(feature = "application-ipc")]
+        if let Some(owner) = &self.ipc_owner {
+            owner.close();
+        }
         #[cfg(feature = "native")]
         self.executor.close();
         self.window_handle.close();
@@ -505,6 +636,11 @@ impl Drop for LocalServerFrame {
 }
 
 /// Run the frame on the OS UI thread until its window closes.
+///
+/// Returning (including on startup error) means the SDK's duplicate listener
+/// pin has been released after terminal IPC retirement. The caller may then
+/// wait for HTTP listener quiescence before releasing its original listener;
+/// never wait for quiescence before the native window has closed.
 ///
 /// # Errors
 ///
@@ -518,6 +654,33 @@ pub fn run_local_server_frame(frame: LocalServerFrame) -> Result<()> {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[cfg(all(
+        feature = "application-ipc",
+        any(target_os = "macos", target_os = "windows")
+    ))]
+    #[test]
+    fn local_runtime_is_explicit_and_never_substituted_for_the_default_bundle() {
+        assert_eq!(LOCAL_IPC_RUNTIME_PATH, "/_webui/ipc/local-runtime.js");
+        let local = std::str::from_utf8(local_ipc_runtime_asset()).unwrap();
+        assert!(local.contains("createNativeDesktopTransport"));
+        assert!(local.contains("nativeCarrierVersion"));
+        let bundled = std::str::from_utf8(crate::ipc_assets::BROWSER_RUNTIME).unwrap();
+        assert!(!bundled.contains("createNativeDesktopTransport"));
+    }
+
+    #[cfg(all(feature = "application-ipc", target_os = "macos"))]
+    #[test]
+    fn wk_security_origin_must_match_the_bound_ip_and_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = LoopbackOrigin::from_socket_addr(address).unwrap();
+        let port = isize::try_from(u32::from(address.port())).unwrap();
+        assert!(origin.matches_security_origin("http", "127.0.0.1", port));
+        assert!(!origin.matches_security_origin("http", "127.0.0.2", port));
+        assert!(!origin.matches_security_origin("https", "127.0.0.1", port));
+        assert!(!origin.matches_security_origin("http", "127.0.0.1", port + 1));
+    }
 
     #[test]
     fn origin_requires_bound_loopback_literal() {

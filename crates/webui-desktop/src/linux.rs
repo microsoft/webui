@@ -14,6 +14,8 @@ mod ipc_message;
 mod ipc_scheme;
 #[cfg(feature = "application-ipc")]
 mod ipc_wake;
+#[cfg(feature = "local-server")]
+mod local_server;
 mod protocol;
 mod response;
 mod state;
@@ -25,3 +27,5 @@ pub(super) const APP_ORIGIN: &str = "webui://app";
 
 pub(crate) use backend::run_frame;
 pub use backend::{run_packaged_app, run_runtime};
+#[cfg(feature = "local-server")]
+pub(crate) use local_server::run_local_server_frame;

@@ -4,6 +4,56 @@
 use super::*;
 use objc2_foundation::NSURL;
 
+#[cfg(feature = "local-server")]
+#[test]
+fn idle_native_cursor_is_retired_by_the_runloop_without_another_message() {
+    use objc2_foundation::{NSDate, NSRunLoop};
+    use std::time::{Duration, Instant};
+
+    let owner = owner();
+    let state = MacIpc::new(owner.bridge());
+    state.commit_for_test();
+    state.data.borrow_mut().seed_test_incoming(
+        owner.bridge().reserve_input(4096).unwrap(),
+        Instant::now() + Duration::from_millis(20),
+    );
+    state.arm_data_deadline();
+    assert!(state.data_timer.borrow().is_some());
+    NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.1));
+    assert!(state.data.borrow().next_deadline().is_none());
+    assert!(state.data_timer.borrow().is_none());
+    state.close();
+}
+
+#[cfg(feature = "local-server")]
+#[test]
+fn idle_native_output_lease_is_released_by_the_runloop() {
+    use objc2_foundation::{NSDate, NSRunLoop};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let owner = owner();
+    let state = MacIpc::new(owner.bridge());
+    state.commit_for_test();
+    let dropped = Arc::new(AtomicBool::new(false));
+    state.data.borrow_mut().seed_test_outgoing(
+        crate::DesktopResponseBody::with_guard(vec![1; 4096], DropFlag(Arc::clone(&dropped))),
+        Instant::now() + Duration::from_millis(20),
+    );
+    state.arm_data_deadline();
+    NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.1));
+    assert!(dropped.load(Ordering::Acquire));
+    assert!(state.data_timer.borrow().is_none());
+    state.close();
+}
+
 fn owner() -> crate::ipc::IpcWindowOwner {
     crate::ipc::IpcWindowOwner::new(
         std::sync::Arc::new(crate::ipc::IpcRegistry::default()),

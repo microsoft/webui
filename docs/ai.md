@@ -1392,6 +1392,10 @@ Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+An existing Rust HTTP app can instead opt into a native window for its bound
+loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
+render that server's routes again. Local-server application IPC is a separate
+owned-listener grant, not enabled by the `local-server` feature alone.
 Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
 for live presentation changes from Rust; these do not change the stable app ID
 or packaged defaults. The background applies to the native surface, current

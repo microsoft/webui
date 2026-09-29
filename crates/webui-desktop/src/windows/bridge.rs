@@ -18,6 +18,7 @@ use super::webview::handle_host_message;
 pub(super) fn register_message_handler(
     webview: &ICoreWebView2,
     hwnd: HWND,
+    controls: bool,
     #[cfg(feature = "application-ipc")] ipc: Weak<super::ipc::WindowsIpc>,
 ) -> Result<ICoreWebView2WebMessageReceivedEventHandler> {
     let handler = WebMessageReceivedEventHandler::create(Box::new(move |_sender, args| {
@@ -26,7 +27,9 @@ pub(super) fn register_message_handler(
             if let Some(ipc) = ipc.upgrade() {
                 ipc.message(&args)?;
             }
-            handle_host_message(hwnd, &args)?;
+            if controls {
+                handle_host_message(hwnd, &args)?;
+            }
         }
         Ok(())
     }));

@@ -216,7 +216,18 @@ fn run_content(frame: FrameContent) -> Result<()> {
             window_frame.hwnd,
         )?),
         #[cfg(feature = "local-server")]
-        FrameContent::Local(_) => None,
+        FrameContent::Local(local) => local
+            .ipc_bridge()
+            .map(|bridge| {
+                ipc::WindowsIpc::new_local(
+                    bridge,
+                    &webview,
+                    window_frame.hwnd,
+                    local.origin().clone(),
+                    local.lifetime().clone(),
+                )
+            })
+            .transpose()?,
     };
     #[cfg(feature = "application-ipc")]
     let _ipc_shutdown = ipc.as_ref().map(|ipc| ipc::Shutdown(Rc::clone(ipc)));
@@ -268,10 +279,21 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // This handler executes native window commands without a committed HTTP
     // document proof. Never register it for local-server content, even when
     // application-ipc is compiled in; P4 must establish that authority first.
-    let web_message_received = if matches!(&frame, FrameContent::Bundle(_)) {
+    let controls = matches!(&frame, FrameContent::Bundle(_));
+    let web_message_received = if controls || {
+        #[cfg(feature = "application-ipc")]
+        {
+            ipc.is_some()
+        }
+        #[cfg(not(feature = "application-ipc"))]
+        {
+            false
+        }
+    } {
         Some(bridge::register_message_handler(
             &webview,
             window_frame.hwnd,
+            controls,
             #[cfg(feature = "application-ipc")]
             ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
         )?)
@@ -347,7 +369,19 @@ fn run_content(frame: FrameContent) -> Result<()> {
     install_wakeup(window_frame.hwnd)?;
     #[cfg(feature = "application-ipc")]
     if let Some(ipc) = &ipc {
-        ipc.install(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT)?;
+        let script = if ipc.is_local() {
+            #[cfg(feature = "local-server")]
+            {
+                crate::ipc_assets::LOCAL_NATIVE_BOOTSTRAP_SCRIPT
+            }
+            #[cfg(not(feature = "local-server"))]
+            {
+                crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+            }
+        } else {
+            crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+        };
+        ipc.install(script)?;
     }
     #[cfg(feature = "local-server")]
     if let FrameContent::Local(local) = &frame {

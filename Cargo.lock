@@ -2193,6 +2193,7 @@ name = "microsoft-webui-desktop"
 version = "0.0.30"
 dependencies = [
  "anyhow",
+ "base64",
  "block2",
  "clap",
  "console",
@@ -2220,6 +2221,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "tempfile",
  "thiserror",
  "webkit6",

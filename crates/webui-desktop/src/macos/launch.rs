@@ -29,6 +29,13 @@ use super::tray::install_tray;
 use super::window::{apply_window_options, DesktopWindow};
 use super::{devtools_enabled_by_env, dispatch_event, startup_url};
 
+struct WebviewHandlers<'a> {
+    scheme: Option<&'a Retained<DesktopSchemeHandler>>,
+    host: Option<&'a Retained<DesktopHostMessageHandler>>,
+    #[cfg(feature = "application-ipc")]
+    ipc: Option<&'a std::rc::Rc<super::ipc::MacIpc>>,
+}
+
 /// Build the window and webview, wire every peripheral, then show the window
 /// and load the startup URL.
 pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSApplication) {
@@ -86,8 +93,12 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     let webview = build_webview(
         mtm,
         &ivars.options,
-        scheme_handler.as_ref(),
-        host_message_handler.as_ref(),
+        WebviewHandlers {
+            scheme: scheme_handler.as_ref(),
+            host: host_message_handler.as_ref(),
+            #[cfg(feature = "application-ipc")]
+            ipc: ivars.ipc.as_ref(),
+        },
         rect,
     );
     #[cfg(feature = "application-ipc")]
@@ -251,8 +262,7 @@ pub(super) fn persist_window_state_if_enabled(delegate: &DesktopAppDelegate) {
 fn build_webview(
     mtm: MainThreadMarker,
     options: &WindowOptions,
-    scheme_handler: Option<&Retained<DesktopSchemeHandler>>,
-    host_message_handler: Option<&Retained<DesktopHostMessageHandler>>,
+    handlers: WebviewHandlers<'_>,
     rect: NSRect,
 ) -> Retained<WKWebView> {
     // SAFETY: WKWebViewConfiguration::new and WKWebView initialization must
@@ -262,7 +272,7 @@ fn build_webview(
         // SAFETY: The handler object lives for the app lifetime via the
         // `scheme_handler` OnceCell in the caller, and WebKit calls it only on
         // the main thread for the registered custom scheme.
-        if let Some(scheme_handler) = scheme_handler {
+        if let Some(scheme_handler) = handlers.scheme {
             config.setURLSchemeHandler_forURLScheme(
                 Some(ProtocolObject::from_ref(&**scheme_handler)),
                 &NSString::from_str("webui"),
@@ -270,7 +280,7 @@ fn build_webview(
         }
         config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
         let content = config.userContentController();
-        if let Some(host_message_handler) = host_message_handler {
+        if let Some(host_message_handler) = handlers.host {
             let mut source = String::with_capacity(DRAG_REGION_SCRIPT.len() + 88);
             source.push_str(
             "window.webuiHostPostMessage=m=>window.webkit.messageHandlers.webuiHost.postMessage(m);",
@@ -289,8 +299,9 @@ fn build_webview(
             );
         }
         #[cfg(feature = "application-ipc")]
-        if let Some(ipc) = scheme_handler.and_then(|handler| handler.ipc_state()) {
-            let handler = super::ipc_message::DesktopIpcMessageHandler::new(mtm, ipc);
+        if let Some(ipc) = handlers.ipc {
+            let handler =
+                super::ipc_message::DesktopIpcMessageHandler::new(mtm, std::rc::Rc::clone(ipc));
             content.addScriptMessageHandlerWithReply_contentWorld_name(
                 ProtocolObject::from_ref(&*handler),
                 &objc2_web_kit::WKContentWorld::pageWorld(mtm),
@@ -298,11 +309,34 @@ fn build_webview(
             );
             let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 WKUserScript::alloc(mtm),
-                &NSString::from_str(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT),
+                &NSString::from_str(if ipc.is_local() {
+                    #[cfg(feature = "local-server")]
+                    {
+                        crate::ipc_assets::LOCAL_NATIVE_BOOTSTRAP_SCRIPT
+                    }
+                    #[cfg(not(feature = "local-server"))]
+                    {
+                        crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+                    }
+                } else {
+                    crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+                }),
                 WKUserScriptInjectionTime::AtDocumentStart,
                 true,
             );
             content.addUserScript(&script);
+            #[cfg(feature = "local-server")]
+            if ipc.is_local() {
+                let data = super::ipc_data_message::DesktopIpcDataHandler::new(
+                    mtm,
+                    std::rc::Rc::clone(ipc),
+                );
+                content.addScriptMessageHandlerWithReply_contentWorld_name(
+                    ProtocolObject::from_ref(&*data),
+                    &objc2_web_kit::WKContentWorld::pageWorld(mtm),
+                    &NSString::from_str("webuiDesktopIpcData"),
+                );
+            }
         }
         let webview = WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), rect, &config);
         if options.devtools || devtools_enabled_by_env() {

@@ -42,6 +42,26 @@ pub(crate) fn hello_reply_json(
     hello: &NativeHello,
     result: &Result<crate::ipc::SessionInfo, IpcError>,
 ) -> Result<Vec<u8>, serde_json::Error> {
+    encode_hello_reply(hello, result, None)
+}
+
+/// A successful owned local-server admission always advertises the private
+/// native data lane. There is deliberately no boolean argument with which a
+/// local adapter could serialize a token-bearing HTTP fallback reply.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) fn hello_reply_json_local(
+    hello: &NativeHello,
+    result: &Result<crate::ipc::SessionInfo, IpcError>,
+) -> Result<Vec<u8>, serde_json::Error> {
+    encode_hello_reply(hello, result, result.is_ok().then_some(1))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn encode_hello_reply(
+    hello: &NativeHello,
+    result: &Result<crate::ipc::SessionInfo, IpcError>,
+    native_carrier_version: Option<u8>,
+) -> Result<Vec<u8>, serde_json::Error> {
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Reply<'a> {
@@ -53,6 +73,8 @@ pub(crate) fn hello_reply_json(
         session: Option<&'a crate::ipc::SessionInfo>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_carrier_version: Option<u8>,
     }
     #[derive(serde::Serialize)]
     struct Error {
@@ -67,6 +89,7 @@ pub(crate) fn hello_reply_json(
             .as_ref()
             .err()
             .map(|error| Error { code: error.code }),
+        native_carrier_version,
     })
 }
 
@@ -78,8 +101,24 @@ pub(crate) fn hello_reply_json(
 pub(crate) fn activation_script(
     proof: &crate::ipc::DocumentActivation,
 ) -> Result<String, serde_json::Error> {
+    encode_activation_script(proof, "")
+}
+
+/// Owned local-server activation cannot be constructed without carrier v1.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) fn activation_script_local(
+    proof: &crate::ipc::DocumentActivation,
+) -> Result<String, serde_json::Error> {
+    encode_activation_script(proof, "p.nativeCarrierVersion=1;")
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn encode_activation_script(
+    proof: &crate::ipc::DocumentActivation,
+    version: &str,
+) -> Result<String, serde_json::Error> {
     let proof = serde_json::to_string(proof)?;
-    Ok(format!("(()=>{{'use strict';const p={proof};const b=window.__webuiDesktopIpcV2;if(!b||b.documentNonce!==p.documentNonce)return false;return b.activate(p);}})()"))
+    Ok(format!("(()=>{{'use strict';const p={proof};const b=window.__webuiDesktopIpcV2;if(!b||b.documentNonce!==p.documentNonce)return false;{version}return b.activate(p);}})()"))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -198,6 +237,51 @@ mod tests {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    #[test]
+    fn owned_local_admission_never_delivers_a_token_without_native_carrier_v1() {
+        let hello = NativeHello {
+            call_id: "1".into(),
+            hello: crate::ipc::Hello {
+                wire_version: crate::ipc::IPC_VERSION,
+                contract_name: "test".into(),
+                contract_major: 1,
+                schema_hash: "a".repeat(64),
+            },
+            proof: crate::ipc::DocumentActivation {
+                navigation: 1,
+                document_nonce: [1; 16],
+                challenge: [2; 16],
+            },
+        };
+        let admitted = Ok(crate::ipc::SessionInfo {
+            generation: 1,
+            token: "b".repeat(32),
+            limits: crate::ipc::IpcLimits::default(),
+        });
+        let local: serde_json::Value =
+            serde_json::from_slice(&hello_reply_json_local(&hello, &admitted).unwrap()).unwrap();
+        assert_eq!(local["nativeCarrierVersion"], 1);
+        assert_eq!(local["token"], "b".repeat(32));
+        let bundled: serde_json::Value =
+            serde_json::from_slice(&hello_reply_json(&hello, &admitted).unwrap()).unwrap();
+        assert!(bundled.get("nativeCarrierVersion").is_none());
+        let denied = Err(crate::ipc::IpcError::new(
+            IpcErrorCode::PermissionDenied,
+            "denied",
+            "reload the document",
+        ));
+        let error: serde_json::Value =
+            serde_json::from_slice(&hello_reply_json_local(&hello, &denied).unwrap()).unwrap();
+        assert!(error.get("token").is_none());
+        assert!(error.get("nativeCarrierVersion").is_none());
+
+        let local_script = activation_script_local(&hello.proof).unwrap();
+        assert!(local_script.contains("p.nativeCarrierVersion=1;"));
+        assert!(!activation_script(&hello.proof)
+            .unwrap()
+            .contains("nativeCarrierVersion"));
     }
 
     #[test]

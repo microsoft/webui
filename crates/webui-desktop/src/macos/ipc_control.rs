@@ -5,7 +5,7 @@ use objc2::runtime::AnyObject;
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
 use crate::ipc::{DocumentActivation, Hello, IpcError, IpcErrorCode};
-pub(super) use crate::native_ipc::{hello_reply_json as reply_json, NativeHello as HelloControl};
+pub(super) use crate::native_ipc::NativeHello as HelloControl;
 
 pub(super) const MAX_CONTROL_BYTES: usize = 4096;
 
@@ -76,7 +76,7 @@ fn digit(value: u8) -> Option<u8> {
     }
 }
 
-pub(super) fn decode(body: &AnyObject) -> Option<Control> {
+pub(super) fn decode(body: &AnyObject, carrier: bool) -> Option<Control> {
     // WebKit creates NSDictionary containers for JS records. Verify every
     // value before use; never serialize/describe an untrusted native object.
     let fields = body.downcast_ref::<NSDictionary>()?;
@@ -89,20 +89,25 @@ pub(super) fn decode(body: &AnyObject) -> Option<Control> {
                 token,
             })
         }
-        "hello" if fields.count() == 9 => Some(Control::Hello(HelloControl {
-            call_id: field(fields, "callId", 32).filter(|s| !s.is_empty())?,
-            hello: Hello {
-                wire_version: number(fields, "wireVersion")?,
-                contract_name: field(fields, "contractName", 256)?,
-                contract_major: number(fields, "contractMajor")?,
-                schema_hash: field(fields, "schemaHash", 64)?,
-            },
-            proof: DocumentActivation {
-                navigation: decimal(&field(fields, "navigation", 20)?)?,
-                document_nonce: nonce(&field(fields, "documentNonce", 32)?)?,
-                challenge: nonce(&field(fields, "challenge", 32)?)?,
-            },
-        })),
+        "hello"
+            if fields.count() == if carrier { 10 } else { 9 }
+                && (!carrier || number(fields, "nativeCarrierVersion") == Some(1)) =>
+        {
+            Some(Control::Hello(HelloControl {
+                call_id: field(fields, "callId", 32).filter(|s| !s.is_empty())?,
+                hello: Hello {
+                    wire_version: number(fields, "wireVersion")?,
+                    contract_name: field(fields, "contractName", 256)?,
+                    contract_major: number(fields, "contractMajor")?,
+                    schema_hash: field(fields, "schemaHash", 64)?,
+                },
+                proof: DocumentActivation {
+                    navigation: decimal(&field(fields, "navigation", 20)?)?,
+                    document_nonce: nonce(&field(fields, "documentNonce", 32)?)?,
+                    challenge: nonce(&field(fields, "challenge", 32)?)?,
+                },
+            }))
+        }
         _ => None,
     }
 }
@@ -152,9 +157,9 @@ mod tests {
 
     #[test]
     fn rejects_non_objects_without_coercion() {
-        assert!(decode(&NSString::from_str("{}")).is_none());
+        assert!(decode(&NSString::from_str("{}"), false).is_none());
         let dictionary = NSDictionary::<NSString, AnyObject>::new();
-        assert!(decode(&dictionary).is_none());
+        assert!(decode(&dictionary, false).is_none());
     }
 
     #[test]
@@ -168,33 +173,50 @@ mod tests {
             )
             .unwrap()
         };
-        let Some(Control::Hello(hello)) = decode(&parse(json)) else {
+        let Some(Control::Hello(hello)) = decode(&parse(json), false) else {
             panic!("valid hello rejected");
         };
+        let local = json.replacen(
+            "\"kind\":\"hello\"",
+            "\"kind\":\"hello\",\"nativeCarrierVersion\":1",
+            1,
+        );
+        assert!(matches!(
+            decode(&parse(&local), true),
+            Some(Control::Hello(_))
+        ));
+        assert!(decode(&parse(&local), false).is_none());
+        assert!(decode(&parse(json), true).is_none());
         let extra_fields =
             json.replacen("\"kind\":\"hello\"", "\"kind\":\"hello\",\"methods\":[]", 1);
-        assert!(decode(&parse(&extra_fields)).is_none());
+        assert!(decode(&parse(&extra_fields), false).is_none());
         assert_eq!(hello.proof.navigation, 7);
         assert_eq!(hello.proof.document_nonce, [1; 16]);
-        assert!(decode(&parse(
-            &json.replace("\"test\"", &format!("\"{}\"", "x".repeat(257)))
-        ))
+        assert!(decode(
+            &parse(&json.replace("\"test\"", &format!("\"{}\"", "x".repeat(257)))),
+            false
+        )
         .is_none());
-        assert!(decode(&parse(&json.replace("\"test\"", "{}"))).is_none());
-        assert!(decode(&parse(
-            &json.replace("\"wireVersion\":2", "\"wireVersion\":2.5")
-        ))
+        assert!(decode(&parse(&json.replace("\"test\"", "{}")), false).is_none());
+        assert!(decode(
+            &parse(&json.replace("\"wireVersion\":2", "\"wireVersion\":2.5")),
+            false
+        )
         .is_none());
-        assert!(decode(&parse(
-            &json.replace("\"navigation\":\"7\"", "\"navigation\":\"07\"")
-        ))
+        assert!(decode(
+            &parse(&json.replace("\"navigation\":\"7\"", "\"navigation\":\"07\"")),
+            false
+        )
         .is_none());
         assert!(matches!(
-            decode(&parse(
-                r#"{"kind":"disconnect","generation":"9","token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
-            )),
+            decode(
+                &parse(
+                    r#"{"kind":"disconnect","generation":"9","token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
+                ),
+                false
+            ),
             Some(Control::Disconnect { generation: 9, .. })
         ));
-        assert!(decode(&parse(r#"{"kind":"disconnect","generation":"9"}"#)).is_none());
+        assert!(decode(&parse(r#"{"kind":"disconnect","generation":"9"}"#), false).is_none());
     }
 }

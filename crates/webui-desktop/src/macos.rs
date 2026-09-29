@@ -34,6 +34,8 @@ mod icon;
 mod ipc;
 #[cfg(feature = "application-ipc")]
 mod ipc_control;
+#[cfg(all(feature = "application-ipc", feature = "local-server"))]
+mod ipc_data_message;
 #[cfg(feature = "application-ipc")]
 mod ipc_message;
 #[cfg(feature = "application-ipc")]
@@ -152,7 +154,9 @@ pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<(
         lifetime: Some(frame.lifetime().clone()),
         live_background: Arc::clone(&frame.live_background),
         #[cfg(feature = "application-ipc")]
-        ipc: None,
+        ipc: frame.ipc_bridge().map(|bridge| {
+            ipc::MacIpc::new_local(bridge, frame.origin().clone(), frame.lifetime().clone())
+        }),
         title: NSString::from_str(&frame.window.title),
         options: frame.window.clone(),
         shell: frame.shell.clone(),

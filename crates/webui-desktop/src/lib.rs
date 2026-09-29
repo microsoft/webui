@@ -97,6 +97,14 @@ pub use frame::{
 pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
 #[cfg(feature = "application-ipc")]
 pub use ipc::{IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION};
+#[cfg(all(feature = "local-server", feature = "application-ipc"))]
+pub use local_server::bind_owned_local_server;
+#[cfg(all(
+    feature = "local-server",
+    feature = "application-ipc",
+    any(target_os = "macos", target_os = "windows")
+))]
+pub use local_server::{local_ipc_runtime_asset, LOCAL_IPC_RUNTIME_PATH};
 #[cfg(feature = "local-server")]
 pub use local_server::{
     run_local_server_frame, HostCloseError, HostLifetime, HostLifetimeOwner, LocalServerAppBuilder,
