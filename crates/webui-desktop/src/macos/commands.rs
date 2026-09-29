@@ -125,6 +125,7 @@ fn schedule_drain(id: u64) {
 fn owner_close_callback(
     #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
     #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
+    #[cfg(feature = "native-dialogs")] dialogs: Option<Arc<crate::native_dialogs::DialogState>>,
     schedule: impl Fn() + Send + Sync + 'static,
 ) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || {
@@ -138,6 +139,10 @@ fn owner_close_callback(
         if let Some(clipboard) = &clipboard {
             clipboard.close_silent();
         }
+        #[cfg(feature = "native-dialogs")]
+        if let Some(dialogs) = &dialogs {
+            dialogs.close_silent();
+        }
         schedule();
     })
 }
@@ -148,6 +153,7 @@ pub(super) fn install_owner_close(
     lifetime: &crate::HostLifetime,
     #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
     #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
+    #[cfg(feature = "native-dialogs")] dialogs: Option<Arc<crate::native_dialogs::DialogState>>,
 ) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
     let window = Weak::new(window);
     let state = lifetime.clone();
@@ -166,6 +172,8 @@ pub(super) fn install_owner_close(
         capture,
         #[cfg(feature = "native-clipboard")]
         clipboard,
+        #[cfg(feature = "native-dialogs")]
+        dialogs,
         move || schedule_drain(id),
     ))?;
     Ok((target, registration))

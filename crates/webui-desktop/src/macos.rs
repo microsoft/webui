@@ -161,6 +161,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
 #[cfg(feature = "local-server")]
 pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<()> {
     frame.lifetime().require_active()?;
+    #[cfg(feature = "native-dialogs")]
+    let _ = frame.native_services()?;
     let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
     let state_store =
         WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;

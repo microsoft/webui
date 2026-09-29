@@ -22,6 +22,8 @@ pub(crate) mod capture;
 pub(crate) mod clipboard;
 mod command;
 mod create;
+#[cfg(feature = "native-dialogs")]
+pub(crate) mod dialogs;
 mod event;
 #[cfg(feature = "application-ipc")]
 mod ipc;
@@ -214,6 +216,15 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window().devtools)?;
+    #[cfg(feature = "native-dialogs")]
+    let dialog_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-dialogs")]
+    if let Some(services) = &dialog_services {
+        services.attach_dialogs(window_frame.hwnd.0 as usize);
+    }
     #[cfg(feature = "local-server")]
     let local_controls = match &frame {
         FrameContent::Local(local)
@@ -368,6 +379,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
             let clipboard = capture_services
                 .as_ref()
                 .map(|services| services.clipboard_for_revoke());
+            #[cfg(feature = "native-dialogs")]
+            let dialogs = dialog_services
+                .as_ref()
+                .map(|services| services.dialogs_for_revoke());
             Some(local.lifetime().register_close_fallible(Arc::new(move || {
                 #[cfg(feature = "native-capture")]
                 if let Some(capture) = &capture {
@@ -380,6 +395,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
                 if let Some(clipboard) = &clipboard {
                     // No future wake under HostLifetime's close lock.
                     clipboard.close_silent();
+                }
+                #[cfg(feature = "native-dialogs")]
+                if let Some(dialogs) = &dialogs {
+                    dialogs.close_silent();
                 }
                 let hwnd = windows::Win32::Foundation::HWND(handle as *mut std::ffi::c_void);
                 post_owner_lost(hwnd, cookie)
@@ -402,6 +421,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "native-dialogs")]
+        dialogs: dialog_services
+            .as_ref()
+            .map(|services| services.dialogs_for_revoke()),
         #[cfg(feature = "native-clipboard")]
         clipboard: capture_services
             .as_ref()

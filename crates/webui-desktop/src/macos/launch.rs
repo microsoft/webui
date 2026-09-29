@@ -242,6 +242,11 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
                 .native_services
                 .as_ref()
                 .map(crate::NativeServices::clipboard_for_revoke),
+            #[cfg(feature = "native-dialogs")]
+            ivars
+                .native_services
+                .as_ref()
+                .map(crate::NativeServices::dialogs_for_revoke),
         ) {
             Ok((wake, registration)) => {
                 let _ = ivars.owner_close_wake.set(wake);

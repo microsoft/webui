@@ -49,6 +49,8 @@ pub mod ipc;
 mod ipc_assets;
 #[cfg(feature = "local-server")]
 mod local_server;
+#[cfg(feature = "native-dialogs")]
+mod native_dialogs;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod native_ipc;
 #[cfg(feature = "native-services")]
@@ -139,6 +141,11 @@ pub use local_server::{
     run_local_server_frame, HostCloseError, HostLifetime, HostLifetimeOwner, LocalServerAppBuilder,
     LocalServerFrame, LocalServerOptions, LoopbackOrigin, UrlActivation,
     UrlActivationRegistrationError, MAX_URL_ACTIVATIONS_PER_BATCH, MAX_URL_ACTIVATION_BYTES,
+};
+#[cfg(feature = "native-dialogs")]
+pub use native_dialogs::{
+    ConfirmDialog, DialogError, DialogOutcome, DialogRequest, ErrorDialog, MAX_DIALOG_LABEL_BYTES,
+    MAX_DIALOG_MESSAGE_BYTES, MAX_DIALOG_TITLE_BYTES,
 };
 #[cfg(feature = "native-services")]
 pub use native_services::{

@@ -161,6 +161,8 @@ struct Inner {
     navigation_id: AtomicU64,
     #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
     clipboard: Arc<crate::clipboard::ClipboardState>,
+    #[cfg(feature = "native-dialogs")]
+    dialogs: Arc<crate::native_dialogs::DialogState>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
     timer: Mutex<Option<Weak<Timer>>>,
@@ -246,6 +248,11 @@ impl NativeServices {
         #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
         let clipboard =
             crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
+        #[cfg(feature = "native-dialogs")]
+        let dialogs = crate::native_dialogs::DialogState::new(
+            lifetime.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let inner = Arc::new(Inner {
             executor,
             lifetime,
@@ -275,6 +282,8 @@ impl NativeServices {
             navigation_id: AtomicU64::new(0),
             #[cfg(all(any(target_os = "macos", windows), feature = "native-clipboard"))]
             clipboard,
+            #[cfg(feature = "native-dialogs")]
+            dialogs,
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
             timer: Mutex::new(None),
@@ -630,6 +639,52 @@ impl NativeServices {
         }
     }
 
+    #[cfg(feature = "native-dialogs")]
+    pub fn show_error(
+        &self,
+        copy: crate::ErrorDialog,
+    ) -> Result<crate::DialogRequest, crate::DialogError> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.0
+                .dialogs
+                .begin(crate::native_dialogs::DialogCopy::Error(copy))
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = (self, copy);
+            Err(crate::DialogError::Unsupported)
+        }
+    }
+
+    #[cfg(feature = "native-dialogs")]
+    pub fn confirm(
+        &self,
+        copy: crate::ConfirmDialog,
+    ) -> Result<crate::DialogRequest, crate::DialogError> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.0
+                .dialogs
+                .begin(crate::native_dialogs::DialogCopy::Confirm(copy))
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = (self, copy);
+            Err(crate::DialogError::Unsupported)
+        }
+    }
+
+    #[cfg(feature = "native-dialogs")]
+    pub(crate) fn dialogs_for_revoke(&self) -> Arc<crate::native_dialogs::DialogState> {
+        Arc::clone(&self.0.dialogs)
+    }
+
+    #[cfg(all(windows, feature = "native-dialogs"))]
+    pub(crate) fn attach_dialogs(&self, window: usize) {
+        self.0.dialogs.attach(window);
+    }
+
     fn start(
         &self,
         work: impl FnOnce() -> Result<(), NativeServiceError> + Send + 'static,
@@ -803,6 +858,12 @@ impl NativeServices {
 
 impl Inner {
     fn cancel_open(&self, close: bool) {
+        #[cfg(feature = "native-dialogs")]
+        if close {
+            self.dialogs.close_silent();
+        } else {
+            self.dialogs.navigate();
+        }
         #[cfg(target_os = "macos")]
         self.theme.cancel(
             if close {
@@ -1015,7 +1076,7 @@ fn validate_document(path: &Path) -> Result<PathBuf, NativeServiceError> {
 #[cfg(target_os = "macos")]
 #[path = "macos/services.rs"]
 #[allow(unsafe_code)]
-mod platform;
+pub(crate) mod platform;
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
