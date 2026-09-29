@@ -9,6 +9,7 @@
 //! development compilation, and `cli` for the `webui-desktop` tooling binary.
 //! Enable `packaging` to lay out an already-compiled host without source compilation.
 //! Enable `verified-update` for host-only, staged-file byte integrity checks.
+//! Enable `startup-failure` for an explicit host-only pre-frame error alert.
 
 #[cfg(test)]
 extern crate self as webui_desktop;
@@ -73,6 +74,8 @@ mod protocol;
 mod response_content;
 mod routes;
 mod runtime;
+#[cfg(feature = "startup-failure")]
+mod startup_failure;
 #[cfg(feature = "verified-update")]
 pub mod verified_update;
 mod window;
@@ -163,6 +166,11 @@ pub use routes::{ApiContext, ApiRouteRegistry, RouteContext, RouteStateRegistry}
 #[cfg(feature = "source")]
 pub use runtime::DesktopSourceConfig;
 pub use runtime::{DesktopBundleConfig, DesktopRuntime};
+#[cfg(feature = "startup-failure")]
+pub use startup_failure::{
+    present_startup_failure, StartupFailure, StartupFailureError, StartupPresentationError,
+    MAX_STARTUP_HELP_BYTES, MAX_STARTUP_SUMMARY_BYTES, MAX_STARTUP_TITLE_BYTES,
+};
 pub use window::{
     apply_window_css, window_css_block, CaptionButtonSize, DesktopPlatform, Rgba, RgbaParseError,
     TitlebarStyle, WindowEffect, WindowInsets, WindowOptions,
