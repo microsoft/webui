@@ -1428,6 +1428,13 @@ webui build ./src --out ./dist --plugin=webui
 webui inspect ./dist/protocol.bin
 ```
 
+`webui serve` listens on IPv4 loopback and accepts `127.0.0.1`, `localhost`,
+and subdomains such as `play.xbox.localhost` on its port. For a reverse
+proxy that forwards a custom Host, add an exact
+`--allowed-host dev.example[:port]` (repeatable); only add names you control.
+Other Hosts are rejected before the app or API proxy handles them. See the
+[serve CLI reference](./guide/cli/#webui-serve) for details.
+
 `webui press` invokes the separately installed native Press sidecar.
 It launches Rust directly; Press does not support `--format json`.
 

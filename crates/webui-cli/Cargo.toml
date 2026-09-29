@@ -33,6 +33,7 @@ awc = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
 bytes = { workspace = true }
+futures-util = { workspace = true }
 memchr = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

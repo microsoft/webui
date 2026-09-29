@@ -1,13 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod host;
 mod metafile;
 mod streaming_api;
 
+use actix_web::dev::Service;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
+use futures_util::future::Either;
 use mime_guess::from_path;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +50,11 @@ pub struct ServeArgs {
     /// Port to bind the development server to
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
+
+    /// Additional exact Host authority to accept (repeatable). Use a hostname,
+    /// or hostname:port when a reverse proxy forwards a different port.
+    #[arg(long = "allowed-host", value_name = "HOST[:PORT]")]
+    pub allowed_hosts: Vec<String>,
 
     /// Path to the JSON state file used for rendering
     #[arg(long)]
@@ -277,6 +285,7 @@ fn execute_mode(args: &ServeArgs) -> Result<i32> {
 }
 
 fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
+    let host_policy = host::HostPolicy::new(args.port, &args.allowed_hosts)?;
     let paths = ServePaths::from_args(args)?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
@@ -417,7 +426,17 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     let server_result = actix_web::rt::System::new()
         .block_on(async move {
             let mut server = HttpServer::new(move || {
+                let host_policy = host_policy.clone();
                 let mut app = App::new()
+                    .wrap_fn(move |req, service| {
+                        if host_policy.allows(req.request()) {
+                            Either::Left(service.call(req))
+                        } else {
+                            Either::Right(std::future::ready(Ok(req.into_response(
+                                HttpResponse::BadRequest().body("Invalid Host header"),
+                            ))))
+                        }
+                    })
                     .app_data(server_context.clone())
                     .route("/", web::get().to(handle_index))
                     .route("/index.html", web::get().to(handle_index));
@@ -2341,6 +2360,82 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn test_foreign_host_cannot_reach_server_routes_or_api_proxy() {
+        let (port, handle, captured_targets) = start_request_target_server();
+        let host_policy = host::HostPolicy::new(3000, &[]).unwrap();
+        let app = actix_test::init_service(
+            App::new()
+                .wrap_fn(move |req, service| {
+                    if host_policy.allows(req.request()) {
+                        Either::Left(service.call(req))
+                    } else {
+                        Either::Right(std::future::ready(Ok(req.into_response(
+                            HttpResponse::BadRequest().body("Invalid Host header"),
+                        ))))
+                    }
+                })
+                .app_data(test_server_context(port))
+                .app_data(web::Data::new(LiveReload::new(HMR_ENDPOINT)))
+                .route("/", web::get().to(handle_index))
+                .route("/index.html", web::get().to(handle_index))
+                .route(HMR_ENDPOINT, web::get().to(sse_handler))
+                .route(
+                    "/_webui/templates",
+                    web::get().to(handle_component_templates),
+                )
+                .route("/api/{tail:.*}", web::route().to(handle_api_proxy))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let allowed = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/api/healthy")
+                .insert_header(("host", "play.xbox.localhost:3000"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        for path in [
+            "/",
+            "/index.html",
+            "/static.css",
+            "/_webui/templates",
+            HMR_ENDPOINT,
+            "/api/action",
+        ] {
+            let request = if path == "/api/action" {
+                actix_test::TestRequest::post()
+            } else {
+                actix_test::TestRequest::get()
+            };
+            let response = actix_test::call_service(
+                &app,
+                request
+                    .uri(path)
+                    .insert_header(("host", "attacker.example:3000"))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/")
+                .insert_header(("host", "attacker.example:3000"))
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(*captured_targets.lock().unwrap(), ["/api/healthy"]);
+        handle.stop(true).await;
     }
 
     #[actix_web::test]

@@ -85,4 +85,22 @@ mod tests {
         assert!(Cli::try_parse_from(["webui", "build", "--shutdown-timeout", "1"]).is_err());
         Ok(())
     }
+
+    #[test]
+    fn allowed_hosts_are_opt_in_and_serve_only() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "webui",
+            "serve",
+            "--allowed-host",
+            "dev.example:443",
+            "--allowed-host",
+            "project.example",
+        ])?;
+        let Some(Commands::Serve(serve)) = cli.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(serve.allowed_hosts, ["dev.example:443", "project.example"]);
+        assert!(Cli::try_parse_from(["webui", "build", "--allowed-host", "dev.example"]).is_err());
+        Ok(())
+    }
 }

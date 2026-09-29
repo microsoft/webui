@@ -375,7 +375,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--allowed-host <HOST[:PORT]>]... [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -388,6 +388,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--watch` | Enable file watching + HMR | `false` |
 | `--shutdown-timeout <SECONDS>` | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` | *(none)* |
 | `--port <PORT>` | Port to bind the development server | `3000` |
+| `--allowed-host <HOST[:PORT]>` | Permit an additional exact hostname or authority, for example when a reverse proxy forwards a custom Host. Repeatable; URLs and wildcards are not accepted. | *(none)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
@@ -404,6 +405,17 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
+
+The server listens on `127.0.0.1` and accepts only `127.0.0.1`, `localhost`,
+and valid subdomains of `.localhost` (such as `play.xbox.localhost`) on its
+listening port by default. Requests with another, missing, or malformed Host
+receive HTTP 400 before reaching the app or `--api-port` proxy. A `.localhost`
+name must resolve to `127.0.0.1` on your machine to connect to this IPv4 server.
+When a reverse proxy preserves a custom Host, pass `--allowed-host dev.example`
+for that exact name at the server's port (or without a port), or
+`--allowed-host dev.example:443` when the proxy forwards a different port.
+Add only names whose DNS you control; this option does not enable CORS or
+authenticate proxied API requests.
 
 #### Bounded dev-server shutdown
 
