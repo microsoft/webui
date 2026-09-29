@@ -71,7 +71,9 @@ mod menu_guard {
     use std::rc::Rc;
 
     use objc2::rc::{autoreleasepool, Weak};
-    use objc2::{msg_send, MainThreadMarker, Message};
+    use objc2::{msg_send, MainThreadMarker, MainThreadOnly, Message};
+    use objc2_app_kit::{NSApplication, NSBackingStoreType, NSWindow, NSWindowStyleMask};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     use super::{menu, DesktopMenu};
 
@@ -89,8 +91,20 @@ mod menu_guard {
         let last_script = Rc::new(RefCell::new(String::new()));
         let sink_calls = Rc::clone(&calls);
         let sink_script = Rc::clone(&last_script);
+        let _app = NSApplication::sharedApplication(mtm);
+        // SAFETY: The guard runs on AppKit's main thread with a valid
+        // nonempty content rect and standard native window style.
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)),
+                NSWindowStyleMask::Titled,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
         let (owner, bar, weak_target) = autoreleasepool(|_| {
-            let owner = menu::build_main_menu(mtm, &menus, move |script| {
+            let owner = menu::build_main_menu(mtm, &window, &menus, move |script| {
                 sink_calls.set(sink_calls.get() + 1);
                 *sink_script.borrow_mut() = script.to_owned();
             });
