@@ -50,6 +50,7 @@ set desktop package options with command flags or the app-root
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
+| `native-dialogs` | Trusted Rust-host live error and confirmation dialogs on macOS and Windows (includes `native-services`; no renderer grant) |
 | `native-capture` | Host-only bounded visible webview PNG on macOS and Windows (includes `native-services`) |
 | `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
 | `startup-failure` | Explicit host-only, pre-frame native startup error alert on macOS and Windows; independent of `local-server`, `native`, and `source` |
@@ -380,8 +381,44 @@ cancel it. Do not synchronously wait for this future on the native UI
 thread. No workers or timers start unless an opener or theme change
 is requested.
 
-Directory selection and native message/confirmation dialogs are **not**
-provided by this host API yet.
+Directory selection is not provided by this dialog feature.
+
+With the separate `native-dialogs` feature, the trusted Rust host can show
+one window-owned native sheet or Task Dialog during the live local-server
+frame. The renderer gains no dialog method or IPC grant:
+
+```rust
+use webui_desktop::{ConfirmDialog, DialogOutcome, NativeServices};
+
+async fn ask_before_discard(services: &NativeServices) -> Result<bool, webui_desktop::DialogError> {
+    let copy = ConfirmDialog::new(
+        "Discard changes?",
+        "Your unsaved changes will be lost.",
+        "Discard",
+        "Keep editing",
+    )?;
+    Ok(matches!(services.confirm(copy)?.await?, DialogOutcome::Confirmed))
+}
+```
+
+For errors, use `ErrorDialog::new(title, message, acknowledgement)` and
+await `services.show_error(copy)?`; it has only one visible button and only
+a real acknowledgement yields
+`Acknowledged`. In a confirmation, Return selects the non-destructive Cancel
+label (such as "Keep editing"); an error dialog defaults to acknowledgement.
+Programmatic or window-close dismissal remains a distinct `Cancelled` outcome,
+not an acknowledgement or OS failure.
+All text is explicitly authored by the host: title at most 120 UTF-8 bytes,
+message 500, labels 40 each. Empty, control, bidi and multiline text is
+rejected. Never pass a raw `Error::to_string()` or error chain into a dialog.
+Navigation, host revocation, close and a ten-second logical deadline cancel
+the future; a native dialog already running retains its per-window Busy
+reservation until the OS acknowledges dismissal. This feature does not grant directory
+selection. Hosts must not wait synchronously on the window UI thread or
+assume queue admission means a user response.
+`DialogError` distinguishes invalid copy, Busy, Navigated, Closed, Timeout,
+Unavailable, and numeric OS failure. Linux returns `Unsupported`. The native
+modal interaction has not been executed in this environment.
 
 On macOS, `services.content_geometry()?.await` reads a live `ContentGeometry`
 snapshot on the AppKit main thread. Its `screen_rect` is the **WKWebView

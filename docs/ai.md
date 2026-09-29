@@ -1445,6 +1445,12 @@ and query `services.current_theme()` for the effective native appearance
 of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
 the host persists preferences and owns SSR CSS. No renderer grant is added.
 See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
+With `native-dialogs`, a trusted local-server host can await one OS-owned
+error acknowledgement or confirmation without granting renderer IPC. Construct
+bounded `ErrorDialog` or `ConfirmDialog` copy explicitly; do not display raw
+error chains. Navigation/close and a finite deadline cancel delivery, and
+`Cancelled` is a distinct user response. See
+[live native dialogs](./guide/concepts/desktop.md#trusted-host-os-openers).
 With `native-capture`, the macOS or Windows trusted host can request a bounded,
 visible webview PNG (WK snapshot or WebView2 `CapturePreview` on its owning STA)
 after its own preview-readiness handshake, then read/release the opaque

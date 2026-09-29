@@ -11,8 +11,22 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
+#[cfg(feature = "native-dialogs")]
+use block2::RcBlock;
+
+#[cfg(feature = "native-dialogs")]
+use objc2::rc::Retained;
 use objc2::rc::Weak as ObjcWeak;
+#[cfg(feature = "native-dialogs")]
+use objc2::MainThreadMarker;
 use objc2_app_kit::NSWindow;
+#[cfg(feature = "native-dialogs")]
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAlertStyle, NSModalResponse,
+    NSModalResponseCancel,
+};
+#[cfg(feature = "native-dialogs")]
+use objc2_foundation::NSString;
 use objc2_web_kit::WKWebView;
 
 use super::{ContentGeometry, GeometryRequest, Inner, NativeServiceError, ScreenRectPoints};
@@ -41,13 +55,35 @@ struct Target {
     window: ObjcWeak<NSWindow>,
     view: ObjcWeak<WKWebView>,
     owner: Weak<Inner>,
+    #[cfg(feature = "native-dialogs")]
+    active_dialog: RefCell<Option<ActiveDialog>>,
 }
 
-pub(super) struct Dispatch {
+pub(crate) struct Dispatch {
     id: u64,
     closed: AtomicBool,
     queued: AtomicBool,
     pending: Mutex<Vec<Pending>>,
+    #[cfg(feature = "native-dialogs")]
+    dialog: Mutex<Option<DialogSubmission>>,
+    #[cfg(feature = "native-dialogs")]
+    cancel_dialog_id: AtomicU64,
+}
+
+#[cfg(feature = "native-dialogs")]
+struct DialogSubmission {
+    owner: Arc<crate::native_dialogs::DialogState>,
+    id: u64,
+    epoch: u64,
+    copy: crate::native_dialogs::DialogCopy,
+    signal: Arc<crate::native_dialogs::Signal>,
+}
+
+#[cfg(feature = "native-dialogs")]
+struct ActiveDialog {
+    id: u64,
+    alert: Retained<NSAlert>,
+    owner: Arc<crate::native_dialogs::DialogState>,
 }
 
 struct Pending {
@@ -117,8 +153,24 @@ impl Registration {
     pub(crate) fn close(&self) {
         if !self.dispatch.closed.swap(true, Ordering::AcqRel) {
             self.dispatch.cancel_all(NativeServiceError::Closed);
+            #[cfg(feature = "native-dialogs")]
+            self.dispatch.cancel_queued_dialog();
         }
         let target = TARGETS.with(|targets| targets.borrow_mut().remove(&self.dispatch.id));
+        #[cfg(feature = "native-dialogs")]
+        if let Some(target) = &target {
+            if let Some(owner) = target.owner.upgrade() {
+                owner.dialogs.notify_closed();
+            }
+            let active = target
+                .active_dialog
+                .borrow()
+                .as_ref()
+                .map(|active| active.alert.clone());
+            if let (Some(alert), Some(window)) = (active, target.window.load()) {
+                window.endSheet_returnCode(&alert.window(), NSModalResponseCancel);
+            }
+        }
         drop(target);
     }
 }
@@ -135,12 +187,18 @@ pub(super) fn install(owner: &Arc<Inner>, window: &NSWindow, view: &WKWebView) -
         closed: AtomicBool::new(false),
         queued: AtomicBool::new(false),
         pending: Mutex::new(Vec::new()),
+        #[cfg(feature = "native-dialogs")]
+        dialog: Mutex::new(None),
+        #[cfg(feature = "native-dialogs")]
+        cancel_dialog_id: AtomicU64::new(0),
     });
     let target = Rc::new(Target {
         dispatch: Arc::clone(&dispatch),
         window: ObjcWeak::new(window),
         view: ObjcWeak::new(view),
         owner: Arc::downgrade(owner),
+        #[cfg(feature = "native-dialogs")]
+        active_dialog: RefCell::new(None),
     });
     TARGETS.with(|targets| {
         targets.borrow_mut().insert(dispatch.id, target);
@@ -148,6 +206,8 @@ pub(super) fn install(owner: &Arc<Inner>, window: &NSWindow, view: &WKWebView) -
     if let Ok(mut active) = owner.geometry_dispatch.lock() {
         *active = Some(Arc::clone(&dispatch));
     }
+    #[cfg(feature = "native-dialogs")]
+    owner.dialogs.attach(Arc::clone(&dispatch));
     Registration {
         dispatch,
         _ui_only: std::marker::PhantomData,
@@ -201,6 +261,67 @@ pub(super) fn cancel_pending(owner: &Inner, close: bool) {
 }
 
 impl Dispatch {
+    #[cfg(feature = "native-dialogs")]
+    pub(crate) fn enqueue_dialog(
+        &self,
+        owner: Arc<crate::native_dialogs::DialogState>,
+        (id, epoch): (u64, u64),
+        copy: crate::native_dialogs::DialogCopy,
+        signal: Arc<crate::native_dialogs::Signal>,
+    ) -> Result<(), crate::DialogError> {
+        let mut pending = self
+            .dialog
+            .lock()
+            .map_err(|_| crate::DialogError::Unavailable)?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(crate::DialogError::Closed);
+        }
+        if pending.is_some() {
+            return Err(crate::DialogError::Busy);
+        }
+        *pending = Some(DialogSubmission {
+            owner,
+            id,
+            epoch,
+            copy,
+            signal,
+        });
+        drop(pending);
+        self.wake();
+        Ok(())
+    }
+
+    #[cfg(feature = "native-dialogs")]
+    pub(crate) fn cancel_dialog(&self, id: u64) {
+        self.cancel_dialog_id.store(id, Ordering::Release);
+        self.wake();
+    }
+
+    #[cfg(feature = "native-dialogs")]
+    fn cancel_queued_dialog(&self) {
+        let pending = self.dialog.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(pending) = pending {
+            pending
+                .owner
+                .complete(pending.id, Err(crate::DialogError::Closed));
+        }
+    }
+
+    fn wake(&self) {
+        if !self.queued.swap(true, Ordering::AcqRel) {
+            let context = Box::into_raw(Box::new(self.id)).cast::<c_void>();
+            // SAFETY: GCD delivers the opaque ID once on the main queue. Only
+            // the registered UI-local target may access its AppKit objects.
+            unsafe {
+                dispatch_async_f(
+                    std::ptr::addr_of!(_dispatch_main_q).cast_mut(),
+                    context,
+                    drain,
+                );
+            }
+        }
+    }
+
     fn enqueue(&self, pending: Pending) -> Result<(), NativeServiceError> {
         let mut queue = self
             .pending
@@ -214,18 +335,7 @@ impl Dispatch {
         }
         queue.push(pending);
         drop(queue);
-        if !self.queued.swap(true, Ordering::AcqRel) {
-            let context = Box::into_raw(Box::new(self.id)).cast::<c_void>();
-            // SAFETY: GCD delivers the owned ID once on the main queue; the
-            // registry looks up only the exact live window generation.
-            unsafe {
-                dispatch_async_f(
-                    std::ptr::addr_of!(_dispatch_main_q).cast_mut(),
-                    context,
-                    drain,
-                );
-            }
-        }
+        self.wake();
         Ok(())
     }
 
@@ -247,6 +357,121 @@ impl Dispatch {
     }
 }
 
+impl Target {
+    #[cfg(feature = "native-dialogs")]
+    fn drain_dialog(this: &Rc<Self>) {
+        let cancel_id = this.dispatch.cancel_dialog_id.swap(0, Ordering::AcqRel);
+        let active = this
+            .active_dialog
+            .borrow()
+            .as_ref()
+            .filter(|active| active.id == cancel_id)
+            .map(|active| active.alert.clone());
+        if let (Some(alert), Some(window)) = (active, this.window.load()) {
+            window.endSheet_returnCode(&alert.window(), NSModalResponseCancel);
+        }
+        let pending = this
+            .dispatch
+            .dialog
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(pending) = pending {
+            Self::start_dialog(this, pending);
+        }
+    }
+
+    #[cfg(feature = "native-dialogs")]
+    fn start_dialog(this: &Rc<Self>, pending: DialogSubmission) {
+        let fail = |error| pending.owner.complete(pending.id, Err(error));
+        if this.dispatch.closed.load(Ordering::Acquire)
+            || !pending.owner.current(pending.id, pending.epoch)
+        {
+            fail(crate::DialogError::Navigated);
+            return;
+        }
+        let (Some(window), Some(view), Some(mtm)) = (
+            this.window.load(),
+            this.view.load(),
+            MainThreadMarker::new(),
+        ) else {
+            fail(crate::DialogError::Closed);
+            return;
+        };
+        if !view
+            .window()
+            .is_some_and(|attached| std::ptr::eq(&*attached, &*window))
+        {
+            fail(crate::DialogError::Closed);
+            return;
+        }
+        if window.attachedSheet().is_some() || this.active_dialog.borrow().is_some() {
+            fail(crate::DialogError::Busy);
+            return;
+        }
+        let alert = NSAlert::new(mtm);
+        alert.setAlertStyle(NSAlertStyle::Warning);
+        alert.setMessageText(&NSString::from_str(pending.copy.title()));
+        alert.setInformativeText(&NSString::from_str(pending.copy.message()));
+        let order = pending.copy.mac_buttons();
+        for button in order {
+            let Some(label) = pending.copy.label(*button) else {
+                fail(crate::DialogError::Unavailable);
+                return;
+            };
+            alert.addButtonWithTitle(&NSString::from_str(label));
+        }
+        let id = pending.id;
+        let copy = pending.copy;
+        let weak = Rc::downgrade(this);
+        let callback = RcBlock::new(move |response: NSModalResponse| {
+            let Some(target) = weak.upgrade() else { return };
+            let active = {
+                let mut slot = target.active_dialog.borrow_mut();
+                if slot.as_ref().is_some_and(|active| active.id == id) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            let Some(active) = active else { return };
+            let outcome = if response == NSAlertFirstButtonReturn {
+                Ok(copy.outcome(order[0]))
+            } else if response == NSAlertSecondButtonReturn {
+                Ok(order
+                    .get(1)
+                    .copied()
+                    .map_or(crate::DialogOutcome::Cancelled, |button| {
+                        copy.outcome(button)
+                    }))
+            } else if response == NSModalResponseCancel {
+                Ok(crate::DialogOutcome::Cancelled)
+            } else {
+                Err(crate::DialogError::Os {
+                    operation: "NSAlert(response)",
+                    code: i32::try_from(response).unwrap_or(i32::MAX),
+                })
+            };
+            active.owner.complete(id, outcome);
+        });
+        *this.active_dialog.borrow_mut() = Some(ActiveDialog {
+            id,
+            alert: alert.clone(),
+            owner: Arc::clone(&pending.owner),
+        });
+        if pending.signal.cancelled.load(Ordering::Acquire)
+            || !pending.owner.current(id, pending.epoch)
+        {
+            this.active_dialog.borrow_mut().take();
+            pending
+                .owner
+                .complete(id, Err(crate::DialogError::Navigated));
+            return;
+        }
+        alert.beginSheetModalForWindow_completionHandler(&window, Some(&callback));
+    }
+}
+
 unsafe extern "C" fn drain(context: *mut c_void) {
     // SAFETY: enqueue transfers one boxed ID to this GCD callback.
     let id = unsafe { Box::from_raw(context.cast::<u64>()) };
@@ -265,6 +490,8 @@ unsafe extern "C" fn drain(context: *mut c_void) {
                 }
             }
         }
+        #[cfg(feature = "native-dialogs")]
+        Target::drain_dialog(&target);
     }
 }
 

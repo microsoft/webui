@@ -33,6 +33,7 @@ startup-failure = [
 ]
 local-server = ["native", "dep:url", "dep:getrandom", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
+native-dialogs = ["native-services", "objc2-app-kit?/NSAlert", "objc2-app-kit?/block2"]
 native-capture = [
     "native-services",
     "objc2-app-kit?/NSBitmapImageRep",
