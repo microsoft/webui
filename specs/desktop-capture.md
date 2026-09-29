@@ -18,6 +18,18 @@ reservation until its callback returns, even after the 10-second logical
 deadline. No Windows GUI execution or preview-iframe pixel verification has
 been performed. Linux remains unsupported.
 
+With the separate `native-clipboard` opt-in, Windows writes the same retained
+PNG through the OS-registered `PNG` clipboard format on a worker thread, not
+through `CF_DIB` or the webview STA. A checked `GMEM_MOVEABLE` allocation
+temporarily adds at most the bounded PNG bytes to the retained capture; it
+transfers ownership only when `SetClipboardData` succeeds. The host future
+resolves only after bounded logical-length readback and `CloseClipboard`.
+Failed writes keep the capture available for a deliberate retry; an operation
+that passed `EmptyClipboard` cannot be restored. Navigation, retake/release,
+host retirement and native teardown cancel delivery, but in-flight work keeps
+the per-window Busy reservation until it returns. No Windows clipboard GUI
+was executed in this environment.
+
 ## macOS adapter and observed evidence
 
 The local-server frame's opt-in `native-capture` capability (which includes

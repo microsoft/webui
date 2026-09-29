@@ -39,7 +39,11 @@ native-capture = [
     "objc2-app-kit?/NSImageRep",
     "objc2-web-kit?/WKSnapshotConfiguration",
 ]
-native-clipboard = ["native-capture", "objc2-app-kit?/NSPasteboard"]
+native-clipboard = [
+    "native-capture",
+    "objc2-app-kit?/NSPasteboard",
+    "windows?/Win32_System_DataExchange",
+]
 application-ipc = [
     "dep:base64",
     "dep:libc",

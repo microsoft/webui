@@ -384,6 +384,12 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
 
 /// Publish the final close event and release the frame state.
 fn destroy_window(hwnd: HWND) {
+    #[cfg(feature = "native-clipboard")]
+    with_window_state(hwnd, |state| {
+        if let Some(clipboard) = &state.clipboard {
+            clipboard.notify_closed();
+        }
+    });
     #[cfg(feature = "local-server")]
     with_window_state(hwnd, |state| {
         if let Some(controls) = &state.local_controls {

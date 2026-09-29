@@ -39,6 +39,8 @@ pub(super) struct FrameState {
     pub(super) ipc: Option<std::rc::Rc<super::ipc::WindowsIpc>>,
     /// WebView2 controller that hosts the app content.
     pub(super) controller: ICoreWebView2Controller,
+    #[cfg(feature = "native-clipboard")]
+    pub(super) clipboard: Option<std::sync::Arc<crate::clipboard::ClipboardState>>,
     #[cfg(feature = "local-server")]
     pub(super) local_controls: Option<std::rc::Rc<super::local_controls::LocalControls>>,
     #[cfg(feature = "native-capture")]

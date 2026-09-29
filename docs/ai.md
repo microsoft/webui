@@ -1439,10 +1439,12 @@ resource in paced chunks. Windows rejects oversized viewports before native
 capture and has no verified runtime/iframe-pixel evidence. No renderer or
 screen-capture permission is added.
 See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos-and-windows).
-A macOS trusted host with `native-clipboard` may separately await a `public.png` clipboard write
-for that still-retained capture before any host-controlled URL opener; no
-issue-opening or renderer grant is automatic. See
-[explicit PNG clipboard write](./guide/concepts/desktop.md#explicit-macos-png-clipboard-write).
+A macOS or Windows trusted host with `native-clipboard` may separately await
+a native PNG clipboard write for that still-retained capture before any
+host-controlled URL opener; no issue-opening or renderer grant is automatic.
+Windows uses the registered `PNG` format, not `CF_DIB`, and remains
+runtime-unverified. See
+[explicit PNG clipboard write](./guide/concepts/desktop.md#explicit-macos-and-windows-png-clipboard-write).
 For an already-compiled Rust host that owns its sealed WebUI assets and
 workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
 and call `package_precompiled_host` with its host executable, target triple,
