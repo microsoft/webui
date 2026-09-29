@@ -122,7 +122,8 @@ pub use local_server::{local_ipc_runtime_asset, LOCAL_IPC_RUNTIME_PATH};
 #[cfg(feature = "local-server")]
 pub use local_server::{
     run_local_server_frame, HostCloseError, HostLifetime, HostLifetimeOwner, LocalServerAppBuilder,
-    LocalServerFrame, LocalServerOptions, LoopbackOrigin,
+    LocalServerFrame, LocalServerOptions, LoopbackOrigin, UrlActivation,
+    UrlActivationRegistrationError, MAX_URL_ACTIVATIONS_PER_BATCH, MAX_URL_ACTIVATION_BYTES,
 };
 #[cfg(feature = "native-services")]
 pub use native_services::{

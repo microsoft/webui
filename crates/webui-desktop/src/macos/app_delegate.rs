@@ -27,6 +27,8 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSStatusItem, NSWindow,
     NSWindowDelegate,
 };
+#[cfg(feature = "local-server")]
+use objc2_foundation::{NSArray, NSURL};
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
 #[cfg(feature = "local-server")]
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
@@ -53,6 +55,13 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) frame_policy: Option<std::sync::Arc<crate::frame_policy::FramePolicy>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) url_activation:
+        Option<std::sync::Arc<crate::local_server::url_activation::ActivationSender>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) pending_url_activations: RefCell<Vec<crate::UrlActivation>>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) url_activation_ready: Cell<bool>,
     #[cfg(feature = "native-services")]
     pub(in crate::macos) native_services: Option<crate::NativeServices>,
     #[cfg(feature = "native-services")]
@@ -112,6 +121,12 @@ define_class!(
     // SAFETY: Method signatures match NSApplicationDelegate.
     #[allow(non_snake_case)]
     unsafe impl NSApplicationDelegate for DesktopAppDelegate {
+        #[cfg(feature = "local-server")]
+        #[unsafe(method(application:openURLs:))]
+        fn application_openURLs(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
+            self.receive_open_urls(urls);
+        }
+
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, notification: &NSNotification) {
             autoreleasepool(|_| {
@@ -342,6 +357,11 @@ define_class!(
             }
             #[cfg(feature = "local-server")]
             self.cancel_quit_deadline();
+            #[cfg(feature = "local-server")]
+            if let Some(sender) = &self.ivars().url_activation {
+                sender.close();
+                self.ivars().pending_url_activations.borrow_mut().clear();
+            }
             if let Some(wake) = self.ivars().command_wake.get() {
                 wake.close();
             }
@@ -429,6 +449,57 @@ pub(super) fn dispatch_for_delegate(
 
 impl DesktopAppDelegate {
     #[cfg(feature = "local-server")]
+    fn receive_open_urls(&self, urls: &NSArray<NSURL>) {
+        use crate::local_server::url_activation::{reject, Rejection};
+
+        let Some(sender) = &self.ivars().url_activation else {
+            return;
+        };
+        let count = urls.count();
+        if count > crate::MAX_URL_ACTIVATIONS_PER_BATCH {
+            reject(Rejection::TooMany);
+            return;
+        }
+        for index in 0..count {
+            let url = urls.objectAtIndex(index);
+            let Some(raw) = url.absoluteString() else {
+                reject(Rejection::InvalidUrl);
+                continue;
+            };
+            // NSString length bounds conversion to at most 4x this many
+            // UTF-8 bytes before the exact byte limit is checked.
+            if raw.length() > crate::MAX_URL_ACTIVATION_BYTES {
+                reject(Rejection::TooLong);
+                continue;
+            }
+            match sender.accept(&raw.to_string()) {
+                Ok(activation) if self.ivars().url_activation_ready.get() => {
+                    sender.send(activation)
+                }
+                Ok(activation) => {
+                    let mut pending = self.ivars().pending_url_activations.borrow_mut();
+                    if pending.len() < crate::MAX_URL_ACTIVATIONS_PER_BATCH {
+                        pending.push(activation);
+                    } else {
+                        reject(Rejection::Full);
+                    }
+                }
+                Err(reason) => reject(reason),
+            }
+        }
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn url_window_ready(&self) {
+        self.ivars().url_activation_ready.set(true);
+        if let Some(sender) = &self.ivars().url_activation {
+            for activation in self.ivars().pending_url_activations.borrow_mut().drain(..) {
+                sender.send(activation);
+            }
+        }
+    }
+
+    #[cfg(feature = "local-server")]
     pub(super) fn cancel_quit_deadline(&self) {
         self.ivars().quit_close_pending.set(false);
         if let Some(timer) = self.ivars().quit_close_deadline.borrow_mut().take() {
@@ -449,6 +520,12 @@ impl DesktopAppDelegate {
             lifetime: options.lifetime,
             #[cfg(feature = "local-server")]
             frame_policy: options.frame_policy,
+            #[cfg(feature = "local-server")]
+            url_activation: options.url_activation,
+            #[cfg(feature = "local-server")]
+            pending_url_activations: RefCell::new(Vec::new()),
+            #[cfg(feature = "local-server")]
+            url_activation_ready: Cell::new(false),
             #[cfg(feature = "native-services")]
             native_services: options.native_services,
             #[cfg(feature = "native-services")]

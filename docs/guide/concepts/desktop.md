@@ -148,6 +148,36 @@ identity check; the host must authenticate the daemon before constructing
 this lifetime.
 Use a separate lifetime per running native window.
 
+On macOS only, a local-server frame may opt in to a **trusted-host** incoming
+URL callback before running. The SDK does not register the scheme with macOS
+or forward URLs from other processes:
+
+```rust
+frame.on_url_activation("myapp", |activation| {
+    // Runs on a bounded host worker, not the AppKit thread.
+    // Check activation.window_id and authorize the untrusted path/query
+    // before using activation.url in your own application.
+    println!("activation for window {:?}", activation.window_id);
+})?;
+```
+
+`on_url_activation` accepts one handler and a lower-case custom scheme
+(2-32 ASCII characters, starting with a letter; `http`, `https`, `file` and
+`webui` are reserved). It returns `UrlActivationRegistrationError` for
+invalid or repeated registration; Windows and Linux return `Unsupported`.
+Only URLs on that scheme with an authority, without credentials or fragments,
+up to `MAX_URL_ACTIVATION_BYTES` (2,048 bytes), are delivered. AppKit batches
+and pre-ready activations are capped at `MAX_URL_ACTIVATIONS_PER_BATCH` (8);
+excess, controls, wrong schemes, retired-host activations and full delivery
+queues are rejected with reason-only diagnostics, never URL content.
+Activations do not navigate the webview or reach page JavaScript or IPC. The
+callback must not block waiting on the UI thread.
+
+This API is a host-side AppKit callback, **not** proof that macOS launches or
+forwards a URL to this process. An application must separately package and
+test its OS URL association, cold launch and warm delivery before advertising
+a scheme. No scheme registration or default-handler change is performed here.
+
 Only an IP-literal loopback HTTP origin with an explicit nonzero port is
 accepted (for example, `127.0.0.1` or `[::1]`; all bound IPv4 `127/8`
 addresses are valid, but `localhost` and wildcard addresses are not).

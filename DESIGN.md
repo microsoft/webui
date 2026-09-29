@@ -384,6 +384,11 @@ frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.
+An explicitly opted-in macOS local-server frame may accept bounded incoming
+custom-scheme URLs from AppKit into a single-window Rust host callback. This
+OS-to-host path is distinct from browser navigation, application IPC, and
+outgoing trusted-host OS openers; it grants no renderer authority. The app
+owns OS scheme association and any launch/second-instance delivery policy.
 
 Optional application IPC is distinct from resource requests and window-control
 messages. Proto3 application contracts generate typed Rust and TypeScript
