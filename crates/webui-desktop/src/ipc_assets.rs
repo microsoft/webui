@@ -13,7 +13,7 @@ pub(crate) const LOCAL_NATIVE_BOOTSTRAP_SCRIPT: &str =
     include_str!("generated/ipc/local-native-bootstrap.js");
 #[cfg(all(
     feature = "local-server",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 pub(crate) const LOCAL_BROWSER_RUNTIME: &[u8] =
     include_bytes!("generated/ipc/local-desktop-runtime.js");

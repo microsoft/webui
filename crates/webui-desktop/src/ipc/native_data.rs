@@ -588,7 +588,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn native_chunks_use_the_existing_v3_engine_not_the_http_listener() {
         let listener = crate::bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();

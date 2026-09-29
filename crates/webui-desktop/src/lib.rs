@@ -111,7 +111,7 @@ pub use local_server::bind_owned_local_server;
 #[cfg(all(
     feature = "local-server",
     feature = "application-ipc",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 pub use local_server::{local_ipc_runtime_asset, LOCAL_IPC_RUNTIME_PATH};
 #[cfg(feature = "local-server")]

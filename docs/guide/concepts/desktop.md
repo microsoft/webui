@@ -140,14 +140,15 @@ still requires product qualification. Do not infer macOS 13 compatibility for
 Custom titlebar styles are rejected; use the native titlebar.
 The browser fetches ordinary HTTP resources directly; this is not a network
 egress sandbox. Page-originated native window controls are unavailable. Application IPC is
-also disabled unless an owned macOS or Windows host explicitly calls
+also disabled unless an owned macOS, Windows or Linux host explicitly calls
 `LocalServerAppBuilder::application_ipc(&listener, registry, options)` before
 `build()`, with its **retained bound TCP listener** and generated schema
 registered through `IpcRegistry` and `IpcOptions::for_schema`. The builder
 rejects a listener at another address or one that cannot exclude competing
-same-port bindings. On Windows, use `bind_owned_local_server(address)` to
-bind an exclusive `std::net::TcpListener` before passing it to the application's
-server and this builder. An attached daemon cannot use this grant.
+same-port bindings. On Windows and Linux, use
+`bind_owned_local_server(address)` to bind an exclusive `std::net::TcpListener`
+before passing it to the application's server and this builder. An attached
+daemon cannot use this grant.
 Import `createDesktopTransport` from `@microsoft/webui-desktop/native` for
 that document; the ordinary package entry does not include the local native
 carrier. If the host does not bundle that import, it can serve
@@ -179,10 +180,12 @@ an error, including when an earlier Quit failed to queue a close and its
 fallback was vetoed. This terminal recovery is not an ordinary cancellable
 close request; the host still owns its backend shutdown after
 `run_local_server_frame` returns.
-Rust event callbacks and `window_handle()` remain available. Linux reports
-an error if local-server application IPC is requested because WebKitGTK cannot
-attribute native handler messages to a frame; unprivileged direct HTTP windows
-and existing bundled/source apps still run there.
+Rust event callbacks and `window_handle()` remain available. On Linux,
+WebKitGTK callbacks cannot attribute a native message to a frame. The local
+carrier therefore mediates through a private, top-frame-only content world
+bound to the current document; it does not authorize child frames, enable
+preview grants, or change the bundled IPC path. Existing bundled/source apps
+still run there.
 The current macOS webview uses an ephemeral website data store, even with a
 stable app ID; this mode does not migrate or persist existing browser cookies.
 

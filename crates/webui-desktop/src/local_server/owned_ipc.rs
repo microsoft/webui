@@ -14,9 +14,11 @@ use crate::{DesktopError, Result};
 /// Bind an exclusively owned loopback listener for local application IPC.
 ///
 /// On Windows this sets `SO_EXCLUSIVEADDRUSE` **before** bind, unlike an
-/// ordinary `TcpListener::bind`. On macOS it uses a normal non-reusable
-/// listener. Never pass a daemon's port or ownership-loss notification in
-/// place of the returned socket; retain it until the native window closes.
+/// ordinary `TcpListener::bind`. On Linux it disables address reuse before
+/// binding and verifies both reuse options on the live socket. On macOS it
+/// uses a normal non-reusable listener. Never pass a daemon's port or
+/// ownership-loss notification in place of the returned socket; retain it
+/// until the native window closes.
 ///
 /// # Errors
 ///
@@ -87,7 +89,47 @@ pub fn bind_owned_local_server(address: SocketAddr) -> Result<TcpListener> {
         OwnedLocalServerIpc::ensure_exclusive_listener(&listener)?;
         Ok(listener)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+        let socket = Socket::new(
+            Domain::for_address(address),
+            Type::STREAM,
+            Some(Protocol::TCP),
+        )
+        .map_err(|source| DesktopError::Io {
+            context: "creating exclusive Linux local IPC listener".into(),
+            source,
+        })?;
+        socket
+            .set_reuse_address(false)
+            .map_err(|source| DesktopError::Io {
+                context: "disabling local IPC address reuse before bind".into(),
+                source,
+            })?;
+        if address.is_ipv6() {
+            socket
+                .set_only_v6(true)
+                .map_err(|source| DesktopError::Io {
+                    context: "restricting the Linux local IPC listener to IPv6".into(),
+                    source,
+                })?;
+        }
+        socket
+            .bind(&SockAddr::from(address))
+            .map_err(|source| DesktopError::Io {
+                context: "binding exclusive Linux local IPC listener".into(),
+                source,
+            })?;
+        socket.listen(128).map_err(|source| DesktopError::Io {
+            context: "listening on exclusive Linux local IPC socket".into(),
+            source,
+        })?;
+        let listener: TcpListener = socket.into();
+        OwnedLocalServerIpc::ensure_exclusive_listener(&listener)?;
+        Ok(listener)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Err(invalid_local_server(
             "local application IPC is unavailable on this platform",
@@ -229,7 +271,48 @@ impl OwnedLocalServerIpc {
         Ok(())
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    #[allow(unsafe_code)]
+    fn ensure_exclusive_listener(listener: &TcpListener) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        let option = |name| -> Result<libc::c_int> {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of_val(&value)
+                .try_into()
+                .map_err(|_| invalid_local_server("invalid Linux socket option size"))?;
+            // SAFETY: The bound listener owns this live fd; the initialized
+            // integer and length remain writable throughout getsockopt.
+            let status = unsafe {
+                libc::getsockopt(
+                    listener.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    name,
+                    std::ptr::from_mut(&mut value).cast(),
+                    &mut len,
+                )
+            };
+            if status != 0 {
+                return Err(DesktopError::Io {
+                    context: "checking Linux local IPC listener exclusivity".into(),
+                    source: std::io::Error::last_os_error(),
+                });
+            }
+            if usize::try_from(len).ok() != Some(std::mem::size_of_val(&value)) {
+                return Err(invalid_local_server(
+                    "invalid Linux socket option result length",
+                ));
+            }
+            Ok(value)
+        };
+        if option(libc::SO_REUSEPORT)? != 0 || option(libc::SO_REUSEADDR)? != 0 {
+            return Err(invalid_local_server(
+                "IPC requires an exclusive Linux listener without SO_REUSEPORT or SO_REUSEADDR",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     fn ensure_exclusive_listener(_listener: &TcpListener) -> Result<()> {
         Err(invalid_local_server(
             "local-server IPC requires exclusive macOS or Windows listener proof",
@@ -243,7 +326,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn only_the_exact_retained_owned_listener_can_enable_ipc() {
         let listener = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -284,7 +367,7 @@ mod tests {
         drop(frame);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn terminal_retirement_releases_pin_even_while_host_arc_survives() {
         let listener = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -318,7 +401,7 @@ mod tests {
         assert!(Arc::strong_count(&pin) == 1);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn failed_local_ipc_build_releases_its_duplicate_listener() {
         let listener = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -340,22 +423,76 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_local_host_cannot_enable_page_ipc() {
+    #[allow(unsafe_code)]
+    fn linux_owned_listener_rejects_reuse_and_competing_binders() {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+        use std::os::fd::AsRawFd;
         let address = "127.0.0.1:0".parse().unwrap();
-        assert!(bind_owned_local_server(address).is_err());
-        let listener = TcpListener::bind(address).unwrap();
+        let listener = bind_owned_local_server(address).unwrap();
+        let origin = LoopbackOrigin::from_socket_addr(listener.local_addr().unwrap()).unwrap();
+        let (owner, lifetime) = HostLifetime::new();
+        let pin = OwnedLocalServerIpc::from_listener(&listener, &origin, &lifetime).unwrap();
+        let attacker = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        attacker.set_reuse_address(true).unwrap();
+        let reuse_port: libc::c_int = 1;
+        let size = std::mem::size_of_val(&reuse_port).try_into().unwrap();
+        // SAFETY: The attacker socket is live; initialized option bytes stay
+        // readable for the duration of this synchronous Linux syscall.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    attacker.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEPORT,
+                    std::ptr::from_ref(&reuse_port).cast(),
+                    size,
+                )
+            },
+            0
+        );
+        assert!(attacker
+            .bind(&SockAddr::from(listener.local_addr().unwrap()))
+            .is_err());
+        drop(listener);
+        assert!(TcpListener::bind(origin.as_str().trim_start_matches("http://")).is_err());
+        owner.revoke().unwrap();
+        drop(pin);
+        assert!(TcpListener::bind(origin.as_str().trim_start_matches("http://")).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_reusable_listener_is_not_an_owned_ipc_capability() {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        socket.set_reuse_address(true).unwrap();
+        socket
+            .bind(&SockAddr::from(
+                "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            ))
+            .unwrap();
+        socket.listen(8).unwrap();
+        let listener: TcpListener = socket.into();
         let origin = LoopbackOrigin::from_socket_addr(listener.local_addr().unwrap()).unwrap();
         let (_owner, lifetime) = HostLifetime::new();
-        assert!(
-            crate::DesktopApp::from_local_server(super::super::LocalServerOptions::new(
-                origin, lifetime
-            ))
-            .application_ipc(
-                &listener,
-                crate::ipc_test_support::registry(),
-                crate::ipc_test_support::options(),
-            )
-            .is_err()
+        assert!(OwnedLocalServerIpc::from_listener(&listener, &origin, &lifetime).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_owned_ipc_rejects_a_listener_from_a_different_port() {
+        let listener = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
+        let other = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
+        let origin = LoopbackOrigin::from_socket_addr(listener.local_addr().unwrap()).unwrap();
+        let (_owner, lifetime) = HostLifetime::new();
+        let frame = crate::DesktopApp::from_local_server(super::super::LocalServerOptions::new(
+            origin, lifetime,
+        ))
+        .application_ipc(
+            &other,
+            crate::ipc_test_support::registry(),
+            crate::ipc_test_support::options(),
         );
+        assert!(frame.is_err());
     }
 }

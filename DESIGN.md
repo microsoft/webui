@@ -378,7 +378,9 @@ without promoting it to main-document or native authority. Browser-created
 target frame before requesting it, so a denied subframe request may still reach
 the HTTP server. No local-server page receives native window controls; native
 application IPC requires a separately proven owned listener and current main
-document and remains unavailable on Linux.
+document. On Linux, a top-frame-only isolated content world mediates the
+native data lane because WebKitGTK callbacks do not identify the sending
+frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.

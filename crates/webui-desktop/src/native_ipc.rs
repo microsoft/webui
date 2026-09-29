@@ -48,7 +48,7 @@ pub(crate) fn hello_reply_json(
 /// A successful owned local-server admission always advertises the private
 /// native data lane. There is deliberately no boolean argument with which a
 /// local adapter could serialize a token-bearing HTTP fallback reply.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", test))]
 pub(crate) fn hello_reply_json_local(
     hello: &NativeHello,
     result: &Result<crate::ipc::SessionInfo, IpcError>,
@@ -105,7 +105,7 @@ pub(crate) fn activation_script(
 }
 
 /// Owned local-server activation cannot be constructed without carrier v1.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", test))]
 pub(crate) fn activation_script_local(
     proof: &crate::ipc::DocumentActivation,
 ) -> Result<String, serde_json::Error> {

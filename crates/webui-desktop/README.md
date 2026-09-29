@@ -29,6 +29,8 @@ files from the bundle.
 There are no default features:
 
 - `native`: the current platform's native window and system webview.
+- `local-server`: a native window for an already-bound loopback HTTP server on
+  macOS, Windows, or Linux; it includes `native` but does not grant page IPC.
 - `application-ipc`: typed application IPC, sessions, workers, and browser assets.
 - `source`: source compilation, bundle construction, and packaging APIs.
 - `packaging`: build-only layout for an already-compiled host and explicitly
@@ -44,6 +46,10 @@ Enable `application-ipc` alongside `native` when using generated Rust bindings.
 Without it, no application IPC sessions, workers, embedded assets, or native
 transport handlers are installed. Window controls and lifecycle events remain
 available independently.
+An owned local-server host may enable generated IPC only with its exact,
+exclusive bound listener and `application-ipc`; attached daemons are ineligible.
+Linux uses a private, top-frame-only content-world mediator for that local
+carrier. It does not grant native authority or preview navigation to subframes.
 
 Packaging supports macOS `.app` bundles and Windows/Linux portable directories,
 not installers, archives, or signing. Shell configuration exposes app icons,

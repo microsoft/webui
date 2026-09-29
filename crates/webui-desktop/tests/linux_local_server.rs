@@ -22,6 +22,10 @@ use webui_desktop::{
     WindowCommandError, WindowOptions,
 };
 
+#[cfg(feature = "application-ipc")]
+#[path = "fixtures/linux-local-ipc.rs"]
+mod local_ipc_fixture;
+
 const PAGE: &str = r#"<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Direct HTTP fixture</title><main><h1>Linux direct HTTP</h1>
@@ -64,14 +68,117 @@ struct Observed {
     result: Option<String>,
 }
 
-// GTK's default main context is process-global. Rust's test harness otherwise
-// runs these two GUI journeys concurrently on separate worker threads.
+// GTK's default main context is process-global. Run the native journeys
+// sequentially on the same harness thread, never in parallel worker tests.
 #[test]
 fn native_local_server_journeys() -> Result<(), Box<dyn std::error::Error>> {
+    // Performance sampling deliberately runs one window per fresh process.
+    // Normal cargo test still runs every acceptance journey sequentially.
+    match std::env::var("WEBUI_LINUX_MEASURE_MODE").ok().as_deref() {
+        Some("direct") => return direct_http_navigation_and_response_semantics(),
+        #[cfg(feature = "application-ipc")]
+        Some("ipc") => return local_ipc_fixture::run(),
+        None => {}
+        Some(_) => return Err("invalid Linux RSS measurement mode".into()),
+    }
     direct_http_navigation_and_response_semantics()
         .map_err(|error| std::io::Error::other(format!("direct HTTP journey: {error}")))?;
     synchronous_revocation_closes_with_a_full_command_queue()
         .map_err(|error| std::io::Error::other(format!("owner revocation journey: {error}")))?;
+    top_level_srcdoc_does_not_survive_native_commit()
+        .map_err(|error| std::io::Error::other(format!("top-level srcdoc probe: {error}")))?;
+    #[cfg(feature = "application-ipc")]
+    {
+        local_ipc_fixture::run()
+            .map_err(|error| std::io::Error::other(format!("owned Linux IPC journey: {error}")))?;
+        local_ipc_fixture::prove_child_isolation().map_err(|error| {
+            std::io::Error::other(format!("isolated-world child journey: {error}"))
+        })?;
+        println!(
+            "LINUX_IPC_RESULT generated_documents=2 sandboxed_child_denied=true http_ipc_frames=0"
+        );
+    }
+    Ok(())
+}
+
+fn top_level_srcdoc_does_not_survive_native_commit() -> Result<(), Box<dyn std::error::Error>> {
+    const PAGE: &str =
+        "<!doctype html><title>Top srcdoc probe</title><script>location.assign('about:srcdoc')</script>";
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let origin = LoopbackOrigin::from_socket_addr(listener.local_addr()?)?;
+    listener.set_nonblocking(true)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = std::thread::spawn(move || {
+        while !server_stop.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                    let mut bytes = [0; 2048];
+                    let _ = stream.read(&mut bytes);
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PAGE}", PAGE.len());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    });
+    let (owner, lifetime) = HostLifetime::new();
+    let frame = DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime)).build()?;
+    let requested = Arc::new(AtomicBool::new(false));
+    let committed = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(AtomicBool::new(false));
+    let (requested_event, committed_event, closed_event) = (
+        Arc::clone(&requested),
+        Arc::clone(&committed),
+        Arc::clone(&closed),
+    );
+    frame.on_event(move |event| {
+        match event {
+            DesktopEvent::NavigationRequested { url, .. } if url == "about:srcdoc" => {
+                requested_event.store(true, Ordering::Release);
+            }
+            DesktopEvent::NavigationCompleted { url, .. } if url == "about:srcdoc" => {
+                committed_event.store(true, Ordering::Release);
+            }
+            DesktopEvent::WindowClosed { .. } => {
+                closed_event.store(true, Ordering::Release);
+            }
+            _ => {}
+        }
+        EventResponse::Continue
+    })?;
+    let handle = frame.window_handle().clone();
+    let closed_watchdog = Arc::clone(&closed);
+    let watchdog = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        if !closed_watchdog.load(Ordering::Acquire) {
+            let _ = handle.request_close();
+        }
+    });
+    let result = webui_desktop::run_local_server_frame(frame);
+    stop.store(true, Ordering::Release);
+    server.join().map_err(|_| "srcdoc HTTP server panicked")??;
+    watchdog.join().map_err(|_| "srcdoc watchdog panicked")?;
+    result?;
+    eprintln!(
+        "TOP_SRCDOC action_observed={} completed={} closed={}",
+        requested.load(Ordering::Acquire),
+        committed.load(Ordering::Acquire),
+        closed.load(Ordering::Acquire)
+    );
+    assert!(
+        !committed.load(Ordering::Acquire),
+        "non-HTTP top document survived"
+    );
+    assert!(
+        closed.load(Ordering::Acquire),
+        "native window did not close"
+    );
+    drop(owner);
     Ok(())
 }
 

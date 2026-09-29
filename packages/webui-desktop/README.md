@@ -243,12 +243,12 @@ closed.
 
 ### Owned local-server carrier
 
-For an owned, IPC-enabled local-server frame on macOS or Windows, import
+For an owned, IPC-enabled local-server frame on macOS, Windows or Linux, import
 `createDesktopTransport` from `@microsoft/webui-desktop/native` instead of
 the ordinary package root. The native host must retain its bound listener and
-opt in with `LocalServerAppBuilder::application_ipc`; an attached daemon and
-the current Linux local-server frame cannot enable this capability. The host
-can use `bind_owned_local_server(address)` to bind an exclusive Windows
+opt in with `LocalServerAppBuilder::application_ipc`; an attached daemon
+cannot enable this capability. The host
+can use `bind_owned_local_server(address)` to bind an exclusive Windows or Linux
 `std::net::TcpListener` before starting its server. The SDK retains a
 duplicate only until trusted IPC retirement; close the native frame before
 waiting for the server's port to become free.
@@ -265,6 +265,9 @@ opt-in transport before it can send session credentials to HTTP; there is no
 HTTP fallback. The Rust host validates the live listener, exact committed main
 document and host lifetime before admitting page authority. The server must
 serve its own routes, assets and headers normally; the SDK does not proxy them.
+On Linux, the WebKitGTK callback has no sender frame identity, so the private
+native handlers live in an isolated content world with only a top-frame
+mediator. This does not enable preview subframe navigation or native authority.
 
 ## Resource bounds
 

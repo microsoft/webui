@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 #[cfg(all(
     feature = "application-ipc",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 use crate::ipc::{IpcBridge, IpcWindow};
 #[cfg(feature = "application-ipc")]
@@ -32,7 +32,7 @@ pub(crate) use owned_ipc::OwnedLocalServerIpc;
 /// local-only browser runtime. This is an asset route, never an IPC endpoint.
 #[cfg(all(
     feature = "application-ipc",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 pub const LOCAL_IPC_RUNTIME_PATH: &str = "/_webui/ipc/local-runtime.js";
 
@@ -46,7 +46,7 @@ pub const LOCAL_IPC_RUNTIME_PATH: &str = "/_webui/ipc/local-runtime.js";
 /// separate private native lane.
 #[cfg(all(
     feature = "application-ipc",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 #[must_use]
 pub fn local_ipc_runtime_asset() -> &'static [u8] {
@@ -605,7 +605,7 @@ impl LocalServerFrame {
     /// Borrow the weak application IPC handle, if explicitly enabled.
     #[cfg(all(
         feature = "application-ipc",
-        any(target_os = "macos", target_os = "windows")
+        any(target_os = "macos", target_os = "windows", target_os = "linux")
     ))]
     #[must_use]
     pub fn ipc(&self) -> Option<IpcWindow> {
@@ -614,7 +614,7 @@ impl LocalServerFrame {
 
     #[cfg(all(
         feature = "application-ipc",
-        any(target_os = "macos", target_os = "windows")
+        any(target_os = "macos", target_os = "windows", target_os = "linux")
     ))]
     pub(crate) fn ipc_bridge(&self) -> Option<IpcBridge> {
         self.ipc_owner.as_ref().map(IpcWindowOwner::bridge)

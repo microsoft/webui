@@ -14,6 +14,8 @@ mod ipc_message;
 mod ipc_scheme;
 #[cfg(feature = "application-ipc")]
 mod ipc_wake;
+#[cfg(all(feature = "local-server", feature = "application-ipc"))]
+mod local_ipc;
 #[cfg(feature = "local-server")]
 mod local_server;
 mod protocol;

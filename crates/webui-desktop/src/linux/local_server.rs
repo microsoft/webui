@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Direct HTTP WebKitGTK window. Deliberately does not use the bundled
-//! scheme handler, user-content manager, host message handler or IPC adapter.
+//! Direct HTTP WebKitGTK window. Never uses the bundled scheme or host-control
+//! handlers; optional owned IPC gets a separate top-frame isolated manager.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use gtk4::{gdk, gio, glib, prelude::*, Application, ApplicationWindow};
+#[cfg(feature = "application-ipc")]
+use webkit6::UserContentManager;
 use webkit6::{prelude::*, LoadEvent, PolicyDecisionType, WebContext, WebView};
 
 use crate::local_server::{HostCloseError, HostCloseRegistration};
@@ -47,6 +49,8 @@ struct LocalLaunch {
     registration: RefCell<Option<HostCloseRegistration>>,
     startup_error: Rc<RefCell<Option<anyhow::Error>>>,
     closed: Rc<Cell<bool>>,
+    #[cfg(feature = "application-ipc")]
+    ipc: Rc<RefCell<Option<Rc<super::local_ipc::GtkLocalIpc>>>>,
 }
 
 /// Run the already-bound loopback server as the main WebKitGTK document.
@@ -55,13 +59,6 @@ struct LocalLaunch {
 /// A close wake is independent of the bounded window command queue.
 pub(crate) fn run_local_server_frame(frame: LocalServerFrame) -> Result<()> {
     frame.lifetime().require_active()?;
-    // The Linux local-server mode has no frame-attributed IPC transport.
-    // Refuse a privileged frame rather than installing a subframe-reachable
-    // script handler or silently discarding explicitly requested grants.
-    #[cfg(feature = "application-ipc")]
-    if frame.ipc_owner.is_some() {
-        return Err(anyhow!("Linux local-server application IPC is unavailable: a registered WebKitGTK script handler is reachable from subframes"));
-    }
 
     let state_store =
         WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
@@ -81,6 +78,8 @@ pub(crate) fn run_local_server_frame(frame: LocalServerFrame) -> Result<()> {
         registration: RefCell::new(None),
         startup_error: Rc::new(RefCell::new(None)),
         closed: Rc::new(Cell::new(false)),
+        #[cfg(feature = "application-ipc")]
+        ipc: Rc::new(RefCell::new(None)),
     });
     let activation = {
         let frame = Rc::clone(&frame);
@@ -116,6 +115,10 @@ pub(crate) fn run_local_server_frame(frame: LocalServerFrame) -> Result<()> {
         .as_ref()
         .map(|window| (window.is_visible(), window.is_realized()));
     app.disconnect(activation);
+    #[cfg(feature = "application-ipc")]
+    if let Some(ipc) = launch.ipc.borrow_mut().take() {
+        ipc.close();
+    }
     // Drop the registration before the UI slot so a concurrent owner revoke
     // cannot schedule a close against a subsequent window generation.
     launch.registration.borrow_mut().take();
@@ -144,10 +147,29 @@ pub(crate) fn run_local_server_frame(frame: LocalServerFrame) -> Result<()> {
 
 fn build_window(app: &Application, frame: &LocalServerFrame, launch: &LocalLaunch) -> Result<()> {
     frame.lifetime().require_active()?;
-    // A private WebContext and default EMPTY manager: never call
-    // register_script_message_handler, add_script, or register_uri_scheme.
+    // The default path has no content manager, script or native handler.
+    // The isolated manager exists only for a separately proven owned listener.
     let context = WebContext::new();
-    let webview = WebView::builder().web_context(&context).build();
+    #[cfg(feature = "application-ipc")]
+    let manager = frame.ipc_owner.as_ref().map(|_| UserContentManager::new());
+    #[cfg(feature = "application-ipc")]
+    if let Some(manager) = manager.as_ref() {
+        super::local_ipc::GtkLocalIpc::prepare(manager)?;
+    }
+    let builder = WebView::builder().web_context(&context);
+    #[cfg(feature = "application-ipc")]
+    let builder = if let Some(manager) = manager.as_ref() {
+        builder.user_content_manager(manager)
+    } else {
+        builder
+    };
+    let webview = builder.build();
+    #[cfg(feature = "application-ipc")]
+    if let Some(manager) = manager.as_ref() {
+        *launch.ipc.borrow_mut() = Some(super::local_ipc::GtkLocalIpc::install(
+            frame, &webview, manager,
+        )?);
+    }
     // A host may queue a background change before the native loop starts.
     // Reflect that latest native color on the first WebView paint.
     if let Some(color) = frame.live_background.current().or(frame.window.background) {
@@ -176,6 +198,8 @@ fn build_window(app: &Application, frame: &LocalServerFrame, launch: &LocalLaunc
     let target = window.downgrade();
     let closed = Rc::clone(&launch.closed);
     let events = frame.events.clone();
+    #[cfg(feature = "application-ipc")]
+    let ipc = Rc::clone(&launch.ipc);
     app.connect_window_removed(move |_, removed| {
         // A WeakRef names this exact window generation without extending its
         // lifetime. Neither close-request nor widget destroy alone certifies
@@ -184,6 +208,10 @@ fn build_window(app: &Application, frame: &LocalServerFrame, launch: &LocalLaunc
             .upgrade()
             .is_some_and(|window| removed.as_ptr().cast::<()>() == window.as_ptr().cast::<()>());
         if this_window && !closed.replace(true) {
+            #[cfg(feature = "application-ipc")]
+            if let Some(state) = ipc.borrow_mut().take() {
+                state.close();
+            }
             let _ = events.dispatch(&DesktopEvent::WindowClosed {
                 window_id: WINDOW_ID,
             });
@@ -338,14 +366,29 @@ fn install_navigation(
     let lifetime = frame.lifetime().clone();
     let window = local.window.clone();
     let events = local.events.clone();
+    let origin = frame.origin().clone();
     local.webview.connect_load_changed(move |webview, state| {
         if !lifetime.is_active() {
             webview.stop_loading();
             window.destroy();
             return;
         }
+        if state == LoadEvent::Committed
+            && !webview
+                .uri()
+                .is_some_and(|url| lifetime.allows_navigation(&origin, url.as_str()))
+        {
+            webview.stop_loading();
+            window.destroy();
+            return;
+        }
         if state == LoadEvent::Finished {
             if let Some(url) = webview.uri() {
+                if !lifetime.allows_navigation(&origin, url.as_str()) {
+                    webview.stop_loading();
+                    window.destroy();
+                    return;
+                }
                 let _ = events.dispatch(&DesktopEvent::NavigationCompleted {
                     window_id: WINDOW_ID,
                     url: url.to_string(),
