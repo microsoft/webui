@@ -28,6 +28,8 @@ mod browser_profile;
 mod bundle;
 #[cfg(feature = "native-services")]
 mod capture;
+#[cfg(feature = "native-services")]
+mod clipboard;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod document;
 mod error;
@@ -101,6 +103,8 @@ pub use capture::{
     MAX_WEB_CAPTURE_CHUNK_BYTES, MAX_WEB_CAPTURE_HEIGHT, MAX_WEB_CAPTURE_PNG_BYTES,
     MAX_WEB_CAPTURE_RASTER_BYTES, MAX_WEB_CAPTURE_WIDTH,
 };
+#[cfg(feature = "native-services")]
+pub use clipboard::{ClipboardError, ClipboardRequest};
 pub use error::{DesktopError, Result};
 pub use event::{
     DesktopEvent, DesktopHostMessage, DesktopHostMessageError, EventHandler, EventJavascriptError,

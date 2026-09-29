@@ -379,6 +379,48 @@ one JSON/base64 response. A pending capture may fail `Busy`, `Unavailable`,
 unverified crop. Windows and Linux explicitly return `Unsupported`. No
 clipboard or issue-opening workflow is implied by this API.
 
+### Explicit macOS PNG clipboard write
+
+A trusted host can pass a **still-retained** `CapturedContent` to
+`services.write_capture_to_clipboard(&capture)?.await?`. This explicit action
+replaces the user's general clipboard contents with `public.png`; it is
+never invoked by capture, by the page, or by an IPC grant by default.
+The future reports success only after AppKit accepts the bytes and immediate
+same-type readback matches the PNG while the pasteboard change count remains
+stable. Do not interpret request admission as completion:
+
+```rust
+use webui_desktop::{CapturedContent, ClipboardError, NativeServices};
+
+async fn copy_review_image(
+    services: &NativeServices,
+    capture: &CapturedContent,
+) -> Result<(), ClipboardError> {
+    services.write_capture_to_clipboard(capture)?.await
+}
+```
+
+Only then may the host separately decide whether to invoke its existing
+validated URL opener; the SDK does **not** open an issue or browser tab.
+The capture must still belong to this exact window/document and remain
+retained. One clipboard write may be pending per window. Navigation,
+retake, release, owner revocation and close cancel pending work before the
+native write. After the bounded NSData copy, a synchronized final token and
+deadline check occurs immediately before AppKit clears the pasteboard:
+queued cancellation wins that transition. An OS write already in progress
+cannot be recalled, but its late result cannot report success to a new document.
+An OS refusal or ten-second deadline leaves the captured PNG available for
+an explicit retry **if the document and resource remain live**; navigation,
+release and retake invalidate it. Windows and Linux return `Unsupported`.
+
+The native write/readback helper has been exercised with a unique **private**
+macOS pasteboard, not a user's general clipboard. The latter remains a
+platform-permission/contention qualification gap: a host must handle
+`Rejected`, `Contended`, `Readback`, `Cancelled`, `Timeout` and `Overloaded` explicitly
+and never claim clipboard completion on those outcomes. An OS refusal after
+clearing the general pasteboard can leave it empty; tell the user and allow
+an explicit retry rather than opening an issue URL on failure.
+
 ## Rust API
 
 `DesktopApp` builds a `DesktopFrame`. Register state and handlers before

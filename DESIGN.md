@@ -392,6 +392,10 @@ platform evidence and limits live in `specs/desktop-capture.md`. Navigation
 and native teardown invalidate the resource. Neither capture nor chunk reads
 create ambient renderer authority; generated application IPC access remains
 an explicit, separately budgeted host choice.
+Only a trusted macOS host may separately ask AppKit to write that still-live
+PNG to the clipboard. Its native acknowledgement is an awaitable operation,
+not authority to open an external URL or a renderer grant; the host owns any
+later, independently validated browser-opening decision.
 An explicitly opted-in macOS local-server frame may accept bounded incoming
 custom-scheme URLs from AppKit into a single-window Rust host callback. This
 OS-to-host path is distinct from browser navigation, application IPC, and

@@ -155,6 +155,8 @@ struct Inner {
     geometry_dispatch: Mutex<Option<Arc<platform::Dispatch>>>,
     #[cfg(target_os = "macos")]
     capture: Arc<crate::capture::CaptureState>,
+    #[cfg(target_os = "macos")]
+    clipboard: Arc<crate::clipboard::ClipboardState>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
     timer: Mutex<Option<Weak<Timer>>>,
@@ -232,6 +234,9 @@ impl NativeServices {
         let window_generation = NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed);
         #[cfg(target_os = "macos")]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
+        #[cfg(target_os = "macos")]
+        let clipboard =
+            crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
         let inner = Arc::new(Inner {
             executor,
             lifetime,
@@ -255,6 +260,8 @@ impl NativeServices {
             geometry_dispatch: Mutex::new(None),
             #[cfg(target_os = "macos")]
             capture,
+            #[cfg(target_os = "macos")]
+            clipboard,
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
             timer: Mutex::new(None),
@@ -281,6 +288,7 @@ impl NativeServices {
                         {
                             inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
                             inner.capture.viewport_changed();
+                            inner.clipboard.navigation_changed();
                         }
                     }
                     _ => {}
@@ -388,7 +396,9 @@ impl NativeServices {
                 self.0.capture.close();
                 return Err(crate::CaptureError::Closed);
             }
-            self.0.capture.begin(options)
+            let request = self.0.capture.begin(options)?;
+            self.0.clipboard.cancel_invalidated();
+            Ok(request)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -432,12 +442,40 @@ impl NativeServices {
     ) -> Result<(), crate::CaptureError> {
         #[cfg(target_os = "macos")]
         {
-            self.0.capture.release(content)
+            self.0.capture.release(content)?;
+            self.0.clipboard.cancel_token(content.token());
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = content;
             Err(crate::CaptureError::Unsupported)
+        }
+    }
+
+    /// Write one currently retained PNG to the macOS general clipboard.
+    /// The returned future resolves only after AppKit acknowledges the
+    /// `public.png` write and immediate byte-for-byte readback. The trusted
+    /// host must await success before any separately validated URL opener;
+    /// no issue navigation or renderer method is installed by this API.
+    ///
+    /// # Errors
+    ///
+    /// Rejects released/foreign captures, retired documents, concurrent
+    /// writes and unsupported platforms. OS refusal, contention, readback
+    /// mismatch and a finite deadline are reported by the returned future.
+    pub fn write_capture_to_clipboard(
+        &self,
+        content: &crate::CapturedContent,
+    ) -> Result<crate::ClipboardRequest, crate::ClipboardError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.0.clipboard.begin(content)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = content;
+            Err(crate::ClipboardError::Unsupported)
         }
     }
 
@@ -501,8 +539,13 @@ impl NativeServices {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn capture_for_revoke(&self) -> Arc<crate::capture::CaptureState> {
-        Arc::clone(&self.0.capture)
+    pub(crate) fn native_resources_for_revoke(
+        &self,
+    ) -> (
+        Arc<crate::capture::CaptureState>,
+        Arc<crate::clipboard::ClipboardState>,
+    ) {
+        (Arc::clone(&self.0.capture), Arc::clone(&self.0.clipboard))
     }
 
     #[cfg(target_os = "macos")]
@@ -514,6 +557,7 @@ impl NativeServices {
         GeometryRegistration {
             geometry: platform::install(&self.0, window, view),
             capture: crate::macos::capture::install(&self.0.capture, window, view),
+            clipboard: crate::macos::clipboard::install(&self.0.clipboard),
         }
     }
 
@@ -617,6 +661,7 @@ impl NativeServices {
         inner
             .capture
             .invalidate(inner.document_epoch.load(Ordering::Acquire), false);
+        inner.clipboard.navigation_changed();
         inner.committed_epoch.store(0, Ordering::Release);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
         platform::cancel_pending(inner, false);
@@ -701,6 +746,7 @@ impl Inner {
                 self.committed_epoch.store(0, Ordering::Release);
                 self.document_epoch.fetch_add(1, Ordering::AcqRel);
                 self.capture.close();
+                self.clipboard.close_silent();
                 self.geometry_revision.fetch_add(1, Ordering::AcqRel);
                 platform::cancel_pending(self, true);
             }
@@ -753,11 +799,13 @@ impl Future for GeometryRequest {
 pub(crate) struct GeometryRegistration {
     geometry: platform::Registration,
     capture: crate::macos::capture::Registration,
+    clipboard: crate::macos::clipboard::Registration,
 }
 
 #[cfg(target_os = "macos")]
 impl GeometryRegistration {
     pub(crate) fn close(&self) {
+        self.clipboard.close();
         self.capture.close();
         self.geometry.close();
     }
@@ -897,6 +945,49 @@ mod tests {
         let (owner, lifetime) = HostLifetime::new();
         let services = NativeServices::new(&events, Arc::default(), lifetime).unwrap();
         (services, events, owner)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[allow(unsafe_code)]
+    fn public_clipboard_request_completes_through_private_dispatch_and_readback() {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+
+        struct PrivateBoard(objc2::rc::Retained<NSPasteboard>);
+        impl Drop for PrivateBoard {
+            fn drop(&mut self) {
+                // SAFETY: This releases this test's unique pasteboard name,
+                // never the user's general pasteboard.
+                unsafe {
+                    let _: () = objc2::msg_send![&*self.0, releaseGlobally];
+                }
+            }
+        }
+
+        let (services, _events, _host) = services();
+        let png = &crate::macos::clipboard::TEST_PNG;
+        services.0.capture.test_store_retained_png(png);
+        let content = services.0.capture.test_content().unwrap();
+        let board = PrivateBoard(NSPasteboard::pasteboardWithUniqueName());
+        let registration =
+            crate::macos::clipboard::install_private(&services.0.clipboard, board.0.clone());
+        let mut pending = services.write_capture_to_clipboard(&content).unwrap();
+        assert!(matches!(
+            services.write_capture_to_clipboard(&content),
+            Err(crate::ClipboardError::Busy)
+        ));
+        // Test mode drains the SAME admitted Dispatch and AppKit helper on
+        // this thread instead of running a foreground NSApplication loop.
+        registration.test_drain();
+        assert!(matches!(
+            Pin::new(&mut pending).poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+        // SAFETY: Public AppKit PNG pasteboard type is an immutable symbol.
+        let data = board.0.dataForType(unsafe { NSPasteboardTypePNG }).unwrap();
+        // SAFETY: NSData is immutable and retained throughout comparison.
+        assert_eq!(unsafe { data.as_bytes_unchecked() }, png);
+        drop(registration);
     }
 
     fn wait(mut operation: NativeOpen) -> Result<(), NativeServiceError> {

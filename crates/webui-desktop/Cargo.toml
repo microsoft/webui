@@ -29,6 +29,7 @@ native-services = [
     "dep:url",
     "objc2-app-kit?/NSBitmapImageRep",
     "objc2-app-kit?/NSImageRep",
+    "objc2-app-kit?/NSPasteboard",
     "objc2-web-kit?/WKSnapshotConfiguration",
 ]
 application-ipc = [

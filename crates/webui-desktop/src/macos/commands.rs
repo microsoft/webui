@@ -123,15 +123,19 @@ fn schedule_drain(id: u64) {
 
 #[cfg(feature = "local-server")]
 fn owner_close_callback(
-    #[cfg(feature = "native-services")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-services")] resources: Option<(
+        Arc<crate::capture::CaptureState>,
+        Arc<crate::clipboard::ClipboardState>,
+    )>,
     schedule: impl Fn() + Send + Sync + 'static,
 ) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || {
         #[cfg(feature = "native-services")]
-        if let Some(capture) = &capture {
+        if let Some((capture, clipboard)) = &resources {
             // This runs synchronously under HostLifetime's close lock. Never
             // invoke a Rust Future waker or wait for AppKit here.
             capture.close();
+            clipboard.close_silent();
         }
         schedule();
     })
@@ -141,7 +145,10 @@ fn owner_close_callback(
 pub(super) fn install_owner_close(
     window: &NSWindow,
     lifetime: &crate::HostLifetime,
-    #[cfg(feature = "native-services")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-services")] resources: Option<(
+        Arc<crate::capture::CaptureState>,
+        Arc<crate::clipboard::ClipboardState>,
+    )>,
 ) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
     let window = Weak::new(window);
     let state = lifetime.clone();
@@ -157,7 +164,7 @@ pub(super) fn install_owner_close(
     let id = target.id;
     let registration = lifetime.register_close(owner_close_callback(
         #[cfg(feature = "native-services")]
-        capture,
+        resources,
         move || schedule_drain(id),
     ))?;
     Ok((target, registration))
@@ -253,28 +260,38 @@ mod capture_close_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn composed_owner_revoke_drops_png_before_wake_and_retry_is_idempotent() {
+    fn composed_owner_revoke_retires_png_and_clipboard_before_wake() {
         let (owner, lifetime) = crate::HostLifetime::new();
         let capture = crate::capture::CaptureState::new(lifetime.clone(), 17);
+        let clipboard =
+            crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
         capture.test_store_retained(25_000);
         assert_eq!(capture.test_retained_len(), 25_000);
         let queued = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&queued);
         let observed = Arc::clone(&capture);
         let during_wake = Arc::clone(&capture);
+        let observed_clipboard = Arc::clone(&clipboard);
+        let during_wake_clipboard = Arc::clone(&clipboard);
         let _registration = lifetime
-            .register_close(owner_close_callback(Some(capture), move || {
-                assert_eq!(during_wake.test_retained_len(), 0);
-                counter.fetch_add(1, Ordering::AcqRel);
-            }))
+            .register_close(owner_close_callback(
+                Some((capture, clipboard)),
+                move || {
+                    assert_eq!(during_wake.test_retained_len(), 0);
+                    assert!(during_wake_clipboard.test_is_closed());
+                    counter.fetch_add(1, Ordering::AcqRel);
+                },
+            ))
             .unwrap();
         owner.revoke().unwrap();
         assert_eq!(observed.test_retained_len(), 0);
+        assert!(observed_clipboard.test_is_closed());
         assert_eq!(queued.load(Ordering::Acquire), 1);
         owner.revoke().unwrap();
         assert_eq!(queued.load(Ordering::Acquire), 1);
         owner.retry_close().unwrap();
         assert_eq!(observed.test_retained_len(), 0);
+        assert!(observed_clipboard.test_is_closed());
         assert_eq!(queued.load(Ordering::Acquire), 2);
     }
 }
