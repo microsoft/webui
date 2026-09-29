@@ -153,9 +153,9 @@ struct Inner {
     last_magnification: AtomicU64,
     #[cfg(target_os = "macos")]
     geometry_dispatch: Mutex<Option<Arc<platform::Dispatch>>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "native-capture"))]
     capture: Arc<crate::capture::CaptureState>,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
     clipboard: Arc<crate::clipboard::ClipboardState>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
@@ -232,9 +232,9 @@ impl NativeServices {
             crate::native_theme::platform::Controller::new(events.clone(), lifetime.clone());
         #[cfg(target_os = "macos")]
         let window_generation = NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed);
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "native-capture"))]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
         let clipboard =
             crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
         let inner = Arc::new(Inner {
@@ -258,9 +258,9 @@ impl NativeServices {
             last_magnification: AtomicU64::new(1_f64.to_bits()),
             #[cfg(target_os = "macos")]
             geometry_dispatch: Mutex::new(None),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "native-capture"))]
             capture,
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
             clipboard,
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
@@ -287,7 +287,9 @@ impl NativeServices {
                         #[cfg(target_os = "macos")]
                         {
                             inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+                            #[cfg(feature = "native-capture")]
                             inner.capture.viewport_changed();
+                            #[cfg(feature = "native-clipboard")]
                             inner.clipboard.navigation_changed();
                         }
                     }
@@ -386,6 +388,7 @@ impl NativeServices {
     /// busy, closed and stale windows and an incomplete or oversized WK result.
     /// Its future times out after ten seconds; a hung native callback retains
     /// its Busy reservation rather than permitting overlapping snapshots.
+    #[cfg(feature = "native-capture")]
     pub fn capture_web_content(
         &self,
         options: crate::CaptureOptions,
@@ -397,6 +400,7 @@ impl NativeServices {
                 return Err(crate::CaptureError::Closed);
             }
             let request = self.0.capture.begin(options)?;
+            #[cfg(feature = "native-clipboard")]
             self.0.clipboard.cancel_invalidated();
             Ok(request)
         }
@@ -414,6 +418,7 @@ impl NativeServices {
     /// # Errors
     ///
     /// Rejects stale or cross-window handles and offsets beyond the PNG.
+    #[cfg(feature = "native-capture")]
     pub fn read_captured_content(
         &self,
         content: &crate::CapturedContent,
@@ -436,6 +441,7 @@ impl NativeServices {
     /// # Errors
     ///
     /// Returns `Released` for stale or foreign resource handles.
+    #[cfg(feature = "native-capture")]
     pub fn release_captured_content(
         &self,
         content: &crate::CapturedContent,
@@ -443,6 +449,7 @@ impl NativeServices {
         #[cfg(target_os = "macos")]
         {
             self.0.capture.release(content)?;
+            #[cfg(feature = "native-clipboard")]
             self.0.clipboard.cancel_token(content.token());
             Ok(())
         }
@@ -464,6 +471,7 @@ impl NativeServices {
     /// Rejects released/foreign captures, retired documents, concurrent
     /// writes and unsupported platforms. OS refusal, contention, readback
     /// mismatch and a finite deadline are reported by the returned future.
+    #[cfg(feature = "native-clipboard")]
     pub fn write_capture_to_clipboard(
         &self,
         content: &crate::CapturedContent,
@@ -538,14 +546,14 @@ impl NativeServices {
         Arc::clone(&self.0.theme)
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn native_resources_for_revoke(
-        &self,
-    ) -> (
-        Arc<crate::capture::CaptureState>,
-        Arc<crate::clipboard::ClipboardState>,
-    ) {
-        (Arc::clone(&self.0.capture), Arc::clone(&self.0.clipboard))
+    #[cfg(all(target_os = "macos", feature = "native-capture"))]
+    pub(crate) fn capture_for_revoke(&self) -> Arc<crate::capture::CaptureState> {
+        Arc::clone(&self.0.capture)
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-clipboard"))]
+    pub(crate) fn clipboard_for_revoke(&self) -> Arc<crate::clipboard::ClipboardState> {
+        Arc::clone(&self.0.clipboard)
     }
 
     #[cfg(target_os = "macos")]
@@ -556,7 +564,9 @@ impl NativeServices {
     ) -> GeometryRegistration {
         GeometryRegistration {
             geometry: platform::install(&self.0, window, view),
+            #[cfg(feature = "native-capture")]
             capture: crate::macos::capture::install(&self.0.capture, window, view),
+            #[cfg(feature = "native-clipboard")]
             clipboard: crate::macos::clipboard::install(&self.0.clipboard),
         }
     }
@@ -658,9 +668,11 @@ impl NativeServices {
             return;
         }
         inner.document_epoch.fetch_add(1, Ordering::AcqRel);
+        #[cfg(feature = "native-capture")]
         inner
             .capture
             .invalidate(inner.document_epoch.load(Ordering::Acquire), false);
+        #[cfg(feature = "native-clipboard")]
         inner.clipboard.navigation_changed();
         inner.committed_epoch.store(0, Ordering::Release);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
@@ -695,6 +707,7 @@ impl NativeServices {
         };
         *committed_url = Some(url.to_owned());
         inner.committed_epoch.store(epoch, Ordering::Release);
+        #[cfg(feature = "native-capture")]
         inner.capture.finished(epoch);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
     }
@@ -722,6 +735,7 @@ impl NativeServices {
             return false;
         }
         inner.committed_epoch.store(epoch, Ordering::Release);
+        #[cfg(feature = "native-capture")]
         inner.capture.finished(epoch);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
         true
@@ -745,7 +759,9 @@ impl Inner {
             {
                 self.committed_epoch.store(0, Ordering::Release);
                 self.document_epoch.fetch_add(1, Ordering::AcqRel);
+                #[cfg(feature = "native-capture")]
                 self.capture.close();
+                #[cfg(feature = "native-clipboard")]
                 self.clipboard.close_silent();
                 self.geometry_revision.fetch_add(1, Ordering::AcqRel);
                 platform::cancel_pending(self, true);
@@ -798,14 +814,18 @@ impl Future for GeometryRequest {
 #[cfg(target_os = "macos")]
 pub(crate) struct GeometryRegistration {
     geometry: platform::Registration,
+    #[cfg(feature = "native-capture")]
     capture: crate::macos::capture::Registration,
+    #[cfg(feature = "native-clipboard")]
     clipboard: crate::macos::clipboard::Registration,
 }
 
 #[cfg(target_os = "macos")]
 impl GeometryRegistration {
     pub(crate) fn close(&self) {
+        #[cfg(feature = "native-clipboard")]
         self.clipboard.close();
+        #[cfg(feature = "native-capture")]
         self.capture.close();
         self.geometry.close();
     }
@@ -950,6 +970,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     #[allow(unsafe_code)]
+    #[cfg(feature = "native-clipboard")]
     fn public_clipboard_request_completes_through_private_dispatch_and_readback() {
         use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
 

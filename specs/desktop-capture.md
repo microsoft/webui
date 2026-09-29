@@ -1,6 +1,7 @@
 # Host-owned macOS visible-content capture
 
-The local-server frame's `native-services` capability can create one opaque
+The local-server frame's opt-in `native-capture` capability (which includes
+`native-services`) can create one opaque
 native PNG resource for its **exact owning window and finished main-document
 epoch**. This is a host-only API and cannot be invoked by an ungranted
 renderer. Preview frame grants remain exact, unprivileged HTTP origins;

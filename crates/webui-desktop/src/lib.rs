@@ -26,9 +26,9 @@ mod asset_file;
 #[cfg(any(all(windows, feature = "native"), test))]
 mod browser_profile;
 mod bundle;
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-capture")]
 mod capture;
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-clipboard")]
 mod clipboard;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod document;
@@ -97,13 +97,13 @@ pub use bundle::{
     BundleAsset, BundleIntegrity, DesktopBundleManifest, DesktopMenu, DesktopMenuItem,
     DesktopPackageTarget, DesktopShellConfig, TrayConfig,
 };
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-capture")]
 pub use capture::{
     CaptureError, CaptureOptions, CaptureRequest, CapturedContent, CapturedContentChunk,
     MAX_WEB_CAPTURE_CHUNK_BYTES, MAX_WEB_CAPTURE_HEIGHT, MAX_WEB_CAPTURE_PNG_BYTES,
     MAX_WEB_CAPTURE_RASTER_BYTES, MAX_WEB_CAPTURE_WIDTH,
 };
-#[cfg(feature = "native-services")]
+#[cfg(feature = "native-clipboard")]
 pub use clipboard::{ClipboardError, ClipboardRequest};
 pub use error::{DesktopError, Result};
 pub use event::{

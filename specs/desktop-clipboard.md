@@ -1,6 +1,7 @@
 # Host-only native PNG clipboard completion
 
-On macOS, a trusted local-server `NativeServices` handle may request one
+On macOS, a trusted local-server `NativeServices` handle with
+`native-clipboard` enabled (which includes `native-capture`) may request one
 clipboard write for an existing opaque `CapturedContent` token. Admission
 checks the owning window, finished document epoch, viewport revision, and
 retained resource identity. Windows/Linux explicitly reject the operation.

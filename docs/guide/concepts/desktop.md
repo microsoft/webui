@@ -50,6 +50,8 @@ set desktop package options with command flags or the app-root
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
+| `native-capture` | Host-only visible WK content PNG, including bounded native capture resources (includes `native-services`) |
+| `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `verified-update` | Host-only staged-file SHA-256 or SHA-512/size check; no native, source or packaging dependency |
 | `application-ipc` | Typed application messages |
@@ -353,7 +355,7 @@ grant is installed by this API.
 
 ### Host-owned visible-content capture (macOS)
 
-The `native-services` Rust host may call
+An opt-in `native-capture` Rust host may call
 `services.capture_web_content(CaptureOptions::new())?.await?` after the
 main document finishes and any preview iframe has **independently**
 reported that its content is ready. This API targets the **visible WKWebView
@@ -365,6 +367,14 @@ finished main page is **not** proof that a child iframe has loaded or
 painted. The host must establish that readiness through its own application
 protocol; capture adds no page global or default IPC method and requires no
 screen-recording grant.
+
+`native-services` alone continues to provide geometry, appearance and OS
+openers without constructing capture or clipboard state. If an earlier local
+unpublished runner enabled only `native-services` while calling capture,
+enable `native-capture` explicitly; enable `native-clipboard` for clipboard
+write/readback (it includes capture). Without those feature flags, their
+methods and types are absent at compile time. On Windows/Linux, opting in
+exposes the host API but its operations return typed `Unsupported`.
 
 ```rust
 use webui_desktop::{CaptureError, CaptureOptions, NativeServices};
@@ -404,7 +414,7 @@ clipboard or issue-opening workflow is implied by this API.
 
 ### Explicit macOS PNG clipboard write
 
-A trusted host can pass a **still-retained** `CapturedContent` to
+With `native-clipboard` enabled, a trusted host can pass a **still-retained** `CapturedContent` to
 `services.write_capture_to_clipboard(&capture)?.await?`. This explicit action
 replaces the user's general clipboard contents with `public.png`; it is
 never invoked by capture, by the page, or by an IPC grant by default.

@@ -24,14 +24,14 @@ required-features = ["cli"]
 [features]
 default = []
 local-server = ["native", "dep:url", "objc2-web-kit?/WKNavigationResponse"]
-native-services = [
-    "local-server",
-    "dep:url",
+native-services = ["local-server", "dep:url"]
+native-capture = [
+    "native-services",
     "objc2-app-kit?/NSBitmapImageRep",
     "objc2-app-kit?/NSImageRep",
-    "objc2-app-kit?/NSPasteboard",
     "objc2-web-kit?/WKSnapshotConfiguration",
 ]
+native-clipboard = ["native-capture", "objc2-app-kit?/NSPasteboard"]
 application-ipc = [
     "dep:base64",
     "dep:libc",
@@ -193,7 +193,7 @@ required-features = ["native-services"]
 [[example]]
 name = "native-capture"
 path = "tests/fixtures/native-capture.rs"
-required-features = ["native-services"]
+required-features = ["native-capture"]
 
 [[example]]
 name = "native-theme"
