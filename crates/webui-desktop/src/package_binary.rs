@@ -53,7 +53,7 @@ pub(super) fn validate_binary(file: &mut File, path: &Path, target: Target) -> R
     let bytes = &header[..count];
     let valid = match target.format {
         Format::Mach => mach_machine(file, bytes, target.machine),
-        Format::Pe => pe_machine(bytes) == Some(target.machine),
+        Format::Pe => pe_machine(file, bytes, path)? == Some(target.machine),
         Format::Elf => elf_machine(bytes) == Some(target.machine),
     };
     if !valid {
@@ -184,16 +184,53 @@ fn mach_machine(file: &mut File, bytes: &[u8], machine: u32) -> bool {
     false
 }
 
-fn pe_machine(bytes: &[u8]) -> Option<u32> {
+fn pe_machine(file: &mut File, bytes: &[u8], path: &Path) -> Result<Option<u32>> {
     if bytes.len() < 0x40 || !bytes.starts_with(b"MZ") {
+        return Ok(None);
+    }
+    let offset = u64::from(u32::from_le_bytes([
+        bytes[0x3c],
+        bytes[0x3d],
+        bytes[0x3e],
+        bytes[0x3f],
+    ]));
+    if let Ok(start) = usize::try_from(offset) {
+        if let Some(end) = start.checked_add(6) {
+            if let Some(header) = bytes.get(start..end) {
+                return Ok(pe_header_machine(header));
+            }
+        }
+    }
+    let file_len = file
+        .metadata()
+        .map_err(|source| DesktopError::Io {
+            context: format!("checking PE executable size {}", path.display()),
+            source,
+        })?
+        .len();
+    if offset.checked_add(6).is_none_or(|end| end > file_len) {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|source| DesktopError::Io {
+            context: format!("seeking PE executable header {}", path.display()),
+            source,
+        })?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header)
+        .map_err(|source| DesktopError::Io {
+            context: format!("reading PE executable header {}", path.display()),
+            source,
+        })?;
+    Ok(pe_header_machine(&header))
+}
+
+fn pe_header_machine(header: &[u8]) -> Option<u32> {
+    if header.get(..4)? != b"PE\0\0" {
         return None;
     }
-    let offset = u32::from_le_bytes(bytes[0x3c..0x40].try_into().ok()?) as usize;
-    let header = bytes.get(offset..offset.checked_add(6)?)?;
-    if &header[..4] != b"PE\0\0" {
-        return None;
-    }
-    Some(u32::from(u16::from_le_bytes([header[4], header[5]])))
+    let machine = header.get(4..6)?;
+    Some(u32::from(u16::from_le_bytes([machine[0], machine[1]])))
 }
 
 fn elf_machine(bytes: &[u8]) -> Option<u32> {
