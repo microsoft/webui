@@ -395,7 +395,9 @@ authorize the caller, pace each read, and count its encoded transport bytes
 against the existing aggregate IPC budgets. Never return the whole image in
 one JSON/base64 response. A pending capture may fail `Busy`, `Unavailable`,
 `Incomplete`, `TooLarge`, `Cancelled`, `Timeout`, or `Closed` rather than presenting an
-unverified crop. Windows and Linux explicitly return `Unsupported`. No
+unverified crop. Up to eight short-lived capture deadline workers may be
+finishing per window; additional requests return `Overloaded` until they exit.
+Windows and Linux explicitly return `Unsupported`. No
 clipboard or issue-opening workflow is implied by this API.
 
 ### Explicit macOS PNG clipboard write
