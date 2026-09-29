@@ -371,8 +371,12 @@ host revocation cannot authenticate a replacement at that address; privileged
 document admission requires a separately verified process/generation identity
 or live authenticated channel.
 This first native mode admits only same-origin top-level document navigation;
-network-backed subframe navigation and popups are denied, though browser-created
-`about:blank` children may exist. No page receives native controls or IPC.
+popups and subframe document commits are denied, though browser-created
+`about:blank` children may exist. WebKitGTK cannot identify a navigation's
+target frame before requesting it, so a denied subframe request may still reach
+the HTTP server. No local-server page receives native window controls; native
+application IPC requires a separately proven owned listener and current main
+document and remains unavailable on Linux.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.

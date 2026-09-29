@@ -166,8 +166,11 @@ codec or application allocations.
 ## Native adapter seam
 
 Inject **the built `dist/native-bootstrap.js` bytes** at document start, only in
-eligible main frames, identically for source and packaged applications. The
-artifact installs an immutable, frozen `window.__webuiDesktopIpcV2`:
+eligible main frames, identically for source and packaged applications. An
+owned local-server frame with `application_ipc` instead uses the separate
+`dist/local-native-bootstrap.js` asset; it must never inject the bundled
+bootstrap into an HTTP document. Both install an immutable, frozen
+`window.__webuiDesktopIpcV2`:
 
 ```ts
 interface NativeIpcBootstrap {
@@ -176,6 +179,7 @@ interface NativeIpcBootstrap {
     navigation: string;
     documentNonce: string;
     challenge: string;
+    nativeCarrierVersion?: 1;
   }): boolean;
   hello(hello: Hello): Promise<SessionInfo>;
   subscribeControl(listener: (control: NativeControl) => void): Subscription;
@@ -197,8 +201,10 @@ The single hello waits for activation and has a five-second deadline covering
 that wait. Connection, transport and bootstrap boundaries project only
 `wireVersion`, `contractName`, `contractMajor` and `schemaHash`; local method
 descriptors, codecs and extra own properties never cross native admission.
-The posted hello has exactly nine fields, adding `navigation`, `documentNonce`,
-`challenge`, `callId: "1"` and `kind: "hello"`. Native success and structured
+The bundled hello has exactly nine fields, adding `navigation`, `documentNonce`,
+`challenge`, `callId: "1"` and `kind: "hello"`. An owned local-server
+document adds `nativeCarrierVersion: 1` to that hello and requires the same
+version in the successful native reply. Native success and structured
 error replies must echo the navigation, nonce, challenge and call ID with
 `kind: "helloResult"`. Stale proof or call ID replies cannot settle
 the handshake. SessionInfo strips proof fields.
@@ -234,6 +240,31 @@ proof and session token cannot gain authority. GTK callbacks must not fabricate
 main-frame identity. IPC-enabled GTK views disable page caching so history
 navigation creates a fresh bootstrap, and cancelled revoked navigations stay
 closed.
+
+### Owned local-server carrier
+
+For an owned, IPC-enabled local-server frame on macOS or Windows, import
+`createDesktopTransport` from `@microsoft/webui-desktop/native` instead of
+the ordinary package root. The native host must retain its bound listener and
+opt in with `LocalServerAppBuilder::application_ipc`; an attached daemon and
+the current Linux local-server frame cannot enable this capability. The host
+can use `bind_owned_local_server(address)` to bind an exclusive Windows
+`std::net::TcpListener` before starting its server. The SDK retains a
+duplicate only until trusted IPC retirement; close the native frame before
+waiting for the server's port to become free.
+The host
+can mount `local_ipc_runtime_asset()` at `LOCAL_IPC_RUNTIME_PATH` on its existing
+same-origin server, or bundle the native package export itself. The ordinary
+package root and default embedded runtime do not include the native data
+carrier.
+
+Local IPC uses a private native message data lane, not the HTTP listener or
+the 4 KiB native control lane. It reuses the existing generated schema and
+binary IPC frame engine. A missing or mismatched carrier version fails the
+opt-in transport before it can send session credentials to HTTP; there is no
+HTTP fallback. The Rust host validates the live listener, exact committed main
+document and host lifetime before admitting page authority. The server must
+serve its own routes, assets and headers normally; the SDK does not proxy them.
 
 ## Resource bounds
 

@@ -32,6 +32,22 @@ sources, not duplicated here.
   **not** a universal claim that every control callback is main-frame-only.
   Same-origin delegation is inside the trusted application boundary; do not
   treat untrusted same-origin content as isolated by this IPC design.
+- The opt-in local-server frame admits application IPC **only** when configured
+  with the actual bound `TcpListener`, the matching exact loopback origin,
+  generated registry, explicit grants, and a live `HostLifetime`. Rust retains
+  a   duplicate of that listener while document authority remains live, so
+  dropping the application's original handle cannot free its port for a
+  replacement. Terminal retirement synchronously drops the SDK pin even if
+  blocked handlers retain the IPC core; returning from `run_local_server_frame`
+  is a receipt for this release. Only then should the host wait for HTTP
+  quiescence before releasing its own listener. Socket-option admission rejects
+  macOS `SO_REUSEPORT` and requires Windows `SO_EXCLUSIVEADDRUSE` without
+  `SO_REUSEADDR`; `bind_owned_local_server` safely sets exclusivity **before**
+  binding on Windows. A
+  non-exclusive listener must not create a local IPC principal. An attached
+  daemon's port and asynchronous owner-loss signal
+  do not prove socket identity; attached daemons remain **ineligible**. Default
+  local-server frames install no IPC bootstrap, handler, or data channel.
 
 ## Document proof and admission
 
@@ -43,6 +59,12 @@ sources, not duplicated here.
    document; the wrapper checks the nonce **before** invoking the bootstrap,
    which checks it again. Neither challenge nor session token belongs in
    persistent scripts, URLs, logs, or availability controls.
+   For an eligible owned local-server document, native activation alone adds
+   `nativeCarrierVersion: 1`. The ordinary bundled activation has no carrier
+   marker. The native hello verifies that same marker and the current native
+   main-frame origin/epoch before admission; a successful local hello echoes
+   version 1. The browser uses its explicit local carrier entry, never an
+   HTTP fallback after native admission.
 2. The renderer's bounded native `hello` carries only wire version, generated
    contract name, contract major, and normalized schema hash, together with
    the echoed navigation/nonce/challenge proof and control correlation ID.
@@ -102,6 +124,35 @@ type (including standalone encoded error responses); that MIME name does
 not handler completion. A `ready` control wakes the renderer to drain until
 `204`, without idle polling. A `closed` control retires that document's
 connection. Resource, control, and application-data paths remain distinct.
+
+An owned local-server window instead transports those **same** binary v3
+frames through a private WK script handler-with-reply or top-level WebView2
+host-message lane. The app's HTTP listener receives neither IPC paths nor
+bearer/session credentials. Native JSON data records have independent,
+bounded 24 KiB binary/32 KiB base64 chunks and exactly one send and one
+receive cursor. Authenticate every chunk against the current admitted
+generation/token and native main-frame origin/commit; reserve aggregate
+input capacity before allocating a complete frame. The receive cursor keeps
+the core output lease until chunk delivery, while the existing bridge
+performs all frame, grant, cancellation, deadline and worker processing.
+WebKit's actual `frameInfo` security origin and `isMainFrame` are mandatory;
+WebView2 checks both message source and committed top-level `Source`.
+The separate data lane does not relax the 4 KiB control lane.
+Each retained partial input/output cursor has an event-driven native deadline:
+one platform timer per document retires idle storage and credits without waiting
+for another renderer message, heartbeat, or polling loop. A recoverable native
+`overloaded`, `payload-too-large`, or `invalid-payload` send discards any
+partial input cursor so a fresh offset-zero send can retry without replaying
+an incomplete frame. A late chunk after cursor expiry is rejected rather than
+reclaiming already released credits or output.
+The SDK embeds a separate `local-native-bootstrap.js` injected only into
+eligible local windows; the ordinary bundled bootstrap/runtime remain free of
+the local carrier. The direct HTTP host may explicitly mount the matching
+`local-desktop-runtime.js` bytes exposed by `local_ipc_runtime_asset()` at
+`/_webui/ipc/local-runtime.js` as a **static JavaScript asset**, or bundle the
+explicit `@microsoft/webui-desktop/native` entry into its application assets.
+The SDK does not intercept or proxy that listener, and neither static asset
+choice receives a token or binary application message.
 
 Both sides use the same strict v3 frame codec: a fixed-layout little-endian
 header with version, generation, sender-local nonzero ID, kind, method ID and
@@ -186,6 +237,10 @@ remain distinguishable.
   [`macos/ipc.rs`](../crates/webui-desktop/src/macos/ipc.rs),
   [`linux/ipc.rs`](../crates/webui-desktop/src/linux/ipc.rs),
   [`linux/ipc_message.rs`](../crates/webui-desktop/src/linux/ipc_message.rs).
+  Owned local-server socket proof and private binary cursor:
+  [`local_server.rs`](../crates/webui-desktop/src/local_server.rs),
+  [`ipc/native_data.rs`](../crates/webui-desktop/src/ipc/native_data.rs),
+  [`macos/ipc_data_message.rs`](../crates/webui-desktop/src/macos/ipc_data_message.rs).
   Generator identity/ID rules: [`compiler.rs`](../crates/webui-desktop-build/src/compiler.rs),
   [`evolution.rs`](../crates/webui-desktop-build/src/evolution.rs).
 - Executable boundary checks:

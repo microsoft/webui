@@ -56,6 +56,8 @@ futures-executor = { version = "0.3.33", features = ["thread-pool"] }
 getrandom = "0.4.3"
 tokio-stream = "0.1.19"
 bytes = "1.12.1"
+base64 = "0.22.1"
+socket2 = "0.6.5"
 crossbeam-queue = "0.3.14"
 memchr = "2.8.3"
 notify = "8.2.0"

@@ -416,19 +416,23 @@ pub(crate) fn platform_run_local_server_frame(frame: crate::LocalServerFrame) ->
     {
         crate::windows::run_local_server_frame(frame).map_err(local_backend_error)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::run_local_server_frame(frame).map_err(local_backend_error)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = frame;
         Err(DesktopError::UnsupportedRuntime {
             message: "local-server native frames are unavailable on this target".to_string(),
-            help: "Use macOS or Windows, or the existing bundled native frame".to_string(),
+            help: "Use macOS, Windows or Linux with a native webview runtime".to_string(),
         })
     }
 }
 
 #[cfg(all(
     feature = "local-server",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 fn local_backend_error(source: anyhow::Error) -> DesktopError {
     match source.downcast::<DesktopError>() {
@@ -445,7 +449,15 @@ pub(crate) fn local_platform_capabilities() -> DesktopFrameCapabilities {
     {
         platform_capabilities()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        DesktopFrameCapabilities {
+            application_ipc: false,
+            titlebar_styles: false,
+            ..platform_capabilities()
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         DesktopFrameCapabilities::default()
     }

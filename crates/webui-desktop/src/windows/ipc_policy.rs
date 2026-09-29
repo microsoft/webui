@@ -64,6 +64,8 @@ pub(super) enum Control {
         contract_name: String,
         contract_major: u32,
         schema_hash: String,
+        #[serde(default)]
+        native_carrier_version: Option<u8>,
     },
     Disconnect {
         generation: String,
@@ -74,7 +76,7 @@ pub(super) enum Control {
 pub(super) use crate::native_ipc::NativeHello as HelloCall;
 
 impl Control {
-    pub fn into_hello(self) -> Option<HelloCall> {
+    pub fn into_hello(self, carrier: bool) -> Option<HelloCall> {
         let Self::Hello {
             call_id,
             navigation,
@@ -84,11 +86,13 @@ impl Control {
             contract_name,
             contract_major,
             schema_hash,
+            native_carrier_version,
         } = self
         else {
             return None;
         };
-        if call_id.is_empty()
+        if native_carrier_version != carrier.then_some(1)
+            || call_id.is_empty()
             || call_id.len() > 32
             || contract_name.len() > 256
             || schema_hash.len() != 64
@@ -120,6 +124,7 @@ pub(super) struct Document {
     pub generation: Option<u64>,
     pub token: Option<String>,
     pub max_frame_bytes: Option<usize>,
+    pub limits: Option<crate::ipc::IpcLimits>,
     pub proof: Option<DocumentActivation>,
     pub unavailable_code: Option<IpcErrorCode>,
 }
@@ -169,10 +174,24 @@ impl Document {
 
 /// Keep the challenge behind the wrapper's own nonce check. A replacement
 /// document's fake activate method must never receive an old proof.
+#[cfg(test)]
 pub(super) fn activation_script(proof: &DocumentActivation) -> serde_json::Result<String> {
-    let activate = crate::native_ipc::activation_script(proof)?;
+    activation_script_for(proof, super::APP_ORIGIN, false)
+}
+
+pub(super) fn activation_script_for(
+    proof: &DocumentActivation,
+    origin: &str,
+    carrier: bool,
+) -> serde_json::Result<String> {
+    let activate = if carrier {
+        crate::native_ipc::activation_script_local(proof)?
+    } else {
+        crate::native_ipc::activation_script(proof)?
+    };
+    let origin = serde_json::to_string(origin)?;
     Ok(format!(
-        "(()=>{{'use strict';if(window!==window.top||location.origin!=='https://app.webui.localhost')return false;return {activate}===true;}})()"
+        "(()=>{{'use strict';if(window!==window.top||location.origin!=={origin})return false;return {activate}===true;}})()"
     ))
 }
 
@@ -190,6 +209,29 @@ pub(super) fn error(code: IpcErrorCode) -> IpcError {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_hello_requires_carrier_v1_before_proof_can_be_admitted() {
+        let hello = r#"{"kind":"hello","callId":"1","navigation":"1","documentNonce":"01010101010101010101010101010101","challenge":"02020202020202020202020202020202","wireVersion":3,"contractName":"test","contractMajor":1,"schemaHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+        let bundled: Control = serde_json::from_str(hello).unwrap();
+        assert!(bundled.into_hello(false).is_some());
+        let missing: Control = serde_json::from_str(hello).unwrap();
+        assert!(missing.into_hello(true).is_none());
+        let local = hello.replacen(
+            "\"kind\":\"hello\"",
+            "\"kind\":\"hello\",\"nativeCarrierVersion\":1",
+            1,
+        );
+        let valid: Control = serde_json::from_str(&local).unwrap();
+        assert!(valid.into_hello(true).is_some());
+        let forbidden: Control = serde_json::from_str(&local).unwrap();
+        assert!(forbidden.into_hello(false).is_none());
+        let wrong: Control = serde_json::from_str(
+            &local.replace("\"nativeCarrierVersion\":1", "\"nativeCarrierVersion\":2"),
+        )
+        .unwrap();
+        assert!(wrong.into_hello(true).is_none());
+    }
 
     #[test]
     fn disconnect_without_credential_is_not_a_control_message() {

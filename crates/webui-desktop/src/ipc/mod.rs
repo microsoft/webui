@@ -16,6 +16,11 @@ mod engine;
 mod error;
 mod executor;
 mod limits;
+#[cfg(all(
+    feature = "local-server",
+    any(target_os = "macos", target_os = "windows")
+))]
+pub(crate) mod native_data;
 mod registry;
 mod session;
 mod validation;

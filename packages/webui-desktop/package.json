@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./native": {
+      "types": "./dist/local-index.d.ts",
+      "import": "./dist/local-index.js"
     }
   },
   "files": [

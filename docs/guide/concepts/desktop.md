@@ -48,7 +48,7 @@ set desktop package options with command flags or the app-root
 | --- | --- |
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
 | `native` | System webview and `run_frame` |
-| `local-server` | Native window for an existing loopback HTTP origin (includes `native`; no source compiler or IPC grant) |
+| `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
@@ -70,7 +70,7 @@ Enable `application-ipc` separately if you use generated messages.
 ### Existing HTTP application
 
 An application that already owns a loopback HTTP listener can use the opt-in
-`local-server` feature on macOS or Windows. Pass the **bound** socket address;
+`local-server` feature on macOS, Windows or Linux. Pass the **bound** socket address;
 keep that listener running until the window exits. The Rust host must verify
 the identity of any externally owned server before creating a frame; an IP
 address and port do not authenticate it. No source build, bundle loading,
@@ -115,16 +115,36 @@ Only an IP-literal loopback HTTP origin with an explicit nonzero port is
 accepted (for example, `127.0.0.1` or `[::1]`; all bound IPv4 `127/8`
 addresses are valid, but `localhost` and wildcard addresses are not).
 Initial paths must start with a single `/`; top-level navigation outside that
-exact origin is cancelled. Network-backed subframe navigation and popups are
-denied in this first mode, but a browser-created `about:blank` child may still
-exist. No subframe receives a native grant.
+exact origin is cancelled. macOS and Windows deny network-backed subframe
+navigation; on Linux, WebKitGTK denies the subframe document response, but a
+request can reach the HTTP server before that decision. Do not use GET requests
+with side effects as a frame-isolation mechanism. Popups are denied, though a
+browser-created `about:blank` child may still exist. No subframe receives a
+native grant.
 Custom titlebar styles are rejected; use the native titlebar.
 The browser fetches ordinary HTTP resources directly; this is not a network
-egress sandbox. Page-originated native controls and application IPC are
-unavailable even if `application-ipc` is compiled into the binary. Rust event
-callbacks and `window_handle()` remain available. Linux reports unsupported
-from `LocalServerAppBuilder::build()` for this frame; existing bundled/source
-apps still run there.
+egress sandbox. Page-originated native window controls are unavailable. Application IPC is
+also disabled unless an owned macOS or Windows host explicitly calls
+`LocalServerAppBuilder::application_ipc(&listener, registry, options)` before
+`build()`, with its **retained bound TCP listener** and generated schema
+registered through `IpcRegistry` and `IpcOptions::for_schema`. The builder
+rejects a listener at another address or one that cannot exclude competing
+same-port bindings. On Windows, use `bind_owned_local_server(address)` to
+bind an exclusive `std::net::TcpListener` before passing it to the application's
+server and this builder. An attached daemon cannot use this grant.
+Import `createDesktopTransport` from `@microsoft/webui-desktop/native` for
+that document; the ordinary package entry does not include the local native
+carrier. If the host does not bundle that import, it can serve
+`local_ipc_runtime_asset()` at `LOCAL_IPC_RUNTIME_PATH` on its existing
+same-origin HTTP server. Native IPC credentials and frames do not go to
+the HTTP server, and a missing carrier version does not fall back to HTTP.
+Keep the original listener and `HostLifetimeOwner` alive while the window runs.
+Let the native window close before waiting for server port quiescence;
+`run_local_server_frame` returns only after the SDK releases its listener pin.
+Rust event callbacks and `window_handle()` remain available. Linux reports
+an error if local-server application IPC is requested because WebKitGTK cannot
+attribute native handler messages to a frame; unprivileged direct HTTP windows
+and existing bundled/source apps still run there.
 The current macOS webview uses an ephemeral website data store, even with a
 stable app ID; this mode does not migrate or persist existing browser cookies.
 
