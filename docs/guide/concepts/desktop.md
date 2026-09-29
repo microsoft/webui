@@ -385,8 +385,10 @@ async fn read_visible_png(services: &NativeServices) -> Result<Vec<u8>, CaptureE
 The final PNG has no upscale, is at most 1600×1200 **physical pixels** and
 12 MiB, and can be further constrained by
 `CaptureOptions::max_dimensions(width, height)?` and
-`.max_png_bytes(bytes)?`. At most one WK callback is active and one PNG is
-retained per window. A retake releases old bytes at admission; explicit
+`.max_png_bytes(bytes)?`. The compressor caps its destination buffer
+against that byte limit before encoding; a too-small bound returns `TooLarge`
+without retaining a partial PNG. At most one WK callback is active and one
+PNG is retained per window. A retake releases old bytes at admission; explicit
 release, actual main-frame navigation and window close also discard them.
 Verified host-owner revocation releases retained PNG bytes before the
 asynchronous AppKit window-close wake is queued.

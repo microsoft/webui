@@ -30,6 +30,27 @@ unsafe extern "C" {
 
 const PNG_FIXED_OVERHEAD: usize = 8 + 25 + 12 + 12;
 
+fn destination_limit(
+    source_len: c_ulong,
+    max_png_bytes: usize,
+) -> Result<(usize, usize), CaptureError> {
+    // SAFETY: zlib accepts this checked scalar length and returns its
+    // worst-case compressed size without reading a source buffer.
+    let compressed_bound = usize::try_from(unsafe { compressBound(source_len) })
+        .map_err(|_| CaptureError::TooLarge)?;
+    let hard_bound = PNG_FIXED_OVERHEAD
+        .checked_add(compressed_bound)
+        .ok_or(CaptureError::TooLarge)?;
+    if hard_bound > MAX_WEB_CAPTURE_PNG_BYTES {
+        return Err(CaptureError::TooLarge);
+    }
+    let allowed = max_png_bytes
+        .checked_sub(PNG_FIXED_OVERHEAD)
+        .filter(|bytes| *bytes > 0)
+        .ok_or(CaptureError::TooLarge)?;
+    Ok((compressed_bound, compressed_bound.min(allowed)))
+}
+
 pub(super) fn encode_rgba(
     pixels: &[u8],
     width: u32,
@@ -55,16 +76,7 @@ pub(super) fn encode_rgba(
         return Err(CaptureError::TooLarge);
     }
     let source_len = c_ulong::try_from(raw_len).map_err(|_| CaptureError::TooLarge)?;
-    // SAFETY: zlib accepts a scalar length; compressBound gives a guaranteed
-    // destination capacity for any bytes of that length before allocation.
-    let compressed_bound = usize::try_from(unsafe { compressBound(source_len) })
-        .map_err(|_| CaptureError::TooLarge)?;
-    let max_png = PNG_FIXED_OVERHEAD
-        .checked_add(compressed_bound)
-        .ok_or(CaptureError::TooLarge)?;
-    if max_png > MAX_WEB_CAPTURE_PNG_BYTES {
-        return Err(CaptureError::TooLarge);
-    }
+    let (_, capacity_limit) = destination_limit(source_len, max_png_bytes)?;
 
     let mut raw = Vec::with_capacity(raw_len);
     for row in pixels.chunks_exact(row_bytes) {
@@ -94,12 +106,12 @@ pub(super) fn encode_rgba(
             }
         }
     }
-    let mut capacity = compressed_bound.min(64 * 1024);
+    let mut capacity = capacity_limit.min(64 * 1024);
     let (mut compressed, encoded_len) = loop {
         let mut buffer = vec![0_u8; capacity];
         let mut written = c_ulong::try_from(buffer.len()).map_err(|_| CaptureError::TooLarge)?;
         // SAFETY: Both owned buffers are live and disjoint; destination
-        // capacity never exceeds zlib's checked worst-case compressBound.
+        // capacity never exceeds the checked zlib or caller's byte budget.
         let status = unsafe {
             compress2(
                 buffer.as_mut_ptr(),
@@ -116,12 +128,15 @@ pub(super) fn encode_rgba(
             }
             break (buffer, written);
         }
-        if status != -5 || capacity == compressed_bound {
+        if status == -5 && capacity == capacity_limit {
+            return Err(CaptureError::TooLarge);
+        }
+        if status != -5 {
             return Err(CaptureError::Native(
                 "bounded PNG zlib encoding failed".into(),
             ));
         }
-        capacity = capacity.saturating_mul(2).min(compressed_bound);
+        capacity = capacity.saturating_mul(2).min(capacity_limit);
     };
     let total = PNG_FIXED_OVERHEAD
         .checked_add(encoded_len)
@@ -222,5 +237,36 @@ mod tests {
         ));
         let transparent = encode_rgba(&[0, 0, 0, 0], 1, 1, MAX_WEB_CAPTURE_PNG_BYTES).unwrap();
         assert!(transparent.len() < 256);
+    }
+
+    #[test]
+    fn caller_png_budget_caps_compression_before_destination_allocation() {
+        let row_bytes = 64 * 4;
+        let raw_len = 64 * (row_bytes + 1);
+        let (worst_case, capacity_limit) = destination_limit(raw_len as c_ulong, 1024).unwrap();
+        assert!(worst_case > capacity_limit);
+        assert_eq!(capacity_limit, 1024 - PNG_FIXED_OVERHEAD);
+        assert!(matches!(
+            destination_limit(raw_len as c_ulong, PNG_FIXED_OVERHEAD),
+            Err(CaptureError::TooLarge)
+        ));
+
+        let mut pixels = vec![0_u8; 64 * row_bytes];
+        let mut seed = 0x1729_5301_u32;
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            pixel[..3].copy_from_slice(&seed.to_le_bytes()[..3]);
+            pixel[3] = 255;
+        }
+        assert!(matches!(
+            encode_rgba(&pixels, 64, 64, 1024),
+            Err(CaptureError::TooLarge)
+        ));
+
+        let opaque = [0_u8, 0, 0, 255].repeat(64 * 64);
+        let encoded = encode_rgba(&opaque, 64, 64, 1024).unwrap();
+        assert!(encoded.len() <= 1024);
     }
 }

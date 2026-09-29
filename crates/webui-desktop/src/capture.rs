@@ -435,7 +435,7 @@ impl CaptureState {
             });
             (id, state.epoch)
         };
-        if let Err(error) = Self::start_deadline(self, &timer, id, epoch, deadline, reservation) {
+        if let Err(error) = Self::start_deadline(&timer, id, epoch, deadline, reservation) {
             self.abort_unsubmitted(id);
             return Err(error);
         }
@@ -463,7 +463,6 @@ impl CaptureState {
     }
 
     fn start_deadline(
-        owner: &Arc<Self>,
         timer: &Arc<DeadlineTimer>,
         id: u64,
         epoch: u64,
@@ -471,7 +470,7 @@ impl CaptureState {
         reservation: TimerReservation,
     ) -> Result<(), CaptureError> {
         let timer = Arc::clone(timer);
-        let weak_owner = Arc::downgrade(owner);
+        let weak_owner = Arc::downgrade(&reservation.0);
         std::thread::Builder::new()
             .name("webui-capture-deadline".into())
             .spawn(move || {
@@ -1161,7 +1160,7 @@ mod tests {
         };
         hung.deadline = deadline;
         let reservation = owner.reserve_timer().unwrap();
-        CaptureState::start_deadline(&owner, &timer, 1, 1, deadline, reservation).unwrap();
+        CaptureState::start_deadline(&timer, 1, 1, deadline, reservation).unwrap();
         let until = Instant::now() + Duration::from_secs(2);
         while !owner
             .state
@@ -1193,7 +1192,6 @@ mod tests {
             .timer
             .clone();
         CaptureState::start_deadline(
-            &owner,
             &timer,
             2,
             1,
@@ -1229,7 +1227,7 @@ mod tests {
         let timer = DeadlineTimer::new();
         let deadline = Instant::now() + Duration::from_secs(2);
         let reservation = owner.reserve_timer().unwrap();
-        CaptureState::start_deadline(&owner, &timer, 99, 1, deadline, reservation).unwrap();
+        CaptureState::start_deadline(&timer, 99, 1, deadline, reservation).unwrap();
         timer.finish();
         let until = Instant::now() + Duration::from_secs(1);
         while owner.active_timer_threads.load(Ordering::Acquire) != 0 {
