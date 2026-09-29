@@ -24,7 +24,13 @@ required-features = ["cli"]
 [features]
 default = []
 local-server = ["native", "dep:url", "objc2-web-kit?/WKNavigationResponse"]
-native-services = ["local-server", "dep:url"]
+native-services = [
+    "local-server",
+    "dep:url",
+    "objc2-app-kit?/NSBitmapImageRep",
+    "objc2-app-kit?/NSImageRep",
+    "objc2-web-kit?/WKSnapshotConfiguration",
+]
 application-ipc = [
     "dep:base64",
     "dep:libc",
@@ -176,6 +182,11 @@ required-features = ["local-server", "application-ipc"]
 [[example]]
 name = "native-geometry"
 path = "tests/fixtures/native-geometry.rs"
+required-features = ["native-services"]
+
+[[example]]
+name = "native-capture"
+path = "tests/fixtures/native-capture.rs"
 required-features = ["native-services"]
 
 [[example]]

@@ -27,6 +27,8 @@ use objc2_foundation::{MainThreadMarker, NSString};
 use objc2_web_kit::WKWebView;
 
 mod app_delegate;
+#[cfg(feature = "native-services")]
+pub(crate) mod capture;
 mod commands;
 mod effects;
 mod geometry;

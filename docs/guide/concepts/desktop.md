@@ -332,6 +332,53 @@ scale:** the mapping from CSS and `visualViewport` at non-default WebKit zoom
 to Cocoa points has not been established. No renderer script or native IPC
 grant is installed by this API.
 
+### Host-owned visible-content capture (macOS)
+
+The `native-services` Rust host may call
+`services.capture_web_content(CaptureOptions::new())?.await?` after the
+main document finishes and any preview iframe has **independently**
+reported that its content is ready. This API targets the **visible WKWebView
+bounds**, not the OS desktop, titlebar, other windows, or offscreen scroll
+content. In the controlled native **macOS 27** fixture, snapshots included
+the already-painted, explicitly granted preview iframe; this is observed
+behavior, **not** a guarantee for macOS 13 or other untested runtimes. A
+finished main page is **not** proof that a child iframe has loaded or
+painted. The host must establish that readiness through its own application
+protocol; capture adds no page global or default IPC method and requires no
+screen-recording grant.
+
+```rust
+use webui_desktop::{CaptureError, CaptureOptions, NativeServices};
+
+async fn read_visible_png(services: &NativeServices) -> Result<Vec<u8>, CaptureError> {
+    let capture = services.capture_web_content(CaptureOptions::new())?.await?;
+    let mut png = Vec::with_capacity(capture.png_bytes);
+    loop {
+        let chunk = services.read_captured_content(&capture, png.len())?;
+        png.extend_from_slice(&chunk.bytes);
+        if chunk.eof { break; }
+    }
+    services.release_captured_content(&capture)?;
+    Ok(png)
+}
+```
+
+The final PNG has no upscale, is at most 1600×1200 **physical pixels** and
+12 MiB, and can be further constrained by
+`CaptureOptions::max_dimensions(width, height)?` and
+`.max_png_bytes(bytes)?`. At most one WK callback is active and one PNG is
+retained per window. A retake releases old bytes at admission; explicit
+release, actual main-frame navigation and window close also discard them.
+Verified host-owner revocation releases retained PNG bytes before the
+asynchronous AppKit window-close wake is queued.
+Reads are limited to 20 KiB binary chunks; a generated IPC handler must
+authorize the caller, pace each read, and count its encoded transport bytes
+against the existing aggregate IPC budgets. Never return the whole image in
+one JSON/base64 response. A pending capture may fail `Busy`, `Unavailable`,
+`Incomplete`, `TooLarge`, `Cancelled`, `Timeout`, or `Closed` rather than presenting an
+unverified crop. Windows and Linux explicitly return `Unsupported`. No
+clipboard or issue-opening workflow is implied by this API.
+
 ## Rust API
 
 `DesktopApp` builds a `DesktopFrame`. Register state and handlers before

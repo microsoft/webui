@@ -26,6 +26,8 @@ mod asset_file;
 #[cfg(any(all(windows, feature = "native"), test))]
 mod browser_profile;
 mod bundle;
+#[cfg(feature = "native-services")]
+mod capture;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod document;
 mod error;
@@ -92,6 +94,12 @@ pub use bundle::{build_desktop_bundle, DesktopBundleOptions};
 pub use bundle::{
     BundleAsset, BundleIntegrity, DesktopBundleManifest, DesktopMenu, DesktopMenuItem,
     DesktopPackageTarget, DesktopShellConfig, TrayConfig,
+};
+#[cfg(feature = "native-services")]
+pub use capture::{
+    CaptureError, CaptureOptions, CaptureRequest, CapturedContent, CapturedContentChunk,
+    MAX_WEB_CAPTURE_CHUNK_BYTES, MAX_WEB_CAPTURE_HEIGHT, MAX_WEB_CAPTURE_PNG_BYTES,
+    MAX_WEB_CAPTURE_RASTER_BYTES, MAX_WEB_CAPTURE_WIDTH,
 };
 pub use error::{DesktopError, Result};
 pub use event::{

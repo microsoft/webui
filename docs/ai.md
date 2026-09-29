@@ -1408,6 +1408,10 @@ and query `services.current_theme()` for the effective native appearance
 of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
 the host persists preferences and owns SSR CSS. No renderer grant is added.
 See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
+The macOS trusted host can also request a bounded, visible WK content PNG
+after its own preview-readiness handshake, then read/release the opaque
+resource in paced chunks. No renderer or screen-capture permission is added.
+See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos).
 For an already-compiled Rust host that owns its sealed WebUI assets and
 workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
 and call `package_precompiled_host` with its host executable, target triple,

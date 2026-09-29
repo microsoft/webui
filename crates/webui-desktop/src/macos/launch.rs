@@ -202,7 +202,15 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     }
     #[cfg(feature = "local-server")]
     if let Some(lifetime) = &ivars.lifetime {
-        match super::commands::install_owner_close(&window, lifetime) {
+        match super::commands::install_owner_close(
+            &window,
+            lifetime,
+            #[cfg(feature = "native-services")]
+            ivars
+                .native_services
+                .as_ref()
+                .map(crate::NativeServices::capture_for_revoke),
+        ) {
             Ok((wake, registration)) => {
                 let _ = ivars.owner_close_wake.set(wake);
                 ivars.owner_close_registration.replace(Some(registration));
