@@ -31,6 +31,8 @@ There are no default features:
 - `native`: the current platform's native window and system webview.
 - `application-ipc`: typed application IPC, sessions, workers, and browser assets.
 - `source`: source compilation, bundle construction, and packaging APIs.
+- `packaging`: build-only layout for an already-compiled host and explicitly
+  mapped resources, independent of `source`, `native`, and `cli`.
 - `cli`: the `webui-desktop` tooling binary, including `native` and `source`.
 
 Apps normally enable `native` and opt into `source` only during development.
@@ -46,6 +48,14 @@ available independently.
 Packaging supports macOS `.app` bundles and Windows/Linux portable directories,
 not installers, archives, or signing. Shell configuration exposes app icons,
 menus, and tray icons, subject to backend capabilities.
+
+Consumers that own their HTTP server and sealed assets can use
+`package_precompiled_host` with the `packaging` feature instead of building a
+second WebUI desktop render bundle. Provide an already-compiled native host,
+target triple, identity, optional icon, and explicit file mappings for workers
+and opaque assets. Existing output directories are never removed or replaced.
+See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop#precompiled-host-layout)
+for layout, validation, and Windows deployment requirements.
 
 Application IPC uses `ipc::IpcLimits::default()` with checked
 `with_max_frame_bytes(...)` and `with_default_timeout(...)` policy builders.

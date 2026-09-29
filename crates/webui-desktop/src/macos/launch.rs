@@ -82,7 +82,12 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         ivars.events.clone(),
         std::sync::Arc::clone(&ivars.live_background),
         #[cfg(feature = "local-server")]
-        ivars.local_origin.clone().zip(ivars.lifetime.clone()),
+        ivars
+            .local_origin
+            .clone()
+            .zip(ivars.lifetime.clone())
+            .zip(ivars.frame_policy.clone())
+            .map(|((origin, lifetime), policy)| (origin, lifetime, policy)),
         #[cfg(feature = "application-ipc")]
         ivars.ipc.clone(),
     );

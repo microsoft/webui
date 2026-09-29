@@ -254,6 +254,7 @@ fn run_content(frame: FrameContent) -> Result<()> {
             window_frame.hwnd,
             local.lifetime().clone(),
             cookie,
+            Arc::clone(&local.frame_policy),
         )?),
         (FrameContent::Local(_), None) => {
             return Err(anyhow::anyhow!(

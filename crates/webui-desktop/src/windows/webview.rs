@@ -246,11 +246,16 @@ pub(super) fn register_local_frame_guards(
     hwnd: HWND,
     lifetime: crate::HostLifetime,
     owner_close_cookie: usize,
+    frame_policy: std::sync::Arc<crate::frame_policy::FramePolicy>,
 ) -> Result<LocalNavigationGuards> {
-    let frames = NavigationStartingEventHandler::create(Box::new(|_sender, args| {
+    let frame_lifetime = lifetime.clone();
+    let frames = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             // SAFETY: WebView2 supplies a live event argument in this callback.
-            unsafe { args.SetCancel(true)? };
+            let uri = read_pwstr(|out| unsafe { args.Uri(out) })?;
+            if !frame_lifetime.is_active() || !frame_policy.allows(&uri) {
+                unsafe { args.SetCancel(true)? };
+            }
         }
         Ok(())
     }));

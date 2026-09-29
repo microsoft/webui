@@ -35,7 +35,7 @@ sources, not duplicated here.
 - The opt-in local-server frame admits application IPC **only** when configured
   with the actual bound `TcpListener`, the matching exact loopback origin,
   generated registry, explicit grants, and a live `HostLifetime`. Rust retains
-  a   duplicate of that listener while document authority remains live, so
+  a duplicate of that listener while document authority remains live, so
   dropping the application's original handle cannot free its port for a
   replacement. Terminal retirement synchronously drops the SDK pin even if
   blocked handlers retain the IPC core; returning from `run_local_server_frame`
@@ -43,11 +43,16 @@ sources, not duplicated here.
   quiescence before releasing its own listener. Socket-option admission rejects
   macOS `SO_REUSEPORT` and requires Windows `SO_EXCLUSIVEADDRUSE` without
   `SO_REUSEADDR`; `bind_owned_local_server` safely sets exclusivity **before**
-  binding on Windows. A
-  non-exclusive listener must not create a local IPC principal. An attached
-  daemon's port and asynchronous owner-loss signal
-  do not prove socket identity; attached daemons remain **ineligible**. Default
+  binding on Windows. A non-exclusive listener must not create a local IPC
+  principal. An attached daemon's port and asynchronous owner-loss signal do
+  not prove socket identity; attached daemons remain **ineligible**. Default
   local-server frames install no IPC bootstrap, handler, or data channel.
+- An exact, host-owned `.localhost` subframe navigation grant never changes
+  the committed main-document IPC principal. A preview may load network content
+  without receiving main-frame IPC or native window controls. Native callbacks
+  still require their platform's current top-frame document proof; dropping a
+  grant denies later frame navigation but cannot retract already admitted
+  network work.
 
 ## Document proof and admission
 

@@ -2223,6 +2223,7 @@ dependencies = [
  "socket2",
  "tempfile",
  "thiserror",
+ "url",
  "webkit6",
  "webview2-com",
  "windows",

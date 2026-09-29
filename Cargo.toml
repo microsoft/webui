@@ -63,6 +63,7 @@ memchr = "2.8.3"
 notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"
+url = "2.5.8"
 walkdir = "2.5.0"
 toml = "1.1.6"
 comrak = { version = "0.55.0", default-features = false }

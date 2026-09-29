@@ -3,12 +3,12 @@
 
 #[cfg(feature = "source")]
 use std::collections::HashSet;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 use std::ffi::OsString;
 use std::fs;
 #[cfg(feature = "source")]
 use std::io::Read;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
@@ -389,7 +389,7 @@ fn prepare_out_dir(out_dir: &Path) -> Result<()> {
     })
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 pub(crate) fn normalized_absolute_path(path: &Path) -> Result<PathBuf> {
     // A symlink followed by `..` must resolve through its filesystem target.
     let absolute = absolute_path(path)?;
@@ -397,12 +397,12 @@ pub(crate) fn normalized_absolute_path(path: &Path) -> Result<PathBuf> {
     Ok(normalize_components(&base))
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 pub(crate) fn lexical_absolute_path(path: &Path) -> Result<PathBuf> {
     Ok(normalize_components(&absolute_path(path)?))
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -417,7 +417,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     Ok(absolute)
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 fn normalize_components(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -434,7 +434,7 @@ fn normalize_components(path: &Path) -> PathBuf {
     normalized
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return path.canonicalize().map_err(|source| DesktopError::Io {
@@ -465,7 +465,7 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 pub(crate) fn reject_path_overlap(
     output: &Path,
     input: &Path,

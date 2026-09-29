@@ -1383,6 +1383,18 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+On macOS and Windows, an exact `.localhost` preview subdomain needs an
+unprivileged `frame.frame_policy()` grant; it never gains native IPC or
+window controls. Linux currently denies preview subframe document commits.
+For an already-compiled Rust host that owns its sealed WebUI assets and
+workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
+and call `package_precompiled_host` with its host executable, target triple,
+identity, optional icon, and explicit executable/data file mappings. This
+creates a macOS `.app` or Windows/Linux portable directory without compiling
+a second render bundle or shipping Node. It refuses unsafe mappings and
+existing output; distribution, signing, installers, and Windows shared runtime
+prerequisites remain consumer-owned. See
+[precompiled host layout](./guide/concepts/desktop.md#precompiled-host-layout).
 Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
 for live presentation changes from Rust; these do not change the stable app ID
 or packaged defaults. The background applies to the native surface, current

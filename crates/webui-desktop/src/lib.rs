@@ -7,6 +7,7 @@
 //! native dependencies. Enable `application-ipc` for application IPC,
 //! `native` for the platform webview, `source` for
 //! development compilation, and `cli` for the `webui-desktop` tooling binary.
+//! Enable `packaging` to lay out an already-compiled host without source compilation.
 
 #[cfg(test)]
 extern crate self as webui_desktop;
@@ -31,6 +32,8 @@ mod event;
 #[cfg(any(feature = "native", test))]
 mod execution;
 mod frame;
+#[cfg(feature = "local-server")]
+mod frame_policy;
 mod hydration;
 #[cfg(any(test, all(feature = "native", target_os = "macos")))]
 mod icon_path;
@@ -42,6 +45,8 @@ mod ipc_assets;
 mod local_server;
 #[cfg(all(feature = "native", feature = "application-ipc"))]
 mod native_ipc;
+#[cfg(feature = "native-services")]
+mod native_services;
 #[cfg(all(
     feature = "native",
     any(
@@ -52,8 +57,10 @@ mod native_ipc;
 ))]
 mod native_tasks;
 mod navigation;
-#[cfg(feature = "source")]
+#[cfg(any(feature = "source", feature = "packaging"))]
 mod package;
+#[cfg(feature = "packaging")]
+mod package_precompiled;
 mod path;
 mod protocol;
 mod response_content;
@@ -95,6 +102,8 @@ pub use frame::{
 };
 #[cfg(feature = "native")]
 pub use frame::{run_frame, run_runtime, PlatformFrameBackend};
+#[cfg(feature = "local-server")]
+pub use frame_policy::{FrameGrant, FramePolicyHandle, HttpFrameOrigin};
 #[cfg(feature = "application-ipc")]
 pub use ipc::{IpcRegistry, DEFAULT_MAX_IPC_PAYLOAD_BYTES, IPC_VERSION};
 #[cfg(all(feature = "local-server", feature = "application-ipc"))]
@@ -110,9 +119,19 @@ pub use local_server::{
     run_local_server_frame, HostCloseError, HostLifetime, HostLifetimeOwner, LocalServerAppBuilder,
     LocalServerFrame, LocalServerOptions, LoopbackOrigin,
 };
+#[cfg(feature = "native-services")]
+pub use native_services::{
+    NativeOpen, NativeServiceError, NativeServices, MAX_NATIVE_DOCUMENT_PATH_BYTES,
+    MAX_NATIVE_URL_BYTES,
+};
 pub use navigation::is_allowed_navigation_url;
 #[cfg(feature = "source")]
 pub use package::{package_desktop_bundle, DesktopPackageOptions, DesktopPackageResult};
+#[cfg(feature = "packaging")]
+pub use package_precompiled::{
+    package_precompiled_host, PrecompiledHostOptions, PrecompiledPackageResult,
+    PrecompiledResource, ResourceKind,
+};
 #[cfg(feature = "application-ipc")]
 pub use protocol::IPC_ENDPOINT;
 pub use protocol::{
