@@ -5,6 +5,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { typedIpcBinaryPath } from './support/target-output.mjs';
+
 // Use Cargo's exact artifacts rather than selecting a possibly stale glob.
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const result = spawnSync('cargo', [
@@ -26,7 +28,7 @@ for (const line of result.stdout.split('\n')) {
 if (result.status !== 0) process.exit(result.status ?? 1);
 const sdk = libraries.get('webui_desktop');
 if (!sdk) throw new Error('Cargo did not emit the SDK library artifact');
-const binary = join(root, 'target', process.platform === 'win32' ? 'typed-ipc-compile-test.exe' : 'typed-ipc-compile-test');
+const binary = typedIpcBinaryPath(root, process.env.CARGO_TARGET_DIR, process.platform);
 execFileSync('rustc', [
   '--test', '--edition=2021', fileURLToPath(new URL('support/runtime.rs', import.meta.url)),
   '--extern', `webui_desktop=${sdk}`,

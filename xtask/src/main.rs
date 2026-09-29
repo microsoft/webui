@@ -814,6 +814,14 @@ impl Step {
             )?;
             run_command_quiet(
                 "node",
+                &[
+                    "--test",
+                    "crates/webui-desktop-build/tests/support/target-output.test.mjs",
+                ],
+                None,
+            )?;
+            run_command_quiet(
+                "node",
                 &["crates/webui-desktop-build/tests/run-rust.mjs"],
                 None,
             )?;
