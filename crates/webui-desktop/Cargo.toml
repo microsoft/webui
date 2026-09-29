@@ -27,6 +27,7 @@ local-server = ["native", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
 application-ipc = [
     "dep:base64",
+    "dep:libc",
     "dep:socket2",
     "dep:futures-channel",
     "dep:futures-executor",
@@ -98,6 +99,7 @@ windows-future = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true, optional = true }
+socket2 = { workspace = true, optional = true }
 gtk4 = { workspace = true, optional = true, features = ["v4_10"] }
 webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 

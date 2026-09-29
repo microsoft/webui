@@ -18,7 +18,7 @@ mod executor;
 mod limits;
 #[cfg(all(
     feature = "local-server",
-    any(target_os = "macos", target_os = "windows")
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 pub(crate) mod native_data;
 mod registry;

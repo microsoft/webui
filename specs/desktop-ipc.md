@@ -43,10 +43,17 @@ sources, not duplicated here.
   quiescence before releasing its own listener. Socket-option admission rejects
   macOS `SO_REUSEPORT` and requires Windows `SO_EXCLUSIVEADDRUSE` without
   `SO_REUSEADDR`; `bind_owned_local_server` safely sets exclusivity **before**
-  binding on Windows. A non-exclusive listener must not create a local IPC
-  principal. An attached daemon's port and asynchronous owner-loss signal do
-  not prove socket identity; attached daemons remain **ineligible**. Default
+  binding on Windows. Linux rejects `SO_REUSEPORT` and `SO_REUSEADDR`; the same
+  helper can bind its exclusive listener before use. A non-exclusive listener
+  must not create a local IPC principal. An attached daemon's port and
+  asynchronous owner-loss signal do not prove socket identity; attached
+  daemons remain **ineligible**. Default
   local-server frames install no IPC bootstrap, handler, or data channel.
+- WebKitGTK local-server handlers are registered in a private content world
+  only. A top-frame-only mediator checks the current main origin and document
+  capability before reaching them; a child document never gains the mediator
+  or an application IPC principal. This does not change the separate bundled
+  GTK IPC trust boundary or authorize Linux preview subframe navigation.
 - An exact, host-owned `.localhost` subframe navigation grant never changes
   the committed main-document IPC principal. A preview may load network content
   without receiving main-frame IPC or native window controls. Native callbacks
