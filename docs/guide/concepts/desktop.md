@@ -50,7 +50,7 @@ set desktop package options with command flags or the app-root
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
-| `native-capture` | Host-only visible WK content PNG, including bounded native capture resources (includes `native-services`) |
+| `native-capture` | Host-only bounded visible webview PNG on macOS and Windows (includes `native-services`) |
 | `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
 | `startup-failure` | Explicit host-only, pre-frame native startup error alert on macOS and Windows; independent of `local-server`, `native`, and `source` |
 | `source` | Build from templates with `DesktopSourceConfig` |
@@ -380,18 +380,22 @@ scale:** the mapping from CSS and `visualViewport` at non-default WebKit zoom
 to Cocoa points has not been established. No renderer script or native IPC
 grant is installed by this API.
 
-### Host-owned visible-content capture (macOS)
+### Host-owned visible-content capture (macOS and Windows)
 
 An opt-in `native-capture` Rust host may call
 `services.capture_web_content(CaptureOptions::new())?.await?` after the
 main document finishes and any preview iframe has **independently**
-reported that its content is ready. This API targets the **visible WKWebView
-bounds**, not the OS desktop, titlebar, other windows, or offscreen scroll
-content. In the controlled native **macOS 27** fixture, snapshots included
+reported that its content is ready. This API targets the **visible native
+webview bounds**, not the OS desktop, titlebar, other windows, or offscreen
+scroll content. macOS uses `WKWebView.takeSnapshot`; Windows x64/ARM64 uses
+the owning window STA's WebView2 `CapturePreview(PNG)` with a bounded
+writable `IStream`. In the controlled native **macOS 27** fixture, snapshots included
 the already-painted, explicitly granted preview iframe; this is observed
 behavior, **not** a guarantee for macOS 13 or other untested runtimes. A
 finished main page is **not** proof that a child iframe has loaded or
-painted. The host must establish that readiness through its own application
+painted. **Windows preview iframe pixels have not been verified at runtime**;
+do not infer them from successful main-document capture. The host must establish
+readiness through its own application
 protocol; capture adds no page global or default IPC method and requires no
 screen-recording grant.
 
@@ -400,8 +404,8 @@ openers without constructing capture or clipboard state. If an earlier local
 unpublished runner enabled only `native-services` while calling capture,
 enable `native-capture` explicitly; enable `native-clipboard` for clipboard
 write/readback (it includes capture). Without those feature flags, their
-methods and types are absent at compile time. On Windows/Linux, opting in
-exposes the host API but its operations return typed `Unsupported`.
+methods and types are absent at compile time. Linux opting in exposes the
+host API but its operations return typed `Unsupported`.
 
 ```rust
 use webui_desktop::{CaptureError, CaptureOptions, NativeServices};
@@ -422,13 +426,20 @@ async fn read_visible_png(services: &NativeServices) -> Result<Vec<u8>, CaptureE
 The final PNG has no upscale, is at most 1600×1200 **physical pixels** and
 12 MiB, and can be further constrained by
 `CaptureOptions::max_dimensions(width, height)?` and
-`.max_png_bytes(bytes)?`. The compressor caps its destination buffer
-against that byte limit before encoding; a too-small bound returns `TooLarge`
-without retaining a partial PNG. At most one WK callback is active and one
+`.max_png_bytes(bytes)?`. On macOS the compressor caps its destination buffer
+against that byte limit before encoding. Windows `CapturePreview` has no
+downsample setting: a viewport wider or taller than the selected bound returns
+`TooLarge` before calling WebView2, rather than cropping or first encoding an
+oversized raster. The Windows stream bounds both cumulative source writes and
+resident PNG bytes and rejects overflow; a too-small byte bound returns
+`TooLarge` without retaining a partial PNG. At most one native callback is active and one
 PNG is retained per window. A retake releases old bytes at admission; explicit
 release, actual main-frame navigation and window close also discard them.
 Verified host-owner revocation releases retained PNG bytes before the
-asynchronous AppKit window-close wake is queued.
+asynchronous window-close wake is queued. On Windows, navigation, viewport
+changes, and revocation also discard pending stream bytes and reject later
+writes; a timed-out or cancelled capture still reserves the native slot until
+its callback acknowledges completion.
 Reads are limited to 20 KiB binary chunks; a generated IPC handler must
 authorize the caller, pace each read, and count its encoded transport bytes
 against the existing aggregate IPC budgets. Never return the whole image in
@@ -436,7 +447,9 @@ one JSON/base64 response. A pending capture may fail `Busy`, `Unavailable`,
 `Incomplete`, `TooLarge`, `Cancelled`, `Timeout`, or `Closed` rather than presenting an
 unverified crop. Up to eight short-lived capture deadline workers may be
 finishing per window; additional requests return `Overloaded` until they exit.
-Windows and Linux explicitly return `Unsupported`. No
+Linux explicitly returns `Unsupported`. Windows is cross-compiled and
+strict-Clippy-checked for x64 and ARM64, but has not been exercised on a
+Windows runtime; no iframe paint or platform parity is claimed. No
 clipboard or issue-opening workflow is implied by this API.
 
 ### Explicit macOS PNG clipboard write

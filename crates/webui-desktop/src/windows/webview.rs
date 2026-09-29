@@ -177,6 +177,7 @@ pub(super) fn configure_settings(webview: &ICoreWebView2, devtools: bool) -> Res
 pub(super) fn register_navigation_guard(
     webview: &ICoreWebView2,
     events: EventRegistry,
+    #[cfg(feature = "native-capture")] capture: Option<crate::NativeServices>,
     #[cfg(feature = "local-server")] local_origin: Option<crate::LoopbackOrigin>,
     #[cfg(feature = "local-server")] local_lifetime: Option<crate::HostLifetime>,
 ) -> Result<ICoreWebView2NavigationStartingEventHandler> {
@@ -221,6 +222,17 @@ pub(super) fn register_navigation_guard(
             if prevented || !allowed {
                 // SAFETY: Same live args interface as above.
                 unsafe { args.SetCancel(true)? };
+            } else {
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &capture {
+                    let mut navigation_id = 0;
+                    // SAFETY: These live event arguments belong to this STA.
+                    if let Err(error) = unsafe { args.NavigationId(&mut navigation_id) } {
+                        capture.capture_for_revoke().close();
+                        return Err(error);
+                    }
+                    capture.capture_navigation_started(navigation_id);
+                }
             }
         }
         Ok(())
@@ -466,17 +478,27 @@ fn decode_host_message(raw: &str) -> Option<DesktopHostMessage> {
 }
 
 /// Report completed navigations to app handlers and web content.
+pub(super) struct CompletionOwner {
+    #[cfg(feature = "native-capture")]
+    pub(super) capture: Option<crate::NativeServices>,
+    #[cfg(feature = "local-server")]
+    pub(super) lifetime: Option<(crate::HostLifetime, usize)>,
+}
+
 pub(super) fn register_navigation_completed(
     webview: &ICoreWebView2,
     events: EventRegistry,
     hwnd: HWND,
     live_background: Arc<LiveBackground>,
-    #[cfg(feature = "local-server")] owner: Option<(crate::HostLifetime, usize)>,
+    owner: CompletionOwner,
 ) -> Result<ICoreWebView2NavigationCompletedEventHandler> {
     let webview_for_uri = webview.clone();
-    let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
+    #[cfg(not(feature = "local-server"))]
+    let _ = &owner;
+    let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
         #[cfg(feature = "local-server")]
         if owner
+            .lifetime
             .as_ref()
             .is_some_and(|(lifetime, _)| !lifetime.is_active())
         {
@@ -484,7 +506,7 @@ pub(super) fn register_navigation_completed(
             if let Err(error) = unsafe { webview_for_uri.Stop() } {
                 eprintln!("WebUI: failed to stop retired local-server document: {error}");
             }
-            if let Some((_, cookie)) = owner.as_ref() {
+            if let Some((_, cookie)) = owner.lifetime.as_ref() {
                 if let Err(error) = super::post_owner_lost(hwnd, *cookie) {
                     eprintln!(
                         "WebUI: failed to schedule retired local-server window close: {error}"
@@ -493,6 +515,20 @@ pub(super) fn register_navigation_completed(
             }
             return Ok(());
         }
+        #[cfg(feature = "native-capture")]
+        if let (Some(capture), Some(args)) = (&owner.capture, &args) {
+            let mut success = windows::core::BOOL::default();
+            let mut navigation_id = 0;
+            // SAFETY: These live event arguments belong to this STA.
+            unsafe { args.IsSuccess(&mut success)? };
+            if success.as_bool() {
+                // SAFETY: The native ID rejects completions from older navigations.
+                unsafe { args.NavigationId(&mut navigation_id)? };
+                capture.capture_navigation_finished(navigation_id);
+            }
+        }
+        #[cfg(not(feature = "native-capture"))]
+        let _ = &args;
         super::state::with_window_state(hwnd, |state| {
             if let Err(error) = state.app_window.publish_metrics(&state.webview) {
                 eprintln!("WebUI: failed to publish native titlebar measurements: {error}");
