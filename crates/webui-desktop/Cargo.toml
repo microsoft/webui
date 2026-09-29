@@ -160,6 +160,11 @@ name = "macos_response"
 harness = false
 required-features = ["native"]
 
+[[bench]]
+name = "macos_menu"
+harness = false
+required-features = ["native"]
+
 [[example]]
 name = "no-ipc-native"
 path = "tests/fixtures/no-ipc-native.rs"
