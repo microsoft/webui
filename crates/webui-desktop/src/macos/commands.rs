@@ -122,9 +122,26 @@ fn schedule_drain(id: u64) {
 }
 
 #[cfg(feature = "local-server")]
+fn owner_close_callback(
+    #[cfg(feature = "native-services")] capture: Option<Arc<crate::capture::CaptureState>>,
+    schedule: impl Fn() + Send + Sync + 'static,
+) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        #[cfg(feature = "native-services")]
+        if let Some(capture) = &capture {
+            // This runs synchronously under HostLifetime's close lock. Never
+            // invoke a Rust Future waker or wait for AppKit here.
+            capture.close();
+        }
+        schedule();
+    })
+}
+
+#[cfg(feature = "local-server")]
 pub(super) fn install_owner_close(
     window: &NSWindow,
     lifetime: &crate::HostLifetime,
+    #[cfg(feature = "native-services")] capture: Option<Arc<crate::capture::CaptureState>>,
 ) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
     let window = Weak::new(window);
     let state = lifetime.clone();
@@ -138,7 +155,11 @@ pub(super) fn install_owner_close(
         }
     }));
     let id = target.id;
-    let registration = lifetime.register_close(Arc::new(move || schedule_drain(id)))?;
+    let registration = lifetime.register_close(owner_close_callback(
+        #[cfg(feature = "native-services")]
+        capture,
+        move || schedule_drain(id),
+    ))?;
     Ok((target, registration))
 }
 
@@ -222,5 +243,38 @@ pub(super) fn update_document_background(webview: &WKWebView, color: Rgba) {
             &NSString::from_str(&live_background_script(color)),
             Some(&completion),
         );
+    }
+}
+
+#[cfg(all(test, feature = "native-services"))]
+#[allow(clippy::disallowed_methods)]
+mod capture_close_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn composed_owner_revoke_drops_png_before_wake_and_retry_is_idempotent() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let capture = crate::capture::CaptureState::new(lifetime.clone(), 17);
+        capture.test_store_retained(25_000);
+        assert_eq!(capture.test_retained_len(), 25_000);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&queued);
+        let observed = Arc::clone(&capture);
+        let during_wake = Arc::clone(&capture);
+        let _registration = lifetime
+            .register_close(owner_close_callback(Some(capture), move || {
+                assert_eq!(during_wake.test_retained_len(), 0);
+                counter.fetch_add(1, Ordering::AcqRel);
+            }))
+            .unwrap();
+        owner.revoke().unwrap();
+        assert_eq!(observed.test_retained_len(), 0);
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        owner.revoke().unwrap();
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        owner.retry_close().unwrap();
+        assert_eq!(observed.test_retained_len(), 0);
+        assert_eq!(queued.load(Ordering::Acquire), 2);
     }
 }

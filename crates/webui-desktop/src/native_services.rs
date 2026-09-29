@@ -153,6 +153,8 @@ struct Inner {
     last_magnification: AtomicU64,
     #[cfg(target_os = "macos")]
     geometry_dispatch: Mutex<Option<Arc<platform::Dispatch>>>,
+    #[cfg(target_os = "macos")]
+    capture: Arc<crate::capture::CaptureState>,
     busy: AtomicBool,
     active_timers: std::sync::atomic::AtomicUsize,
     timer: Mutex<Option<Weak<Timer>>>,
@@ -226,12 +228,16 @@ impl NativeServices {
         #[cfg(target_os = "macos")]
         let theme =
             crate::native_theme::platform::Controller::new(events.clone(), lifetime.clone());
+        #[cfg(target_os = "macos")]
+        let window_generation = NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
+        let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
         let inner = Arc::new(Inner {
             executor,
             lifetime,
             closed: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
-            window_generation: NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed),
+            window_generation,
             generation: AtomicU64::new(0),
             #[cfg(target_os = "macos")]
             document_epoch: AtomicU64::new(0),
@@ -247,6 +253,8 @@ impl NativeServices {
             last_magnification: AtomicU64::new(1_f64.to_bits()),
             #[cfg(target_os = "macos")]
             geometry_dispatch: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            capture,
             busy: AtomicBool::new(false),
             active_timers: std::sync::atomic::AtomicUsize::new(0),
             timer: Mutex::new(None),
@@ -270,7 +278,10 @@ impl NativeServices {
                     | DesktopEvent::WindowLeftFullscreen { .. }
                     | DesktopEvent::ScaleFactorChanged { .. } => {
                         #[cfg(target_os = "macos")]
-                        inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+                        {
+                            inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
+                            inner.capture.viewport_changed();
+                        }
                     }
                     _ => {}
                 }
@@ -355,6 +366,81 @@ impl NativeServices {
         }
     }
 
+    /// Capture only the visible WKWebView content in a bounded, opaque PNG
+    /// resource owned by this window and its currently finished main document.
+    /// The view snapshot includes already-painted, explicitly allowed preview
+    /// iframes; the host must establish its own iframe readiness before capture.
+    /// This installs no renderer global or grant and needs no screen permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` on Windows/Linux; on macOS rejects unavailable,
+    /// busy, closed and stale windows and an incomplete or oversized WK result.
+    /// Its future times out after ten seconds; a hung native callback retains
+    /// its Busy reservation rather than permitting overlapping snapshots.
+    pub fn capture_web_content(
+        &self,
+        options: crate::CaptureOptions,
+    ) -> Result<crate::CaptureRequest, crate::CaptureError> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.0.closed.load(Ordering::Acquire) || !self.0.lifetime.is_active() {
+                self.0.capture.close();
+                return Err(crate::CaptureError::Closed);
+            }
+            self.0.capture.begin(options)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = options;
+            Err(crate::CaptureError::Unsupported)
+        }
+    }
+
+    /// Copy at most 20 KiB from the retained PNG. Generated IPC consumers
+    /// must separately authorize and credit each chunk against their own
+    /// aggregate transport budget; no full data URL is provided.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or cross-window handles and offsets beyond the PNG.
+    pub fn read_captured_content(
+        &self,
+        content: &crate::CapturedContent,
+        offset: usize,
+    ) -> Result<crate::CapturedContentChunk, crate::CaptureError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.0.capture.read(content, offset)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (content, offset);
+            Err(crate::CaptureError::Unsupported)
+        }
+    }
+
+    /// Explicitly release the native PNG bytes. A retake, real navigation or
+    /// window retirement also releases them automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Released` for stale or foreign resource handles.
+    pub fn release_captured_content(
+        &self,
+        content: &crate::CapturedContent,
+    ) -> Result<(), crate::CaptureError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.0.capture.release(content)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = content;
+            Err(crate::CaptureError::Unsupported)
+        }
+    }
+
     /// Schedule an opt-in appearance override on this window's native UI
     /// thread. The resulting state reflects the window's effective appearance.
     /// This does not save the host preference or grant renderer IPC.
@@ -415,12 +501,20 @@ impl NativeServices {
     }
 
     #[cfg(target_os = "macos")]
+    pub(crate) fn capture_for_revoke(&self) -> Arc<crate::capture::CaptureState> {
+        Arc::clone(&self.0.capture)
+    }
+
+    #[cfg(target_os = "macos")]
     pub(crate) fn attach_geometry(
         &self,
         window: &objc2_app_kit::NSWindow,
         view: &objc2_web_kit::WKWebView,
     ) -> GeometryRegistration {
-        platform::install(&self.0, window, view)
+        GeometryRegistration {
+            geometry: platform::install(&self.0, window, view),
+            capture: crate::macos::capture::install(&self.0.capture, window, view),
+        }
     }
 
     fn start(
@@ -520,6 +614,9 @@ impl NativeServices {
             return;
         }
         inner.document_epoch.fetch_add(1, Ordering::AcqRel);
+        inner
+            .capture
+            .invalidate(inner.document_epoch.load(Ordering::Acquire), false);
         inner.committed_epoch.store(0, Ordering::Release);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
         platform::cancel_pending(inner, false);
@@ -553,6 +650,7 @@ impl NativeServices {
         };
         *committed_url = Some(url.to_owned());
         inner.committed_epoch.store(epoch, Ordering::Release);
+        inner.capture.finished(epoch);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -579,6 +677,7 @@ impl NativeServices {
             return false;
         }
         inner.committed_epoch.store(epoch, Ordering::Release);
+        inner.capture.finished(epoch);
         inner.geometry_revision.fetch_add(1, Ordering::AcqRel);
         true
     }
@@ -601,6 +700,7 @@ impl Inner {
             {
                 self.committed_epoch.store(0, Ordering::Release);
                 self.document_epoch.fetch_add(1, Ordering::AcqRel);
+                self.capture.close();
                 self.geometry_revision.fetch_add(1, Ordering::AcqRel);
                 platform::cancel_pending(self, true);
             }
@@ -650,7 +750,18 @@ impl Future for GeometryRequest {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use platform::Registration as GeometryRegistration;
+pub(crate) struct GeometryRegistration {
+    geometry: platform::Registration,
+    capture: crate::macos::capture::Registration,
+}
+
+#[cfg(target_os = "macos")]
+impl GeometryRegistration {
+    pub(crate) fn close(&self) {
+        self.capture.close();
+        self.geometry.close();
+    }
+}
 
 /// Awaitable completion of an OS opener call (not browser load completion).
 /// Dropping it cancels queued work but cannot retract an already-issued OS call.

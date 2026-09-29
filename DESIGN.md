@@ -406,6 +406,14 @@ frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.
+An opt-in macOS local-server host may retain one bounded, native PNG of its
+visible WKWebView viewport per window/document epoch. The intended content
+boundary is the current web view, not OS windows or a scroll document; hosts
+must establish allowed preview-frame readiness independently. The tested
+platform evidence and limits live in `specs/desktop-capture.md`. Navigation
+and native teardown invalidate the resource. Neither capture nor chunk reads
+create ambient renderer authority; generated application IPC access remains
+an explicit, separately budgeted host choice.
 An explicitly opted-in macOS local-server frame may accept bounded incoming
 custom-scheme URLs from AppKit into a single-window Rust host callback. This
 OS-to-host path is distinct from browser navigation, application IPC, and
