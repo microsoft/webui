@@ -41,6 +41,53 @@ fn native(path: &Path, target: DesktopPackageTarget, arm: bool) {
     }
 }
 
+fn windows_runtime_files(root: &Path) {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    fs::copy(
+        runtime.join("win-x64").join(deployment::BOOTSTRAP_DLL),
+        root.join(deployment::BOOTSTRAP_DLL),
+    )
+    .unwrap();
+    for name in deployment::NOTICES {
+        fs::copy(runtime.join(name), root.join(name)).unwrap();
+    }
+}
+
+fn long_pe(path: &Path, machine: u16) {
+    let pe_offset = 8_192_u32;
+    let mut bytes = vec![0_u8; pe_offset as usize + 6];
+    bytes[..2].copy_from_slice(b"MZ");
+    bytes[0x3c..0x40].copy_from_slice(&pe_offset.to_le_bytes());
+    bytes[pe_offset as usize..pe_offset as usize + 4].copy_from_slice(b"PE\0\0");
+    bytes[pe_offset as usize + 4..pe_offset as usize + 6].copy_from_slice(&machine.to_le_bytes());
+    fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn accepts_windows_pe_header_beyond_initial_scan_buffer() {
+    let dir = TempDir::new().unwrap();
+    let target = DesktopPackageTarget::WindowsPortable;
+    let inputs = options(dir.path(), target);
+    windows_runtime_files(dir.path());
+    let host = dir.path().join("host.exe");
+    long_pe(&host, 0x8664);
+
+    let result = package_precompiled_host(inputs).unwrap();
+    assert_eq!(fs::metadata(&result.host_path).unwrap().len(), 8_198);
+}
+
+#[test]
+fn rejects_wrong_machine_after_long_pe_stub() {
+    let dir = TempDir::new().unwrap();
+    let inputs = options(dir.path(), DesktopPackageTarget::WindowsPortable);
+    windows_runtime_files(dir.path());
+    long_pe(&dir.path().join("host.exe"), 0xaa64);
+    assert!(matches!(
+        package_precompiled_host(inputs),
+        Err(DesktopError::PackageValidation { .. })
+    ));
+}
+
 fn universal(path: &Path, offset: u32, size: u32, inner_arm: bool) {
     let mut bytes = vec![0_u8; 128];
     bytes[..4].copy_from_slice(&[0xca, 0xfe, 0xba, 0xbe]);
@@ -415,15 +462,7 @@ fn rejects_symlink_input_and_output_overlap_without_deleting_source() {
 fn windows_layout_preserves_bootstrap_and_notices_and_rejects_wrong_worker_arch() {
     let dir = TempDir::new().unwrap();
     let inputs = options(dir.path(), DesktopPackageTarget::WindowsPortable);
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
-    fs::copy(
-        runtime.join("win-x64").join(deployment::BOOTSTRAP_DLL),
-        dir.path().join(deployment::BOOTSTRAP_DLL),
-    )
-    .unwrap();
-    for name in deployment::NOTICES {
-        fs::copy(runtime.join(name), dir.path().join(name)).unwrap();
-    }
+    windows_runtime_files(dir.path());
     native(
         &dir.path().join("worker"),
         DesktopPackageTarget::WindowsPortable,
@@ -457,14 +496,7 @@ fn windows_layout_preserves_bootstrap_and_notices_and_rejects_wrong_worker_arch(
         DesktopPackageTarget::WindowsPortable,
         true,
     );
-    fs::copy(
-        runtime.join("win-x64").join(deployment::BOOTSTRAP_DLL),
-        other.path().join(deployment::BOOTSTRAP_DLL),
-    )
-    .unwrap();
-    for name in deployment::NOTICES {
-        fs::copy(runtime.join(name), other.path().join(name)).unwrap();
-    }
+    windows_runtime_files(other.path());
     assert!(matches!(
         package_precompiled_host(arm_inputs),
         Err(DesktopError::PackageValidation { .. })
