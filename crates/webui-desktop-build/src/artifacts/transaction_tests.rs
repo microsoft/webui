@@ -7,7 +7,7 @@ use super::*;
 use crate::artifacts::paths::Scope;
 
 fn fixture() -> (tempfile::TempDir, Vec<Change>) {
-    let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let scope = Scope::new(dir.path()).unwrap();
     let mut changes = Vec::new();
     for (name, before, after, order) in [

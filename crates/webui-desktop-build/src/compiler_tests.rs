@@ -31,7 +31,7 @@ fn only_windows_drive_verbatim_prefixes_are_adapted() {
 fn compiler_options_keep_paths_with_spaces_in_one_argument() {
     let dir = tempfile::Builder::new()
         .prefix("output paths & spaces ")
-        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .tempdir()
         .unwrap();
     let output = dir.path().join("descriptor with spaces.bin");
     let mut command = Command::new("protoc");
