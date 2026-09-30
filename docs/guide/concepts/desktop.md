@@ -368,6 +368,10 @@ prior event. Before native attachment it returns `ThemeUnavailable`; after
 closure it returns `Closed`. Only one theme change can be queued at once;
 navigation, host-owner revocation, and close cancel a queued change. A
 ten-second timeout requires checking the current snapshot before retrying.
+Dropping the returned future, cancellation, or timeout does not immediately
+make the window ready for another theme change: retries can return `ThemeBusy`
+until the native UI finishes processing the previous request. Do not block
+the UI thread waiting to retry.
 Windows and Linux
 currently return `ThemeUnsupported` for both operations instead of
 pretending to set a coherent native/webview theme. This does not persist
