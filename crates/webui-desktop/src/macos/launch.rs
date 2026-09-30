@@ -26,7 +26,7 @@ use super::scheme::DesktopSchemeHandler;
 use super::state::{apply_state, capture_state, display_bounds};
 use super::theme::install_theme_observer;
 use super::tray::install_tray;
-use super::window::{apply_window_options, DesktopWindow};
+use super::window::{align_overlay_controls, apply_window_options, DesktopWindow};
 use super::{devtools_enabled_by_env, dispatch_event, startup_url};
 
 struct WebviewHandlers<'a> {
@@ -153,6 +153,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     }
     apply_background(&window, &webview, ivars.options.background);
     install_content_view(mtm, &window, &webview, ivars.options.effect);
+    align_overlay_controls(&window, &ivars.options);
     window.setDelegate(Some(ProtocolObject::from_ref(delegate)));
 
     let menu_webview = webview.clone();
