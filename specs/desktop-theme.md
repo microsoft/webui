@@ -13,6 +13,11 @@ appearance. Native events and the snapshot use that view's effective
 appearance rather than NSApplication's global appearance. Only one request
 may be queued per window, with typed busy, cancellation, closed, unavailable,
 and deadline errors; a timeout does not imply a native operation was reversed.
+Cancellation, including Future drop, retires the logical request but retains
+admission until its native callback drains. A retry can return `ThemeBusy`
+in the meantime. This also applies after a timeout; releasing a deadline
+reservation does not release a queued native callback. Setup failures before
+native dispatch release admission immediately.
 Navigation invalidates pending work but never clears an applied preference.
 Host-owner revocation rejects queued appearance work before the AppKit close
 wake drains, even when the window is still live; it cannot roll back a
