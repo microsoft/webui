@@ -163,6 +163,16 @@ performs all frame, grant, cancellation, deadline and worker processing.
 WebKit's actual `frameInfo` security origin and `isMainFrame` are mandatory;
 WebView2 checks both message source and committed top-level `Source`.
 The separate data lane does not relax the 4 KiB control lane.
+The serialized browser sender first reserves ordinary retained scratch without
+decoding the envelope. Only a typed `overloaded` reservation failure may fall
+back to one independent scratch slot for a complete, validated `CANCEL`, `ERROR`,
+or `ACCEPT` frame of the current generation, bounded
+by `maxErrorTextBytesTotal + 128` encoded bytes. Its binary-string/base64/marshal
+allowance is `2*C + 16*ceil(C/3)` bytes for that frame bound `C` (at most 15,968
+bytes with the SDK's 2,048-byte error-text ceiling). The slot lasts until the
+send settles, including rejection, timeout or close; it adds no queue.
+Application frames use ordinary retained credit regardless of how small they
+are. Malformed envelopes and over-budget error text cannot use this slot.
 Each retained partial input/output cursor has an event-driven native deadline:
 one platform timer per document retires idle storage and credits without waiting
 for another renderer message, heartbeat, or polling loop. A recoverable native
