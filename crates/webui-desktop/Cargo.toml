@@ -39,6 +39,7 @@ native-picker = [
     "objc2-app-kit?/NSSavePanel",
     "objc2-app-kit?/NSPanel",
     "objc2-app-kit?/block2",
+    "windows?/Win32_UI_Shell",
 ]
 native-dialogs = ["native-services", "objc2-app-kit?/NSAlert", "objc2-app-kit?/block2"]
 native-capture = [

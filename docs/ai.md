@@ -1433,10 +1433,12 @@ and query `services.current_theme()` for the effective native appearance
 of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
 the host persists preferences and owns SSR CSS. No renderer grant is added.
 See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
-With the separate `native-picker` feature, a trusted macOS Rust host can
-await `services.pick_directory(DirectoryPickerOptions::new())` for one bounded,
-absolute folder path or explicit cancellation. Windows/Linux return
-`PickerUnsupported`. No renderer grant is added; actual selection through
+With the separate `native-picker` feature, a trusted macOS or Windows Rust host
+can await `services.pick_directory(DirectoryPickerOptions::new())?.await?` for
+one bounded, absolute folder path or explicit cancellation. Linux returns
+`PickerUnsupported`. Windows uses a dedicated COM STA; the 120-second
+deadline can finish logically while OS work still holds Busy, without a hard
+dialog-teardown guarantee. No renderer grant is added; actual selection through
 the native panel has not yet been verified with a user. See
 [trusted-host OS openers](./guide/concepts/desktop.md#trusted-host-os-openers).
 With `native-dialogs`, a trusted local-server host can await one OS-owned

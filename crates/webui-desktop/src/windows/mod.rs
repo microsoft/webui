@@ -41,6 +41,8 @@ mod ipc_policy;
 mod local_controls;
 mod message;
 mod nonclient;
+#[cfg(feature = "native-picker")]
+pub(crate) mod picker;
 mod protocol;
 mod request;
 mod state;
@@ -216,6 +218,18 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window().devtools)?;
+    #[cfg(feature = "native-picker")]
+    let picker_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-picker")]
+    if let Some(services) = &picker_services {
+        let cookie = owner_close_cookie.ok_or_else(|| {
+            anyhow::anyhow!("local-server picker has no exact owning window generation")
+        })?;
+        services.attach_picker(window_frame.hwnd.0 as usize, cookie);
+    }
     #[cfg(feature = "native-dialogs")]
     let dialog_services = match &frame {
         FrameContent::Bundle(_) => None,
@@ -383,6 +397,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
             let dialogs = dialog_services
                 .as_ref()
                 .map(|services| services.dialogs_for_revoke());
+            #[cfg(feature = "native-picker")]
+            let picker = picker_services.clone();
             Some(local.lifetime().register_close_fallible(Arc::new(move || {
                 #[cfg(feature = "native-capture")]
                 if let Some(capture) = &capture {
@@ -399,6 +415,12 @@ fn run_content(frame: FrameContent) -> Result<()> {
                 #[cfg(feature = "native-dialogs")]
                 if let Some(dialogs) = &dialogs {
                     dialogs.close_silent();
+                }
+                #[cfg(feature = "native-picker")]
+                if let Some(picker) = &picker {
+                    // Retire synchronously, post cancellation to its own STA;
+                    // no arbitrary Future waker runs under the host lock.
+                    picker.picker_close_silent();
                 }
                 let hwnd = windows::Win32::Foundation::HWND(handle as *mut std::ffi::c_void);
                 post_owner_lost(hwnd, cookie)
@@ -421,6 +443,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
         #[cfg(feature = "application-ipc")]
         ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "native-picker")]
+        picker: picker_services,
         #[cfg(feature = "native-dialogs")]
         dialogs: dialog_services
             .as_ref()

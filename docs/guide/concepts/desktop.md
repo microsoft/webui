@@ -50,7 +50,7 @@ set desktop package options with command flags or the app-root
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
-| `native-picker` | Opt-in macOS directory picker for the trusted Rust host (includes `native-services`; no renderer grant) |
+| `native-picker` | Opt-in macOS/Windows directory picker for the trusted Rust host (includes `native-services`; no renderer grant) |
 | `native-dialogs` | Trusted Rust-host live error and confirmation dialogs on macOS and Windows (includes `native-services`; no renderer grant) |
 | `native-capture` | Host-only bounded visible webview PNG on macOS and Windows (includes `native-services`) |
 | `native-clipboard` | Host-only native PNG clipboard acknowledgement/readback (includes `native-capture`) |
@@ -383,7 +383,7 @@ cancel it. Do not synchronously wait for this future on the native UI
 thread. No workers or timers start unless an opener or theme change is
 requested.
 
-With `native-picker`, a trusted macOS Rust host can request one OS-owned
+With `native-picker`, a trusted macOS or Windows Rust host can request one OS-owned
 directory selection without exposing arbitrary filesystem access to the
 renderer:
 
@@ -413,8 +413,19 @@ is authorized. At most one picker can be pending per window; the async sheet
 reports **actual OS completion**, explicit user cancellation, failure, or a
 120-second deadline. Navigation requests and window close cancel pending
 selection where the OS permits; the host must not block the UI thread while
-awaiting it. Windows and Linux return `PickerUnsupported`. Actual selection
-through the native panel has not yet been verified with a user.
+awaiting it. Windows uses a dedicated COM STA for `IFileOpenDialog` with the
+exact owning window and the OS `FOS_PICKFOLDERS`, `FOS_FORCEFILESYSTEM`, and
+`FOS_PATHMUSTEXIST` checks; WebView2's UI thread keeps pumping. Its 120-second
+deadline is **logical**: a stalled OS dialog may remain visible and keep the
+window Busy until `Show` really returns. Cancellation posts a best-effort
+`IFileDialog::Close` request on the dialog's own STA; there is no thread kill,
+silent retry, or guaranteed hard OS UI teardown. Returned paths are checked
+as bounded, absolute, existing directories without lossy Unicode conversion
+on the worker. Windows Shell refusal is a typed `PickerOs` error with a
+static operation name and numeric HRESULT, never raw dialog text. When
+`native-dialogs` is also enabled, both operations share
+one modal reservation per window. Linux returns `PickerUnsupported`. Windows
+selection and OS cancellation have not been exercised with a user.
 
 With the separate `native-dialogs` feature, the trusted Rust host can show
 one window-owned native sheet or Task Dialog during the live local-server
