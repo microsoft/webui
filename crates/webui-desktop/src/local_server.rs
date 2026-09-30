@@ -21,11 +21,11 @@ use crate::{
     EventResponse, EventSubscription, Result, WindowHandle, WindowOptions,
 };
 
+mod listener;
+pub use listener::bind_owned_local_server;
 #[cfg(feature = "application-ipc")]
 mod owned_ipc;
 pub(crate) mod url_activation;
-#[cfg(feature = "application-ipc")]
-pub use owned_ipc::bind_owned_local_server;
 #[cfg(feature = "application-ipc")]
 pub(crate) use owned_ipc::OwnedLocalServerIpc;
 #[cfg(target_os = "macos")]

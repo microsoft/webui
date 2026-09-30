@@ -36,6 +36,27 @@ pub(crate) fn run() -> Result<(), String> {
         command.args(["--", "--format=pretty"]);
         run_suite(&mut command, &format!("Desktop features [{features}]"))?;
     }
+    for features in ["local-server", "local-server,application-ipc"] {
+        run_suite(
+            &mut build_command(
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "microsoft-webui-desktop",
+                    "--no-default-features",
+                    "--features",
+                    features,
+                    "--lib",
+                    "--test",
+                    "local_server_api",
+                    "--",
+                    "--format=pretty",
+                ],
+            ),
+            &format!("Desktop local-server features [{features}]"),
+        )?;
+    }
     #[cfg(target_os = "macos")]
     run_suite(
         &mut build_command(
