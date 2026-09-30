@@ -62,6 +62,8 @@ mod tray;
 /// Scheme and authority the macOS backend serves app content from, with no
 /// trailing slash. WKWebView registers `webui` as a custom scheme handler.
 pub(crate) const APP_ORIGIN: &str = "webui://app";
+#[cfg(feature = "local-server")]
+pub(crate) mod website_data;
 mod window;
 
 // Exercise the production Windows attachment invariant with the real command
@@ -101,6 +103,8 @@ struct MacosLaunchOptions {
     events: EventRegistry,
     window_handle: crate::WindowHandle,
     state_store: Option<WindowStateStore>,
+    #[cfg(feature = "local-server")]
+    persistent_website_data: bool,
 }
 
 /// Run a packaged desktop app bundle.
@@ -154,6 +158,8 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         events: frame.events.clone(),
         window_handle: frame.window_handle.clone(),
         state_store,
+        #[cfg(feature = "local-server")]
+        persistent_website_data: false,
     };
     run_app(mtm, options)
 }
@@ -161,6 +167,9 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
 #[cfg(feature = "local-server")]
 pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<()> {
     frame.lifetime().require_active()?;
+    if frame.persistent_website_data {
+        website_data::validate(frame.app_id.as_deref())?;
+    }
     #[cfg(feature = "native-dialogs")]
     let _ = frame.native_services()?;
     let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
@@ -196,6 +205,7 @@ pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<(
         events: frame.events.clone(),
         window_handle: frame.window_handle.clone(),
         state_store,
+        persistent_website_data: frame.persistent_website_data,
     };
     run_app(mtm, options)
 }

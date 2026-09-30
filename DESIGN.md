@@ -390,6 +390,13 @@ frame; this grants no authority to preview subframes.
 OS adapters own native lifecycle and FFI. npm distributes desktop
 binaries only through an explicit desktop support install, keeping webview
 dependencies out of the default CLI.
+Native browser data belongs to the application, not a viewer or preview
+window. Mac local-server frames default to an ephemeral WebKit store even
+with an app ID; an explicit persistent request must prove that the running
+packaged `.app` owns the exact bundle identity before using WebKit's
+app-wide default store. A missing or mismatched identity fails before any
+webview opens. Windows retains its existing app-ID-owned WebView2 profile
+selection; unsupported platforms do not silently claim persistence.
 An opt-in macOS or Windows local-server host may retain one bounded, native
 PNG of its visible webview viewport per window/document epoch. Windows uses
 the owning WebView2 STA and a bounded writable COM stream; Mac uses WKWebView.
@@ -444,6 +451,7 @@ engineering another; they are not public application-authoring guides.
 | Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
 | Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
+| Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/guide/integrations/`, `docs/guide/cli/`, package READMEs, `examples/` |
 

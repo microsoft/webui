@@ -23,6 +23,8 @@ mod ipc_test_support;
 mod ipc_contract_tests;
 
 mod app;
+#[cfg(any(feature = "native", test))]
+mod app_identity;
 mod asset_file;
 #[cfg(any(all(windows, feature = "native"), test))]
 mod browser_profile;
@@ -110,7 +112,7 @@ pub use capture::{
 };
 #[cfg(feature = "native-clipboard")]
 pub use clipboard::{ClipboardError, ClipboardRequest};
-pub use error::{DesktopError, Result};
+pub use error::{DesktopError, Result, WebsiteDataError};
 pub use event::{
     DesktopEvent, DesktopHostMessage, DesktopHostMessageError, EventHandler, EventJavascriptError,
     EventRegistrationError, EventRegistry, EventResponse, EventSubscription, WindowCommand,

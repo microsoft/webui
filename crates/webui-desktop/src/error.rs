@@ -8,9 +8,32 @@ use thiserror::Error;
 /// Result type used by the WebUI desktop runtime.
 pub type Result<T> = std::result::Result<T, DesktopError>;
 
+/// Failure to establish an app-owned persistent browser-data boundary.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum WebsiteDataError {
+    /// Persistence requires an explicit identity.
+    #[error("persistent website data requires an app_id; help: set LocalServerAppBuilder::app_id to the packaged application's bundle identifier")]
+    MissingIdentity,
+    /// The identity cannot safely name app-owned storage.
+    #[error("invalid app_id for persistent website data; help: use 1–255 ASCII letters, digits, dots, underscores or hyphens, with no trailing dot")]
+    InvalidIdentity,
+    /// The process is not running as the executable of a real macOS .app bundle.
+    #[error("persistent website data requires a packaged macOS .app executable; help: launch the app from its packaged Contents/MacOS executable")]
+    Unpackaged,
+    /// The requested identity does not own the running application bundle.
+    #[error("app_id does not match the running macOS bundle identifier; help: use the exact CFBundleIdentifier of the packaged .app")]
+    IdentityMismatch,
+    /// No safe native-owned persistent store is available on this platform.
+    #[error("persistent website data is unsupported on this platform; help: use a packaged macOS app or a Windows app-owned WebView2 profile")]
+    Unsupported,
+}
+
 /// Errors produced by the runtime-neutral WebUI desktop layer.
 #[derive(Debug, Error)]
 pub enum DesktopError {
+    /// An explicit native website-data persistence request failed.
+    #[error(transparent)]
+    WebsiteData(#[from] WebsiteDataError),
     /// Application IPC configuration or delivery failed.
     #[cfg(feature = "application-ipc")]
     #[error("desktop application IPC failed")]

@@ -326,8 +326,31 @@ Rust event callbacks and `window_handle()` remain available. On Linux, an
 owned local-server frame can use the same generated IPC connection; child
 frames receive no native authority, and preview subframe grants remain
 unsupported. Existing bundled/source apps still run there.
-The current macOS webview uses an ephemeral website data store, even with a
-stable app ID; this mode does not migrate or persist existing browser cookies.
+Local-server macOS frames use an ephemeral WebKit website data store by
+default, even with a stable app ID. A **packaged** Rust host can explicitly
+request native-owned persistence:
+
+```rust
+let frame = DesktopApp::from_local_server(options)
+    .app_id("com.example.myapp") // must equal the running .app's CFBundleIdentifier
+    .persistent_website_data()
+    .build()?;
+webui_desktop::run_local_server_frame(frame)?;
+```
+
+On macOS, `build()` rejects missing, invalid, mismatched, or unbundled
+identities with `DesktopError::WebsiteData(WebsiteDataError::...)`, before
+opening any WebView. Startup checks identity again. Launch the actual
+packaged `.app` executable, not an unbundled development runner. WebKit's
+public default data store is **app-wide**, not a viewer-specific profile:
+opted-in windows and their allowed preview frames share website data.
+Cookie scope and expiration still follow browser rules; session-only cookies
+are not promised across restarts. This option does not set cookies, import
+older browser data, authenticate the first HTTP response, or make a preview
+a native IPC principal. On Windows, the same request requires a valid
+`app_id` and uses the existing app-owned WebView2 profile; without this
+request the current Windows profile selection is unchanged. Linux rejects
+this request explicitly. An unopted-in macOS window remains ephemeral.
 
 ### Trusted-host OS openers
 

@@ -1389,6 +1389,13 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+macOS local-server browser data stays ephemeral even with `app_id` unless
+the packaged Rust host calls `.app_id(bundle_id).persistent_website_data()`
+before `.build()`. The ID must match the running `.app` bundle, or building
+fails before opening a webview. The public WebKit store is shared across
+windows and allowed frames, not per viewer; normal cookie expiry applies.
+Windows keeps its existing app-ID-owned WebView2 profile. Linux rejects this
+request. See [desktop website data](./guide/concepts/desktop.md#existing-http-application).
 On macOS and Windows, a local-server host can set
 `WindowOptions.titlebar = TitlebarStyle::Overlay { height }` to float native
 controls over web content. On macOS that height also centers standard caption
