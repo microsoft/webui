@@ -428,6 +428,7 @@ pub struct LocalServerAppBuilder {
     window: WindowOptions,
     shell: DesktopShellConfig,
     app_id: Option<String>,
+    persistent_website_data: bool,
     #[cfg(feature = "application-ipc")]
     ipc: Option<(OwnedLocalServerIpc, IpcRegistry, IpcOptions)>,
 }
@@ -439,6 +440,7 @@ impl LocalServerAppBuilder {
             window: WindowOptions::default(),
             shell: DesktopShellConfig::default(),
             app_id: None,
+            persistent_website_data: false,
             #[cfg(feature = "application-ipc")]
             ipc: None,
         }
@@ -462,6 +464,18 @@ impl LocalServerAppBuilder {
     #[must_use]
     pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = Some(app_id.into());
+        self
+    }
+
+    /// Opt in to the native app-owned persistent website data store.
+    ///
+    /// macOS requires an exact matching packaged `.app` bundle identifier;
+    /// Windows reuses the existing app-ID-owned WebView2 profile. Without
+    /// this request, macOS uses an ephemeral store even when `app_id` is set.
+    /// The store is app-wide, including allowed frames, not per-window.
+    #[must_use]
+    pub fn persistent_website_data(mut self) -> Self {
+        self.persistent_website_data = true;
         self
     }
 
@@ -498,6 +512,19 @@ impl LocalServerAppBuilder {
     /// Rejects unsupported window or shell options on the selected platform.
     pub fn build(self) -> Result<LocalServerFrame> {
         self.options.lifetime.require_active()?;
+        if self.persistent_website_data {
+            let id = self
+                .app_id
+                .as_deref()
+                .ok_or(crate::WebsiteDataError::MissingIdentity)?;
+            if !crate::app_identity::valid_app_id(id) {
+                return Err(crate::WebsiteDataError::InvalidIdentity.into());
+            }
+            #[cfg(target_os = "macos")]
+            crate::macos::website_data::validate(Some(id))?;
+            #[cfg(not(any(target_os = "macos", windows)))]
+            return Err(crate::WebsiteDataError::Unsupported.into());
+        }
         let capabilities = crate::frame::local_platform_capabilities();
         crate::validate_frame_capabilities(&self.window, &self.shell, capabilities)?;
         if matches!(self.window.titlebar, crate::TitlebarStyle::None) {
@@ -536,6 +563,8 @@ impl LocalServerAppBuilder {
             #[cfg(target_os = "macos")]
             shell: self.shell,
             app_id: self.app_id,
+            #[cfg(target_os = "macos")]
+            persistent_website_data: self.persistent_website_data,
             events: EventRegistry::default(),
             #[cfg(target_os = "macos")]
             url_activation: Mutex::new(None),
@@ -565,6 +594,8 @@ pub struct LocalServerFrame {
     #[cfg(target_os = "macos")]
     pub(crate) shell: DesktopShellConfig,
     pub(crate) app_id: Option<String>,
+    #[cfg(target_os = "macos")]
+    pub(crate) persistent_website_data: bool,
     pub(crate) events: EventRegistry,
     #[cfg(target_os = "macos")]
     pub(crate) url_activation: Mutex<Option<Arc<ActivationSender>>>,
@@ -855,6 +886,65 @@ mod tests {
         assert!(frame.window_handle().set_title("HTTP ready").is_ok());
         drop(subscription);
         drop(frame);
+    }
+
+    #[test]
+    fn persistent_website_data_requires_an_explicit_valid_app_identity() {
+        fn build(id: Option<&str>, persistent: bool) -> crate::Result<LocalServerFrame> {
+            let origin =
+                LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+            let (_owner, lifetime) = HostLifetime::new();
+            let mut builder =
+                crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime));
+            if let Some(id) = id {
+                builder = builder.app_id(id);
+            }
+            if persistent {
+                builder = builder.persistent_website_data();
+            }
+            builder.build()
+        }
+
+        assert!(matches!(
+            build(None, true),
+            Err(DesktopError::WebsiteData(
+                crate::WebsiteDataError::MissingIdentity
+            ))
+        ));
+        for id in [
+            "",
+            "../foreign",
+            "foreign.",
+            "a/b",
+            "a".repeat(256).as_str(),
+        ] {
+            assert!(matches!(
+                build(Some(id), true),
+                Err(DesktopError::WebsiteData(
+                    crate::WebsiteDataError::InvalidIdentity
+                ))
+            ));
+        }
+        // Setting an identity alone never changes the Mac website data store.
+        assert!(build(Some("com.example.unbundled"), false).is_ok());
+        #[cfg(target_os = "macos")]
+        assert!(matches!(
+            build(Some("com.example.unbundled"), true),
+            Err(DesktopError::WebsiteData(
+                crate::WebsiteDataError::Unpackaged
+            )) | Err(DesktopError::WebsiteData(
+                crate::WebsiteDataError::IdentityMismatch
+            ))
+        ));
+        #[cfg(target_os = "windows")]
+        assert!(build(Some("com.example.windows"), true).is_ok());
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert!(matches!(
+            build(Some("com.example.linux"), true),
+            Err(DesktopError::WebsiteData(
+                crate::WebsiteDataError::Unsupported
+            ))
+        ));
     }
 
     #[test]

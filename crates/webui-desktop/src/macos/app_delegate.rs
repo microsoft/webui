@@ -98,6 +98,8 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) events: EventRegistry,
     pub(in crate::macos) window_handle: crate::WindowHandle,
     pub(in crate::macos) state_store: Option<WindowStateStore>,
+    #[cfg(feature = "local-server")]
+    pub(in crate::macos) persistent_website_data: bool,
     /// Last observed `NSWindow::isZoomed` value.
     ///
     /// AppKit has no `windowDidZoom:` notification, so maximize transitions are
@@ -598,6 +600,8 @@ impl DesktopAppDelegate {
             events: options.events,
             window_handle: options.window_handle,
             state_store: options.state_store,
+            #[cfg(feature = "local-server")]
+            persistent_website_data: options.persistent_website_data,
             zoomed: Cell::new(maximized),
             exiting: Cell::new(false),
         });

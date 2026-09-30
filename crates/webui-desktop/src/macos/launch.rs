@@ -136,6 +136,8 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             ipc: ivars.ipc.as_ref(),
         },
         rect,
+        #[cfg(feature = "local-server")]
+        ivars.persistent_website_data,
     );
     #[cfg(feature = "local-server")]
     if let Some(handler) = &host_message_handler {
@@ -344,6 +346,7 @@ fn build_webview(
     options: &WindowOptions,
     handlers: WebviewHandlers<'_>,
     rect: NSRect,
+    #[cfg(feature = "local-server")] persistent_website_data: bool,
 ) -> Retained<WKWebView> {
     // SAFETY: WKWebViewConfiguration::new and WKWebView initialization must
     // run on the main thread; mtm proves this. The frame is valid.
@@ -358,7 +361,17 @@ fn build_webview(
                 &NSString::from_str("webui"),
             );
         }
-        config.setWebsiteDataStore(&WKWebsiteDataStore::nonPersistentDataStore(mtm));
+        // The default store is app-wide, never a per-window profile. Identity
+        // was checked at build and immediately before AppKit startup.
+        #[cfg(feature = "local-server")]
+        let store = if persistent_website_data {
+            WKWebsiteDataStore::defaultDataStore(mtm)
+        } else {
+            WKWebsiteDataStore::nonPersistentDataStore(mtm)
+        };
+        #[cfg(not(feature = "local-server"))]
+        let store = WKWebsiteDataStore::nonPersistentDataStore(mtm);
+        config.setWebsiteDataStore(&store);
         let content = config.userContentController();
         if let Some(host_message_handler) = handlers.host {
             #[cfg(feature = "local-server")]
