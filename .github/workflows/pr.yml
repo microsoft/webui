@@ -157,6 +157,11 @@ jobs:
           cargo test -p microsoft-webui-desktop --no-default-features --features native
           cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
 
+      - name: Test opt-in macOS native services
+        run: |
+          cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
+          cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-capture,native-dialogs --lib capture_only_owner_revoke_discards_png_before_native_close_wake
+
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
 
@@ -232,6 +237,9 @@ jobs:
       - name: Test native desktop SDK
         run: cargo test -p microsoft-webui-desktop --no-default-features --features native
 
+      - name: Test opt-in Windows native services
+        run: cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
+
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
 
@@ -270,6 +278,10 @@ jobs:
           skip-build: 'true'
           rust-targets: ${{ matrix.platform.target }}
           install-linux-desktop-dependencies: ${{ matrix.platform.target != 'aarch64-unknown-linux-gnu' }}
+
+      - name: Cross-check opt-in Windows ARM64 native services
+        if: matrix.platform.target == 'aarch64-pc-windows-msvc'
+        run: cargo check --locked --target aarch64-pc-windows-msvc -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
 
       - name: Build and export native package
         if: runner.os != 'Windows'
