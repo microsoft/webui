@@ -535,8 +535,12 @@ The final PNG has no upscale, is at most 1600×1200 **physical pixels** and
 against that byte limit before encoding. Windows `CapturePreview` has no
 downsample setting: a viewport wider or taller than the selected bound returns
 `TooLarge` before calling WebView2, rather than cropping or first encoding an
-oversized raster. The Windows stream bounds both cumulative source writes and
-resident PNG bytes and rejects overflow; a too-small byte bound returns
+oversized raster. On high-DPI Windows displays, raw-pixel WebView2 bounds are
+checked directly - DPI and rasterization scale do not multiply this physical
+limit. Unknown WebView2 bounds mode or stale controller bounds fail closed.
+The reported image dimensions come from the checked PNG IHDR. The Windows
+stream bounds both cumulative source writes and resident PNG bytes and rejects
+overflow; a too-small byte bound returns
 `TooLarge` without retaining a partial PNG. At most one native callback is active and one
 PNG is retained per window. A retake releases old bytes at admission; explicit
 release, actual main-frame navigation and window close also discard them.

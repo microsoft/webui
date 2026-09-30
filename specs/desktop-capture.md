@@ -7,16 +7,25 @@ runs on the owning window STA. The host schedules via a generation-checked,
 payload-free window wake, not page IPC. A custom writable COM stream caps
 cumulative source writes and resident output to the configured PNG limit
 (never above 12 MiB); its buffer is moved, not copied, into the existing
-per-window captured-content resource on native completion. Full physical
-viewport bounds are checked against the 1600×1200 / RGBA hard limit and
-host-selected options before WebView2 encodes. Unlike WKSnapshot, WebView2's
-CapturePreview offers no downsampling, so an oversized viewport is rejected,
-not cropped. PNG signature, IHDR dimensions, and terminal IEND are checked
-before retention. Navigation, viewport change, close and owner revocation
+per-window captured-content resource on native completion. The adapter requires
+controller3 `BoundsMode=USE_RAW_PIXELS` and controller bounds equal to its
+parent's current client rectangle; otherwise it fails closed. In RAW_PIXELS
+mode, WebView2 documents Bounds as raw screen-pixel size, unaffected by
+RasterizationScale. Before WebView2 encodes, the adapter checks those bounds
+directly against host options and the 1600×1200 / RGBA hard limit, even at high
+DPI; it does not multiply by DPI or rasterization scale. The actual PNG IHDR
+is separately measured and checked against the options and SDK raster budget,
+and must match the raw-pixel viewport within one pixel on each axis. Unlike
+WKSnapshot, WebView2's CapturePreview offers no downsampling, so an oversized
+viewport is rejected, not cropped. PNG signature, IHDR dimensions, and terminal
+IEND are checked before retention. Navigation, viewport change, close and owner revocation
 cancel delivery and discard pending stream bytes; native work keeps the busy
 reservation until its callback returns, even after the 10-second logical
-deadline. No Windows GUI execution or preview-iframe pixel verification has
-been performed. Linux remains unsupported.
+deadline. WebView2's CapturePreview docs do not specify exact PNG pixel
+dimensions or its native encoder's scratch allocation: a controller bounds
+check is not a strict bound on WebView2's internal allocations. No Windows GUI execution
+or preview-iframe pixel verification has been performed. Linux remains
+unsupported.
 
 With the separate `native-clipboard` opt-in, Windows writes the same retained
 PNG through the OS-registered `PNG` clipboard format on a worker thread, not
