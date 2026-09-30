@@ -31,6 +31,11 @@ pub const MAX_WEB_CAPTURE_PNG_BYTES: usize = 12 * 1024 * 1024;
 /// One native binary chunk returned to a trusted host for paced IPC delivery.
 pub const MAX_WEB_CAPTURE_CHUNK_BYTES: usize = 20 * 1024;
 
+// Pure Windows policy is exercised on macOS too; COM and HWND remain in the
+// Windows adapter.
+#[cfg(all(feature = "native-capture", any(windows, test)))]
+pub(crate) mod windows_png;
+
 /// Host-chosen, validated limits on one visible-content snapshot. macOS
 /// downscales the whole viewport; Windows rejects oversized viewports because
 /// WebView2 CapturePreview cannot downsample. Neither adapter crops or upscales.

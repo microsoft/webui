@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use webview2_com::CapturePreviewCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+    ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Controller3,
+    COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
 };
-use windows::core::{implement, Error, Ref, Result, HRESULT};
+use windows::core::{implement, Error, Interface, Ref, Result, HRESULT};
 use windows::Win32::Foundation::{
     E_INVALIDARG, E_NOTIMPL, HWND, STG_E_INVALIDFUNCTION, STG_E_MEDIUMFULL,
 };
@@ -23,8 +24,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::capture::{
-    CaptureError, CaptureOptions, CaptureState, MAX_WEB_CAPTURE_PNG_BYTES,
-    MAX_WEB_CAPTURE_RASTER_BYTES,
+    windows_png, CaptureError, CaptureOptions, CaptureState, MAX_WEB_CAPTURE_PNG_BYTES,
 };
 
 static NEXT_DISPATCH: AtomicUsize = AtomicUsize::new(1);
@@ -56,7 +56,13 @@ impl Registration {
         self.owner.notify_closed();
     }
 
-    pub(super) fn drain(&self, cookie: usize, webview: &ICoreWebView2, hwnd: HWND) {
+    pub(super) fn drain(
+        &self,
+        cookie: usize,
+        webview: &ICoreWebView2,
+        controller: &ICoreWebView2Controller,
+        (hwnd, content): (HWND, HWND),
+    ) {
         if cookie != self.dispatch.id {
             return;
         }
@@ -73,8 +79,8 @@ impl Registration {
                 start_capture(
                     &self.owner,
                     &self.dispatch,
-                    webview,
-                    hwnd,
+                    (webview, controller),
+                    (hwnd, content),
                     (id, epoch, options),
                 );
             }
@@ -433,8 +439,8 @@ impl IStream_Impl for BoundedStream_Impl {
 fn start_capture(
     owner: &Arc<CaptureState>,
     dispatch: &Dispatch,
-    webview: &ICoreWebView2,
-    hwnd: HWND,
+    (webview, controller): (&ICoreWebView2, &ICoreWebView2Controller),
+    (hwnd, content): (HWND, HWND),
     (id, epoch, options): (u64, u64, CaptureOptions),
 ) {
     let mut rect = windows::Win32::Foundation::RECT::default();
@@ -445,8 +451,11 @@ fn start_capture(
         owner.complete(id, epoch, Err(CaptureError::Unavailable));
         return;
     }
-    // SAFETY: hwnd is still the live owning window on this STA.
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }.is_err() {
+    // SAFETY: content is the live controller parent, distinct from the frame
+    // HWND used to route the wake and inspect window visibility.
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(content, &mut rect) }
+        .is_err()
+    {
         owner.complete(id, epoch, Err(CaptureError::Unavailable));
         return;
     }
@@ -457,21 +466,42 @@ fn start_capture(
         owner.complete(id, epoch, Err(CaptureError::Incomplete));
         return;
     };
-    let raster = usize::try_from(width)
-        .ok()
-        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
-        .and_then(|pixels| pixels.checked_mul(4));
-    // CapturePreview has no downsample parameter. Reject oversized viewports
-    // *before* asking WebView2 to encode their full-size PNG.
-    if width == 0
-        || height == 0
-        || width > options.max_width
-        || height > options.max_height
-        || raster.is_none_or(|n| n > MAX_WEB_CAPTURE_RASTER_BYTES)
-    {
-        owner.complete(id, epoch, Err(CaptureError::TooLarge));
-        return;
-    }
+    // The host sets controller.Bounds from this same content HWND. In
+    // RAW_PIXELS mode Bounds is the physical extent even at high DPI; changing
+    // RasterizationScale does not change it. Do not guess for logical Bounds,
+    // an older controller, or a stale resize.
+    let viewport = (|| {
+        let controller3 = controller
+            .cast::<ICoreWebView2Controller3>()
+            .map_err(|_| CaptureError::Unavailable)?;
+        let mut mode = Default::default();
+        let mut bounds = windows::Win32::Foundation::RECT::default();
+        // SAFETY: The controller, view and HWND belong to this live STA.
+        unsafe {
+            controller3
+                .BoundsMode(&mut mode)
+                .map_err(|_| CaptureError::Unavailable)?;
+            controller
+                .Bounds(&mut bounds)
+                .map_err(|_| CaptureError::Unavailable)?;
+        }
+        if mode != COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS
+            || bounds.left != 0
+            || bounds.top != 0
+            || bounds.right != rect.right
+            || bounds.bottom != rect.bottom
+        {
+            return Err(CaptureError::Unavailable);
+        }
+        windows_png::preflight(width, height, options)
+    })();
+    let viewport = match viewport {
+        Ok(viewport) => viewport,
+        Err(error) => {
+            owner.complete(id, epoch, Err(error));
+            return;
+        }
+    };
     let bytes = Arc::new(Mutex::new(Bytes::new(options.max_png_bytes)));
     if let Err(error) = dispatch.track_stream(id, &bytes) {
         owner.complete(id, epoch, Err(error));
@@ -499,13 +529,7 @@ fn start_capture(
             result.map_err(|error| CaptureError::NativeCode(error.code().0 as isize))?;
             let mut bytes = bytes;
             let png = std::mem::take(&mut bytes.data);
-            if png.len() < 36
-                || !png.ends_with(b"\0\0\0\0IEND\xaeB`\x82")
-                || png.get(16..20) != Some(width.to_be_bytes().as_slice())
-                || png.get(20..24) != Some(height.to_be_bytes().as_slice())
-            {
-                return Err(CaptureError::Incomplete);
-            }
+            let (width, height) = windows_png::validate_png(&png, viewport, options)?;
             Ok((width, height, png))
         });
         Ok(())

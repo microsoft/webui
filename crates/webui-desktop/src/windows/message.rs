@@ -74,7 +74,12 @@ pub(super) extern "system" fn window_proc(
         CAPTURE_WAKE_MESSAGE => {
             with_window_state(hwnd, |state| {
                 if let Some(registration) = &state.capture_registration {
-                    registration.drain(w_param.0, &state.webview, hwnd);
+                    registration.drain(
+                        w_param.0,
+                        &state.webview,
+                        &state.controller,
+                        (hwnd, state.content),
+                    );
                 }
             });
             LRESULT(0)
