@@ -155,6 +155,11 @@ path = "tests/codecs.rs"
 required-features = ["application-ipc"]
 
 [[test]]
+name = "capture_allocations"
+path = "tests/capture_allocations.rs"
+required-features = ["native-capture"]
+
+[[test]]
 name = "windows_portable_package"
 path = "tests/windows_portable_package.rs"
 required-features = ["source"]

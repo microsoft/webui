@@ -138,6 +138,8 @@ pub(super) fn encode_rgba(
         }
         capacity = capacity.saturating_mul(2).min(capacity_limit);
     };
+    // Scanlines are no longer needed; do not overlap them with the final PNG.
+    drop(raw);
     let total = PNG_FIXED_OVERHEAD
         .checked_add(encoded_len)
         .ok_or(CaptureError::TooLarge)?;

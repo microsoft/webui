@@ -288,9 +288,9 @@ struct Retained {
     id: u64,
     epoch: u64,
     revision: u64,
-    // Intentionally retain the encoder's exact-sized Vec allocation by
-    // moving only its header into Arc; Arc<[u8]>::from(Vec) copies the
-    // entire (potentially multi-MiB) PNG at this boundary.
+    // Move the encoder/stream's Vec header into Arc without copying the PNG.
+    // Windows may retain spare stream capacity, not just png.len() bytes.
+    // Arc<[u8]>::from(Vec) would copy the potentially multi-MiB payload.
     #[allow(clippy::rc_buffer)]
     png: Arc<Vec<u8>>,
 }

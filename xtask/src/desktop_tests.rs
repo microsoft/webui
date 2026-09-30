@@ -33,18 +33,37 @@ pub(crate) fn run() -> Result<(), String> {
             command.args(["--features", features]);
         }
         command.args(["--", "--format=pretty"]);
-        let output = command.output().map_err(|error| error.to_string())?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !output.status.success() {
-            return Err(format!(
-                "Desktop features [{features}] failed:\n{stdout}{stderr}"
-            ));
-        }
-        nonempty_suites(&stdout)
-            .map_err(|error| format!("Desktop features [{features}]: {error}\n{stdout}{stderr}"))?;
+        run_suite(&mut command, &format!("Desktop features [{features}]"))?;
     }
+    #[cfg(target_os = "macos")]
+    run_suite(
+        &mut build_command(
+            "cargo",
+            &[
+                "test",
+                "--release",
+                "-p",
+                "microsoft-webui-desktop",
+                "--no-default-features",
+                "--features",
+                "native-capture",
+                "--test",
+                "capture_allocations",
+            ],
+        ),
+        "Desktop capture allocations",
+    )?;
     Ok(())
+}
+
+fn run_suite(command: &mut std::process::Command, label: &str) -> Result<(), String> {
+    let output = command.output().map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!("{label} failed:\n{stdout}{stderr}"));
+    }
+    nonempty_suites(&stdout).map_err(|error| format!("{label}: {error}\n{stdout}{stderr}"))
 }
 
 fn nonempty_suites(output: &str) -> Result<(), &'static str> {

@@ -224,20 +224,21 @@ impl Bytes {
             return STG_E_MEDIUMFULL;
         }
         if end > self.data.len() {
-            // Geometric growth avoids an allocation on every small COM write;
-            // unlike Vec's unconstrained growth it never requests more than
-            // the selected source/output byte limit.
-            let target = end
-                .max(self.data.capacity().saturating_mul(2))
-                .max(4096)
-                .min(self.limit);
-            if self
-                .data
-                .try_reserve_exact(target - self.data.len())
-                .is_err()
-            {
-                self.overflow = true;
-                return STG_E_MEDIUMFULL;
+            if end > self.data.capacity() {
+                // Grow only when existing capacity is exhausted, and never
+                // request more than the selected source/output byte limit.
+                let target = end
+                    .max(self.data.capacity().saturating_mul(2))
+                    .max(4096)
+                    .min(self.limit);
+                if self
+                    .data
+                    .try_reserve_exact(target - self.data.len())
+                    .is_err()
+                {
+                    self.overflow = true;
+                    return STG_E_MEDIUMFULL;
+                }
             }
             self.data.resize(end, 0);
         }
@@ -556,6 +557,62 @@ fn start_capture(
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_png_writes_reuse_capacity_through_retention() {
+        // Valid 1x1 RGBA PNG, also used by the private macOS pasteboard test.
+        let png = [
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 1, 99, 248, 63, 139,
+            225, 63, 0, 6, 206, 2, 153, 89, 149, 178, 136, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+            130,
+        ];
+        assert_eq!(png.len(), 70);
+        let mut bytes = Bytes::new(MAX_WEB_CAPTURE_PNG_BYTES);
+        assert!(bytes.write(&png[..5]).is_ok());
+        let capacity = bytes.data.capacity();
+        assert!((4096..=8192).contains(&capacity));
+        for chunk in png[5..].chunks(5) {
+            assert!(bytes.write(chunk).is_ok());
+            assert_eq!(bytes.data.capacity(), capacity);
+        }
+        assert_eq!(bytes.written, png.len());
+        let retained = Arc::new(bytes.data);
+        assert_eq!(retained.as_slice(), png);
+        assert_eq!(retained.capacity(), capacity);
+    }
+
+    #[test]
+    fn stream_grows_for_real_capacity_exhaustion_not_rewrites() {
+        let limit = 12 * 1024;
+        let mut bytes = Bytes::new(limit);
+        assert!(bytes.write(&[7; 4096]).is_ok());
+        let initial = bytes.data.capacity();
+        assert!(bytes
+            .seek(i64::try_from(initial).unwrap(), STREAM_SEEK_SET)
+            .is_ok());
+        assert!(bytes.write(&[8]).is_ok());
+        let grown = bytes.data.capacity();
+        assert!(grown > initial && grown <= limit);
+        assert_eq!(bytes.data[initial], 8);
+
+        assert_eq!(bytes.seek(0, STREAM_SEEK_SET).unwrap(), 0);
+        assert!(bytes.write(&[9; 16]).is_ok());
+        assert_eq!(bytes.data.capacity(), grown);
+        assert_eq!(&bytes.data[..16], &[9; 16]);
+
+        assert!(bytes
+            .seek(i64::try_from(grown).unwrap(), STREAM_SEEK_SET)
+            .is_ok());
+        assert!(bytes.write(&[10]).is_ok());
+        assert!(bytes.data.capacity() <= limit);
+        assert!(bytes.data[initial + 1..grown].iter().all(|byte| *byte == 0));
+        assert_eq!(bytes.data[grown], 10);
+        assert!(bytes
+            .seek(i64::try_from(limit).unwrap(), STREAM_SEEK_SET)
+            .is_ok());
+        assert_eq!(bytes.write(&[11]).0, STG_E_MEDIUMFULL.0);
+    }
 
     #[test]
     fn stream_caps_growth_rewrites_and_seek_without_allocating_past_limit() {
