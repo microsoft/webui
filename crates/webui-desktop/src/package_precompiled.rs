@@ -16,6 +16,8 @@ use crate::package::{self, windows};
 mod binary;
 #[path = "package_output.rs"]
 mod output;
+#[path = "package_seal.rs"]
+mod seal;
 use output::PackageOutput;
 
 /// A mapped input's layout class. Destinations are relative to the corresponding
@@ -300,7 +302,7 @@ pub fn package_precompiled_host(
         (None, None)
     };
     let mut resource_paths = Vec::with_capacity(options.resources.len());
-    let mut resource_handles = Vec::with_capacity(options.resources.len());
+    let mut resource_seals = Vec::with_capacity(options.resources.len());
     for resource in &options.resources {
         validate_relative(&resource.destination)?;
         let mut handle = open_input(&resource.source, &output_path, "resource")?;
@@ -319,7 +321,10 @@ pub fn package_precompiled_host(
         let path = root.join(&resource.destination);
         claim(&mut claimed, &output_path, &path)?;
         resource_paths.push(path);
-        resource_handles.push(handle);
+        resource_seals.push(seal::ResourceSeal::from_handle(
+            &mut handle,
+            &resource.source,
+        )?);
     }
     #[cfg(unix)]
     require_executable(&host, &options.host_exe)?;
@@ -329,6 +334,7 @@ pub fn package_precompiled_host(
             output_path.display()
         )));
     }
+    drop(claimed);
 
     // The Unix output root is an owned directory fd. All subsequent writes
     // are handle-relative and exclusive, never path-based fs::copy.
@@ -367,14 +373,13 @@ pub fn package_precompiled_host(
             CopySpec::new(source, dest, &output_path, target, false)?,
         )?;
     }
-    for ((resource, dest), handle) in options
+    for ((resource, dest), resource_seal) in options
         .resources
         .iter()
         .zip(&resource_paths)
-        .zip(&mut resource_handles)
+        .zip(&resource_seals)
     {
-        copy_bound(
-            handle,
+        seal::copy_sealed(
             &mut output,
             CopySpec::new(
                 &resource.source,
@@ -383,6 +388,7 @@ pub fn package_precompiled_host(
                 target,
                 resource.kind == ResourceKind::Executable,
             )?,
+            resource_seal,
         )?;
     }
     if options.target == DesktopPackageTarget::MacosApp {
@@ -606,6 +612,7 @@ fn require_executable(file: &File, path: &Path) -> Result<()> {
 struct CopySpec<'a> {
     source: &'a Path,
     destination: &'a Path,
+    root: &'a Path,
     relative: &'a Path,
     target: binary::Target,
     executable: bool,
@@ -628,6 +635,7 @@ impl<'a> CopySpec<'a> {
         Ok(Self {
             source,
             destination,
+            root,
             relative,
             target,
             executable,

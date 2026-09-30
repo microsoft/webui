@@ -150,6 +150,61 @@ fn configured(
         .unwrap()
 }
 
+#[cfg(unix)]
+#[test]
+#[allow(unsafe_code)]
+fn packages_many_resources_under_child_fd_limit() {
+    const CHILD: &str = "WEBUI_PACKAGE_FD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "packages_many_resources_under_child_fd_limit"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child packaging failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let host = dir.path().join("host");
+    native(&host, DesktopPackageTarget::MacosApp, false);
+    let mut options = configured(
+        dir.path(),
+        DesktopPackageTarget::MacosApp,
+        host,
+        "x86_64-apple-darwin",
+    );
+    // SAFETY: The limit changes only in this isolated child test process.
+    unsafe {
+        let mut original = std::mem::zeroed::<libc::rlimit>();
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut original), 0);
+        assert!(original.rlim_cur >= 64);
+        let limited = libc::rlimit {
+            rlim_cur: 64,
+            rlim_max: original.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limited), 0);
+    }
+    for index in 0..80 {
+        let name = format!("{index}.txt");
+        let source = dir.path().join(&name);
+        fs::write(&source, b"fixture").unwrap();
+        options = options
+            .add_resource(PrecompiledResource::new(source, name, ResourceKind::Data).unwrap())
+            .unwrap();
+    }
+    let package = package_precompiled_host(options).unwrap();
+    assert_eq!(package.resource_paths.len(), 80);
+    for resource in package.resource_paths {
+        assert_eq!(fs::read(resource).unwrap(), b"fixture");
+    }
+}
+
 #[test]
 fn builder_checks_required_identity_triple_icon_and_relative_mapping() {
     let dir = TempDir::new().unwrap();

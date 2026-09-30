@@ -6,6 +6,7 @@ use crate::util::build_command;
 // Keep these package-local: workspace feature unification can hide missing gates.
 const FEATURES: &[&str] = &[
     "",
+    "packaging",
     "native",
     "source",
     "native,source",

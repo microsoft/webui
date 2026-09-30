@@ -82,7 +82,7 @@ native = [
 ]
 source = ["dep:microsoft-webui", "dep:sha2"]
 verified-update = ["dep:sha2"]
-packaging = ["dep:libc"]
+packaging = ["dep:libc", "dep:sha2"]
 cli = ["native", "source", "dep:clap", "dep:console", "dep:expand-tilde", "dep:microsoft-webui-desktop-build"]
 
 [dependencies]

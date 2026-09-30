@@ -908,8 +908,15 @@ Visual C++ Redistributable, or WebView2. There is no installer, DMG, ZIP,
 NSIS, signing, or updater publication API in this layout slice. The existing
 `source`/CLI bundle package flow remains unchanged.
 
-Inputs are held open from validation through copying, and copied bytes and
-native headers are checked before success. On Unix, new output files are
+The host, Windows deployment files, and icon retain their validated open
+handles through copying. Each mapped resource is validated and sealed
+individually with its length and SHA-256 digest, then closed before output
+creation. At copy time it is reopened with the same no-follow checks, copied
+with a length bound, and its **output bytes** are checked against the seal
+before native headers are checked. Changed inputs fail rather than silently
+packaging replacement bytes. This keeps open descriptors bounded independently
+of resource count.
+On Unix, new output files are
 created exclusively relative to a private directory handle. On Windows,
 directory creation remains path-based; **use an output parent not writable by
 untrusted concurrent processes**. A directory-swap attacker with write access

@@ -1488,8 +1488,10 @@ and call `package_precompiled_host` with its host executable, target triple,
 identity, optional icon, and explicit executable/data file mappings. This
 creates a macOS `.app` or Windows/Linux portable directory without compiling
 a second render bundle or shipping Node. It refuses unsafe mappings and
-existing output; distribution, signing, installers, and Windows shared runtime
-prerequisites remain consumer-owned. See
+existing output. Mapped resources are preflight-sealed one at a time, then
+reopened and verified against the copied output, bounding open descriptors
+independently of mapping count. Distribution, signing, installers, and
+Windows shared runtime prerequisites remain consumer-owned. See
 [precompiled host layout](./guide/concepts/desktop.md#precompiled-host-layout).
 Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
 for live presentation changes from Rust; these do not change the stable app ID
