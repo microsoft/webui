@@ -36,7 +36,12 @@ pub(crate) fn run() -> Result<(), String> {
         command.args(["--", "--format=pretty"]);
         run_suite(&mut command, &format!("Desktop features [{features}]"))?;
     }
-    for features in ["local-server", "local-server,application-ipc"] {
+    for features in [
+        "local-server",
+        "local-server,application-ipc",
+        "native-url-activation",
+        "native-services",
+    ] {
         run_suite(
             &mut build_command(
                 "cargo",
@@ -57,6 +62,22 @@ pub(crate) fn run() -> Result<(), String> {
             &format!("Desktop local-server features [{features}]"),
         )?;
     }
+    run_suite(
+        &mut build_command(
+            "cargo",
+            &[
+                "test",
+                "-p",
+                "microsoft-webui-desktop",
+                "--no-default-features",
+                "--features",
+                "local-server",
+                "--doc",
+                "local_server::LocalServerFrame",
+            ],
+        ),
+        "Desktop URL activation API opt-out",
+    )?;
     #[cfg(target_os = "macos")]
     run_suite(
         &mut build_command(

@@ -4,7 +4,7 @@
 //! Manual, controlled AppKit delegate injection; NOT proof of OS URL delivery.
 //! On an unlocked macOS desktop:
 //! WEBUI_NATIVE_URL_TEST_CONTROLLED=yes cargo run -p microsoft-webui-desktop \
-//!   --no-default-features --features local-server --example local-url-activation
+//!   --no-default-features --features native-url-activation --example local-url-activation
 #![allow(unsafe_code)]
 
 #[cfg(not(target_os = "macos"))]

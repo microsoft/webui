@@ -69,3 +69,44 @@ fn minimal_host_can_configure_packaged_overlay_without_application_ipc() {
             as fn(webui_desktop::LocalServerFrame) -> webui_desktop::Result<()>,
     );
 }
+
+#[cfg(feature = "native-url-activation")]
+#[test]
+fn incoming_url_registration_exposes_the_opt_in_typed_contract() {
+    use webui_desktop::{
+        DesktopApp, HostLifetime, LocalServerOptions, LoopbackOrigin, UrlActivation,
+        UrlActivationRegistrationError, MAX_URL_ACTIVATIONS_PER_BATCH, MAX_URL_ACTIVATION_BYTES,
+    };
+
+    assert_eq!(MAX_URL_ACTIVATIONS_PER_BATCH, 8);
+    assert_eq!(MAX_URL_ACTIVATION_BYTES, 2048);
+    let listener = bind_owned_local_server("127.0.0.1:0".parse().unwrap()).unwrap();
+    let origin = LoopbackOrigin::from_socket_addr(listener.local_addr().unwrap()).unwrap();
+    let (owner, lifetime) = HostLifetime::new();
+    let frame =
+        DesktopApp::from_local_server(LocalServerOptions::new(origin.clone(), lifetime.clone()))
+            .build()
+            .unwrap();
+    let retired = DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime))
+        .build()
+        .unwrap();
+    let result = frame.on_url_activation("testapp", |_: UrlActivation| {});
+    #[cfg(target_os = "macos")]
+    {
+        assert!(result.is_ok());
+        assert_eq!(
+            frame.on_url_activation("testapp", |_| {}),
+            Err(UrlActivationRegistrationError::AlreadyRegistered)
+        );
+        owner.revoke().unwrap();
+        assert_eq!(
+            retired.on_url_activation("testapp", |_| {}),
+            Err(UrlActivationRegistrationError::Closed)
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(result, Err(UrlActivationRegistrationError::Unsupported));
+        drop((owner, retired));
+    }
+}

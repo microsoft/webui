@@ -27,7 +27,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSStatusItem, NSWindow,
     NSWindowDelegate,
 };
-#[cfg(feature = "local-server")]
+#[cfg(feature = "native-url-activation")]
 use objc2_foundation::{NSArray, NSURL};
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString};
 #[cfg(feature = "local-server")]
@@ -55,12 +55,12 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
     pub(in crate::macos) frame_policy: Option<std::sync::Arc<crate::frame_policy::FramePolicy>>,
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     pub(in crate::macos) url_activation:
         Option<std::sync::Arc<crate::local_server::url_activation::ActivationSender>>,
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     pub(in crate::macos) pending_url_activations: RefCell<Vec<crate::UrlActivation>>,
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     pub(in crate::macos) url_activation_ready: Cell<bool>,
     #[cfg(feature = "native-services")]
     pub(in crate::macos) native_services: Option<crate::NativeServices>,
@@ -123,7 +123,7 @@ define_class!(
     // SAFETY: Method signatures match NSApplicationDelegate.
     #[allow(non_snake_case)]
     unsafe impl NSApplicationDelegate for DesktopAppDelegate {
-        #[cfg(feature = "local-server")]
+        #[cfg(feature = "native-url-activation")]
         #[unsafe(method(application:openURLs:))]
         fn application_openURLs(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
             self.receive_open_urls(urls);
@@ -372,7 +372,7 @@ define_class!(
             }
             #[cfg(feature = "local-server")]
             self.cancel_quit_deadline();
-            #[cfg(feature = "local-server")]
+            #[cfg(feature = "native-url-activation")]
             if let Some(sender) = &self.ivars().url_activation {
                 sender.close();
                 self.ivars().pending_url_activations.borrow_mut().clear();
@@ -488,7 +488,7 @@ impl DesktopAppDelegate {
         }
     }
 
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     fn receive_open_urls(&self, urls: &NSArray<NSURL>) {
         use crate::local_server::url_activation::{reject, Rejection};
 
@@ -529,7 +529,7 @@ impl DesktopAppDelegate {
         }
     }
 
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     pub(super) fn url_window_ready(&self) {
         self.ivars().url_activation_ready.set(true);
         if let Some(sender) = &self.ivars().url_activation {
@@ -560,11 +560,11 @@ impl DesktopAppDelegate {
             lifetime: options.lifetime,
             #[cfg(feature = "local-server")]
             frame_policy: options.frame_policy,
-            #[cfg(feature = "local-server")]
+            #[cfg(feature = "native-url-activation")]
             url_activation: options.url_activation,
-            #[cfg(feature = "local-server")]
+            #[cfg(feature = "native-url-activation")]
             pending_url_activations: RefCell::new(Vec::new()),
-            #[cfg(feature = "local-server")]
+            #[cfg(feature = "native-url-activation")]
             url_activation_ready: Cell::new(false),
             #[cfg(feature = "native-services")]
             native_services: options.native_services,
@@ -607,5 +607,21 @@ impl DesktopAppDelegate {
         });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DesktopAppDelegate;
+    use objc2::{sel, ClassType};
+
+    #[test]
+    fn incoming_url_selector_requires_explicit_feature() {
+        assert_eq!(
+            DesktopAppDelegate::class()
+                .instance_method(sel!(application:openURLs:))
+                .is_some(),
+            cfg!(feature = "native-url-activation"),
+        );
     }
 }
