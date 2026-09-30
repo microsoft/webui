@@ -183,7 +183,8 @@ impl LocalControls {
         struct Control<'a> {
             #[serde(rename = "webuiHostControl")]
             token: &'a str,
-            command: &'a str,
+            // The nested JSON command contains escapes and cannot borrow raw input.
+            command: String,
         }
         let control: Control<'_> = serde_json::from_str(raw).ok()?;
         let state = self.state.borrow();
@@ -191,7 +192,7 @@ impl LocalControls {
         if !token_matches(&proof.token, control.token) {
             return None;
         }
-        DesktopHostMessage::from_json(control.command).ok()
+        DesktopHostMessage::from_json(&control.command).ok()
     }
 }
 
@@ -343,6 +344,50 @@ mod tests {
         );
         let incorrectly_wrapped = serde_json::to_string(&object).unwrap();
         assert_eq!(controls.decode(source, source, &incorrectly_wrapped), None);
+    }
+
+    #[test]
+    fn escaped_commands_decode_without_relaxing_the_bounded_envelope() {
+        let (controls, _owner) = controls();
+        let source = "http://127.0.0.1:4312/";
+        controls.start(1);
+        controls.state.borrow_mut().proof = Some(Proof {
+            token: [0x3a; 16],
+            source: source.into(),
+        });
+        for (command, expected) in [
+            ("start-drag", DesktopHostMessage::StartDrag),
+            ("minimize", DesktopHostMessage::Minimize),
+            ("toggle-maximize", DesktopHostMessage::ToggleMaximize),
+            ("close", DesktopHostMessage::Close),
+        ] {
+            let payload = serde_json::to_string(&serde_json::json!({
+                "webuiHostControl": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+                "command": serde_json::to_string(command).unwrap(),
+            }))
+            .unwrap();
+            assert_eq!(controls.decode(source, source, &payload), Some(expected));
+            let mut extra: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            extra["extra"] = serde_json::Value::Bool(true);
+            assert_eq!(
+                controls.decode(source, source, &serde_json::to_string(&extra).unwrap()),
+                None
+            );
+        }
+        for command in ["close", "\"unknown\"", "\"close\" trailing"] {
+            let payload = serde_json::to_string(&serde_json::json!({
+                "webuiHostControl": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+                "command": command,
+            }))
+            .unwrap();
+            assert_eq!(controls.decode(source, source, &payload), None);
+        }
+        let oversized = serde_json::to_string(&serde_json::json!({
+            "webuiHostControl": "3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+            "command": "x".repeat(MAX_MESSAGE_UNITS),
+        }))
+        .unwrap();
+        assert_eq!(controls.decode(source, source, &oversized), None);
     }
 
     #[test]
