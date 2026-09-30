@@ -905,8 +905,9 @@ Effects depend on the OS: macOS supports `vibrancy`, `acrylic`, `mica`, and
 `tabbed`; Windows supports the first three; Linux supports none. Native menus
 and tray icons are available on macOS only. Without a custom menu configuration,
 macOS provides App, Edit, and Window menus. Window actions target this frame's
-native window rather than whichever window was last focused; custom menus keep
-their explicit contents. Unsupported requested capabilities fail before launch.
+native window rather than whichever window was last focused. The default
+Window menu includes Toggle Full Screen (`Control+Command+F`); custom menus
+keep their explicit contents. Unsupported requested capabilities fail before launch.
 
 For a custom header, mark the drag region `webui-drag` and interactive
 children `webui-no-drag`. A double-click on the drag region toggles maximize.
