@@ -41,7 +41,7 @@ use super::menu::NativeMenu;
 use super::navigation::DesktopNavigationDelegate;
 use super::scheme::DesktopSchemeHandler;
 use super::theme::DesktopThemeObserver;
-use super::window::DesktopWindow;
+use super::window::{align_overlay_controls, DesktopWindow};
 use super::{dispatch_event, MacosLaunchOptions};
 
 pub(super) struct AppDelegateIvars {
@@ -237,6 +237,7 @@ define_class!(
         #[unsafe(method(windowDidResize:))]
         fn windowDidResize(&self, _notification: &NSNotification) {
             if let Some(window) = self.ivars().window.get() {
+                align_overlay_controls(window, &self.ivars().options);
                 // Emit the state transition before the geometry so handlers see
                 // the window become maximized before its new size, matching the
                 // ordering the Windows and Linux backends use.
@@ -285,6 +286,7 @@ define_class!(
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn windowDidChangeBackingProperties(&self, _notification: &NSNotification) {
             if let Some(window) = self.ivars().window.get() {
+                align_overlay_controls(window, &self.ivars().options);
                 dispatch_for_delegate(
                     self,
                     DesktopEvent::ScaleFactorChanged {
@@ -343,6 +345,9 @@ define_class!(
         }
         #[unsafe(method(windowDidExitFullScreen:))]
         fn windowDidExitFullScreen(&self, _notification: &NSNotification) {
+            if let Some(window) = self.ivars().window.get() {
+                align_overlay_controls(window, &self.ivars().options);
+            }
             #[cfg(feature = "local-server")]
             self.update_local_caption_insets(false);
             dispatch_for_delegate(

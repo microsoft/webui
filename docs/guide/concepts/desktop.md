@@ -255,7 +255,10 @@ still requires product qualification. Do not infer macOS 13 compatibility for
 `.localhost` subdomains from results on newer systems.
 On macOS and Windows, a local-server frame can use
 `TitlebarStyle::HiddenInset` or `TitlebarStyle::Overlay { height }` to place
-native caption controls over full-bleed web content. The host should compute
+native caption controls over full-bleed web content. On macOS, `Overlay`
+requests that standard close, minimize and zoom controls align with the
+vertical center of that header band; macOS owns their placement in fullscreen.
+The host should compute
 `window_css_block(&window, DesktopPlatform::current())` once for the same
 `WindowOptions` passed to `.window(window)` and include that trusted style
 in its own full-document HTML `<head>`. The SDK does not rewrite the HTTP

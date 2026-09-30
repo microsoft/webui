@@ -1391,7 +1391,8 @@ render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
 On macOS and Windows, a local-server host can set
 `WindowOptions.titlebar = TitlebarStyle::Overlay { height }` to float native
-controls over web content. Include
+controls over web content. On macOS that height also centers standard caption
+controls within the header band outside fullscreen. Include
 `window_css_block(&window, DesktopPlatform::current())` in the host-rendered
 document head, and use `[webui-drag]` with `[webui-no-drag]` on interactive
 children. No separate titlebar strip or application IPC grant is required;
