@@ -157,6 +157,10 @@ fn default_window_menu(mtm: MainThreadMarker, window: &NSWindow) -> Retained<NSM
         "m",
     ));
     menu.addItem(&window_item(mtm, window, "Zoom", sel!(performZoom:), ""));
+    let (title, action, key, modifiers) = fullscreen_command();
+    let fullscreen = window_item(mtm, window, title, action, key);
+    fullscreen.setKeyEquivalentModifierMask(modifiers);
+    menu.addItem(&fullscreen);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     menu.addItem(&standard_item(
         mtm,
@@ -165,6 +169,15 @@ fn default_window_menu(mtm: MainThreadMarker, window: &NSWindow) -> Retained<NSM
         "",
     ));
     menu
+}
+
+fn fullscreen_command() -> (&'static str, Sel, &'static str, NSEventModifierFlags) {
+    (
+        "Toggle Full Screen",
+        sel!(toggleFullScreen:),
+        "f",
+        NSEventModifierFlags::Control | NSEventModifierFlags::Command,
+    )
 }
 
 fn window_item(
@@ -288,10 +301,25 @@ fn menu_command_script(command: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
+    use objc2::sel;
+    use objc2_app_kit::NSEventModifierFlags;
+
     #[test]
     fn command_script_embeds_id_as_json() {
         let script = super::menu_command_script("open-preferences");
         assert!(script.contains("webui:menu-command"));
         assert!(script.contains("id:\"open-preferences\""));
+    }
+
+    #[test]
+    fn default_window_fullscreen_uses_native_toggle_and_standard_shortcut() {
+        let (title, action, key, modifiers) = super::fullscreen_command();
+        assert_eq!(title, "Toggle Full Screen");
+        assert_eq!(action, sel!(toggleFullScreen:));
+        assert_eq!(key, "f");
+        assert_eq!(
+            modifiers,
+            NSEventModifierFlags::Command | NSEventModifierFlags::Control
+        );
     }
 }

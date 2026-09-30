@@ -1431,6 +1431,8 @@ can drain its backend off the UI thread. Quit is cancellable. See the
 [desktop SDK guide](./guide/concepts/desktop.md) for veto, retry, and failure
 behavior, including terminal window teardown before an unexpected AppKit stop
 returns an error.
+The default macOS Window menu targets this window and includes Toggle Full
+Screen (`Control+Command+F`); custom menus retain their explicit entries.
 On macOS and Windows, an exact `.localhost` preview subdomain needs an
 unprivileged `frame.frame_policy()` grant; it never gains native IPC or
 window controls. Linux currently denies preview subframe document commits.
