@@ -280,7 +280,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         return;
     }
     dispatch_event(&ivars.events, &webview, DesktopEvent::Ready);
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     delegate.url_window_ready();
 }
 

@@ -31,7 +31,8 @@ startup-failure = [
     "dep:windows",
     "objc2-app-kit?/NSAlert",
 ]
-local-server = ["native", "dep:url", "dep:getrandom", "dep:libc", "dep:socket2", "objc2-web-kit?/WKNavigationResponse"]
+local-server = ["native", "dep:getrandom", "dep:libc", "dep:socket2", "objc2-web-kit?/WKNavigationResponse"]
+native-url-activation = ["local-server", "dep:url"]
 native-services = ["local-server", "dep:url"]
 native-picker = [
     "native-services",
@@ -214,7 +215,7 @@ required-features = ["local-server"]
 [[example]]
 name = "local-url-activation"
 path = "tests/fixtures/local-url-activation.rs"
-required-features = ["local-server"]
+required-features = ["native-url-activation"]
 
 [[example]]
 name = "local-server-quit"

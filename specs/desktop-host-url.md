@@ -1,7 +1,17 @@
 # Desktop incoming host URL boundary
 
-An explicitly opted-in macOS `LocalServerFrame` can register one
-`on_url_activation` handler before the frame runs. Its AppKit
+With the `native-url-activation` Cargo feature, a macOS `LocalServerFrame` can
+register one `on_url_activation` handler before the frame runs. The feature
+includes `local-server` and selects the existing general URL parser.
+Plain `local-server` exposes neither the activation method/types nor the AppKit
+selector and retains no activation queue/readiness state. `native-services`
+independently retains its URL parser dependency, without enabling incoming
+activation. Callers of the previously implicit, unpublished activation API must
+explicitly select `native-url-activation`; feature omission is a compile-time
+API absence, not a runtime `Unsupported` fallback. With the feature selected,
+non-macOS targets retain the explicit `Unsupported` registration error.
+
+Its AppKit
 `application:openURLs:` adapter passes bounded validated custom-scheme URLs
 only to that window's Rust host callback, off the UI thread. The default
 bundle/source frames and local-server frames without a handler do no URL work.

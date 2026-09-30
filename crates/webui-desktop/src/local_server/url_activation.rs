@@ -258,4 +258,27 @@ mod tests {
         ));
         sender.close();
     }
+
+    #[test]
+    fn opted_in_worker_delivers_validated_urls_and_close_ends_admission() {
+        let (_owner, lifetime) = HostLifetime::new();
+        let (delivered, received) = mpsc::sync_channel(1);
+        let sender = ActivationSender::register("testapp", lifetime, move |activation| {
+            delivered.send(activation).unwrap();
+        })
+        .unwrap();
+        let activation = sender.accept("testapp://open/path?q=1").unwrap();
+        sender.send(activation.clone());
+        assert_eq!(
+            received
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            activation
+        );
+        sender.close();
+        assert!(matches!(
+            sender.accept("testapp://open/after"),
+            Err(Rejection::Retired)
+        ));
+    }
 }

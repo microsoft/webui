@@ -49,6 +49,7 @@ set desktop package options with command flags or the app-root
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
 | `native` | System webview and `run_frame` |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
+| `native-url-activation` | Host-only incoming custom-scheme URLs on macOS (includes `local-server`; no OS scheme registration or renderer grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
 | `native-picker` | Opt-in macOS/Windows directory picker for the trusted Rust host (includes `native-services`; no renderer grant) |
 | `native-dialogs` | Trusted Rust-host live error and confirmation dialogs on macOS and Windows (includes `native-services`; no renderer grant) |
@@ -203,9 +204,12 @@ identity check; the host must authenticate the daemon before constructing
 this lifetime.
 Use a separate lifetime per running native window.
 
-On macOS only, a local-server frame may opt in to a **trusted-host** incoming
-URL callback before running. The SDK does not register the scheme with macOS
-or forward URLs from other processes:
+With the `native-url-activation` Cargo feature, a macOS local-server frame may
+register a **trusted-host** incoming URL callback before running. This feature
+includes `local-server`. Hosts using `on_url_activation` must add it explicitly;
+`local-server` alone no longer exposes the method or its activation types.
+The SDK does not register the scheme with macOS or forward URLs from other
+processes:
 
 ```rust
 frame.on_url_activation("myapp", |activation| {

@@ -138,12 +138,6 @@ client, interactive components hydrate as islands.
 
 ## Project structure
 
-For a Rust host embedding an existing HTTP server, the opt-in macOS
-`LocalServerFrame::on_url_activation("myapp", handler)` receives bounded,
-host-only incoming custom-scheme URLs. It does not register the scheme with
-the OS, navigate the browser or prove cold/warm OS delivery. See the
-[desktop local-server guide](/guide/concepts/desktop#existing-http-application).
-
 ```
 my-app/
 |- src/
@@ -1392,6 +1386,14 @@ owned-listener grant, not enabled by the `local-server` feature alone.
 `webui_desktop::bind_owned_local_server(address)` needs only `local-server`.
 It binds an exclusive loopback listener without enabling application IPC;
 retain the listener until the native window closes.
+Incoming macOS custom-scheme URLs require the separate `native-url-activation`
+Cargo feature (which includes `local-server`). Hosts calling
+`LocalServerFrame::on_url_activation("myapp", handler)` must enable this flag;
+the method and activation types are absent with `local-server` alone.
+Delivery is bounded and host-only: it does not register the scheme with the OS,
+navigate the browser or prove cold/warm OS delivery. See the
+[desktop local-server guide](/guide/concepts/desktop#existing-http-application).
+
 macOS local-server browser data stays ephemeral even with `app_id` unless
 the packaged Rust host calls `.app_id(bundle_id).persistent_website_data()`
 before `.build()`. The ID must match the running `.app` bundle, or building

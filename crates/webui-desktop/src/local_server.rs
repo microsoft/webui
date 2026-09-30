@@ -25,11 +25,13 @@ mod listener;
 pub use listener::bind_owned_local_server;
 #[cfg(feature = "application-ipc")]
 mod owned_ipc;
+#[cfg(feature = "native-url-activation")]
 pub(crate) mod url_activation;
 #[cfg(feature = "application-ipc")]
 pub(crate) use owned_ipc::OwnedLocalServerIpc;
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "native-url-activation", target_os = "macos"))]
 use url_activation::ActivationSender;
+#[cfg(feature = "native-url-activation")]
 pub use url_activation::{
     UrlActivation, UrlActivationRegistrationError, MAX_URL_ACTIVATIONS_PER_BATCH,
     MAX_URL_ACTIVATION_BYTES,
@@ -566,7 +568,7 @@ impl LocalServerAppBuilder {
             #[cfg(target_os = "macos")]
             persistent_website_data: self.persistent_website_data,
             events: EventRegistry::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(feature = "native-url-activation", target_os = "macos"))]
             url_activation: Mutex::new(None),
             window_handle: WindowHandle::with_background(std::sync::Arc::clone(&live_background)),
             live_background,
@@ -588,6 +590,23 @@ impl LocalServerAppBuilder {
 /// titlebars enable only bounded window controls for the exact main document,
 /// not application IPC; the latter requires the owned listener and generated
 /// grants.
+#[cfg_attr(
+    not(feature = "native-url-activation"),
+    doc = r#"
+Incoming URL registration and its types require `native-url-activation`:
+
+```compile_fail
+use webui_desktop::LocalServerFrame;
+fn register(frame: &LocalServerFrame) {
+    frame.on_url_activation("myapp", |_| {}).unwrap();
+}
+```
+
+```compile_fail
+use webui_desktop::UrlActivation;
+```
+"#
+)]
 pub struct LocalServerFrame {
     pub(crate) options: LocalServerOptions,
     pub(crate) window: WindowOptions,
@@ -597,7 +616,7 @@ pub struct LocalServerFrame {
     #[cfg(target_os = "macos")]
     pub(crate) persistent_website_data: bool,
     pub(crate) events: EventRegistry,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "native-url-activation", target_os = "macos"))]
     pub(crate) url_activation: Mutex<Option<Arc<ActivationSender>>>,
     pub(crate) window_handle: WindowHandle,
     pub(crate) live_background: std::sync::Arc<crate::window::LiveBackground>,
@@ -692,6 +711,8 @@ impl LocalServerFrame {
 
     /// Register one trusted-host callback for incoming macOS custom-scheme URLs.
     ///
+    /// Requires the `native-url-activation` feature.
+    ///
     /// The callback runs off the AppKit thread and receives only validated,
     /// bounded URLs for this window. It must not pass the URL to page scripts
     /// or native IPC without its own application authorization. This does not
@@ -702,6 +723,7 @@ impl LocalServerFrame {
     /// Returns a typed error for an invalid scheme, duplicate registration,
     /// unavailable worker, or an unsupported platform. Register before
     /// [`run_local_server_frame`].
+    #[cfg(feature = "native-url-activation")]
     pub fn on_url_activation<F>(
         &self,
         scheme: &str,
@@ -751,7 +773,7 @@ impl LocalServerFrame {
 
 impl Drop for LocalServerFrame {
     fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(feature = "native-url-activation", target_os = "macos"))]
         {
             if let Ok(mut activation) = self.url_activation.lock() {
                 if let Some(sender) = activation.take() {
@@ -947,6 +969,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "native-url-activation")]
     #[test]
     fn url_activation_registration_is_single_owner_or_explicitly_unsupported() {
         let origin = LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
@@ -970,6 +993,26 @@ mod tests {
         assert!(matches!(
             frame.on_url_activation("testapp", |_| {}),
             Err(UrlActivationRegistrationError::Unsupported)
+        ));
+    }
+
+    #[cfg(all(feature = "native-url-activation", target_os = "macos"))]
+    #[test]
+    fn frame_drop_retires_its_activation_sender_without_retiring_the_host() {
+        let origin = LoopbackOrigin::from_socket_addr("127.0.0.1:3456".parse().unwrap()).unwrap();
+        let (_owner, lifetime) = HostLifetime::new();
+        let frame =
+            crate::DesktopApp::from_local_server(LocalServerOptions::new(origin, lifetime.clone()))
+                .build()
+                .unwrap();
+        frame.on_url_activation("testapp", |_| {}).unwrap();
+        let sender = frame.url_activation.lock().unwrap().clone().unwrap();
+        assert!(sender.accept("testapp://open/before").is_ok());
+        drop(frame);
+        assert!(lifetime.is_active());
+        assert!(matches!(
+            sender.accept("testapp://open/after"),
+            Err(url_activation::Rejection::Retired)
         ));
     }
 

@@ -90,7 +90,7 @@ struct MacosLaunchOptions {
     lifetime: Option<crate::HostLifetime>,
     #[cfg(feature = "local-server")]
     frame_policy: Option<Arc<crate::frame_policy::FramePolicy>>,
-    #[cfg(feature = "local-server")]
+    #[cfg(feature = "native-url-activation")]
     url_activation: Option<Arc<crate::local_server::url_activation::ActivationSender>>,
     #[cfg(feature = "native-services")]
     native_services: Option<crate::NativeServices>,
@@ -142,7 +142,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
         lifetime: None,
         #[cfg(feature = "local-server")]
         frame_policy: None,
-        #[cfg(feature = "local-server")]
+        #[cfg(feature = "native-url-activation")]
         url_activation: None,
         #[cfg(feature = "native-services")]
         native_services: None,
@@ -182,6 +182,7 @@ pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<(
         local_url: Some(frame.options.url()),
         lifetime: Some(frame.lifetime().clone()),
         frame_policy: Some(Arc::clone(&frame.frame_policy)),
+        #[cfg(feature = "native-url-activation")]
         url_activation: frame
             .url_activation
             .lock()
@@ -253,7 +254,7 @@ fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
         }
         #[cfg(feature = "local-server")]
         delegate.cancel_quit_deadline();
-        #[cfg(feature = "local-server")]
+        #[cfg(feature = "native-url-activation")]
         if let Some(sender) = &delegate.ivars().url_activation {
             sender.close();
         }

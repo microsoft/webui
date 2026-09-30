@@ -32,6 +32,9 @@ There are no default features:
 - `local-server`: a native window for an already-bound loopback HTTP server on
   macOS, Windows, or Linux, including `bind_owned_local_server` for exclusive
   loopback binding; it includes `native` but does not grant page IPC.
+- `native-url-activation`: host-only incoming custom-scheme URLs on macOS;
+  includes `local-server` and enables `LocalServerFrame::on_url_activation`
+  and its associated types.
 - `application-ipc`: typed application IPC, sessions, workers, and browser assets.
 - `source`: source compilation, bundle construction, and packaging APIs.
 - `packaging`: build-only layout for an already-compiled host and explicitly
@@ -49,6 +52,9 @@ Enable `application-ipc` alongside `native` when using generated Rust bindings.
 Without it, no application IPC sessions, workers, embedded assets, or native
 transport handlers are installed. Window controls and lifecycle events remain
 available independently.
+Hosts calling `on_url_activation` must explicitly enable `native-url-activation`;
+`local-server` alone no longer exposes that method or its URL activation types.
+The feature does not register URL schemes with the OS or grant renderer access.
 An owned local-server host may enable generated IPC only with its exact,
 exclusive bound listener and `application-ipc`; attached daemons are ineligible.
 Linux uses a private, top-frame-only content-world mediator for that local
