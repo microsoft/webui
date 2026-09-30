@@ -202,6 +202,8 @@ fn parse_nonce(text: &str) -> Option<[u8; 16]> {
     if text.len() != 32 {
         return None;
     }
+    // Decode storage, not generated key material: every byte is overwritten
+    // from the validated 32-character input before this array can be returned.
     let mut nonce = [0_u8; 16];
     for (pair, byte) in text.as_bytes().as_chunks::<2>().0.iter().zip(&mut nonce) {
         *byte = digit(pair[0])? * 16 + digit(pair[1])?;
@@ -693,6 +695,38 @@ mod tests {
             &lifetime
         ));
         Ok(())
+    }
+
+    #[cfg(feature = "local-server")]
+    #[test]
+    fn decoded_nonce_uses_every_input_pair_and_rejects_partial_values() {
+        use std::fmt::Write;
+
+        for seed in 0..=u8::MAX {
+            let expected: [u8; 16] =
+                std::array::from_fn(|index| seed.wrapping_add(u8::try_from(index).unwrap()));
+            let mut text = String::with_capacity(32);
+            for byte in expected {
+                write!(text, "{byte:02x}").unwrap();
+            }
+            assert_eq!(parse_nonce(&text), Some(expected));
+            for index in 0..text.len() {
+                let mut invalid = text.clone();
+                invalid.replace_range(index..index + 1, "g");
+                assert_eq!(parse_nonce(&invalid), None);
+            }
+        }
+        for invalid in [
+            "",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789abcdef0123456789abcdef00",
+            "ABCDEF0123456789abcdef0123456789",
+            "+123456789abcdef0123456789abcdef",
+            "é123456789abcdef0123456789abcde",
+        ] {
+            assert_eq!(parse_nonce(invalid), None);
+        }
     }
 
     #[cfg(feature = "local-server")]
