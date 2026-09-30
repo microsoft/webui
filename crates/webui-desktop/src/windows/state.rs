@@ -39,6 +39,8 @@ pub(super) struct FrameState {
     pub(super) ipc: Option<std::rc::Rc<super::ipc::WindowsIpc>>,
     /// WebView2 controller that hosts the app content.
     pub(super) controller: ICoreWebView2Controller,
+    #[cfg(feature = "native-picker")]
+    pub(super) picker: Option<crate::NativeServices>,
     #[cfg(feature = "native-dialogs")]
     pub(super) dialogs: Option<std::sync::Arc<crate::native_dialogs::DialogState>>,
     #[cfg(feature = "native-clipboard")]
