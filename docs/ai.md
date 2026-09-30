@@ -1389,6 +1389,9 @@ An existing Rust HTTP app can instead opt into a native window for its bound
 loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
 render that server's routes again. Local-server application IPC is a separate
 owned-listener grant, not enabled by the `local-server` feature alone.
+`webui_desktop::bind_owned_local_server(address)` needs only `local-server`.
+It binds an exclusive loopback listener without enabling application IPC;
+retain the listener until the native window closes.
 macOS local-server browser data stays ephemeral even with `app_id` unless
 the packaged Rust host calls `.app_id(bundle_id).persistent_website_data()`
 before `.build()`. The ID must match the running `.app` bundle, or building

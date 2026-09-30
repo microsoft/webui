@@ -30,7 +30,8 @@ There are no default features:
 
 - `native`: the current platform's native window and system webview.
 - `local-server`: a native window for an already-bound loopback HTTP server on
-  macOS, Windows, or Linux; it includes `native` but does not grant page IPC.
+  macOS, Windows, or Linux, including `bind_owned_local_server` for exclusive
+  loopback binding; it includes `native` but does not grant page IPC.
 - `application-ipc`: typed application IPC, sessions, workers, and browser assets.
 - `source`: source compilation, bundle construction, and packaging APIs.
 - `packaging`: build-only layout for an already-compiled host and explicitly

@@ -156,6 +156,11 @@ installer approval are separately established.
 
 ### Existing HTTP application
 
+`bind_owned_local_server(address)` is available with `local-server` alone.
+It returns an exclusively bound loopback `std::net::TcpListener` for your
+existing HTTP server; neither binding nor constructing the window enables
+application IPC. Keep the listener alive until the native window closes.
+
 An application that already owns a loopback HTTP listener can use the opt-in
 `local-server` feature on macOS, Windows or Linux. Pass the **bound** socket address;
 keep that listener running until the window exits. The Rust host must verify

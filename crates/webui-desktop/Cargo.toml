@@ -31,7 +31,7 @@ startup-failure = [
     "dep:windows",
     "objc2-app-kit?/NSAlert",
 ]
-local-server = ["native", "dep:url", "dep:getrandom", "objc2-web-kit?/WKNavigationResponse"]
+local-server = ["native", "dep:url", "dep:getrandom", "dep:libc", "dep:socket2", "objc2-web-kit?/WKNavigationResponse"]
 native-services = ["local-server", "dep:url"]
 native-picker = [
     "native-services",
@@ -143,6 +143,11 @@ microsoft-webui-test-utils = { path = "../webui-test-utils" }
 block2 = { workspace = true }
 # Only the controlled native acceptance fixture clicks AppKit's OK button.
 objc2-app-kit = { workspace = true, features = ["NSActionCell", "NSButtonCell", "NSCell"] }
+
+[[test]]
+name = "local_server_api"
+path = "tests/public_api/local_server.rs"
+required-features = ["local-server"]
 
 [[test]]
 name = "ipc_contract"
