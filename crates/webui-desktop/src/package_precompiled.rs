@@ -550,11 +550,17 @@ fn claim(claimed: &mut Claims, output: &Path, path: &Path) -> Result<()> {
             path.display()
         ))
     })?;
-    validate_relative(relative)?;
-    let key = relative
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase();
+    let text = relative.to_str().ok_or_else(|| {
+        validation(format!(
+            "package destination {} must be valid UTF-8",
+            path.display()
+        ))
+    })?;
+    // These paths include host-native separators added by Path::join.
+    // Caller-provided mappings still pass strict validation before joining.
+    let mut key = text.replace(std::path::MAIN_SEPARATOR, "/");
+    validate_relative(Path::new(&key))?;
+    key.make_ascii_lowercase();
     if key == "resources"
         || key == "contents"
         || key == "contents/info.plist"
@@ -732,12 +738,52 @@ fn validation(message: String) -> DesktopError {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
+    #[test]
+    fn native_joined_paths_keep_portable_collision_keys() {
+        let root = Path::new("package");
+        let mut claims = Claims {
+            files: HashSet::new(),
+            dirs: HashSet::new(),
+        };
+        claim(&mut claims, root, &root.join("Contents/MacOS").join("host")).unwrap();
+        claim(
+            &mut claims,
+            root,
+            &root.join("resources").join("sealed/webui.bundle"),
+        )
+        .unwrap();
+        assert!(claims.files.contains("contents/macos/host"));
+        assert!(claims.files.contains("resources/sealed/webui.bundle"));
+        assert!(claim(
+            &mut claims,
+            root,
+            &root.join("resources/SEALED").join("WEBUI.BUNDLE"),
+        )
+        .is_err());
+        assert!(claim(&mut claims, root, &root.join("resources").join("sealed")).is_err());
+        assert!(claim(&mut claims, root, &root.join("resources").join("../escape"),).is_err());
+        assert!(claim(&mut claims, root, Path::new("outside/resource")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn literal_unix_backslashes_are_not_native_separators() {
+        let root = Path::new("package");
+        let mut claims = Claims {
+            files: HashSet::new(),
+            dirs: HashSet::new(),
+        };
+        assert!(claim(&mut claims, root, &root.join(r"resources\payload")).is_err());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn source_name_swap_cannot_change_copied_bytes_or_escape_output_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -763,6 +809,7 @@ mod tests {
         assert_eq!(fs::read(replacement).unwrap(), b"changed data");
     }
 
+    #[cfg(unix)]
     #[test]
     fn replacing_output_path_cannot_redirect_anchored_writes() {
         let dir = tempfile::tempdir().unwrap();
