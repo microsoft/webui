@@ -374,6 +374,11 @@ fn rejects_architecture_paths_collisions_and_existing_output_before_writing() {
         "sealed/webui.bundle.",
         "sealed/webui.bundle ",
         "sealed./webui.bundle",
+        r"sealed\webui.bundle",
+        r"sealed\..\escape",
+        r"C:\absolute",
+        "sealed//webui.bundle",
+        "/absolute",
     ] {
         assert!(
             matches!(
