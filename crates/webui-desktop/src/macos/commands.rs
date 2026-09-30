@@ -328,6 +328,8 @@ mod capture_close_tests {
             .register_close(owner_close_callback(
                 Some(capture),
                 Some(clipboard),
+                #[cfg(feature = "native-dialogs")]
+                None,
                 move || {
                     assert_eq!(during_wake.test_retained_len(), 0);
                     assert!(during_wake_clipboard.test_is_closed());
@@ -363,10 +365,15 @@ mod capture_only_close_tests {
         let wakes = Arc::new(AtomicUsize::new(0));
         let callback_wakes = Arc::clone(&wakes);
         let _registration = lifetime
-            .register_close(owner_close_callback(Some(capture), move || {
-                assert_eq!(observed.test_retained_len(), 0);
-                callback_wakes.fetch_add(1, Ordering::AcqRel);
-            }))
+            .register_close(owner_close_callback(
+                Some(capture),
+                #[cfg(feature = "native-dialogs")]
+                None,
+                move || {
+                    assert_eq!(observed.test_retained_len(), 0);
+                    callback_wakes.fetch_add(1, Ordering::AcqRel);
+                },
+            ))
             .unwrap();
         owner.revoke().unwrap();
         assert_eq!(wakes.load(Ordering::Acquire), 1);
