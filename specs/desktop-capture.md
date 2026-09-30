@@ -5,9 +5,13 @@
 Windows WebView2 0.39.1 `ICoreWebView2::CapturePreview(PNG, IStream, completion)`
 runs on the owning window STA. The host schedules via a generation-checked,
 payload-free window wake, not page IPC. A custom writable COM stream caps
-cumulative source writes and resident output to the configured PNG limit
-(never above 12 MiB); its buffer is moved, not copied, into the existing
-per-window captured-content resource on native completion. The adapter requires
+cumulative source writes and requested buffer capacity to the configured PNG
+limit (never above 12 MiB); its buffer is moved, not copied, into the existing
+per-window captured-content resource on native completion. Small writes reuse
+existing capacity; growth requests stay within the PNG limit, but the retained
+`Vec` may have spare capacity beyond its logical PNG length. Allocator rounding
+and transient old/new allocation overlap during growth are not included in that
+logical byte bound. The adapter requires
 controller3 `BoundsMode=USE_RAW_PIXELS` and controller bounds equal to its
 parent's current client rectangle; otherwise it fails closed. In RAW_PIXELS
 mode, WebView2 documents Bounds as raw screen-pixel size, unaffected by
@@ -57,8 +61,11 @@ converted to PNG using public zlib with a destination checked against
 `compressBound` **before** allocation; no AppKit PNG encoder, TIFF, or browser
 data URL is involved. At 1600×1200 RGBA the bitmap is 7,680,000 bytes, raw
 filtered scanlines are 7,681,200 bytes, and the maximum PNG allocation is
-7,683,613 bytes including framing. The host cannot infer
-iframe readiness from a main-document finish: it must confirm preview HTTP
+7,683,613 bytes including framing. Filtered scanlines are released before
+allocating the final PNG, but bitmap, compression destination and output can
+still overlap. These per-buffer limits are not a whole-process memory bound
+and do not include native snapshot scratch. The host cannot infer iframe
+readiness from a main-document finish: it must confirm preview HTTP
 completion, iframe load and child-produced application readiness separately.
 The native capture API itself does not execute a page script.
 
