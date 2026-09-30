@@ -127,6 +127,7 @@ export class NativeFrameCarrier {
   }
 
   async send(bytes: Uint8Array): Promise<void> {
+    if (this.failure) throw this.failure;
     if (this.sending) throw new IpcError('overloaded');
     if (!bytes.byteLength || bytes.byteLength > this.session.limits.maxFrameBytes) throw new IpcError('payload-too-large');
     this.sending = true;
@@ -135,7 +136,17 @@ export class NativeFrameCarrier {
       // binary-string/base64/marshal storage before encoding each chunk.
       for (let offset = 0; offset < bytes.byteLength;) {
         const count = Math.min(CHUNK, bytes.byteLength - offset);
-        const release = this.ledger.reserve(count * 2 + encodedLength(count) * 4);
+        let release: (() => void) | undefined;
+        try { release = this.ledger.reserve(count * 2 + encodedLength(count) * 4); }
+        catch (error) {
+          if (!(error instanceof IpcError) || error.code !== 'overloaded' ||
+              bytes.byteLength > this.session.limits.maxErrorTextBytesTotal + 128) throw error;
+          const message = decodeFrame(bytes, this.session.limits);
+          if (message.kind !== Kind.CANCEL && message.kind !== Kind.ERROR && message.kind !== Kind.ACCEPT) throw error;
+          if (message.generation !== BigInt(this.session.generation)) throw new IpcError('navigated');
+          // Only overload uses this bounded control slot; `sending` owns it
+          // until finally. The ordinary path never decodes the envelope here.
+        }
         try {
           const chunk = bytes.subarray(offset, offset + count);
           let binary = '';
@@ -148,7 +159,7 @@ export class NativeFrameCarrier {
           if (reply.nextOffset !== offset + count || reply.complete !== (offset + count === bytes.byteLength)) {
             throw new IpcError('invalid-frame');
           }
-        } finally { release(); }
+        } finally { release?.(); }
         offset += count;
       }
     } finally { this.sending = false; }
