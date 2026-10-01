@@ -1,6 +1,7 @@
 {
   "appTitle": "Router Test",
   "dashboardTitle": "SSR Dashboard",
+  "view_model": { "label": "Connecting" },
   "isHome": true,
   "isAlpha": false,
   "isBeta": false,
