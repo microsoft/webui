@@ -1818,6 +1818,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "microsoft-webui-tokens"
+version = "0.0.30"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3952,6 +3960,7 @@ dependencies = [
  "http",
  "microsoft-webui-handler",
  "microsoft-webui-test-utils",
+ "microsoft-webui-tokens",
  "mime_guess",
  "percent-encoding",
  "serde_json",

@@ -26,6 +26,9 @@ struct Options {
     /// Enable WebUI browser hydration.
     #[arg(long)]
     plugin: Option<Plugin>,
+    /// Theme token file or npm package; packages resolve from the state directory.
+    #[arg(long)]
+    theme: Option<String>,
 }
 
 struct Snapshot {
@@ -48,6 +51,28 @@ impl Snapshot {
             bail!("state must be a JSON object");
         }
         state["basePath"] = "/".into();
+        if let Some(theme) = &options.theme {
+            if state
+                .get("tokens")
+                .is_some_and(|tokens| !tokens.is_object())
+            {
+                bail!("state.tokens must be an object; remove it or supply per-theme CSS strings");
+            }
+            let state_path = options.state.canonicalize()?;
+            let theme_path = webui_tokens::resolve_theme_path(
+                theme,
+                state_path
+                    .parent()
+                    .context("state file has no parent directory")?,
+            )?;
+            let bytes = assets::read_bounded(&theme_path)?;
+            let tokens = webui_tokens::parse_token_content(
+                std::str::from_utf8(&bytes).context("theme must contain UTF-8 JSON")?,
+                &theme_path,
+            )?;
+            let resolved = webui_tokens::resolve_tokens(protocol.tokens(), &tokens)?;
+            webui_tokens::inject_into_state(&mut state, &resolved);
+        }
         let handler = match options.plugin {
             Some(Plugin::Webui) => {
                 WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
@@ -208,6 +233,7 @@ mod tests {
             dist_dir: dir.path().into(),
             state: state.clone(),
             plugin: None,
+            theme: None,
         })?;
         std::fs::write(&state, br#"{"title":"Changed"}"#)?;
         std::fs::create_dir(dir.path().join("assets"))?;
@@ -246,7 +272,8 @@ mod tests {
         assert!(Snapshot::load(&Options {
             dist_dir: dir.path().into(),
             state,
-            plugin: None
+            plugin: None,
+            theme: None,
         })
         .is_err());
         Ok(())
@@ -271,6 +298,82 @@ mod tests {
         assert!(
             Options::try_parse_from(["tauri", "dist", "state.json", "--plugin=other"]).is_err()
         );
+        Ok(())
+    }
+
+    fn themed_fixture() -> Result<(tempfile::TempDir, Options)> {
+        let dir = tempfile::tempdir()?;
+        let mut protocol = WebUIProtocol::new(std::collections::HashMap::from([(
+            "index.html".into(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<style>:root{"),
+                    WebUIFragment::signal("tokens.light", true),
+                    WebUIFragment::raw("}@media(prefers-color-scheme:dark){:root{"),
+                    WebUIFragment::signal("tokens.dark", true),
+                    WebUIFragment::raw("}}</style>"),
+                ],
+                ..Default::default()
+            },
+        )]));
+        protocol.tokens = vec!["color".into()];
+        std::fs::write(dir.path().join("protocol.bin"), protocol.to_protobuf()?)?;
+        let state = dir.path().join("state.json");
+        std::fs::write(&state, br#"{"tokens":{"light":"--color:seed;"}}"#)?;
+        let options = Options {
+            dist_dir: dir.path().into(),
+            state,
+            plugin: None,
+            theme: None,
+        };
+        Ok((dir, options))
+    }
+
+    #[test]
+    fn resolves_file_and_package_themes_once_before_rendering() -> Result<()> {
+        let (dir, mut options) = themed_fixture()?;
+        assert!(std::str::from_utf8(&Snapshot::load(&options)?.html)?.contains("--color:seed;"));
+        std::fs::write(&options.state, "{}")?;
+        let package = dir.path().join("node_modules/@example/theme");
+        std::fs::create_dir_all(&package)?;
+        let theme = package.join("tokens.json");
+        std::fs::write(
+            &theme,
+            r##"{"themes":{"light":{"color":"#123456"},"dark":{"color":"#abcdef"}}}"##,
+        )?;
+        for name in [
+            theme.to_string_lossy().into_owned(),
+            "@example/theme".into(),
+        ] {
+            options.theme = Some(name);
+            let snapshot = Snapshot::load(&options)?;
+            let html = std::str::from_utf8(&snapshot.html)?;
+            assert!(html.contains(":root{--color: #123456;}"), "{html}");
+            assert!(
+                html.contains("@media(prefers-color-scheme:dark){:root{--color: #abcdef;}}"),
+                "{html}"
+            );
+            assert_eq!(std::fs::read_to_string(&options.state)?, "{}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_theme_inputs_before_opening_a_window() -> Result<()> {
+        let (dir, mut options) = themed_fixture()?;
+        options.theme = Some("@missing/theme".into());
+        assert!(Snapshot::load(&options).is_err());
+        let theme = dir.path().join("tokens.json");
+        options.theme = Some(theme.to_string_lossy().into_owned());
+        for invalid in [b"null".as_slice(), b"{", b"\xff"] {
+            std::fs::write(&theme, invalid)?;
+            assert!(Snapshot::load(&options).is_err());
+        }
+        std::fs::File::create(&theme)?.set_len(assets::MAX_FILE_BYTES + 1)?;
+        assert!(Snapshot::load(&options).is_err());
+        std::fs::write(&theme, r##"{"color":"#123456"}"##)?;
+        std::fs::write(&options.state, r#"{"tokens":null}"#)?;
+        assert!(Snapshot::load(&options).is_err());
         Ok(())
     }
 }

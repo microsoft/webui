@@ -15,12 +15,15 @@ From the repository root:
 pnpm --filter hello-world-example build
 cargo run --manifest-path examples/integration/tauri/Cargo.toml --locked --release -- \
   examples/app/hello-world/dist \
-  examples/app/hello-world/data/state.json
+  examples/app/hello-world/data/state.json \
+  --theme=@microsoft/webui-examples-theme
 ```
 
 Pass another app's build directory and state file to open it instead.
 Add `--plugin=webui` for apps compiled with the WebUI hydration plugin.
-Theme tokens, when needed, belong in the supplied state.
+Use `--theme=<file-or-package>` to resolve and inject theme tokens at startup.
+File paths resolve from the working directory; npm packages resolve from the
+state file's directory. Omit it to preserve token CSS already in the state.
 
 This is a **read-only snapshot**, not an application backend. Client-side
 interactions work, but server-backed routing, mutations and persistence

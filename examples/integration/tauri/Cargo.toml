@@ -35,6 +35,7 @@ serde_json = { workspace = true }
 tauri = { workspace = true, optional = true }
 url = { workspace = true }
 microsoft-webui-handler = { path = "../../../crates/webui-handler" }
+microsoft-webui-tokens = { path = "../../../crates/webui-tokens" }
 
 [build-dependencies]
 tauri-build = { workspace = true, optional = true }

@@ -11,12 +11,16 @@ and the repository's pnpm dependencies, then run from the repository root:
 pnpm --filter hello-world-example build
 cargo run --manifest-path examples/integration/tauri/Cargo.toml --locked --release -- \
   examples/app/hello-world/dist \
-  examples/app/hello-world/data/state.json
+  examples/app/hello-world/data/state.json \
+  --theme=@microsoft/webui-examples-theme
 ```
 
 The two paths select the build directory and initial state file.
 `--plugin=webui` enables browser hydration for apps built with that plugin;
-omit it for plain HTML. Supply theme tokens in the state if the app uses them.
+omit it for plain HTML. `--theme=<file-or-package>` resolves and injects the
+app's theme tokens before rendering. File paths resolve from the working
+directory; npm packages resolve from the state file's directory.
+Without `--theme`, any token CSS already supplied in the state is preserved.
 No Tauri CLI or JavaScript Tauri package is required.
 
 Like the [Electron example](./electron), this is a read-only snapshot host,
