@@ -1628,5 +1628,5 @@ Full detail: [Integrations](/guide/integrations/).
 | Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
 | WebUI Press named regions | [/guide/webui-press](/guide/webui-press) |
-| Rust, Node, Python, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
+| Rust, Node, Python, WASM, FFI, Electron, Tauri | [/guide/integrations/](/guide/integrations/) |
 | Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |

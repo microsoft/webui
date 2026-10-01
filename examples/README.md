@@ -24,6 +24,7 @@ Current entries:
 | `integration/node` | Node.js integration via native addon |
 | `integration/node-addon-bench` | Node/V8/N-API runtime benchmark for the native addon |
 | `integration/rust` | Rust integration via `webui-handler` |
+| `integration/tauri` | Rust-only Tauri snapshot viewer for pre-built WebUI apps |
 
 ## Quick Start
 
@@ -53,4 +54,5 @@ See integration-specific READMEs:
 - [integration/node/README.md](integration/node/README.md)
 - [integration/node-addon-bench/README.md](integration/node-addon-bench/README.md)
 - [integration/rust/README.md](integration/rust/README.md)
+- [integration/tauri/README.md](integration/tauri/README.md)
 - [app/service-worker/README.md](app/service-worker/README.md)

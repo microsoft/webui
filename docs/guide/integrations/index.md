@@ -9,6 +9,7 @@ Pick the handler that matches your stack:
 - [**.NET**](./dotnet), Managed `Microsoft.WebUI` NuGet bindings with progressive ASP.NET streaming
 - [**Python**](./python), Native `microsoft-webui` package (PyO3) with buffered, partial, and host-driven streaming rendering
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
+- [**Tauri**](./tauri), Rust-only snapshot viewer for pre-built apps
 - [**WebAssembly**](./wasm), Split parser, handler, and combined browser bundles
 - [**C / FFI**](./ffi), Shared library for Go and any language with C interop, plus an advanced `ctypes` fallback for Python on platforms outside its wheel matrix
 

@@ -73,6 +73,21 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         }],
         run_commands: &[],
     },
+    IntegrationBuild {
+        name: "tauri",
+        commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &[
+                "test",
+                "--manifest-path",
+                "examples/integration/tauri/Cargo.toml",
+                "--locked",
+                "--no-default-features",
+            ],
+            cwd: None,
+        }],
+        run_commands: &[],
+    },
 ];
 
 pub fn run_integration_builds() -> Result<(), String> {
