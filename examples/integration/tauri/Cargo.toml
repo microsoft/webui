@@ -1,0 +1,61 @@
+[package]
+name = "webui-tauri-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Tauri uses GTK3 on Linux; keep its dependencies separate from the SDK's GTK4.
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.3", features = ["derive"] }
+http = "1.4.0"
+mime_guess = "2.0.5"
+percent-encoding = "2.3.2"
+serde_json = "1.0.151"
+tauri = { version = "2.12.1", default-features = false, features = ["wry", "custom-protocol"] }
+tauri-build = { version = "2.7.1", default-features = false }
+tempfile = "3.27.0"
+url = "2.5.8"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+http = { workspace = true }
+mime_guess = { workspace = true }
+percent-encoding = { workspace = true }
+serde_json = { workspace = true }
+tauri = { workspace = true, optional = true }
+url = { workspace = true }
+microsoft-webui-handler = { path = "../../../crates/webui-handler" }
+microsoft-webui-tokens = { path = "../../../crates/webui-tokens" }
+
+[build-dependencies]
+tauri-build = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+microsoft-webui-test-utils = { path = "../../../crates/webui-test-utils" }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+perf = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+debug = false

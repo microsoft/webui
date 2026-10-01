@@ -175,6 +175,10 @@
             "link": "/guide/integrations/electron"
           },
           {
+            "text": "Tauri",
+            "link": "/guide/integrations/tauri"
+          },
+          {
             "text": ".NET",
             "link": "/guide/integrations/dotnet"
           },

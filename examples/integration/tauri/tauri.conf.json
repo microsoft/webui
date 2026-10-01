@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WebUI Tauri",
+  "version": "0.1.0",
+  "identifier": "com.microsoft.webui.tauri-example",
+  "build": { "frontendDist": "webui://app/" },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": { "capabilities": [] }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}

@@ -8,6 +8,7 @@ members = [
     "examples/demo/server",
     "examples/app/contact-book-manager/desktop",
 ]
+exclude = ["examples/integration/tauri"]
 resolver = "2"
 
 [workspace.package]
