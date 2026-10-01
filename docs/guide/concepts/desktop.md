@@ -391,8 +391,20 @@ An opt-in `native-services` Rust host can call `frame.native_services()?` to
 obtain a `NativeServices` handle for its own window. This installs only a
 Rust lifecycle subscription; it does **not** add a page global, a renderer
 bridge, or an IPC grant. To expose a specific action to a page, authorize it
-separately through an explicitly generated application IPC registry. Never
-forward an arbitrary renderer-supplied file path to the document opener.
+through a narrow same-origin host endpoint or an explicitly generated
+application IPC registry. The `@microsoft/webui-desktop/native` TypeScript
+entry is required only for that opt-in typed application IPC transport; these
+host-only services do not import it. Never forward an arbitrary
+renderer-supplied file path to the document opener.
+
+The runnable WebUI 0.0.30
+[`native-services` example](https://github.com/microsoft/webui/tree/main/examples/app/native-services)
+uses four narrow same-origin actions for the directory picker, dialogs,
+visible-content capture, and PNG clipboard write:
+
+```bash
+pnpm --dir examples/app/native-services start
+```
 
 ```rust
 use webui_desktop::{NativeServiceError, NativeServices};

@@ -77,14 +77,14 @@ pub enum ClipboardError {
 
 /// Validate only the logical PNG bytes; HGLOBAL may reserve extra trailing
 /// capacity which must not be read as part of the encoded resource.
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(windows, test))]
 pub(crate) fn valid_png_bytes(png: &[u8]) -> bool {
     (36..=crate::MAX_WEB_CAPTURE_PNG_BYTES).contains(&png.len())
         && png.starts_with(b"\x89PNG\r\n\x1a\n")
         && png.ends_with(b"\0\0\0\0IEND\xaeB`\x82")
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(windows, test))]
 pub(crate) fn matches_logical_png(expected: &[u8], observed: &[u8], allocation: usize) -> bool {
     valid_png_bytes(expected)
         && allocation >= expected.len()

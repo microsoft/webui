@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}} - WebUI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-950);
+      font-family: var(--font-family-base);
+    }
+  </style>
+</head>
+<body>
+  <native-services-app
+    status="{{status}}"
+    detail="{{detail}}"
+    ?busy="{{busy}}"
+    ?has-capture="{{hasCapture}}"
+    capture-url="{{captureUrl}}"
+  ></native-services-app>
+  <script type="module" src="/index.js"></script>
+</body>
+</html>
