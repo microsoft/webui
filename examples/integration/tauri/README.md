@@ -41,10 +41,11 @@ ephemeral. Do not modify the build directory during a run.
 cargo test --manifest-path examples/integration/tauri/Cargo.toml --locked --no-default-features
 cargo fmt --manifest-path examples/integration/tauri/Cargo.toml --check
 cargo clippy --manifest-path examples/integration/tauri/Cargo.toml --locked --all-targets -- -D warnings
-cargo deny --manifest-path examples/integration/tauri/Cargo.toml --config examples/integration/tauri/deny.toml check
+cargo deny --locked --manifest-path examples/integration/tauri/Cargo.toml --config examples/integration/tauri/deny.toml check
 ```
 
 The standard examples gate runs the headless tests; native builds remain
-opt-in. This example has its own Cargo workspace and lockfile because Tauri
+opt-in. The existing PR lint job also audits this isolated dependency graph.
+This example has its own Cargo workspace and lockfile because Tauri
 uses GTK3 on Linux while the WebUI desktop SDK uses GTK4. Its audit policy
 keeps Tauri-specific dependency exceptions out of the SDK workspace.
