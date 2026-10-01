@@ -796,8 +796,8 @@ export class WebUIRouter {
     }
     const component = document.createElement(componentTag);
     clearRouteContent(routeEl);
-    routeEl.appendChild(component);
     applyParamsQueryState(component, routeEl, params, state, query);
+    routeEl.appendChild(component);
   }
 
   private applyState(

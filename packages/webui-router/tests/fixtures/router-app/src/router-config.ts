@@ -7,6 +7,8 @@ export const routerConfig: RouterConfig = {
   loaders: {
     'page-alpha': () => Promise.resolve(),
     'page-beta': () => Promise.resolve(),
+    'page-live': () => Promise.resolve(),
+    'page-live-hydrated': () => Promise.resolve(),
     'route-dashboard': () => Promise.resolve(),
     'page-detail': () => Promise.resolve(),
     'page-compose': () => Promise.resolve(),

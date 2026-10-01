@@ -121,7 +121,7 @@ test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(11);
+    await expect(page.locator('nav a')).toHaveCount(13);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
@@ -259,6 +259,13 @@ test.describe('SSR deep links', () => {
     await expect(page.locator('h2')).toContainText('Beta Page');
   });
 
+  for (const path of ['/live', '/live-hydrated']) {
+    test(`direct ${path} SSR activates with live state`, async ({ page }) => {
+      await page.goto(path);
+      await expect(page.locator('output[role="status"]')).toHaveText('Live');
+    });
+  }
+
   test('parameterized route renders item detail via SSR', async ({ page }) => {
     await page.goto('/items/42');
     await expect(page.locator('h2')).toContainText('Item 42');
@@ -282,6 +289,29 @@ test.describe('client-side navigation', () => {
     );
     await page.waitForTimeout(300);
   });
+
+  for (const path of ['/live', '/live-hydrated']) {
+    test(`preserves synchronous ${path} activation over initial server state`, async ({ page }) => {
+      const shell = page.locator('route-shell');
+      await shell.evaluate(element => {
+        (element as HTMLElement & { __mountMarker?: boolean }).__mountMarker = true;
+      });
+
+      const partialResponse = page.waitForResponse(response =>
+        new URL(response.url()).pathname === path &&
+        response.request().headers()['accept']?.includes('application/json') === true,
+      );
+      await page.locator(`nav a[href="${path}"]`).click();
+      const partial = await partialResponse;
+      expect((await partial.json() as { state: Record<string, unknown> }).state)
+        .toMatchObject({ view_model: { label: 'Connecting' } });
+      await expect(page).toHaveURL(path);
+      await expect(page.locator('output[role="status"]')).toHaveText('Live');
+      expect(await shell.evaluate(element =>
+        (element as HTMLElement & { __mountMarker?: boolean }).__mountMarker,
+      )).toBe(true);
+    });
+  }
 
   test.describe('pre-hydration route intent', () => {
     test('prefetches once, then activates components and router on click', async ({ page }) => {
