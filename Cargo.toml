@@ -7,6 +7,7 @@ members = [
     "examples/app/commerce/server",
     "examples/demo/server",
     "examples/app/contact-book-manager/desktop",
+    "examples/app/native-services/desktop",
 ]
 exclude = ["examples/integration/tauri"]
 resolver = "2"
