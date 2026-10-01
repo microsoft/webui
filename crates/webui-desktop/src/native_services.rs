@@ -2201,7 +2201,20 @@ mod tests {
         assert!(!services.0.picker_busy.load(Ordering::Acquire));
     }
 
-    #[cfg(all(not(target_os = "macos"), feature = "native-picker"))]
+    #[cfg(all(windows, feature = "native-picker"))]
+    #[test]
+    fn directory_picker_rejects_unattached_windows_window_without_reserving_work() {
+        let (services, _events, _owner) = services();
+        assert!(matches!(
+            services.pick_directory(DirectoryPickerOptions::new()),
+            Err(NativeServiceError::Unavailable)
+        ));
+        assert!(!services.0.picker_busy.load(Ordering::Acquire));
+        assert_eq!(services.0.picker_id.load(Ordering::Acquire), 0);
+        assert_eq!(services.0.active_timers.load(Ordering::Acquire), 0);
+    }
+
+    #[cfg(all(not(any(target_os = "macos", windows)), feature = "native-picker"))]
     #[test]
     fn directory_picker_explicitly_rejects_unsupported_platforms() {
         let (services, _events, _owner) = services();
