@@ -9,10 +9,8 @@ import {
 import {
   prepareAssetComponentStyles,
   readComponentAssetModule,
-  sameComponents,
   validateAsset,
   type ComponentAsset,
-  type ComponentAssetImport,
 } from './asset.js';
 import {
   hasRegisteredComponentStyleResource,
@@ -72,7 +70,7 @@ async function registerRootAsset(
   validateExternalComponents(asset);
 
   const root = prepareComponentPayload(asset);
-  const chunks = await prepareAssetImports(asset.imports);
+  const chunks = prepareAssetImports(asset.imports);
   const graph = [...chunks, root];
   validatePreparedGraph(graph);
   for (let i = 0; i < chunks.length; i++) {
@@ -109,33 +107,25 @@ function loadAssetModule(
   return promise;
 }
 
-async function prepareAssetImports(
-  imports: ComponentAssetImport[],
-): Promise<PreparedComponentAsset[]> {
-  const pending: Promise<PreparedComponentAsset>[] = [];
+function prepareAssetImports(
+  imports: ComponentAsset[],
+): PreparedComponentAsset[] {
+  const prepared: PreparedComponentAsset[] = [];
   for (let i = 0; i < imports.length; i++) {
-    const assetImport = imports[i];
-    if (componentsAlreadyRegistered(assetImport.components)) continue;
-    pending.push(importAndPrepareChunk(assetImport));
+    const chunk = imports[i];
+    if (componentsAlreadyRegistered(chunk.components)) continue;
+    prepared.push(prepareComponentPayload(chunk));
   }
-  return Promise.all(pending);
+  return prepared;
 }
 
-function importAndPrepareChunk(
-  assetImport: ComponentAssetImport,
-): Promise<PreparedComponentAsset> {
-  const href = new URL(assetImport.href, document.baseURI).href;
-  return loadAssetModule(href, assetImport.load)
-    .then(imported => {
-      const chunk = readComponentAssetModule(imported);
-      validateAsset(chunk, 'chunk');
-      if (!sameComponents(chunk.components, assetImport.components)) {
-        throw new Error(
-          `[WebUI] Shared component asset ${href} does not provide the components declared by its root import.`,
-        );
-      }
-      return prepareComponentPayload(chunk);
-    });
+/** Validate and atomically register an already imported component asset graph. */
+export function registerComponentAsset(asset: ComponentAsset): Promise<void> {
+  return registerRootAsset(
+    typeof asset.root === 'string' ? asset.root : '',
+    'generated component asset',
+    { default: asset },
+  );
 }
 
 function prepareComponentPayload(asset: ComponentAsset): PreparedComponentAsset {

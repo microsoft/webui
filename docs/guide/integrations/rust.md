@@ -446,7 +446,7 @@ delivery from a cancelled or stalled stream.
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `BuildResult` |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and static component assets to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and generated component ESM inputs to disk |
 | `inspect(path)` | Read a protocol file and return JSON |
 | `inspect_bytes(bytes)` | Convert protocol bytes to JSON |
 
@@ -463,7 +463,7 @@ delivery from a cancelled or stalled stream.
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
 | `metafile` | `bool` | `false` | Generate an esbuild-compatible component asset graph in the build result |
 | `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
-| `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted filename template for Link-mode CSS. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
@@ -473,12 +473,13 @@ sole open Shadow roots remain Shadow in either mode. Light CSS uses ordinary
 selectors, and `:host`, `:host-context`, and `::slotted` fail with
 `unsupported-light-css`.
 
-`BuildResult::component_asset_files` contains root and shared chunk modules.
-Entry-reachable dependencies remain in the protocol and are external
-prerequisites; single-root dependencies stay inline; dependencies with an
-identical multi-root consumer set are emitted once in a shared chunk. Asset-only
-protocol records are pruned after the files are rendered. Component assets
-cannot be combined with `<route>`.
+`BuildResult::component_asset_files` contains stable version 4 ESM inputs: one
+module per asset-owned component plus a thin root entry with static imports for
+its closure. Entry-reachable dependencies remain in the protocol as external
+prerequisites. Asset-only protocol records are pruned after the files are
+rendered. Pass the generated inputs to the application bundler, which owns final
+splitting, hashes, public paths, caching, and delivery. Component assets cannot
+be combined with `<route>`.
 
 Set `metafile: true` to populate
 `BuildResult::metafile` with esbuild-compatible JSON:
@@ -497,8 +498,8 @@ if let Some(metafile) = result.metafile {
 }
 ```
 
-Root outputs in the metafile have `entryPoint` records and
-`dynamic-import` edges to shared chunks. `build_to_disk()` validates
+Root outputs in the metafile have `entryPoint` records and static
+`import-statement` edges to component inputs. `build_to_disk()` validates
 `protocol.bin`, CSS files, and component assets as one output set before
 writing, so filename collisions fail without leaving partial output.
 

@@ -396,36 +396,27 @@ In most components you do not call `$update()` directly. Property changes throug
 
 ### Static component assets
 
-`webui build --plugin=webui --emit-component-assets settings-dialog` emits
-`settings-dialog.webui.js` next to `protocol.bin`. Load the ESM asset before
-creating the component when you are not using `@microsoft/webui-router`:
+Generate stable ESM inputs separately from deployable output:
 
-```ts
-import { settingsAssets } from './lazy-assets.js';
-
-settingsAssets.preload('settings-dialog');
-panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets settings-dialog \
+  --component-assets-out ./.webui
 ```
 
-```ts
-// lazy-assets.ts
-import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+```typescript
+const loadSettings = () => import('../../.webui/settings-dialog.webui.js');
 
-export const settingsAssets = defineComponentAssets({
-  'settings-dialog': {
-    asset: '/settings-dialog.webui.js',
-    module: () => import('./settings-dialog/settings-dialog.js'),
-    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
-  },
-});
+void loadSettings().then(asset => asset.preload());
+panelSlot.replaceChildren(await (await loadSettings()).create());
 ```
 
-The asset graph keeps entry-owned templates external, leaves single-root
-dependencies inline, and emits dependencies shared by multiple roots once as
-flat dynamic chunks. Component assets cannot be combined with `<route>`. Load
-the normal entry bundle first so external prerequisites are registered.
-Current assets require version 3 and an atomically validated
-`componentStyles` catalog; any other version is rejected as unsupported.
+WebUI emits one module per asset-owned component and a thin root entry with
+static imports for its closure. The application bundler owns final splitting,
+sharing, hashes, public paths, and caching. Entry-owned templates remain
+external prerequisites, so load the normal application entry first. Component
+assets cannot be combined with `<route>`. Current generated assets use version
+4 and are validated as a complete graph before any payload is registered.
 
 The compiler records final Link stylesheet filenames in the protocol. For
 Shadow builds, the handler emits that finite manifest as inert JSON in the
@@ -437,25 +428,16 @@ WebUI handler or `Protocol`, which emits `#webui-component-assets`. A shell that
 uses build artifacts without rendering the protocol still mounts safely through
 the native stylesheet guard, but it does not receive the earlier
 compiler-owned style preload.
-Shared chunk and content-hashed stylesheet filenames are generated and must not
-be copied into authored code. Each root asset carries its own dynamic imports;
-`--metafile` remains available for analysis and build tooling.
+Only stable generated root input paths belong in authored imports. Final
+JavaScript filenames are application-bundler outputs, while content-hashed
+stylesheet filenames remain compiler-owned. `--metafile` exposes the static
+input graph for analysis and build tooling.
 
-In Shadow builds, `preload(tag)` reads the compiler-owned style metadata and
-starts Link styles beside the authored root asset, component module, and
-optional data request. Only the stable root asset URL remains in application
-code; shared chunks and content-hashed CSS stay compiler-owned.
-
-Bundler-generated loaders can use `asset: () => import('./settings-dialog.webui.js')`
-instead of a URL. This keeps chunk naming and public-path rewriting inside the
-bundler while preserving the same `preload(tag)` and `create(tag)` lifecycle.
-Concurrent roots share in-flight chunk and stylesheet work. `create(tag)`
-creates the element after template/module work is ready and does not block on
-optional data by default. Use
-`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
-must wait briefly for state before mounting. A rejected root asset or authored
-module is evicted from the registry so a later `preload(tag)` or `create(tag)`
-retries it.
+In Shadow builds, root `preload()` reads the compiler-owned style metadata and
+starts Link styles while registering the imported graph. Concurrent roots share
+in-flight registration and stylesheet work. Root `create()` waits for that work
+and creates the element. Application-owned code loads component behavior and
+data directly, so it also owns caching and retry policy for those requests.
 
 ### `@observable`
 

@@ -37,7 +37,7 @@ export interface BuildOptions {
   componentAssetRoots?: string[];
   /** Generate and return an esbuild-compatible component asset metafile. */
   metafile?: boolean;
-  /** Emitted asset filename template for Link-mode CSS and component assets. Tokens: [name], [hash], [ext]. */
+  /** Emitted Link-mode CSS filename template. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
   cssPublicBase?: string;

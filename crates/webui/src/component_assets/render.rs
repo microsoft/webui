@@ -4,13 +4,13 @@
 use rayon::prelude::*;
 use webui_protocol::WebUIProtocol;
 
-use super::graph::{AssetGraphPlan, ChunkPlan, RootPlan};
+use super::graph::{AssetGraphPlan, RootPlan};
 use super::payload::render_component_payloads;
 use super::serialize::{
     render_asset, AssetRenderOptions, PendingAsset, RenderedAsset, RenderedOutput, ResolvedImport,
 };
 use super::ComponentAssetFile;
-use crate::{AssetFileNameTemplate, WebUIError};
+use crate::WebUIError;
 
 pub(super) struct RenderedGraph {
     pub files: Vec<ComponentAssetFile>,
@@ -20,29 +20,34 @@ pub(super) struct RenderedGraph {
 pub(super) fn render_component_asset_graph(
     protocol: &WebUIProtocol,
     plan: &AssetGraphPlan,
-    file_name_template: &AssetFileNameTemplate,
     emit_metafile: bool,
 ) -> Result<RenderedGraph, WebUIError> {
     let payloads = render_component_payloads(protocol, plan)?;
     let render_options = AssetRenderOptions {
-        file_name_template,
         emit_metafile,
         protocol,
     };
-    let chunks = if plan.chunks.is_empty() {
+    let payloads_rendered = if plan.emitted_components.is_empty() {
         Vec::new()
     } else {
-        let chunk_results: Vec<Result<RenderedAsset, WebUIError>> = plan
-            .chunks
+        let payload_results: Vec<Result<RenderedAsset, WebUIError>> = plan
+            .emitted_components
             .par_iter()
-            .map(|chunk| render_asset(&pending_chunk(chunk), plan, &payloads, &render_options))
+            .map(|component| {
+                render_asset(
+                    &pending_component(*component, plan),
+                    plan,
+                    &payloads,
+                    &render_options,
+                )
+            })
             .collect();
-        collect_rendered(chunk_results)?
+        collect_rendered(payload_results)?
     };
 
     let roots = if plan.roots.len() == 1 {
         vec![render_asset(
-            &pending_root(&plan.roots[0], plan, &chunks),
+            &pending_root(&plan.roots[0], plan, &payloads_rendered)?,
             plan,
             &payloads,
             &render_options,
@@ -53,7 +58,7 @@ pub(super) fn render_component_asset_graph(
             .par_iter()
             .map(|root| {
                 render_asset(
-                    &pending_root(root, plan, &chunks),
+                    &pending_root(root, plan, &payloads_rendered)?,
                     plan,
                     &payloads,
                     &render_options,
@@ -63,13 +68,13 @@ pub(super) fn render_component_asset_graph(
         collect_rendered(root_results)?
     };
 
-    let mut files = Vec::with_capacity(roots.len() + chunks.len());
+    let mut files = Vec::with_capacity(roots.len() + payloads_rendered.len());
     let mut outputs = if emit_metafile {
         Vec::with_capacity(files.capacity())
     } else {
         Vec::new()
     };
-    for rendered in roots.into_iter().chain(chunks) {
+    for rendered in roots.into_iter().chain(payloads_rendered) {
         files.push(rendered.file);
         if let Some(output) = rendered.output {
             outputs.push(output);
@@ -78,34 +83,52 @@ pub(super) fn render_component_asset_graph(
     Ok(RenderedGraph { files, outputs })
 }
 
-fn pending_chunk(chunk: &ChunkPlan) -> PendingAsset {
+fn pending_component(component: usize, plan: &AssetGraphPlan) -> PendingAsset {
+    let tag = plan.component_names[component];
+    let mut logical_name = String::with_capacity(tag.len() + 10);
+    logical_name.push_str("component-");
+    logical_name.push_str(tag);
     PendingAsset {
-        logical_name: chunk.name.clone(),
+        logical_name,
         root: None,
-        components: chunk.components.clone(),
-        required_components: chunk.components.clone(),
+        components: vec![component],
+        required_components: vec![component],
         external_components: Vec::new(),
         imports: Vec::new(),
     }
 }
 
-fn pending_root(root: &RootPlan, plan: &AssetGraphPlan, chunks: &[RenderedAsset]) -> PendingAsset {
+fn pending_root(
+    root: &RootPlan,
+    plan: &AssetGraphPlan,
+    payloads: &[RenderedAsset],
+) -> Result<PendingAsset, WebUIError> {
     let imports = root
-        .chunks
+        .components
         .iter()
-        .map(|chunk_id| ResolvedImport {
-            file_name: chunks[*chunk_id].file.name.clone(),
-            components: plan.chunks[*chunk_id].components.clone(),
+        .map(|component| {
+            let payload_index = plan
+                .emitted_components
+                .binary_search(component)
+                .map_err(|_| {
+                    WebUIError::InvalidBuildOptions(
+                        "component asset root references a missing generated component module"
+                            .to_string(),
+                    )
+                })?;
+            Ok(ResolvedImport {
+                file_name: payloads[payload_index].file.name.clone(),
+            })
         })
-        .collect();
-    PendingAsset {
+        .collect::<Result<Vec<_>, WebUIError>>()?;
+    Ok(PendingAsset {
         logical_name: root.root.clone(),
         root: Some(root.root.clone()),
-        components: root.components.clone(),
+        components: Vec::new(),
         required_components: root.required_components.clone(),
         external_components: root.external_components.clone(),
         imports,
-    }
+    })
 }
 
 fn collect_rendered(

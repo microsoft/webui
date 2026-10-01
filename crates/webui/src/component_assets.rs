@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Static component asset graph rendering for CDN-loadable ESM modules.
+//! Semantic component ESM input generation for application-owned bundling.
 
 mod graph;
 mod json;
@@ -14,12 +14,12 @@ mod traversal;
 use std::collections::HashSet;
 use webui_protocol::{ComponentAssetStylePreload, WebUIProtocol};
 
-use crate::{AssetFileNameTemplate, WebUIError};
+use crate::WebUIError;
 
-/// A rendered static component asset root or shared chunk.
+/// A generated component or root ESM input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentAssetFile {
-    /// Output filename for the ESM asset.
+    /// Stable input filename for the ESM module.
     pub name: String,
     /// JavaScript module content.
     pub content: String,
@@ -28,7 +28,7 @@ pub struct ComponentAssetFile {
 /// Rendered component asset graph.
 #[derive(Debug)]
 pub struct ComponentAssetGraph {
-    /// Root and shared chunk ESM files.
+    /// Root and component ESM input files.
     pub files: Vec<ComponentAssetFile>,
     /// Optional esbuild-compatible metafile JSON.
     pub metafile: Option<String>,
@@ -116,9 +116,9 @@ impl ComponentAssetGraph {
 
 /// Render a static component asset graph.
 ///
-/// Entry-reachable components remain external prerequisites. Components used
-/// by one requested root stay inline, while components with an identical
-/// multi-root consumer set are emitted once in a shared chunk.
+/// Entry-reachable components remain external prerequisites. Each asset-owned
+/// component is emitted once, and roots statically import their full closure.
+/// The application bundler chooses final chunks, filenames, and delivery.
 ///
 /// # Errors
 ///
@@ -129,7 +129,6 @@ pub fn render_component_assets(
     protocol: &WebUIProtocol,
     entry: &str,
     roots: &[String],
-    file_name_template: &str,
     emit_metafile: bool,
 ) -> Result<ComponentAssetGraph, WebUIError> {
     if roots.is_empty() {
@@ -147,12 +146,8 @@ pub fn render_component_assets(
         });
     }
 
-    let file_name_template =
-        AssetFileNameTemplate::try_new(file_name_template.to_string(), "asset_file_name_template")
-            .map_err(|error| WebUIError::InvalidBuildOptions(error.to_string()))?;
     let plan = graph::plan_component_assets(protocol, entry, roots)?;
-    let rendered =
-        render::render_component_asset_graph(protocol, &plan, &file_name_template, emit_metafile)?;
+    let rendered = render::render_component_asset_graph(protocol, &plan, emit_metafile)?;
     let style_preloads = collect_component_asset_style_preloads(protocol, &plan);
     validate_unique_asset_file_names(&rendered.files)?;
     let metafile = if emit_metafile {
@@ -210,7 +205,7 @@ fn validate_unique_asset_file_names(files: &[ComponentAssetFile]) -> Result<(), 
     for file in files {
         if !names.insert(file.name.as_str()) {
             return Err(WebUIError::InvalidBuildOptions(format!(
-                "component asset filename collision for '{}'. Adjust --asset-file-name-template to include [name] or another unique component-specific segment.",
+                "component asset filename collision for '{}'. Choose distinct component root tags.",
                 file.name
             )));
         }
@@ -355,14 +350,9 @@ mod tests {
             },
         );
 
-        let error = render_component_assets(
-            &protocol,
-            "index.html",
-            &["legacy-card".to_string()],
-            "[name].[ext]",
-            false,
-        )
-        .expect_err("current component assets require style closure metadata");
+        let error =
+            render_component_assets(&protocol, "index.html", &["legacy-card".to_string()], false)
+                .expect_err("current component assets require style closure metadata");
         assert!(error
             .to_string()
             .contains("requires missing style closure metadata"));
@@ -418,11 +408,14 @@ mod tests {
             &protocol,
             "index.html",
             &["deferred-card".to_string()],
-            "[name].[ext]",
             false,
         )
         .expect("render component asset");
-        let asset = graph.files.first().expect("deferred root asset");
+        let asset = graph
+            .files
+            .iter()
+            .find(|file| file.name == "component-deferred-card.webui.js")
+            .expect("deferred component module");
 
         assert!(asset
             .content

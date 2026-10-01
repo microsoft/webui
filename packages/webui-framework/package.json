@@ -20,6 +20,12 @@
         "default": "./dist/component-asset.js"
       }
     },
+    "./component-asset-runtime.js": {
+      "import": {
+        "types": "./dist/component-asset-runtime.d.ts",
+        "default": "./dist/component-asset-runtime.js"
+      }
+    },
     "./streaming.js": {
       "import": {
         "types": "./dist/streaming-entry.d.ts",

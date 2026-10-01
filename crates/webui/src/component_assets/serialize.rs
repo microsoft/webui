@@ -5,12 +5,13 @@ use super::graph::AssetGraphPlan;
 use super::json::{push_json_string, push_u64};
 use super::payload::{render_style_resource, RenderedComponent, RenderedStyleResource};
 use super::ComponentAssetFile;
-use crate::{AssetFileNameTemplate, WebUIError};
+use crate::WebUIError;
 use webui_protocol::WebUIProtocol;
 
 const ASSET_TYPE: &str = "webui-component-asset";
-const ASSET_VERSION: u64 = 3;
+const ASSET_VERSION: u64 = 4;
 const COMPONENT_ASSET_EXT: &str = "webui.js";
+const COMPONENT_ASSET_RUNTIME: &str = "@microsoft/webui-framework/component-asset-runtime.js";
 
 pub(super) struct RenderedOutput {
     pub name: String,
@@ -19,7 +20,6 @@ pub(super) struct RenderedOutput {
     pub components: Vec<(String, usize)>,
     pub required_components: Vec<String>,
     pub external_components: Vec<String>,
-    pub dynamic_components: Vec<String>,
     pub imports: Vec<String>,
 }
 
@@ -34,7 +34,6 @@ pub(super) struct PendingAsset {
 
 pub(super) struct ResolvedImport {
     pub file_name: String,
-    pub components: Vec<usize>,
 }
 
 pub(super) struct RenderedAsset {
@@ -43,7 +42,6 @@ pub(super) struct RenderedAsset {
 }
 
 pub(super) struct AssetRenderOptions<'a> {
-    pub file_name_template: &'a AssetFileNameTemplate,
     pub emit_metafile: bool,
     pub protocol: &'a WebUIProtocol,
 }
@@ -68,6 +66,16 @@ pub(super) fn render_asset(
     } else {
         Vec::new()
     };
+    if pending.root.is_some() {
+        js.push_str("import{defineComponentAsset as __webuiDefineComponentAsset}from");
+        push_json_string(
+            &mut js,
+            COMPONENT_ASSET_RUNTIME,
+            "component asset runtime import",
+        )?;
+        js.push_str(";\n");
+    }
+    push_static_imports(&mut js, &pending.imports)?;
     js.push_str("const asset={\"type\":\"");
     js.push_str(ASSET_TYPE);
     js.push_str("\",\"version\":");
@@ -76,7 +84,7 @@ pub(super) fn render_asset(
     js.push_str(if pending.root.is_some() {
         "root"
     } else {
-        "chunk"
+        "component"
     });
     js.push('"');
     if let Some(root) = &pending.root {
@@ -90,7 +98,7 @@ pub(super) fn render_asset(
     js.push_str("],\"externalComponents\":[");
     push_component_id_array(&mut js, &pending.external_components, plan)?;
     js.push_str("],\"imports\":[");
-    push_imports(&mut js, &pending.imports, plan)?;
+    push_imports(&mut js, &pending.imports)?;
     js.push_str("],\"componentStyles\":{\"version\":1,\"strategy\":\"");
     js.push_str(options.protocol.css_strategy().wire_name());
     js.push_str("\",\"resources\":{");
@@ -140,41 +148,36 @@ pub(super) fn render_asset(
         )?;
         js.push('}');
     }
-    js.push_str("};\nexport default asset;\n");
+    js.push_str("};\n");
+    if pending.root.is_some() {
+        js.push_str("const api=__webuiDefineComponentAsset(asset);\n");
+        js.push_str("export const preload=api.preload;\n");
+        js.push_str("export const create=api.create;\n");
+    }
+    js.push_str("export default asset;\n");
 
-    let name = options.file_name_template.resolve(
-        &pending.logical_name,
-        COMPONENT_ASSET_EXT,
-        js.as_bytes(),
-    );
-    let output = options.emit_metafile.then(|| {
-        let mut dynamic_components: Vec<String> = pending
+    let mut name =
+        String::with_capacity(pending.logical_name.len() + COMPONENT_ASSET_EXT.len() + 1);
+    name.push_str(&pending.logical_name);
+    name.push('.');
+    name.push_str(COMPONENT_ASSET_EXT);
+    let output = options.emit_metafile.then(|| RenderedOutput {
+        bytes: js.len(),
+        root: pending.root.clone(),
+        components: pending
+            .components
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (plan.component_names[*id].to_string(), attribution[index]))
+            .collect(),
+        required_components: component_names(&pending.required_components, plan),
+        external_components: component_names(&pending.external_components, plan),
+        imports: pending
             .imports
             .iter()
-            .flat_map(|import| import.components.iter())
-            .map(|component| plan.component_names[*component].to_string())
-            .collect();
-        dynamic_components.sort_unstable();
-        dynamic_components.dedup();
-        RenderedOutput {
-            bytes: js.len(),
-            root: pending.root.clone(),
-            components: pending
-                .components
-                .iter()
-                .enumerate()
-                .map(|(index, id)| (plan.component_names[*id].to_string(), attribution[index]))
-                .collect(),
-            required_components: component_names(&pending.required_components, plan),
-            external_components: component_names(&pending.external_components, plan),
-            dynamic_components,
-            imports: pending
-                .imports
-                .iter()
-                .map(|import| import.file_name.clone())
-                .collect(),
-            name: name.clone(),
-        }
+            .map(|import| import.file_name.clone())
+            .collect(),
+        name: name.clone(),
     });
     Ok(RenderedAsset {
         file: ComponentAssetFile { name, content: js },
@@ -204,7 +207,10 @@ fn estimate_asset_size(
         }
     }
     for import in &pending.imports {
-        size += import.file_name.len() * 2 + 96;
+        size += import.file_name.len() + 32;
+    }
+    if pending.root.is_some() {
+        size += COMPONENT_ASSET_RUNTIME.len() + 192;
     }
     size
 }
@@ -240,26 +246,38 @@ fn push_component_id_array(
     Ok(())
 }
 
-fn push_imports(
-    out: &mut String,
-    imports: &[ResolvedImport],
-    plan: &AssetGraphPlan,
-) -> Result<(), WebUIError> {
+fn push_static_imports(out: &mut String, imports: &[ResolvedImport]) -> Result<(), WebUIError> {
     for (index, import) in imports.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"components\":[");
-        push_component_id_array(out, &import.components, plan)?;
-        out.push_str("],\"href\":new URL(");
+        out.push_str("import __webuiChunk");
+        push_import_index(out, index)?;
+        out.push_str(" from ");
         let mut relative = String::with_capacity(import.file_name.len() + 2);
         relative.push_str("./");
         relative.push_str(&import.file_name);
         push_json_string(out, &relative, "component asset import")?;
-        out.push_str(",import.meta.url).href,\"load\":()=>import(");
-        push_json_string(out, &relative, "component asset import")?;
-        out.push_str(")}");
+        out.push_str(";\n");
     }
+    Ok(())
+}
+
+fn push_imports(out: &mut String, imports: &[ResolvedImport]) -> Result<(), WebUIError> {
+    for index in 0..imports.len() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("__webuiChunk");
+        push_import_index(out, index)?;
+    }
+    Ok(())
+}
+
+fn push_import_index(out: &mut String, index: usize) -> Result<(), WebUIError> {
+    let index = u64::try_from(index).map_err(|_| {
+        WebUIError::InvalidBuildOptions(
+            "component asset import count exceeds the supported index range".to_string(),
+        )
+    })?;
+    push_u64(out, index);
     Ok(())
 }
 

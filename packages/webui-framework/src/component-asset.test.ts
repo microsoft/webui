@@ -5,9 +5,10 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
+import { defineComponentAsset } from './component-asset-runtime.js';
 import { getTemplate, type TemplateMeta } from './template.js';
 import { defineComponentAssets } from './component-asset.js';
-import { validateAsset } from './component-asset/asset.js';
+import { validateAsset, type ComponentAsset } from './component-asset/asset.js';
 import {
   installComponentStyles,
   registerComponentStyles,
@@ -52,7 +53,7 @@ function componentAsset(templates: Record<string, TemplateMeta>): Record<string,
   const components = Object.keys(templates);
   return {
     type: 'webui-component-asset',
-    version: 3,
+    version: 4,
     kind: 'root',
     root: components[0],
     components,
@@ -288,7 +289,7 @@ describe('component asset helpers', () => {
               'asset-parent': { h: '<asset-child></asset-child>' },
               'asset-child': { h: '<p>Child</p>' },
             }),
-            version: 3,
+            version: 4,
             componentStyles: {
               version: 1,
               strategy: 'style',
@@ -331,7 +332,7 @@ describe('component asset helpers', () => {
     assert.throws(() => validateAsset({
       ...asset,
       componentStyles: undefined,
-    }, 'root'), /Version 3 component assets require componentStyles/);
+    }, 'root'), /Version 4 component assets require componentStyles/);
 
     assert.throws(() => validateAsset({
       ...asset,
@@ -365,7 +366,7 @@ describe('component asset helpers', () => {
             ...componentAsset({
               'invalid-v3-card': { h: '<p>Must not register</p>' },
             }),
-            version: 3,
+            version: 4,
             componentStyles: {
               version: 1,
               strategy: 'style',
@@ -517,7 +518,7 @@ describe('component asset helpers', () => {
         'fn-card': {
           asset: assetModule(`{
             type: 'webui-component-asset',
-            version: 3,
+            version: 4,
             kind: 'root',
             root: 'fn-card',
             components: ['fn-card'],
@@ -834,7 +835,7 @@ describe('component asset helpers', () => {
         'empty-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 3,
+            version: 4,
             kind: 'root',
             root: 'empty-card',
             components: [],
@@ -869,7 +870,7 @@ describe('component asset helpers', () => {
         'declared-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 3,
+            version: 4,
             kind: 'root',
             root: 'declared-card',
             components: ['declared-card'],
@@ -904,7 +905,7 @@ describe('component asset helpers', () => {
         'condition-card': {
           asset: assetModule(`{
             type: 'webui-component-asset',
-            version: 3,
+            version: 4,
             kind: 'root',
             root: 'condition-card',
             components: ['valid-child', 'condition-card'],
@@ -955,7 +956,7 @@ describe('component asset helpers', () => {
         'stale-condition-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 3,
+            version: 4,
             kind: 'root',
             root: 'stale-condition-card',
             components: ['stale-condition-card'],
@@ -1024,7 +1025,7 @@ describe('component asset helpers', () => {
     }
   });
 
-  test('concurrent roots import and register one shared chunk once', async () => {
+  test('concurrent roots register one statically imported shared payload', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
       baseURI: 'https://example.test/app/',
@@ -1033,38 +1034,29 @@ describe('component asset helpers', () => {
       },
     });
 
-    const chunkUrl = assetObjectModule({
+    const shared = {
       type: 'webui-component-asset',
-      version: 3,
-      kind: 'chunk',
+      version: 4,
+      kind: 'component',
       components: ['shared-detail'],
       requiredComponents: ['shared-detail'],
       externalComponents: [],
       imports: [],
       componentStyles: emptyComponentStyles(),
       templates: { 'shared-detail': { h: '<p>Shared</p>' } },
-    });
-    const chunkUrlSource = JSON.stringify(chunkUrl);
-    const rootModule = (root: string) => assetModule(`{
+    };
+    const rootModule = (root: string) => assetObjectModule({
       type: 'webui-component-asset',
-      version: 3,
+      version: 4,
       kind: 'root',
-      root: '${root}',
-      components: ['${root}'],
-      requiredComponents: ['${root}', 'shared-detail'],
+      root,
+      components: [root],
+      requiredComponents: [root, 'shared-detail'],
       externalComponents: [],
-      imports: [{
-        components: ['shared-detail'],
-        href: ${chunkUrlSource},
-        load: () => {
-          globalThis.__componentAssetChunkLoads =
-            (globalThis.__componentAssetChunkLoads ?? 0) + 1;
-          return import(${chunkUrlSource});
-        }
-      }],
-      componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
-      templates: { '${root}': { h: '<shared-detail></shared-detail>' } }
-    }`);
+      imports: [shared],
+      componentStyles: emptyComponentStyles(),
+      templates: { [root]: { h: '<shared-detail></shared-detail>' } },
+    });
 
     try {
       const first = defineComponentAssets({
@@ -1079,16 +1071,48 @@ describe('component asset helpers', () => {
         second.preload('second-panel').asset,
       ]);
 
-      assert.equal(
-        (globalThis as typeof globalThis & { __componentAssetChunkLoads?: number })
-          .__componentAssetChunkLoads,
-        1,
-      );
       assert.equal(getTemplate('shared-detail')?.h, '<p>Shared</p>');
       assert.equal(getTemplate('first-panel')?.h, '<shared-detail></shared-detail>');
       assert.equal(getTemplate('second-panel')?.h, '<shared-detail></shared-detail>');
     } finally {
-      Reflect.deleteProperty(globalThis, '__componentAssetChunkLoads');
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('generated asset facade preloads once and creates its root element', async () => {
+    let createCount = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+      createElement(tag: string) {
+        createCount += 1;
+        return { tagName: tag };
+      },
+    });
+
+    try {
+      const generated = defineComponentAsset(
+        componentAsset({ 'generated-root': { h: '<p>Generated</p>' } }) as unknown as ComponentAsset,
+      );
+      const first = generated.preload();
+      const second = generated.preload();
+      assert.equal(first, second);
+      await first;
+
+      const element = await generated.create();
+      assert.equal(
+        (element as unknown as { tagName: string }).tagName,
+        'generated-root',
+      );
+      assert.equal(createCount, 1);
+      assert.equal(getTemplate('generated-root')?.h, '<p>Generated</p>');
+    } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }

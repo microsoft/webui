@@ -2,17 +2,9 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, attr } from '@microsoft/webui-framework';
-import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
 
-const assets = defineComponentAssets({
-  'lazy-panel': {
-    asset: './lazy-panel.webui.js',
-    data: async () => await (await fetch('./lazy-panel-data.json')).json(),
-  },
-  'secondary-panel': {
-    asset: './secondary-panel.webui.js',
-  },
-});
+const loadLazyPanel = () => import('../../.webui/lazy-panel.webui.js');
+const loadSecondaryPanel = () => import('../../.webui/secondary-panel.webui.js');
 
 export class AppShell extends WebUIElement {
   @attr title = '';
@@ -21,19 +13,26 @@ export class AppShell extends WebUIElement {
   secondaryPanelSlot!: HTMLDivElement;
 
   preloadPanel(): void {
-    assets.preload('lazy-panel');
+    void loadLazyPanel().then(asset => asset.preload());
   }
 
   preloadSecondaryPanel(): void {
-    assets.preload('secondary-panel');
+    void loadSecondaryPanel().then(asset => asset.preload());
   }
 
   async openPanel(): Promise<void> {
-    this.panelSlot.replaceChildren(await assets.create('lazy-panel'));
+    const [asset, state] = await Promise.all([
+      loadLazyPanel(),
+      fetch('./lazy-panel-data.json').then(response => response.json()),
+    ]);
+    const panel = await asset.create();
+    (panel as HTMLElement & { setState(value: unknown): void }).setState(state);
+    this.panelSlot.replaceChildren(panel);
   }
 
   async openSecondaryPanel(): Promise<void> {
-    this.secondaryPanelSlot.replaceChildren(await assets.create('secondary-panel'));
+    const asset = await loadSecondaryPanel();
+    this.secondaryPanelSlot.replaceChildren(await asset.create());
   }
 }
 

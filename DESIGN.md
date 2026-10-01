@@ -244,14 +244,16 @@ features, not dependencies of the SSR handler.
 ### Optional component assets
 
 Builds without route directives may request stand-alone component asset roots.
-The compiler computes each root's conservative template/style dependencies
-and emits reusable shared modules for overlapping closures rather than
-duplicating payloads. The entry bundle retains ownership of entry-reachable
-components. An asset declares its prerequisites and imports; the framework
-validates coverage before registering any payload. Each CSS tree still gets
-the required ordered style closure, including when a Shadow root is created
-later. Neither a static asset module nor the handler assumes the browser's
-current template inventory at build time.
+The compiler emits one stable ESM input per asset-owned component plus a thin
+root entry that statically imports its conservative template/style closure.
+These files describe semantic ownership and dependency edges, but do not choose
+production chunks, hashes, public paths, caching, or delivery. The application
+bundler owns those decisions and may inline, split, or share any part of the
+graph. The entry bundle retains ownership of entry-reachable components. The
+framework validates complete coverage before registering any payload. Each CSS
+tree still gets the required ordered style closure, including when a Shadow
+root is created later. Neither a generated module nor the handler assumes the
+browser's current template inventory at build time.
 
 ## Browser hydration
 

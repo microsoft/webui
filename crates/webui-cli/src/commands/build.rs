@@ -15,6 +15,8 @@ use crate::utils::error::CliError;
 use crate::utils::output;
 use output_paths::OutputPathSet;
 
+use super::component_asset_output;
+
 #[derive(Args)]
 pub struct BuildArgs {
     #[command(flatten)]
@@ -26,9 +28,13 @@ pub struct BuildArgs {
     #[arg(long)]
     pub out: PathBuf,
 
-    /// Comma-separated root component tags to emit as static CDN-loadable assets
+    /// Comma-separated root component tags to generate as application bundler inputs
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
+
+    /// Directory for generated component ESM inputs consumed by the application bundler
+    #[arg(long, value_name = "DIR", requires = "emit_component_assets")]
+    pub component_assets_out: Option<PathBuf>,
 
     /// Write an esbuild-compatible component asset metafile
     #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
@@ -66,6 +72,7 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
 
 fn validate_output_file_names(
     out_dir: &Path,
+    component_assets_out: &Path,
     protocol_name: &std::ffi::OsStr,
     result: &webui::BuildResult,
     metafile: Option<&Path>,
@@ -85,7 +92,7 @@ fn validate_output_file_names(
         }
     }
     for file in &result.component_asset_files {
-        if !paths.insert(&out_dir.join(&file.name))? {
+        if !paths.insert(&component_assets_out.join(&file.name))? {
             anyhow::bail!(
                 "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
                 file.name
@@ -127,6 +134,13 @@ fn run(args: &BuildArgs) -> Result<()> {
         .transpose()
         .with_context(|| "Failed to expand metafile path")?
         .map(std::borrow::Cow::into_owned);
+    let component_assets_out = args
+        .component_assets_out
+        .as_deref()
+        .map(expand_tilde)
+        .transpose()
+        .with_context(|| "Failed to expand component asset output path")?
+        .map(std::borrow::Cow::into_owned);
 
     let app = app_input
         .canonicalize()
@@ -143,6 +157,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
 
     let (out_dir, protocol_name) = resolve_out(&out);
+    let component_assets_out = component_assets_out.as_deref().unwrap_or(&out_dir);
     let protocol_path = out_dir.join(&protocol_name);
 
     output::header("WebUI Build");
@@ -159,6 +174,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
+        output::field("Component asset inputs", &component_assets_out.display());
     }
     if let Some(ref metafile) = metafile {
         output::field("Metafile", &metafile.display());
@@ -177,7 +193,13 @@ fn run(args: &BuildArgs) -> Result<()> {
         .map(|theme| load_theme(theme, &app))
         .transpose()?;
     let result = webui::build(build_options).with_context(|| "Build failed")?;
-    validate_output_file_names(&out_dir, &protocol_name, &result, metafile.as_deref())?;
+    validate_output_file_names(
+        &out_dir,
+        component_assets_out,
+        &protocol_name,
+        &result,
+        metafile.as_deref(),
+    )?;
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
@@ -187,14 +209,8 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
-    for file in &result.component_asset_files {
-        fs::write(out_dir.join(&file.name), &file.content).with_context(|| {
-            format!(
-                "Failed to write component asset {} to {}",
-                file.name,
-                out_dir.display()
-            )
-        })?;
+    if !result.component_asset_files.is_empty() {
+        component_asset_output::publish(component_assets_out, &result.component_asset_files)?;
     }
     if let Some(path) = &metafile {
         let content = result.metafile.as_deref().ok_or_else(|| {
@@ -286,6 +302,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         },
         out: out.to_path_buf(),
         emit_component_assets: Vec::new(),
+        component_assets_out: None,
         metafile: None,
         theme: None,
     })
@@ -400,6 +417,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -424,6 +442,7 @@ mod tests {
             ("mail-message.ts", "export {};"),
         ]);
         let out_dir = TempDir::new().unwrap();
+        let asset_dir = TempDir::new().unwrap();
 
         run(&BuildArgs {
             app_args: AppArgs {
@@ -441,13 +460,15 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            component_assets_out: Some(asset_dir.path().to_path_buf()),
             metafile: Some(out_dir.path().join("component-assets.meta.json")),
             theme: None,
         })
         .unwrap();
 
-        let asset_path = out_dir.path().join("mail-thread.webui.js");
+        let asset_path = asset_dir.path().join("mail-thread.webui.js");
         assert!(asset_path.exists());
+        assert!(!out_dir.path().join("mail-thread.webui.js").exists());
 
         let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
@@ -462,16 +483,19 @@ mod tests {
 
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":3"#));
+        assert!(asset.contains(r#""version":4"#));
         assert!(asset.contains(r#""componentStyles":{"version":1"#));
         assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
-        assert!(asset.contains(r#""components":["mail-message","mail-thread"]"#));
-        assert!(asset.contains(r#""templates":{"mail-message":"#));
-        assert!(asset.contains(r#""mail-thread":"#));
-        assert!(asset.contains(r#""templateFunctions":{"mail-thread":"#));
+        assert!(asset.contains(r#""components":[]"#));
+        assert!(asset.contains(r#"from "./component-mail-message.webui.js";"#));
+        assert!(asset.contains(r#"from "./component-mail-thread.webui.js";"#));
+        assert!(!asset.contains(r#""templates":{"mail-message":"#));
         assert!(asset.contains("export default asset;"));
+        let thread =
+            fs::read_to_string(asset_dir.path().join("component-mail-thread.webui.js")).unwrap();
+        assert!(thread.contains(r#""templateFunctions":{"mail-thread":"#));
 
         let metafile =
             fs::read_to_string(out_dir.path().join("component-assets.meta.json")).unwrap();
@@ -504,6 +528,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+            component_assets_out: None,
             metafile: None,
             theme: None,
         });
@@ -538,6 +563,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(collision.clone()),
             theme: None,
         });
@@ -579,6 +605,7 @@ mod tests {
             },
             out: linked_out,
             emit_component_assets: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(real_out.join("protocol.bin")),
             theme: None,
         });
@@ -620,6 +647,7 @@ mod tests {
             },
             out: linked.join(".."),
             emit_component_assets: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(target.join("protocol.bin")),
             theme: None,
         });
@@ -660,6 +688,7 @@ mod tests {
             },
             out,
             emit_component_assets: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(metafile_alias),
             theme: None,
         });
@@ -698,6 +727,7 @@ mod tests {
             },
             out,
             emit_component_assets: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(metafile),
             theme: None,
         });
@@ -727,6 +757,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: Some(out_dir.path().join("meta.json")),
             theme: None,
         });
@@ -738,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_emits_fast_component_assets() {
+    fn test_build_rejects_fast_component_assets() {
         let app_dir = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
@@ -746,7 +777,7 @@ mod tests {
         ]);
         let out_dir = TempDir::new().unwrap();
 
-        run(&BuildArgs {
+        let result = run(&BuildArgs {
             app_args: AppArgs {
                 app: app_dir.path().to_path_buf(),
                 entry: "index.html".to_string(),
@@ -762,26 +793,18 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["fast-card".to_string()],
+            component_assets_out: None,
             metafile: None,
             theme: None,
-        })
-        .unwrap();
+        });
 
-        let asset_path = out_dir.path().join("fast-card.webui.js");
-        assert!(asset_path.exists());
-        let asset = fs::read_to_string(asset_path).unwrap();
-        assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":3"#));
-        assert!(asset.contains(r#""componentStyles":{"version":1"#));
-        assert!(asset.contains(r#""kind":"root""#));
-        assert!(!asset.contains(r#""plugin""#));
-        assert!(!asset.contains(r#""templateFunctionModule""#));
-        assert!(!asset.contains(r#""templateFunctions""#));
-        assert!(asset.contains("<f-template"));
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("component assets require --plugin webui"));
+        assert!(!out_dir.path().join("fast-card.webui.js").exists());
     }
 
     #[test]
-    fn test_build_emits_hashed_component_asset_filename() {
+    fn test_build_keeps_component_input_filenames_stable() {
         let app_dir = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
@@ -806,6 +829,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -825,10 +849,9 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(asset_names.len(), 1);
-        assert!(asset_names[0].starts_with("mail-thread-"));
-        assert!(asset_names[0].ends_with(".webui.js"));
-        assert_ne!(asset_names[0], "mail-thread-.webui.js");
+        assert_eq!(asset_names.len(), 2);
+        assert!(asset_names.contains(&"mail-thread.webui.js".to_string()));
+        assert!(asset_names.contains(&"component-mail-thread.webui.js".to_string()));
     }
 
     #[test]
@@ -945,6 +968,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -1012,6 +1036,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -1088,6 +1113,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -1147,6 +1173,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: Some(
                 app_dir
@@ -1193,6 +1220,7 @@ mod tests {
             },
             out: custom_path.clone(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })
@@ -1233,6 +1261,7 @@ mod tests {
             },
             out: nested.clone(),
             emit_component_assets: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             theme: None,
         })

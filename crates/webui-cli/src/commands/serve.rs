@@ -26,6 +26,8 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
 use webui::{Diagnostic, Protocol, WebUIHandler};
+
+use super::component_asset_output;
 use webui_dev_server::shutdown::{self, Control, Mode};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
@@ -88,14 +90,18 @@ pub struct ServeArgs {
     #[arg(long)]
     pub theme: Option<String>,
 
-    /// Comma-separated root component tags to emit as static CDN-loadable
-    /// assets, matching `webui build --emit-component-assets`. Their templates
+    /// Comma-separated root component tags to generate as application bundler
+    /// inputs, matching `webui build --emit-component-assets`. Their templates
     /// and CSS are parsed and validated (theme tokens, HTML) on every build —
     /// even though they are not part of the initial SSR tree — so authoring
     /// errors in lazily loaded components surface in the dev server. The
     /// compiled `<tag>.webui.js` modules are served from memory.
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
+
+    /// Directory for generated component ESM inputs consumed by the application bundler
+    #[arg(long, value_name = "DIR", requires = "emit_component_assets")]
+    pub component_assets_out: Option<PathBuf>,
 
     /// Write an esbuild-compatible component asset metafile after each successful build
     #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
@@ -114,6 +120,7 @@ struct ServePaths {
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
     serve_dir: Option<PathBuf>,
+    component_assets_out: Option<PathBuf>,
     metafile: Option<PathBuf>,
 }
 
@@ -207,11 +214,27 @@ impl ServePaths {
                 }
             })
             .transpose()?;
+        let component_assets_out = args
+            .component_assets_out
+            .as_deref()
+            .map(expand_tilde)
+            .transpose()
+            .with_context(|| "Failed to expand component asset output path")?
+            .map(std::borrow::Cow::into_owned)
+            .map(|path| {
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    std::env::current_dir().map(|current| current.join(path))
+                }
+            })
+            .transpose()?;
 
         Ok(Self {
             app_dir,
             state_file,
             serve_dir,
+            component_assets_out,
             metafile,
         })
     }
@@ -310,6 +333,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         state_file: paths.state_file.clone(),
         token_file,
         component_asset_roots: args.emit_component_assets.clone(),
+        component_assets_out: paths.component_assets_out.clone(),
         metafile: paths.metafile.clone(),
         base_path: args.base_path.clone(),
     };
@@ -335,6 +359,9 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     output::field("DOM", &args.app_args.dom);
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
+        if let Some(ref component_assets_out) = paths.component_assets_out {
+            output::field("Component asset inputs", &component_assets_out.display());
+        }
     }
     if let Some(ref metafile) = paths.metafile {
         output::field("Metafile", &metafile.display());
@@ -523,6 +550,8 @@ struct RenderConfig {
     /// Parsed and validated on every build so their authoring errors surface in
     /// the dev server, even though they are not part of the initial SSR tree.
     component_asset_roots: Vec<String>,
+    /// Generated ESM input directory refreshed after each successful build.
+    component_assets_out: Option<PathBuf>,
     /// Atomic metafile destination updated only after a successful build and render.
     metafile: Option<PathBuf>,
     /// Base path for sub-path deployment (e.g., `/commerce/`).
@@ -607,6 +636,9 @@ fn build_and_render(
         None => output,
     };
 
+    if let Some(output_dir) = &config.component_assets_out {
+        component_asset_output::publish(output_dir, &build_result.component_asset_files)?;
+    }
     if let Some(path) = &config.metafile {
         let metafile = build_result.metafile.as_deref().ok_or_else(|| {
             anyhow::anyhow!("component asset metafile was requested but not generated")
@@ -632,13 +664,21 @@ fn build_and_render(
     })
 }
 
-fn watcher_ignore_paths(metafile: Option<&std::path::Path>) -> Vec<PathBuf> {
+fn watcher_ignore_paths(
+    metafile: Option<&std::path::Path>,
+    component_assets_out: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
     let mut ignore = webui_dev_server::default_ignore_paths();
     if let Ok(out_dir) = std::env::current_dir() {
         ignore.push(out_dir.join("dist"));
     }
     if let Some(metafile) = metafile {
         ignore.extend(metafile::watch_ignore_paths(metafile));
+    }
+    if let Some(component_assets_out) = component_assets_out {
+        ignore.extend(component_asset_output::watch_ignore_paths(
+            component_assets_out,
+        ));
     }
     ignore
 }
@@ -1475,6 +1515,7 @@ fn start_file_watcher(
     let state_for_rebuild = Arc::clone(&state);
     let retry_state = Arc::clone(&state);
     let metafile_ignore = render_config.metafile.clone();
+    let component_assets_ignore = render_config.component_assets_out.clone();
     let worker = webui_dev_server::spawn_rebuild_worker(livereload, move || {
         let warnings =
             rebuild_and_update_state(&render_config, &lr_for_inject, &state_for_rebuild)?;
@@ -1486,7 +1527,10 @@ fn start_file_watcher(
             .is_ok_and(|state| state.rebuild_error.is_some())
     });
 
-    let ignore = watcher_ignore_paths(metafile_ignore.as_deref());
+    let ignore = watcher_ignore_paths(
+        metafile_ignore.as_deref(),
+        component_assets_ignore.as_deref(),
+    );
 
     let tick_tx = worker.sender();
     let watcher = spawn_watcher(
@@ -1751,6 +1795,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -1783,6 +1828,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -1821,6 +1867,7 @@ mod tests {
                 state_file: Some(app.path().join("state.json")),
                 token_file: None,
                 component_asset_roots: Vec::new(),
+                component_assets_out: None,
                 metafile: None,
                 base_path: None,
             };
@@ -1873,6 +1920,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -1915,6 +1963,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -1944,6 +1993,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -1972,6 +2022,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -2489,6 +2540,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -2510,6 +2562,7 @@ mod tests {
             app_dir: dir.path().to_path_buf(),
             state_file: Some(dir.path().join("state.json")),
             serve_dir: Some(dir.path().join("public")),
+            component_assets_out: None,
             metafile: None,
         };
         let watched = paths.watch_paths();
@@ -2541,6 +2594,7 @@ mod tests {
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -2898,6 +2952,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -2968,6 +3023,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -3034,6 +3090,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };
@@ -3049,9 +3106,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_and_render_emits_component_asset_into_memory() {
-        // `--emit-component-assets` parity: serve compiles the static asset and
-        // keeps it in memory (served like generated CSS), no `--out` needed.
+    fn test_build_and_render_emits_component_asset_to_memory_and_disk() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
@@ -3059,6 +3114,7 @@ mod tests {
             ("lazy-panel.css", ":host { color: red; }"),
             ("lazy-panel.ts", "export {};"),
         ]);
+        let generated = app.path().join(".webui");
         let config = RenderConfig {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
@@ -3077,6 +3133,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
+            component_assets_out: Some(generated.clone()),
             metafile: None,
             base_path: None,
         };
@@ -3091,6 +3148,10 @@ mod tests {
                 )
             });
         assert!(asset.contains("webui-component-asset"), "asset: {asset}");
+        assert_eq!(
+            fs::read_to_string(generated.join("lazy-panel.webui.js")).unwrap(),
+            *asset
+        );
     }
 
     #[test]
@@ -3119,6 +3180,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
+            component_assets_out: None,
             metafile: Some(metafile.clone()),
             base_path: None,
         };
@@ -3141,8 +3203,10 @@ mod tests {
         .unwrap();
         assert!(build_and_render(&config, None).is_err());
         assert_eq!(fs::read_to_string(&metafile).unwrap(), second);
-        let ignored = watcher_ignore_paths(Some(&metafile));
+        let component_assets_out = app.path().join(".webui");
+        let ignored = watcher_ignore_paths(Some(&metafile), Some(&component_assets_out));
         assert!(ignored.contains(&metafile::watch_ignore_paths(&metafile)[1]));
+        assert!(ignored.contains(&component_assets_out));
         assert!(!metafile_temp_directory(&metafile).exists());
         assert!(
             fs::read_dir(app.path()).unwrap().all(|entry| !entry
@@ -3190,6 +3254,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: roots,
+            component_assets_out: None,
             metafile: None,
             base_path: None,
         };

@@ -100,7 +100,7 @@ fn setup() -> Fixture {
 }
 
 fn render(protocol: &WebUIProtocol, roots: &[String]) -> Vec<webui::ComponentAssetFile> {
-    match render_component_assets(protocol, "index.html", roots, "[name].[ext]", false) {
+    match render_component_assets(protocol, "index.html", roots, false) {
         Ok(graph) => graph.files,
         Err(error) => panic!("component asset benchmark setup failed: {error}"),
     }

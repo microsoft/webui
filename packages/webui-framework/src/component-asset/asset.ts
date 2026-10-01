@@ -11,7 +11,7 @@ import {
 } from '../element/styles.js';
 
 const ASSET_TYPE = 'webui-component-asset';
-const COMPONENT_STYLES_ASSET_VERSION = 3;
+const COMPONENT_STYLES_ASSET_VERSION = 4;
 
 /**
  * Detached style catalogs already produced by {@link validateAsset}.
@@ -22,27 +22,18 @@ const COMPONENT_STYLES_ASSET_VERSION = 3;
  */
 const preparedAssetStyles = new WeakMap<object, ComponentStyles>();
 
-/** Dynamic import edge from a component asset root to a shared chunk. */
-export interface ComponentAssetImport {
-  /** Component templates provided by the imported chunk. */
-  components: string[];
-  /** Fully resolved chunk URL used for concurrent-load deduplication. */
-  href: string;
-  /** Browser-native dynamic import emitted into the root asset module. */
-  load: () => Promise<unknown>;
-}
-
 /** WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
 export interface ComponentAsset {
   type: 'webui-component-asset';
-  /** Light-DOM-aware assets require an atomic component style catalog. */
-  version: 3;
-  kind: 'root' | 'chunk';
+  /** Statically composable assets require an atomic component style catalog. */
+  version: 4;
+  kind: 'root' | 'component';
   root?: string;
   components: string[];
   requiredComponents: string[];
   externalComponents: string[];
-  imports: ComponentAssetImport[];
+  /** Component payloads imported statically by the generated root module. */
+  imports: ComponentAsset[];
   componentStyles: ComponentStyles;
   templates: Record<string, TemplateMeta>;
   templateFunctions?: Record<string, CompiledConditionFn[]>;
@@ -88,7 +79,7 @@ export function validateAsset(
     throw new Error(`[WebUI] Unsupported component asset version: ${String(asset.version)}`);
   }
   if (asset.componentStyles === undefined) {
-    throw new Error('[WebUI] Version 3 component assets require componentStyles.');
+    throw new Error('[WebUI] Version 4 component assets require componentStyles.');
   }
   if (asset.kind !== expectedKind) {
     throw new Error(
@@ -117,7 +108,7 @@ export function validateAsset(
   }
 
   for (let i = 0; i < asset.imports.length; i++) {
-    validateAssetImport(asset.imports[i]);
+    validateAsset(asset.imports[i], 'component');
   }
   validateAssetPayload(
     asset.components,
@@ -131,15 +122,6 @@ export function validateAsset(
     asset.externalComponents,
     asset.imports,
   );
-}
-
-/** Return whether two ordered component declarations are identical. */
-export function sameComponents(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let i = 0; i < left.length; i++) {
-    if (left[i] !== right[i]) return false;
-  }
-  return true;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -159,23 +141,6 @@ function validateChunkShape(
   }
   if (externalComponents.length !== 0) {
     throw new Error('[WebUI] Shared component asset chunks cannot declare external components.');
-  }
-}
-
-function validateAssetImport(value: unknown): asserts value is ComponentAssetImport {
-  if (!isObject(value)) {
-    throw new Error('[WebUI] Component asset import must be an object.');
-  }
-  const assetImport = value;
-  validateUniqueStringArray(assetImport.components, 'import components');
-  if (assetImport.components.length === 0) {
-    throw new Error('[WebUI] Component asset imports must provide at least one component.');
-  }
-  if (typeof assetImport.href !== 'string' || assetImport.href.length === 0) {
-    throw new Error('[WebUI] Component asset import href must be a non-empty string.');
-  }
-  if (typeof assetImport.load !== 'function') {
-    throw new Error('[WebUI] Component asset import load must be a function.');
   }
 }
 
@@ -206,7 +171,7 @@ function validateAssetCoverage(
   components: readonly string[],
   requiredComponents: readonly string[],
   externalComponents: readonly string[],
-  imports: readonly ComponentAssetImport[],
+  imports: readonly ComponentAsset[],
 ): void {
   const required = new Set(requiredComponents);
   if (root && !required.has(root)) {

@@ -821,7 +821,7 @@ transient user activation or closed-shadow click targets.
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
+| Generated component asset root | Import a stable generated `<tag>.webui.js` bundler input, then call its `preload()` / `create()` exports |
 
 ### Custom events
 
@@ -1020,22 +1020,19 @@ Without `@microsoft/webui-router`, prebuild the asset and mount it into a
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog \
+  --component-assets-out ./.webui \
   --metafile ./dist/component-assets-meta.json
 ```
 
 ```typescript
-import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+const loadSettings = () => import('../.webui/settings-dialog.webui.js');
 
-export const settingsAssets = defineComponentAssets({
-  'settings-dialog': {
-    asset: '/settings-dialog.webui.js',
-    module: () => import('./settings-dialog/settings-dialog.js'),
-  },
-});
+preloadSettings(): void {
+  void loadSettings().then(asset => asset.preload());
+}
 
-async onOpenSettings(): Promise<void> {
-  settingsAssets.preload('settings-dialog');
-  this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+async openSettings(): Promise<void> {
+  this.panelSlot.replaceChildren(await (await loadSettings()).create());
 }
 ```
 
@@ -1049,14 +1046,13 @@ handler or `Protocol`, which emits `#webui-component-assets`. Using build
 artifacts without rendering the protocol preserves the guarded native mount but
 does not provide early compiler-owned style preloading.
 
-Assets keep entry-owned templates external, inline dependencies used by one
-asset root, and split dependencies shared by multiple roots into deduplicated
-dynamic chunks. Do not copy generated chunk filenames into the manifest; each
-root asset carries its own dynamic imports. `create(tag)` waits for the template
-graph and module, then creates the element. Failed asset or authored module work
-is evicted so a later `preload(tag)` or `create(tag)` retries. The normal entry
-bundle must load first. Component assets cannot be combined with `<route>`; use
-the router for routed components.
+WebUI emits one stable module per asset-owned component and a thin root entry
+with static imports for its closure. The application bundler owns final chunks,
+hashes, public paths, caching, and delivery. Root `create()` waits for graph and
+style registration, then creates the element. Failed registration is evicted so
+a later `preload()` or `create()` retries. The normal entry bundle must load
+first. Component assets cannot be combined with `<route>`; use the router for
+routed components.
 
 ## Routing
 
