@@ -40,13 +40,20 @@ pub(super) fn publish(output_dir: &Path, files: &[ComponentAssetFile]) -> Result
             .context("Failed to stage component asset manifest")?;
 
         let previous = read_manifest(output_dir)?;
-        publish_group(output_dir, &temporary_dir, files, false)?;
-        publish_group(output_dir, &temporary_dir, files, true)?;
-        remove_stale(output_dir, &previous, &current)?;
-        replace_file(
-            &temporary_dir.join(MANIFEST_FILE),
-            &output_dir.join(MANIFEST_FILE),
-        )
+        let mut publication = Publication::new(output_dir, &temporary_dir);
+        let published = (|| {
+            publication.publish_group(files, false)?;
+            publication.publish_group(files, true)?;
+            publication.remove_stale(&previous, &current)?;
+            publication.replace(MANIFEST_FILE)
+        })();
+        match published {
+            Ok(()) => Ok(()),
+            Err(error) => match publication.rollback() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(error.context(format!("Rollback also failed: {rollback:#}"))),
+            },
+        }
     })();
     let _ = fs::remove_dir_all(&temporary_dir);
     result
@@ -74,51 +81,8 @@ fn manifest_for(files: &[ComponentAssetFile]) -> PublishedFiles {
     manifest
 }
 
-fn publish_group(
-    output_dir: &Path,
-    temporary_dir: &Path,
-    files: &[ComponentAssetFile],
-    roots: bool,
-) -> Result<()> {
-    for file in files {
-        if is_root_file(file) != roots {
-            continue;
-        }
-        replace_file(
-            &temporary_dir.join(&file.name),
-            &output_dir.join(&file.name),
-        )?;
-    }
-    Ok(())
-}
-
 fn is_root_file(file: &ComponentAssetFile) -> bool {
     !file.name.starts_with("components/")
-}
-
-fn remove_stale(
-    output_dir: &Path,
-    previous: &PublishedFiles,
-    current: &PublishedFiles,
-) -> Result<()> {
-    let current_files: HashSet<&str> = current.files.iter().map(String::as_str).collect();
-    let previous_roots: HashSet<&str> = previous.roots.iter().map(String::as_str).collect();
-    for roots in [true, false] {
-        for file in &previous.files {
-            if current_files.contains(file.as_str())
-                || previous_roots.contains(file.as_str()) != roots
-                || !is_owned_file_name(file)
-            {
-                continue;
-            }
-            let path = output_dir.join(file);
-            if path.is_file() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("Failed to remove stale {}", path.display()))?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn is_owned_file_name(name: &str) -> bool {
@@ -167,22 +131,126 @@ fn read_manifest(output_dir: &Path) -> Result<PublishedFiles> {
     }
 }
 
-fn replace_file(source: &Path, destination: &Path) -> Result<()> {
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    if let Err(error) = fs::rename(source, destination) {
-        if !destination.is_file() {
-            return Err(error)
-                .with_context(|| format!("Failed to publish {}", destination.display()));
+enum PublishedChange {
+    Created(PathBuf),
+    Replaced {
+        destination: PathBuf,
+        backup: PathBuf,
+    },
+}
+
+struct Publication<'a> {
+    output_dir: &'a Path,
+    temporary_dir: &'a Path,
+    changes: Vec<PublishedChange>,
+}
+
+impl<'a> Publication<'a> {
+    fn new(output_dir: &'a Path, temporary_dir: &'a Path) -> Self {
+        Self {
+            output_dir,
+            temporary_dir,
+            changes: Vec::new(),
         }
-        fs::remove_file(destination)
-            .with_context(|| format!("Failed to replace {}", destination.display()))?;
-        fs::rename(source, destination)
-            .with_context(|| format!("Failed to publish {}", destination.display()))?;
     }
-    Ok(())
+
+    fn publish_group(&mut self, files: &[ComponentAssetFile], roots: bool) -> Result<()> {
+        for file in files {
+            if is_root_file(file) == roots {
+                self.replace(&file.name)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_stale(&mut self, previous: &PublishedFiles, current: &PublishedFiles) -> Result<()> {
+        let current_files: HashSet<&str> = current.files.iter().map(String::as_str).collect();
+        let previous_roots: HashSet<&str> = previous.roots.iter().map(String::as_str).collect();
+        for roots in [true, false] {
+            for file in &previous.files {
+                if current_files.contains(file.as_str())
+                    || previous_roots.contains(file.as_str()) != roots
+                    || !is_owned_file_name(file)
+                {
+                    continue;
+                }
+                let destination = self.output_dir.join(file);
+                if destination.is_file() {
+                    self.back_up(file, &destination)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn replace(&mut self, relative: &str) -> Result<()> {
+        let source = self.temporary_dir.join(relative);
+        let destination = self.output_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        if destination.exists() {
+            if !destination.is_file() {
+                anyhow::bail!(
+                    "Cannot publish component asset over non-file {}",
+                    destination.display()
+                );
+            }
+            self.back_up(relative, &destination)?;
+        } else {
+            self.changes
+                .push(PublishedChange::Created(destination.clone()));
+        }
+        fs::rename(&source, &destination)
+            .with_context(|| format!("Failed to publish {}", destination.display()))
+    }
+
+    fn back_up(&mut self, relative: &str, destination: &Path) -> Result<()> {
+        let backup = self.temporary_dir.join("backup").join(relative);
+        if let Some(parent) = backup.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        fs::rename(destination, &backup)
+            .with_context(|| format!("Failed to preserve {}", destination.display()))?;
+        self.changes.push(PublishedChange::Replaced {
+            destination: destination.to_path_buf(),
+            backup,
+        });
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        let mut failure = None;
+        while let Some(change) = self.changes.pop() {
+            let result = match change {
+                PublishedChange::Created(destination) => remove_if_file(&destination),
+                PublishedChange::Replaced {
+                    destination,
+                    backup,
+                } => restore_backup(&destination, &backup),
+            };
+            if failure.is_none() {
+                failure = result.err();
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+fn remove_if_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("Failed to roll back {}", path.display())),
+    }
+}
+
+fn restore_backup(destination: &Path, backup: &Path) -> Result<()> {
+    remove_if_file(destination)?;
+    fs::rename(backup, destination)
+        .with_context(|| format!("Failed to restore {}", destination.display()))
 }
 
 #[cfg(test)]
@@ -229,5 +297,24 @@ mod tests {
             fs::read_to_string(output.path().join("application.js")).unwrap(),
             "owned by app"
         );
+    }
+
+    #[test]
+    fn publication_rolls_back_replacements_after_late_failure() {
+        let output = TempDir::new().unwrap();
+        let staging = TempDir::new_in(output.path()).unwrap();
+        fs::write(output.path().join("first.webui.js"), "old first").unwrap();
+        fs::write(staging.path().join("first.webui.js"), "new first").unwrap();
+
+        let mut publication = Publication::new(output.path(), staging.path());
+        publication.replace("first.webui.js").unwrap();
+        assert!(publication.replace("missing.webui.js").is_err());
+        publication.rollback().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output.path().join("first.webui.js")).unwrap(),
+            "old first"
+        );
+        assert!(!output.path().join("missing.webui.js").exists());
     }
 }
