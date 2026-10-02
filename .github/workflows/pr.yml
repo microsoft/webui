@@ -109,7 +109,12 @@ jobs:
 
       - name: Test Linux local-server journeys
         run: |
-          GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+          # Allow only this test binary to create WebKitGTK sandbox namespaces.
+          # Keep both AppArmor's global restriction and WebKit's sandbox enabled.
+          profile=crates/webui-desktop/tests/fixtures/linux-local-server/linux-apparmor
+          sudo apparmor_parser -r "$profile"
+          trap 'sudo apparmor_parser -R "$profile"' EXIT
+          GDK_BACKEND=x11 GTK_A11Y=none xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
             cargo test -p microsoft-webui-desktop --no-default-features \
               --features local-server,application-ipc \
               --test linux_local_server -- --ignored --format=pretty
