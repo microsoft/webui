@@ -201,7 +201,9 @@ fn run_content(frame: FrameContent) -> Result<()> {
     let store = WindowStateStore::for_window(frame.window().remember_state, frame.app_id())?;
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
-    let runtime = app_sdk::Runtime::initialize()?;
+    let runtime = app_sdk::requires_runtime(frame.window())
+        .then(app_sdk::Runtime::initialize)
+        .transpose()?;
 
     let saved = state::load_saved_state(store.as_ref());
     let window_frame = FrameWindow::new(frame.window(), saved.as_ref())?;
@@ -211,7 +213,10 @@ fn run_content(frame: FrameContent) -> Result<()> {
     })?;
     let content = window_frame.hwnd;
     let pending_controller = webview::begin_create_controller(&environment, content)?;
-    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, frame.window())?;
+    let app_window = match runtime.as_ref() {
+        Some(runtime) => app_sdk::WindowFrame::attach(runtime, window_frame.hwnd, frame.window())?,
+        None => app_sdk::WindowFrame::without_sdk(window_frame.hwnd, frame.window()),
+    };
     window_frame.show()?;
     let controller = pending_controller.finish()?;
     webview::configure_controller_background(&controller, frame.window().background)?;

@@ -10,6 +10,7 @@ use windows::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_SUCCESS, E_INVALIDARG, HWND, LPARAM, LRESULT, POINT, RECT,
     WPARAM,
 };
+use windows::Win32::Graphics::Dwm;
 use windows::Win32::UI::{HiDpi, WindowsAndMessaging};
 
 use super::command::screen_point;
@@ -29,6 +30,7 @@ const STARTUP_READY_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
 const FRAME_NATIVE: i32 = 0;
 pub(super) const FRAME_OVERLAY: i32 = 1;
 const FRAME_NONE: i32 = 2;
+const FRAME_WIN32_OVERLAY: i32 = 3;
 
 pub(super) fn initialize_frame(hwnd: HWND, l_param: LPARAM) -> Result<()> {
     // SAFETY: WM_NCCREATE supplies CREATESTRUCTW for this synchronous call.
@@ -41,7 +43,13 @@ pub(super) fn initialize_frame(hwnd: HWND, l_param: LPARAM) -> Result<()> {
     let custom = match options.titlebar {
         TitlebarStyle::Native => FRAME_NATIVE,
         TitlebarStyle::None => FRAME_NONE,
-        TitlebarStyle::HiddenInset | TitlebarStyle::Overlay { .. } => FRAME_OVERLAY,
+        TitlebarStyle::HiddenInset | TitlebarStyle::Overlay { .. } => {
+            if super::app_sdk::requires_runtime(options) {
+                FRAME_OVERLAY
+            } else {
+                FRAME_WIN32_OVERLAY
+            }
+        }
     };
     // SAFETY: The registered window class reserves two LONGs at these indices.
     unsafe {
@@ -120,7 +128,7 @@ pub(super) fn non_client_calc_size(
 ) -> LRESULT {
     // SAFETY: WM_NCCREATE initialized the class's reserved frame-mode slot.
     let mode = unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) };
-    if mode != FRAME_NONE || l_param.0 == 0 {
+    if !matches!(mode, FRAME_NONE | FRAME_WIN32_OVERLAY) || l_param.0 == 0 {
         // SAFETY: Native frames and messages without geometry use default handling.
         return unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) };
     }
@@ -135,12 +143,14 @@ pub(super) fn non_client_calc_size(
         let resizable = window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
             & WindowsAndMessaging::WS_THICKFRAME.0
             != 0;
-        if resizable && mode == FRAME_NONE {
+        if resizable {
             let (frame_x, frame_y) = frame_thickness(hwnd);
             target.left += frame_x;
             target.right -= frame_x;
-            target.top += frame_y;
             target.bottom -= frame_y;
+            if mode == FRAME_NONE || WindowsAndMessaging::IsZoomed(hwnd).as_bool() {
+                target.top += frame_y;
+            }
         }
     }
     LRESULT(0)
@@ -167,10 +177,18 @@ pub(super) fn non_client_hit_test(
 ) -> LRESULT {
     // SAFETY: WM_NCCREATE initialized this reserved window slot.
     let mode = unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) };
-    if mode != FRAME_NONE {
+    if mode == FRAME_WIN32_OVERLAY {
+        let mut result = LRESULT(0);
+        // SAFETY: DWM owns the native caption buttons for this live HWND and
+        // writes one hit-test result synchronously when it handles the point.
+        if unsafe { Dwm::DwmDefWindowProc(hwnd, msg, w_param, l_param, &mut result) }.as_bool() {
+            return result;
+        }
+    } else if mode != FRAME_NONE {
         // SAFETY: Native frames keep the system's own hit testing.
         return unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) };
     }
+
     let style = window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE);
     if style & WindowsAndMessaging::WS_CAPTION.0 == 0 {
         return LRESULT(hit_result(WindowsAndMessaging::HTCLIENT));
@@ -190,6 +208,12 @@ pub(super) fn non_client_hit_test(
     }
     LRESULT(hit_result(WindowsAndMessaging::HTCLIENT))
 }
+
+pub(super) fn uses_win32_overlay(hwnd: HWND) -> bool {
+    // SAFETY: WM_NCCREATE initializes the reserved frame-mode slot.
+    unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) == FRAME_WIN32_OVERLAY }
+}
+
 /// Map a screen point onto one of the eight resize borders.
 fn resize_hit(point: POINT, rect: RECT, (border_x, border_y): (i32, i32)) -> Option<u32> {
     let left = point.x < rect.left + border_x;
@@ -337,9 +361,10 @@ mod tests {
     }
 
     #[test]
-    fn sdk_overlay_preserves_default_non_client_geometry_before_attachment() {
+    fn sdk_tall_overlay_preserves_default_non_client_geometry_before_attachment() {
         let options = WindowOptions {
             titlebar: TitlebarStyle::Overlay { height: 48 },
+            caption_button_size: crate::CaptionButtonSize::Tall,
             center: false,
             ..WindowOptions::default()
         };
