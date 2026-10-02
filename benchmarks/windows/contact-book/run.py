@@ -3,14 +3,13 @@
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -32,13 +31,13 @@ class BasicLimitInformation(ctypes.Structure):
     _fields_ = [
         ("PerProcessUserTime", ctypes.c_longlong),
         ("PerJobUserTime", ctypes.c_longlong),
-        ("LimitFlags", wintypes.DWORD),
+        ("LimitFlags", ctypes.wintypes.DWORD),
         ("MinimumWorkingSetSize", ctypes.c_size_t),
         ("MaximumWorkingSetSize", ctypes.c_size_t),
-        ("ActiveProcessLimit", wintypes.DWORD),
+        ("ActiveProcessLimit", ctypes.wintypes.DWORD),
         ("Affinity", ctypes.c_size_t),
-        ("PriorityClass", wintypes.DWORD),
-        ("SchedulingClass", wintypes.DWORD),
+        ("PriorityClass", ctypes.wintypes.DWORD),
+        ("SchedulingClass", ctypes.wintypes.DWORD),
     ]
 
 
@@ -63,10 +62,10 @@ class JobBasicAndIo(ctypes.Structure):
         ("TotalKernelTime", ctypes.c_longlong),
         ("ThisPeriodTotalUserTime", ctypes.c_longlong),
         ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
-        ("TotalPageFaultCount", wintypes.DWORD),
-        ("TotalProcesses", wintypes.DWORD),
-        ("ActiveProcesses", wintypes.DWORD),
-        ("TotalTerminatedProcesses", wintypes.DWORD),
+        ("TotalPageFaultCount", ctypes.wintypes.DWORD),
+        ("TotalProcesses", ctypes.wintypes.DWORD),
+        ("ActiveProcesses", ctypes.wintypes.DWORD),
+        ("TotalTerminatedProcesses", ctypes.wintypes.DWORD),
         ("read_operations", ctypes.c_longlong),
         ("write_operations", ctypes.c_longlong),
         ("other_operations", ctypes.c_longlong),
@@ -78,8 +77,8 @@ class JobBasicAndIo(ctypes.Structure):
 
 class ProcessMemoryCounters(ctypes.Structure):
     _fields_ = [
-        ("cb", wintypes.DWORD),
-        ("PageFaultCount", wintypes.DWORD),
+        ("cb", ctypes.wintypes.DWORD),
+        ("PageFaultCount", ctypes.wintypes.DWORD),
         ("PeakWorkingSetSize", ctypes.c_size_t),
         ("WorkingSetSize", ctypes.c_size_t),
         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
@@ -94,80 +93,99 @@ class ProcessMemoryCounters(ctypes.Structure):
 
 class Rect(ctypes.Structure):
     _fields_ = [
-        ("left", wintypes.LONG),
-        ("top", wintypes.LONG),
-        ("right", wintypes.LONG),
-        ("bottom", wintypes.LONG),
+        ("left", ctypes.wintypes.LONG),
+        ("top", ctypes.wintypes.LONG),
+        ("right", ctypes.wintypes.LONG),
+        ("bottom", ctypes.wintypes.LONG),
     ]
 
 
 class ProcessEntry32(ctypes.Structure):
     _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
+        ("dwSize", ctypes.wintypes.DWORD),
+        ("cntUsage", ctypes.wintypes.DWORD),
+        ("th32ProcessID", ctypes.wintypes.DWORD),
         ("th32DefaultHeapID", ctypes.c_size_t),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", wintypes.LONG),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * 260),
+        ("th32ModuleID", ctypes.wintypes.DWORD),
+        ("cntThreads", ctypes.wintypes.DWORD),
+        ("th32ParentProcessID", ctypes.wintypes.DWORD),
+        ("pcPriClassBase", ctypes.wintypes.LONG),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szExeFile", ctypes.wintypes.WCHAR * 260),
     ]
 
 
-kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+kernel32.CreateJobObjectW.restype = ctypes.wintypes.HANDLE
+kernel32.AssignProcessToJobObject.argtypes = [
+    ctypes.wintypes.HANDLE,
+    ctypes.wintypes.HANDLE,
+]
 kernel32.SetInformationJobObject.argtypes = [
-    wintypes.HANDLE,
-    wintypes.INT,
+    ctypes.wintypes.HANDLE,
+    ctypes.wintypes.INT,
     ctypes.c_void_p,
-    wintypes.DWORD,
+    ctypes.wintypes.DWORD,
 ]
 kernel32.QueryInformationJobObject.argtypes = [
-    wintypes.HANDLE,
-    wintypes.INT,
+    ctypes.wintypes.HANDLE,
+    ctypes.wintypes.INT,
     ctypes.c_void_p,
-    wintypes.DWORD,
-    ctypes.POINTER(wintypes.DWORD),
+    ctypes.wintypes.DWORD,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
 ]
-kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-kernel32.OpenProcess.restype = wintypes.HANDLE
-kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+kernel32.OpenProcess.argtypes = [
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.BOOL,
+    ctypes.wintypes.DWORD,
+]
+kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+kernel32.CreateToolhelp32Snapshot.argtypes = [
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.DWORD,
+]
+kernel32.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
 kernel32.Process32FirstW.argtypes = [
-    wintypes.HANDLE,
+    ctypes.wintypes.HANDLE,
     ctypes.POINTER(ProcessEntry32),
 ]
 kernel32.Process32NextW.argtypes = [
-    wintypes.HANDLE,
+    ctypes.wintypes.HANDLE,
     ctypes.POINTER(ProcessEntry32),
 ]
 psapi.GetProcessMemoryInfo.argtypes = [
-    wintypes.HANDLE,
+    ctypes.wintypes.HANDLE,
     ctypes.POINTER(ProcessMemoryCounters),
-    wintypes.DWORD,
+    ctypes.wintypes.DWORD,
 ]
-user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
-user32.EnumWindows.restype = wintypes.BOOL
+user32.EnumWindows.argtypes = [ctypes.c_void_p, ctypes.wintypes.LPARAM]
+user32.EnumWindows.restype = ctypes.wintypes.BOOL
 user32.GetWindowThreadProcessId.argtypes = [
-    wintypes.HWND,
-    ctypes.POINTER(wintypes.DWORD),
+    ctypes.wintypes.HWND,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
 ]
-user32.IsWindowVisible.argtypes = [wintypes.HWND]
-user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(Rect)]
-user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(Rect)]
+user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+user32.GetWindowTextW.argtypes = [
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.LPWSTR,
+    ctypes.c_int,
+]
+user32.PostMessageW.argtypes = [
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.UINT,
+    ctypes.wintypes.WPARAM,
+    ctypes.wintypes.LPARAM,
+]
+user32.GetClientRect.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(Rect)]
+user32.GetWindowRect.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(Rect)]
 user32.SetWindowPos.argtypes = [
-    wintypes.HWND,
-    wintypes.HWND,
-    wintypes.INT,
-    wintypes.INT,
-    wintypes.INT,
-    wintypes.INT,
-    wintypes.UINT,
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.UINT,
 ]
 
 SWP_NOACTIVATE = 0x0010
@@ -197,7 +215,7 @@ def create_job():
 
 def query_job(job):
     info = JobBasicAndIo()
-    returned = wintypes.DWORD()
+    returned = ctypes.wintypes.DWORD()
     if not kernel32.QueryInformationJobObject(
         job,
         8,
@@ -213,7 +231,7 @@ def query_job(job):
 
 def process_children(root_pid):
     snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == wintypes.HANDLE(-1).value:
+    if snapshot == ctypes.wintypes.HANDLE(-1).value:
         return []
     try:
         entry = ProcessEntry32()
@@ -282,11 +300,15 @@ def find_window(pid):
     found = []
     titled = []
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    @ctypes.WINFUNCTYPE(
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.LPARAM,
+    )
     def callback(hwnd, _):
         if not user32.IsWindowVisible(hwnd):
             return True
-        window_pid = wintypes.DWORD()
+        window_pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
         if window_pid.value != pid:
             return True
