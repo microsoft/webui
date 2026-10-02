@@ -2,7 +2,10 @@
 // Licensed under the MIT license.
 
 //! Run on a Linux desktop with GTK4, WebKitGTK 6 and a display:
-//! cargo test -p microsoft-webui-desktop --features local-server --test linux_local_server -- --nocapture
+//! cargo test -p microsoft-webui-desktop --features local-server --test linux_local_server -- --ignored --nocapture
+//! The journeys drive a real native window, so they are `#[ignore]` by default
+//! and headless runs such as `cargo xtask test` skip them; CI runs them under
+//! `xvfb-run`.
 //! No mock WebView or custom protocol is involved.
 //! WebKitGTK cannot identify a navigation action's source frame: a same-origin
 //! iframe GET may reach the listener. The response policy prevents its document
@@ -71,6 +74,7 @@ struct Observed {
 // GTK's default main context is process-global. Run the native journeys
 // sequentially on the same harness thread, never in parallel worker tests.
 #[test]
+#[ignore = "drives a real GTK window; needs a Linux display (xvfb-run in CI)"]
 fn native_local_server_journeys() -> Result<(), Box<dyn std::error::Error>> {
     // Performance sampling deliberately runs one window per fresh process.
     // Normal cargo test still runs every acceptance journey sequentially.
