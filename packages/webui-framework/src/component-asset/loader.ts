@@ -10,6 +10,7 @@ import {
 } from './asset.js';
 import type { ComponentAssetSource } from './manifest.js';
 import { registerComponentAssetGraph } from './registration.js';
+import { validateComponentAssetGraph } from './validate-graph.js';
 
 const assetModulePromises = new Map<string, Promise<unknown>>();
 
@@ -46,7 +47,11 @@ async function registerRootAsset(
     );
   }
   validateExternalComponents(asset);
-  await registerComponentAssetGraph(asset, prepareAssetComponentStyles);
+  await registerComponentAssetGraph(
+    asset,
+    prepareAssetComponentStyles,
+    validateComponentAssetGraph,
+  );
 }
 
 function loadAssetModule(

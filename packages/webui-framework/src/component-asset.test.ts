@@ -859,6 +859,72 @@ describe('component asset helpers', () => {
     }
   });
 
+  test('manifest preload rejects assets of one graph that disagree on a resource', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'graph-conflict-root': {
+          asset: assetObjectModule({
+            type: 'webui-component-asset',
+            version: 4,
+            kind: 'root',
+            root: 'graph-conflict-root',
+            components: ['graph-conflict-root'],
+            requiredComponents: ['graph-conflict-root', 'graph-conflict-child'],
+            externalComponents: [],
+            imports: [
+              {
+                type: 'webui-component-asset',
+                version: 4,
+                kind: 'component',
+                components: ['graph-conflict-child'],
+                requiredComponents: ['graph-conflict-child'],
+                externalComponents: [],
+                imports: [],
+                componentStyles: {
+                  version: 1,
+                  strategy: 'style',
+                  resources: {
+                    'graph-conflict-style': { kind: 'style', css: '.child{}' },
+                  },
+                  closures: { 'graph-conflict-child': ['graph-conflict-style'] },
+                },
+                templates: { 'graph-conflict-child': { h: '<p>Child</p>' } },
+              },
+            ],
+            componentStyles: {
+              version: 1,
+              strategy: 'style',
+              resources: {
+                'graph-conflict-style': { kind: 'style', css: '.root{}' },
+              },
+              closures: { 'graph-conflict-root': ['graph-conflict-style'] },
+            },
+            templates: { 'graph-conflict-root': { h: '<p>Root</p>' } },
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('graph-conflict-root').asset,
+        /Conflicting component style resource "graph-conflict-style"/,
+      );
+      assert.equal(getTemplate('graph-conflict-root'), undefined);
+      assert.equal(getTemplate('graph-conflict-child'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
   test('manifest preload rejects undeclared template payloads before registration', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {

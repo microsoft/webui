@@ -9,10 +9,7 @@ import {
 import {
   hasRegisteredComponentStyleResource,
   registerPreparedComponentStyles,
-  sameComponentStyleClosure,
-  sameComponentStyleResource,
   validateComponentStylesRegistration,
-  type ComponentStyleResource,
   type ComponentStyles,
 } from '../element/styles.js';
 import {
@@ -21,7 +18,8 @@ import {
 } from '../element/link-styles.js';
 import type { ComponentAsset } from './asset.js';
 
-interface PreparedComponentAsset {
+/** One asset of a graph, with its style catalog and stylesheet readiness. */
+export interface PreparedComponentAsset {
   asset: ComponentAsset;
   componentStyles: ComponentStyles;
   linkStyles?: Promise<void>;
@@ -29,10 +27,28 @@ interface PreparedComponentAsset {
 
 type PrepareStyles = (value: unknown) => ComponentStyles;
 
-/** Atomically register an already validated or compiler-generated asset graph. */
+/** Cross-asset consistency checks applied before any registry mutation. */
+export type ValidateComponentAssetGraph = (
+  graph: readonly PreparedComponentAsset[],
+) => void;
+
+/**
+ * Atomically register an already validated or compiler-generated asset graph.
+ *
+ * Checks that depend only on the graph's own contents are already guaranteed
+ * by the compiler that emitted it, so callers that trust their source omit
+ * `validateGraph`. Omitting it is what keeps `validate-graph.ts` off the
+ * generated path's module graph, so bundlers drop those checks from the
+ * startup bundle without relying on a build-time flag. Callers that load an
+ * asset from an untrusted source pass it explicitly.
+ *
+ * Checks that depend on what the page has already loaded cannot be proven at
+ * build time and always run - see {@link validateAgainstLoadedPage}.
+ */
 export async function registerComponentAssetGraph(
   asset: ComponentAsset,
   prepareStyles: PrepareStyles = trustedComponentStyles,
+  validateGraph?: ValidateComponentAssetGraph,
 ): Promise<void> {
   const graph: PreparedComponentAsset[] = [];
   for (let i = 0; i < asset.imports.length; i++) {
@@ -42,7 +58,9 @@ export async function registerComponentAssetGraph(
     }
   }
   graph.push(prepare(asset, prepareStyles));
-  validateGraph(graph);
+
+  validateGraph?.(graph);
+  validateAgainstLoadedPage(graph);
 
   for (let i = 0; i < graph.length; i++) {
     registerPreparedComponentStyles(graph[i].componentStyles);
@@ -76,53 +94,28 @@ function prepare(
   return { asset, componentStyles, linkStyles };
 }
 
-function validateGraph(graph: readonly PreparedComponentAsset[]): void {
-  const resources = new Map<string, ComponentStyleResource>();
-  const closures = new Map<string, readonly string[]>();
+/**
+ * Validate the graph against state the running page already established.
+ *
+ * A stale deferred asset can disagree with the entry bundle it is loaded into,
+ * and no build-time analysis can rule that out, so these checks ship in
+ * production. They run before any registry mutation to keep registration
+ * atomic.
+ */
+function validateAgainstLoadedPage(
+  graph: readonly PreparedComponentAsset[],
+): void {
   const provided = new Set<string>();
+  const resources = new Set<string>();
   for (let i = 0; i < graph.length; i++) {
     const prepared = graph[i];
     validateComponentStylesRegistration(prepared.componentStyles);
-    for (let j = 0; j < prepared.asset.components.length; j++) {
-      provided.add(prepared.asset.components[j]);
-    }
-    collectStyles(prepared.componentStyles, resources, closures);
+    const ids = Object.keys(prepared.componentStyles.resources);
+    for (let j = 0; j < ids.length; j++) resources.add(ids[j]);
+    const components = prepared.asset.components;
+    for (let j = 0; j < components.length; j++) provided.add(components[j]);
   }
-  validateClosures(graph, resources);
-  validateRequiredComponents(graph, provided);
-}
 
-function collectStyles(
-  styles: ComponentStyles,
-  resources: Map<string, ComponentStyleResource>,
-  closures: Map<string, readonly string[]>,
-): void {
-  const resourceIds = Object.keys(styles.resources);
-  for (let i = 0; i < resourceIds.length; i++) {
-    const id = resourceIds[i];
-    const resource = styles.resources[id];
-    const current = resources.get(id);
-    if (current && !sameComponentStyleResource(current, resource)) {
-      throw new Error(`[WebUI] Conflicting component style resource "${id}".`);
-    }
-    resources.set(id, resource);
-  }
-  const roots = Object.keys(styles.closures);
-  for (let i = 0; i < roots.length; i++) {
-    const root = roots[i];
-    const closure = styles.closures[root];
-    const current = closures.get(root);
-    if (current && !sameComponentStyleClosure(current, closure)) {
-      throw new Error(`[WebUI] Conflicting component style closure "${root}".`);
-    }
-    closures.set(root, closure);
-  }
-}
-
-function validateClosures(
-  graph: readonly PreparedComponentAsset[],
-  resources: ReadonlyMap<string, ComponentStyleResource>,
-): void {
   for (let i = 0; i < graph.length; i++) {
     const closures = graph[i].componentStyles.closures;
     const roots = Object.keys(closures);
@@ -139,12 +132,7 @@ function validateClosures(
       }
     }
   }
-}
 
-function validateRequiredComponents(
-  graph: readonly PreparedComponentAsset[],
-  provided: ReadonlySet<string>,
-): void {
   const missing: string[] = [];
   for (let i = 0; i < graph.length; i++) {
     const required = graph[i].asset.requiredComponents;

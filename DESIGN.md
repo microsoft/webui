@@ -249,11 +249,19 @@ root entry that statically imports its conservative template/style closure.
 These files describe semantic ownership and dependency edges, but do not choose
 production chunks, hashes, public paths, caching, or delivery. The application
 bundler owns those decisions and may inline, split, or share any part of the
-graph. The entry bundle retains ownership of entry-reachable components. The
-framework validates complete coverage before registering any payload. Each CSS
-tree still gets the required ordered style closure, including when a Shadow
+graph. The entry bundle retains ownership of entry-reachable components. Each
+CSS tree still gets the required ordered style closure, including when a Shadow
 root is created later. Neither a generated module nor the handler assumes the
 browser's current template inventory at build time.
+
+Registration is atomic and splits validation by what is provable at build time.
+Rules about a graph's own contents - whether two assets of one build agree on a
+shared style resource or closure - are already guaranteed by the compiler, so
+the generated path omits them and bundlers drop that code from the startup
+bundle. Rules about the running page - a required template the entry bundle
+never loaded, or a stale asset that disagrees with the live style catalog -
+cannot be proven at build time and always ship. Applications that load assets
+from an untrusted manifest opt back into the full check set.
 
 ## Browser hydration
 
