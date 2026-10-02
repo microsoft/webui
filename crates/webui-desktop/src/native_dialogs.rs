@@ -3,6 +3,14 @@
 
 //! Bounded host-authored copy and OS-independent button policy.
 
+// The dialog API is uniform on every target so hosts compile unchanged, but only
+// macOS and Windows have a native backend that reads the copy and admission
+// machinery; elsewhere `NativeServices` answers `DialogError::Unsupported`.
+#![cfg_attr(
+    not(any(target_os = "macos", windows)),
+    allow(dead_code, unused_imports, unused_variables)
+)]
+
 #[path = "native_dialogs/state.rs"]
 pub(crate) mod state;
 

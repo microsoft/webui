@@ -1139,7 +1139,7 @@ impl NativeServices {
         }
     }
 
-    #[cfg(feature = "native-dialogs")]
+    #[cfg(all(any(target_os = "macos", windows), feature = "native-dialogs"))]
     pub(crate) fn dialogs_for_revoke(&self) -> Arc<crate::native_dialogs::DialogState> {
         Arc::clone(&self.0.dialogs)
     }
