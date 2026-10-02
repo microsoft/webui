@@ -7,21 +7,17 @@ import {
   preloadComponentAssetStyles,
   type GeneratedComponentAsset,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
+import { createRetryableLoader } from './asset-loader.js';
 
-let lazyPanelAsset: Promise<GeneratedComponentAsset> | undefined;
-let secondaryPanelAsset: Promise<GeneratedComponentAsset> | undefined;
+const loadLazyPanel = createRetryableLoader<GeneratedComponentAsset>(() =>
+  import('../../.webui/lazy-panel.webui.js')
+    .then(module => defineComponentAsset(module.default)),
+);
 
-const loadLazyPanel = (): Promise<GeneratedComponentAsset> => {
-  lazyPanelAsset ??= import('../../.webui/lazy-panel.webui.js')
-    .then(module => defineComponentAsset(module.default));
-  return lazyPanelAsset;
-};
-
-const loadSecondaryPanel = (): Promise<GeneratedComponentAsset> => {
-  secondaryPanelAsset ??= import('../../.webui/secondary-panel.webui.js')
-    .then(module => defineComponentAsset(module.default));
-  return secondaryPanelAsset;
-};
+const loadSecondaryPanel = createRetryableLoader<GeneratedComponentAsset>(() =>
+  import('../../.webui/secondary-panel.webui.js')
+    .then(module => defineComponentAsset(module.default)),
+);
 
 export class AppShell extends WebUIElement {
   @attr title = '';
@@ -31,12 +27,16 @@ export class AppShell extends WebUIElement {
 
   preloadPanel(): void {
     preloadComponentAssetStyles('lazy-panel');
-    void loadLazyPanel().then(asset => asset.preload());
+    void loadLazyPanel()
+      .then(asset => asset.preload())
+      .catch(() => undefined);
   }
 
   preloadSecondaryPanel(): void {
     preloadComponentAssetStyles('secondary-panel');
-    void loadSecondaryPanel().then(asset => asset.preload());
+    void loadSecondaryPanel()
+      .then(asset => asset.preload())
+      .catch(() => undefined);
   }
 
   async openPanel(): Promise<void> {

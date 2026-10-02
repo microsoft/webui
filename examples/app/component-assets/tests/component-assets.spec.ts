@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import { expect, test, type Page } from '@playwright/test';
+import { createRetryableLoader } from '../src/app-shell/asset-loader.js';
 
 type LazyResource =
   | 'lazy-asset'
@@ -40,6 +41,47 @@ async function loadedTemplateNames(page: Page): Promise<string[]> {
 }
 
 test.describe('static component assets', () => {
+  test('retries application asset loading after a rejection', async () => {
+    let attempts = 0;
+    const load = createRetryableLoader(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('transient failure');
+      return 'loaded';
+    });
+
+    await expect(load()).rejects.toThrow('transient failure');
+    await expect(load()).resolves.toBe('loaded');
+    await expect(load()).resolves.toBe('loaded');
+    expect(attempts).toBe(2);
+  });
+
+  test('consumes speculative asset preload failures', async ({ page }) => {
+    let assetRequests = 0;
+    const pageErrors: Error[] = [];
+    page.on('pageerror', error => pageErrors.push(error));
+    await page.route('**/lazy-panel.webui-*.js', async route => {
+      assetRequests += 1;
+      if (assetRequests === 1) {
+        await route.abort('connectionfailed');
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto('/');
+    const button = page.getByRole('button', { name: 'Load lazy panel' });
+    await expect(button).toBeVisible();
+    await Promise.all([
+      page.waitForEvent(
+        'requestfailed',
+        request => request.url().includes('/lazy-panel.webui-'),
+      ),
+      button.hover(),
+    ]);
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
+    expect(pageErrors).toEqual([]);
+  });
+
   test('uses the application-owned import as the lazy loading boundary', async ({ page }) => {
     let cssRequests = 0;
     let releaseAsset!: () => void;
