@@ -57,13 +57,12 @@ The default output is written to
 output directory with `--output-dir`. Keep the temporary root short because
 WebView2 appends its app identity and profile directories below it.
 
-The probe attempts to record process-start-to-FCP from the browser
-`first-contentful-paint` performance entry and Chromium lifecycle metrics.
-Some WebView2/Electron targets do not expose that entry after navigation; in
-that case the raw readiness record keeps `fcpEpochMs: null` and the metric is
-not included in the cleaned summary. Dashboard TTI remains the stronger
-readiness contract: it additionally waits for application readiness, fonts,
-validated Dashboard content/styles/geometry, and two animation frames.
+The probe records process-start-to-FCP from the browser's buffered
+`first-contentful-paint` performance entry. Dashboard readiness retains its
+existing application, font, content, style, geometry, and two-animation-frame
+checks, then requires FCP to have occurred before recording the final
+Dashboard TTI timestamp. Every run must therefore report FCP before Dashboard
+TTI or the run fails.
 
 The analyzer uses the modified z-score for each metric, with
 `abs(score) > 3.5` as the outlier rule. A pair is excluded when either host is

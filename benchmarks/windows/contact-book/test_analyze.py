@@ -24,7 +24,8 @@ class SummarizeTests(unittest.TestCase):
                     "electron": {
                         metric: electron_value for metric in (
                             "dashboard_tti_ms",
-                            "launcher_to_host_main_ms",
+                            "process_start_to_window_visible_ms",
+                            "process_start_to_fcp_ms",
                             "host_process_peak_rss_bytes",
                             "process_tree_cpu_ms",
                             "close_to_exit_ms",
@@ -33,7 +34,8 @@ class SummarizeTests(unittest.TestCase):
                     "webui": {
                         metric: webui_value for metric in (
                             "dashboard_tti_ms",
-                            "launcher_to_host_main_ms",
+                            "process_start_to_window_visible_ms",
+                            "process_start_to_fcp_ms",
                             "host_process_peak_rss_bytes",
                             "process_tree_cpu_ms",
                             "close_to_exit_ms",
@@ -44,12 +46,14 @@ class SummarizeTests(unittest.TestCase):
 
         summary = summarize(
             {
+                "schema": 2,
                 "source": "test",
                 "host": "Windows",
                 "pairs": pairs,
             }
         )
 
+        self.assertEqual(summary["schema"], 2)
         for metric in summary["metrics"].values():
             self.assertEqual(metric["excluded_pairs"], [7])
             self.assertEqual(metric["retained_pairs"], 6)
