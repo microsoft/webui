@@ -23,15 +23,15 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 
 struct DemoServer {
     page: Vec<u8>,
-    script: &'static [u8],
-    styles: &'static [u8],
+    script: Vec<u8>,
+    styles: Vec<u8>,
     services: NativeServices,
     capture: Mutex<Option<CapturedContent>>,
 }
 
 fn main() -> Result<()> {
-    let script = include_bytes!("../../dist/index.js");
-    let styles = include_bytes!("../../dist/native-services-app.css");
+    let script = built_asset("index.js")?;
+    let styles = built_asset("native-services-app.css")?;
     let page = render_page()?;
     let listener = TcpListener::bind("127.0.0.1:0").context("failed to bind demo server")?;
     listener
@@ -85,8 +85,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn built_asset(name: &str) -> Result<Vec<u8>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../dist")
+        .join(name);
+    std::fs::read(&path).with_context(|| {
+        format!(
+            "missing {}; run `pnpm build` in examples/app/native-services first",
+            path.display()
+        )
+    })
+}
+
 fn render_page() -> Result<Vec<u8>> {
-    let protocol = Protocol::from_protobuf(include_bytes!("../../dist/protocol.bin"))
+    let protocol = Protocol::from_protobuf(&built_asset("protocol.bin")?)
         .context("failed to decode native services protocol")?;
     let mut state: serde_json::Value = serde_json::from_str(include_str!("../../data/state.json"))
         .context("failed to parse native services state")?;
@@ -160,10 +172,10 @@ impl DemoServer {
         match line {
             "GET / HTTP/1.1" => write_response(stream, 200, "text/html; charset=utf-8", &self.page),
             "GET /index.js HTTP/1.1" => {
-                write_response(stream, 200, "text/javascript; charset=utf-8", self.script)
+                write_response(stream, 200, "text/javascript; charset=utf-8", &self.script)
             }
             "GET /native-services-app.css HTTP/1.1" => {
-                write_response(stream, 200, "text/css; charset=utf-8", self.styles)
+                write_response(stream, 200, "text/css; charset=utf-8", &self.styles)
             }
             "POST /api/picker HTTP/1.1" => pick_directory(stream, &self.services),
             "POST /api/dialog/error HTTP/1.1" => show_error(stream, &self.services),
