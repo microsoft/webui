@@ -32,8 +32,7 @@ pub(super) fn publish(output_dir: &Path, files: &[ComponentAssetFile]) -> Result
     let result = (|| {
         let current = manifest_for(files);
         for file in files {
-            fs::write(temporary_dir.join(&file.name), &file.content)
-                .with_context(|| format!("Failed to stage component asset {}", file.name))?;
+            write_staged_file(&temporary_dir, file)?;
         }
         let manifest =
             serde_json::to_vec(&current).context("Failed to serialize component assets")?;
@@ -64,7 +63,7 @@ fn manifest_for(files: &[ComponentAssetFile]) -> PublishedFiles {
     };
     for file in files {
         manifest.files.push(file.name.clone());
-        if file.content.contains("__webuiDefineComponentAsset") {
+        if is_root_file(file) {
             manifest.roots.push(file.name.clone());
         }
     }
@@ -78,7 +77,7 @@ fn publish_group(
     roots: bool,
 ) -> Result<()> {
     for file in files {
-        if file.content.contains("__webuiDefineComponentAsset") != roots {
+        if is_root_file(file) != roots {
             continue;
         }
         replace_file(
@@ -87,6 +86,10 @@ fn publish_group(
         )?;
     }
     Ok(())
+}
+
+fn is_root_file(file: &ComponentAssetFile) -> bool {
+    !file.name.starts_with("components/")
 }
 
 fn remove_stale(
@@ -115,10 +118,39 @@ fn remove_stale(
 }
 
 fn is_owned_file_name(name: &str) -> bool {
-    Path::new(name)
-        .file_name()
-        .is_some_and(|file_name| file_name == name)
-        && name.ends_with(".webui.js")
+    if name.contains('\\') {
+        return false;
+    }
+    let mut parts = name.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(file), None, None) => is_component_asset_file_name(file),
+        (Some("components"), Some(file), None) => is_component_asset_file_name(file),
+        _ => false,
+    }
+}
+
+fn is_component_asset_file_name(name: &str) -> bool {
+    let Some(tag) = name.strip_suffix(".webui.js") else {
+        return false;
+    };
+    let bytes = tag.as_bytes();
+    !bytes.is_empty()
+        && bytes.contains(&b'-')
+        && bytes[0].is_ascii_lowercase()
+        && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+fn write_staged_file(temporary_dir: &Path, file: &ComponentAssetFile) -> Result<()> {
+    let path = temporary_dir.join(&file.name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::write(path, &file.content)
+        .with_context(|| format!("Failed to stage component asset {}", file.name))
 }
 
 fn read_manifest(output_dir: &Path) -> Result<PublishedFiles> {
@@ -132,6 +164,10 @@ fn read_manifest(output_dir: &Path) -> Result<PublishedFiles> {
 }
 
 fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
     if let Err(error) = fs::rename(source, destination) {
         if !destination.is_file() {
             return Err(error)
@@ -150,14 +186,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn file(name: &str, root: bool, content: &str) -> ComponentAssetFile {
+    fn file(name: &str, content: &str) -> ComponentAssetFile {
         ComponentAssetFile {
             name: name.to_string(),
-            content: if root {
-                format!("const __webuiDefineComponentAsset=1;{content}")
-            } else {
-                content.to_string()
-            },
+            content: content.to_string(),
         }
     }
 
@@ -167,8 +199,8 @@ mod tests {
         publish(
             output.path(),
             &[
-                file("component-old.webui.js", false, "old component"),
-                file("old.webui.js", true, "old root"),
+                file("component-old-card.webui.js", "old component"),
+                file("old-root.webui.js", "old root"),
             ],
         )
         .unwrap();
@@ -177,16 +209,18 @@ mod tests {
         publish(
             output.path(),
             &[
-                file("component-new.webui.js", false, "new component"),
-                file("new.webui.js", true, "new root"),
+                file("components/new-card.webui.js", "new component"),
+                file("new-root.webui.js", "new root"),
             ],
         )
         .unwrap();
 
-        assert!(!output.path().join("component-old.webui.js").exists());
-        assert!(!output.path().join("old.webui.js").exists());
-        assert!(output.path().join("component-new.webui.js").is_file());
-        assert!(output.path().join("new.webui.js").is_file());
+        assert!(!output.path().join("component-old-card.webui.js").exists());
+        assert!(!output.path().join("old-root.webui.js").exists());
+        assert!(output.path().join("components/new-card.webui.js").is_file());
+        assert!(output.path().join("new-root.webui.js").is_file());
+        let manifest = read_manifest(output.path()).unwrap();
+        assert_eq!(manifest.roots, ["new-root.webui.js"]);
         assert_eq!(
             fs::read_to_string(output.path().join("application.js")).unwrap(),
             "owned by app"

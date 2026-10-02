@@ -166,8 +166,8 @@ describe('build', () => {
     assert.equal(result.componentAssetFiles.length, 4); // [filename, content, ...]
     assert.equal(result.componentAssetFiles[0], 'lazy-panel.webui.js');
     assert.match(result.componentAssetFiles[1], /webui-component-asset/);
-    assert.match(result.componentAssetFiles[1], /component-lazy-panel\.webui\.js/);
-    assert.equal(result.componentAssetFiles[2], 'component-lazy-panel.webui.js');
+    assert.match(result.componentAssetFiles[1], /components\/lazy-panel\.webui\.js/);
+    assert.equal(result.componentAssetFiles[2], 'components/lazy-panel.webui.js');
     assert.match(result.componentAssetFiles[3], /"kind":"component"/);
     assert.ok(result.metafile);
     const parsedMetafile: Metafile = JSON.parse(result.metafile);

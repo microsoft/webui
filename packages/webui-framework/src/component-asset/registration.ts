@@ -69,12 +69,10 @@ function prepare(
   prepareAssetTemplateData(asset.templates, asset.templateFunctions);
   const templateLinks = prepareRegisteredLinkStyles(asset.templates);
   const componentLinks = prepareComponentStyleLinks(componentStyles);
-  let linkStyles = templateLinks;
-  if (templateLinks && componentLinks) {
-    linkStyles = Promise.all([templateLinks, componentLinks]).then(() => {});
-  } else {
-    linkStyles = templateLinks ?? componentLinks;
-  }
+  const linkStyles =
+    templateLinks && componentLinks
+      ? Promise.all([templateLinks, componentLinks]).then(() => {})
+      : (templateLinks ?? componentLinks);
   return { asset, componentStyles, linkStyles };
 }
 

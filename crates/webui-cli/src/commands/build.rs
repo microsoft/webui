@@ -489,18 +489,75 @@ mod tests {
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
         assert!(asset.contains(r#""components":[]"#));
-        assert!(asset.contains(r#"from "./component-mail-message.webui.js";"#));
-        assert!(asset.contains(r#"from "./component-mail-thread.webui.js";"#));
+        assert!(asset.contains(r#"from "./components/mail-message.webui.js";"#));
+        assert!(asset.contains(r#"from "./components/mail-thread.webui.js";"#));
         assert!(!asset.contains(r#""templates":{"mail-message":"#));
         assert!(asset.contains("export default asset;"));
         let thread =
-            fs::read_to_string(asset_dir.path().join("component-mail-thread.webui.js")).unwrap();
+            fs::read_to_string(asset_dir.path().join("components/mail-thread.webui.js")).unwrap();
         assert!(thread.contains(r#""templateFunctions":{"mail-thread":"#));
 
         let metafile =
             fs::read_to_string(out_dir.path().join("component-assets.meta.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&metafile).unwrap();
         assert!(value["outputs"].get("mail-thread.webui.js").is_some());
+    }
+
+    #[test]
+    fn test_build_namespaces_component_payloads_from_root_entries() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("component-mail-card.html", "<mail-card></mail-card>"),
+            ("mail-card.html", "<p>Card</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+        let asset_dir = TempDir::new().unwrap();
+        let metafile = out_dir.path().join("component-assets.meta.json");
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["component-mail-card".to_string()],
+            component_assets_out: Some(asset_dir.path().to_path_buf()),
+            metafile: Some(metafile.clone()),
+            theme: None,
+        })
+        .unwrap();
+
+        let root =
+            fs::read_to_string(asset_dir.path().join("component-mail-card.webui.js")).unwrap();
+        assert!(root.contains(r#"from "./components/mail-card.webui.js";"#));
+        assert!(root.contains(r#"from "./components/component-mail-card.webui.js";"#));
+        assert!(asset_dir
+            .path()
+            .join("components/mail-card.webui.js")
+            .is_file());
+        assert!(asset_dir
+            .path()
+            .join("components/component-mail-card.webui.js")
+            .is_file());
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(metafile).unwrap()).unwrap();
+        assert!(value["outputs"]
+            .get("component-mail-card.webui.js")
+            .is_some());
+        assert!(value["outputs"]
+            .get("components/mail-card.webui.js")
+            .is_some());
     }
 
     #[test]
@@ -849,9 +906,11 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(asset_names.len(), 2);
-        assert!(asset_names.contains(&"mail-thread.webui.js".to_string()));
-        assert!(asset_names.contains(&"component-mail-thread.webui.js".to_string()));
+        assert_eq!(asset_names, ["mail-thread.webui.js"]);
+        assert!(out_dir
+            .path()
+            .join("components/mail-thread.webui.js")
+            .is_file());
     }
 
     #[test]

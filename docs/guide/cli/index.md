@@ -188,7 +188,7 @@ template also references them. A build containing both component assets and a
 `<route>` fails with `component-assets-with-routes`; use the router's normal
 partial-navigation pipeline for routed components.
 
-WebUI emits one stable `component-<tag>.webui.js` module per asset-owned
+WebUI emits one stable `components/<tag>.webui.js` module per asset-owned
 component and a thin `<root>.webui.js` entry with static imports for its
 closure. Entry-reachable components stay in `protocol.bin` and the normal
 application bundle, and become external prerequisites instead of being copied.

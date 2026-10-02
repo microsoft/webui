@@ -1197,6 +1197,14 @@ async fn handle_asset(
                 .content_type("text/css; charset=utf-8")
                 .body(css.clone());
         }
+        if let Some(css) = relative
+            .strip_prefix("components/")
+            .and_then(|name| s.css_files.get(name))
+        {
+            return HttpResponse::Ok()
+                .content_type("text/css; charset=utf-8")
+                .body(css.clone());
+        }
         if let Some(asset) = s.component_assets.get(&relative) {
             // Served as a JS module: the framework loads it via dynamic
             // `import()`, which the browser rejects under a non-JS MIME type.
@@ -3179,6 +3187,15 @@ mod tests {
             fs::read_to_string(generated.join("lazy-panel.webui.js")).unwrap(),
             *asset
         );
+        let payload = result
+            .component_assets
+            .get("components/lazy-panel.webui.js")
+            .expect("component payload");
+        assert!(payload.contains(r#""kind":"component""#));
+        assert_eq!(
+            fs::read_to_string(generated.join("components/lazy-panel.webui.js")).unwrap(),
+            *payload
+        );
     }
 
     #[test]
@@ -3341,9 +3358,12 @@ mod tests {
         let context = web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
                 rendered_html: String::new(),
-                css_files: HashMap::new(),
+                css_files: HashMap::from([(
+                    "lazy-panel.css".to_string(),
+                    ":host { color: red; }".to_string(),
+                )]),
                 component_assets: HashMap::from([(
-                    "lazy-panel.webui.js".to_string(),
+                    "components/lazy-panel.webui.js".to_string(),
                     "export default {\"type\":\"webui-component-asset\"};".to_string(),
                 )]),
                 protocol: None,
@@ -3373,7 +3393,7 @@ mod tests {
         let response = actix_test::call_service(
             &app,
             actix_test::TestRequest::get()
-                .uri("/lazy-panel.webui.js")
+                .uri("/components/lazy-panel.webui.js")
                 .to_request(),
         )
         .await;
@@ -3392,6 +3412,19 @@ mod tests {
         assert!(
             body.starts_with(b"export default"),
             "unexpected asset body: {body:?}"
+        );
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/components/lazy-panel.css")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            actix_test::read_body(response).await,
+            ":host { color: red; }"
         );
     }
 }

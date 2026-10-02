@@ -100,8 +100,8 @@ pub(super) fn render_component_asset_graph(
 
 fn pending_component(component: usize, plan: &AssetGraphPlan) -> PendingAsset {
     let tag = plan.component_names[component];
-    let mut logical_name = String::with_capacity(tag.len() + 10);
-    logical_name.push_str("component-");
+    let mut logical_name = String::with_capacity(tag.len() + 11);
+    logical_name.push_str("components/");
     logical_name.push_str(tag);
     PendingAsset {
         logical_name,

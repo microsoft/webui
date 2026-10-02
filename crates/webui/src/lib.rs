@@ -2707,11 +2707,11 @@ mod tests {
             vec![
                 "lazy-panel.webui.js",
                 "secondary-panel.webui.js",
-                "component-lazy-panel.webui.js",
-                "component-panel-only.webui.js",
-                "component-secondary-only.webui.js",
-                "component-secondary-panel.webui.js",
-                "component-shared-detail.webui.js",
+                "components/lazy-panel.webui.js",
+                "components/panel-only.webui.js",
+                "components/secondary-only.webui.js",
+                "components/secondary-panel.webui.js",
+                "components/shared-detail.webui.js",
             ]
         );
         let lazy = &result.component_asset_files[0].content;
@@ -2722,9 +2722,9 @@ mod tests {
         assert!(!lazy.contains(
             r#""entry-badge":{"kind":"link","href":new URL("entry-badge.css",import.meta.url).href}"#
         ));
-        assert!(lazy.contains(r#"from "./component-lazy-panel.webui.js";"#));
-        assert!(lazy.contains(r#"from "./component-panel-only.webui.js";"#));
-        assert!(lazy.contains(r#"from "./component-shared-detail.webui.js";"#));
+        assert!(lazy.contains(r#"from "./components/lazy-panel.webui.js";"#));
+        assert!(lazy.contains(r#"from "./components/panel-only.webui.js";"#));
+        assert!(lazy.contains(r#"from "./components/shared-detail.webui.js";"#));
         assert!(!lazy.contains("@microsoft/webui-framework/component-asset-runtime.js"));
         assert!(!lazy.contains("export const preload"));
         assert!(!lazy.contains("export const create"));
@@ -2734,7 +2734,7 @@ mod tests {
         let shared = result
             .component_asset_files
             .iter()
-            .find(|file| file.name == "component-shared-detail.webui.js")
+            .find(|file| file.name == "components/shared-detail.webui.js")
             .unwrap();
         assert!(shared.content.contains(r#""kind":"component""#));
         assert!(shared.content.contains(r#""components":["shared-detail"]"#));
@@ -2781,19 +2781,19 @@ mod tests {
                 "root-a.webui.js",
                 "root-b.webui.js",
                 "root-c.webui.js",
-                "component-only-a.webui.js",
-                "component-only-b.webui.js",
-                "component-only-c.webui.js",
-                "component-root-a.webui.js",
-                "component-root-b.webui.js",
-                "component-root-c.webui.js",
-                "component-shared-ab.webui.js",
-                "component-shared-all.webui.js",
+                "components/only-a.webui.js",
+                "components/only-b.webui.js",
+                "components/only-c.webui.js",
+                "components/root-a.webui.js",
+                "components/root-b.webui.js",
+                "components/root-c.webui.js",
+                "components/shared-ab.webui.js",
+                "components/shared-all.webui.js",
             ]
         );
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#"from "./component-only-a.webui.js";"#));
+            .contains(r#"from "./components/only-a.webui.js";"#));
         assert!(result.component_asset_files[9]
             .content
             .contains(r#""components":["shared-ab"]"#));
@@ -2825,7 +2825,7 @@ mod tests {
         assert_eq!(forward, reverse);
         let shared_name = forward
             .iter()
-            .find(|file| file.name == "component-shared-detail.webui.js")
+            .find(|file| file.name == "components/shared-detail.webui.js")
             .map(|file| file.name.as_str())
             .unwrap();
         assert!(forward[0].content.contains(shared_name));
@@ -2910,7 +2910,7 @@ mod tests {
         );
         assert_eq!(
             value["outputs"]["root-a.webui.js"]["imports"][1]["path"],
-            "component-shared-detail.webui.js"
+            "components/shared-detail.webui.js"
         );
         assert_eq!(
             value["outputs"]["root-a.webui.js"]["imports"][1]["kind"],
@@ -2925,11 +2925,11 @@ mod tests {
             serde_json::json!(["default"])
         );
         assert_eq!(
-            value["outputs"]["component-shared-detail.webui.js"]["bytes"],
+            value["outputs"]["components/shared-detail.webui.js"]["bytes"],
             result
                 .component_asset_files
                 .iter()
-                .find(|file| file.name == "component-shared-detail.webui.js")
+                .find(|file| file.name == "components/shared-detail.webui.js")
                 .unwrap()
                 .content
                 .len()

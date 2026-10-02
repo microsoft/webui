@@ -1056,11 +1056,12 @@ handler or `Protocol`, which emits `#webui-component-assets`. Using build
 artifacts without rendering the protocol preserves the guarded native mount but
 does not provide early compiler-owned style preloading.
 
-WebUI emits one stable module per asset-owned component and a thin root entry
-with static imports for its closure. The application bundler owns final chunks,
-hashes, public paths, caching, and delivery. `defineComponentAsset()` waits for
-graph and style registration before creating the element. Failed registration
-is evicted so a later preload retries. The normal entry bundle must load first.
+WebUI emits one stable `components/<tag>.webui.js` module per asset-owned
+component and a thin `<root>.webui.js` entry with static imports for its closure.
+The application bundler owns final chunks, hashes, public paths, caching, and
+delivery. `defineComponentAsset()` waits for graph and style registration before
+creating the element. Failed registration is evicted so a later preload retries.
+The normal entry bundle must load first.
 Component assets cannot be combined with `<route>`; use the router for routed
 components.
 

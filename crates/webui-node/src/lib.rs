@@ -1665,7 +1665,7 @@ mod tests {
         assert!(!result.component_asset_files[1].contains("defineComponentAsset"));
         assert_eq!(
             result.component_asset_files[2],
-            "component-lazy-panel.webui.js"
+            "components/lazy-panel.webui.js"
         );
         assert!(result.component_asset_files[3].contains("export default asset;"));
         let metafile = result
