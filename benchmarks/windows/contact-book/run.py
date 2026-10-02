@@ -364,7 +364,7 @@ def wait_for_window(process, job, timeout_ms):
         assign_process_tree(job, process.pid)
         window = find_window(process.pid)
         if window:
-            return (*window, monotonic_ms())
+            return (window[0], window[1], monotonic_ms())
         if process.poll() is not None and not any(
             process_is_running(pid) for pid in process_children(process.pid)
         ):
