@@ -217,10 +217,10 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
-    if !result.component_asset_files.is_empty() {
-        component_asset_output::publish(component_assets_out, &result.component_asset_files)?;
-    }
-    if let Some(path) = &metafile {
+    let write_metafile = || -> Result<()> {
+        let Some(path) = &metafile else {
+            return Ok(());
+        };
         let content = result.metafile.as_deref().ok_or_else(|| {
             anyhow::anyhow!("component asset metafile was requested but not generated")
         })?;
@@ -231,7 +231,16 @@ fn run(args: &BuildArgs) -> Result<()> {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
-        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))
+    };
+    if result.component_asset_files.is_empty() {
+        write_metafile()?;
+    } else {
+        component_asset_output::publish_with(
+            component_assets_out,
+            &result.component_asset_files,
+            write_metafile,
+        )?;
     }
     let stats = result.stats;
 
@@ -336,6 +345,19 @@ mod tests {
             fs::write(&path, content).unwrap();
         }
         dir
+    }
+
+    fn component_payload_path(output: &Path, tag: &str) -> PathBuf {
+        let prefix = format!("{tag}.");
+        fs::read_dir(output.join("components"))
+            .unwrap()
+            .find_map(|entry| {
+                let path = entry.unwrap().path();
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+                    .then_some(path)
+            })
+            .unwrap()
     }
 
     #[test]
@@ -497,12 +519,13 @@ mod tests {
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
         assert!(asset.contains(r#""components":[]"#));
-        assert!(asset.contains(r#"from "./components/mail-message.webui.js";"#));
-        assert!(asset.contains(r#"from "./components/mail-thread.webui.js";"#));
+        let message_path = component_payload_path(asset_dir.path(), "mail-message");
+        let thread_path = component_payload_path(asset_dir.path(), "mail-thread");
+        assert!(asset.contains(message_path.file_name().unwrap().to_str().unwrap()));
+        assert!(asset.contains(thread_path.file_name().unwrap().to_str().unwrap()));
         assert!(!asset.contains(r#""templates":{"mail-message":"#));
         assert!(asset.contains("export default asset;"));
-        let thread =
-            fs::read_to_string(asset_dir.path().join("components/mail-thread.webui.js")).unwrap();
+        let thread = fs::read_to_string(thread_path).unwrap();
         assert!(thread.contains(r#""templateFunctions":{"mail-thread":"#));
 
         let metafile =
@@ -547,25 +570,21 @@ mod tests {
 
         let root =
             fs::read_to_string(asset_dir.path().join("component-mail-card.webui.js")).unwrap();
-        assert!(root.contains(r#"from "./components/mail-card.webui.js";"#));
-        assert!(root.contains(r#"from "./components/component-mail-card.webui.js";"#));
-        assert!(asset_dir
-            .path()
-            .join("components/mail-card.webui.js")
-            .is_file());
-        assert!(asset_dir
-            .path()
-            .join("components/component-mail-card.webui.js")
-            .is_file());
+        let card_path = component_payload_path(asset_dir.path(), "mail-card");
+        let root_payload_path = component_payload_path(asset_dir.path(), "component-mail-card");
+        assert!(root.contains(card_path.file_name().unwrap().to_str().unwrap()));
+        assert!(root.contains(root_payload_path.file_name().unwrap().to_str().unwrap()));
 
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(metafile).unwrap()).unwrap();
         assert!(value["outputs"]
             .get("component-mail-card.webui.js")
             .is_some());
-        assert!(value["outputs"]
-            .get("components/mail-card.webui.js")
-            .is_some());
+        let card_output = format!(
+            "components/{}",
+            card_path.file_name().unwrap().to_string_lossy()
+        );
+        assert!(value["outputs"].get(&card_output).is_some());
     }
 
     #[test]
@@ -952,10 +971,7 @@ mod tests {
             .collect();
 
         assert_eq!(asset_names, ["mail-thread.webui.js"]);
-        assert!(out_dir
-            .path()
-            .join("components/mail-thread.webui.js")
-            .is_file());
+        assert!(component_payload_path(out_dir.path(), "mail-thread").is_file());
     }
 
     #[test]

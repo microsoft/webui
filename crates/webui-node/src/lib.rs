@@ -1663,10 +1663,8 @@ mod tests {
         assert!(result.component_asset_files[1].contains("webui-component-asset"));
         assert!(result.component_asset_files[1].contains("export default asset;"));
         assert!(!result.component_asset_files[1].contains("defineComponentAsset"));
-        assert_eq!(
-            result.component_asset_files[2],
-            "components/lazy-panel.webui.js"
-        );
+        assert!(result.component_asset_files[2].starts_with("components/lazy-panel."));
+        assert!(result.component_asset_files[2].ends_with(".webui.js"));
         assert!(result.component_asset_files[3].contains("export default asset;"));
         let metafile = result
             .metafile

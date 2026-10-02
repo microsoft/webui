@@ -649,14 +649,23 @@ fn build_and_render(
         None => output,
     };
 
-    if let Some(output_dir) = &config.component_assets_out {
-        component_asset_output::publish(output_dir, &build_result.component_asset_files)?;
-    }
-    if let Some(path) = &config.metafile {
+    let write_metafile = || -> Result<()> {
+        let Some(path) = &config.metafile else {
+            return Ok(());
+        };
         let metafile = build_result.metafile.as_deref().ok_or_else(|| {
             anyhow::anyhow!("component asset metafile was requested but not generated")
         })?;
-        write_atomic(path, metafile)?;
+        write_atomic(path, metafile)
+    };
+    if let Some(output_dir) = &config.component_assets_out {
+        component_asset_output::publish_with(
+            output_dir,
+            &build_result.component_asset_files,
+            write_metafile,
+        )?;
+    } else {
+        write_metafile()?;
     }
 
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
@@ -3210,13 +3219,14 @@ mod tests {
             fs::read_to_string(generated.join("lazy-panel.webui.js")).unwrap(),
             *asset
         );
-        let payload = result
+        let (payload_name, payload) = result
             .component_assets
-            .get("components/lazy-panel.webui.js")
+            .iter()
+            .find(|(name, _)| name.starts_with("components/lazy-panel."))
             .expect("component payload");
         assert!(payload.contains(r#""kind":"component""#));
         assert_eq!(
-            fs::read_to_string(generated.join("components/lazy-panel.webui.js")).unwrap(),
+            fs::read_to_string(generated.join(payload_name)).unwrap(),
             *payload
         );
     }

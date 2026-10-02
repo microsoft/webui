@@ -31,6 +31,7 @@ bytes = { workspace = true }
 tokio = { workspace = true }
 memchr = { workspace = true }
 crossbeam-queue = { workspace = true }
+crc32fast = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 

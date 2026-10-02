@@ -414,7 +414,7 @@ mod tests {
         let asset = graph
             .files
             .iter()
-            .find(|file| file.name == "components/deferred-card.webui.js")
+            .find(|file| file.name.starts_with("components/deferred-card."))
             .expect("deferred component module");
 
         assert!(asset

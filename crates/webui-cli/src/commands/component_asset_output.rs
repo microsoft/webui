@@ -16,9 +16,23 @@ static PUBLISH_ID: AtomicU64 = AtomicU64::new(0);
 struct PublishedFiles {
     files: Vec<String>,
     roots: Vec<String>,
+    #[serde(default)]
+    retired: Vec<String>,
 }
 
+#[cfg(test)]
 pub(super) fn publish(output_dir: &Path, files: &[ComponentAssetFile]) -> Result<()> {
+    publish_with(output_dir, files, || Ok(()))
+}
+
+pub(super) fn publish_with<F>(
+    output_dir: &Path,
+    files: &[ComponentAssetFile],
+    finish: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create {}", output_dir.display()))?;
     let publish_id = PUBLISH_ID.fetch_add(1, Ordering::Relaxed);
@@ -30,22 +44,34 @@ pub(super) fn publish(output_dir: &Path, files: &[ComponentAssetFile]) -> Result
         .with_context(|| format!("Failed to create {}", temporary_dir.display()))?;
 
     let result = (|| {
-        let current = manifest_for(files);
+        let mut current = manifest_for(files);
         for file in files {
             write_staged_file(&temporary_dir, file)?;
         }
+
+        let previous = read_manifest(output_dir)?;
+        let current_files: HashSet<&str> = current.files.iter().map(String::as_str).collect();
+        current.retired = previous
+            .files
+            .iter()
+            .filter(|file| {
+                file.starts_with("components/") && !current_files.contains(file.as_str())
+            })
+            .cloned()
+            .collect();
         let manifest =
             serde_json::to_vec(&current).context("Failed to serialize component assets")?;
         fs::write(temporary_dir.join(MANIFEST_FILE), manifest)
             .context("Failed to stage component asset manifest")?;
 
-        let previous = read_manifest(output_dir)?;
         let mut publication = Publication::new(output_dir, &temporary_dir);
         let published = (|| {
+            publication.remove_retired(&previous)?;
             publication.publish_group(files, false)?;
             publication.publish_group(files, true)?;
             publication.remove_stale(&previous, &current)?;
-            publication.replace(MANIFEST_FILE)
+            publication.replace(MANIFEST_FILE)?;
+            finish()
         })();
         match published {
             Ok(()) => Ok(()),
@@ -71,6 +97,7 @@ fn manifest_for(files: &[ComponentAssetFile]) -> PublishedFiles {
     let mut manifest = PublishedFiles {
         files: Vec::with_capacity(files.len()),
         roots: Vec::new(),
+        retired: Vec::new(),
     };
     for file in files {
         manifest.files.push(file.name.clone());
@@ -92,15 +119,34 @@ fn is_owned_file_name(name: &str) -> bool {
     let mut parts = name.split('/');
     match (parts.next(), parts.next(), parts.next()) {
         (Some(file), None, None) => is_component_asset_file_name(file),
-        (Some("components"), Some(file), None) => is_component_asset_file_name(file),
+        (Some("components"), Some(file), None) => is_component_payload_file_name(file),
         _ => false,
     }
+}
+
+fn is_component_payload_file_name(name: &str) -> bool {
+    const CONTENT_ID_LEN: usize = 16;
+    let Some(stem) = name.strip_suffix(".webui.js") else {
+        return false;
+    };
+    let Some((tag, content_id)) = stem.rsplit_once('.') else {
+        return false;
+    };
+    content_id.len() == CONTENT_ID_LEN
+        && content_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && is_component_tag(tag)
 }
 
 fn is_component_asset_file_name(name: &str) -> bool {
     let Some(tag) = name.strip_suffix(".webui.js") else {
         return false;
     };
+    is_component_tag(tag)
+}
+
+fn is_component_tag(tag: &str) -> bool {
     let bytes = tag.as_bytes();
     !bytes.is_empty()
         && bytes.contains(&b'-')
@@ -171,6 +217,7 @@ impl<'a> Publication<'a> {
                 if current_files.contains(file.as_str())
                     || previous_roots.contains(file.as_str()) != roots
                     || !is_owned_file_name(file)
+                    || file.starts_with("components/")
                 {
                     continue;
                 }
@@ -178,6 +225,19 @@ impl<'a> Publication<'a> {
                 if destination.is_file() {
                     self.back_up(file, &destination)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_retired(&mut self, previous: &PublishedFiles) -> Result<()> {
+        for file in &previous.retired {
+            if !file.starts_with("components/") || !is_owned_file_name(file) {
+                continue;
+            }
+            let destination = self.output_dir.join(file);
+            if destination.is_file() {
+                self.back_up(file, &destination)?;
             }
         }
         Ok(())
@@ -196,6 +256,24 @@ impl<'a> Publication<'a> {
                     "Cannot publish component asset over non-file {}",
                     destination.display()
                 );
+            }
+            if relative.starts_with("components/") {
+                let source_content = fs::read(&source).with_context(|| {
+                    format!("Failed to read staged component asset {}", source.display())
+                })?;
+                let destination_content = fs::read(&destination).with_context(|| {
+                    format!(
+                        "Failed to read published component asset {}",
+                        destination.display()
+                    )
+                })?;
+                if source_content == destination_content {
+                    fs::remove_file(source).with_context(|| {
+                        format!("Failed to discard unchanged component asset {}", relative)
+                    })?;
+                    return Ok(());
+                }
+                anyhow::bail!("Component asset content hash collision for {relative}");
             }
             self.back_up(relative, &destination)?;
         } else {
@@ -267,11 +345,14 @@ mod tests {
 
     #[test]
     fn publish_replaces_complete_generation_and_removes_stale_files() {
+        const OLD_PAYLOAD: &str = "components/old-card.aaaaaaaaaaaaaaaa.webui.js";
+        const NEW_PAYLOAD: &str = "components/new-card.bbbbbbbbbbbbbbbb.webui.js";
+        const NEXT_PAYLOAD: &str = "components/next-card.cccccccccccccccc.webui.js";
         let output = TempDir::new().unwrap();
         publish(
             output.path(),
             &[
-                file("component-old-card.webui.js", "old component"),
+                file(OLD_PAYLOAD, "old component"),
                 file("old-root.webui.js", "old root"),
             ],
         )
@@ -281,18 +362,31 @@ mod tests {
         publish(
             output.path(),
             &[
-                file("components/new-card.webui.js", "new component"),
+                file(NEW_PAYLOAD, "new component"),
                 file("new-root.webui.js", "new root"),
             ],
         )
         .unwrap();
 
-        assert!(!output.path().join("component-old-card.webui.js").exists());
         assert!(!output.path().join("old-root.webui.js").exists());
-        assert!(output.path().join("components/new-card.webui.js").is_file());
+        assert!(output.path().join(OLD_PAYLOAD).is_file());
+        assert!(output.path().join(NEW_PAYLOAD).is_file());
         assert!(output.path().join("new-root.webui.js").is_file());
         let manifest = read_manifest(output.path()).unwrap();
         assert_eq!(manifest.roots, ["new-root.webui.js"]);
+        assert_eq!(manifest.retired, [OLD_PAYLOAD]);
+
+        publish(
+            output.path(),
+            &[
+                file(NEXT_PAYLOAD, "next component"),
+                file("next-root.webui.js", "next root"),
+            ],
+        )
+        .unwrap();
+        assert!(!output.path().join(OLD_PAYLOAD).exists());
+        assert!(output.path().join(NEW_PAYLOAD).is_file());
+        assert!(output.path().join(NEXT_PAYLOAD).is_file());
         assert_eq!(
             fs::read_to_string(output.path().join("application.js")).unwrap(),
             "owned by app"
@@ -316,5 +410,39 @@ mod tests {
             "old first"
         );
         assert!(!output.path().join("missing.webui.js").exists());
+    }
+
+    #[test]
+    fn finish_failure_rolls_back_asset_generation() {
+        let output = TempDir::new().unwrap();
+        publish(output.path(), &[file("stable-root.webui.js", "old root")]).unwrap();
+
+        let error = publish_with(
+            output.path(),
+            &[file("stable-root.webui.js", "new root")],
+            || anyhow::bail!("metafile commit failed"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("metafile commit failed"));
+        assert_eq!(
+            fs::read_to_string(output.path().join("stable-root.webui.js")).unwrap(),
+            "old root"
+        );
+    }
+
+    #[test]
+    fn content_hash_collision_preserves_published_payload() {
+        const PAYLOAD: &str = "components/test-card.0000000100000000.webui.js";
+        let output = TempDir::new().unwrap();
+        publish(output.path(), &[file(PAYLOAD, "a")]).unwrap();
+
+        let error = publish(output.path(), &[file(PAYLOAD, "b")]).unwrap_err();
+
+        assert!(error.to_string().contains("content hash collision"));
+        assert_eq!(
+            fs::read_to_string(output.path().join(PAYLOAD)).unwrap(),
+            "a"
+        );
     }
 }

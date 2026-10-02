@@ -473,7 +473,14 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
         })?;
     }
     for file in &result.component_asset_files {
-        fs::write(out_dir.join(&file.name), &file.content).map_err(|source| WebUIError::Io {
+        let path = out_dir.join(&file.name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| WebUIError::Io {
+                context: format!("Failed to create {}", parent.display()),
+                source,
+            })?;
+        }
+        fs::write(&path, &file.content).map_err(|source| WebUIError::Io {
             context: format!(
                 "Failed to write component asset {} to {}",
                 file.name,
@@ -1059,6 +1066,17 @@ mod tests {
             app_dir: app_dir.to_path_buf(),
             ..BuildOptions::default()
         }
+    }
+
+    fn component_payload<'a>(files: &'a [ComponentAssetFile], tag: &str) -> &'a ComponentAssetFile {
+        let mut prefix = String::with_capacity(tag.len() + 12);
+        prefix.push_str("components/");
+        prefix.push_str(tag);
+        prefix.push('.');
+        files
+            .iter()
+            .find(|file| file.name.starts_with(&prefix))
+            .unwrap()
     }
 
     fn light_options(app_dir: &Path) -> BuildOptions {
@@ -2674,6 +2692,7 @@ mod tests {
                 "asset-only component <{tag}> must not be serialized"
             );
         }
+
         assert!(result.protocol.fragments.contains_key("app-shell"));
         assert!(result.protocol.components.contains_key("entry-badge"));
         assert_eq!(
@@ -2696,22 +2715,11 @@ mod tests {
             ]
         );
 
-        let names: Vec<&str> = result
-            .component_asset_files
-            .iter()
-            .map(|file| file.name.as_str())
-            .collect();
+        assert_eq!(result.component_asset_files.len(), 7);
+        assert_eq!(result.component_asset_files[0].name, "lazy-panel.webui.js");
         assert_eq!(
-            names,
-            vec![
-                "lazy-panel.webui.js",
-                "secondary-panel.webui.js",
-                "components/lazy-panel.webui.js",
-                "components/panel-only.webui.js",
-                "components/secondary-only.webui.js",
-                "components/secondary-panel.webui.js",
-                "components/shared-detail.webui.js",
-            ]
+            result.component_asset_files[1].name,
+            "secondary-panel.webui.js"
         );
         let lazy = &result.component_asset_files[0].content;
         assert!(lazy.contains(r#""version":4"#));
@@ -2721,25 +2729,46 @@ mod tests {
         assert!(!lazy.contains(
             r#""entry-badge":{"kind":"link","href":new URL("entry-badge.css",import.meta.url).href}"#
         ));
-        assert!(lazy.contains(r#"from "./components/lazy-panel.webui.js";"#));
-        assert!(lazy.contains(r#"from "./components/panel-only.webui.js";"#));
-        assert!(lazy.contains(r#"from "./components/shared-detail.webui.js";"#));
+        for tag in ["lazy-panel", "panel-only", "shared-detail"] {
+            let payload = component_payload(&result.component_asset_files, tag);
+            assert!(lazy.contains(&payload.name));
+        }
         assert!(!lazy.contains("@microsoft/webui-framework/component-asset-runtime.js"));
         assert!(!lazy.contains("export const preload"));
         assert!(!lazy.contains("export const create"));
         assert!(!lazy.contains(r#""templates":{"entry-badge":"#));
         assert!(!lazy.contains(r#""templates":{"shared-detail":"#));
 
-        let shared = result
-            .component_asset_files
-            .iter()
-            .find(|file| file.name == "components/shared-detail.webui.js")
-            .unwrap();
+        let shared = component_payload(&result.component_asset_files, "shared-detail");
         assert!(shared.content.contains(r#""kind":"component""#));
         assert!(shared.content.contains(r#""components":["shared-detail"]"#));
         assert!(shared.content.contains(r#""templates":{"shared-detail":"#));
         assert!(shared.content.contains(r#""href":"shared-detail.css""#));
         assert!(!shared.content.contains("import.meta.url"));
+    }
+
+    #[test]
+    fn build_to_disk_creates_component_asset_parent_directories() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let out = tempfile::tempdir().unwrap();
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+        build_to_disk(options, out.path()).unwrap();
+
+        assert!(out.path().join("lazy-panel.webui.js").is_file());
+        assert!(fs::read_dir(out.path().join("components"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("lazy-panel.")));
     }
 
     #[test]
@@ -2771,36 +2800,24 @@ mod tests {
         ];
 
         let result = build(options).unwrap();
-        let names: Vec<&str> = result
-            .component_asset_files
-            .iter()
-            .map(|file| file.name.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "root-a.webui.js",
-                "root-b.webui.js",
-                "root-c.webui.js",
-                "components/only-a.webui.js",
-                "components/only-b.webui.js",
-                "components/only-c.webui.js",
-                "components/root-a.webui.js",
-                "components/root-b.webui.js",
-                "components/root-c.webui.js",
-                "components/shared-ab.webui.js",
-                "components/shared-all.webui.js",
-            ]
-        );
+        assert_eq!(result.component_asset_files.len(), 11);
+        assert_eq!(result.component_asset_files[0].name, "root-a.webui.js");
+        assert_eq!(result.component_asset_files[1].name, "root-b.webui.js");
+        assert_eq!(result.component_asset_files[2].name, "root-c.webui.js");
+        let only_a = component_payload(&result.component_asset_files, "only-a");
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#"from "./components/only-a.webui.js";"#));
-        assert!(result.component_asset_files[9]
-            .content
-            .contains(r#""components":["shared-ab"]"#));
-        assert!(result.component_asset_files[10]
-            .content
-            .contains(r#""components":["shared-all"]"#));
+            .contains(&only_a.name));
+        assert!(
+            component_payload(&result.component_asset_files, "shared-ab")
+                .content
+                .contains(r#""components":["shared-ab"]"#)
+        );
+        assert!(
+            component_payload(&result.component_asset_files, "shared-all")
+                .content
+                .contains(r#""components":["shared-all"]"#)
+        );
     }
 
     #[test]
@@ -2824,11 +2841,7 @@ mod tests {
         let reverse = build_files(vec!["root-b".to_string(), "root-a".to_string()]);
 
         assert_eq!(forward, reverse);
-        let shared_name = forward
-            .iter()
-            .find(|file| file.name == "components/shared-detail.webui.js")
-            .map(|file| file.name.as_str())
-            .unwrap();
+        let shared_name = &component_payload(&forward, "shared-detail").name;
         assert!(forward[0].content.contains(shared_name));
         assert!(forward[1].content.contains(shared_name));
     }
@@ -2909,9 +2922,10 @@ mod tests {
             value["outputs"]["root-a.webui.js"]["entryPoint"],
             "webui:component/root-a"
         );
+        let shared = component_payload(&result.component_asset_files, "shared-detail");
         assert_eq!(
             value["outputs"]["root-a.webui.js"]["imports"][1]["path"],
-            "components/shared-detail.webui.js"
+            shared.name
         );
         assert_eq!(
             value["outputs"]["root-a.webui.js"]["imports"][1]["kind"],
@@ -2926,14 +2940,8 @@ mod tests {
             serde_json::json!(["default"])
         );
         assert_eq!(
-            value["outputs"]["components/shared-detail.webui.js"]["bytes"],
-            result
-                .component_asset_files
-                .iter()
-                .find(|file| file.name == "components/shared-detail.webui.js")
-                .unwrap()
-                .content
-                .len()
+            value["outputs"][&shared.name]["bytes"],
+            shared.content.len()
         );
     }
 

@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 use rayon::prelude::*;
+use std::fmt::Write;
 use webui_protocol::WebUIProtocol;
 
 use super::graph::{AssetGraphPlan, RootPlan};
@@ -29,7 +30,7 @@ pub(super) fn render_component_asset_graph(
         emit_metafile,
         protocol,
     };
-    let payloads_rendered = if plan.emitted_components.len() >= PARALLEL_RENDER_THRESHOLD {
+    let mut payloads_rendered = if plan.emitted_components.len() >= PARALLEL_RENDER_THRESHOLD {
         let payload_results: Vec<Result<RenderedAsset, WebUIError>> = plan
             .emitted_components
             .par_iter()
@@ -55,6 +56,7 @@ pub(super) fn render_component_asset_graph(
         }
         rendered
     };
+    content_address_payloads(&mut payloads_rendered)?;
 
     let roots = if plan.roots.len() >= PARALLEL_RENDER_THRESHOLD {
         let root_results: Vec<Result<RenderedAsset, WebUIError>> = plan
@@ -96,6 +98,37 @@ pub(super) fn render_component_asset_graph(
         }
     }
     Ok(RenderedGraph { files, outputs })
+}
+
+fn content_address_payloads(payloads: &mut [RenderedAsset]) -> Result<(), WebUIError> {
+    for payload in payloads {
+        let Some(stem) = payload.file.name.strip_suffix(".webui.js") else {
+            return Err(WebUIError::InvalidBuildOptions(
+                "generated component payload has an invalid filename".to_string(),
+            ));
+        };
+        let content = payload.file.content.as_bytes();
+        let content_len = u32::try_from(content.len()).map_err(|_| {
+            WebUIError::InvalidBuildOptions(
+                "generated component payload exceeds the supported size".to_string(),
+            )
+        })?;
+        let content_crc = crc32fast::hash(content);
+        let mut name = String::with_capacity(stem.len() + 26);
+        name.push_str(stem);
+        name.push('.');
+        write!(&mut name, "{content_len:08x}{content_crc:08x}").map_err(|_| {
+            WebUIError::InvalidBuildOptions(
+                "failed to encode component payload content hash".to_string(),
+            )
+        })?;
+        name.push_str(".webui.js");
+        payload.file.name = name.clone();
+        if let Some(output) = &mut payload.output {
+            output.name = name;
+        }
+    }
+    Ok(())
 }
 
 fn pending_component(component: usize, plan: &AssetGraphPlan) -> PendingAsset {
