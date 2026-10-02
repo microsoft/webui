@@ -18,7 +18,7 @@ use super::command::execute_window_command;
 use super::event::{logical_dimension, physical_to_logical, size_event_transition};
 use super::nonclient::{
     defer_startup_close, initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame,
-    startup_background, startup_is_ready,
+    startup_background, startup_is_ready, uses_win32_overlay,
 };
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
@@ -307,10 +307,18 @@ fn dispatch_size_changed(hwnd: HWND, w_param: WPARAM) {
 
 pub(super) fn refresh_frame(hwnd: HWND) {
     with_window_state(hwnd, |state| {
-        if matches!(state.options.titlebar, crate::TitlebarStyle::None) {
-            if let Err(error) = super::create::extend_frameless_frame(hwnd) {
-                eprintln!("WebUI: failed to refresh the frameless DWM border: {error}");
+        let frame = match state.options.titlebar {
+            crate::TitlebarStyle::Overlay { height } if uses_win32_overlay(hwnd) => {
+                super::create::extend_overlay_frame(hwnd, height)
             }
+            crate::TitlebarStyle::HiddenInset if uses_win32_overlay(hwnd) => {
+                super::create::extend_overlay_frame(hwnd, 0)
+            }
+            crate::TitlebarStyle::None => super::create::extend_frameless_frame(hwnd),
+            _ => Ok(()),
+        };
+        if let Err(error) = frame {
+            eprintln!("WebUI: failed to refresh the custom DWM frame: {error}");
         }
         if let Err(error) = resize_content(hwnd, state) {
             eprintln!("WebUI: failed to refresh native caption controls: {error}");

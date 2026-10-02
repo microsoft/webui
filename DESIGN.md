@@ -403,7 +403,10 @@ window controls only to the current main document of the verified, live
 local-server origin; native titlebars and separately sandboxed preview
 subframes receive none. An inherited-origin child able to script its parent
 shares the parent's browser authority and is not a boundary for untrusted
-content.
+content. On Windows, standard custom-titlebar controls stay in the Win32/DWM
+frame so ordinary startup does not initialize a second windowing runtime;
+the Windows App SDK is reserved for the explicitly requested tall caption
+button mode that Win32 does not provide.
 This is independent of native application IPC, which requires a separately
 proven owned listener and current main document. On Linux, a top-frame-only
 isolated content world mediates the
