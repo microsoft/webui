@@ -10,9 +10,7 @@
 //! `NSObject`/`NSApplicationDelegate`/`NSWindowDelegate` trait implementation
 //! that AppKit calls into directly.
 
-#[cfg(feature = "local-server")]
-use std::cell::RefCell;
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 
 use crate::{
     DesktopEvent, DesktopShellConfig, EventRegistry, EventResponse, WindowId, WindowOptions,
@@ -36,7 +34,7 @@ use objc2_web_kit::WKWebView;
 
 use super::geometry::{clamp_coordinate, clamp_dimension};
 use super::host_message::DesktopHostMessageHandler;
-use super::launch::{build_window_and_webview, persist_window_state_if_enabled};
+use super::launch::{build_window_and_webview, persist_window_state_if_enabled, PreparedWebview};
 use super::menu::NativeMenu;
 use super::navigation::DesktopNavigationDelegate;
 use super::scheme::DesktopSchemeHandler;
@@ -84,6 +82,8 @@ pub(super) struct AppDelegateIvars {
     pub(in crate::macos) command_wake: OnceCell<super::commands::CommandWake>,
     #[cfg(feature = "application-ipc")]
     pub(in crate::macos) ipc: Option<std::rc::Rc<super::ipc::MacIpc>>,
+    /// Webview built ahead of `applicationDidFinishLaunching:` for bundled apps.
+    pub(in crate::macos) prepared: RefCell<Option<PreparedWebview>>,
     pub(in crate::macos) window: OnceCell<Retained<DesktopWindow>>,
     pub(in crate::macos) webview: OnceCell<Retained<WKWebView>>,
     pub(in crate::macos) scheme_handler: OnceCell<Retained<DesktopSchemeHandler>>,
@@ -138,7 +138,11 @@ define_class!(
                 let Ok(app) = app_obj.downcast::<NSApplication>() else {
                     return;
                 };
-                build_window_and_webview(self, &app);
+                // A bundled app already built and showed its window before
+                // `run()`, so only the unprepared paths build it here.
+                if self.ivars().window.get().is_none() {
+                    build_window_and_webview(self, &app);
+                }
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
                 #[allow(deprecated)]
                 app.activateIgnoringOtherApps(true);
@@ -586,6 +590,7 @@ impl DesktopAppDelegate {
             command_wake: OnceCell::new(),
             #[cfg(feature = "application-ipc")]
             ipc: options.ipc,
+            prepared: RefCell::new(None),
             window: OnceCell::new(),
             webview: OnceCell::new(),
             scheme_handler: OnceCell::new(),
