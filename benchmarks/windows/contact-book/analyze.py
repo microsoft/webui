@@ -30,10 +30,8 @@ def summarize(raw):
     for metric in METRICS:
         electron = [pair["electron"][metric] for pair in pairs]
         webui = [pair["webui"][metric] for pair in pairs]
-        combined = [a for values in zip(electron, webui) for a in values]
-        scores = modified_z_scores(combined)
-        electron_scores = scores[::2]
-        webui_scores = scores[1::2]
+        electron_scores = modified_z_scores(electron)
+        webui_scores = modified_z_scores(webui)
         excluded = [
             pair["pair"]
             for pair, electron_score, webui_score in zip(
