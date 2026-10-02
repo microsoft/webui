@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "source": "benchmarks/macos/contact-book",
+  "host": "macOS",
+  "pair_count": 20,
+  "warmups_per_host": 1,
+  "outlier_policy": {
+    "method": "per-metric paired exclusion using modified z-score",
+    "threshold": 3.5,
+    "rule": "Exclude a pair when either host exceeds the absolute modified z-score threshold; no samples are hand-selected."
+  },
+  "metrics": {
+    "dashboard_tti_ms": {
+      "available": true,
+      "electron": {
+        "median": 363.091625,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 357.58491649999996,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "process_start_to_fcp_ms": {
+      "available": true,
+      "electron": {
+        "median": 346.7021484375,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 242.60498046875,
+        "unit": "ms"
+      },
+      "retained_pairs": 19,
+      "excluded_pairs": [
+        3
+      ],
+      "threshold": 3.5
+    },
+    "host_process_peak_rss_bytes": {
+      "available": true,
+      "electron": {
+        "median": 169.515625,
+        "unit": "MiB"
+      },
+      "webui": {
+        "median": 102.5390625,
+        "unit": "MiB"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "process_tree_cpu_ms": {
+      "available": true,
+      "electron": {
+        "median": 599.6029999999996,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 175.33749999999992,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "close_to_exit_ms": {
+      "available": true,
+      "electron": {
+        "median": 154.79316600000038,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 14.305041999999958,
+        "unit": "ms"
+      },
+      "retained_pairs": 19,
+      "excluded_pairs": [
+        4
+      ],
+      "threshold": 3.5
+    },
+    "process_start_to_window_visible_ms": {
+      "available": false,
+      "reason": "The macOS harness has no equivalent visible-window receipt. Electron emits Ready before BrowserWindow construction, and the native Ready event is not compositing proof."
+    }
+  }
+}
