@@ -1,0 +1,998 @@
+{
+  "schema": 1,
+  "source": "benchmarks/windows/contact-book",
+  "host": "Windows",
+  "pairs": [
+    {
+      "pair": 1,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 497.9375,
+        "launcher_to_host_main_ms": 146.84349999949336,
+        "host_process_peak_rss_bytes": 108974080,
+        "process_tree_cpu_ms": 1140.625,
+        "close_to_exit_ms": 68.98669999837875,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918745950.2,
+          "hydrationMs": 2.800000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 790.01123046875,
+        "launcher_to_host_main_ms": 438.95830000191927,
+        "host_process_peak_rss_bytes": 41103360,
+        "process_tree_cpu_ms": 1796.875,
+        "close_to_exit_ms": 50.93260000273585,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918747443.9001,
+          "hydrationMs": 2.399999998509884,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 796.27587890625,
+        "launcher_to_host_main_ms": 440.85830000042915,
+        "host_process_peak_rss_bytes": 40931328,
+        "process_tree_cpu_ms": 1625.0,
+        "close_to_exit_ms": 51.85859999805689,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918748811.5,
+          "hydrationMs": 3.300000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 496.010986328125,
+        "launcher_to_host_main_ms": 143.9015999995172,
+        "host_process_peak_rss_bytes": 111042560,
+        "process_tree_cpu_ms": 812.5,
+        "close_to_exit_ms": 81.84009999781847,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918749992.5,
+          "hydrationMs": 2.400000002235174,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 517.570556640625,
+        "launcher_to_host_main_ms": 155.09189999848604,
+        "host_process_peak_rss_bytes": 114765824,
+        "process_tree_cpu_ms": 1000.0,
+        "close_to_exit_ms": 99.52389999851584,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918751112.9001,
+          "hydrationMs": 2.800000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 781.95947265625,
+        "launcher_to_host_main_ms": 422.72230000048876,
+        "host_process_peak_rss_bytes": 40525824,
+        "process_tree_cpu_ms": 1937.5,
+        "close_to_exit_ms": 51.325799997895956,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918752515.4,
+          "hydrationMs": 3.300000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 4,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 803.035400390625,
+        "launcher_to_host_main_ms": 436.3191999979317,
+        "host_process_peak_rss_bytes": 40198144,
+        "process_tree_cpu_ms": 1828.125,
+        "close_to_exit_ms": 50.31089999899268,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918753892.9001,
+          "hydrationMs": 2.399999998509884,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 529.809814453125,
+        "launcher_to_host_main_ms": 159.55840000137687,
+        "host_process_peak_rss_bytes": 108752896,
+        "process_tree_cpu_ms": 1000.0,
+        "close_to_exit_ms": 85.58350000157952,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918754994.2998,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 5,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 533.868896484375,
+        "launcher_to_host_main_ms": 151.58339999988675,
+        "host_process_peak_rss_bytes": 114618368,
+        "process_tree_cpu_ms": 1093.75,
+        "close_to_exit_ms": 82.52119999751449,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918756132.5,
+          "hydrationMs": 2.599999997764826,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 811.197265625,
+        "launcher_to_host_main_ms": 446.4708000011742,
+        "host_process_peak_rss_bytes": 40906752,
+        "process_tree_cpu_ms": 1984.375,
+        "close_to_exit_ms": 50.70109999924898,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918757653.8,
+          "hydrationMs": 2.399999998509884,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 6,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 776.291748046875,
+        "launcher_to_host_main_ms": 414.3563000001013,
+        "host_process_peak_rss_bytes": 39944192,
+        "process_tree_cpu_ms": 1750.0,
+        "close_to_exit_ms": 50.673699997365475,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918759103.9,
+          "hydrationMs": 3.099999997764826,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 505.7265625,
+        "launcher_to_host_main_ms": 149.68330000340939,
+        "host_process_peak_rss_bytes": 110137344,
+        "process_tree_cpu_ms": 1140.625,
+        "close_to_exit_ms": 66.13540000095963,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918760182,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 7,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 512.222900390625,
+        "launcher_to_host_main_ms": 154.458599999547,
+        "host_process_peak_rss_bytes": 113106944,
+        "process_tree_cpu_ms": 968.75,
+        "close_to_exit_ms": 67.1021999977529,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918761382,
+          "hydrationMs": 2.599999997764826,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 765.43603515625,
+        "launcher_to_host_main_ms": 413.94699999690056,
+        "host_process_peak_rss_bytes": 40280064,
+        "process_tree_cpu_ms": 1562.5,
+        "close_to_exit_ms": 51.186099998652935,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918762840.5999,
+          "hydrationMs": 3.100000001490116,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 8,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 782.14013671875,
+        "launcher_to_host_main_ms": 421.08809999749064,
+        "host_process_peak_rss_bytes": 39936000,
+        "process_tree_cpu_ms": 1781.25,
+        "close_to_exit_ms": 52.60710000246763,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918764311.5,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 503.7353515625,
+        "launcher_to_host_main_ms": 149.56300000101328,
+        "host_process_peak_rss_bytes": 108314624,
+        "process_tree_cpu_ms": 890.625,
+        "close_to_exit_ms": 67.67709999904037,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918765388.8,
+          "hydrationMs": 2.699999999254942,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 9,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 506.81494140625,
+        "launcher_to_host_main_ms": 148.90390000119805,
+        "host_process_peak_rss_bytes": 110100480,
+        "process_tree_cpu_ms": 1062.5,
+        "close_to_exit_ms": 67.8830000013113,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918766485.6,
+          "hydrationMs": 2.7000000029802322,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 783.89306640625,
+        "launcher_to_host_main_ms": 433.92799999937415,
+        "host_process_peak_rss_bytes": 40259584,
+        "process_tree_cpu_ms": 1765.625,
+        "close_to_exit_ms": 51.27149999886751,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918767966.9,
+          "hydrationMs": 3.100000001490116,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 10,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 776.147705078125,
+        "launcher_to_host_main_ms": 420.25989999994636,
+        "host_process_peak_rss_bytes": 41271296,
+        "process_tree_cpu_ms": 1859.375,
+        "close_to_exit_ms": 51.95830000191927,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918769314.6,
+          "hydrationMs": 3.400000002235174,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 546.2802734375,
+        "launcher_to_host_main_ms": 150.47120000049472,
+        "host_process_peak_rss_bytes": 109977600,
+        "process_tree_cpu_ms": 1171.875,
+        "close_to_exit_ms": 70.00459999963641,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918770433.0999,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 11,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 504.6259765625,
+        "launcher_to_host_main_ms": 150.8200999982655,
+        "host_process_peak_rss_bytes": 110579712,
+        "process_tree_cpu_ms": 1031.25,
+        "close_to_exit_ms": 67.50079999864101,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918771640.8,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 778.299072265625,
+        "launcher_to_host_main_ms": 416.9747999981046,
+        "host_process_peak_rss_bytes": 40140800,
+        "process_tree_cpu_ms": 1656.25,
+        "close_to_exit_ms": 52.483999997377396,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918773007.7,
+          "hydrationMs": 3.2999999970197678,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 12,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 765.1279296875,
+        "launcher_to_host_main_ms": 401.8744999989867,
+        "host_process_peak_rss_bytes": 41213952,
+        "process_tree_cpu_ms": 1671.875,
+        "close_to_exit_ms": 51.23659999668598,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918774347.7002,
+          "hydrationMs": 2.300000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 513.45458984375,
+        "launcher_to_host_main_ms": 150.73510000109673,
+        "host_process_peak_rss_bytes": 110325760,
+        "process_tree_cpu_ms": 906.25,
+        "close_to_exit_ms": 67.68279999867082,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918775432.5,
+          "hydrationMs": 2.599999997764826,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 13,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 504.27978515625,
+        "launcher_to_host_main_ms": 150.7800000011921,
+        "host_process_peak_rss_bytes": 112820224,
+        "process_tree_cpu_ms": 968.75,
+        "close_to_exit_ms": 66.37020000070333,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918776525.2002,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 780.763671875,
+        "launcher_to_host_main_ms": 411.6296999976039,
+        "host_process_peak_rss_bytes": 40833024,
+        "process_tree_cpu_ms": 1750.0,
+        "close_to_exit_ms": 50.7917999997735,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918777893.2002,
+          "hydrationMs": 2.300000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 14,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 786.8837890625,
+        "launcher_to_host_main_ms": 426.0886000022292,
+        "host_process_peak_rss_bytes": 40759296,
+        "process_tree_cpu_ms": 1687.5,
+        "close_to_exit_ms": 52.20549999922514,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918779252.7002,
+          "hydrationMs": 2.399999998509884,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 499.05029296875,
+        "launcher_to_host_main_ms": 144.29839999973774,
+        "host_process_peak_rss_bytes": 108777472,
+        "process_tree_cpu_ms": 1031.25,
+        "close_to_exit_ms": 68.03819999843836,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918780324.8,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 15,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 499.79638671875,
+        "launcher_to_host_main_ms": 146.06180000305176,
+        "host_process_peak_rss_bytes": 114401280,
+        "process_tree_cpu_ms": 812.5,
+        "close_to_exit_ms": 82.9294999986887,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918781526,
+          "hydrationMs": 2.2999999970197678,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 800.263427734375,
+        "launcher_to_host_main_ms": 434.8024000003934,
+        "host_process_peak_rss_bytes": 40144896,
+        "process_tree_cpu_ms": 1843.75,
+        "close_to_exit_ms": 50.98420000076294,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918782930.5,
+          "hydrationMs": 2.699999999254942,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 16,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 786.78955078125,
+        "launcher_to_host_main_ms": 427.2650999985635,
+        "host_process_peak_rss_bytes": 40140800,
+        "process_tree_cpu_ms": 1796.875,
+        "close_to_exit_ms": 50.232200000435114,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918784290.5,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 500.6015625,
+        "launcher_to_host_main_ms": 145.124200001359,
+        "host_process_peak_rss_bytes": 112885760,
+        "process_tree_cpu_ms": 1140.625,
+        "close_to_exit_ms": 68.08690000325441,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918785362.7,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 17,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 503.903564453125,
+        "launcher_to_host_main_ms": 149.69060000032187,
+        "host_process_peak_rss_bytes": 108584960,
+        "process_tree_cpu_ms": 1156.25,
+        "close_to_exit_ms": 66.89120000228286,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918786456,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 773.232666015625,
+        "launcher_to_host_main_ms": 418.3716000020504,
+        "host_process_peak_rss_bytes": 40460288,
+        "process_tree_cpu_ms": 1953.125,
+        "close_to_exit_ms": 51.2483000010252,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918787816.3,
+          "hydrationMs": 2.300000000745058,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 18,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 792.327392578125,
+        "launcher_to_host_main_ms": 433.1688000001013,
+        "host_process_peak_rss_bytes": 40783872,
+        "process_tree_cpu_ms": 1796.875,
+        "close_to_exit_ms": 50.926500000059605,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918789287.8,
+          "hydrationMs": 3.2999999970197678,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 504.857666015625,
+        "launcher_to_host_main_ms": 147.88989999890327,
+        "host_process_peak_rss_bytes": 112660480,
+        "process_tree_cpu_ms": 1140.625,
+        "close_to_exit_ms": 87.03139999881387,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918790469.9,
+          "hydrationMs": 2.7000000029802322,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 19,
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 493.800537109375,
+        "launcher_to_host_main_ms": 144.67089999839664,
+        "host_process_peak_rss_bytes": 109891584,
+        "process_tree_cpu_ms": 1046.875,
+        "close_to_exit_ms": 80.3103999979794,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918791571.8,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 809.961181640625,
+        "launcher_to_host_main_ms": 448.2161999978125,
+        "host_process_peak_rss_bytes": 40161280,
+        "process_tree_cpu_ms": 1656.25,
+        "close_to_exit_ms": 52.2909999974072,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918792984,
+          "hydrationMs": 3.099999997764826,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    },
+    {
+      "pair": 20,
+      "webui": {
+        "host": "webui",
+        "dashboard_tti_ms": 789.713623046875,
+        "launcher_to_host_main_ms": 429.62900000065565,
+        "host_process_peak_rss_bytes": 41046016,
+        "process_tree_cpu_ms": 1609.375,
+        "close_to_exit_ms": 52.0625,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918794348.5,
+          "hydrationMs": 2.5,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 3,
+          "resourceCount": 9,
+          "bodyBackground": "rgb(240, 242, 245)",
+          "dashboardText": "Recent Contacts"
+        }
+      },
+      "electron": {
+        "host": "electron",
+        "dashboard_tti_ms": 517.912841796875,
+        "launcher_to_host_main_ms": 150.05560000240803,
+        "host_process_peak_rss_bytes": 110571520,
+        "process_tree_cpu_ms": 1265.625,
+        "close_to_exit_ms": 69.26160000264645,
+        "readiness": {
+          "ok": true,
+          "readyEpochMs": 1790918795439.5,
+          "hydrationMs": 2.899999998509884,
+          "title": "Contact Book",
+          "pageTitle": "Dashboard",
+          "appReady": true,
+          "innerWidth": 1200,
+          "innerHeight": 800,
+          "devicePixelRatio": 1,
+          "stylesheetCount": 2,
+          "resourceCount": 9,
+          "bodyBackground": "rgba(0, 0, 0, 0)",
+          "dashboardText": "Recent Contacts"
+        }
+      }
+    }
+  ],
+  "method": {
+    "warmups_per_host": 1,
+    "pairs": 20,
+    "viewport": [
+      1200,
+      800
+    ],
+    "outlier_rule": "paired metric modified z-score absolute score > 3.5",
+    "rss": "main host process working set sampled during lifecycle",
+    "cpu": "Windows Job Object process-tree user plus kernel time"
+  }
+}
