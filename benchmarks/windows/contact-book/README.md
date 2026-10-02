@@ -2,9 +2,11 @@
 
 This harness compares the release Electron and WebUI desktop hosts using the
 same Contact Book bundle, state, 1200x800 window, and Dashboard readiness
-contract. It uses WebView2/Electron CDP for readiness, Win32 window discovery
-for launcher-to-host-main timing, and Windows Job Objects plus process-memory
-sampling for lifecycle CPU and host-process RSS.
+contract. Readiness requires hydration, loaded fonts, validated Dashboard
+content/styles/geometry, and two completed animation frames so the host is not
+closed on an incomplete first paint. It uses WebView2/Electron CDP for
+readiness, Win32 window discovery for launcher-to-host-main timing, and Windows
+Job Objects plus process-memory sampling for lifecycle CPU and host-process RSS.
 
 The native host resolves the manifest theme at startup. The harness gives
 Electron a per-run copy of the same immutable state with the same theme tokens
@@ -16,7 +18,7 @@ are not modified.
 - Windows with the WebView2 Runtime installed.
 - Node.js, pnpm, Python 3.11+, and the repository dependencies installed.
 - A release build of `microsoft-webui-node`.
-- A release build of `contact-book-desktop` with the `source` feature.
+- A release build of the desktop packager and packaged Contact Book host.
 - The Contact Book app and Electron launcher built in release-compatible mode.
 
 From the repository root:
@@ -27,11 +29,16 @@ pnpm --dir examples\app\contact-book-manager run build
 pnpm --dir examples\integration\electron run build
 cargo build --release -p microsoft-webui-node
 cargo build --release -p microsoft-webui-cli
-cargo build --release -p contact-book-desktop --features source
+cargo build --release -p microsoft-webui-desktop --features cli
 .\target\release\webui.exe build .\examples\app\contact-book-manager\src `
   --plugin=webui `
   --projection-manifest .\examples\app\contact-book-manager\dist\webui-projection.json `
   --out .\examples\app\contact-book-manager\dist
+.\target\release\webui-desktop.exe package `
+  .\examples\app\contact-book-manager `
+  --target windows-portable `
+  --out .\target\contact-book-benchmark-package `
+  --no-web-build
 ```
 
 Run one warmup per host followed by 20 alternating Electron/WebUI pairs:

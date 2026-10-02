@@ -506,7 +506,13 @@ def build_commands(root, port, profile):
     )
     electron_main = root / "examples" / "integration" / "electron" / "dist" / "main.js"
     electron_entry = root / "benchmarks" / "windows" / "contact-book" / "electron_entry.mjs"
-    native = root / "target" / "release" / "contact-book-desktop.exe"
+    native = (
+        root
+        / "target"
+        / "contact-book-benchmark-package"
+        / "Contact-Book-Manager-windows-portable"
+        / "contact-book-desktop.exe"
+    )
     addon = root / "target" / "release" / "webui_node.dll"
     electron_state = profile / "electron-state.json"
     write_themed_state(state, theme, electron_state)

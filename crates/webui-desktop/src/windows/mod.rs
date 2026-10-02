@@ -205,14 +205,15 @@ fn run_content(frame: FrameContent) -> Result<()> {
 
     let saved = state::load_saved_state(store.as_ref());
     let window_frame = FrameWindow::new(frame.window(), saved.as_ref())?;
-    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, frame.window())?;
-
     let profile = webview::browser_profile(frame.app_id())?;
     let environment = webview::create_environment(&profile.path).with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
     let content = window_frame.hwnd;
-    let controller = webview::create_controller(&environment, content)?;
+    let pending_controller = webview::begin_create_controller(&environment, content)?;
+    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, frame.window())?;
+    window_frame.show()?;
+    let controller = pending_controller.finish()?;
     webview::configure_controller_background(&controller, frame.window().background)?;
     webview::configure_window_effect(window_frame.hwnd, frame.window().effect);
     // SAFETY: The controller was created successfully, so it owns a WebView2.
@@ -343,11 +344,11 @@ fn run_content(frame: FrameContent) -> Result<()> {
         },
     )?;
     if matches!(&frame, FrameContent::Bundle(_)) {
-        webview::inject_drag_script(&webview)?;
+        let metrics = app_window.metrics_script();
+        webview::inject_bundle_script(&webview, metrics.as_deref())?;
     }
     // Local-server controls are a separate, document-nonce-bound host bridge,
     // never the packaged app's unconditional native command path.
-    app_window.install_metrics(&webview)?;
     let controls = matches!(&frame, FrameContent::Bundle(_));
     let needs_message_handler = controls;
     #[cfg(feature = "local-server")]
@@ -511,6 +512,13 @@ fn run_content(frame: FrameContent) -> Result<()> {
         });
     }
 
+    if nonclient::mark_startup_ready(window_frame.hwnd) {
+        // SAFETY: Startup is complete and the deferred close can now run
+        // through the normal state-aware destruction path.
+        unsafe { WindowsAndMessaging::DestroyWindow(window_frame.hwnd)? };
+        let _ = frame.events().dispatch(&DesktopEvent::Exiting);
+        return Ok(());
+    }
     window_frame.show()?;
     message::refresh_frame(window_frame.hwnd);
     // SAFETY: `window_frame.hwnd` is a live window owned by this thread.

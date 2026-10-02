@@ -130,35 +130,38 @@ pub(super) fn browser_profile(
     })
 }
 
-/// Create the WebView2 controller hosted inside the native window.
-pub(super) fn create_controller(
+pub(super) struct PendingController {
+    receiver: mpsc::Receiver<WindowsResult<ICoreWebView2Controller>>,
+}
+
+impl PendingController {
+    pub(super) fn finish(self) -> Result<ICoreWebView2Controller> {
+        webview2_com::wait_with_pump(self.receiver)?.map_err(Into::into)
+    }
+}
+
+pub(super) fn begin_create_controller(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
-) -> Result<ICoreWebView2Controller> {
+) -> Result<PendingController> {
     let (tx, rx) = mpsc::channel();
     let environment = environment.clone();
-    CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
-        Box::new(move |handler| {
-            // SAFETY: `hwnd` is a live window owned by this thread and the
-            // environment reference stays alive for the async operation.
-            unsafe {
-                environment
-                    .CreateCoreWebView2Controller(hwnd, &handler)
-                    .map_err(webview2_com::Error::WindowsError)
-            }
-        }),
-        Box::new(
-            move |error_code, controller: Option<ICoreWebView2Controller>| {
-                error_code?;
-                tx.send(controller.ok_or_else(|| WindowsError::from(E_FAIL)))
-                    .map_err(|_| WindowsError::from(E_FAIL))?;
-                Ok(())
-            },
-        ),
-    )?;
-    rx.recv()
-        .map_err(|_| anyhow::anyhow!("WebView2 controller creation was cancelled"))?
-        .map_err(Into::into)
+    let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+        move |error_code, controller: Option<ICoreWebView2Controller>| {
+            let result =
+                error_code.and_then(|_| controller.ok_or_else(|| WindowsError::from(E_FAIL)));
+            tx.send(result).map_err(|_| WindowsError::from(E_FAIL))?;
+            Ok(())
+        },
+    ));
+    // SAFETY: `hwnd` is a live window owned by this thread. WebView2 retains
+    // the completion handler and the cloned environment for the async operation.
+    unsafe {
+        environment
+            .CreateCoreWebView2Controller(hwnd, &handler)
+            .map_err(webview2_com::Error::WindowsError)?;
+    }
+    Ok(PendingController { receiver: rx })
 }
 
 /// Apply the developer-tools policy to the WebView2 settings.
@@ -428,10 +431,26 @@ pub(super) fn update_document_background(webview: &ICoreWebView2, color: Rgba) -
     Ok(())
 }
 
-/// Install the host bridge and drag-region helper script on every document.
-pub(super) fn inject_drag_script(webview: &ICoreWebView2) -> Result<()> {
-    add_document_script(webview, HOST_BRIDGE_SCRIPT)?;
-    add_document_script(webview, DRAG_REGION_SCRIPT)
+/// Install the packaged host bridge, drag regions, and optional titlebar
+/// metrics in one pre-document registration.
+pub(super) fn inject_bundle_script(webview: &ICoreWebView2, metrics: Option<&str>) -> Result<()> {
+    let source = bundle_document_script(metrics);
+    add_document_script(webview, &source)
+}
+
+fn bundle_document_script(metrics: Option<&str>) -> String {
+    let metrics_len = metrics.map_or(0, str::len);
+    let mut source = String::with_capacity(
+        HOST_BRIDGE_SCRIPT.len() + DRAG_REGION_SCRIPT.len() + metrics_len + 2,
+    );
+    source.push_str(HOST_BRIDGE_SCRIPT);
+    source.push(';');
+    source.push_str(DRAG_REGION_SCRIPT);
+    if let Some(metrics) = metrics {
+        source.push(';');
+        source.push_str(metrics);
+    }
+    source
 }
 
 /// Register a script that runs before any page script on every document.
@@ -660,5 +679,15 @@ mod tests {
     fn host_bridge_script_defines_the_documented_global() {
         assert!(HOST_BRIDGE_SCRIPT.contains("window.webuiHostPostMessage"));
         assert!(DRAG_REGION_SCRIPT.contains("window.webuiHostPostMessage"));
+    }
+
+    #[test]
+    fn bundle_document_script_combines_each_startup_script_once() {
+        let metrics = "window.testTitlebarMetrics=true;";
+        let source = bundle_document_script(Some(metrics));
+
+        assert_eq!(source.matches(HOST_BRIDGE_SCRIPT).count(), 1);
+        assert_eq!(source.matches(DRAG_REGION_SCRIPT).count(), 1);
+        assert_eq!(source.matches(metrics).count(), 1);
     }
 }

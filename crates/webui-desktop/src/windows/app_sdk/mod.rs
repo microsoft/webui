@@ -92,15 +92,11 @@ impl WindowFrame {
         Ok(frame)
     }
 
-    pub(super) fn install_metrics(&self, webview: &ICoreWebView2) -> Result<()> {
-        if let Some(metrics) = self
-            .overlay
+    pub(super) fn metrics_script(&self) -> Option<String> {
+        self.overlay
             .as_ref()
             .and_then(|caption| caption.metrics.get())
-        {
-            crate::windows::webview::add_document_script(webview, &metrics.script())?;
-        }
-        Ok(())
+            .map(metrics::Metrics::script)
     }
 
     pub(super) fn publish_metrics(&self, webview: &ICoreWebView2) -> Result<()> {
