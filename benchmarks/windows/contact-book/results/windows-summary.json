@@ -1,16 +1,42 @@
 {
-  "schema": 1,
+  "schema": 2,
   "source": "benchmarks/windows/contact-book",
   "host": "Windows",
   "pair_count": 20,
   "metrics": {
     "dashboard_tti_ms": {
       "electron": {
-        "median": 465.94091796875,
+        "median": 496.6533203125,
         "unit": "ms"
       },
       "webui": {
-        "median": 567.718017578125,
+        "median": 564.5255126953125,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "process_start_to_window_visible_ms": {
+      "electron": {
+        "median": 175.97754999995232,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 135.27884999662638,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "process_start_to_fcp_ms": {
+      "electron": {
+        "median": 465.8740234375,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 530.75341796875,
         "unit": "ms"
       },
       "retained_pairs": 19,
@@ -19,39 +45,31 @@
       ],
       "threshold": 3.5
     },
-    "launcher_to_host_main_ms": {
-      "electron": {
-        "median": 177.03435000777245,
-        "unit": "ms"
-      },
-      "webui": {
-        "median": 155.09350000321865,
-        "unit": "ms"
-      },
-      "retained_pairs": 20,
-      "excluded_pairs": [],
-      "threshold": 3.5
-    },
     "host_process_peak_rss_bytes": {
       "electron": {
-        "median": 111.6015625,
+        "median": 109.73046875,
         "unit": "MiB"
       },
       "webui": {
-        "median": 38.806640625,
+        "median": 37.7421875,
         "unit": "MiB"
       },
-      "retained_pairs": 20,
-      "excluded_pairs": [],
+      "retained_pairs": 16,
+      "excluded_pairs": [
+        1,
+        7,
+        11,
+        12
+      ],
       "threshold": 3.5
     },
     "process_tree_cpu_ms": {
       "electron": {
-        "median": 1132.8125,
+        "median": 1062.5,
         "unit": "ms"
       },
       "webui": {
-        "median": 1953.125,
+        "median": 1664.0625,
         "unit": "ms"
       },
       "retained_pairs": 20,
@@ -60,15 +78,18 @@
     },
     "close_to_exit_ms": {
       "electron": {
-        "median": 98.20509999990463,
+        "median": 73.73759999871254,
         "unit": "ms"
       },
       "webui": {
-        "median": 83.49559999257326,
+        "median": 55.13289999961853,
         "unit": "ms"
       },
-      "retained_pairs": 20,
-      "excluded_pairs": [],
+      "retained_pairs": 18,
+      "excluded_pairs": [
+        5,
+        6
+      ],
       "threshold": 3.5
     }
   }

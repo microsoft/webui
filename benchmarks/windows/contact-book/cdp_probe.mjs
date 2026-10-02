@@ -30,19 +30,6 @@ try {
   }
   if (!page) throw new Error('host page did not become available');
 
-  const cdpSession = await browser.contexts()[0].newCDPSession(page);
-  let fcpTimestamp;
-  cdpSession.on('Page.lifecycleEvent', event => {
-    if (event.name === 'firstContentfulPaint') {
-      fcpTimestamp = event.timestamp;
-    }
-  });
-  await cdpSession.send('Page.enable');
-  await cdpSession.send('Page.setLifecycleEventsEnabled', { enabled: true });
-  await cdpSession.send('Performance.enable');
-  const cdpMetrics = await cdpSession.send('Performance.getMetrics');
-  const cdpMetric = name => cdpMetrics.metrics.find(metric => metric.name === name)?.value;
-
   let result;
   while (!result && Date.now() < deadline) {
     const remaining = Math.max(1, deadline - Date.now());
@@ -61,47 +48,62 @@ try {
         await new Promise(resolve => {
           requestAnimationFrame(() => requestAnimationFrame(resolve));
         });
-    const resources = [];
-    const queryDeep = (root, selector) => {
-      const direct = root.querySelector(selector);
-      if (direct) return direct;
-      for (const element of root.querySelectorAll('*')) {
-        if (element.shadowRoot) {
-          const nested = queryDeep(element.shadowRoot, selector);
-          if (nested) return nested;
-        }
-      }
-      return null;
-    };
-    const collectResources = root => {
-      for (const element of root.querySelectorAll('*')) {
-        if (element.matches('[data-webui-resource]')) {
-          resources.push(element.dataset.webuiResource ?? '');
-        }
-        if (element.shadowRoot) collectResources(element.shadowRoot);
-      }
-    };
-    collectResources(document);
-    const hydration = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
-    const firstContentfulPaint = performance
-      .getEntriesByType('paint')
-      .find(entry => entry.name === 'first-contentful-paint');
-    const title = document.querySelector('title')?.textContent ?? '';
-    const dashboard = queryDeep(document, 'cb-page-dashboard');
-    const pageTitle = queryDeep(dashboard?.shadowRoot ?? document, '.page-title')
-      ?.textContent?.trim() ?? '';
-    const app = queryDeep(document, 'cb-app');
-    const bodyStyle = getComputedStyle(document.body);
-    const bodyBackground = bodyStyle.backgroundColor;
-    const dashboardStyle = getComputedStyle(dashboard);
-    const sidebar = queryDeep(document, 'cb-sidebar');
-    const sidebarStyle = getComputedStyle(sidebar);
+        const existingPaint = performance
+          .getEntriesByType('paint')
+          .find(entry => entry.name === 'first-contentful-paint');
+        const firstContentfulPaint = existingPaint ?? await new Promise((resolve, reject) => {
+          const observer = new PerformanceObserver(entries => {
+            const entry = entries
+              .getEntries()
+              .find(candidate => candidate.name === 'first-contentful-paint');
+            if (entry) {
+              clearTimeout(timer);
+              observer.disconnect();
+              resolve(entry);
+            }
+          });
+          const timer = setTimeout(() => {
+            observer.disconnect();
+            reject(new Error('first-contentful-paint was not reported'));
+          }, 5_000);
+          observer.observe({ type: 'paint', buffered: true });
+        });
+        const readyEpochMs = performance.timeOrigin + performance.now();
+        const resources = [];
+        const queryDeep = (root, selector) => {
+          const direct = root.querySelector(selector);
+          if (direct) return direct;
+          for (const element of root.querySelectorAll('*')) {
+            if (element.shadowRoot) {
+              const nested = queryDeep(element.shadowRoot, selector);
+              if (nested) return nested;
+            }
+          }
+          return null;
+        };
+        const collectResources = root => {
+          for (const element of root.querySelectorAll('*')) {
+            if (element.matches('[data-webui-resource]')) {
+              resources.push(element.dataset.webuiResource ?? '');
+            }
+            if (element.shadowRoot) collectResources(element.shadowRoot);
+          }
+        };
+        collectResources(document);
+        const hydration = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
+        const title = document.querySelector('title')?.textContent ?? '';
+        const dashboard = queryDeep(document, 'cb-page-dashboard');
+        const pageTitle = queryDeep(dashboard?.shadowRoot ?? document, '.page-title')
+          ?.textContent?.trim() ?? '';
+        const app = queryDeep(document, 'cb-app');
+        const bodyStyle = getComputedStyle(document.body);
+        const bodyBackground = bodyStyle.backgroundColor;
+        const dashboardStyle = getComputedStyle(dashboard);
+        const sidebar = queryDeep(document, 'cb-sidebar');
+        const sidebarStyle = getComputedStyle(sidebar);
         return {
-          timeOrigin: performance.timeOrigin,
-          readyEpochMs: performance.timeOrigin + performance.now(),
-          fcpEpochMs: firstContentfulPaint
-            ? performance.timeOrigin + firstContentfulPaint.startTime
-            : null,
+          readyEpochMs,
+          fcpEpochMs: performance.timeOrigin + firstContentfulPaint.startTime,
           hydrationMs: hydration?.duration ?? null,
           title,
           pageTitle,
@@ -127,26 +129,11 @@ try {
     }
   }
 
-  if (!Number.isFinite(result.fcpEpochMs)) {
-    const navigationStart = cdpMetric('NavigationStart');
-    const firstContentfulPaint = cdpMetric('FirstContentfulPaint');
-    if (Number.isFinite(navigationStart) && Number.isFinite(firstContentfulPaint)) {
-      result.fcpEpochMs =
-        result.timeOrigin + (firstContentfulPaint - navigationStart) * 1000;
-    }
-  }
-  if (!Number.isFinite(result.fcpEpochMs) && Number.isFinite(fcpTimestamp)) {
-    const timestamp = cdpMetric('Timestamp');
-    if (Number.isFinite(timestamp)) {
-      result.fcpEpochMs =
-        result.timeOrigin + (fcpTimestamp - timestamp) * 1000 +
-        (result.readyEpochMs - result.timeOrigin);
-    }
-  }
-
   if (
     result.pageTitle !== 'Dashboard' ||
     !result.appReady ||
+    !Number.isFinite(result.fcpEpochMs) ||
+    result.fcpEpochMs > result.readyEpochMs ||
     result.hydrationMs === null ||
     !result.fontsReady ||
     result.completedPaintFrames !== 2 ||

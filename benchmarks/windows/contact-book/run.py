@@ -479,16 +479,13 @@ def run_host(name, command, env, probe_path):
         metrics = {
             "host": name,
             "dashboard_tti_ms": dashboard_tti,
-            "launcher_to_host_main_ms": main_ms - launch_ms,
+            "process_start_to_window_visible_ms": main_ms - launch_ms,
+            "process_start_to_fcp_ms": readiness["fcpEpochMs"] - launch_epoch_ms,
             "host_process_peak_rss_bytes": rss_result["peaks"].get(host_pid, 0),
             "process_tree_cpu_ms": job_metrics["cpu_ms"],
             "close_to_exit_ms": exit_ms - close_start,
             "readiness": readiness,
         }
-        if readiness["fcpEpochMs"] is not None:
-            metrics["process_start_to_fcp_ms"] = (
-                readiness["fcpEpochMs"] - launch_epoch_ms
-            )
         return metrics
     finally:
         if probe_process and probe_process.poll() is None:
@@ -625,7 +622,7 @@ def run():
             print(f"completed pair {pair_number}/{args.pairs}", flush=True)
 
     raw = {
-        "schema": 1,
+        "schema": 2,
         "source": "benchmarks/windows/contact-book",
         "host": "Windows",
         "pairs": rows,
