@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-mod output_paths;
+pub(super) mod output_paths;
 
 use anyhow::{Context, Result};
 use clap::Args;

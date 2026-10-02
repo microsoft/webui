@@ -821,7 +821,7 @@ transient user activation or closed-shadow click targets.
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| Generated component asset root | Import a stable generated `<tag>.webui.js` bundler input, then call its `preload()` / `create()` exports |
+| Generated component asset root | Import a stable generated `<tag>.webui.js` payload, then wrap its default export with `defineComponentAsset()` |
 
 ### Custom events
 
@@ -1025,10 +1025,20 @@ webui build ./src --out ./dist --plugin=webui \
 ```
 
 ```typescript
-const loadSettings = () => import('../.webui/settings-dialog.webui.js');
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
+
+let settingsAsset;
+const loadSettings = () => {
+  preloadComponentAssetStyles('settings-dialog');
+  return settingsAsset ??= import('../.webui/settings-dialog.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
 
 preloadSettings(): void {
-  void loadSettings().then(asset => asset.preload());
+  void loadSettings();
 }
 
 async openSettings(): Promise<void> {
@@ -1048,11 +1058,11 @@ does not provide early compiler-owned style preloading.
 
 WebUI emits one stable module per asset-owned component and a thin root entry
 with static imports for its closure. The application bundler owns final chunks,
-hashes, public paths, caching, and delivery. Root `create()` waits for graph and
-style registration, then creates the element. Failed registration is evicted so
-a later `preload()` or `create()` retries. The normal entry bundle must load
-first. Component assets cannot be combined with `<route>`; use the router for
-routed components.
+hashes, public paths, caching, and delivery. `defineComponentAsset()` waits for
+graph and style registration before creating the element. Failed registration
+is evicted so a later preload retries. The normal entry bundle must load first.
+Component assets cannot be combined with `<route>`; use the router for routed
+components.
 
 ## Routing
 

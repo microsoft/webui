@@ -9,6 +9,8 @@ use super::graph::AssetGraphPlan;
 use super::json::encode_json_string;
 use crate::WebUIError;
 
+const PARALLEL_RENDER_THRESHOLD: usize = 128;
+
 pub(super) struct RenderedComponent<'a> {
     pub resource: Option<RenderedStyleResource<'a>>,
     pub template: Cow<'a, str>,
@@ -29,7 +31,7 @@ pub(super) fn render_component_payloads<'a>(
     let mut payloads: Vec<Option<RenderedComponent<'a>>> = std::iter::repeat_with(|| None)
         .take(plan.component_names.len())
         .collect();
-    if plan.roots.len() == 1 {
+    if plan.emitted_components.len() < PARALLEL_RENDER_THRESHOLD {
         for component in &plan.emitted_components {
             payloads[*component] = Some(render_component(
                 protocol,

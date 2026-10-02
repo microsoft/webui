@@ -39,6 +39,12 @@ impl OutputPathSet {
     }
 }
 
+pub(in crate::commands) fn path_contains(parent: &Path, child: &Path) -> std::io::Result<bool> {
+    let parent = normalize_filesystem_case(resolved_absolute(parent)?);
+    let child = normalize_filesystem_case(resolved_absolute(child)?);
+    Ok(child.starts_with(parent))
+}
+
 fn resolved_absolute(path: &Path) -> std::io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()

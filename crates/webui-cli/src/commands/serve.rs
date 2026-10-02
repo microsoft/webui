@@ -9,7 +9,7 @@ use actix_web::body::BoxBody;
 use actix_web::dev::Service;
 use actix_web::dev::{ServiceFactory, ServiceRequest, ServiceResponse};
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
 use futures_util::future::Either;
@@ -27,6 +27,7 @@ use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
 use webui::{Diagnostic, Protocol, WebUIHandler};
 
+use super::build::output_paths;
 use super::component_asset_output;
 use webui_dev_server::shutdown::{self, Control, Mode};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
@@ -99,7 +100,8 @@ pub struct ServeArgs {
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
-    /// Directory for generated component ESM inputs consumed by the application bundler
+    /// Directory for generated component ESM inputs consumed by the application bundler.
+    /// In watch mode, it cannot equal or contain a watched source path.
     #[arg(long, value_name = "DIR", requires = "emit_component_assets")]
     pub component_assets_out: Option<PathBuf>,
 
@@ -315,6 +317,20 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
     let watch_enabled = args.watch && !watch_disabled_by_env();
+    let watch_paths = if watch_enabled {
+        let mut watch_paths = paths.watch_paths();
+        watch_paths.extend(webui_discovery::collect_watch_paths(
+            &args.app_args.components,
+            &paths.app_dir,
+        ));
+        validate_component_asset_output_watch_root(
+            paths.component_assets_out.as_deref(),
+            &watch_paths,
+        )?;
+        Some(watch_paths)
+    } else {
+        None
+    };
     let livereload: Option<LiveReload> = if watch_enabled {
         Some(LiveReload::new(HMR_ENDPOINT))
     } else {
@@ -401,31 +417,23 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     // Keep both the watcher and rebuild worker alive until the server stops.
     // We store them in an `Option` so that the
     // `--watch=false` branch is a no-op.
-    let watcher_handle = if let Some(active_lr) = &livereload {
-        let mut watch_paths_list = paths.watch_paths();
-
-        // Also watch local path component sources
-        for extra_dir in
-            webui_discovery::collect_watch_paths(&args.app_args.components, &paths.app_dir)
-        {
-            watch_paths_list.push(extra_dir);
-        }
-
-        let handle = start_file_watcher(WatcherConfig {
-            watch_paths: watch_paths_list,
-            projection_manifests: args.app_args.projection_manifests.clone(),
-            state: Arc::clone(&state),
-            render_config,
-            livereload: active_lr.clone(),
-            // Seed dedup with warnings already shown above (keyed by the plain
-            // diagnostic body), so the first rebuild does not re-print them.
-            initial_warnings: initial_result.warnings.iter().map(|d| d.body()).collect(),
-        })?;
-        output::success("File watcher started");
-        Some(handle)
-    } else {
-        None
-    };
+    let watcher_handle =
+        if let (Some(active_lr), Some(watch_paths_list)) = (&livereload, watch_paths) {
+            let handle = start_file_watcher(WatcherConfig {
+                watch_paths: watch_paths_list,
+                projection_manifests: args.app_args.projection_manifests.clone(),
+                state: Arc::clone(&state),
+                render_config,
+                livereload: active_lr.clone(),
+                // Seed dedup with warnings already shown above (keyed by the plain
+                // diagnostic body), so the first rebuild does not re-print them.
+                initial_warnings: initial_result.warnings.iter().map(|d| d.body()).collect(),
+            })?;
+            output::success("File watcher started");
+            Some(handle)
+        } else {
+            None
+        };
 
     let addr = format!("127.0.0.1:{}", args.port);
     let bind_addr = addr.clone();
@@ -681,6 +689,25 @@ fn watcher_ignore_paths(
         ));
     }
     ignore
+}
+
+fn validate_component_asset_output_watch_root(
+    component_assets_out: Option<&std::path::Path>,
+    watch_paths: &[PathBuf],
+) -> Result<()> {
+    let Some(component_assets_out) = component_assets_out else {
+        return Ok(());
+    };
+    for watch_path in watch_paths {
+        if output_paths::path_contains(component_assets_out, watch_path)? {
+            bail!(
+                "Component asset output directory {} cannot equal or contain watched source path {}.\nhelp: Choose a dedicated generated subdirectory inside the app, such as .webui.",
+                component_assets_out.display(),
+                watch_path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
@@ -3216,6 +3243,35 @@ mod tests {
                 .ends_with(".tmp")),
             "atomic writes must not leave temporary files"
         );
+    }
+
+    #[test]
+    fn test_component_asset_output_cannot_hide_watched_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        fs::create_dir(&app).unwrap();
+
+        let equal_error =
+            validate_component_asset_output_watch_root(Some(&app), std::slice::from_ref(&app))
+                .unwrap_err();
+        assert!(equal_error
+            .to_string()
+            .contains("cannot equal or contain watched source path"));
+
+        let parent_error = validate_component_asset_output_watch_root(
+            Some(root.path()),
+            std::slice::from_ref(&app),
+        )
+        .unwrap_err();
+        assert!(parent_error
+            .to_string()
+            .contains("cannot equal or contain watched source path"));
+
+        validate_component_asset_output_watch_root(
+            Some(&app.join(".webui")),
+            std::slice::from_ref(&app),
+        )
+        .unwrap();
     }
 
     #[test]

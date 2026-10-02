@@ -12,6 +12,8 @@ use super::serialize::{
 use super::ComponentAssetFile;
 use crate::WebUIError;
 
+const PARALLEL_RENDER_THRESHOLD: usize = 128;
+
 pub(super) struct RenderedGraph {
     pub files: Vec<ComponentAssetFile>,
     pub outputs: Vec<RenderedOutput>,
@@ -27,9 +29,7 @@ pub(super) fn render_component_asset_graph(
         emit_metafile,
         protocol,
     };
-    let payloads_rendered = if plan.emitted_components.is_empty() {
-        Vec::new()
-    } else {
+    let payloads_rendered = if plan.emitted_components.len() >= PARALLEL_RENDER_THRESHOLD {
         let payload_results: Vec<Result<RenderedAsset, WebUIError>> = plan
             .emitted_components
             .par_iter()
@@ -43,16 +43,20 @@ pub(super) fn render_component_asset_graph(
             })
             .collect();
         collect_rendered(payload_results)?
+    } else {
+        let mut rendered = Vec::with_capacity(plan.emitted_components.len());
+        for component in &plan.emitted_components {
+            rendered.push(render_asset(
+                &pending_component(*component, plan),
+                plan,
+                &payloads,
+                &render_options,
+            )?);
+        }
+        rendered
     };
 
-    let roots = if plan.roots.len() == 1 {
-        vec![render_asset(
-            &pending_root(&plan.roots[0], plan, &payloads_rendered)?,
-            plan,
-            &payloads,
-            &render_options,
-        )?]
-    } else {
+    let roots = if plan.roots.len() >= PARALLEL_RENDER_THRESHOLD {
         let root_results: Vec<Result<RenderedAsset, WebUIError>> = plan
             .roots
             .par_iter()
@@ -66,6 +70,17 @@ pub(super) fn render_component_asset_graph(
             })
             .collect();
         collect_rendered(root_results)?
+    } else {
+        let mut rendered = Vec::with_capacity(plan.roots.len());
+        for root in &plan.roots {
+            rendered.push(render_asset(
+                &pending_root(root, plan, &payloads_rendered)?,
+                plan,
+                &payloads,
+                &render_options,
+            )?);
+        }
+        rendered
     };
 
     let mut files = Vec::with_capacity(roots.len() + payloads_rendered.len());

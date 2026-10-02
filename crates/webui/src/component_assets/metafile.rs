@@ -129,28 +129,20 @@ fn metafile_output(output: &RenderedOutput) -> MetafileOutput {
             )
         })
         .collect();
-    let mut imports = Vec::with_capacity(output.imports.len() + usize::from(output.root.is_some()));
-    if output.root.is_some() {
-        imports.push(MetafileOutputImport {
-            path: "@microsoft/webui-framework/component-asset-runtime.js".to_string(),
+    let imports = output
+        .imports
+        .iter()
+        .map(|path| MetafileOutputImport {
+            path: path.clone(),
             kind: "import-statement",
-            external: true,
-        });
-    }
-    imports.extend(output.imports.iter().map(|path| MetafileOutputImport {
-        path: path.clone(),
-        kind: "import-statement",
-        external: false,
-    }));
+            external: false,
+        })
+        .collect();
     MetafileOutput {
         bytes: output.bytes,
         inputs,
         imports,
-        exports: if output.root.is_some() {
-            vec!["create", "default", "preload"]
-        } else {
-            vec!["default"]
-        },
+        exports: vec!["default"],
         entry_point: output.root.as_deref().map(component_path),
     }
 }

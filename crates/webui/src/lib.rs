@@ -2725,11 +2725,9 @@ mod tests {
         assert!(lazy.contains(r#"from "./component-lazy-panel.webui.js";"#));
         assert!(lazy.contains(r#"from "./component-panel-only.webui.js";"#));
         assert!(lazy.contains(r#"from "./component-shared-detail.webui.js";"#));
-        assert!(lazy.contains(
-            r#"import{defineComponentAsset as __webuiDefineComponentAsset}from"@microsoft/webui-framework/component-asset-runtime.js";"#
-        ));
-        assert!(lazy.contains("export const preload=api.preload;"));
-        assert!(lazy.contains("export const create=api.create;"));
+        assert!(!lazy.contains("@microsoft/webui-framework/component-asset-runtime.js"));
+        assert!(!lazy.contains("export const preload"));
+        assert!(!lazy.contains("export const create"));
         assert!(!lazy.contains(r#""templates":{"entry-badge":"#));
         assert!(!lazy.contains(r#""templates":{"shared-detail":"#));
 
@@ -2911,11 +2909,11 @@ mod tests {
             "webui:component/root-a"
         );
         assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][2]["path"],
+            value["outputs"]["root-a.webui.js"]["imports"][1]["path"],
             "component-shared-detail.webui.js"
         );
         assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][2]["kind"],
+            value["outputs"]["root-a.webui.js"]["imports"][1]["kind"],
             "import-statement"
         );
         assert_eq!(
@@ -2923,16 +2921,8 @@ mod tests {
             "import-statement"
         );
         assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][0]["path"],
-            "@microsoft/webui-framework/component-asset-runtime.js"
-        );
-        assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][0]["external"],
-            true
-        );
-        assert_eq!(
             value["outputs"]["root-a.webui.js"]["exports"],
-            serde_json::json!(["create", "default", "preload"])
+            serde_json::json!(["default"])
         );
         assert_eq!(
             value["outputs"]["component-shared-detail.webui.js"]["bytes"],

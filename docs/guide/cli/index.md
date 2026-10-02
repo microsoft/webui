@@ -212,9 +212,19 @@ continues to use `--asset-file-name-template`.
 Load an asset before creating the component:
 
 ```typescript
-const loadMailThread = () => import('../.webui/mail-thread.webui.js');
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
 
-void loadMailThread().then(asset => asset.preload());
+let mailThreadAsset;
+const loadMailThread = () => {
+  preloadComponentAssetStyles('mail-thread');
+  return mailThreadAsset ??= import('../.webui/mail-thread.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
+
+void loadMailThread();
 panelSlot.replaceChildren(await (await loadMailThread()).create());
 ```
 
@@ -223,10 +233,10 @@ eligible for initial SSR. Use a mount element or another non-HTML trigger, then
 create the custom element with the generated root's `create()`. The application must
 load its normal entry bundle before component assets because entry-reachable
 dependencies are external prerequisites. For Shadow builds, the compiler
-records final Link stylesheet hrefs in the protocol so root `preload()` can
-start CSS without exposing content-hashed stylesheet names. Light builds emit
-those hrefs as document stylesheets with the entry because their CSS is globally
-scoped.
+records final Link stylesheet hrefs in the protocol so
+`preloadComponentAssetStyles(root)` can start CSS without exposing
+content-hashed stylesheet names. Light builds emit those hrefs as document
+stylesheets with the entry because their CSS is globally scoped.
 
 **Comment handling:**
 
@@ -383,7 +393,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
-| `--component-assets-out <DIR>` | Directory refreshed with stable generated ESM inputs after each successful build. Requires `--emit-component-assets`. | *(none)* |
+| `--component-assets-out <DIR>` | Directory refreshed with stable generated ESM inputs after each successful build. Requires `--emit-component-assets`. With `--watch`, it cannot equal or contain the app or another watched source path. | *(none)* |
 | `--metafile <PATH>` | Atomically replace an esbuild-compatible component asset graph after each successful build. Requires `--emit-component-assets`. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
@@ -563,9 +573,12 @@ initial SSR tree - so authoring mistakes in lazily loaded components fail the
 dev build instead of being silently skipped. Generated root and component
 modules are served from memory. With `--component-assets-out`, successful
 rebuilds also refresh the stable inputs consumed by an application bundler
-watcher. With `--metafile`, a successful rebuild atomically replaces the graph;
-a failed rebuild leaves the last valid metafile and generated inputs untouched.
-The metafile itself is ignored by the watcher to prevent rebuild loops.
+watcher. In `serve --watch`, the output directory may be inside a watched source
+root, such as `./.webui`, but cannot equal or contain one because generated
+writes are excluded from source watching. With `--metafile`, a successful
+rebuild atomically replaces the graph; a failed rebuild leaves the last valid
+metafile and generated inputs untouched. The metafile itself is ignored by the
+watcher to prevent rebuild loops.
 
 In `serve --watch`, rebuild failures are sticky: the terminal and live-reload
 SSE report the error, and refreshing the page returns the latest rebuild error

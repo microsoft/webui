@@ -1118,6 +1118,136 @@ describe('component asset helpers', () => {
     }
   });
 
+  test('generated asset registration is atomic and retries after rejection', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+    let includeMissing = true;
+    const asset = {
+      ...componentAsset({
+        'generated-retry-root': { h: '<missing-generated-entry></missing-generated-entry>' },
+      }),
+      get requiredComponents() {
+        return includeMissing
+          ? ['generated-retry-root', 'missing-generated-entry']
+          : ['generated-retry-root'];
+      },
+    } as unknown as ComponentAsset;
+
+    try {
+      const generated = defineComponentAsset(asset);
+      await assert.rejects(
+        generated.preload(),
+        /missing required template <missing-generated-entry>/,
+      );
+      assert.equal(getTemplate('generated-retry-root'), undefined);
+
+      includeMissing = false;
+      await generated.preload();
+      assert.equal(
+        getTemplate('generated-retry-root')?.h,
+        '<missing-generated-entry></missing-generated-entry>',
+      );
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('generated asset rejects missing style closure resources atomically', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+    const asset = {
+      ...componentAsset({
+        'generated-style-root': { h: '<p>Generated styles</p>' },
+      }),
+      componentStyles: {
+        version: 1,
+        strategy: 'style',
+        resources: {},
+        closures: {
+          'generated-style-root': ['missing-generated-style'],
+        },
+      },
+    } as unknown as ComponentAsset;
+
+    try {
+      await assert.rejects(
+        defineComponentAsset(asset).preload(),
+        /references missing resource "missing-generated-style"/,
+      );
+      assert.equal(getTemplate('generated-style-root'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('generated asset rejects conflicting registered resources atomically', async () => {
+    const document = {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    } as unknown as Document;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', document);
+    registerComponentStyles({
+      version: 1,
+      strategy: 'style',
+      resources: {
+        'generated-conflict-style': {
+          kind: 'style',
+          css: '.before{}',
+        },
+      },
+      closures: {},
+    }, document);
+    const asset = {
+      ...componentAsset({
+        'generated-conflict-root': { h: '<p>Generated conflict</p>' },
+      }),
+      componentStyles: {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          'generated-conflict-style': {
+            kind: 'style',
+            css: '.after{}',
+          },
+        },
+        closures: {
+          'generated-conflict-root': ['generated-conflict-style'],
+        },
+      },
+    } as unknown as ComponentAsset;
+
+    try {
+      await assert.rejects(
+        defineComponentAsset(asset).preload(),
+        /Conflicting component style resource "generated-conflict-style"/,
+      );
+      assert.equal(getTemplate('generated-conflict-root'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
   test('accepts deferred closures with an exact external resource', async () => {
     const document = {
       nodeType: 9,

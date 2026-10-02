@@ -552,14 +552,23 @@ Load the asset before creating or revealing the component:
 
 ```typescript
 import { WebUIElement } from '@microsoft/webui-framework';
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
 
-const loadSettings = () => import('../../.webui/settings-dialog.webui.js');
+let settingsAsset;
+const loadSettings = () => {
+  preloadComponentAssetStyles('settings-dialog');
+  return settingsAsset ??= import('../../.webui/settings-dialog.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
 
 export class AppShell extends WebUIElement {
   panelSlot!: HTMLDivElement;
 
   preloadSettings(): void {
-    void loadSettings().then(asset => asset.preload());
+    void loadSettings();
   }
 
   async openSettings(): Promise<void> {
@@ -574,9 +583,9 @@ export class AppShell extends WebUIElement {
 }
 ```
 
-Each generated root exports `preload()` and `create()`. The application owns
-when to import it, when to load authored component code or data, and whether
-those operations are cached. The compiler
+Each generated root exports a semantic payload. The application owns when to
+import it, when to load authored component code or data, and whether those
+operations are cached. The compiler
 stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
 handler publishes that finite manifest as inert JSON in the document head, or
 at the rendered body start for body-only host protocols. Light builds emit the
@@ -590,17 +599,17 @@ loading the generated root.
 If an authoritative native stylesheet link fails, WebUI reports the error,
 keeps the native link in place, releases the temporary guard, and completes
 hydration. The component may be unstyled, but it remains visible and usable.
-Only stable generated root input paths belong in authored imports. Final
-JavaScript chunk names are application-bundler outputs. Content-hashed
-stylesheet filenames remain compiler-owned. In Shadow builds, root `preload()`
-starts Link styles and registers the imported template graph. Components can
-then fetch their own data in their class code and expose it through
-`@observable` fields when JavaScript needs to read or mutate it. Concurrent
-roots deduplicate registration and stylesheet work. `create()` creates the root
-element after registration and styles are ready. If registration fails, the
-generated facade clears the failed attempt so a later `preload()` or `create()`
-can retry. Start the root import and application data request together when
-mount latency matters.
+Only stable generated root input paths belong in authored imports. Generated
+files export semantic payloads only; the application owns the runtime facade,
+loading policy, and final JavaScript chunks. Content-hashed stylesheet
+filenames remain compiler-owned. In Shadow builds,
+`preloadComponentAssetStyles(root)` starts Link styles before the dynamic
+import, while `defineComponentAsset()` registers the imported template graph
+and creates the root element. Concurrent roots deduplicate registration and
+stylesheet work. If registration fails, the runtime facade clears the failed
+attempt so a later preload can retry. Start the root import and application data
+request together when mount latency matters. This avoids a
+CSS-after-JavaScript waterfall without eagerly loading component templates.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the

@@ -69,12 +69,11 @@ test.describe('static component assets', () => {
     const button = page.getByRole('button', { name: 'Load lazy panel' });
     await expect(button).toBeVisible();
     await button.hover();
-    await assetSeen;
+    await Promise.all([assetSeen, cssSeen]);
     await expect(page.locator('lazy-panel')).toHaveCount(0);
-    expect(cssRequests).toBe(0);
+    expect(cssRequests).toBe(1);
 
     releaseAsset();
-    await cssSeen;
     await button.click();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
     expect(cssRequests).toBe(1);

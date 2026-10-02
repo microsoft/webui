@@ -2,9 +2,9 @@
 // Licensed under the MIT license.
 
 import type { ComponentAsset } from './component-asset/asset.js';
-import { registerComponentAsset } from './component-asset/loader.js';
+import { registerComponentAssetGraph } from './component-asset/registration.js';
 import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
-import { preloadComponentAssetStyles } from './element/link-styles.js';
+import { preloadComponentAssetStyles as preloadComponentAssetStylesInternal } from './element/link-styles.js';
 
 /** Runtime API exported by a compiler-generated component asset root. */
 export interface GeneratedComponentAsset {
@@ -14,6 +14,12 @@ export interface GeneratedComponentAsset {
   create(): Promise<HTMLElement>;
 }
 
+/** Start compiler-known Link stylesheet preloads before importing a generated root. */
+export function preloadComponentAssetStyles(root: string): void {
+  const styles = takeGeneratedComponentAssetStyles(root);
+  if (styles) preloadComponentAssetStylesInternal(styles);
+}
+
 /** Create the small runtime facade embedded by generated component asset roots. */
 export function defineComponentAsset(asset: ComponentAsset): GeneratedComponentAsset {
   const root = asset.root ?? '';
@@ -21,9 +27,8 @@ export function defineComponentAsset(asset: ComponentAsset): GeneratedComponentA
 
   const preload = (): Promise<void> => {
     if (pending) return pending;
-    const styles = takeGeneratedComponentAssetStyles(root);
-    if (styles) preloadComponentAssetStyles(styles);
-    const next = registerComponentAsset(asset).catch((error: unknown) => {
+    preloadComponentAssetStyles(root);
+    const next = registerComponentAssetGraph(asset).catch((error: unknown) => {
       if (pending === next) pending = undefined;
       throw error;
     });

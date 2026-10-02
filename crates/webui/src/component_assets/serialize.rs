@@ -11,7 +11,6 @@ use webui_protocol::WebUIProtocol;
 const ASSET_TYPE: &str = "webui-component-asset";
 const ASSET_VERSION: u64 = 4;
 const COMPONENT_ASSET_EXT: &str = "webui.js";
-const COMPONENT_ASSET_RUNTIME: &str = "@microsoft/webui-framework/component-asset-runtime.js";
 
 pub(super) struct RenderedOutput {
     pub name: String,
@@ -66,15 +65,6 @@ pub(super) fn render_asset(
     } else {
         Vec::new()
     };
-    if pending.root.is_some() {
-        js.push_str("import{defineComponentAsset as __webuiDefineComponentAsset}from");
-        push_json_string(
-            &mut js,
-            COMPONENT_ASSET_RUNTIME,
-            "component asset runtime import",
-        )?;
-        js.push_str(";\n");
-    }
     push_static_imports(&mut js, &pending.imports)?;
     js.push_str("const asset={\"type\":\"");
     js.push_str(ASSET_TYPE);
@@ -149,11 +139,6 @@ pub(super) fn render_asset(
         js.push('}');
     }
     js.push_str("};\n");
-    if pending.root.is_some() {
-        js.push_str("const api=__webuiDefineComponentAsset(asset);\n");
-        js.push_str("export const preload=api.preload;\n");
-        js.push_str("export const create=api.create;\n");
-    }
     js.push_str("export default asset;\n");
 
     let mut name =
@@ -208,9 +193,6 @@ fn estimate_asset_size(
     }
     for import in &pending.imports {
         size += import.file_name.len() + 32;
-    }
-    if pending.root.is_some() {
-        size += COMPONENT_ASSET_RUNTIME.len() + 192;
     }
     size
 }

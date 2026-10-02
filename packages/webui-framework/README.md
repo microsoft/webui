@@ -405,9 +405,19 @@ webui build ./src --out ./dist --plugin=webui \
 ```
 
 ```typescript
-const loadSettings = () => import('../../.webui/settings-dialog.webui.js');
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
 
-void loadSettings().then(asset => asset.preload());
+let settingsAsset;
+const loadSettings = () => {
+  preloadComponentAssetStyles('settings-dialog');
+  return settingsAsset ??= import('../../.webui/settings-dialog.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
+
+void loadSettings();
 panelSlot.replaceChildren(await (await loadSettings()).create());
 ```
 
@@ -433,11 +443,13 @@ JavaScript filenames are application-bundler outputs, while content-hashed
 stylesheet filenames remain compiler-owned. `--metafile` exposes the static
 input graph for analysis and build tooling.
 
-In Shadow builds, root `preload()` reads the compiler-owned style metadata and
-starts Link styles while registering the imported graph. Concurrent roots share
-in-flight registration and stylesheet work. Root `create()` waits for that work
-and creates the element. Application-owned code loads component behavior and
-data directly, so it also owns caching and retry policy for those requests.
+Generated roots export semantic payloads only. Application-owned code loads
+component behavior and data directly, so it also owns caching and retry policy.
+In Shadow builds, applications can import the small runtime eagerly, call
+`preloadComponentAssetStyles(root)` before the dynamic import, and wrap the
+default generated payload with `defineComponentAsset()`. This keeps templates
+lazy while starting CSS and JavaScript in parallel. Concurrent roots share
+in-flight registration and stylesheet work.
 
 ### `@observable`
 
