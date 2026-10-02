@@ -30,22 +30,37 @@ try {
   }
   if (!page) throw new Error('host page did not become available');
 
-  const remaining = Math.max(1, deadline - Date.now());
-  await page.waitForFunction(
-    () => document.querySelector('cb-app')?.$ready === true,
-    undefined,
-    { timeout: remaining },
-  );
-  await page.locator('cb-page-dashboard .page-title').waitFor({
-    state: 'visible',
-    timeout: Math.max(1, deadline - Date.now()),
+  const cdpSession = await browser.contexts()[0].newCDPSession(page);
+  let fcpTimestamp;
+  cdpSession.on('Page.lifecycleEvent', event => {
+    if (event.name === 'firstContentfulPaint') {
+      fcpTimestamp = event.timestamp;
+    }
   });
+  await cdpSession.send('Page.enable');
+  await cdpSession.send('Page.setLifecycleEventsEnabled', { enabled: true });
+  await cdpSession.send('Performance.enable');
+  const cdpMetrics = await cdpSession.send('Performance.getMetrics');
+  const cdpMetric = name => cdpMetrics.metrics.find(metric => metric.name === name)?.value;
 
-  const result = await page.evaluate(async () => {
-    await document.fonts.ready;
-    await new Promise(resolve => {
-      requestAnimationFrame(() => requestAnimationFrame(resolve));
-    });
+  let result;
+  while (!result && Date.now() < deadline) {
+    const remaining = Math.max(1, deadline - Date.now());
+    try {
+      await page.waitForFunction(
+        () => document.querySelector('cb-app')?.$ready === true,
+        undefined,
+        { timeout: remaining },
+      );
+      await page.locator('cb-page-dashboard .page-title').waitFor({
+        state: 'visible',
+        timeout: Math.max(1, deadline - Date.now()),
+      });
+      result = await page.evaluate(async () => {
+        await document.fonts.ready;
+        await new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
     const resources = [];
     const queryDeep = (root, selector) => {
       const direct = root.querySelector(selector);
@@ -68,6 +83,9 @@ try {
     };
     collectResources(document);
     const hydration = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
+    const firstContentfulPaint = performance
+      .getEntriesByType('paint')
+      .find(entry => entry.name === 'first-contentful-paint');
     const title = document.querySelector('title')?.textContent ?? '';
     const dashboard = queryDeep(document, 'cb-page-dashboard');
     const pageTitle = queryDeep(dashboard?.shadowRoot ?? document, '.page-title')
@@ -78,27 +96,53 @@ try {
     const dashboardStyle = getComputedStyle(dashboard);
     const sidebar = queryDeep(document, 'cb-sidebar');
     const sidebarStyle = getComputedStyle(sidebar);
-    return {
-      readyEpochMs: performance.timeOrigin + performance.now(),
-      hydrationMs: hydration?.duration ?? null,
-      title,
-      pageTitle,
-      appReady: app?.$ready === true,
-      fontsReady: document.fonts.status === 'loaded',
-      completedPaintFrames: 2,
-      innerWidth: window.innerWidth,
-      innerHeight: window.innerHeight,
-      devicePixelRatio: window.devicePixelRatio,
-      stylesheetCount: document.querySelectorAll('link[rel="stylesheet"],style').length,
-      resourceCount: resources.length,
-      bodyBackground,
-      bodyFontFamily: bodyStyle.fontFamily,
-      dashboardDisplay: dashboardStyle.display,
-      sidebarWidth: sidebarStyle.width,
-      dashboardText: queryDeep(dashboard?.shadowRoot ?? document, '.section-title')
-        ?.textContent?.trim() ?? '',
-    };
-  });
+        return {
+          timeOrigin: performance.timeOrigin,
+          readyEpochMs: performance.timeOrigin + performance.now(),
+          fcpEpochMs: firstContentfulPaint
+            ? performance.timeOrigin + firstContentfulPaint.startTime
+            : null,
+          hydrationMs: hydration?.duration ?? null,
+          title,
+          pageTitle,
+          appReady: app?.$ready === true,
+          fontsReady: document.fonts.status === 'loaded',
+          completedPaintFrames: 2,
+          innerWidth: window.innerWidth,
+          innerHeight: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio,
+          stylesheetCount: document.querySelectorAll('link[rel="stylesheet"],style').length,
+          resourceCount: resources.length,
+          bodyBackground,
+          bodyFontFamily: bodyStyle.fontFamily,
+          dashboardDisplay: dashboardStyle.display,
+          sidebarWidth: sidebarStyle.width,
+          dashboardText: queryDeep(dashboard?.shadowRoot ?? document, '.section-title')
+            ?.textContent?.trim() ?? '',
+        };
+      });
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await sleep(25);
+    }
+  }
+
+  if (!Number.isFinite(result.fcpEpochMs)) {
+    const navigationStart = cdpMetric('NavigationStart');
+    const firstContentfulPaint = cdpMetric('FirstContentfulPaint');
+    if (Number.isFinite(navigationStart) && Number.isFinite(firstContentfulPaint)) {
+      result.fcpEpochMs =
+        result.timeOrigin + (firstContentfulPaint - navigationStart) * 1000;
+    }
+  }
+  if (!Number.isFinite(result.fcpEpochMs) && Number.isFinite(fcpTimestamp)) {
+    const timestamp = cdpMetric('Timestamp');
+    if (Number.isFinite(timestamp)) {
+      result.fcpEpochMs =
+        result.timeOrigin + (fcpTimestamp - timestamp) * 1000 +
+        (result.readyEpochMs - result.timeOrigin);
+    }
+  }
 
   if (
     result.pageTitle !== 'Dashboard' ||

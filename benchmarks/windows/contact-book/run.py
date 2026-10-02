@@ -407,6 +407,7 @@ def run_host(name, command, env, probe_path):
     rss_stop = threading.Event()
     rss_result = {"peaks": {}}
     rss_sampler = None
+    probe_process = None
     try:
         process = subprocess.Popen(
             command,
@@ -436,16 +437,22 @@ def run_host(name, command, env, probe_path):
             kernel32.CloseHandle(process_handle)
         assign_process_tree(job, process.pid)
 
-        hwnd, host_pid, main_ms = wait_for_window(process, job, 30_000)
-        set_client_viewport(hwnd, 1200, 800)
-        probe_result = subprocess.run(
+        probe_process = subprocess.Popen(
             ["node", str(probe_path), str(env["WEBUI_BENCHMARK_CDP_PORT"])],
             cwd=ROOT,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=45,
-            check=False,
+        )
+        hwnd, host_pid, main_ms = wait_for_window(process, job, 30_000)
+        set_client_viewport(hwnd, 1200, 800)
+        probe_stdout, probe_stderr = probe_process.communicate(timeout=45)
+        probe_result = subprocess.CompletedProcess(
+            probe_process.args,
+            probe_process.returncode,
+            probe_stdout,
+            probe_stderr,
         )
         if probe_result.returncode:
             raise RuntimeError(
@@ -468,17 +475,25 @@ def run_host(name, command, env, probe_path):
         stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
         if process.returncode != 0:
             raise RuntimeError(f"{name} exited with {process.returncode}:\n{stderr}")
-        metrics = query_job(job)
-        return {
+        job_metrics = query_job(job)
+        metrics = {
             "host": name,
             "dashboard_tti_ms": dashboard_tti,
             "launcher_to_host_main_ms": main_ms - launch_ms,
             "host_process_peak_rss_bytes": rss_result["peaks"].get(host_pid, 0),
-            "process_tree_cpu_ms": metrics["cpu_ms"],
+            "process_tree_cpu_ms": job_metrics["cpu_ms"],
             "close_to_exit_ms": exit_ms - close_start,
             "readiness": readiness,
         }
+        if readiness["fcpEpochMs"] is not None:
+            metrics["process_start_to_fcp_ms"] = (
+                readiness["fcpEpochMs"] - launch_epoch_ms
+            )
+        return metrics
     finally:
+        if probe_process and probe_process.poll() is None:
+            probe_process.kill()
+            probe_process.wait()
         if process and process.poll() is None:
             process.kill()
             process.wait()

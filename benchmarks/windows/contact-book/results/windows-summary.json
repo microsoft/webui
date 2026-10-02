@@ -6,63 +6,52 @@
   "metrics": {
     "dashboard_tti_ms": {
       "electron": {
-        "median": 538.323974609375,
+        "median": 465.94091796875,
         "unit": "ms"
       },
       "webui": {
-        "median": 504.47705078125,
+        "median": 567.718017578125,
         "unit": "ms"
       },
       "retained_pairs": 19,
       "excluded_pairs": [
-        6
+        2
       ],
       "threshold": 3.5
     },
     "launcher_to_host_main_ms": {
       "electron": {
-        "median": 174.435700006783,
+        "median": 177.03435000777245,
         "unit": "ms"
       },
       "webui": {
-        "median": 42.471599996089935,
+        "median": 155.09350000321865,
         "unit": "ms"
       },
-      "retained_pairs": 17,
-      "excluded_pairs": [
-        11,
-        15,
-        19
-      ],
+      "retained_pairs": 20,
+      "excluded_pairs": [],
       "threshold": 3.5
     },
     "host_process_peak_rss_bytes": {
       "electron": {
-        "median": 109.349609375,
+        "median": 111.6015625,
         "unit": "MiB"
       },
       "webui": {
-        "median": 23.234375,
+        "median": 38.806640625,
         "unit": "MiB"
       },
-      "retained_pairs": 14,
-      "excluded_pairs": [
-        3,
-        8,
-        13,
-        16,
-        18,
-        20
-      ],
+      "retained_pairs": 20,
+      "excluded_pairs": [],
       "threshold": 3.5
     },
     "process_tree_cpu_ms": {
       "electron": {
-        "median": 1039.0625,
+        "median": 1132.8125,
         "unit": "ms"
       },
       "webui": {
-        "median": 1539.0625,
+        "median": 1953.125,
         "unit": "ms"
       },
       "retained_pairs": 20,
@@ -71,17 +60,15 @@
     },
     "close_to_exit_ms": {
       "electron": {
-        "median": 56.40209999680519,
+        "median": 98.20509999990463,
         "unit": "ms"
       },
       "webui": {
-        "median": 37.75389999896288,
+        "median": 83.49559999257326,
         "unit": "ms"
       },
-      "retained_pairs": 19,
-      "excluded_pairs": [
-        12
-      ],
+      "retained_pairs": 20,
+      "excluded_pairs": [],
       "threshold": 3.5
     }
   }
