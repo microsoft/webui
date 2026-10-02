@@ -41,7 +41,11 @@ try {
     timeout: Math.max(1, deadline - Date.now()),
   });
 
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
     const resources = [];
     const queryDeep = (root, selector) => {
       const direct = root.querySelector(selector);
@@ -80,6 +84,8 @@ try {
       title,
       pageTitle,
       appReady: app?.$ready === true,
+      fontsReady: document.fonts.status === 'loaded',
+      completedPaintFrames: 2,
       innerWidth: window.innerWidth,
       innerHeight: window.innerHeight,
       devicePixelRatio: window.devicePixelRatio,
@@ -98,6 +104,8 @@ try {
     result.pageTitle !== 'Dashboard' ||
     !result.appReady ||
     result.hydrationMs === null ||
+    !result.fontsReady ||
+    result.completedPaintFrames !== 2 ||
     result.innerWidth !== 1200 ||
     result.innerHeight !== 800 ||
     !Number.isFinite(result.devicePixelRatio) ||

@@ -16,7 +16,10 @@ use windows::Win32::UI::WindowsAndMessaging::{self, MSG};
 use super::capture::CAPTURE_WAKE_MESSAGE;
 use super::command::execute_window_command;
 use super::event::{logical_dimension, physical_to_logical, size_event_transition};
-use super::nonclient::{initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame};
+use super::nonclient::{
+    defer_startup_close, initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame,
+    startup_background, startup_is_ready,
+};
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
 #[cfg(feature = "application-ipc")]
@@ -345,6 +348,10 @@ fn dispatch_moved(hwnd: HWND) {
 
 /// Offer the close request to handlers before destroying the window.
 fn close_window(hwnd: HWND) {
+    if !startup_is_ready(hwnd) {
+        defer_startup_close(hwnd);
+        return;
+    }
     let prevented = super::state::with_window_state_result(hwnd, |state| {
         let event = DesktopEvent::WindowCloseRequested {
             window_id: WINDOW_ID,
@@ -366,7 +373,9 @@ fn close_window(hwnd: HWND) {
 /// Paint the configured background so there is no flash before first paint.
 fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
     let Some(color) =
-        super::state::with_window_state_result(hwnd, |state| state.options.background).flatten()
+        super::state::with_window_state_result(hwnd, |state| state.options.background)
+            .flatten()
+            .or_else(|| startup_background(hwnd))
     else {
         return LRESULT(0);
     };

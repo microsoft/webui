@@ -4,7 +4,7 @@
 //! Custom non-client frame geometry: `WM_NCCALCSIZE` client extension,
 //! `WM_NCHITTEST` resize borders and caption, and frame invalidation.
 
-use crate::{TitlebarStyle, WindowOptions};
+use crate::{Rgba, TitlebarStyle, WindowOptions};
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_SUCCESS, E_INVALIDARG, HWND, LPARAM, LRESULT, POINT, RECT,
@@ -15,10 +15,17 @@ use windows::Win32::UI::{HiDpi, WindowsAndMessaging};
 use super::command::screen_point;
 use super::state::window_style_bits;
 
-// One Win32 LONG keeps creation-time frame layout independent of WebView2 state.
-pub(super) const CUSTOM_FRAME_BYTES: i32 = 4;
+// Four Win32 LONGs keep creation-time frame layout, background, and startup
+// lifecycle independent of WebView2 state.
+pub(super) const CUSTOM_FRAME_BYTES: i32 = 16;
 const CUSTOM_FRAME_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
     WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(0);
+const STARTUP_BACKGROUND_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
+    WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(4);
+const STARTUP_CLOSE_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
+    WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(8);
+const STARTUP_READY_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
+    WindowsAndMessaging::WINDOW_LONG_PTR_INDEX(12);
 const FRAME_NATIVE: i32 = 0;
 pub(super) const FRAME_OVERLAY: i32 = 1;
 const FRAME_NONE: i32 = 2;
@@ -36,15 +43,69 @@ pub(super) fn initialize_frame(hwnd: HWND, l_param: LPARAM) -> Result<()> {
         TitlebarStyle::None => FRAME_NONE,
         TitlebarStyle::HiddenInset | TitlebarStyle::Overlay { .. } => FRAME_OVERLAY,
     };
-    // SAFETY: The registered window class reserves one LONG at this index.
+    // SAFETY: The registered window class reserves two LONGs at these indices.
     unsafe {
         SetLastError(ERROR_SUCCESS);
         WindowsAndMessaging::SetWindowLongW(hwnd, CUSTOM_FRAME_INDEX, custom);
         if GetLastError() != ERROR_SUCCESS {
             return Err(Error::from_thread());
         }
+        WindowsAndMessaging::SetWindowLongW(
+            hwnd,
+            STARTUP_BACKGROUND_INDEX,
+            encode_startup_background(options.background),
+        );
+        if GetLastError() != ERROR_SUCCESS {
+            return Err(Error::from_thread());
+        }
     }
     Ok(())
+}
+
+pub(super) fn startup_background(hwnd: HWND) -> Option<Rgba> {
+    // SAFETY: WM_NCCREATE initializes this reserved LONG before the window can
+    // be shown.
+    let encoded = unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, STARTUP_BACKGROUND_INDEX) };
+    decode_startup_background(encoded)
+}
+
+pub(super) fn defer_startup_close(hwnd: HWND) {
+    // SAFETY: The window class reserves this LONG for the startup-close flag.
+    // Hiding the live window acknowledges the user's close immediately while
+    // keeping its HWND valid for in-flight WebView2 callbacks.
+    unsafe {
+        WindowsAndMessaging::SetWindowLongW(hwnd, STARTUP_CLOSE_INDEX, 1);
+        let _ = WindowsAndMessaging::ShowWindow(hwnd, WindowsAndMessaging::SW_HIDE);
+    }
+}
+
+pub(super) fn mark_startup_ready(hwnd: HWND) -> bool {
+    // SAFETY: The window class reserves both LONGs for startup lifecycle flags.
+    unsafe {
+        WindowsAndMessaging::SetWindowLongW(hwnd, STARTUP_READY_INDEX, 1);
+        WindowsAndMessaging::GetWindowLongW(hwnd, STARTUP_CLOSE_INDEX) != 0
+    }
+}
+
+pub(super) fn startup_is_ready(hwnd: HWND) -> bool {
+    // SAFETY: The window class reserves this LONG for the startup-ready flag.
+    unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, STARTUP_READY_INDEX) != 0 }
+}
+
+fn encode_startup_background(color: Option<Rgba>) -> i32 {
+    color.map_or(0, |color| {
+        (i32::from(color.r) | (i32::from(color.g) << 8) | (i32::from(color.b) << 16)) + 1
+    })
+}
+
+fn decode_startup_background(encoded: i32) -> Option<Rgba> {
+    let rgb = u32::try_from(encoded).ok()?.checked_sub(1)?;
+    Some(Rgba {
+        r: u8::try_from(rgb & 0xff).ok()?,
+        g: u8::try_from((rgb >> 8) & 0xff).ok()?,
+        b: u8::try_from((rgb >> 16) & 0xff).ok()?,
+        a: u8::MAX,
+    })
 }
 
 /// Extend the client area into the frame for non-native titlebars.
@@ -302,5 +363,41 @@ mod tests {
         );
         assert_eq!(result, default_result);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn startup_background_round_trips_rgb_and_uses_zero_for_none() {
+        let color = Rgba {
+            r: 12,
+            g: 34,
+            b: 56,
+            a: 78,
+        };
+
+        assert_eq!(
+            decode_startup_background(encode_startup_background(None)),
+            None
+        );
+        assert_eq!(
+            decode_startup_background(encode_startup_background(Some(color))),
+            Some(Rgba {
+                a: u8::MAX,
+                ..color
+            })
+        );
+    }
+
+    #[test]
+    fn startup_close_is_deferred_until_the_frame_is_ready() {
+        let options = WindowOptions {
+            center: false,
+            ..WindowOptions::default()
+        };
+        let frame = super::super::create::FrameWindow::new(&options, None).unwrap();
+
+        assert!(!startup_is_ready(frame.hwnd));
+        defer_startup_close(frame.hwnd);
+        assert!(mark_startup_ready(frame.hwnd));
+        assert!(startup_is_ready(frame.hwnd));
     }
 }
