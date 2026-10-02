@@ -216,6 +216,11 @@ fn run_app(mtm: MainThreadMarker, options: MacosLaunchOptions) -> Result<()> {
         let (app, delegate) = autoreleasepool(|_| {
             let app = NSApplication::sharedApplication(mtm);
             let delegate = DesktopAppDelegate::new(mtm, options);
+            // Start WebKit before AppKit finishes launching: WebKit's content
+            // and networking process spawn - the dominant serial cost on the
+            // path to first paint - then overlaps the launch handshake and the
+            // whole window build instead of running after them.
+            launch::prelaunch_webview(&delegate, &app);
             app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             (app, delegate)
         });

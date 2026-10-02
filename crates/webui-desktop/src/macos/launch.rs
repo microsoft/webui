@@ -36,8 +36,59 @@ struct WebviewHandlers<'a> {
     ipc: Option<&'a std::rc::Rc<super::ipc::MacIpc>>,
 }
 
-/// Build the webview and window, wire every peripheral, then show the window.
-pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSApplication) {
+/// Webview and its peripherals, built before the window exists.
+///
+/// Bundled apps construct this during [`prelaunch_webview`], before AppKit
+/// finishes launching, so WebKit's content-process startup - the dominant
+/// serial cost on the path to first paint - overlaps the rest of the AppKit
+/// launch handshake and the whole window build.
+pub(super) struct PreparedWebview {
+    webview: Retained<WKWebView>,
+    scheme_handler: Option<Retained<DesktopSchemeHandler>>,
+    host_message_handler: Option<Retained<DesktopHostMessageHandler>>,
+    navigation_delegate: Retained<DesktopNavigationDelegate>,
+    window: Retained<DesktopWindow>,
+    /// Whether the startup navigation has already been started.
+    loaded: bool,
+}
+
+/// Build and navigate the bundled webview ahead of `applicationDidFinishLaunching:`.
+///
+/// Only bundled apps are eligible: a local-server host must not open its
+/// document before its owner admission has been validated, so that path keeps
+/// building everything inside the launch callback.
+pub(super) fn prelaunch_webview(delegate: &DesktopAppDelegate, app: &NSApplication) {
+    if !prelaunch_eligible(delegate.ivars()) {
+        return;
+    }
+    build_window_and_webview(delegate, app);
+}
+
+fn prelaunch_eligible(ivars: &super::app_delegate::AppDelegateIvars) -> bool {
+    #[cfg(feature = "local-server")]
+    {
+        prelaunch_allowed(
+            ivars.runtime.is_some(),
+            ivars.local_url.is_some(),
+            ivars.lifetime.is_some(),
+        )
+    }
+    #[cfg(not(feature = "local-server"))]
+    {
+        prelaunch_allowed(ivars.runtime.is_some(), false, false)
+    }
+}
+
+/// Whether the window may be built before `applicationDidFinishLaunching:`.
+///
+/// Only a bundled app qualifies. A local HTTP host must not open its document
+/// until its owner admission has been validated, and a host-owned lifetime
+/// keeps its window build inside the launch callback it coordinates with.
+const fn prelaunch_allowed(has_runtime: bool, has_local_url: bool, has_lifetime: bool) -> bool {
+    has_runtime && !has_local_url && !has_lifetime
+}
+
+fn prepare_webview(delegate: &DesktopAppDelegate) -> PreparedWebview {
     let mtm = delegate.mtm();
     let ivars = delegate.ivars();
     let restored_state = restore_state_if_enabled(ivars.state_store.as_ref(), mtm);
@@ -138,10 +189,10 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
             None
         }
     };
-    let load_before_window = should_load_before_window(local_url);
+    let loaded = should_load_before_window(local_url);
     // Bundled navigation needs no external-owner admission, so its real WebKit
     // startup can overlap construction of the real window and shell.
-    if load_before_window {
+    if loaded {
         load_startup_url(&webview, None);
     }
 
@@ -172,6 +223,40 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     install_content_view(mtm, &window, &webview, ivars.options.effect);
     align_overlay_controls(&window, &ivars.options);
     window.setDelegate(Some(ProtocolObject::from_ref(delegate)));
+
+    PreparedWebview {
+        webview,
+        scheme_handler,
+        host_message_handler,
+        navigation_delegate,
+        window,
+        loaded,
+    }
+}
+
+/// Build the window, wire every peripheral, then show it.
+pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSApplication) {
+    let mtm = delegate.mtm();
+    let ivars = delegate.ivars();
+    let prepared = ivars.prepared.take();
+    let PreparedWebview {
+        webview,
+        scheme_handler,
+        host_message_handler,
+        navigation_delegate,
+        window,
+        loaded,
+    } = prepared.unwrap_or_else(|| prepare_webview(delegate));
+    let local_url = {
+        #[cfg(feature = "local-server")]
+        {
+            ivars.local_url.as_deref()
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            None
+        }
+    };
 
     let menu_webview = webview.clone();
     let menu = build_main_menu(mtm, &window, &ivars.shell.menus, move |script| {
@@ -271,7 +356,7 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         }
     }
     window.makeKeyAndOrderFront(None);
-    if !load_before_window {
+    if !loaded {
         load_startup_url(&webview, local_url);
     }
     #[cfg(feature = "local-server")]
@@ -483,11 +568,19 @@ fn should_load_before_window(local_url: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::should_load_before_window;
+    use super::{prelaunch_allowed, should_load_before_window};
 
     #[test]
     fn bundled_navigation_is_eager_and_local_server_navigation_is_deferred() {
         assert!(should_load_before_window(None));
         assert!(!should_load_before_window(Some("http://127.0.0.1:3000")));
+    }
+
+    #[test]
+    fn prelaunch_allowed_only_for_bundled_runtimes() {
+        assert!(prelaunch_allowed(true, false, false));
+        assert!(!prelaunch_allowed(false, false, false));
+        assert!(!prelaunch_allowed(true, true, false));
+        assert!(!prelaunch_allowed(true, false, true));
     }
 }
