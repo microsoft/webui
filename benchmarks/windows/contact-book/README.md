@@ -5,8 +5,9 @@ same Contact Book bundle, state, 1200x800 window, and Dashboard readiness
 contract. Readiness requires hydration, loaded fonts, validated Dashboard
 content/styles/geometry, and two completed animation frames so the host is not
 closed on an incomplete first paint. It uses WebView2/Electron CDP for
-readiness, Win32 window discovery for launcher-to-host-main timing, and Windows
-Job Objects plus process-memory sampling for lifecycle CPU and host-process RSS.
+first-contentful-paint and readiness, Win32 window discovery for
+process-start-to-window-visible timing, and Windows Job Objects plus
+process-memory sampling for lifecycle CPU and host-process RSS.
 
 The native host resolves the manifest theme at startup. The harness gives
 Electron a per-run copy of the same immutable state with the same theme tokens
@@ -55,6 +56,14 @@ The default output is written to
 `benchmarks/windows/contact-book/results/windows-summary.json`. Override the
 output directory with `--output-dir`. Keep the temporary root short because
 WebView2 appends its app identity and profile directories below it.
+
+The probe attempts to record process-start-to-FCP from the browser
+`first-contentful-paint` performance entry and Chromium lifecycle metrics.
+Some WebView2/Electron targets do not expose that entry after navigation; in
+that case the raw readiness record keeps `fcpEpochMs: null` and the metric is
+not included in the cleaned summary. Dashboard TTI remains the stronger
+readiness contract: it additionally waits for application readiness, fonts,
+validated Dashboard content/styles/geometry, and two animation frames.
 
 The analyzer uses the modified z-score for each metric, with
 `abs(score) > 3.5` as the outlier rule. A pair is excluded when either host is

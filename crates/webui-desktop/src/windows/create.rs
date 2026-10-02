@@ -102,20 +102,10 @@ impl FrameWindow {
 
     /// Keep DWM's shadow and system-managed corners for custom frames.
     fn apply_custom_frame(&self, window: &WindowOptions) {
-        let win32_overlay = !super::app_sdk::requires_runtime(window)
-            && matches!(
-                window.titlebar,
-                TitlebarStyle::Overlay { .. } | TitlebarStyle::HiddenInset
-            );
-        if !matches!(window.titlebar, TitlebarStyle::None) && !win32_overlay {
+        if !matches!(window.titlebar, TitlebarStyle::None) {
             return;
         }
-        let result = match window.titlebar {
-            TitlebarStyle::Overlay { height } => extend_overlay_frame(self.hwnd, height),
-            TitlebarStyle::HiddenInset => extend_overlay_frame(self.hwnd, 0),
-            _ => extend_frameless_frame(self.hwnd),
-        };
-        if let Err(error) = result {
+        if let Err(error) = extend_frameless_frame(self.hwnd) {
             eprintln!("WebUI: failed to extend the desktop frame: {error}");
         }
 
@@ -185,30 +175,6 @@ pub(super) fn extend_frameless_frame(hwnd: HWND) -> windows::core::Result<()> {
                 cxLeftWidth: 1,
                 cxRightWidth: 1,
                 cyTopHeight: 1,
-                cyBottomHeight: 1,
-            },
-        )
-    }
-}
-
-pub(super) fn extend_overlay_frame(hwnd: HWND, minimum_height: u32) -> windows::core::Result<()> {
-    // SAFETY: DPI and system metrics are read-only queries for this live HWND.
-    let top = unsafe {
-        let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
-        let native =
-            windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(WindowsAndMessaging::SM_CYSIZE, dpi);
-        let minimum = i32::try_from((u64::from(minimum_height) * u64::from(dpi)).div_ceil(96))
-            .unwrap_or(i32::MAX);
-        native.max(minimum)
-    };
-    // SAFETY: The live HWND owns this DWM frame; margins are plain values.
-    unsafe {
-        windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(
-            hwnd,
-            &windows::Win32::UI::Controls::MARGINS {
-                cxLeftWidth: 1,
-                cxRightWidth: 1,
-                cyTopHeight: top,
                 cyBottomHeight: 1,
             },
         )
