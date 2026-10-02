@@ -69,7 +69,11 @@ try {
     const pageTitle = queryDeep(dashboard?.shadowRoot ?? document, '.page-title')
       ?.textContent?.trim() ?? '';
     const app = queryDeep(document, 'cb-app');
-    const bodyBackground = getComputedStyle(document.body).backgroundColor;
+    const bodyStyle = getComputedStyle(document.body);
+    const bodyBackground = bodyStyle.backgroundColor;
+    const dashboardStyle = getComputedStyle(dashboard);
+    const sidebar = queryDeep(document, 'cb-sidebar');
+    const sidebarStyle = getComputedStyle(sidebar);
     return {
       readyEpochMs: performance.timeOrigin + performance.now(),
       hydrationMs: hydration?.duration ?? null,
@@ -82,6 +86,9 @@ try {
       stylesheetCount: document.querySelectorAll('link[rel="stylesheet"],style').length,
       resourceCount: resources.length,
       bodyBackground,
+      bodyFontFamily: bodyStyle.fontFamily,
+      dashboardDisplay: dashboardStyle.display,
+      sidebarWidth: sidebarStyle.width,
       dashboardText: queryDeep(dashboard?.shadowRoot ?? document, '.section-title')
         ?.textContent?.trim() ?? '',
     };
@@ -96,6 +103,10 @@ try {
     !Number.isFinite(result.devicePixelRatio) ||
     result.stylesheetCount === 0 ||
     result.resourceCount === 0 ||
+    result.bodyBackground === 'rgba(0, 0, 0, 0)' ||
+    !result.bodyFontFamily.includes('Segoe UI') ||
+    result.dashboardDisplay !== 'block' ||
+    result.sidebarWidth !== '260px' ||
     result.dashboardText !== 'Recent Contacts'
   ) {
     throw new Error(`Dashboard readiness contract failed: ${JSON.stringify(result)}`);

@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -16,9 +17,11 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
 PROCESS_SET_QUOTA = 0x0100
 PROCESS_TERMINATE = 0x0001
+STILL_ACTIVE = 259
 TH32CS_SNAPPROCESS = 0x00000002
 WM_CLOSE = 0x0010
 
@@ -139,6 +142,10 @@ kernel32.OpenProcess.argtypes = [
     ctypes.wintypes.DWORD,
 ]
 kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+kernel32.GetExitCodeProcess.argtypes = [
+    ctypes.wintypes.HANDLE,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
+]
 kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
 kernel32.CreateToolhelp32Snapshot.argtypes = [
     ctypes.wintypes.DWORD,
@@ -296,9 +303,35 @@ def process_rss(pid):
         kernel32.CloseHandle(handle)
 
 
-def find_window(pid):
+def process_is_running(pid):
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.wintypes.DWORD()
+        return bool(
+            kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            and exit_code.value == STILL_ACTIVE
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def sample_peak_rss(root_pid, stop, result):
+    peaks = {}
+    while not stop.is_set():
+        for pid in process_children(root_pid):
+            rss = process_rss(pid)
+            if rss is not None:
+                peaks[pid] = max(peaks.get(pid, 0), rss)
+        stop.wait(0.005)
+    result["peaks"] = peaks
+
+
+def find_window(root_pid):
     found = []
     titled = []
+    process_ids = set(process_children(root_pid))
 
     @ctypes.WINFUNCTYPE(
         ctypes.wintypes.BOOL,
@@ -310,14 +343,14 @@ def find_window(pid):
             return True
         window_pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
-        if window_pid.value != pid:
+        if window_pid.value not in process_ids:
             return True
         title = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(hwnd, title, len(title))
         if title.value:
-            titled.append(hwnd)
+            titled.append((hwnd, window_pid.value))
         if "Contact Book" in title.value:
-            found.append(hwnd)
+            found.append((hwnd, window_pid.value))
             return False
         return True
 
@@ -325,17 +358,20 @@ def find_window(pid):
     return found[0] if found else (titled[0] if titled else None)
 
 
-def wait_for_window(process, timeout_ms):
+def wait_for_window(process, job, timeout_ms):
     deadline = monotonic_ms() + timeout_ms
     while monotonic_ms() < deadline:
-        if process.poll() is not None:
+        assign_process_tree(job, process.pid)
+        window = find_window(process.pid)
+        if window:
+            return (*window, monotonic_ms())
+        if process.poll() is not None and not any(
+            process_is_running(pid) for pid in process_children(process.pid)
+        ):
             stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
             raise RuntimeError(
                 f"host exited before creating a window with {process.returncode}:\n{stderr}"
             )
-        hwnd = find_window(process.pid)
-        if hwnd:
-            return hwnd, monotonic_ms()
         time.sleep(0.005)
     raise TimeoutError(f"Contact Book window was not created for pid {process.pid}")
 
@@ -368,7 +404,9 @@ def run_host(name, command, env, probe_path):
     launch_epoch_ms = time.time() * 1000
     job = create_job()
     process = None
-    peak_rss = 0
+    rss_stop = threading.Event()
+    rss_result = {"peaks": {}}
+    rss_sampler = None
     try:
         process = subprocess.Popen(
             command,
@@ -378,6 +416,12 @@ def run_host(name, command, env, probe_path):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        rss_sampler = threading.Thread(
+            target=sample_peak_rss,
+            args=(process.pid, rss_stop, rss_result),
+            daemon=True,
+        )
+        rss_sampler.start()
         process_handle = kernel32.OpenProcess(
             PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE,
             False,
@@ -392,7 +436,7 @@ def run_host(name, command, env, probe_path):
             kernel32.CloseHandle(process_handle)
         assign_process_tree(job, process.pid)
 
-        hwnd, main_ms = wait_for_window(process, 30_000)
+        hwnd, host_pid, main_ms = wait_for_window(process, job, 30_000)
         set_client_viewport(hwnd, 1200, 800)
         probe_result = subprocess.run(
             ["node", str(probe_path), str(env["WEBUI_BENCHMARK_CDP_PORT"])],
@@ -413,13 +457,14 @@ def run_host(name, command, env, probe_path):
         close_start = monotonic_ms()
         if not user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
             raise ctypes.WinError(ctypes.get_last_error())
-        while process.poll() is None:
+        while process_is_running(host_pid):
             assign_process_tree(job, process.pid)
-            rss = process_rss(process.pid)
-            if rss is not None:
-                peak_rss = max(peak_rss, rss)
             time.sleep(0.005)
         exit_ms = monotonic_ms()
+        rss_stop.set()
+        rss_sampler.join()
+        if process.poll() is None:
+            process.wait(timeout=5)
         stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
         if process.returncode != 0:
             raise RuntimeError(f"{name} exited with {process.returncode}:\n{stderr}")
@@ -428,7 +473,7 @@ def run_host(name, command, env, probe_path):
             "host": name,
             "dashboard_tti_ms": dashboard_tti,
             "launcher_to_host_main_ms": main_ms - launch_ms,
-            "host_process_peak_rss_bytes": peak_rss,
+            "host_process_peak_rss_bytes": rss_result["peaks"].get(host_pid, 0),
             "process_tree_cpu_ms": metrics["cpu_ms"],
             "close_to_exit_ms": exit_ms - close_start,
             "readiness": readiness,
@@ -438,6 +483,9 @@ def run_host(name, command, env, probe_path):
             process.kill()
             process.wait()
             assign_process_tree(job, process.pid)
+        rss_stop.set()
+        if rss_sampler is not None and rss_sampler.is_alive():
+            rss_sampler.join()
         kernel32.CloseHandle(job)
         time.sleep(0.5)
 
@@ -445,6 +493,7 @@ def run_host(name, command, env, probe_path):
 def build_commands(root, port, profile):
     app_dist = root / "examples" / "app" / "contact-book-manager" / "dist"
     state = root / "examples" / "app" / "contact-book-manager" / "data" / "state.json"
+    theme = root / "packages" / "webui-examples-theme" / "tokens.json"
     electron = (
         root
         / "examples"
@@ -459,6 +508,8 @@ def build_commands(root, port, profile):
     electron_entry = root / "benchmarks" / "windows" / "contact-book" / "electron_entry.mjs"
     native = root / "target" / "release" / "contact-book-desktop.exe"
     addon = root / "target" / "release" / "webui_node.dll"
+    electron_state = profile / "electron-state.json"
+    write_themed_state(state, theme, electron_state)
     common = os.environ.copy()
     common["WEBUI_BENCHMARK_CDP_PORT"] = str(port)
     common["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -468,7 +519,7 @@ def build_commands(root, port, profile):
         "WEBUI_ADDON_PATH": str(addon),
         "ELECTRON_NO_ATTACH_CONSOLE": "1",
         "WEBUI_BENCHMARK_APP_DIST": str(app_dist),
-        "WEBUI_BENCHMARK_STATE_PATH": str(state),
+        "WEBUI_BENCHMARK_STATE_PATH": str(electron_state),
         "WEBUI_BENCHMARK_ELECTRON_MAIN": str(electron_main),
     }
     webui_env = common | {
@@ -491,6 +542,18 @@ def build_commands(root, port, profile):
     )
 
 
+def write_themed_state(state_path, theme_path, output_path):
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    themes = json.loads(theme_path.read_text(encoding="utf-8"))["themes"]
+    state["tokens"] = {
+        name: "\n".join(
+            f"--{token}: {values[token]};" for token in sorted(values)
+        )
+        for name, values in themes.items()
+    }
+    output_path.write_text(json.dumps(state), encoding="utf-8")
+
+
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -507,10 +570,10 @@ def run():
         prefix="webui-contact-book-", ignore_cleanup_errors=True
     ) as temp:
         temp_root = Path(temp)
-        for warmup_host in ("electron", "webui"):
+        for warmup_index, warmup_host in enumerate(("electron", "webui")):
             profile = temp_root / f"warmup-{warmup_host}"
             profile.mkdir()
-            port = 9400 + len(rows)
+            port = 9400 + warmup_index
             electron_cmd, electron_env, webui_cmd, webui_env = build_commands(
                 ROOT, port, profile
             )

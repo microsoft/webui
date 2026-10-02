@@ -6,11 +6,11 @@
   "metrics": {
     "dashboard_tti_ms": {
       "electron": {
-        "median": 504.7418212890625,
+        "median": 534.176025390625,
         "unit": "ms"
       },
       "webui": {
-        "median": 785.34130859375,
+        "median": 806.901611328125,
         "unit": "ms"
       },
       "retained_pairs": 20,
@@ -19,11 +19,11 @@
     },
     "launcher_to_host_main_ms": {
       "electron": {
-        "median": 149.68695000186563,
+        "median": 172.46439999900758,
         "unit": "ms"
       },
       "webui": {
-        "median": 426.67685000039637,
+        "median": 447.6502000000328,
         "unit": "ms"
       },
       "retained_pairs": 20,
@@ -32,24 +32,31 @@
     },
     "host_process_peak_rss_bytes": {
       "electron": {
-        "median": 105.33203125,
+        "median": 112.017578125,
         "unit": "MiB"
       },
       "webui": {
-        "median": 38.6171875,
+        "median": 39.892578125,
         "unit": "MiB"
       },
-      "retained_pairs": 20,
-      "excluded_pairs": [],
+      "retained_pairs": 14,
+      "excluded_pairs": [
+        5,
+        12,
+        13,
+        14,
+        18,
+        19
+      ],
       "threshold": 3.5
     },
     "process_tree_cpu_ms": {
       "electron": {
-        "median": 1039.0625,
+        "median": 1109.375,
         "unit": "ms"
       },
       "webui": {
-        "median": 1773.4375,
+        "median": 1710.9375,
         "unit": "ms"
       },
       "retained_pairs": 20,
@@ -58,11 +65,11 @@
     },
     "close_to_exit_ms": {
       "electron": {
-        "median": 68.53680000081658,
+        "median": 75.9313999991864,
         "unit": "ms"
       },
       "webui": {
-        "median": 51.24244999885559,
+        "median": 59.501350002363324,
         "unit": "ms"
       },
       "retained_pairs": 20,
