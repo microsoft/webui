@@ -107,6 +107,13 @@ jobs:
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
 
+      - name: Test Linux local-server journeys
+        run: |
+          GDK_BACKEND=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+            cargo test -p microsoft-webui-desktop --no-default-features \
+              --features local-server,application-ipc \
+              --test linux_local_server -- --ignored --format=pretty
+
       - name: Test release native IPC source/package and no-IPC
         run: |
           # Allow only fixture executables to create WebKitGTK sandbox namespaces.
