@@ -2623,9 +2623,8 @@ mod tests {
                     .contains(r#""lazy-panel":{"kind":"module","specifier":"lazy-panel","css":"#,));
             }
             if strategy == CssStrategy::Link {
-                assert!(
-                    component.contains(r#""href":new URL("lazy-panel.css",import.meta.url).href"#,)
-                );
+                assert!(component.contains(r#""href":"lazy-panel.css""#));
+                assert!(!component.contains("import.meta.url"));
             }
         }
     }
@@ -2739,6 +2738,8 @@ mod tests {
         assert!(shared.content.contains(r#""kind":"component""#));
         assert!(shared.content.contains(r#""components":["shared-detail"]"#));
         assert!(shared.content.contains(r#""templates":{"shared-detail":"#));
+        assert!(shared.content.contains(r#""href":"shared-detail.css""#));
+        assert!(!shared.content.contains("import.meta.url"));
     }
 
     #[test]

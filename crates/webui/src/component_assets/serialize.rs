@@ -100,13 +100,11 @@ pub(super) fn render_asset(
             protocol: options.protocol,
             attribution: &mut attribution,
         };
-        let written_resources =
-            push_style_resources(&mut writer, &pending.components, 0, true, true)?;
+        let written_resources = push_style_resources(&mut writer, &pending.components, 0, true)?;
         push_style_resources(
             &mut writer,
             &pending.external_components,
             written_resources,
-            false,
             false,
         )?;
     }
@@ -268,7 +266,6 @@ fn push_style_resources(
     components: &[usize],
     mut written: usize,
     attribute_bytes: bool,
-    resolve_relative_href: bool,
 ) -> Result<usize, WebUIError> {
     for (index, component) in components.iter().copied().enumerate() {
         let resource = match writer.payloads.get(component).and_then(Option::as_ref) {
@@ -287,13 +284,7 @@ fn push_style_resources(
         match &resource {
             RenderedStyleResource::Link(href) => {
                 writer.out.push_str(":{\"kind\":\"link\",\"href\":");
-                if resolve_relative_href && is_relative_href(href) {
-                    writer.out.push_str("new URL(");
-                    push_json_string(writer.out, href, "component style href")?;
-                    writer.out.push_str(",import.meta.url).href");
-                } else {
-                    push_json_string(writer.out, href, "component style href")?;
-                }
+                push_json_string(writer.out, href, "component style href")?;
                 writer.out.push('}');
             }
             RenderedStyleResource::Style(css) => {
@@ -344,13 +335,6 @@ fn push_style_closures(
         out.push(']');
     }
     Ok(())
-}
-
-fn is_relative_href(href: &str) -> bool {
-    !href.starts_with('/')
-        && !href.starts_with('#')
-        && !href.starts_with("//")
-        && !href.contains(':')
 }
 
 fn push_templates(
