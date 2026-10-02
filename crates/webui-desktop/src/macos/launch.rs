@@ -36,37 +36,12 @@ struct WebviewHandlers<'a> {
     ipc: Option<&'a std::rc::Rc<super::ipc::MacIpc>>,
 }
 
-/// Build the window and webview, wire every peripheral, then show the window
-/// and load the startup URL.
+/// Build the webview and window, wire every peripheral, then show the window.
 pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSApplication) {
     let mtm = delegate.mtm();
     let ivars = delegate.ivars();
     let restored_state = restore_state_if_enabled(ivars.state_store.as_ref(), mtm);
     let rect = initial_content_rect(&ivars.options, restored_state.as_ref());
-
-    // SAFETY: NSWindow is allocated and initialized on the main thread, with a
-    // valid content rect and standard style flags. `DesktopWindow` has no
-    // designated initializer of its own, so the call must go through the
-    // inherited `NSWindow` initializer via `super`.
-    let window: Retained<DesktopWindow> = unsafe {
-        msg_send![
-            super(DesktopWindow::alloc(mtm).set_ivars(())),
-            initWithContentRect: rect,
-            styleMask: super::options::native_window_style(&ivars.options).mask,
-            backing: NSBackingStoreType::Buffered,
-            defer: false,
-        ]
-    };
-    // SAFETY: The window is retained in the delegate OnceCell, so it must not
-    // auto-release itself when closed.
-    unsafe { window.setReleasedWhenClosed(false) };
-    window.setTitle(&ivars.title);
-    apply_window_options(&window, &ivars.options);
-    if let Some(state) = &restored_state {
-        apply_state(&window, state);
-    } else if ivars.options.center {
-        window.center();
-    }
 
     let scheme_handler = ivars.runtime.as_ref().map(|runtime| {
         DesktopSchemeHandler::new(
@@ -153,6 +128,46 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
     unsafe {
         webview.setNavigationDelegate(Some(ProtocolObject::from_ref(&*navigation_delegate)));
     }
+    let local_url = {
+        #[cfg(feature = "local-server")]
+        {
+            ivars.local_url.as_deref()
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            None
+        }
+    };
+    let load_before_window = should_load_before_window(local_url);
+    // Bundled navigation needs no external-owner admission, so its real WebKit
+    // startup can overlap construction of the real window and shell.
+    if load_before_window {
+        load_startup_url(&webview, None);
+    }
+
+    // SAFETY: NSWindow is allocated and initialized on the main thread, with a
+    // valid content rect and standard style flags. `DesktopWindow` has no
+    // designated initializer of its own, so the call must go through the
+    // inherited `NSWindow` initializer via `super`.
+    let window: Retained<DesktopWindow> = unsafe {
+        msg_send![
+            super(DesktopWindow::alloc(mtm).set_ivars(())),
+            initWithContentRect: rect,
+            styleMask: super::options::native_window_style(&ivars.options).mask,
+            backing: NSBackingStoreType::Buffered,
+            defer: false,
+        ]
+    };
+    // SAFETY: The window is retained in the delegate OnceCell, so it must not
+    // auto-release itself when closed.
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setTitle(&ivars.title);
+    apply_window_options(&window, &ivars.options);
+    if let Some(state) = &restored_state {
+        apply_state(&window, state);
+    } else if ivars.options.center {
+        window.center();
+    }
     apply_background(&window, &webview, ivars.options.background);
     install_content_view(mtm, &window, &webview, ivars.options.effect);
     align_overlay_controls(&window, &ivars.options);
@@ -206,16 +221,6 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         &webview,
         &ivars.window_handle,
     ));
-    let local_url = {
-        #[cfg(feature = "local-server")]
-        {
-            ivars.local_url.as_deref()
-        }
-        #[cfg(not(feature = "local-server"))]
-        {
-            None
-        }
-    };
     let _ = ivars.window.set(window.clone());
     let _ = ivars.webview.set(webview.clone());
     #[cfg(feature = "native-services")]
@@ -266,7 +271,9 @@ pub(super) fn build_window_and_webview(delegate: &DesktopAppDelegate, app: &NSAp
         }
     }
     window.makeKeyAndOrderFront(None);
-    load_startup_url(&webview, local_url);
+    if !load_before_window {
+        load_startup_url(&webview, local_url);
+    }
     #[cfg(feature = "local-server")]
     if ivars
         .lifetime
@@ -467,5 +474,20 @@ fn load_startup_url(webview: &WKWebView, local_url: Option<&str>) {
         unsafe {
             let _ = webview.loadRequest(&request);
         }
+    }
+}
+
+fn should_load_before_window(local_url: Option<&str>) -> bool {
+    local_url.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_load_before_window;
+
+    #[test]
+    fn bundled_navigation_is_eager_and_local_server_navigation_is_deferred() {
+        assert!(should_load_before_window(None));
+        assert!(!should_load_before_window(Some("http://127.0.0.1:3000")));
     }
 }
