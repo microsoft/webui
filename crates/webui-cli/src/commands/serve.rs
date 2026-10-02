@@ -232,6 +232,11 @@ impl ServePaths {
             })
             .transpose()?;
 
+        validate_component_asset_output_paths(
+            component_assets_out.as_deref(),
+            metafile.as_deref(),
+        )?;
+
         Ok(Self {
             app_dir,
             state_file,
@@ -706,6 +711,24 @@ fn validate_component_asset_output_watch_root(
                 watch_path.display()
             );
         }
+    }
+    Ok(())
+}
+
+fn validate_component_asset_output_paths(
+    component_assets_out: Option<&std::path::Path>,
+    metafile: Option<&std::path::Path>,
+) -> Result<()> {
+    let (Some(component_assets_out), Some(metafile)) = (component_assets_out, metafile) else {
+        return Ok(());
+    };
+    let manifest = component_asset_output::manifest_path(component_assets_out);
+    if output_paths::paths_collide(&manifest, metafile)? {
+        bail!(
+            "Metafile output {} collides with the internal component asset manifest.\nhelp: Choose a distinct --metafile path outside {}.",
+            metafile.display(),
+            manifest.display()
+        );
     }
     Ok(())
 }
@@ -3287,6 +3310,25 @@ mod tests {
         validate_component_asset_output_watch_root(
             Some(&app.join(".webui")),
             std::slice::from_ref(&app),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_metafile_cannot_overwrite_component_asset_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join(".webui");
+        let manifest = component_asset_output::manifest_path(&output);
+
+        let error =
+            validate_component_asset_output_paths(Some(&output), Some(&manifest)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("collides with the internal component asset manifest"));
+
+        validate_component_asset_output_paths(
+            Some(&output),
+            Some(&root.path().join("component-assets.meta.json")),
         )
         .unwrap();
     }

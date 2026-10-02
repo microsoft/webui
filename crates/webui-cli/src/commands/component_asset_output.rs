@@ -56,6 +56,10 @@ pub(super) fn watch_ignore_paths(output_dir: &Path) -> [PathBuf; 1] {
     [output_dir.to_path_buf()]
 }
 
+pub(super) fn manifest_path(output_dir: &Path) -> PathBuf {
+    output_dir.join(MANIFEST_FILE)
+}
+
 fn manifest_for(files: &[ComponentAssetFile]) -> PublishedFiles {
     let mut manifest = PublishedFiles {
         files: Vec::with_capacity(files.len()),

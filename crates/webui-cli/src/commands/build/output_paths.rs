@@ -45,6 +45,12 @@ pub(in crate::commands) fn path_contains(parent: &Path, child: &Path) -> std::io
     Ok(child.starts_with(parent))
 }
 
+pub(in crate::commands) fn paths_collide(first: &Path, second: &Path) -> std::io::Result<bool> {
+    let mut paths = OutputPathSet::with_capacity(2);
+    paths.insert(first)?;
+    Ok(!paths.insert(second)?)
+}
+
 fn resolved_absolute(path: &Path) -> std::io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
