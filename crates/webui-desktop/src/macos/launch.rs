@@ -29,6 +29,11 @@ use super::tray::install_tray;
 use super::window::{align_overlay_controls, apply_window_options, DesktopWindow};
 use super::{devtools_enabled_by_env, dispatch_event, startup_url};
 
+const DISABLE_VIEWPORT_OVERSCROLL_SCRIPT: &str =
+    "(()=>{const apply=()=>{const root=document.documentElement;if(!root)return false;\
+     root.style.setProperty('overscroll-behavior','none','important');return true;};\
+     if(!apply())document.addEventListener('DOMContentLoaded',apply,{once:true});})();";
+
 struct WebviewHandlers<'a> {
     scheme: Option<&'a Retained<DesktopSchemeHandler>>,
     host: Option<&'a Retained<DesktopHostMessageHandler>>,
@@ -465,6 +470,13 @@ fn build_webview(
         let store = WKWebsiteDataStore::nonPersistentDataStore(mtm);
         config.setWebsiteDataStore(&store);
         let content = config.userContentController();
+        let overscroll_script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+            WKUserScript::alloc(mtm),
+            &NSString::from_str(DISABLE_VIEWPORT_OVERSCROLL_SCRIPT),
+            WKUserScriptInjectionTime::AtDocumentStart,
+            true,
+        );
+        content.addUserScript(&overscroll_script);
         if let Some(host_message_handler) = handlers.host {
             #[cfg(feature = "local-server")]
             let local_controls = host_message_handler.local_gate().is_some();
@@ -568,7 +580,7 @@ fn should_load_before_window(local_url: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{prelaunch_allowed, should_load_before_window};
+    use super::{prelaunch_allowed, should_load_before_window, DISABLE_VIEWPORT_OVERSCROLL_SCRIPT};
 
     #[test]
     fn bundled_navigation_is_eager_and_local_server_navigation_is_deferred() {
@@ -582,5 +594,12 @@ mod tests {
         assert!(!prelaunch_allowed(false, false, false));
         assert!(!prelaunch_allowed(true, true, false));
         assert!(!prelaunch_allowed(true, false, true));
+    }
+
+    #[test]
+    fn viewport_overscroll_is_disabled_before_document_interaction() {
+        assert!(DISABLE_VIEWPORT_OVERSCROLL_SCRIPT.contains("overscroll-behavior"));
+        assert!(DISABLE_VIEWPORT_OVERSCROLL_SCRIPT.contains("'none','important'"));
+        assert!(DISABLE_VIEWPORT_OVERSCROLL_SCRIPT.contains("DOMContentLoaded"));
     }
 }
