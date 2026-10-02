@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "source": "benchmarks/windows/contact-book",
+  "host": "Windows",
+  "pair_count": 20,
+  "metrics": {
+    "dashboard_tti_ms": {
+      "electron": {
+        "median": 504.7418212890625,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 785.34130859375,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "launcher_to_host_main_ms": {
+      "electron": {
+        "median": 149.68695000186563,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 426.67685000039637,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "host_process_peak_rss_bytes": {
+      "electron": {
+        "median": 105.33203125,
+        "unit": "MiB"
+      },
+      "webui": {
+        "median": 38.6171875,
+        "unit": "MiB"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "process_tree_cpu_ms": {
+      "electron": {
+        "median": 1039.0625,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 1773.4375,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    },
+    "close_to_exit_ms": {
+      "electron": {
+        "median": 68.53680000081658,
+        "unit": "ms"
+      },
+      "webui": {
+        "median": 51.24244999885559,
+        "unit": "ms"
+      },
+      "retained_pairs": 20,
+      "excluded_pairs": [],
+      "threshold": 3.5
+    }
+  }
+}
