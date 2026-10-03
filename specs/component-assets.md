@@ -51,6 +51,11 @@ reader/publisher quiescence. No time interval or generation count guarantees
 that property. Persistent disk usage therefore grows until coordinated cleanup;
 there is no automatic finite disk bound for arbitrary uncoordinated readers.
 
+The CLI exposes this operation as `prune-component-assets`, requiring an
+explicit output directory and `--quiescent` acknowledgment. It does not establish
+quiescence itself and refuses cleanup without existing, parseable publication
+bookkeeping.
+
 The development HTTP server retains current root descriptors in memory and
 reads immutable dependencies from the publication directory. Without an
 explicit output directory, a server-owned temporary directory lasts until

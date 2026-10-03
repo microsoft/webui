@@ -202,8 +202,9 @@ proves graph coverage; registration checks external entry templates and live
 style conflicts. Manifest-driven loaders additionally validate untrusted input.
 Publication writes dependencies before switching roots and preserves unchanged
 input modification times. Old dependencies stay available until readers of
-older roots finish. Stop or coordinate bundler readers before cleaning the
-generated directory; no generation count guarantees they have finished.
+older roots finish. Stop or coordinate bundler/HTTP readers and publishers
+before using [`webui prune-component-assets`](#webui-prune-component-assets);
+no generation count guarantees they have finished.
 
 `--metafile` writes esbuild-compatible `inputs` and `outputs`, including static
 `import-statement` edges and exact byte attribution. It can be opened directly
@@ -342,6 +343,38 @@ to keep application startup separate. The host's existing asset handoff owns
 script URLs; there is no additional streaming manifest input. Authored module
 scripts with `fetchpriority="low"` are excluded from automatic modulepreload
 hints so deferred application code does not get promoted into the head.
+
+### `webui prune-component-assets`
+
+Remove obsolete immutable component payloads from a reused `build` or `serve`
+output directory after downstream readers and publishers are quiescent:
+
+```bash
+webui prune-component-assets --component-assets-out ./.webui --quiescent
+```
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--component-assets-out <DIR>` | Existing component input directory produced by `build` or `serve` | *(required)* |
+| `--quiescent` | Confirm all bundler/HTTP readers and publishers are stopped or coordinated until cleanup finishes | *(required)* |
+
+Pass the same directory used for `--component-assets-out`. If `build` used its
+default asset location, pass the `--out` directory instead, or the parent
+directory when `--out` names a `.bin` file. Paths support absolute and relative
+filesystem values and `~/...`.
+
+For an offline pipeline, run cleanup after WebUI and all downstream bundler jobs
+finish, with no other publishers or readers using the directory. For watch
+pipelines, stop both `webui serve --watch` and downstream bundler watchers and
+wait for in-flight reads and builds to finish before cleanup; restart them
+afterward. The command does not stop, detect, or synchronize other processes.
+`--quiescent` is your confirmation, not an automatic safety check.
+
+Cleanup preserves stable roots, current payloads, protocol/CSS/metafile outputs,
+and application files. It requires the directory's generated
+`.webui-component-assets.json` bookkeeping; missing or malformed bookkeeping
+fails without pruning. Repeating cleanup is safe and does not rewrite retained
+files. Normal `build` and `serve` rebuilds never prune automatically.
 
 ### `webui inspect`
 
@@ -575,8 +608,8 @@ a `did you mean …?` suggestion) since it is usually a typo.
 root is parsed and validated on every build - its template and CSS are checked
 for HTML and theme-token errors even though the component is not part of the
 initial SSR tree - so authoring mistakes in lazily loaded components fail the
-dev build instead of being silently skipped. Generated root and component
-roots are served from memory and immutable dependencies from disk. Without
+dev build instead of being silently skipped. Generated stable roots are served
+from memory and immutable dependencies from disk. Without
 `--component-assets-out`, the server owns a temporary input directory for its
 lifetime. With `--component-assets-out`, successful
 rebuilds also refresh the stable inputs consumed by an application bundler
@@ -590,10 +623,11 @@ watcher to prevent rebuild loops.
 Unchanged graph inputs keep their modification times. Dependencies referenced
 by earlier roots remain available across any number of watch rebuilds without
 accumulating a resident dependency cache. Persistent generated directories need
-cleanup after their consumers stop. For native ESM loading, report real open
-failures and offer an explicit reload, or use application-bundler-owned chunk
-recovery. Resetting an import promise alone cannot clear a failed native module
-from the browser cache.
+[`webui prune-component-assets`](#webui-prune-component-assets) after their
+readers and publishers stop or are coordinated. For native ESM loading, report
+real open failures and offer an explicit reload, or use
+application-bundler-owned chunk recovery. Resetting an import promise alone
+cannot clear a failed native module from the browser cache.
 
 In `serve --watch`, rebuild failures are sticky: the terminal and live-reload
 SSE report the error, and refreshing the page returns the latest rebuild error

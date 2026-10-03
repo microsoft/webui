@@ -48,6 +48,9 @@ pub enum CliError {
         host: String,
     },
 
+    /// Component asset cleanup was requested without confirming quiescence.
+    ComponentAssetPruneUnconfirmed,
+
     /// The entry file could not be read.
     EntryReadFailed {
         /// The path that could not be read.
@@ -79,6 +82,9 @@ impl fmt::Display for CliError {
             CliError::InvalidAllowedHost { host } => {
                 write!(f, "Invalid --allowed-host value: {host}")
             }
+            CliError::ComponentAssetPruneUnconfirmed => {
+                write!(f, "Component asset cleanup requires --quiescent")
+            }
             CliError::EntryReadFailed { path } => write!(f, "Failed to read entry file: {path}"),
             CliError::DesktopBinaryNotFound { binary } => {
                 write!(f, "Desktop sidecar backend not found: {binary}")
@@ -108,6 +114,9 @@ impl CliError {
             CliError::InvalidAllowedHost { .. } => {
                 "Pass an exact DNS hostname, optionally followed by :port; URLs and wildcards are not allowed"
             }
+            CliError::ComponentAssetPruneUnconfirmed => {
+                "Stop or coordinate all bundler/HTTP readers and publishers before retrying with --quiescent"
+            }
             CliError::EntryReadFailed { .. } => {
                 "Use --entry <file> to specify a different entry file"
             }
@@ -135,7 +144,9 @@ impl CliError {
             // A required service (the port) is unavailable → EX_UNAVAILABLE.
             CliError::PortInUse { .. } => 69,
             // Invalid flag value → usage error.
-            CliError::InvalidServePort | CliError::InvalidAllowedHost { .. } => 2,
+            CliError::InvalidServePort
+            | CliError::InvalidAllowedHost { .. }
+            | CliError::ComponentAssetPruneUnconfirmed => 2,
         }
     }
 }
