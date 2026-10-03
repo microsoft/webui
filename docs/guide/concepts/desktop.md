@@ -48,6 +48,7 @@ set desktop package options with command flags or the app-root
 | --- | --- |
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
 | `native` | System webview and `run_frame` |
+| `native-dwm-frame` | Opt-in Windows DWM frame for standard-button overlay/hidden-inset windows (includes `native`) |
 | `local-server` | Native window for an existing loopback HTTP origin on macOS, Windows or Linux (includes `native`; no source compiler or implicit IPC grant) |
 | `native-url-activation` | Host-only incoming custom-scheme URLs on macOS (includes `local-server`; no OS scheme registration or renderer grant) |
 | `native-services` | Trusted Rust-host browser/document OS openers on a local-server window (includes `local-server`; no implicit renderer grant) |
@@ -74,6 +75,12 @@ source = ["webui-desktop/source"]
 ```
 
 Enable `application-ipc` separately if you use generated messages.
+
+Rust hosts can add `native-dwm-frame` to their dependency features to select
+Windows DWM caption controls for `Overlay` and `HiddenInset` with standard
+buttons. Tall buttons and other titlebar styles keep the existing frame
+backend. This feature does not change the webview, application bundle, or
+native window-control APIs.
 
 On Windows, static styles, scripts, fonts, and images can be reused during a
 page's initial load and are revalidated on later loads. Documents, API responses,

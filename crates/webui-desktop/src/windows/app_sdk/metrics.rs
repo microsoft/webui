@@ -9,16 +9,16 @@ use webview2_com::{CoTaskMemPWSTR, ExecuteScriptCompletedHandler};
 
 /// Physical measurements of native controls, translated at the CSS boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct Metrics {
-    pub(super) left: i32,
-    pub(super) right: i32,
-    pub(super) height: i32,
-    pub(super) dpi: u32,
-    pub(super) minimum_height: u32,
+pub(in crate::windows) struct Metrics {
+    pub(in crate::windows) left: i32,
+    pub(in crate::windows) right: i32,
+    pub(in crate::windows) height: i32,
+    pub(in crate::windows) dpi: u32,
+    pub(in crate::windows) minimum_height: u32,
 }
 
 impl Metrics {
-    pub(super) fn script(self) -> String {
+    pub(in crate::windows) fn script(self) -> String {
         let mut script = String::with_capacity(1800);
         let _ = write!(
             script,
@@ -55,7 +55,7 @@ impl Metrics {
         script
     }
 
-    pub(super) fn publish(self, webview: &ICoreWebView2) -> Result<()> {
+    pub(in crate::windows) fn publish(self, webview: &ICoreWebView2) -> Result<()> {
         let script = CoTaskMemPWSTR::from(self.script().as_str());
         let completion = ExecuteScriptCompletedHandler::create(Box::new(|result, _| {
             if let Err(error) = result {

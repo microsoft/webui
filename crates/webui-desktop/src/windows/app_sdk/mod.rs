@@ -26,6 +26,7 @@ use bindings::Microsoft::UI::Windowing::{
     AppWindow, AppWindowPresenter, AppWindowPresenterKind, AppWindowTitleBar, IconShowOptions,
     TitleBarHeightOption,
 };
+pub(super) use metrics::Metrics;
 pub(super) use runtime::Runtime;
 
 pub(super) struct WindowFrame {

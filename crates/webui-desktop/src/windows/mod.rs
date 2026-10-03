@@ -40,6 +40,7 @@ mod ipc_policy;
 #[cfg(feature = "local-server")]
 mod local_controls;
 mod message;
+mod native_frame;
 mod nonclient;
 #[cfg(feature = "native-picker")]
 pub(crate) mod picker;
@@ -205,7 +206,11 @@ fn run_content(frame: FrameContent) -> Result<()> {
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
     trace.mark("com_dpi");
-    let runtime = app_sdk::Runtime::initialize()?;
+    let runtime = if native_frame::enabled(frame.window()) {
+        None
+    } else {
+        Some(app_sdk::Runtime::initialize()?)
+    };
     trace.mark("app_sdk_runtime");
 
     let saved = state::load_saved_state(store.as_ref());
@@ -216,8 +221,13 @@ fn run_content(frame: FrameContent) -> Result<()> {
             frame.window().titlebar,
             crate::TitlebarStyle::Overlay { .. } | crate::TitlebarStyle::HiddenInset
         );
+    if native_frame::enabled(frame.window()) {
+        nonclient::prepare_dwm_frame(window_frame.hwnd)?;
+    }
     if early_overlay {
-        nonclient::prepare_overlay_startup(window_frame.hwnd)?;
+        if !native_frame::enabled(frame.window()) {
+            nonclient::prepare_overlay_startup(window_frame.hwnd)?;
+        }
         window_frame.show()?;
         trace.mark("early_overlay_visible");
     }
@@ -227,12 +237,36 @@ fn run_content(frame: FrameContent) -> Result<()> {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
     trace.mark("environment_created");
-    let content = window_frame.hwnd;
+    let native_window = if runtime.is_none() {
+        Some(native_frame::WindowFrame::attach(
+            None,
+            window_frame.hwnd,
+            frame.window(),
+        )?)
+    } else {
+        None
+    };
+    let browser_frame = native_frame::enabled(frame.window())
+        .then(|| native_frame::BrowserWindow::new(window_frame.hwnd))
+        .transpose()?;
+    let content = browser_frame
+        .as_ref()
+        .map_or(window_frame.hwnd, |browser| browser.hwnd);
+    if browser_frame.is_some() {
+        native_frame::resize_browser(window_frame.hwnd, content)?;
+    }
     let pending_controller = webview::begin_create_controller(&environment, content)?;
     trace.mark("controller_started");
-    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, frame.window())?;
-    if early_overlay {
+    let app_window = if let Some(native) = native_window {
+        native
+    } else {
+        native_frame::WindowFrame::attach(runtime.as_ref(), window_frame.hwnd, frame.window())?
+    };
+    if early_overlay && !native_frame::enabled(frame.window()) {
         nonclient::finish_overlay_startup(window_frame.hwnd)?;
+    }
+    if browser_frame.is_some() {
+        native_frame::resize_browser(window_frame.hwnd, content)?;
     }
     trace.mark("app_window_attached");
     window_frame.show()?;

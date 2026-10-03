@@ -31,7 +31,7 @@ pub(super) enum WindowSizeState {
 
 /// Per-window state owned by the native window procedure.
 pub(super) struct FrameState {
-    pub(super) app_window: super::app_sdk::WindowFrame,
+    pub(super) app_window: super::native_frame::WindowFrame,
     pub(super) content: HWND,
     pub(super) application_tasks: std::rc::Rc<super::tasks::ApplicationTasks>,
     /// Native IPC adapter, with weak core facade and UI-local completions.
