@@ -160,6 +160,12 @@ fn set_title(hwnd: HWND, title: &str) {
 
 /// Resize the window without moving it.
 fn set_size(hwnd: HWND, width: u32, height: u32) {
+    if cfg!(feature = "native-dwm-frame") && super::nonclient::is_dwm_frame(hwnd) {
+        if let Err(error) = super::native_frame::resize_client(hwnd, width, height) {
+            eprintln!("WebUI: failed to resize the native client viewport: {error}");
+        }
+        return;
+    }
     let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {
         return;
     };

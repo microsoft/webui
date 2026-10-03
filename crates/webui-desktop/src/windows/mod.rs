@@ -222,7 +222,7 @@ fn run_content(frame: FrameContent) -> Result<()> {
             crate::TitlebarStyle::Overlay { .. } | crate::TitlebarStyle::HiddenInset
         );
     if native_frame::enabled(frame.window()) {
-        nonclient::prepare_dwm_frame(window_frame.hwnd)?;
+        native_frame::prepare_startup_window(window_frame.hwnd, frame.window(), saved.is_some())?;
     }
     if early_overlay {
         if !native_frame::enabled(frame.window()) {

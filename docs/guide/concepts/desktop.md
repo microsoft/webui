@@ -80,7 +80,9 @@ Rust hosts can add `native-dwm-frame` to their dependency features to select
 Windows DWM caption controls for `Overlay` and `HiddenInset` with standard
 buttons. Tall buttons and other titlebar styles keep the existing frame
 backend. This feature does not change the webview, application bundle, or
-native window-control APIs.
+native window-control APIs. Its configured width/height and `WindowHandle`
+size commands describe the client viewport in logical pixels, including the
+overlay band; saved native window bounds are restored unchanged.
 
 On Windows, static styles, scripts, fonts, and images can be reused during a
 page's initial load and are revalidated on later loads. Documents, API responses,
