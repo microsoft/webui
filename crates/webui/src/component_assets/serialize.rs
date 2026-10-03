@@ -66,30 +66,21 @@ pub(super) fn render_asset(
         Vec::new()
     };
     push_static_imports(&mut js, &pending.imports)?;
-    js.push_str("const asset={\"type\":\"");
-    js.push_str(ASSET_TYPE);
-    js.push_str("\",\"version\":");
-    push_u64(&mut js, ASSET_VERSION);
-    js.push_str(",\"kind\":\"");
-    js.push_str(if pending.root.is_some() {
-        "root"
-    } else {
-        "component"
-    });
-    js.push('"');
+    js.push_str("const asset={");
     if let Some(root) = &pending.root {
+        js.push_str("\"type\":\"");
+        js.push_str(ASSET_TYPE);
+        js.push_str("\",\"version\":");
+        push_u64(&mut js, ASSET_VERSION);
         js.push_str(",\"root\":");
         push_json_string(&mut js, root, "component asset root")?;
+        js.push_str(",\"externalComponents\":[");
+        push_component_id_array(&mut js, &pending.external_components, plan)?;
+        js.push_str("],\"imports\":[");
+        push_imports(&mut js, &pending.imports)?;
+        js.push_str("],");
     }
-    js.push_str(",\"components\":[");
-    push_component_tags(&mut js, &pending.components, plan, &mut attribution)?;
-    js.push_str("],\"requiredComponents\":[");
-    push_component_id_array(&mut js, &pending.required_components, plan)?;
-    js.push_str("],\"externalComponents\":[");
-    push_component_id_array(&mut js, &pending.external_components, plan)?;
-    js.push_str("],\"imports\":[");
-    push_imports(&mut js, &pending.imports)?;
-    js.push_str("],\"componentStyles\":{\"version\":1,\"strategy\":\"");
+    js.push_str("\"componentStyles\":{\"version\":1,\"strategy\":\"");
     js.push_str(options.protocol.css_strategy().wire_name());
     js.push_str("\",\"resources\":{");
     {
@@ -111,15 +102,17 @@ pub(super) fn render_asset(
     js.push_str("},\"closures\":{");
     push_style_closures(&mut js, pending, plan, options.protocol)?;
     js.push_str("}}");
-    js.push_str(",\"templates\":{");
-    push_templates(
-        &mut js,
-        &pending.components,
-        plan,
-        payloads,
-        &mut attribution,
-    )?;
-    js.push('}');
+    if pending.root.is_none() {
+        js.push_str(",\"templates\":{");
+        push_templates(
+            &mut js,
+            &pending.components,
+            plan,
+            payloads,
+            &mut attribution,
+        )?;
+        js.push('}');
+    }
     if pending.components.iter().any(|id| {
         payloads
             .get(*id)
@@ -193,23 +186,6 @@ fn estimate_asset_size(
         size += import.file_name.len() + 32;
     }
     size
-}
-
-fn push_component_tags(
-    out: &mut String,
-    components: &[usize],
-    plan: &AssetGraphPlan,
-    attribution: &mut [usize],
-) -> Result<(), WebUIError> {
-    for (index, component) in components.iter().copied().enumerate() {
-        let start = out.len();
-        if index > 0 {
-            out.push(',');
-        }
-        push_json_string(out, plan.component_names[component], "component tag")?;
-        add_attribution(attribution, index, out.len() - start);
-    }
-    Ok(())
 }
 
 fn push_component_id_array(

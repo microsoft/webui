@@ -545,42 +545,67 @@ The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
 missed because the component is outside the initial SSR tree. The dev server
 refreshes the generated ESM inputs after each successful rebuild and also serves
-them from memory. A successful watch build atomically replaces `--metafile`; a
+them over HTTP. Immutable dependencies remain on disk until consumers of older
+roots have finished. Stop readers before cleaning the generated directory; a
+fixed number of watch rebuilds is not a safe cleanup boundary. Unchanged inputs
+keep their modification times. A successful watch build atomically replaces `--metafile`; a
 failed build preserves the previous valid graph and generated files.
 
 Load the asset before creating or revealing the component:
 
 ```typescript
-import { WebUIElement } from '@microsoft/webui-framework';
+import { WebUIElement, observable } from '@microsoft/webui-framework';
 import {
   defineComponentAsset,
   preloadComponentAssetStyles,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
 
-let settingsAsset;
 const loadSettings = () => {
   preloadComponentAssetStyles('settings-dialog');
-  return settingsAsset ??= import('../../.webui/settings-dialog.webui.js')
+  return import('../../.webui/settings-dialog.webui.js')
     .then(module => defineComponentAsset(module.default));
 };
 
 export class AppShell extends WebUIElement {
+  @observable loadError = '';
   panelSlot!: HTMLDivElement;
 
   preloadSettings(): void {
-    void loadSettings();
+    void loadSettings().then(asset => asset.preload()).catch(() => {});
   }
 
   async openSettings(): Promise<void> {
-    const [asset, state] = await Promise.all([
-      loadSettings(),
-      fetch('/settings-dialog-data.json').then(response => response.json()),
-    ]);
-    const dialog = await asset.create();
-    (dialog as HTMLElement & { setState(value: unknown): void }).setState(state);
-    this.panelSlot.replaceChildren(dialog);
+    try {
+      const [asset, state] = await Promise.all([
+        loadSettings(),
+        fetch('/settings-dialog-data.json').then(response => {
+          if (!response.ok) throw new Error(`Settings data: HTTP ${response.status}`);
+          return response.json();
+        }),
+      ]);
+      const dialog = await asset.create();
+      (dialog as HTMLElement & { setState(value: unknown): void }).setState(state);
+      this.panelSlot.replaceChildren(dialog);
+      this.loadError = '';
+    } catch (error) {
+      console.error('Settings loading failed:', error);
+      this.loadError = 'Settings could not load. Reload the page to try again.';
+    }
+  }
+
+  reloadPage(): void {
+    location.reload();
   }
 }
+```
+
+Render that error in the shell's template with an explicit recovery action:
+
+```html
+<if condition="loadError">
+  <p role="alert">{{loadError}}</p>
+  <button @click="{reloadPage()}">Reload page</button>
+</if>
 ```
 
 Each generated root exports a semantic payload. The application owns when to
@@ -610,6 +635,14 @@ stylesheet work. If registration fails, the runtime facade clears the failed
 attempt so a later preload can retry. Start the root import and application data
 request together when mount latency matters. This avoids a
 CSS-after-JavaScript waterfall without eagerly loading component templates.
+`defineComponentAsset()` returns the same facade for the same imported payload,
+so applications need not cache it themselves. Registration retries do not
+invalidate the browser's native ESM module cache. A failed native dynamic import
+can remain failed for the life of the document. Let the application bundler own
+chunk recovery, or show an error with an explicit **Reload page** action when
+opening fails. Never reload automatically during speculative hover/focus
+preloading. Consume speculative rejections, but handle real open failures with a
+visible error and preserve their diagnostic details.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the

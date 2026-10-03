@@ -1030,15 +1030,14 @@ import {
   preloadComponentAssetStyles,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
 
-let settingsAsset;
 const loadSettings = () => {
   preloadComponentAssetStyles('settings-dialog');
-  return settingsAsset ??= import('../.webui/settings-dialog.webui.js')
+  return import('../.webui/settings-dialog.webui.js')
     .then(module => defineComponentAsset(module.default));
 };
 
 preloadSettings(): void {
-  void loadSettings();
+  void loadSettings().then(asset => asset.preload()).catch(() => {});
 }
 
 async openSettings(): Promise<void> {
@@ -1056,11 +1055,18 @@ handler or `Protocol`, which emits `#webui-component-assets`. Using build
 artifacts without rendering the protocol preserves the guarded native mount but
 does not provide early compiler-owned style preloading.
 
-WebUI emits one stable `components/<tag>.webui.js` module per asset-owned
+WebUI emits one immutable `components/<tag>.<content-id>.webui.js` input per asset-owned
 component and a thin `<root>.webui.js` entry with static imports for its closure.
 The application bundler owns final chunks, hashes, public paths, caching, and
 delivery. `defineComponentAsset()` waits for graph and style registration before
-creating the element. Failed registration is evicted so a later preload retries.
+creating the element, returning one facade per imported payload. Failed
+registration can retry, but a native ESM import failure may stay cached for the
+document lifetime. Consume speculative failures without reloading; real open
+failures need visible errors and bundler-owned recovery or an explicit reload.
+Do not claim resetting a promise retries a native import. The versioned root
+imports compact template/style payloads and lists only external prerequisites.
+Generated dependencies stay available until older readers finish; clean the
+input directory only after stopping or coordinating those readers.
 The normal entry bundle must load first.
 Component assets cannot be combined with `<route>`; use the router for routed
 components.

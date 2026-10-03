@@ -73,11 +73,44 @@ pub(super) fn plan_component_assets<'a>(
     emitted_components.sort_unstable();
     emitted_components.dedup();
 
-    Ok(finalize_plan(
-        index,
-        entry_closure,
-        root_plans,
-        emitted_components,
+    let plan = finalize_plan(index, entry_closure, root_plans, emitted_components);
+    validate_style_coverage(protocol, &plan)?;
+    Ok(plan)
+}
+
+fn validate_style_coverage(
+    protocol: &WebUIProtocol,
+    plan: &AssetGraphPlan<'_>,
+) -> Result<(), WebUIError> {
+    for root in &plan.roots {
+        for component in &root.components {
+            let tag = plan.component_names[*component];
+            let closure = protocol.style_closure(tag).ok_or_else(|| {
+                invalid_style_coverage(tag, "requires missing style closure metadata")
+            })?;
+            for resource in closure {
+                let covered = plan
+                    .component_names
+                    .binary_search(&resource.as_str())
+                    .ok()
+                    .is_some_and(|id| root.required_components.binary_search(&id).is_ok());
+                if !covered || protocol.component_style_resource(resource).is_none() {
+                    return Err(invalid_style_coverage(
+                        tag,
+                        &format!("references unavailable style resource <{resource}>"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_style_coverage(tag: &str, detail: &str) -> WebUIError {
+    WebUIError::InvalidBuildOptions(format!(
+        "component asset <{tag}> {detail}. Rebuild the protocol's style closures before emitting component assets."
     ))
 }
 

@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod component_assets;
 mod host;
-mod metafile;
 mod streaming_api;
 
 use actix_web::body::BoxBody;
@@ -29,6 +29,7 @@ use webui::{Diagnostic, Protocol, WebUIHandler};
 
 use super::build::output_paths;
 use super::component_asset_output;
+use super::metafile;
 use webui_dev_server::shutdown::{self, Control, Mode};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
@@ -93,10 +94,11 @@ pub struct ServeArgs {
 
     /// Comma-separated root component tags to generate as application bundler
     /// inputs, matching `webui build --emit-component-assets`. Their templates
-    /// and CSS are parsed and validated (theme tokens, HTML) on every build —
-    /// even though they are not part of the initial SSR tree — so authoring
+    /// and CSS are parsed and validated (theme tokens, HTML) on every build,
+    /// even though they are not part of the initial SSR tree, so authoring
     /// errors in lazily loaded components surface in the dev server. The
-    /// compiled `<tag>.webui.js` modules are served from memory.
+    /// stable root modules are served from memory; immutable dependencies are
+    /// read from disk.
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
@@ -268,8 +270,8 @@ impl ServePaths {
 struct SharedState {
     rendered_html: String,
     css_files: HashMap<String, String>,
-    /// In-memory static component assets (`<tag>.webui.js`) emitted by
-    /// `--emit-component-assets`, served from memory like generated CSS.
+    /// Current generated root entries. Immutable dependencies are served from
+    /// the publication directory rather than retained in this map.
     component_assets: HashMap<String, String>,
     protocol: Option<Arc<Protocol>>,
     state_data: Option<Value>,
@@ -402,6 +404,18 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     ensure_local_port_available(args.port)?;
 
     // Initial build + render
+    let temporary_component_assets = if !render_config.component_asset_roots.is_empty()
+        && render_config.component_assets_out.is_none()
+    {
+        Some(component_assets::TemporaryComponentAssets::create()?)
+    } else {
+        None
+    };
+    let mut render_config = render_config;
+    if let Some(directory) = &temporary_component_assets {
+        render_config.component_assets_out = Some(directory.0.clone());
+    }
+    let component_assets_dir = render_config.component_assets_out.clone();
     let initial_result = build_and_render(&render_config, livereload.as_ref())?;
     output::success("Initial build and render complete");
     for advisory in &initial_result.warnings {
@@ -451,6 +465,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         state,
         livereload: livereload.clone(),
         assets_dir: paths.serve_dir,
+        component_assets_dir,
         api_port: args.api_port,
         plugin: args.app_args.plugin,
         base_path: args.base_path.clone(),
@@ -677,6 +692,9 @@ fn build_and_render(
     let component_assets: HashMap<String, String> = build_result
         .component_asset_files
         .into_iter()
+        .filter(|file| {
+            !file.name.starts_with("components/") || config.component_assets_out.is_none()
+        })
         .map(|file| (file.name, file.content))
         .collect();
 
@@ -828,6 +846,7 @@ struct ServerContext {
     state: Arc<Mutex<SharedState>>,
     livereload: Option<LiveReload>,
     assets_dir: Option<PathBuf>,
+    component_assets_dir: Option<PathBuf>,
     api_port: Option<u16>,
     plugin: Option<Plugin>,
     /// Base path for sub-path deployment.
@@ -1270,6 +1289,53 @@ async fn handle_asset(
             return HttpResponse::Ok()
                 .content_type("text/javascript; charset=utf-8")
                 .body(asset.clone());
+        }
+    }
+
+    if relative.starts_with("components/") && relative.ends_with(".webui.js") {
+        if let Some(directory) = &context.component_assets_dir {
+            let path = directory.join(&relative);
+            let canonical = match tokio::fs::canonicalize(&path).await {
+                Ok(path) => Some(path),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => {
+                    log::error!(
+                        "Failed to resolve component asset {}: {error}",
+                        path.display()
+                    );
+                    return HttpResponse::InternalServerError()
+                        .body("Failed to read component asset");
+                }
+            };
+            if let Some(canonical) = canonical {
+                let base = match tokio::fs::canonicalize(directory).await {
+                    Ok(base) => base,
+                    Err(error) => {
+                        log::error!("Failed to resolve component asset directory: {error}");
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to read component asset");
+                    }
+                };
+                if !canonical.starts_with(base.join("components")) {
+                    return HttpResponse::Forbidden().body("Forbidden");
+                }
+                match tokio::fs::read(&canonical).await {
+                    Ok(bytes) => {
+                        return HttpResponse::Ok()
+                            .content_type("text/javascript; charset=utf-8")
+                            .body(bytes);
+                    }
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        log::error!(
+                            "Failed to read component asset {}: {error}",
+                            canonical.display()
+                        );
+                        return HttpResponse::InternalServerError()
+                            .body("Failed to read component asset");
+                    }
+                }
+            }
         }
     }
 
@@ -1736,6 +1802,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: Some(api_port),
             plugin: None,
             base_path: None,
@@ -1760,6 +1827,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: None,
             plugin: None,
             base_path: None,
@@ -2352,6 +2420,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: Some(api_port),
             plugin: None,
             base_path: None,
@@ -2718,6 +2787,7 @@ mod tests {
             })),
             livereload: Some(livereload.clone()),
             assets_dir: None,
+            component_assets_dir: None,
             api_port: None,
             plugin: None,
             base_path: None,
@@ -2792,6 +2862,7 @@ mod tests {
             })),
             livereload: Some(livereload),
             assets_dir: None,
+            component_assets_dir: None,
             api_port: None,
             plugin: None,
             base_path: None,
@@ -2913,6 +2984,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: Some(port),
             plugin: None,
             base_path: None,
@@ -2986,6 +3058,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: Some(port),
             plugin: None,
             base_path: None,
@@ -3199,8 +3272,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_and_render_emits_component_asset_to_memory_and_disk() {
+    #[actix_web::test]
+    async fn test_component_asset_publication_preserves_slow_readers_and_noop_identity() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
@@ -3246,16 +3319,61 @@ mod tests {
             fs::read_to_string(generated.join("lazy-panel.webui.js")).unwrap(),
             *asset
         );
-        let (payload_name, payload) = result
-            .component_assets
-            .iter()
-            .find(|(name, _)| name.starts_with("components/lazy-panel."))
-            .expect("component payload");
-        assert!(payload.contains(r#""kind":"component""#));
-        assert_eq!(
-            fs::read_to_string(generated.join(payload_name)).unwrap(),
-            *payload
-        );
+        assert_eq!(result.component_assets.len(), 1, "only roots stay resident");
+        let payload = fs::read_dir(generated.join("components"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let payload = fs::read_to_string(payload).unwrap();
+        assert!(payload.contains(r#""templates":{"lazy-panel":"#));
+        assert!(!payload.contains("requiredComponents"));
+        let root = generated.join("lazy-panel.webui.js");
+        let before = fs::metadata(&root).unwrap().modified().unwrap();
+        build_and_render(&config, None).unwrap();
+        assert_eq!(before, fs::metadata(&root).unwrap().modified().unwrap());
+
+        let payload_name = fs::read_dir(generated.join("components"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        let mut context = Arc::try_unwrap(test_route_context(result.protocol).into_inner())
+            .ok()
+            .unwrap();
+        context.component_assets_dir = Some(generated.clone());
+        let context = web::Data::new(context);
+        let service = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+        for generation in ["B", "C", "D"] {
+            fs::write(
+                app.path().join("lazy-panel.html"),
+                format!("<p>{generation}</p>"),
+            )
+            .unwrap();
+            let rebuilt = build_and_render(&config, None).unwrap();
+            assert_eq!(rebuilt.component_assets.len(), 1);
+            let response = actix_test::call_service(
+                &service,
+                actix_test::TestRequest::get()
+                    .uri(&format!("/components/{payload_name}"))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                actix_test::read_body(response).await.as_ref(),
+                payload.as_bytes()
+            );
+        }
     }
 
     #[test]
@@ -3462,6 +3580,92 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn test_handle_asset_preserves_generated_precedence_and_application_fallback() {
+        let files = create_app_dir(&[
+            (
+                "generated/components/shared.webui.js",
+                "export default 'generated';",
+            ),
+            (
+                "generated/escape.webui.js",
+                "export default 'private generated';",
+            ),
+            (
+                "public/components/shared.webui.js",
+                "export default 'application shared';",
+            ),
+            (
+                "public/components/application.webui.js",
+                "export default 'application';",
+            ),
+            ("private.webui.js", "export default 'private application';"),
+        ]);
+        let public = files.path().join("public").canonicalize().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            files.path().join("private.webui.js"),
+            public.join("components/escaped.webui.js"),
+        )
+        .unwrap();
+        let mut context = Arc::try_unwrap(test_server_context(0).into_inner())
+            .ok()
+            .unwrap();
+        context.assets_dir = Some(public);
+        context.component_assets_dir = Some(files.path().join("generated"));
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(web::Data::new(context))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        for (path, expected) in [
+            (
+                "/components/application.webui.js",
+                "export default 'application';",
+            ),
+            ("/components/shared.webui.js", "export default 'generated';"),
+        ] {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get().uri(path).to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(response
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("javascript"));
+            assert_eq!(
+                actix_test::read_body(response).await.as_ref(),
+                expected.as_bytes()
+            );
+        }
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/components/%2e%2e/escape.webui.js")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        #[cfg(unix)]
+        {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri("/components/escaped.webui.js")
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[actix_web::test]
     async fn test_handle_asset_serves_component_asset_from_memory() {
         // In-memory component assets are served with a JS MIME type (the
         // framework loads them via dynamic `import()`), taking precedence over
@@ -3485,6 +3689,7 @@ mod tests {
             })),
             livereload: None,
             assets_dir: None,
+            component_assets_dir: None,
             api_port: None,
             plugin: None,
             base_path: None,

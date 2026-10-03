@@ -20,6 +20,12 @@
       @click="{openSecondaryPanel()}"
     >Load secondary panel</button>
   </div>
+  <if condition="loadError">
+    <div class="load-error">
+      <p role="alert">{{loadError}}</p>
+      <button @click="{reloadPage()}">Reload page</button>
+    </div>
+  </if>
   <div class="panel-slot" w-ref="{panelSlot}"></div>
   <div class="panel-slot" w-ref="{secondaryPanelSlot}"></div>
 </section>

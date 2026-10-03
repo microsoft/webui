@@ -8,6 +8,15 @@ use thiserror::Error;
 /// Errors that can occur during WebUI build, render, or inspection operations.
 #[derive(Debug, Error)]
 pub enum WebUIError {
+    /// Transactional component asset publication or cleanup failure.
+    #[error("{context}")]
+    ComponentAssetPublication {
+        /// The failed publication operation.
+        context: String,
+        /// The underlying filesystem, serialization, or finalization error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// I/O error (file read/write failures).
     #[error("I/O error: {context}")]
     Io {

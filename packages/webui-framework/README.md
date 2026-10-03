@@ -410,14 +410,13 @@ import {
   preloadComponentAssetStyles,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
 
-let settingsAsset;
 const loadSettings = () => {
   preloadComponentAssetStyles('settings-dialog');
-  return settingsAsset ??= import('../../.webui/settings-dialog.webui.js')
+  return import('../../.webui/settings-dialog.webui.js')
     .then(module => defineComponentAsset(module.default));
 };
 
-void loadSettings();
+void loadSettings().then(asset => asset.preload()).catch(() => {});
 panelSlot.replaceChildren(await (await loadSettings()).create());
 ```
 
@@ -426,7 +425,11 @@ static imports for its closure. The application bundler owns final splitting,
 sharing, hashes, public paths, and caching. Entry-owned templates remain
 external prerequisites, so load the normal application entry first. Component
 assets cannot be combined with `<route>`. Current generated assets use version
-4 and are validated as a complete graph before any payload is registered.
+4 on the root. Imported component payloads contain template and style data,
+not repeated root manifests. Compiler-proven coverage is checked at build time;
+registration checks external entry templates and live style conflicts before
+mutating the registries. The manifest-driven loader additionally validates
+untrusted graphs.
 
 The compiler records final Link stylesheet filenames in the protocol. For
 Shadow builds, the handler emits that finite manifest as inert JSON in the
@@ -444,7 +447,12 @@ stylesheet filenames remain compiler-owned. `--metafile` exposes the static
 input graph for analysis and build tooling.
 
 Generated roots export semantic payloads only. Application-owned code loads
-component behavior and data directly, so it also owns caching and retry policy.
+component behavior and data directly, so it also owns caching and recovery policy.
+The runtime returns one facade per imported payload. Native ESM failures may stay
+cached for the document lifetime: resetting an application promise does not
+guarantee a new network request. Handle real open failures with visible errors
+and bundler-owned recovery or an explicit page reload. Consume speculative
+preload rejections without automatically reloading.
 In Shadow builds, applications can import the small runtime eagerly, call
 `preloadComponentAssetStyles(root)` before the dynamic import, and wrap the
 default generated payload with `defineComponentAsset()`. This keeps templates

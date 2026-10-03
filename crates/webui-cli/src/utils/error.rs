@@ -176,7 +176,9 @@ pub fn exit_code(err: &anyhow::Error) -> i32 {
                 ..
             } => 74,
             webui::WebUIError::ComponentRegistration { .. } => 65,
-            webui::WebUIError::Io { .. } => 74,
+            webui::WebUIError::Io { .. } | webui::WebUIError::ComponentAssetPublication { .. } => {
+                74
+            }
             _ => 1,
         };
     }

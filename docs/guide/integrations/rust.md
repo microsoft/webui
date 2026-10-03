@@ -503,6 +503,19 @@ Root outputs in the metafile have `entryPoint` records and static
 `protocol.bin`, CSS files, and component assets as one output set before
 writing, so filename collisions fail without leaving partial output.
 
+Component input publication is shared with the CLI through
+`webui::component_asset_output`. `publish()` writes immutable dependencies before
+stable roots and preserves unchanged input modification times. `publish_with()`
+also runs a caller's atomic output finalizer inside the asset rollback boundary.
+Serialize publishers targeting one directory.
+
+Publication, including `build_to_disk()`, retains old immutable dependencies
+because readers may still be resolving previously read roots. After all such
+consumers have finished, call `webui::component_asset_output::prune(out_dir)` to
+remove obsolete payloads while preserving the current graph and application
+files. Offline build pipelines can prune after each completed consumer build;
+watch pipelines must explicitly coordinate or stop their readers first.
+
 Load themes with `webui::resolve_theme_path()` and `webui::load_token_file()`.
 When `theme` is set, missing required CSS tokens fail as parser diagnostics
 before the protocol is returned. Tokens used only with a literal `var()`

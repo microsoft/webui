@@ -19,7 +19,7 @@ use crate::WebUIError;
 /// A generated component or root ESM input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComponentAssetFile {
-    /// Stable input filename for the ESM module.
+    /// Stable root or content-addressed component input filename.
     pub name: String,
     /// JavaScript module content.
     pub content: String,
@@ -421,5 +421,49 @@ mod tests {
             .content
             .contains(r#""closures":{"deferred-card":["deferred-card","entry-card"]}"#));
         assert!(!asset.content.contains(r#""entry-card":["entry-card"]"#));
+
+        for missing in ["unknown-card", "entry-card"] {
+            let mut invalid = protocol.clone();
+            invalid
+                .style_closures
+                .get_mut("deferred-card")
+                .unwrap()
+                .component_tags
+                .push(missing.to_string());
+            if missing == "entry-card" {
+                invalid.components.get_mut(missing).unwrap().css.clear();
+            }
+            let error = render_component_assets(
+                &invalid,
+                "index.html",
+                &["deferred-card".to_string()],
+                false,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("unavailable style resource"));
+        }
+
+        let mut outside = protocol.clone();
+        outside.components.insert(
+            "outside-card".to_string(),
+            ComponentData {
+                css: ".outside{}".to_string(),
+                template_json: r#"{"h":"<p>Outside</p>"}"#.to_string(),
+                ..Default::default()
+            },
+        );
+        outside
+            .style_closures
+            .get_mut("deferred-card")
+            .unwrap()
+            .component_tags
+            .push("outside-card".to_string());
+        assert!(render_component_assets(
+            &outside,
+            "index.html",
+            &["deferred-card".to_string()],
+            false,
+        )
+        .is_err());
     }
 }

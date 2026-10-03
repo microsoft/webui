@@ -14,6 +14,14 @@ pub(super) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("Metafile path must name a file: {}", path.display()))?;
+    match fs::read(path) {
+        Ok(existing) if existing == content.as_bytes() => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", path.display()))
+        }
+    }
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -72,6 +80,19 @@ fn existing_parent(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn unchanged_metafile_keeps_its_modification_time_and_inode() {
+        use std::os::unix::fs::MetadataExt;
+        let root = TempDir::new().unwrap();
+        let metafile = root.path().join("graph.json");
+        write_atomic(&metafile, "{}").unwrap();
+        let before = fs::metadata(&metafile).unwrap();
+        write_atomic(&metafile, "{}").unwrap();
+        let after = fs::metadata(&metafile).unwrap();
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert_eq!(before.ino(), after.ino());
+    }
 
     #[test]
     fn watch_ignore_paths_resolve_a_symlinked_metafile_parent() {

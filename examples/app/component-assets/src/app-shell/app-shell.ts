@@ -1,26 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr } from '@microsoft/webui-framework';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 import {
   defineComponentAsset,
   preloadComponentAssetStyles,
-  type GeneratedComponentAsset,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
-import { createRetryableLoader } from './asset-loader.js';
 
-const loadLazyPanel = createRetryableLoader<GeneratedComponentAsset>(() =>
+const loadLazyPanel = () =>
   import('../../.webui/lazy-panel.webui.js')
-    .then(module => defineComponentAsset(module.default)),
-);
+    .then(module => defineComponentAsset(module.default));
 
-const loadSecondaryPanel = createRetryableLoader<GeneratedComponentAsset>(() =>
+const loadSecondaryPanel = () =>
   import('../../.webui/secondary-panel.webui.js')
-    .then(module => defineComponentAsset(module.default)),
-);
+    .then(module => defineComponentAsset(module.default));
 
 export class AppShell extends WebUIElement {
   @attr title = '';
+  @observable loadError = '';
 
   panelSlot!: HTMLDivElement;
   secondaryPanelSlot!: HTMLDivElement;
@@ -40,20 +37,42 @@ export class AppShell extends WebUIElement {
   }
 
   async openPanel(): Promise<void> {
-    preloadComponentAssetStyles('lazy-panel');
-    const [asset, state] = await Promise.all([
-      loadLazyPanel(),
-      fetch('./lazy-panel-data.json').then(response => response.json()),
-    ]);
-    const panel = await asset.create();
-    (panel as HTMLElement & { setState(value: unknown): void }).setState(state);
-    this.panelSlot.replaceChildren(panel);
+    try {
+      preloadComponentAssetStyles('lazy-panel');
+      const [asset, state] = await Promise.all([
+        loadLazyPanel(),
+        fetch('./lazy-panel-data.json').then(response => {
+          if (!response.ok) throw new Error(`Panel data request failed: HTTP ${response.status}`);
+          return response.json();
+        }),
+      ]);
+      const panel = await asset.create();
+      (panel as HTMLElement & { setState(value: unknown): void }).setState(state);
+      this.panelSlot.replaceChildren(panel);
+      this.loadError = '';
+    } catch (error) {
+      this.reportLoadError(error);
+    }
   }
 
   async openSecondaryPanel(): Promise<void> {
-    preloadComponentAssetStyles('secondary-panel');
-    const asset = await loadSecondaryPanel();
-    this.secondaryPanelSlot.replaceChildren(await asset.create());
+    try {
+      preloadComponentAssetStyles('secondary-panel');
+      const asset = await loadSecondaryPanel();
+      this.secondaryPanelSlot.replaceChildren(await asset.create());
+      this.loadError = '';
+    } catch (error) {
+      this.reportLoadError(error);
+    }
+  }
+
+  reloadPage(): void {
+    location.reload();
+  }
+
+  private reportLoadError(error: unknown): void {
+    console.error('Panel loading failed:', error);
+    this.loadError = 'The panel could not load. Reload the page to try again.';
   }
 }
 

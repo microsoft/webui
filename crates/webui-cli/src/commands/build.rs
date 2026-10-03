@@ -224,14 +224,7 @@ fn run(args: &BuildArgs) -> Result<()> {
         let content = result.metafile.as_deref().ok_or_else(|| {
             anyhow::anyhow!("component asset metafile was requested but not generated")
         })?;
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create {}", parent.display()))?;
-        }
-        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))
+        super::metafile::write_atomic(path, content)
     };
     if result.component_asset_files.is_empty() {
         write_metafile()?;
@@ -515,10 +508,10 @@ mod tests {
         assert!(asset.contains(r#""type":"webui-component-asset""#));
         assert!(asset.contains(r#""version":4"#));
         assert!(asset.contains(r#""componentStyles":{"version":1"#));
-        assert!(asset.contains(r#""kind":"root""#));
+        assert!(asset.contains(r#""root":"mail-thread""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
-        assert!(asset.contains(r#""components":[]"#));
+        assert!(!asset.contains(r#""components":"#));
         let message_path = component_payload_path(asset_dir.path(), "mail-message");
         let thread_path = component_payload_path(asset_dir.path(), "mail-thread");
         assert!(asset.contains(message_path.file_name().unwrap().to_str().unwrap()));

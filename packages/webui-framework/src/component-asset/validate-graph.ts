@@ -12,6 +12,7 @@
  */
 
 import {
+  hasRegisteredComponentStyleResource,
   sameComponentStyleClosure,
   sameComponentStyleResource,
   type ComponentStyleResource,
@@ -45,6 +46,20 @@ export function validateComponentAssetGraph(
         throw new Error(`[WebUI] Conflicting component style closure "${root}".`);
       }
       closures.set(root, closure);
+    }
+  }
+  for (let i = 0; i < graph.length; i++) {
+    const styles = graph[i].componentStyles;
+    const roots = Object.keys(styles.closures);
+    for (let j = 0; j < roots.length; j++) {
+      const root = roots[j];
+      const closure = styles.closures[root];
+      for (let k = 0; k < closure.length; k++) {
+        const id = closure[k];
+        if (!resources.has(id) && !hasRegisteredComponentStyleResource(id)) {
+          throw new Error(`[WebUI] Component style closure "${root}" references missing resource "${id}".`);
+        }
+      }
     }
   }
 }

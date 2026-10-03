@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { getTemplate } from '../template.js';
 import {
   prepareAssetComponentStyles,
   readComponentAssetModule,
@@ -40,13 +39,12 @@ async function registerRootAsset(
   imported: unknown,
 ): Promise<void> {
   const asset = readComponentAssetModule(imported);
-  validateAsset(asset, 'root');
+  validateAsset(asset);
   if (asset.root !== expectedRoot) {
     throw new Error(
       `[WebUI] Component asset manifest expected <${expectedRoot}> but ${href} exports <${String(asset.root)}>.`,
     );
   }
-  validateExternalComponents(asset);
   await registerComponentAssetGraph(
     asset,
     prepareAssetComponentStyles,
@@ -76,18 +74,5 @@ export function registerComponentAsset(asset: ComponentAsset): Promise<void> {
     typeof asset.root === 'string' ? asset.root : '',
     'generated component asset',
     { default: asset },
-  );
-}
-
-function validateExternalComponents(asset: ComponentAsset): void {
-  const missing: string[] = [];
-  for (let i = 0; i < asset.externalComponents.length; i++) {
-    const component = asset.externalComponents[i];
-    if (!getTemplate(component)) missing.push(component);
-  }
-  if (missing.length === 0) return;
-
-  throw new Error(
-    `[WebUI] Component asset requires entr${missing.length === 1 ? 'y template' : 'y templates'} ${missing.map(tag => `<${tag}>`).join(', ')}. Load the application entry bundle and protocol before deferred component assets.`,
   );
 }

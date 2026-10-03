@@ -21,6 +21,7 @@
 //! ```
 
 mod chunking;
+pub mod component_asset_output;
 mod component_assets;
 mod error;
 mod module_preload;
@@ -445,7 +446,10 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 ///
 /// Writes `protocol.bin`, any external CSS files, and static component assets
 /// to `out_dir`.
-/// Creates `out_dir` if it does not exist.
+/// Creates `out_dir` if it does not exist. Component dependencies publish before
+/// roots, and unchanged component inputs keep their modification times. Old
+/// immutable payloads remain readable until [`component_asset_output::prune`]
+/// is called after consumers of older roots have finished.
 ///
 /// # Errors
 ///
@@ -472,22 +476,8 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
             source,
         })?;
     }
-    for file in &result.component_asset_files {
-        let path = out_dir.join(&file.name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| WebUIError::Io {
-                context: format!("Failed to create {}", parent.display()),
-                source,
-            })?;
-        }
-        fs::write(&path, &file.content).map_err(|source| WebUIError::Io {
-            context: format!(
-                "Failed to write component asset {} to {}",
-                file.name,
-                out_dir.display()
-            ),
-            source,
-        })?;
+    if !result.component_asset_files.is_empty() {
+        component_asset_output::publish(out_dir, &result.component_asset_files)?;
     }
 
     Ok(result.stats)
@@ -994,6 +984,9 @@ fn validate_output_file_names(
     let mut names =
         HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
     names.insert(protocol_name.to_os_string());
+    if !result.component_asset_files.is_empty() {
+        names.insert(component_asset_output::manifest_path(Path::new("")).into_os_string());
+    }
     for (name, _) in &result.css_files {
         let file_name = OsString::from(name);
         if !names.insert(file_name.clone()) {
@@ -2594,10 +2587,20 @@ mod tests {
             .contains(r#""version":4"#));
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""kind":"root""#));
+            .contains(r#""root":"lazy-panel""#));
         assert!(result.component_asset_files[1]
             .content
             .contains(r#""templateFunctions":{"lazy-panel":"#));
+        let root = &result.component_asset_files[0].content;
+        let payload = &result.component_asset_files[1].content;
+        for field in ["kind", "components", "requiredComponents"] {
+            assert!(!root.contains(&format!("\"{field}\":")));
+            assert!(!payload.contains(&format!("\"{field}\":")));
+        }
+        for field in ["type", "version\":4", "externalComponents", "imports"] {
+            assert!(!payload.contains(&format!("\"{field}")));
+        }
+        assert!(!root.contains("\"templates\":"));
         assert!(!result.protocol.fragments.contains_key("lazy-panel"));
         assert!(
             !result
@@ -2723,7 +2726,7 @@ mod tests {
         );
         let lazy = &result.component_asset_files[0].content;
         assert!(lazy.contains(r#""version":4"#));
-        assert!(lazy.contains(r#""kind":"root""#));
+        assert!(lazy.contains(r#""root":"lazy-panel""#));
         assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
         assert!(lazy.contains(r#""entry-badge":{"kind":"link","href":"entry-badge.css"}"#));
         assert!(!lazy.contains(
@@ -2740,8 +2743,7 @@ mod tests {
         assert!(!lazy.contains(r#""templates":{"shared-detail":"#));
 
         let shared = component_payload(&result.component_asset_files, "shared-detail");
-        assert!(shared.content.contains(r#""kind":"component""#));
-        assert!(shared.content.contains(r#""components":["shared-detail"]"#));
+        assert!(!shared.content.contains(r#""kind":"component""#));
         assert!(shared.content.contains(r#""templates":{"shared-detail":"#));
         assert!(shared.content.contains(r#""href":"shared-detail.css""#));
         assert!(!shared.content.contains("import.meta.url"));
@@ -2769,6 +2771,40 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with("lazy-panel.")));
+    }
+
+    #[test]
+    fn build_to_disk_preserves_noop_inputs_and_supports_quiescent_cleanup() {
+        let app = create_app_dir(&[
+            ("index.html", "<main>Entry</main>"),
+            ("lazy-panel.html", "<p>Initial</p>"),
+        ]);
+        let out = tempfile::tempdir().unwrap();
+        let options = || {
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.component_asset_roots = vec!["lazy-panel".to_string()];
+            options
+        };
+        build_to_disk(options(), out.path()).unwrap();
+        let root = out.path().join("lazy-panel.webui.js");
+        let before = fs::metadata(&root).unwrap().modified().unwrap();
+        build_to_disk(options(), out.path()).unwrap();
+        assert_eq!(before, fs::metadata(&root).unwrap().modified().unwrap());
+
+        for generation in 0..5 {
+            fs::write(
+                app.path().join("lazy-panel.html"),
+                format!("<p>{generation}</p>"),
+            )
+            .unwrap();
+            build_to_disk(options(), out.path()).unwrap();
+            component_asset_output::prune(out.path()).unwrap();
+            assert_eq!(
+                fs::read_dir(out.path().join("components")).unwrap().count(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -2811,12 +2847,12 @@ mod tests {
         assert!(
             component_payload(&result.component_asset_files, "shared-ab")
                 .content
-                .contains(r#""components":["shared-ab"]"#)
+                .contains(r#""templates":{"shared-ab":"#)
         );
         assert!(
             component_payload(&result.component_asset_files, "shared-all")
                 .content
-                .contains(r#""components":["shared-all"]"#)
+                .contains(r#""templates":{"shared-all":"#)
         );
     }
 

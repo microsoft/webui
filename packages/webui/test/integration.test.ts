@@ -174,7 +174,8 @@ describe('build', () => {
       result.componentAssetFiles[2],
       /^components\/lazy-panel\.[0-9a-f]{16}\.webui\.js$/,
     );
-    assert.match(result.componentAssetFiles[3], /"kind":"component"/);
+    assert.match(result.componentAssetFiles[3], /"templates":/);
+    assert.doesNotMatch(result.componentAssetFiles[3], /"requiredComponents":|"kind":|"imports":/);
     assert.ok(result.metafile);
     const parsedMetafile: Metafile = JSON.parse(result.metafile);
     const analysis = await analyzeMetafile(parsedMetafile);
