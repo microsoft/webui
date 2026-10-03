@@ -649,6 +649,11 @@ fn build_and_render(
         None => output,
     };
 
+    validate_component_asset_metafile_paths(
+        config.component_assets_out.as_deref(),
+        config.metafile.as_deref(),
+        &build_result.component_asset_files,
+    )?;
     let write_metafile = || -> Result<()> {
         let Some(path) = &config.metafile else {
             return Ok(());
@@ -738,6 +743,28 @@ fn validate_component_asset_output_paths(
             metafile.display(),
             manifest.display()
         );
+    }
+    Ok(())
+}
+
+fn validate_component_asset_metafile_paths(
+    component_assets_out: Option<&std::path::Path>,
+    metafile: Option<&std::path::Path>,
+    files: &[webui::ComponentAssetFile],
+) -> Result<()> {
+    let (Some(component_assets_out), Some(metafile)) = (component_assets_out, metafile) else {
+        return Ok(());
+    };
+    for file in files {
+        let asset = component_assets_out.join(&file.name);
+        if output_paths::paths_collide(&asset, metafile)? {
+            bail!(
+                "Metafile output {} collides with generated component asset {}.\nhelp: Choose a distinct --metafile path outside {}.",
+                metafile.display(),
+                asset.display(),
+                component_assets_out.display()
+            );
+        }
     }
     Ok(())
 }
@@ -3339,6 +3366,38 @@ mod tests {
         validate_component_asset_output_paths(
             Some(&output),
             Some(&root.path().join("component-assets.meta.json")),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_metafile_cannot_overwrite_generated_component_asset() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join(".webui");
+        let root_asset = webui::ComponentAssetFile {
+            name: "lazy-panel.webui.js".to_string(),
+            content: "export default {};".to_string(),
+        };
+        let payload_asset = webui::ComponentAssetFile {
+            name: "components/lazy-panel-0000000000000000.webui.js".to_string(),
+            content: "export default {};".to_string(),
+        };
+        let files = [root_asset, payload_asset];
+
+        for file in &files {
+            let metafile = output.join(&file.name);
+            let error =
+                validate_component_asset_metafile_paths(Some(&output), Some(&metafile), &files)
+                    .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("collides with generated component asset"));
+        }
+
+        validate_component_asset_metafile_paths(
+            Some(&output),
+            Some(&root.path().join("component-assets.meta.json")),
+            &files,
         )
         .unwrap();
     }
