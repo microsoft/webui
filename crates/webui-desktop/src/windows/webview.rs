@@ -17,6 +17,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Controller2, ICoreWebView2Environment, ICoreWebView2EnvironmentOptions,
     ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2NavigationStartingEventHandler,
     ICoreWebView2WebMessageReceivedEventArgs, COREWEBVIEW2_COLOR,
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
 };
 #[cfg(feature = "local-server")]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -172,6 +173,20 @@ pub(super) fn configure_settings(webview: &ICoreWebView2, devtools: bool) -> Res
         settings.SetAreDevToolsEnabled(devtools)?;
         settings.SetAreDefaultContextMenusEnabled(devtools)?;
     }
+    Ok(())
+}
+
+pub(super) fn focus_controller_from_frame(
+    window: HWND,
+    controller: &ICoreWebView2Controller,
+) -> Result<()> {
+    // SAFETY: This only reads focus on the owning UI thread. Preserve any
+    // already-focused child or other native control instead of taking its focus.
+    if unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } != window {
+        return Ok(());
+    }
+    // SAFETY: The live controller belongs to this UI apartment and native frame.
+    unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)? };
     Ok(())
 }
 
@@ -632,6 +647,64 @@ pub(super) fn navigate_to_url(webview: &ICoreWebView2, url: &str) -> Result<()> 
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_keyboard_focus_reaches_the_webview_child() {
+        use windows::Win32::UI::{Input::KeyboardAndMouse, WindowsAndMessaging as wm};
+
+        let _com = super::super::initialize_com().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let options = crate::WindowOptions {
+            titlebar: crate::TitlebarStyle::Native,
+            center: false,
+            ..crate::WindowOptions::default()
+        };
+        let frame = super::super::create::FrameWindow::new(&options, None).unwrap();
+        frame.show().unwrap();
+        let environment = create_environment(profile.path()).unwrap();
+        let controller = begin_create_controller(&environment, frame.hwnd)
+            .unwrap()
+            .finish()
+            .unwrap();
+        super::super::message::set_controller_bounds(&controller, frame.hwnd).unwrap();
+        // SAFETY: The fixture owns the visible native frame and its WebView2.
+        let (forwarded, preserved_control) = unsafe {
+            controller.SetIsVisible(true).unwrap();
+            let _ = KeyboardAndMouse::SetFocus(Some(frame.hwnd));
+            focus_controller_from_frame(frame.hwnd, &controller).unwrap();
+            let forwarded = wm::IsChild(frame.hwnd, KeyboardAndMouse::GetFocus()).as_bool();
+            let control = wm::CreateWindowExW(
+                Default::default(),
+                windows::core::w!("BUTTON"),
+                None,
+                wm::WS_CHILD | wm::WS_VISIBLE,
+                0,
+                0,
+                40,
+                20,
+                Some(frame.hwnd),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let _ = KeyboardAndMouse::SetFocus(Some(control));
+            focus_controller_from_frame(frame.hwnd, &controller).unwrap();
+            (forwarded, KeyboardAndMouse::GetFocus() == control)
+        };
+        // SAFETY: Explicitly close the fixture's controller before its parent and environment.
+        unsafe { controller.Close().unwrap() };
+        drop(controller);
+        drop(environment);
+        assert!(
+            forwarded,
+            "startup keyboard focus must reach the browser instead of remaining on the outer frame"
+        );
+        assert!(
+            preserved_control,
+            "native focus handoff must not replace an already-focused control"
+        );
+    }
 
     #[test]
     fn startup_url_normalizes_paths() {

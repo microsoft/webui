@@ -278,6 +278,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: The live controller contains only its initial blank document;
     // app navigation still waits for all security and resource handlers.
     unsafe { controller.SetIsVisible(true)? };
+    webview::focus_controller_from_frame(window_frame.hwnd, &controller)
+        .context("Failed to transfer native keyboard focus into WebView2")?;
     trace.mark("controller_visible");
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };

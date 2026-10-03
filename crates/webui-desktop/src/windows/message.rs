@@ -84,6 +84,19 @@ pub(super) extern "system" fn window_proc(
             // SAFETY: Frame configuration is installed before default creation.
             unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) }
         }
+        WindowsAndMessaging::WM_SETFOCUS => {
+            // COM focus changes can reenter the window procedure; release the state borrow first.
+            let controller =
+                super::state::with_window_state_result(hwnd, |state| state.controller.clone());
+            if let Some(controller) = controller {
+                if let Err(error) = super::webview::focus_controller_from_frame(hwnd, &controller) {
+                    eprintln!(
+                        "WebUI: failed to transfer native keyboard focus into WebView2: {error}"
+                    );
+                }
+            }
+            LRESULT(0)
+        }
         super::APP_WAKE_MESSAGE => {
             let tasks = super::state::with_window_state_result(hwnd, |state| {
                 state.application_tasks.clone()
