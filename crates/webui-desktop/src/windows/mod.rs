@@ -66,7 +66,6 @@ use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::HiDpi;
-use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows::Win32::UI::WindowsAndMessaging;
 
 use crate::DesktopFrame;
@@ -597,8 +596,8 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // SAFETY: `window_frame.hwnd` is a live window owned by this thread.
     unsafe {
         let _ = Gdi::UpdateWindow(window_frame.hwnd);
-        let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
+    window_frame.focus_after_startup();
     message::publish(window_frame.hwnd, &DesktopEvent::Ready);
     trace.mark("ready_published");
     match &frame {

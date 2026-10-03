@@ -755,7 +755,8 @@ means the command was accepted, not that the OS has completed it. Handle
 queue errors; `request_close` can still be cancelled by a Rust event handler.
 
 On Windows, `focus` routes keyboard input into the web content, so keyboard
-interaction does not require an initial click in the page.
+interaction does not require an initial click in the page. Finishing startup
+preserves an already-focused control.
 
 Set initial defaults with `WindowOptions` or desktop package flags. To
 respond to a theme change after launch, use the Rust event callback:

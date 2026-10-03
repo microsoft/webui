@@ -107,6 +107,17 @@ impl FrameWindow {
         Ok(())
     }
 
+    pub(super) fn focus_after_startup(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse;
+        // SAFETY: The owner retains this live HWND on its creating UI thread.
+        unsafe {
+            let focused = KeyboardAndMouse::GetFocus();
+            if focused != self.hwnd && !WindowsAndMessaging::IsChild(self.hwnd, focused).as_bool() {
+                let _ = KeyboardAndMouse::SetFocus(Some(self.hwnd));
+            }
+        }
+    }
+
     /// Keep DWM's shadow and system-managed corners for custom frames.
     fn apply_custom_frame(&self, window: &WindowOptions) {
         if !matches!(window.titlebar, TitlebarStyle::None) {
@@ -371,6 +382,50 @@ mod tests {
         let (outer, client) = frame_rectangles(&frame);
 
         assert!(client.bottom - client.top < outer.bottom - outer.top);
+    }
+
+    #[test]
+    fn finishing_startup_does_not_replace_focus_already_inside_the_window() {
+        use windows::Win32::UI::Input::KeyboardAndMouse;
+        let frame = TestFrame(
+            FrameWindow::new(
+                &WindowOptions {
+                    center: false,
+                    ..WindowOptions::default()
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        frame.0.show().unwrap();
+        // SAFETY: The fixture owns the parent and child on this UI thread.
+        let child = unsafe {
+            WindowsAndMessaging::CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                None,
+                WindowsAndMessaging::WS_CHILD | WindowsAndMessaging::WS_VISIBLE,
+                0,
+                0,
+                40,
+                20,
+                Some(frame.0.hwnd),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        // SAFETY: Both focus operations target this thread's live test windows.
+        unsafe {
+            let _ = KeyboardAndMouse::SetFocus(Some(child));
+            assert_eq!(KeyboardAndMouse::GetFocus(), child);
+            frame.0.focus_after_startup();
+            assert_eq!(KeyboardAndMouse::GetFocus(), child);
+            let _ = KeyboardAndMouse::SetFocus(None);
+            frame.0.focus_after_startup();
+            assert_eq!(KeyboardAndMouse::GetFocus(), frame.0.hwnd);
+        }
     }
 
     #[test]
