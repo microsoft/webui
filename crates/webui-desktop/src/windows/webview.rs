@@ -668,11 +668,14 @@ mod tests {
             .unwrap();
         super::super::message::set_controller_bounds(&controller, frame.hwnd).unwrap();
         // SAFETY: The fixture owns the visible native frame and its WebView2.
-        let (forwarded, preserved_control) = unsafe {
+        let (forwarded, preserved_startup, preserved_control) = unsafe {
             controller.SetIsVisible(true).unwrap();
             let _ = KeyboardAndMouse::SetFocus(Some(frame.hwnd));
             focus_controller_from_frame(frame.hwnd, &controller).unwrap();
-            let forwarded = wm::IsChild(frame.hwnd, KeyboardAndMouse::GetFocus()).as_bool();
+            let browser_focus = KeyboardAndMouse::GetFocus();
+            let forwarded = wm::IsChild(frame.hwnd, browser_focus).as_bool();
+            frame.focus_after_startup();
+            let preserved_startup = KeyboardAndMouse::GetFocus() == browser_focus;
             let control = wm::CreateWindowExW(
                 Default::default(),
                 windows::core::w!("BUTTON"),
@@ -690,7 +693,11 @@ mod tests {
             .unwrap();
             let _ = KeyboardAndMouse::SetFocus(Some(control));
             focus_controller_from_frame(frame.hwnd, &controller).unwrap();
-            (forwarded, KeyboardAndMouse::GetFocus() == control)
+            (
+                forwarded,
+                preserved_startup,
+                KeyboardAndMouse::GetFocus() == control,
+            )
         };
         // SAFETY: Explicitly close the fixture's controller before its parent and environment.
         unsafe { controller.Close().unwrap() };
@@ -699,6 +706,10 @@ mod tests {
         assert!(
             forwarded,
             "startup keyboard focus must reach the browser instead of remaining on the outer frame"
+        );
+        assert!(
+            preserved_startup,
+            "finishing startup must preserve focus on the live WebView2 child"
         );
         assert!(
             preserved_control,
