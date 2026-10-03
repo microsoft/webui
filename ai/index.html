@@ -490,7 +490,7 @@ pointer/focus/keyboard/click intent imports components and router concurrently;
 navigation adopts the response without refetching or parsing templates early.
 Non-router apps use <code>installInteractionHydration(&#123; load &#125;)</code>. This policy trades
 first-interaction latency for lower startup JS/heap and cannot preserve
-transient user activation or closed-shadow click targets.</p><table><thead><tr><th>Decorator</th><th>Purpose</th><th>SSR?</th><th>Triggers DOM update?</th></tr></thead><tbody><tr><td><code>@attr</code></td><td>HTML attribute reflection</td><td>Yes; an existing SSR host attribute wins</td><td>Yes</td></tr><tr><td><code>@attr(&#123; mode: 'boolean' &#125;)</code></td><td>Boolean attribute (present/absent)</td><td>Yes; host presence wins</td><td>Yes</td></tr><tr><td><code>@observable</code></td><td>Reactive state used by TypeScript</td><td>Yes (from JSON state)</td><td>Yes</td></tr></tbody></table><table><thead><tr><th>Method / property</th><th>Description</th></tr></thead><tbody><tr><td><code>this.$emit(name, detail?)</code></td><td>Dispatch a bubbling CustomEvent</td></tr><tr><td><code>this.$update()</code></td><td>Force a reactive update cycle</td></tr><tr><td><code>this.$flushUpdates()</code></td><td>Synchronously flush pending updates</td></tr><tr><td><code>&lt;property&gt;Changed(oldValue, newValue)</code></td><td>For <code>@attr</code> and <code>@observable</code>, run once after the component mounts with <code>oldValue</code> undefined, then synchronously on each live assignment</td></tr><tr><td><code>protected hydratedCallback()</code></td><td>Run synchronously once after the first successful hydration or client mount</td></tr><tr><td><code>static define(tagName)</code></td><td>Register as a custom element</td></tr><tr><td><code>defineComponentAssets(manifest)</code></td><td>Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through <code>preload(tag)</code> / <code>create(tag)</code></td></tr></tbody></table><h3 id="custom-events">Custom events <a class="header-anchor" href="/webui/ai/#custom-events" aria-label="Link to Custom events">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">//</span><span class="hl-comment"> Child
+transient user activation or closed-shadow click targets.</p><table><thead><tr><th>Decorator</th><th>Purpose</th><th>SSR?</th><th>Triggers DOM update?</th></tr></thead><tbody><tr><td><code>@attr</code></td><td>HTML attribute reflection</td><td>Yes; an existing SSR host attribute wins</td><td>Yes</td></tr><tr><td><code>@attr(&#123; mode: 'boolean' &#125;)</code></td><td>Boolean attribute (present/absent)</td><td>Yes; host presence wins</td><td>Yes</td></tr><tr><td><code>@observable</code></td><td>Reactive state used by TypeScript</td><td>Yes (from JSON state)</td><td>Yes</td></tr></tbody></table><table><thead><tr><th>Method / property</th><th>Description</th></tr></thead><tbody><tr><td><code>this.$emit(name, detail?)</code></td><td>Dispatch a bubbling CustomEvent</td></tr><tr><td><code>this.$update()</code></td><td>Force a reactive update cycle</td></tr><tr><td><code>this.$flushUpdates()</code></td><td>Synchronously flush pending updates</td></tr><tr><td><code>&lt;property&gt;Changed(oldValue, newValue)</code></td><td>For <code>@attr</code> and <code>@observable</code>, run once after the component mounts with <code>oldValue</code> undefined, then synchronously on each live assignment</td></tr><tr><td><code>protected hydratedCallback()</code></td><td>Run synchronously once after the first successful hydration or client mount</td></tr><tr><td><code>static define(tagName)</code></td><td>Register as a custom element</td></tr><tr><td>Generated component asset root</td><td>Import a stable generated <code>&lt;tag&gt;.webui.js</code> payload, then wrap its default export with <code>defineComponentAsset()</code></td></tr></tbody></table><h3 id="custom-events">Custom events <a class="header-anchor" href="/webui/ai/#custom-events" aria-label="Link to Custom events">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">//</span><span class="hl-comment"> Child
 </span><span class="hl-number">this</span>.$emit(<span class="hl-string">'</span><span class="hl-string">item-selected</span><span class="hl-string">'</span>, &#123; id: <span class="hl-number">this</span>.id, name: <span class="hl-number">this</span>.name &#125;);
 </code></pre></code-block><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">&lt;!--</span><span class="hl-comment"> Parent template </span><span class="hl-comment">--&gt;</span>
 &lt;<span class="hl-tag">child-component</span> @item-selected="&#123;onItemSelected(e)&#125;"&gt;&lt;/<span class="hl-tag">child-component</span>&gt;
@@ -610,19 +610,25 @@ remains visible and usable even if it is unstyled.</p><code-block><template shad
 </code></pre></code-block><p>Without <code>@microsoft/webui-router</code>, prebuild the asset and mount it into a
 <code>w-ref</code> slot:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui build ./src --out ./dist --plugin<span class="hl-keyword">=</span>webui \
   --emit-component-assets settings-dialog \
+  --component-assets-out ./.webui \
   --metafile ./dist/component-assets-meta.json
-</code></pre></code-block><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> &#123; defineComponentAssets &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework/component-asset.js</span><span class="hl-string">'</span>;
+</code></pre></code-block><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> &#123;
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+&#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework/component-asset-runtime.js</span><span class="hl-string">'</span>;
 
-<span class="hl-keyword">export</span> <span class="hl-keyword">const</span> settingsAssets <span class="hl-keyword">=</span> defineComponentAssets(&#123;
-  <span class="hl-string">'</span><span class="hl-string">settings-dialog</span><span class="hl-string">'</span>: &#123;
-    asset: <span class="hl-string">'</span><span class="hl-string">/settings-dialog.webui.js</span><span class="hl-string">'</span>,
-    <span class="hl-attr">module</span>: () <span class="hl-keyword">=&gt;</span> import(<span class="hl-string">'</span><span class="hl-string">./settings-dialog/settings-dialog.js</span><span class="hl-string">'</span>),
-  &#125;,
-&#125;);
+<span class="hl-keyword">const</span> <span class="hl-attr">loadSettings</span> <span class="hl-keyword">=</span> () <span class="hl-keyword">=&gt;</span> &#123;
+  preloadComponentAssetStyles(<span class="hl-string">'</span><span class="hl-string">settings-dialog</span><span class="hl-string">'</span>);
+  <span class="hl-keyword">return</span> import(<span class="hl-string">'</span><span class="hl-string">../.webui/settings-dialog.webui.js</span><span class="hl-string">'</span>)
+    .then(module <span class="hl-keyword">=&gt;</span> defineComponentAsset(<span class="hl-property">module</span>.default));
+&#125;;
 
-async onOpenSettings(): <span class="hl-property">Promise</span><span class="hl-keyword">&lt;</span><span class="hl-keyword">void</span><span class="hl-keyword">&gt;</span> &#123;
-  settingsAssets.<span class="hl-attr">preload</span>('settings-dialog');
-  this.panelSlot.<span class="hl-attr">replaceChildren</span>(await settingsAssets.create('settings-dialog'));
+preloadSettings(): <span class="hl-keyword">void</span> &#123;
+  void <span class="hl-attr">loadSettings</span>().<span class="hl-attr">then</span>(asset <span class="hl-keyword">=</span><span class="hl-keyword">&gt;</span> asset.preload()).<span class="hl-attr">catch</span>(() =&gt; &#123;&#125;);
+&#125;
+
+async openSettings(): <span class="hl-property">Promise</span><span class="hl-keyword">&lt;</span><span class="hl-keyword">void</span><span class="hl-keyword">&gt;</span> &#123;
+  this.panelSlot.<span class="hl-attr">replaceChildren</span>(await (await loadSettings()).<span class="hl-attr">create</span>());
 &#125;
 </code></pre></code-block><p>The compiler stores final Link stylesheet hrefs in the protocol. Shadow builds
 publish them as inert head JSON that <code>preload(tag)</code> consumes automatically;
@@ -632,14 +638,21 @@ stylesheet filename.
 Automatic Shadow intent preloading requires HTML rendered through the WebUI
 handler or <code>Protocol</code>, which emits <code>#webui-component-assets</code>. Using build
 artifacts without rendering the protocol preserves the guarded native mount but
-does not provide early compiler-owned style preloading.</p><p>Assets keep entry-owned templates external, inline dependencies used by one
-asset root, and split dependencies shared by multiple roots into deduplicated
-dynamic chunks. Do not copy generated chunk filenames into the manifest; each
-root asset carries its own dynamic imports. <code>create(tag)</code> waits for the template
-graph and module, then creates the element. Failed asset or authored module work
-is evicted so a later <code>preload(tag)</code> or <code>create(tag)</code> retries. The normal entry
-bundle must load first. Component assets cannot be combined with <code>&lt;route&gt;</code>; use
-the router for routed components.</p><h2 id="routing">Routing <a class="header-anchor" href="/webui/ai/#routing" aria-label="Link to Routing">#</a></h2><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">route</span> <span class="hl-attr">path</span>=<span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span> <span class="hl-attr">component</span>=<span class="hl-string">"</span><span class="hl-string">app-shell</span><span class="hl-string">"</span>&gt;
+does not provide early compiler-owned style preloading.</p><p>WebUI emits one immutable <code>components/&lt;tag&gt;.&lt;content-id&gt;.webui.js</code> input per asset-owned
+component and a thin <code>&lt;root&gt;.webui.js</code> entry with static imports for its closure.
+The application bundler owns final chunks, hashes, public paths, caching, and
+delivery. <code>defineComponentAsset()</code> waits for graph and style registration before
+creating the element, returning one facade per imported payload. Failed
+registration can retry, but a native ESM import failure may stay cached for the
+document lifetime. Consume speculative failures without reloading; real open
+failures need visible errors and bundler-owned recovery or an explicit reload.
+Do not claim resetting a promise retries a native import. The versioned root
+imports compact template/style payloads and lists only external prerequisites.
+Generated dependencies stay available until older readers finish; clean the
+input directory only after stopping or coordinating those readers.
+The normal entry bundle must load first.
+Component assets cannot be combined with <code>&lt;route&gt;</code>; use the router for routed
+components.</p><h2 id="routing">Routing <a class="header-anchor" href="/webui/ai/#routing" aria-label="Link to Routing">#</a></h2><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">route</span> <span class="hl-attr">path</span>=<span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span> <span class="hl-attr">component</span>=<span class="hl-string">"</span><span class="hl-string">app-shell</span><span class="hl-string">"</span>&gt;
   &lt;<span class="hl-tag">route</span> <span class="hl-attr">path</span>=<span class="hl-string">"</span><span class="hl-string">"</span> <span class="hl-attr">component</span>=<span class="hl-string">"</span><span class="hl-string">home-page</span><span class="hl-string">"</span> <span class="hl-attr">exact</span> /&gt;
   &lt;<span class="hl-tag">route</span> <span class="hl-attr">path</span>=<span class="hl-string">"</span><span class="hl-string">users</span><span class="hl-string">"</span> <span class="hl-attr">component</span>=<span class="hl-string">"</span><span class="hl-string">user-list</span><span class="hl-string">"</span> <span class="hl-attr">exact</span> /&gt;
   &lt;<span class="hl-tag">route</span> <span class="hl-attr">path</span>=<span class="hl-string">"</span><span class="hl-string">users/:id</span><span class="hl-string">"</span> <span class="hl-attr">component</span>=<span class="hl-string">"</span><span class="hl-string">user-detail</span><span class="hl-string">"</span> <span class="hl-attr">exact</span> /&gt;
@@ -833,7 +846,11 @@ It launches Rust directly; Press does not support <code>--format json</code>.</p
 <code>--css-bundle</code> (merge component stylesheets into shared chunks; not valid with
 <code>--css module</code>), <code>--components</code>, <code>--theme</code>,
 <code>--projection-manifest</code>, <code>--emit-component-assets</code>, <code>--metafile</code>,
-<code>--format json</code>.</p><p>On <code>webui serve</code> (with or without <code>--watch</code>) and <code>webui press serve</code>, optionally
+<code>--format json</code>.</p><p>For a persistent component input directory, run
+<code>webui prune-component-assets --component-assets-out ./.webui --quiescent</code>
+only after all bundler/HTTP readers and publishers have stopped or been
+coordinated. The flag acknowledges quiescence; it does not stop other processes.
+See <a href="/webui/guide/cli/#webui-prune-component-assets">component asset cleanup</a>.</p><p>On <code>webui serve</code> (with or without <code>--watch</code>) and <code>webui press serve</code>, optionally
 add <code>--shutdown-timeout 10</code> for a ten-second shutdown grace period. Omit it to
 retain the default wait for an active rebuild with no deadline. Forced shutdown
 returns nonzero and may leave incomplete outputs; supervised mode reserves

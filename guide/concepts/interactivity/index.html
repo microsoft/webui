@@ -311,45 +311,79 @@ events and find the row yourself with <code>e.composedPath()</code>.</p><h3 id="
 &#125;
 </code></pre></code-block><p>This pattern keeps components decoupled - the child doesn't know who is listening, and the parent reacts declaratively.</p><h2 id="loading-static-component-assets">Loading Static Component Assets <a class="header-anchor" href="/webui/guide/concepts/interactivity/#loading-static-component-assets" aria-label="Link to Loading Static Component Assets">#</a></h2><p>When you are not using <code>@microsoft/webui-router</code>, deferred UI can still be
 loaded from static files. Build the root components as assets:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui build ./src --out ./dist --plugin<span class="hl-keyword">=</span>webui \
-  --emit-component-assets settings-dialog,mail-thread
-</code></pre></code-block><p>Each requested root writes an ESM graph module such as <code>&lt;tag&gt;.webui.js</code> next to
-<code>protocol.bin</code>. Entry-reachable dependencies remain in the application bundle
-and protocol. Dependencies used by one requested root stay inline, while
-dependencies used by the same set of two or more roots are emitted once as
-<code>chunk-&lt;component&gt;.webui.js</code> and dynamically imported by those roots. Asset-only
-fragments and component records do not remain in <code>protocol.bin</code>.</p><p>Static component assets and <code>&lt;route&gt;</code> cannot be used in the same build. Use
+  --emit-component-assets settings-dialog,mail-thread \
+  --component-assets-out ./.webui
+</code></pre></code-block><p>WebUI writes stable intermediate ESM inputs into <code>.webui</code>: one module for each
+asset-owned component and a thin <code>&lt;tag&gt;.webui.js</code> root entry with static imports
+for its closure. Import the root from application code and let the application
+bundler decide final chunks, hashes, public paths, caching, and delivery.
+Entry-reachable dependencies remain in the normal application bundle and
+protocol. Asset-only fragments and component records do not remain in
+<code>protocol.bin</code>.</p><p>Static component assets and <code>&lt;route&gt;</code> cannot be used in the same build. Use
 <code>@microsoft/webui-router</code> for routed components, or use component assets for
 non-routed deferred UI.</p><p>During development, pass the same flag to <code>webui serve</code> so these roots are
 validated and served without a separate build step:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui serve ./src --state ./data/state.json --plugin<span class="hl-keyword">=</span>webui \
   --emit-component-assets settings-dialog,mail-thread \
+  --component-assets-out ./.webui \
   --metafile ./component-assets-meta.json --watch
 </code></pre></code-block><p>The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
 missed because the component is outside the initial SSR tree. The dev server
-serves roots and shared chunks from memory and rebuilds them on change. A
-successful watch build atomically replaces <code>--metafile</code>; a failed build
-preserves the previous valid graph.</p><p>Load the asset before creating or revealing the component:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> &#123; WebUIElement &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework</span><span class="hl-string">'</span>;
-<span class="hl-keyword">import</span> &#123; settingsAssets &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">./lazy-assets.js</span><span class="hl-string">'</span>;
+refreshes the generated ESM inputs after each successful rebuild and also serves
+them over HTTP. Immutable dependencies remain on disk until consumers of older
+roots have finished. Stop readers before cleaning the generated directory; a
+fixed number of watch rebuilds is not a safe cleanup boundary. Unchanged inputs
+keep their modification times. A successful watch build atomically replaces <code>--metafile</code>; a
+failed build preserves the previous valid graph and generated files.</p><p>Load the asset before creating or revealing the component:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> &#123; WebUIElement, observable &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework</span><span class="hl-string">'</span>;
+<span class="hl-keyword">import</span> &#123;
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+&#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework/component-asset-runtime.js</span><span class="hl-string">'</span>;
+
+<span class="hl-keyword">const</span> <span class="hl-attr">loadSettings</span> <span class="hl-keyword">=</span> () <span class="hl-keyword">=&gt;</span> &#123;
+  preloadComponentAssetStyles(<span class="hl-string">'</span><span class="hl-string">settings-dialog</span><span class="hl-string">'</span>);
+  <span class="hl-keyword">return</span> import(<span class="hl-string">'</span><span class="hl-string">../../.webui/settings-dialog.webui.js</span><span class="hl-string">'</span>)
+    .then(module <span class="hl-keyword">=&gt;</span> defineComponentAsset(<span class="hl-property">module</span>.default));
+&#125;;
 
 <span class="hl-keyword">export</span> class AppShell extends WebUIElement &#123;
+  @observable loadError <span class="hl-keyword">=</span> <span class="hl-string">'</span><span class="hl-string">'</span>;
   panelSlot<span class="hl-keyword">!</span>: HTMLDivElement;
 
+  preloadSettings(): <span class="hl-keyword">void</span> &#123;
+    void <span class="hl-attr">loadSettings</span>().<span class="hl-attr">then</span>(asset <span class="hl-keyword">=</span><span class="hl-keyword">&gt;</span> asset.preload()).<span class="hl-attr">catch</span>(() =&gt; &#123;&#125;);
+  &#125;
+
   async openSettings(): <span class="hl-property">Promise</span><span class="hl-keyword">&lt;</span><span class="hl-keyword">void</span><span class="hl-keyword">&gt;</span> &#123;
-    settingsAssets.<span class="hl-attr">preload</span>('settings-dialog');
-    this.panelSlot.<span class="hl-attr">replaceChildren</span>(await settingsAssets.create('settings-dialog'));
+    try &#123;
+      const [asset, state] = await Promise.<span class="hl-attr">all</span>([
+        loadSettings(),
+        <span class="hl-attr">fetch</span>('/settings-dialog-data.json').<span class="hl-attr">then</span>(response <span class="hl-keyword">=</span><span class="hl-keyword">&gt;</span> &#123;
+          <span class="hl-attr">if</span> (!response.ok) throw new <span class="hl-attr">Error</span>(`Settings data: HTTP $&#123;response.status&#125;`);
+          return response.<span class="hl-attr">json</span>();
+        &#125;),
+      ]);
+      const dialog = await asset.<span class="hl-attr">create</span>();
+      (dialog as HTMLElement &amp; &#123; <span class="hl-attr">setState</span>(value: unknown): <span class="hl-keyword">void</span> &#125;).setState(state);
+      <span class="hl-number">this</span>.panelSlot.replaceChildren(dialog);
+      <span class="hl-number">this</span>.loadError <span class="hl-keyword">=</span> <span class="hl-string">'</span><span class="hl-string">'</span>;
+    &#125; <span class="hl-keyword">catch</span> (error) &#123;
+      <span class="hl-attr">console</span>.<span class="hl-property">error</span>(<span class="hl-string">'</span><span class="hl-string">Settings loading failed:</span><span class="hl-string">'</span>, error);
+      <span class="hl-number">this</span>.loadError <span class="hl-keyword">=</span> <span class="hl-string">'</span><span class="hl-string">Settings could not load. Reload the page to try again.</span><span class="hl-string">'</span>;
+    &#125;
+  &#125;
+
+  reloadPage(): <span class="hl-keyword">void</span> &#123;
+    location.<span class="hl-attr">reload</span>();
   &#125;
 &#125;
-</code></pre></code-block><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">//</span><span class="hl-comment"> lazy-assets.ts
-</span><span class="hl-keyword">import</span> &#123; defineComponentAssets &#125; <span class="hl-keyword">from</span> <span class="hl-string">'</span><span class="hl-string">@microsoft/webui-framework/component-asset.js</span><span class="hl-string">'</span>;
-
-<span class="hl-keyword">export</span> <span class="hl-keyword">const</span> settingsAssets <span class="hl-keyword">=</span> defineComponentAssets(&#123;
-  <span class="hl-string">'</span><span class="hl-string">settings-dialog</span><span class="hl-string">'</span>: &#123;
-    asset: <span class="hl-string">'</span><span class="hl-string">/settings-dialog.webui.js</span><span class="hl-string">'</span>,
-    <span class="hl-attr">module</span>: () <span class="hl-keyword">=&gt;</span> import(<span class="hl-string">'</span><span class="hl-string">./settings-dialog/settings-dialog.js</span><span class="hl-string">'</span>),
-    <span class="hl-attr">data</span>: <span class="hl-keyword">async</span> () <span class="hl-keyword">=&gt;</span> await (await fetch(<span class="hl-string">'</span><span class="hl-string">/settings-dialog-data.json</span><span class="hl-string">'</span>)).json(),
-  &#125;,
-&#125;);
-</code></pre></code-block><p><code>defineComponentAssets()</code> exposes <code>preload(tag)</code> and <code>create(tag)</code>. The compiler
+</code></pre></code-block><p>Render that error in the shell's template with an explicit recovery action:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">if</span> <span class="hl-attr">condition</span>=<span class="hl-string">"</span><span class="hl-string">loadError</span><span class="hl-string">"</span>&gt;
+  &lt;<span class="hl-tag">p</span> <span class="hl-attr">role</span>=<span class="hl-string">"</span><span class="hl-string">alert</span><span class="hl-string">"</span>&gt;&#123;&#123;loadError&#125;&#125;&lt;/<span class="hl-tag">p</span>&gt;
+  &lt;<span class="hl-tag">button</span> @click="&#123;reloadPage()&#125;"&gt;Reload page&lt;/<span class="hl-tag">button</span>&gt;
+&lt;/<span class="hl-tag">if</span>&gt;
+</code></pre></code-block><p>Each generated root exports a semantic payload. The application owns when to
+import it, when to load authored component code or data, and whether those
+operations are cached. The compiler
 stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
 handler publishes that finite manifest as inert JSON in the document head, or
 at the rendered body start for body-only host protocols. Light builds emit the
@@ -358,32 +392,30 @@ scoped.
 Automatic Shadow intent preloading requires HTML rendered through the WebUI
 handler or <code>Protocol</code>, which emits <code>#webui-component-assets</code>. A shell that uses
 the build artifacts without rendering the protocol still mounts safely through
-the native stylesheet guard, but it cannot start the compiler-owned style
-preload before loading the root asset.
+the native stylesheet guard, but it cannot start the style preload before
+loading the generated root.
 If an authoritative native stylesheet link fails, WebUI reports the error,
 keeps the native link in place, releases the temporary guard, and completes
 hydration. The component may be unstyled, but it remains visible and usable.
-Generated root, shared chunk, and content-hashed stylesheet filenames never
-belong in authored code. In Shadow builds, <code>preload(tag)</code> starts the component's
-Link styles, template graph, JavaScript module, and optional data together.
-Components can
-then fetch their own data in their class code and expose it through
-<code>@observable</code> fields when JavaScript needs to read or mutate it. Concurrent
-roots deduplicate shared chunk and stylesheet work by resolved URL.
-<code>create(tag)</code> creates the element after template/module work is ready. Use
-<code>create(tag, &#123; awaitData: true, dataTimeoutMs: 150 &#125;)</code> only when a component must
-wait briefly for state before mounting. Use a manifest helper when you want the
-fastest path: it lets the shell start Link CSS, the authored root asset, the JS
-chunk, and data in parallel. Application code keeps only the stable root asset
-URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
-preload whose intent never mounts the component is removed after three seconds,
-but the browser may still report its standard unused-preload warning.
-If the root asset or authored module rejects, the registry evicts that failed
-generation so the next <code>preload(tag)</code> or <code>create(tag)</code> retries it.
-Generated bundler integrations can supply
-<code>asset: () =&gt; import('./settings-dialog.webui.js')</code> instead of a URL so chunk
-loading and public-path rewriting stay bundler-owned without bypassing
-<code>defineComponentAssets()</code>.</p><p>Do not put <code>&lt;settings-dialog&gt;</code> in an SSR-reachable <code>&lt;if&gt;</code> block for this pattern.
+Only stable generated root input paths belong in authored imports. Generated
+files export semantic payloads only; the application owns the runtime facade,
+loading policy, and final JavaScript chunks. Content-hashed stylesheet
+filenames remain compiler-owned. In Shadow builds,
+<code>preloadComponentAssetStyles(root)</code> starts Link styles before the dynamic
+import, while <code>defineComponentAsset()</code> registers the imported template graph
+and creates the root element. Concurrent roots deduplicate registration and
+stylesheet work. If registration fails, the runtime facade clears the failed
+attempt so a later preload can retry. Start the root import and application data
+request together when mount latency matters. This avoids a
+CSS-after-JavaScript waterfall without eagerly loading component templates.
+<code>defineComponentAsset()</code> returns the same facade for the same imported payload,
+so applications need not cache it themselves. Registration retries do not
+invalidate the browser's native ESM module cache. A failed native dynamic import
+can remain failed for the life of the document. Let the application bundler own
+chunk recovery, or show an error with an explicit <strong>Reload page</strong> action when
+opening fails. Never reload automatically during speculative hover/focus
+preloading. Consume speculative rejections, but handle real open failures with a
+visible error and preserve their diagnostic details.</p><p>Do not put <code>&lt;settings-dialog&gt;</code> in an SSR-reachable <code>&lt;if&gt;</code> block for this pattern.
 If the server state ever makes that condition true, the component is part of the
 initial SSR graph instead of being loaded only from the static asset. Always
 load the normal application entry bundle first; component assets treat all
