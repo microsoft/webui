@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-test/
+.webui/
 *.tsbuildinfo
 bin/
 obj/

@@ -9,7 +9,7 @@ export default defineConfig({
     '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}{ext}',
   timeout: 30_000,
   use: {
-    baseURL: 'http://127.0.0.1:3010',
+    baseURL: process.env.WEBUI_TEST_BASE_URL ?? 'http://127.0.0.1:3010',
     screenshot: 'only-on-failure',
   },
   projects: [

@@ -3,7 +3,10 @@
 
 pub mod build;
 pub mod common;
+mod component_asset_output;
 pub mod inspect;
+mod metafile;
+pub(crate) mod prune_component_assets;
 pub mod serve;
 pub mod sidecar;
 
@@ -19,6 +22,8 @@ pub enum Commands {
     Press(sidecar::SidecarArgs),
     /// Inspect a protocol.bin file and output JSON to stdout
     Inspect(inspect::InspectArgs),
+    /// Remove obsolete component payloads after readers and publishers are quiescent
+    PruneComponentAssets(prune_component_assets::PruneArgs),
     /// Start a development server with live reload
     Serve(serve::ServeArgs),
 }

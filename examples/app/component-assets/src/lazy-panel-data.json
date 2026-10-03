@@ -3,5 +3,5 @@
   "heading": "Static asset template is active",
   "message": "The template came from lazy-panel.webui.js, while this state came from lazy-panel-data.json.",
   "hasDetails": true,
-  "details": "The asset module carries template metadata, CSS import maps, and compiled condition functions in one browser-native ESM file."
+  "details": "WebUI provides compiled templates, ordered styles, and condition functions. The application bundler chooses the JavaScript chunks."
 }

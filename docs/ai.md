@@ -821,7 +821,7 @@ transient user activation or closed-shadow click targets.
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
+| Generated component asset root | Import a stable generated `<tag>.webui.js` payload, then wrap its default export with `defineComponentAsset()` |
 
 ### Custom events
 
@@ -1020,22 +1020,28 @@ Without `@microsoft/webui-router`, prebuild the asset and mount it into a
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog \
+  --component-assets-out ./.webui \
   --metafile ./dist/component-assets-meta.json
 ```
 
 ```typescript
-import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
 
-export const settingsAssets = defineComponentAssets({
-  'settings-dialog': {
-    asset: '/settings-dialog.webui.js',
-    module: () => import('./settings-dialog/settings-dialog.js'),
-  },
-});
+const loadSettings = () => {
+  preloadComponentAssetStyles('settings-dialog');
+  return import('../.webui/settings-dialog.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
 
-async onOpenSettings(): Promise<void> {
-  settingsAssets.preload('settings-dialog');
-  this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+preloadSettings(): void {
+  void loadSettings().then(asset => asset.preload()).catch(() => {});
+}
+
+async openSettings(): Promise<void> {
+  this.panelSlot.replaceChildren(await (await loadSettings()).create());
 }
 ```
 
@@ -1049,14 +1055,21 @@ handler or `Protocol`, which emits `#webui-component-assets`. Using build
 artifacts without rendering the protocol preserves the guarded native mount but
 does not provide early compiler-owned style preloading.
 
-Assets keep entry-owned templates external, inline dependencies used by one
-asset root, and split dependencies shared by multiple roots into deduplicated
-dynamic chunks. Do not copy generated chunk filenames into the manifest; each
-root asset carries its own dynamic imports. `create(tag)` waits for the template
-graph and module, then creates the element. Failed asset or authored module work
-is evicted so a later `preload(tag)` or `create(tag)` retries. The normal entry
-bundle must load first. Component assets cannot be combined with `<route>`; use
-the router for routed components.
+WebUI emits one immutable `components/<tag>.<content-id>.webui.js` input per asset-owned
+component and a thin `<root>.webui.js` entry with static imports for its closure.
+The application bundler owns final chunks, hashes, public paths, caching, and
+delivery. `defineComponentAsset()` waits for graph and style registration before
+creating the element, returning one facade per imported payload. Failed
+registration can retry, but a native ESM import failure may stay cached for the
+document lifetime. Consume speculative failures without reloading; real open
+failures need visible errors and bundler-owned recovery or an explicit reload.
+Do not claim resetting a promise retries a native import. The versioned root
+imports compact template/style payloads and lists only external prerequisites.
+Generated dependencies stay available until older readers finish; clean the
+input directory only after stopping or coordinating those readers.
+The normal entry bundle must load first.
+Component assets cannot be combined with `<route>`; use the router for routed
+components.
 
 ## Routing
 
@@ -1445,6 +1458,12 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
+
+For a persistent component input directory, run
+`webui prune-component-assets --component-assets-out ./.webui --quiescent`
+only after all bundler/HTTP readers and publishers have stopped or been
+coordinated. The flag acknowledges quiescence; it does not stop other processes.
+See [component asset cleanup](./guide/cli/#webui-prune-component-assets).
 
 On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to

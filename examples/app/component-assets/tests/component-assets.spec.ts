@@ -6,10 +6,9 @@ import { expect, test, type Page } from '@playwright/test';
 type LazyResource =
   | 'lazy-asset'
   | 'secondary-asset'
-  | 'shared-chunk'
+  | 'bundled-chunk'
   | 'css'
-  | 'data'
-  | 'module';
+  | 'data';
 
 interface WebUIWindow {
   __webui?: {
@@ -19,14 +18,13 @@ interface WebUIWindow {
 
 function classifyLazyResource(url: string): LazyResource | undefined {
   const { pathname } = new URL(url);
-  if (pathname.endsWith('/lazy-panel.webui.js')) return 'lazy-asset';
-  if (pathname.endsWith('/secondary-panel.webui.js')) return 'secondary-asset';
-  if (pathname.endsWith('/chunk-shared-detail.webui.js')) return 'shared-chunk';
+  if (/\/lazy-panel\.webui-[A-Z0-9]+\.js$/.test(pathname)) return 'lazy-asset';
+  if (/\/secondary-panel\.webui-[A-Z0-9]+\.js$/.test(pathname)) {
+    return 'secondary-asset';
+  }
+  if (/\/chunk-[A-Z0-9]+\.js$/.test(pathname)) return 'bundled-chunk';
   if (pathname.endsWith('/lazy-panel.css')) return 'css';
   if (pathname.endsWith('/lazy-panel-data.json')) return 'data';
-  if (pathname.includes('/chunks/lazy-panel-') && pathname.endsWith('.js')) {
-    return 'module';
-  }
   return undefined;
 }
 
@@ -42,7 +40,50 @@ async function loadedTemplateNames(page: Page): Promise<string[]> {
 }
 
 test.describe('static component assets', () => {
-  test('starts generated Link styles before the root asset settles', async ({ page }) => {
+  test('recovers a failed speculative native import through an explicit reload', async ({ page }) => {
+    let assetRequests = 0;
+    const pageErrors: Error[] = [];
+    page.on('pageerror', error => pageErrors.push(error));
+    await page.route('**/lazy-panel.webui-*.js', async route => {
+      assetRequests += 1;
+      if (assetRequests === 1) {
+        await route.abort('connectionfailed');
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto('/');
+    const button = page.getByRole('button', { name: 'Load lazy panel' });
+    await expect(button).toBeVisible();
+    await Promise.all([
+      page.waitForEvent(
+        'requestfailed',
+        request => request.url().includes('/lazy-panel.webui-'),
+      ),
+      button.hover(),
+    ]);
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
+    expect(pageErrors).toEqual([]);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+    await button.click();
+    await expect(page.getByRole('alert')).toHaveText(
+      'The panel could not load. Reload the page to try again.',
+    );
+    expect(assetRequests).toBe(1);
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Reload page' }).click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Load lazy panel' }).click();
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    await expect(page.getByText('Loaded from component fetch')).toBeVisible();
+    expect(assetRequests).toBe(2);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('uses the application-owned import as the lazy loading boundary', async ({ page }) => {
     let cssRequests = 0;
     let releaseAsset!: () => void;
     let assetRequested!: () => void;
@@ -56,7 +97,7 @@ test.describe('static component assets', () => {
     const cssSeen = new Promise<void>(resolve => {
       cssRequested = resolve;
     });
-    await page.route('**/lazy-panel.webui.js', async route => {
+    await page.route('**/lazy-panel.webui-*.js', async route => {
       assetRequested();
       await assetGate;
       await route.continue();
@@ -73,9 +114,10 @@ test.describe('static component assets', () => {
     await button.hover();
     await Promise.all([assetSeen, cssSeen]);
     await expect(page.locator('lazy-panel')).toHaveCount(0);
+    expect(cssRequests).toBe(1);
 
-    await button.click();
     releaseAsset();
+    await button.click();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
     expect(cssRequests).toBe(1);
   });
@@ -118,7 +160,7 @@ test.describe('static component assets', () => {
     }))).resolves.toEqual({ adopted: 1, disabled: true, links: 1 });
   });
 
-  test('splits and reuses a lazy-only dependency chunk', async ({ page }) => {
+  test('lets the application bundler split and reuse the lazy graph', async ({ page }) => {
     const lazyRequests: LazyResource[] = [];
     page.on('request', (request) => {
       const resource = classifyLazyResource(request.url());
@@ -142,10 +184,14 @@ test.describe('static component assets', () => {
       }),
     ).resolves.toEqual({ ready: true, setState: true });
 
-    expect(lazyRequests).toEqual([]);
+    expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(0);
+    expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(0);
+    expect(countLazyRequests(lazyRequests, 'css')).toBe(0);
+    expect(countLazyRequests(lazyRequests, 'data')).toBe(0);
     expect(await loadedTemplateNames(page)).not.toContain('lazy-panel');
     expect(await loadedTemplateNames(page)).not.toContain('secondary-panel');
     expect(await loadedTemplateNames(page)).not.toContain('shared-detail');
+    lazyRequests.length = 0;
 
     await page.getByRole('button', { name: 'Load secondary panel' }).click();
     await expect(page.locator('secondary-panel')).toHaveCount(1);
@@ -153,8 +199,9 @@ test.describe('static component assets', () => {
     await expect(page.getByText('Shared lazy dependency is active')).toBeVisible();
 
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
-    expect(countLazyRequests(lazyRequests, 'shared-chunk')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(0);
+    expect(countLazyRequests(lazyRequests, 'bundled-chunk')).toBeGreaterThanOrEqual(1);
+    expect(await loadedTemplateNames(page)).toContain('shared-detail');
 
     await page.getByRole('button', { name: 'Load lazy panel' }).click();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
@@ -190,8 +237,6 @@ test.describe('static component assets', () => {
     expect(await loadedTemplateNames(page)).toContain('shared-detail');
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
-    expect(countLazyRequests(lazyRequests, 'shared-chunk')).toBe(1);
-    expect(countLazyRequests(lazyRequests, 'module')).toBe(0);
     expect(countLazyRequests(lazyRequests, 'data')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'css')).toBeGreaterThanOrEqual(1);
 
@@ -205,8 +250,6 @@ test.describe('static component assets', () => {
     await expect(page.getByText('Static asset template is active')).toBeVisible();
 
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(firstLoadCounts.asset);
-    expect(countLazyRequests(lazyRequests, 'shared-chunk')).toBe(1);
-    expect(countLazyRequests(lazyRequests, 'module')).toBe(0);
-    expect(countLazyRequests(lazyRequests, 'data')).toBe(firstLoadCounts.data);
+    expect(countLazyRequests(lazyRequests, 'data')).toBe(firstLoadCounts.data + 1);
   });
 });

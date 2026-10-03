@@ -244,14 +244,36 @@ features, not dependencies of the SSR handler.
 ### Optional component assets
 
 Builds without route directives may request stand-alone component asset roots.
-The compiler computes each root's conservative template/style dependencies
-and emits reusable shared modules for overlapping closures rather than
-duplicating payloads. The entry bundle retains ownership of entry-reachable
-components. An asset declares its prerequisites and imports; the framework
-validates coverage before registering any payload. Each CSS tree still gets
-the required ordered style closure, including when a Shadow root is created
-later. Neither a static asset module nor the handler assumes the browser's
-current template inventory at build time.
+The compiler emits content-addressed ESM inputs for asset-owned components plus
+thin stable root entries that statically import their conservative
+template/style closures. Publication writes immutable dependencies before
+switching roots. Immutable dependencies remain available until the publication
+owner explicitly retires them after readers of older roots finish; neither time
+nor a generation count proves quiescence. CLI and library hosts share this
+publication contract. Development HTTP delivery reads dependencies from the
+publication directory instead of retaining every generation in memory.
+These files describe semantic ownership
+and dependency edges, but do not choose production chunks, public paths,
+caching, or delivery. The application bundler owns those decisions and may
+inline, split, or share any part of the graph. The compiler's content addresses
+only make generated-input publication consistent; they are not deployed asset
+names. The entry bundle retains ownership of entry-reachable components. Each
+CSS tree still gets the required ordered style closure, including when a Shadow
+root is created later. Neither a generated module nor the handler assumes the
+browser's current template inventory at build time.
+
+Roots carry format compatibility and external prerequisites; statically imported
+component payloads carry only template and style data. Registration is atomic
+and splits validation by what is provable at build time.
+Rules about a graph's own contents - whether two assets of one build agree on a
+shared style resource or closure - are already guaranteed by the compiler, so
+the generated path omits them and bundlers drop that code from the startup
+bundle. Rules about the running page - a required template the entry bundle
+never loaded, or a stale asset that disagrees with the live style catalog -
+cannot be proven at build time and always ship. The generated path checks
+external templates and live style conflicts, not compiler-proven coverage.
+Applications that load assets
+from an untrusted manifest opt back into the full check set.
 
 ## Browser hydration
 
@@ -385,6 +407,7 @@ engineering another; they are not public application-authoring guides.
 | --- | --- |
 | Protobuf fields and fragment shapes | `crates/webui-protocol/proto/webui.proto` |
 | Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `packages/webui/src/projection/{graph,manifest,diagnostics}.ts`, `crates/webui-protocol/src/projection_manifest.rs` |
+| Component asset ownership, registration, and publication lifetime | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
 | Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/guide/concepts/directives/` |
 | State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/guide/concepts/state-management/index.md`, `docs/guide/concepts/directives/if.md` |
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |

@@ -1658,10 +1658,14 @@ mod tests {
 
         let result = build(options).unwrap();
 
-        assert_eq!(result.component_asset_files.len(), 2);
+        assert_eq!(result.component_asset_files.len(), 4);
         assert_eq!(result.component_asset_files[0], "lazy-panel.webui.js");
         assert!(result.component_asset_files[1].contains("webui-component-asset"));
         assert!(result.component_asset_files[1].contains("export default asset;"));
+        assert!(!result.component_asset_files[1].contains("defineComponentAsset"));
+        assert!(result.component_asset_files[2].starts_with("components/lazy-panel."));
+        assert!(result.component_asset_files[2].ends_with(".webui.js"));
+        assert!(result.component_asset_files[3].contains("export default asset;"));
         let metafile = result
             .metafile
             .as_deref()

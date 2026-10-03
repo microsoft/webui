@@ -2135,6 +2135,7 @@ dependencies = [
  "actix-web",
  "awc",
  "bytes",
+ "crc32fast",
  "criterion",
  "crossbeam-queue",
  "futures-util",

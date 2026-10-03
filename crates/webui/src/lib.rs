@@ -21,6 +21,7 @@
 //! ```
 
 mod chunking;
+pub mod component_asset_output;
 mod component_assets;
 mod error;
 mod module_preload;
@@ -278,9 +279,7 @@ pub struct BuildOptions {
     pub component_asset_roots: Vec<String>,
     /// Whether to serialize an esbuild-compatible component asset metafile.
     pub metafile: bool,
-    /// Emitted asset filename template using `[name]`, `[hash]`, and `[ext]`.
-    ///
-    /// Applies to Link-mode CSS files and static component assets.
+    /// Emitted Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
     pub css_file_name_template: String,
     /// Optional URL/base-path prefix for Link-mode `css_href` values.
     /// When set, emitted protocol hrefs become `<base>/<filename>`.
@@ -447,7 +446,10 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 ///
 /// Writes `protocol.bin`, any external CSS files, and static component assets
 /// to `out_dir`.
-/// Creates `out_dir` if it does not exist.
+/// Creates `out_dir` if it does not exist. Component dependencies publish before
+/// roots, and unchanged component inputs keep their modification times. Old
+/// immutable payloads remain readable until [`component_asset_output::prune`]
+/// is called after consumers of older roots have finished.
 ///
 /// # Errors
 ///
@@ -474,15 +476,8 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
             source,
         })?;
     }
-    for file in &result.component_asset_files {
-        fs::write(out_dir.join(&file.name), &file.content).map_err(|source| WebUIError::Io {
-            context: format!(
-                "Failed to write component asset {} to {}",
-                file.name,
-                out_dir.display()
-            ),
-            source,
-        })?;
+    if !result.component_asset_files.is_empty() {
+        component_asset_output::publish(out_dir, &result.component_asset_files)?;
     }
 
     Ok(result.stats)
@@ -523,6 +518,12 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let projection_enabled = !options.projection_manifests.is_empty();
     if projection_enabled && options.plugin != Some(Plugin::WebUI) {
         return Err(projection::incompatible_plugin_error());
+    }
+    if !options.component_asset_roots.is_empty() && options.plugin != Some(Plugin::WebUI) {
+        return Err(WebUIError::InvalidBuildOptions(
+            "component assets require --plugin webui because generated entries use the WebUI Framework registration runtime"
+                .to_string(),
+        ));
     }
     if options.css_bundle && options.css == CssStrategy::Module {
         return Err(css_bundle_module_error());
@@ -878,7 +879,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         &protocol,
         &options.entry,
         &options.component_asset_roots,
-        &options.css_file_name_template,
         options.metafile,
     )?;
     component_asset_graph.retain_entry_protocol(&mut protocol)?;
@@ -984,6 +984,9 @@ fn validate_output_file_names(
     let mut names =
         HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
     names.insert(protocol_name.to_os_string());
+    if !result.component_asset_files.is_empty() {
+        names.insert(component_asset_output::manifest_path(Path::new("")).into_os_string());
+    }
     for (name, _) in &result.css_files {
         let file_name = OsString::from(name);
         if !names.insert(file_name.clone()) {
@@ -1056,6 +1059,17 @@ mod tests {
             app_dir: app_dir.to_path_buf(),
             ..BuildOptions::default()
         }
+    }
+
+    fn component_payload<'a>(files: &'a [ComponentAssetFile], tag: &str) -> &'a ComponentAssetFile {
+        let mut prefix = String::with_capacity(tag.len() + 12);
+        prefix.push_str("components/");
+        prefix.push_str(tag);
+        prefix.push('.');
+        files
+            .iter()
+            .find(|file| file.name.starts_with(&prefix))
+            .unwrap()
     }
 
     fn light_options(app_dir: &Path) -> BuildOptions {
@@ -2563,20 +2577,30 @@ mod tests {
 
         let result = build(options).unwrap();
 
-        assert_eq!(result.component_asset_files.len(), 1);
+        assert_eq!(result.component_asset_files.len(), 2);
         assert_eq!(result.component_asset_files[0].name, "lazy-panel.webui.js");
         assert!(result.component_asset_files[0]
             .content
             .contains(r#""type":"webui-component-asset""#));
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""version":3"#));
+            .contains(r#""version":4"#));
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""kind":"root""#));
-        assert!(result.component_asset_files[0]
+            .contains(r#""root":"lazy-panel""#));
+        assert!(result.component_asset_files[1]
             .content
             .contains(r#""templateFunctions":{"lazy-panel":"#));
+        let root = &result.component_asset_files[0].content;
+        let payload = &result.component_asset_files[1].content;
+        for field in ["kind", "components", "requiredComponents"] {
+            assert!(!root.contains(&format!("\"{field}\":")));
+            assert!(!payload.contains(&format!("\"{field}\":")));
+        }
+        for field in ["type", "version\":4", "externalComponents", "imports"] {
+            assert!(!payload.contains(&format!("\"{field}")));
+        }
+        assert!(!root.contains("\"templates\":"));
         assert!(!result.protocol.fragments.contains_key("lazy-panel"));
         assert!(
             !result
@@ -2607,25 +2631,27 @@ mod tests {
             options.component_asset_roots = vec!["lazy-panel".to_string()];
 
             let result = build(options).unwrap();
-            let asset = &result.component_asset_files[0].content;
-            assert!(asset.contains(r#""version":3"#));
-            assert!(asset.contains(&format!(
+            let root = &result.component_asset_files[0].content;
+            let component = &result.component_asset_files[1].content;
+            assert!(root.contains(r#""version":4"#));
+            assert!(component.contains(&format!(
                 r#""componentStyles":{{"version":1,"strategy":"{kind}""#
             )));
-            assert!(asset.contains(&format!(r#""lazy-panel":{{"kind":"{kind}""#)));
-            assert!(asset.contains(r#""closures":{"lazy-panel":["lazy-panel"]}"#));
+            assert!(component.contains(&format!(r#""lazy-panel":{{"kind":"{kind}""#)));
+            assert!(component.contains(r#""closures":{"lazy-panel":["lazy-panel"]}"#));
             if strategy == CssStrategy::Module {
-                assert!(asset
+                assert!(component
                     .contains(r#""lazy-panel":{"kind":"module","specifier":"lazy-panel","css":"#,));
             }
             if strategy == CssStrategy::Link {
-                assert!(asset.contains(r#""href":new URL("lazy-panel.css",import.meta.url).href"#,));
+                assert!(component.contains(r#""href":"lazy-panel.css""#));
+                assert!(!component.contains("import.meta.url"));
             }
         }
     }
 
     #[test]
-    fn test_build_splits_shared_assets_and_keeps_them_out_of_protocol() {
+    fn test_build_emits_semantic_component_modules_and_keeps_them_out_of_protocol() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<entry-badge></entry-badge>"),
@@ -2669,6 +2695,7 @@ mod tests {
                 "asset-only component <{tag}> must not be serialized"
             );
         }
+
         assert!(result.protocol.fragments.contains_key("app-shell"));
         assert!(result.protocol.components.contains_key("entry-badge"));
         assert_eq!(
@@ -2691,41 +2718,97 @@ mod tests {
             ]
         );
 
-        let names: Vec<&str> = result
-            .component_asset_files
-            .iter()
-            .map(|file| file.name.as_str())
-            .collect();
+        assert_eq!(result.component_asset_files.len(), 7);
+        assert_eq!(result.component_asset_files[0].name, "lazy-panel.webui.js");
         assert_eq!(
-            names,
-            vec![
-                "lazy-panel.webui.js",
-                "secondary-panel.webui.js",
-                "chunk-shared-detail.webui.js",
-            ]
+            result.component_asset_files[1].name,
+            "secondary-panel.webui.js"
         );
         let lazy = &result.component_asset_files[0].content;
-        assert!(lazy.contains(r#""version":3"#));
-        assert!(lazy.contains(r#""kind":"root""#));
+        assert!(lazy.contains(r#""version":4"#));
+        assert!(lazy.contains(r#""root":"lazy-panel""#));
         assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
         assert!(lazy.contains(r#""entry-badge":{"kind":"link","href":"entry-badge.css"}"#));
         assert!(!lazy.contains(
             r#""entry-badge":{"kind":"link","href":new URL("entry-badge.css",import.meta.url).href}"#
         ));
-        assert!(lazy
-            .contains(r#""href":new URL("./chunk-shared-detail.webui.js",import.meta.url).href"#));
-        assert!(lazy.contains(r#"import("./chunk-shared-detail.webui.js")"#));
+        for tag in ["lazy-panel", "panel-only", "shared-detail"] {
+            let payload = component_payload(&result.component_asset_files, tag);
+            assert!(lazy.contains(&payload.name));
+        }
+        assert!(!lazy.contains("@microsoft/webui-framework/component-asset-runtime.js"));
+        assert!(!lazy.contains("export const preload"));
+        assert!(!lazy.contains("export const create"));
         assert!(!lazy.contains(r#""templates":{"entry-badge":"#));
         assert!(!lazy.contains(r#""templates":{"shared-detail":"#));
 
-        let chunk = &result.component_asset_files[2].content;
-        assert!(chunk.contains(r#""kind":"chunk""#));
-        assert!(chunk.contains(r#""components":["shared-detail"]"#));
-        assert!(chunk.contains(r#""templates":{"shared-detail":"#));
+        let shared = component_payload(&result.component_asset_files, "shared-detail");
+        assert!(!shared.content.contains(r#""kind":"component""#));
+        assert!(shared.content.contains(r#""templates":{"shared-detail":"#));
+        assert!(shared.content.contains(r#""href":"shared-detail.css""#));
+        assert!(!shared.content.contains("import.meta.url"));
     }
 
     #[test]
-    fn test_component_asset_graph_groups_each_consumer_set() {
+    fn build_to_disk_creates_component_asset_parent_directories() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let out = tempfile::tempdir().unwrap();
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+        build_to_disk(options, out.path()).unwrap();
+
+        assert!(out.path().join("lazy-panel.webui.js").is_file());
+        assert!(fs::read_dir(out.path().join("components"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("lazy-panel.")));
+    }
+
+    #[test]
+    fn build_to_disk_preserves_noop_inputs_and_supports_quiescent_cleanup() {
+        let app = create_app_dir(&[
+            ("index.html", "<main>Entry</main>"),
+            ("lazy-panel.html", "<p>Initial</p>"),
+        ]);
+        let out = tempfile::tempdir().unwrap();
+        let options = || {
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.component_asset_roots = vec!["lazy-panel".to_string()];
+            options
+        };
+        build_to_disk(options(), out.path()).unwrap();
+        let root = out.path().join("lazy-panel.webui.js");
+        let before = fs::metadata(&root).unwrap().modified().unwrap();
+        build_to_disk(options(), out.path()).unwrap();
+        assert_eq!(before, fs::metadata(&root).unwrap().modified().unwrap());
+
+        for generation in 0..5 {
+            fs::write(
+                app.path().join("lazy-panel.html"),
+                format!("<p>{generation}</p>"),
+            )
+            .unwrap();
+            build_to_disk(options(), out.path()).unwrap();
+            component_asset_output::prune(out.path()).unwrap();
+            assert_eq!(
+                fs::read_dir(out.path().join("components")).unwrap().count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn test_component_asset_graph_emits_each_component_once() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<p>Entry</p>"),
@@ -2753,34 +2836,28 @@ mod tests {
         ];
 
         let result = build(options).unwrap();
-        let names: Vec<&str> = result
-            .component_asset_files
-            .iter()
-            .map(|file| file.name.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "root-a.webui.js",
-                "root-b.webui.js",
-                "root-c.webui.js",
-                "chunk-shared-ab.webui.js",
-                "chunk-shared-all.webui.js",
-            ]
-        );
+        assert_eq!(result.component_asset_files.len(), 11);
+        assert_eq!(result.component_asset_files[0].name, "root-a.webui.js");
+        assert_eq!(result.component_asset_files[1].name, "root-b.webui.js");
+        assert_eq!(result.component_asset_files[2].name, "root-c.webui.js");
+        let only_a = component_payload(&result.component_asset_files, "only-a");
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""components":["only-a","root-a"]"#));
-        assert!(result.component_asset_files[3]
-            .content
-            .contains(r#""components":["shared-ab"]"#));
-        assert!(result.component_asset_files[4]
-            .content
-            .contains(r#""components":["shared-all"]"#));
+            .contains(&only_a.name));
+        assert!(
+            component_payload(&result.component_asset_files, "shared-ab")
+                .content
+                .contains(r#""templates":{"shared-ab":"#)
+        );
+        assert!(
+            component_payload(&result.component_asset_files, "shared-all")
+                .content
+                .contains(r#""templates":{"shared-all":"#)
+        );
     }
 
     #[test]
-    fn test_component_asset_graph_is_root_order_independent_with_hashed_imports() {
+    fn test_component_asset_graph_is_root_order_independent_with_stable_imports() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<p>Entry</p>"),
@@ -2800,10 +2877,9 @@ mod tests {
         let reverse = build_files(vec!["root-b".to_string(), "root-a".to_string()]);
 
         assert_eq!(forward, reverse);
-        let chunk_name = &forward[2].name;
-        assert!(chunk_name.starts_with("chunk-shared-detail-"));
-        assert!(forward[0].content.contains(chunk_name));
-        assert!(forward[1].content.contains(chunk_name));
+        let shared_name = &component_payload(&forward, "shared-detail").name;
+        assert!(forward[0].content.contains(shared_name));
+        assert!(forward[1].content.contains(shared_name));
     }
 
     #[test]
@@ -2859,7 +2935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metafile_describes_dynamic_import_graph() {
+    fn test_metafile_describes_static_import_graph() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<p>Entry</p>"),
@@ -2882,21 +2958,26 @@ mod tests {
             value["outputs"]["root-a.webui.js"]["entryPoint"],
             "webui:component/root-a"
         );
+        let shared = component_payload(&result.component_asset_files, "shared-detail");
         assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][0]["path"],
-            "chunk-shared-detail.webui.js"
+            value["outputs"]["root-a.webui.js"]["imports"][1]["path"],
+            shared.name
         );
         assert_eq!(
-            value["outputs"]["root-a.webui.js"]["imports"][0]["kind"],
-            "dynamic-import"
+            value["outputs"]["root-a.webui.js"]["imports"][1]["kind"],
+            "import-statement"
         );
         assert_eq!(
             value["inputs"]["webui:component/root-a"]["imports"][0]["kind"],
-            "dynamic-import"
+            "import-statement"
         );
         assert_eq!(
-            value["outputs"]["chunk-shared-detail.webui.js"]["bytes"],
-            result.component_asset_files[2].content.len()
+            value["outputs"]["root-a.webui.js"]["exports"],
+            serde_json::json!(["default"])
+        );
+        assert_eq!(
+            value["outputs"][&shared.name]["bytes"],
+            shared.content.len()
         );
     }
 
@@ -2928,7 +3009,7 @@ mod tests {
     }
 
     #[test]
-    fn test_component_asset_filename_collision_with_css_is_rejected() {
+    fn test_component_asset_input_name_is_independent_from_css_template() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
@@ -2940,9 +3021,16 @@ mod tests {
         options.component_asset_roots = vec!["lazy-panel".to_string()];
         options.css_file_name_template = "[name]".to_string();
 
-        let result = build(options);
+        let result = build(options).unwrap();
 
-        assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
+        assert!(result
+            .component_asset_files
+            .iter()
+            .any(|file| file.name == "lazy-panel.webui.js"));
+        assert!(result
+            .css_files
+            .iter()
+            .any(|(name, _)| name == "lazy-panel"));
     }
 
     #[test]
@@ -2951,6 +3039,7 @@ mod tests {
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
             ("lazy-panel.html", "<p>Lazy</p>"),
+            ("lazy-panel.css", ".panel { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();
         let mut options = default_options(app.path());
@@ -3500,7 +3589,7 @@ mod tests {
 
         let result = build(options).unwrap();
 
-        assert_eq!(result.component_asset_files.len(), 1);
+        assert_eq!(result.component_asset_files.len(), 2);
         assert!(!result.protocol.fragments.contains_key("lazy-panel"));
         assert!(!result.protocol.components.contains_key("lazy-panel"));
     }

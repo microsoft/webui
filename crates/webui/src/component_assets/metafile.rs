@@ -51,6 +51,8 @@ struct MetafileOutputInput {
 struct MetafileOutputImport {
     path: String,
     kind: &'static str,
+    #[serde(skip_serializing_if = "is_false")]
+    external: bool,
 }
 
 pub(super) fn render_metafile(
@@ -99,11 +101,7 @@ fn add_output_inputs(
             .filter(|component| *component != root)
             .map(|component| MetafileInputImport {
                 path: component_path(component),
-                kind: if is_dynamic(output, component) {
-                    "dynamic-import"
-                } else {
-                    "import-statement"
-                },
+                kind: "import-statement",
                 external: is_external(output, component),
                 original: component.clone(),
             })
@@ -114,13 +112,6 @@ fn add_output_inputs(
 fn is_external(output: &RenderedOutput, component: &str) -> bool {
     output
         .external_components
-        .binary_search_by(|candidate| candidate.as_str().cmp(component))
-        .is_ok()
-}
-
-fn is_dynamic(output: &RenderedOutput, component: &str) -> bool {
-    output
-        .dynamic_components
         .binary_search_by(|candidate| candidate.as_str().cmp(component))
         .is_ok()
 }
@@ -143,7 +134,8 @@ fn metafile_output(output: &RenderedOutput) -> MetafileOutput {
         .iter()
         .map(|path| MetafileOutputImport {
             path: path.clone(),
-            kind: "dynamic-import",
+            kind: "import-statement",
+            external: false,
         })
         .collect();
     MetafileOutput {

@@ -22,7 +22,7 @@ import type {
 
 export type {
   ComponentAsset,
-  ComponentAssetImport,
+  ComponentAssetPayload,
 } from './component-asset/asset.js';
 export type {
   ComponentAssetCreateOptions,

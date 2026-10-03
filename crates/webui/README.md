@@ -34,7 +34,7 @@ let result = build(BuildOptions {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Parse templates, discover components, compile protocol |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and component assets to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and generated component ESM inputs to disk |
 
 ```rust
 use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
@@ -61,8 +61,7 @@ unwrapped; a sole authored `<template shadowrootmode="open">` remains Shadow.
 Light CSS must use ordinary selectors: `:host`, `:host-context`, and `::slotted`
 are rejected with `unsupported-light-css`.
 
-For CDN/cache-friendly Link-mode CSS and static component assets, override the
-asset output fields:
+For CDN/cache-friendly Link-mode CSS, override the asset output fields:
 
 ```rust
 BuildOptions {
@@ -89,11 +88,12 @@ BuildOptions {
 }
 ```
 
-Entry-reachable dependencies remain external to the asset graph, single-root
-dependencies stay inline, and dependencies shared by the same multi-root
-consumer set are emitted once as flat dynamic chunks. Asset-only component
-records are removed from `protocol.bin`. Component assets cannot be combined
-with `<route>`.
+The result contains one stable module per asset-owned component plus a thin
+root entry with static imports for its closure. These are application-bundler
+inputs: the bundler owns final chunks, hashes, public paths, and caching.
+Entry-reachable dependencies remain external prerequisites. Asset-only
+component records are removed from `protocol.bin`. Component assets cannot be
+combined with `<route>`.
 
 `LegalComments::Inline` is the default and preserves legal CSS comments
 containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use

@@ -515,15 +515,17 @@ loaded from static files. Build the root components as assets:
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
-  --emit-component-assets settings-dialog,mail-thread
+  --emit-component-assets settings-dialog,mail-thread \
+  --component-assets-out ./.webui
 ```
 
-Each requested root writes an ESM graph module such as `<tag>.webui.js` next to
-`protocol.bin`. Entry-reachable dependencies remain in the application bundle
-and protocol. Dependencies used by one requested root stay inline, while
-dependencies used by the same set of two or more roots are emitted once as
-`chunk-<component>.webui.js` and dynamically imported by those roots. Asset-only
-fragments and component records do not remain in `protocol.bin`.
+WebUI writes stable intermediate ESM inputs into `.webui`: one module for each
+asset-owned component and a thin `<tag>.webui.js` root entry with static imports
+for its closure. Import the root from application code and let the application
+bundler decide final chunks, hashes, public paths, caching, and delivery.
+Entry-reachable dependencies remain in the normal application bundle and
+protocol. Asset-only fragments and component records do not remain in
+`protocol.bin`.
 
 Static component assets and `<route>` cannot be used in the same build. Use
 `@microsoft/webui-router` for routed components, or use component assets for
@@ -535,46 +537,80 @@ validated and served without a separate build step:
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread \
+  --component-assets-out ./.webui \
   --metafile ./component-assets-meta.json --watch
 ```
 
 The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
 missed because the component is outside the initial SSR tree. The dev server
-serves roots and shared chunks from memory and rebuilds them on change. A
-successful watch build atomically replaces `--metafile`; a failed build
-preserves the previous valid graph.
+refreshes the generated ESM inputs after each successful rebuild and also serves
+them over HTTP. Immutable dependencies remain on disk until consumers of older
+roots have finished. Stop readers before cleaning the generated directory; a
+fixed number of watch rebuilds is not a safe cleanup boundary. Unchanged inputs
+keep their modification times. A successful watch build atomically replaces `--metafile`; a
+failed build preserves the previous valid graph and generated files.
 
 Load the asset before creating or revealing the component:
 
 ```typescript
-import { WebUIElement } from '@microsoft/webui-framework';
-import { settingsAssets } from './lazy-assets.js';
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+import {
+  defineComponentAsset,
+  preloadComponentAssetStyles,
+} from '@microsoft/webui-framework/component-asset-runtime.js';
+
+const loadSettings = () => {
+  preloadComponentAssetStyles('settings-dialog');
+  return import('../../.webui/settings-dialog.webui.js')
+    .then(module => defineComponentAsset(module.default));
+};
 
 export class AppShell extends WebUIElement {
+  @observable loadError = '';
   panelSlot!: HTMLDivElement;
 
+  preloadSettings(): void {
+    void loadSettings().then(asset => asset.preload()).catch(() => {});
+  }
+
   async openSettings(): Promise<void> {
-    settingsAssets.preload('settings-dialog');
-    this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+    try {
+      const [asset, state] = await Promise.all([
+        loadSettings(),
+        fetch('/settings-dialog-data.json').then(response => {
+          if (!response.ok) throw new Error(`Settings data: HTTP ${response.status}`);
+          return response.json();
+        }),
+      ]);
+      const dialog = await asset.create();
+      (dialog as HTMLElement & { setState(value: unknown): void }).setState(state);
+      this.panelSlot.replaceChildren(dialog);
+      this.loadError = '';
+    } catch (error) {
+      console.error('Settings loading failed:', error);
+      this.loadError = 'Settings could not load. Reload the page to try again.';
+    }
+  }
+
+  reloadPage(): void {
+    location.reload();
   }
 }
 ```
 
-```typescript
-// lazy-assets.ts
-import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+Render that error in the shell's template with an explicit recovery action:
 
-export const settingsAssets = defineComponentAssets({
-  'settings-dialog': {
-    asset: '/settings-dialog.webui.js',
-    module: () => import('./settings-dialog/settings-dialog.js'),
-    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
-  },
-});
+```html
+<if condition="loadError">
+  <p role="alert">{{loadError}}</p>
+  <button @click="{reloadPage()}">Reload page</button>
+</if>
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. The compiler
+Each generated root exports a semantic payload. The application owns when to
+import it, when to load authored component code or data, and whether those
+operations are cached. The compiler
 stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
 handler publishes that finite manifest as inert JSON in the document head, or
 at the rendered body start for body-only host protocols. Light builds emit the
@@ -583,32 +619,30 @@ scoped.
 Automatic Shadow intent preloading requires HTML rendered through the WebUI
 handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
 the build artifacts without rendering the protocol still mounts safely through
-the native stylesheet guard, but it cannot start the compiler-owned style
-preload before loading the root asset.
+the native stylesheet guard, but it cannot start the style preload before
+loading the generated root.
 If an authoritative native stylesheet link fails, WebUI reports the error,
 keeps the native link in place, releases the temporary guard, and completes
 hydration. The component may be unstyled, but it remains visible and usable.
-Generated root, shared chunk, and content-hashed stylesheet filenames never
-belong in authored code. In Shadow builds, `preload(tag)` starts the component's
-Link styles, template graph, JavaScript module, and optional data together.
-Components can
-then fetch their own data in their class code and expose it through
-`@observable` fields when JavaScript needs to read or mutate it. Concurrent
-roots deduplicate shared chunk and stylesheet work by resolved URL.
-`create(tag)` creates the element after template/module work is ready. Use
-`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
-wait briefly for state before mounting. Use a manifest helper when you want the
-fastest path: it lets the shell start Link CSS, the authored root asset, the JS
-chunk, and data in parallel. Application code keeps only the stable root asset
-URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
-preload whose intent never mounts the component is removed after three seconds,
-but the browser may still report its standard unused-preload warning.
-If the root asset or authored module rejects, the registry evicts that failed
-generation so the next `preload(tag)` or `create(tag)` retries it.
-Generated bundler integrations can supply
-`asset: () => import('./settings-dialog.webui.js')` instead of a URL so chunk
-loading and public-path rewriting stay bundler-owned without bypassing
-`defineComponentAssets()`.
+Only stable generated root input paths belong in authored imports. Generated
+files export semantic payloads only; the application owns the runtime facade,
+loading policy, and final JavaScript chunks. Content-hashed stylesheet
+filenames remain compiler-owned. In Shadow builds,
+`preloadComponentAssetStyles(root)` starts Link styles before the dynamic
+import, while `defineComponentAsset()` registers the imported template graph
+and creates the root element. Concurrent roots deduplicate registration and
+stylesheet work. If registration fails, the runtime facade clears the failed
+attempt so a later preload can retry. Start the root import and application data
+request together when mount latency matters. This avoids a
+CSS-after-JavaScript waterfall without eagerly loading component templates.
+`defineComponentAsset()` returns the same facade for the same imported payload,
+so applications need not cache it themselves. Registration retries do not
+invalidate the browser's native ESM module cache. A failed native dynamic import
+can remain failed for the life of the document. Let the application bundler own
+chunk recovery, or show an error with an explicit **Reload page** action when
+opening fails. Never reload automatically during speculative hover/focus
+preloading. Consume speculative rejections, but handle real open failures with a
+visible error and preserve their diagnostic details.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
