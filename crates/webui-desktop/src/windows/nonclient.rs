@@ -29,6 +29,44 @@ const STARTUP_READY_INDEX: WindowsAndMessaging::WINDOW_LONG_PTR_INDEX =
 const FRAME_NATIVE: i32 = 0;
 pub(super) const FRAME_OVERLAY: i32 = 1;
 const FRAME_NONE: i32 = 2;
+const FRAME_OVERLAY_STARTUP: i32 = 3;
+
+pub(super) fn prepare_overlay_startup(hwnd: HWND) -> Result<()> {
+    // SAFETY: The UI thread owns the live window and its reserved frame slot.
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+        WindowsAndMessaging::SetWindowLongW(hwnd, CUSTOM_FRAME_INDEX, FRAME_OVERLAY_STARTUP);
+        if GetLastError() != ERROR_SUCCESS {
+            return Err(Error::from_thread());
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn finish_overlay_startup(hwnd: HWND) -> Result<()> {
+    // SAFETY: The UI thread owns the live window and its reserved frame slot.
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+        WindowsAndMessaging::SetWindowLongW(hwnd, CUSTOM_FRAME_INDEX, FRAME_OVERLAY);
+        if GetLastError() != ERROR_SUCCESS {
+            return Err(Error::from_thread());
+        }
+        WindowsAndMessaging::SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            WindowsAndMessaging::SWP_NOMOVE
+                | WindowsAndMessaging::SWP_NOSIZE
+                | WindowsAndMessaging::SWP_NOZORDER
+                | WindowsAndMessaging::SWP_NOACTIVATE
+                | WindowsAndMessaging::SWP_FRAMECHANGED,
+        )?;
+    }
+    Ok(())
+}
 
 pub(super) fn initialize_frame(hwnd: HWND, l_param: LPARAM) -> Result<()> {
     // SAFETY: WM_NCCREATE supplies CREATESTRUCTW for this synchronous call.
@@ -92,6 +130,11 @@ pub(super) fn startup_is_ready(hwnd: HWND) -> bool {
     unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, STARTUP_READY_INDEX) != 0 }
 }
 
+pub(super) fn startup_close_requested(hwnd: HWND) -> bool {
+    // SAFETY: The window class reserves this LONG for startup-close state.
+    unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, STARTUP_CLOSE_INDEX) != 0 }
+}
+
 fn encode_startup_background(color: Option<Rgba>) -> i32 {
     color.map_or(0, |color| {
         (i32::from(color.r) | (i32::from(color.g) << 8) | (i32::from(color.b) << 16)) + 1
@@ -120,7 +163,7 @@ pub(super) fn non_client_calc_size(
 ) -> LRESULT {
     // SAFETY: WM_NCCREATE initialized the class's reserved frame-mode slot.
     let mode = unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) };
-    if mode != FRAME_NONE || l_param.0 == 0 {
+    if !matches!(mode, FRAME_NONE | FRAME_OVERLAY_STARTUP) || l_param.0 == 0 {
         // SAFETY: Native frames and messages without geometry use default handling.
         return unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) };
     }
@@ -135,11 +178,13 @@ pub(super) fn non_client_calc_size(
         let resizable = window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
             & WindowsAndMessaging::WS_THICKFRAME.0
             != 0;
-        if resizable && mode == FRAME_NONE {
+        if resizable || mode == FRAME_OVERLAY_STARTUP {
             let (frame_x, frame_y) = frame_thickness(hwnd);
             target.left += frame_x;
             target.right -= frame_x;
-            target.top += frame_y;
+            if mode == FRAME_NONE || WindowsAndMessaging::IsZoomed(hwnd).as_bool() {
+                target.top += frame_y;
+            }
             target.bottom -= frame_y;
         }
     }

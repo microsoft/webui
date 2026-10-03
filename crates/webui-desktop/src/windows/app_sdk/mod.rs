@@ -44,13 +44,17 @@ struct Caption {
 
 impl WindowFrame {
     pub(super) fn attach(runtime: &Runtime, hwnd: HWND, options: &WindowOptions) -> Result<Self> {
+        let trace = super::startup::StartupTrace::begin();
         let id = runtime
             .window_id(hwnd)
             .context("cannot map HWND to WindowId")?;
+        trace.mark("caption_window_id");
         let window = AppWindow::GetFromWindowId(id).context("cannot attach AppWindow to HWND")?;
+        trace.mark("caption_app_window");
         window
             .AssociateWithDispatcherQueue(runtime.dispatcher())
             .context("cannot associate AppWindow with its UI dispatcher")?;
+        trace.mark("caption_dispatcher");
         let overlay = if matches!(
             options.titlebar,
             TitlebarStyle::Overlay { .. } | TitlebarStyle::HiddenInset
@@ -58,15 +62,19 @@ impl WindowFrame {
             let titlebar = window
                 .TitleBar()
                 .context("cannot acquire AppWindow titlebar")?;
+            trace.mark("caption_titlebar");
             titlebar
                 .SetExtendsContentIntoTitleBar(true)
                 .context("cannot extend content into native titlebar")?;
+            trace.mark("caption_extended");
             titlebar
                 .SetPreferredHeightOption(height_option(options.caption_button_size))
                 .context("cannot set native titlebar height")?;
+            trace.mark("caption_height");
             titlebar
                 .SetIconShowOptions(IconShowOptions::HideIconAndSystemMenu)
                 .context("cannot hide native titlebar icon")?;
+            trace.mark("caption_icon");
             Some(Caption {
                 titlebar,
                 input: InputNonClientPointerSource::GetForWindowId(id)
@@ -86,9 +94,11 @@ impl WindowFrame {
             window,
             overlay,
         };
+        trace.mark("caption_constructed");
         frame
             .refresh(hwnd)
             .context("cannot initialize titlebar input regions")?;
+        trace.mark("caption_refreshed");
         Ok(frame)
     }
 

@@ -8,6 +8,52 @@ use crate::windows::create::FrameWindow;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 #[test]
+fn prepared_overlay_geometry_matches_native_caption_client_after_attachment() {
+    let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
+    let _com = crate::windows::initialize_com().unwrap();
+    let runtime = Runtime::initialize().unwrap();
+    for titlebar in [
+        TitlebarStyle::Overlay { height: 48 },
+        TitlebarStyle::HiddenInset,
+    ] {
+        for caption_button_size in [CaptionButtonSize::Standard, CaptionButtonSize::Tall] {
+            for (resizable, maximized) in [(true, false), (false, false), (true, true)] {
+                let options = WindowOptions {
+                    titlebar: titlebar.clone(),
+                    caption_button_size,
+                    resizable,
+                    maximized,
+                    center: false,
+                    ..WindowOptions::default()
+                };
+                let frame = FrameWindow::new(&options, None).unwrap();
+                crate::windows::nonclient::prepare_overlay_startup(frame.hwnd).unwrap();
+                frame.show().unwrap();
+                let mut before = RECT::default();
+                // SAFETY: The fixture owns the window and writable RECT storage.
+                unsafe { WindowsAndMessaging::GetClientRect(frame.hwnd, &mut before).unwrap() };
+                let sdk = WindowFrame::attach(&runtime, frame.hwnd, &options).unwrap();
+                crate::windows::nonclient::finish_overlay_startup(frame.hwnd).unwrap();
+                let mut after = RECT::default();
+                // SAFETY: The same live window and writable output rectangle.
+                unsafe { WindowsAndMessaging::GetClientRect(frame.hwnd, &mut after).unwrap() };
+                assert_eq!(
+                    before, after,
+                    "{titlebar:?}, {caption_button_size:?}, {resizable}, {maximized}"
+                );
+                assert!(sdk
+                    .overlay
+                    .as_ref()
+                    .unwrap()
+                    .titlebar
+                    .ExtendsContentIntoTitleBar()
+                    .unwrap());
+            }
+        }
+    }
+}
+
+#[test]
 fn caption_button_size_selects_supported_native_sizes() {
     assert_eq!(
         height_option(CaptionButtonSize::Standard),

@@ -17,7 +17,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2WebResourceRequest, ICoreWebView2WebResourceRequestedEventArgs,
     ICoreWebView2WebResourceRequestedEventHandler, ICoreWebView2WebResourceResponse,
     ICoreWebView2_22, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
 };
 use webview2_com::{CoTaskMemPWSTR, WebResourceRequestedEventHandler};
 use windows::core::{
@@ -33,13 +33,19 @@ use windows::Win32::System::Com::{
 use super::ipc::WindowsIpc;
 use super::{APP_ORIGIN, APP_REQUEST_FILTER};
 
+pub(super) struct RuntimeHandlerOptions {
+    pub(super) tasks: Weak<super::tasks::ApplicationTasks>,
+    pub(super) trace: super::startup::StartupTrace,
+    #[cfg(feature = "application-ipc")]
+    pub(super) ipc: Weak<WindowsIpc>,
+}
+
 /// Serve every app-origin request from the desktop runtime.
 pub(super) fn register_runtime_handler(
     environment: &ICoreWebView2Environment,
     webview: &ICoreWebView2,
     frame: &DesktopFrame,
-    tasks: Weak<super::tasks::ApplicationTasks>,
-    #[cfg(feature = "application-ipc")] ipc: Weak<WindowsIpc>,
+    options: RuntimeHandlerOptions,
 ) -> Result<ICoreWebView2WebResourceRequestedEventHandler> {
     register_web_resource_filter(webview)?;
     let environment = environment.clone();
@@ -54,7 +60,7 @@ pub(super) fn register_runtime_handler(
                 let request = unsafe { args.Request()? };
                 let uri = read_pwstr_bounded(8192, |out| unsafe { request.Uri(out) })?;
                 if let Some(path) = super::ipc_policy::reserved_path(&uri) {
-                    if let Some(ipc) = ipc.upgrade() {
+                    if let Some(ipc) = options.ipc.upgrade() {
                         super::ipc_http::handle(&ipc, &environment, &args, path)?;
                     } else {
                         let response = create_webview_response(
@@ -69,9 +75,7 @@ pub(super) fn register_runtime_handler(
                     return Ok(());
                 }
             }
-            if let Some(tasks) = tasks.upgrade() {
-                handle_web_resource_request(&environment, &runtime, &executor, &tasks, &args)?;
-            }
+            handle_web_resource_request(&environment, &runtime, &executor, &options, &args)?;
         }
         Ok(())
     }));
@@ -116,9 +120,12 @@ fn handle_web_resource_request(
     environment: &ICoreWebView2Environment,
     runtime: &Arc<DesktopRuntime>,
     executor: &crate::execution::ApplicationExecutor,
-    tasks: &super::tasks::ApplicationTasks,
+    options: &RuntimeHandlerOptions,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
 ) -> WindowsResult<()> {
+    let Some(tasks) = options.tasks.upgrade() else {
+        return Ok(());
+    };
     // SAFETY: WebView2 keeps `args` and every interface reached through it
     // alive for the duration of this callback, and all strings are copied out
     // before it returns.
@@ -135,16 +142,31 @@ fn handle_web_resource_request(
         let accept = read_header(&headers, "Accept").unwrap_or_default();
         let body = read_request_body(&request)?;
         let path = webui_path_from_uri(&uri);
+        let document = if options.trace.is_enabled() {
+            let mut resource_context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+            args.ResourceContext(&mut resource_context)?;
+            resource_context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
+        } else {
+            false
+        };
+        if document {
+            options.trace.mark("document_requested");
+        }
+        let trace = options.trace;
         let runtime = Arc::clone(runtime);
         let work = executor.submit(move || {
-            runtime
+            let response = runtime
                 .handle_request(&DesktopProtocolRequest {
                     method,
                     path: &path,
                     body: &body,
                     wants_json: accept.contains("json") || accept.contains("ndjson"),
                 })
-                .unwrap_or_else(|err| DesktopProtocolResponse::text(500, err.chain_message()))
+                .unwrap_or_else(|err| DesktopProtocolResponse::text(500, err.chain_message()));
+            if document {
+                trace.mark("document_rendered");
+            }
+            response
         });
         let Ok(work) = work else {
             args.SetResponse(&create_webview_response(
@@ -172,7 +194,11 @@ fn handle_web_resource_request(
                 match create_webview_response(&environment, response_for_head(response, head))
                     .and_then(|response| args.SetResponse(&response))
                 {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if document {
+                            trace.mark("document_delivered");
+                        }
+                    }
                     Err(error) => eprintln!("WebUI: native response delivery failed: {error}"),
                 }
             })
@@ -304,7 +330,7 @@ pub(super) fn create_webview_response(
     environment: &ICoreWebView2Environment,
     response: DesktopProtocolResponse,
 ) -> WindowsResult<ICoreWebView2WebResourceResponse> {
-    let headers = response_headers(&response.content_type);
+    let headers = response_headers(&response);
     let reason = status_reason(response.status);
     let status = i32::from(response.status);
     let stream: WinIStream = MemoryStream::new(response.body).into();
@@ -323,12 +349,34 @@ pub(super) fn create_webview_response(
 }
 
 /// Build the response header block served to web content.
-fn response_headers(content_type: &str) -> String {
-    let mut headers = String::with_capacity(content_type.len() + 96);
+fn response_headers(response: &DesktopProtocolResponse) -> String {
+    let reusable_asset = response.status == 200
+        && matches!(&response.body, crate::DesktopResponseContent::File(_))
+        && reusable_resource_type(&response.content_type);
+    let mut headers = String::with_capacity(response.content_type.len() + 96);
     headers.push_str("Content-Type: ");
-    headers.push_str(content_type);
-    headers.push_str("\r\nCache-Control: no-store\r\nPragma: no-cache\r\n");
+    headers.push_str(&response.content_type);
+    // File bodies originate from bounded native asset opens. Revalidation
+    // preserves updates while allowing the browser to share an initial load.
+    // Rendered state and IPC bodies must never enter that cache.
+    headers.push_str(if reusable_asset {
+        "\r\nCache-Control: private, no-cache\r\nPragma: no-cache\r\n"
+    } else {
+        "\r\nCache-Control: no-store\r\nPragma: no-cache\r\n"
+    });
     headers
+}
+
+fn reusable_resource_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split_once(';')
+        .map_or(content_type, |(mime, _)| mime)
+        .trim();
+    matches!(
+        mime,
+        "text/css" | "text/javascript" | "application/javascript" | "application/wasm"
+    ) || mime.starts_with("font/")
+        || mime.starts_with("image/")
 }
 
 /// Map a status code to its HTTP reason phrase.
@@ -569,11 +617,68 @@ mod tests {
     }
 
     #[test]
-    fn intercepted_responses_publish_the_canonical_no_store_policy() {
+    fn dynamic_responses_publish_the_canonical_no_store_policy() {
         assert_eq!(
-            response_headers("application/x-protobuf"),
+            response_headers(&DesktopProtocolResponse::protobuf(Vec::new())),
             "Content-Type: application/x-protobuf\r\nCache-Control: no-store\r\nPragma: no-cache\r\n"
         );
+        assert_eq!(
+            response_headers(&DesktopProtocolResponse::new(200, "text/css", Vec::new())),
+            "Content-Type: text/css\r\nCache-Control: no-store\r\nPragma: no-cache\r\n"
+        );
+    }
+
+    #[test]
+    fn file_assets_allow_initial_reuse_but_require_later_revalidation() {
+        let response = DesktopProtocolResponse::new(
+            200,
+            "text/css",
+            crate::DesktopResponseContent::File(crate::DesktopResponseFile::new(
+                tempfile::tempfile().unwrap(),
+                0,
+            )),
+        );
+        assert_eq!(
+            response_headers(&response),
+            "Content-Type: text/css\r\nCache-Control: private, no-cache\r\nPragma: no-cache\r\n"
+        );
+        let response = DesktopProtocolResponse {
+            status: 500,
+            ..response
+        };
+        assert!(response_headers(&response).contains("Cache-Control: no-store\r\n"));
+    }
+
+    #[test]
+    fn only_static_browser_resources_can_enter_the_revalidation_cache() {
+        for content_type in [
+            "text/css",
+            "text/css; charset=utf-8",
+            "text/javascript",
+            "application/javascript",
+            "application/wasm",
+            "font/woff2",
+            "image/png",
+        ] {
+            assert!(reusable_resource_type(content_type), "{content_type}");
+        }
+        for content_type in [
+            "text/html",
+            "text/plain",
+            "application/json",
+            "application/x-protobuf",
+            "application/octet-stream",
+        ] {
+            let response = DesktopProtocolResponse::new(
+                200,
+                content_type,
+                crate::DesktopResponseContent::File(crate::DesktopResponseFile::new(
+                    tempfile::tempfile().unwrap(),
+                    0,
+                )),
+            );
+            assert!(response_headers(&response).contains("Cache-Control: no-store\r\n"));
+        }
     }
 
     #[test]
