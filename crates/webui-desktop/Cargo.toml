@@ -81,6 +81,8 @@ native = [
     "dep:gtk4",
     "dep:webkit6",
 ]
+# Opt-in Windows DWM captions for standard-button overlay windows.
+native-dwm-frame = ["native"]
 source = ["dep:microsoft-webui", "dep:sha2"]
 verified-update = ["dep:sha2"]
 packaging = ["dep:libc", "dep:sha2"]

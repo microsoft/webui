@@ -53,6 +53,26 @@ pub(super) extern "system" fn window_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    if cfg!(feature = "native-dwm-frame")
+        && super::nonclient::is_dwm_frame(hwnd)
+        && msg != WindowsAndMessaging::WM_NCCALCSIZE
+    {
+        let mut result = LRESULT(0);
+        // SAFETY: The unchanged native message and writable result belong to this UI thread.
+        if unsafe {
+            windows::Win32::Graphics::Dwm::DwmDefWindowProc(
+                hwnd,
+                msg,
+                w_param,
+                l_param,
+                &mut result,
+            )
+        }
+        .as_bool()
+        {
+            return result;
+        }
+    }
     match msg {
         WindowsAndMessaging::WM_NCCREATE => {
             if let Err(error) = initialize_frame(hwnd, l_param) {
@@ -319,6 +339,9 @@ pub(super) fn refresh_frame(hwnd: HWND) {
 }
 
 fn resize_content(hwnd: HWND, state: &FrameState) -> Result<()> {
+    if state.content != hwnd {
+        super::native_frame::resize_browser(hwnd, state.content)?;
+    }
     if state.app_window.refresh(hwnd)? {
         state.app_window.publish_metrics(&state.webview)?;
     }
@@ -372,14 +395,17 @@ fn close_window(hwnd: HWND) {
 
 /// Paint the configured background so there is no flash before first paint.
 fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
-    let Some(color) =
-        super::state::with_window_state_result(hwnd, |state| state.options.background)
-            .flatten()
-            .or_else(|| startup_background(hwnd))
-    else {
+    let color = super::state::with_window_state_result(hwnd, |state| state.options.background)
+        .flatten()
+        .or_else(|| startup_background(hwnd));
+    let native_glass = cfg!(feature = "native-dwm-frame")
+        && super::nonclient::is_dwm_frame(hwnd)
+        && super::state::window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
+            & WindowsAndMessaging::WS_CAPTION.0
+            != 0;
+    if color.is_none() && !native_glass {
         return LRESULT(0);
-    };
-    let rgb = u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16);
+    }
     let hdc = Gdi::HDC(w_param.0 as *mut std::ffi::c_void);
     let mut rect = RECT::default();
     // SAFETY: `hwnd` is a live window and `rect` is writable storage.
@@ -389,9 +415,22 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
     // SAFETY: Windows supplies the device context in `w_param` for this
     // message, `rect` is initialized, and the brush is deleted before return.
     unsafe {
-        let brush = Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb));
-        let _ = Gdi::FillRect(hdc, &rect, brush);
-        let _ = Gdi::DeleteObject(brush.into());
+        if let Some(color) = color {
+            let rgb = u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16);
+            let brush = Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb));
+            let _ = Gdi::FillRect(hdc, &rect, brush);
+            let _ = Gdi::DeleteObject(brush.into());
+        }
+        if native_glass {
+            match super::native_frame::caption_rect(hwnd) {
+                Ok(caption) => {
+                    // DWM's extended frame requires zero-alpha pixels beneath native controls.
+                    let black = Gdi::GetStockObject(Gdi::BLACK_BRUSH);
+                    let _ = Gdi::FillRect(hdc, &caption, Gdi::HBRUSH(black.0));
+                }
+                Err(error) => eprintln!("WebUI: failed to clear native caption glass: {error}"),
+            }
+        }
     }
     LRESULT(1)
 }
@@ -481,23 +520,6 @@ fn full_client_bounds(size: SIZE) -> RECT {
     }
 }
 
-#[cfg(test)]
-mod overlay_bounds_tests {
-    use super::*;
-
-    #[test]
-    fn webview_fills_entire_client_even_under_native_caption() {
-        assert_eq!(
-            full_client_bounds(SIZE { cx: 1280, cy: 720 }),
-            RECT {
-                left: 0,
-                top: 0,
-                right: 1280,
-                bottom: 720,
-            }
-        );
-    }
-}
 /// Return the window's current DPI for physical-to-logical conversion.
 ///
 /// `GetDpiForWindow` returns 0 for an invalid window; callers treat 0 as the
@@ -516,5 +538,23 @@ pub(super) fn get_window_size(hwnd: HWND) -> SIZE {
     SIZE {
         cx: client_rect.right.saturating_sub(client_rect.left),
         cy: client_rect.bottom.saturating_sub(client_rect.top),
+    }
+}
+
+#[cfg(test)]
+mod overlay_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn webview_fills_entire_client_even_under_native_caption() {
+        assert_eq!(
+            full_client_bounds(SIZE { cx: 1280, cy: 720 }),
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1280,
+                bottom: 720,
+            }
+        );
     }
 }

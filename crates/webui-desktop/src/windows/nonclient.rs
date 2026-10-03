@@ -30,8 +30,29 @@ const FRAME_NATIVE: i32 = 0;
 pub(super) const FRAME_OVERLAY: i32 = 1;
 const FRAME_NONE: i32 = 2;
 const FRAME_OVERLAY_STARTUP: i32 = 3;
+const FRAME_OVERLAY_DWM: i32 = 4;
+
+pub(super) fn is_dwm_frame(hwnd: HWND) -> bool {
+    // SAFETY: The UI thread owns the initialized reserved frame slot.
+    unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) == FRAME_OVERLAY_DWM }
+}
+
+pub(super) fn prepare_dwm_frame(hwnd: HWND) -> Result<()> {
+    // SAFETY: The owning UI thread updates its reserved frame-layout slot.
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+        WindowsAndMessaging::SetWindowLongW(hwnd, CUSTOM_FRAME_INDEX, FRAME_OVERLAY_DWM);
+        if GetLastError() != ERROR_SUCCESS {
+            return Err(Error::from_thread());
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn prepare_overlay_startup(hwnd: HWND) -> Result<()> {
+    if is_dwm_frame(hwnd) {
+        return Ok(());
+    }
     // SAFETY: The UI thread owns the live window and its reserved frame slot.
     unsafe {
         SetLastError(ERROR_SUCCESS);
@@ -163,9 +184,16 @@ pub(super) fn non_client_calc_size(
 ) -> LRESULT {
     // SAFETY: WM_NCCREATE initialized the class's reserved frame-mode slot.
     let mode = unsafe { WindowsAndMessaging::GetWindowLongW(hwnd, CUSTOM_FRAME_INDEX) };
-    if !matches!(mode, FRAME_NONE | FRAME_OVERLAY_STARTUP) || l_param.0 == 0 {
+    if !matches!(mode, FRAME_NONE | FRAME_OVERLAY_STARTUP | FRAME_OVERLAY_DWM) || l_param.0 == 0 {
         // SAFETY: Native frames and messages without geometry use default handling.
         return unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) };
+    }
+    if mode == FRAME_OVERLAY_DWM
+        && window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
+            & WindowsAndMessaging::WS_CAPTION.0
+            == 0
+    {
+        return LRESULT(0);
     }
     // SAFETY: WM_NCCALCSIZE passes writable RECT storage when w_param is zero,
     // and NCCALCSIZE_PARAMS otherwise, for the duration of this message.
@@ -178,7 +206,7 @@ pub(super) fn non_client_calc_size(
         let resizable = window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
             & WindowsAndMessaging::WS_THICKFRAME.0
             != 0;
-        if resizable || mode == FRAME_OVERLAY_STARTUP {
+        if resizable || matches!(mode, FRAME_OVERLAY_STARTUP | FRAME_OVERLAY_DWM) {
             let (frame_x, frame_y) = frame_thickness(hwnd);
             target.left += frame_x;
             target.right -= frame_x;

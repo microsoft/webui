@@ -352,7 +352,11 @@ The desktop shell uses WebView2 on Windows, WKWebView on macOS, and
 WebKitGTK on Linux. Native frame presentation is independent of browser
 readiness. Windows can expose a prepared overlay frame before native caption
 and browser initialization, but its client geometry must remain stable while
-caption ownership transfers to the Windows App SDK. Startup close keeps the
+caption ownership transfers to the selected native frame backend. Standard
+overlay captions may use DWM directly; extended native caption styles retain
+the Windows App SDK. The browser's drawing and input surface must not cover
+the native caption controls, while the document retains its full client
+viewport and matching safe-area information. Startup close keeps the
 native handle alive for outstanding callbacks without showing the frame again.
 Application navigation starts only after its native guards, resource handlers,
 and pre-document bridges are installed. For source and immutable bundle inputs, a frame owns
