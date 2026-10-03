@@ -75,6 +75,10 @@ source = ["webui-desktop/source"]
 
 Enable `application-ipc` separately if you use generated messages.
 
+On Windows, static styles, scripts, fonts, and images can be reused during a
+page's initial load and are revalidated on later loads. Documents, API responses,
+and IPC remain uncached.
+
 ### Before-frame startup failures
 
 If a GUI-launched Rust host fails before creating a frame, stderr may be

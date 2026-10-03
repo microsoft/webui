@@ -45,6 +45,7 @@ mod nonclient;
 pub(crate) mod picker;
 mod protocol;
 mod request;
+mod startup;
 mod state;
 mod wakeup;
 mod webview;
@@ -189,6 +190,7 @@ impl FrameContent {
 }
 
 fn run_content(frame: FrameContent) -> Result<()> {
+    let trace = startup::StartupTrace::begin();
     #[cfg(feature = "local-server")]
     if let FrameContent::Local(local) = &frame {
         local.lifetime().require_active()?;
@@ -199,26 +201,54 @@ fn run_content(frame: FrameContent) -> Result<()> {
         FrameContent::Local(_) => Some(next_owner_close_cookie()?),
     };
     let store = WindowStateStore::for_window(frame.window().remember_state, frame.app_id())?;
+    trace.mark("store");
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
+    trace.mark("com_dpi");
     let runtime = app_sdk::Runtime::initialize()?;
+    trace.mark("app_sdk_runtime");
 
     let saved = state::load_saved_state(store.as_ref());
     let window_frame = FrameWindow::new(frame.window(), saved.as_ref())?;
+    trace.mark("window_created");
+    let early_overlay = !frame.window().fullscreen
+        && matches!(
+            frame.window().titlebar,
+            crate::TitlebarStyle::Overlay { .. } | crate::TitlebarStyle::HiddenInset
+        );
+    if early_overlay {
+        nonclient::prepare_overlay_startup(window_frame.hwnd)?;
+        window_frame.show()?;
+        trace.mark("early_overlay_visible");
+    }
     let profile = webview::browser_profile(frame.app_id())?;
+    trace.mark("environment_started");
     let environment = webview::create_environment(&profile.path).with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
+    trace.mark("environment_created");
     let content = window_frame.hwnd;
     let pending_controller = webview::begin_create_controller(&environment, content)?;
+    trace.mark("controller_started");
     let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, frame.window())?;
+    if early_overlay {
+        nonclient::finish_overlay_startup(window_frame.hwnd)?;
+    }
+    trace.mark("app_window_attached");
     window_frame.show()?;
     let controller = pending_controller.finish()?;
+    trace.mark("controller_created");
     webview::configure_controller_background(&controller, frame.window().background)?;
     webview::configure_window_effect(window_frame.hwnd, frame.window().effect);
+    message::set_controller_bounds(&controller, content)?;
+    // SAFETY: The live controller contains only its initial blank document;
+    // app navigation still waits for all security and resource handlers.
+    unsafe { controller.SetIsVisible(true)? };
+    trace.mark("controller_visible");
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
     webview::configure_settings(&webview, frame.window().devtools)?;
+    trace.mark("webview_configured");
     #[cfg(feature = "native-picker")]
     let picker_services = match &frame {
         FrameContent::Bundle(_) => None,
@@ -310,6 +340,7 @@ fn run_content(frame: FrameContent) -> Result<()> {
             },
         },
     )?;
+    trace.mark("navigation_guard");
     #[cfg(feature = "local-server")]
     let local_navigation = match (&frame, owner_close_cookie) {
         (FrameContent::Bundle(_), _) => None,
@@ -343,10 +374,12 @@ fn run_content(frame: FrameContent) -> Result<()> {
             }),
         },
     )?;
+    trace.mark("navigation_completed");
     if matches!(&frame, FrameContent::Bundle(_)) {
         let metrics = app_window.metrics_script();
         webview::inject_bundle_script(&webview, metrics.as_deref())?;
     }
+    trace.mark("bundle_script");
     // Local-server controls are a separate, document-nonce-bound host bridge,
     // never the packaged app's unconditional native command path.
     let controls = matches!(&frame, FrameContent::Bundle(_));
@@ -368,19 +401,24 @@ fn run_content(frame: FrameContent) -> Result<()> {
     } else {
         None
     };
+    trace.mark("message_handler");
     let application_tasks = tasks::ApplicationTasks::new(window_frame.hwnd);
     let web_resource_requested = match &frame {
         FrameContent::Bundle(bundle) => Some(protocol::register_runtime_handler(
             &environment,
             &webview,
             bundle,
-            std::rc::Rc::downgrade(&application_tasks),
-            #[cfg(feature = "application-ipc")]
-            ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            protocol::RuntimeHandlerOptions {
+                tasks: std::rc::Rc::downgrade(&application_tasks),
+                trace,
+                #[cfg(feature = "application-ipc")]
+                ipc: ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            },
         )?),
         #[cfg(feature = "local-server")]
         FrameContent::Local(_) => None,
     };
+    trace.mark("resource_handler");
     #[cfg(feature = "local-server")]
     let owner_close_registration = match (&frame, owner_close_cookie) {
         (FrameContent::Bundle(_), _) => None,
@@ -433,10 +471,6 @@ fn run_content(frame: FrameContent) -> Result<()> {
             ));
         }
     };
-    message::set_controller_bounds(&controller, content)?;
-    // SAFETY: The controller is live and owns the WebView2 surface.
-    unsafe { controller.SetIsVisible(true)? };
-
     let state = Box::new(FrameState {
         app_window,
         content,
@@ -485,6 +519,7 @@ fn run_content(frame: FrameContent) -> Result<()> {
     // Installing a wakeup flushes an existing backlog. WebView2 initialization
     // pumps messages, so the native receiver must exist before attachment.
     install_wakeup(window_frame.hwnd)?;
+    trace.mark("state_installed");
     #[cfg(feature = "application-ipc")]
     if let Some(ipc) = &ipc {
         let script = if ipc.is_local() {
@@ -520,13 +555,16 @@ fn run_content(frame: FrameContent) -> Result<()> {
         return Ok(());
     }
     window_frame.show()?;
+    trace.mark("final_show");
     message::refresh_frame(window_frame.hwnd);
+    trace.mark("frame_refreshed");
     // SAFETY: `window_frame.hwnd` is a live window owned by this thread.
     unsafe {
         let _ = Gdi::UpdateWindow(window_frame.hwnd);
         let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
     message::publish(window_frame.hwnd, &DesktopEvent::Ready);
+    trace.mark("ready_published");
     match &frame {
         FrameContent::Bundle(_) => webview::navigate_to_startup_url(&webview)?,
         #[cfg(feature = "local-server")]
@@ -535,6 +573,7 @@ fn run_content(frame: FrameContent) -> Result<()> {
             webview::navigate_to_url(&webview, &local.options.url())?;
         }
     }
+    trace.mark("navigation_started");
     let message_loop_result = message::message_loop();
     let _ = frame.events().dispatch(&DesktopEvent::Exiting);
     message_loop_result
