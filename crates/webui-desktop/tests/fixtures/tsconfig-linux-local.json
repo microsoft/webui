@@ -1,0 +1,10 @@
+{
+  "extends": "./native-ipc/tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@microsoft/webui-desktop": ["../../../../packages/webui-desktop/src/index.ts"],
+      "@microsoft/webui-desktop/native": ["../../../../packages/webui-desktop/src/local-index.ts"]
+    }
+  },
+  "include": ["linux-local-renderer.ts", "native-ipc/generated/ts/**/*.ts"]
+}

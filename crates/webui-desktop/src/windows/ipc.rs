@@ -36,7 +36,14 @@ pub(super) struct WindowsIpc {
     tasks: RefCell<Rc<NativeIpcTasks>>,
     tokens: RefCell<Option<(i64, i64)>>,
     pub(super) hello_deadline: RefCell<Option<super::ipc_deadline::HelloDeadline>>,
+    #[cfg(feature = "local-server")]
+    pub(super) local: Option<(crate::LoopbackOrigin, crate::HostLifetime)>,
+    #[cfg(feature = "local-server")]
+    pub(super) data: Rc<RefCell<crate::ipc::native_data::NativeData>>,
 }
+
+#[cfg(feature = "local-server")]
+const DATA_TIMER_ID: usize = usize::MAX;
 
 /// Also close on initialization/message-loop errors after FrameState has taken
 /// an Rc. This does not own or clone the frame's core IPC owner.
@@ -49,6 +56,30 @@ impl Drop for Shutdown {
 
 impl WindowsIpc {
     pub fn new(bridge: IpcBridge, webview: &ICoreWebView2, hwnd: HWND) -> Result<Rc<Self>> {
+        Self::new_with_local(bridge, webview, hwnd, None)
+    }
+
+    #[cfg(feature = "local-server")]
+    pub fn new_local(
+        bridge: IpcBridge,
+        webview: &ICoreWebView2,
+        hwnd: HWND,
+        origin: crate::LoopbackOrigin,
+        lifetime: crate::HostLifetime,
+    ) -> Result<Rc<Self>> {
+        Self::new_with_local(bridge, webview, hwnd, Some((origin, lifetime)))
+    }
+
+    fn new_with_local(
+        bridge: IpcBridge,
+        webview: &ICoreWebView2,
+        hwnd: HWND,
+        #[cfg(feature = "local-server")] local: Option<(
+            crate::LoopbackOrigin,
+            crate::HostLifetime,
+        )>,
+        #[cfg(not(feature = "local-server"))] _local: Option<()>,
+    ) -> Result<Rc<Self>> {
         let wake = Arc::new(IpcWindowWake::new(hwnd)?);
         let task_wake: Arc<dyn IpcWake> = wake.clone();
         Ok(Rc::new(Self {
@@ -60,6 +91,10 @@ impl WindowsIpc {
             tasks: RefCell::new(Rc::new(NativeIpcTasks::new(task_wake, MAX_TASKS))),
             tokens: RefCell::new(None),
             hello_deadline: RefCell::new(None),
+            #[cfg(feature = "local-server")]
+            local,
+            #[cfg(feature = "local-server")]
+            data: Rc::new(RefCell::new(Default::default())),
         }))
     }
 
@@ -128,6 +163,8 @@ impl WindowsIpc {
             // Revoke before dropping native completions. Redirects do not reset
             // the document; fragment/history changes do not raise this event.
             self.bridge.navigate(navigation);
+            #[cfg(feature = "local-server")]
+            self.clear_data();
             let wake: Arc<dyn IpcWake> = self.wake.clone();
             let old = self
                 .tasks
@@ -141,13 +178,40 @@ impl WindowsIpc {
     pub(super) fn trusted_source(&self) -> bool {
         // SAFETY: This is only called on the owning STA.
         read_pwstr_bounded(8192, |out| unsafe { self.webview.Source(out) })
-            .is_ok_and(|source| ipc_policy::app_url(&source))
+            .is_ok_and(|source| self.trusted_url(&source))
+    }
+
+    pub(super) fn is_local(&self) -> bool {
+        #[cfg(feature = "local-server")]
+        {
+            self.local.is_some()
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            false
+        }
+    }
+
+    pub(super) fn trusted_url(&self, source: &str) -> bool {
+        #[cfg(feature = "local-server")]
+        if let Some((origin, lifetime)) = &self.local {
+            return lifetime.allows_navigation(origin, source);
+        }
+        ipc_policy::app_url(source)
+    }
+
+    fn origin(&self) -> &str {
+        #[cfg(feature = "local-server")]
+        if let Some((origin, _)) = &self.local {
+            return origin.as_str();
+        }
+        APP_ORIGIN
     }
 
     fn identity(&self, navigation: u64) -> CommittedMainDocument {
         CommittedMainDocument {
             navigation,
-            origin: APP_ORIGIN.into(),
+            origin: self.origin().into(),
         }
     }
 
@@ -191,8 +255,12 @@ impl WindowsIpc {
             }
             Ok(())
         }));
-        let script = CoTaskMemPWSTR::from(
-            "(()=>{'use strict';if(window!==window.top||location.origin!=='https://app.webui.localhost')return null;const n=window.__webuiDesktopIpcV2?.documentNonce;return typeof n==='string'&&n.length===32?n:null;})()");
+        let Ok(quoted) = serde_json::to_string(self.origin()) else {
+            self.transport_failed(IpcErrorCode::Transport);
+            return;
+        };
+        let probe = format!("(()=>{{'use strict';if(window!==window.top||location.origin!=={quoted})return null;const n=window.__webuiDesktopIpcV2?.documentNonce;return typeof n==='string'&&n.length===32?n:null;}})()");
+        let script = CoTaskMemPWSTR::from(probe.as_str());
         // SAFETY: Current-main-document evaluation, never a child frame.
         if unsafe {
             self.webview
@@ -205,7 +273,8 @@ impl WindowsIpc {
     }
 
     fn activate(self: &Rc<Self>, proof: crate::ipc::DocumentActivation) {
-        let Ok(script) = ipc_policy::activation_script(&proof) else {
+        let Ok(script) = ipc_policy::activation_script_for(&proof, self.origin(), self.is_local())
+        else {
             self.transport_failed(IpcErrorCode::Transport);
             return;
         };
@@ -298,12 +367,15 @@ impl WindowsIpc {
     pub fn transport_failed(&self, code: IpcErrorCode) {
         self.publish_retirement(code);
         self.cancel_hello_deadline();
+        #[cfg(feature = "local-server")]
+        self.clear_data();
         let credentials = {
             let mut document = self.document.borrow_mut();
             document.epoch.committed = false;
             document.unavailable_code = Some(code);
             document.proof = None;
             document.max_frame_bytes = None;
+            document.limits = None;
             document.generation.take().zip(document.token.take())
         };
         if let Some((generation, token)) = credentials {
@@ -327,8 +399,11 @@ impl WindowsIpc {
             document.token = None;
             document.proof = None;
             document.max_frame_bytes = None;
+            document.limits = None;
         }
         self.bridge.close();
+        #[cfg(feature = "local-server")]
+        self.clear_data();
         let tasks = Rc::clone(&self.tasks.borrow());
         tasks.close();
         let tokens = self.tokens.borrow_mut().take();
@@ -360,6 +435,7 @@ impl WindowsIpc {
         {
             return;
         }
+
         let deadline = self.hello_deadline.borrow_mut().take();
         if let Some(deadline) = deadline {
             super::ipc_deadline::cancel(self.hwnd, cookie);
@@ -368,6 +444,50 @@ impl WindowsIpc {
                 Err(ipc_policy::error(IpcErrorCode::DeadlineExceeded)),
             );
             self.transport_failed(IpcErrorCode::DeadlineExceeded);
+        }
+    }
+
+    #[cfg(feature = "local-server")]
+    fn clear_data(&self) {
+        // SAFETY: All native IPC state and this window timer live on the STA.
+        let _ = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.hwnd), DATA_TIMER_ID)
+        };
+        self.data.borrow_mut().reset();
+    }
+
+    /// One event-driven timer per local document, never a polling loop or a
+    /// task/thread per chunk. Updating the same HWND timer replaces its due time.
+    #[cfg(feature = "local-server")]
+    pub(super) fn arm_data_deadline(&self) -> Result<(), IpcError> {
+        use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+        let deadline = self.data.borrow().next_deadline();
+        // SAFETY: The owning STA manipulates only this window's reserved timer.
+        let _ = unsafe { KillTimer(Some(self.hwnd), DATA_TIMER_ID) };
+        let Some(until) = deadline else { return Ok(()) };
+        let millis = until
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis()
+            .clamp(1, 5000);
+        let millis =
+            u32::try_from(millis).map_err(|_| super::ipc_policy::error(IpcErrorCode::Transport))?;
+        // SAFETY: HWND is live; the null callback routes WM_TIMER to the STA
+        // window procedure with no cross-thread payload or callback pointer.
+        if unsafe { SetTimer(Some(self.hwnd), DATA_TIMER_ID, millis, None) } == 0 {
+            self.data.borrow_mut().reset();
+            return Err(super::ipc_policy::error(IpcErrorCode::Transport));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn expire_data(&self, timer_id: usize) {
+        if timer_id != DATA_TIMER_ID || !self.is_local() || self.document.borrow().epoch.closed {
+            return;
+        }
+        self.data.borrow_mut().expire(std::time::Instant::now());
+        if self.arm_data_deadline().is_err() {
+            self.transport_failed(IpcErrorCode::Transport);
         }
     }
 }

@@ -7,7 +7,7 @@ import { WireError } from './envelope.js';
 import { validateLimits } from './limits.js';
 import { ByteLedger, hasLedger, type InputCredit } from './budget.js';
 import { projectHello } from './hello.js';
-import type { BinaryReceiver, Hello, IpcTransport, NativeIpcBootstrap, SessionInfo, Subscription } from './types.js';
+import type { BinaryReceiver, Hello, IpcTransport, NativeDataLane, NativeIpcBootstrap, SessionInfo, Subscription } from './types.js';
 
 const frameLedgers = new WeakMap<NativeIpcBootstrap, ByteLedger>();
 
@@ -20,6 +20,21 @@ export interface DesktopTransportOptions {
 
 /** Native admission plus authenticated, binary-only custom-protocol requests. */
 export function createDesktopTransport(options: DesktopTransportOptions = {}): IpcTransport {
+  return createTransport(options);
+}
+
+/** Private, explicit opt-in injection: the root package never imports a native carrier. */
+export interface FrameCarrier {
+  send(bytes: Uint8Array): Promise<void>;
+  read(): Promise<{ bytes: Uint8Array; credit?: InputCredit } | undefined>;
+  close(error: IpcError): void;
+}
+export type CarrierFactory = (lane: NativeDataLane, session: SessionInfo, ledger: ByteLedger) => FrameCarrier;
+export function createDesktopTransportWithCarrier(factory: CarrierFactory, options: DesktopTransportOptions = {}): IpcTransport {
+  return createTransport(options, factory, true);
+}
+
+function createTransport(options: DesktopTransportOptions, carrierFactory?: CarrierFactory, requireNativeCarrier = false): IpcTransport {
   const bootstrap = options.bootstrap ?? globalThis.window?.__webuiDesktopIpcV2;
   const documentNonce = bootstrap?.documentNonce;
   const fetcher = options.fetch ?? globalThis.fetch;
@@ -34,6 +49,7 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
   let postActive = false;
   let rejectStart: ((error: IpcError) => void) | undefined;
   let ledger: ByteLedger | undefined;
+  let native: FrameCarrier | undefined;
   const abort = new AbortController();
 
   function endpoint(path: string): string {
@@ -46,6 +62,7 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
     rejectStart?.(error);
     rejectStart = undefined;
     abort.abort();
+    native?.close(error);
     listener?.close();
     listener = undefined;
     // Zero only cancels the local, not-yet-admitted handshake. It is never posted natively.
@@ -115,6 +132,10 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
     if (failure) throw failure;
     const current = session;
     if (!current) throw new IpcError('not-ready');
+    if (native) {
+      if (body) { await native.send(body); return undefined; }
+      return native.read();
+    }
     const headers: Record<string, string> = { 'X-WebUI-Ipc-Session': current.token };
     if (body) headers['Content-Type'] = 'application/x-protobuf';
     const init: RequestInit = {
@@ -207,11 +228,20 @@ export function createDesktopTransport(options: DesktopTransportOptions = {}): I
         }
         session = admitted;
         validateLimits(admitted.limits);
+        if (requireNativeCarrier && admitted.nativeCarrierVersion !== 1) {
+          throw new IpcError('unsupported-version');
+        }
         ledger = hasLedger(target) ? target.byteLedger : new ByteLedger(admitted.limits);
         const previousLedger = frameLedgers.get(bootstrap);
         if (previousLedger) ledger.shareWith(previousLedger);
         frameLedgers.set(bootstrap, ledger);
         ledger.limits = Object.freeze({ ...admitted.limits });
+        if (admitted.nativeCarrierVersion !== undefined) {
+          if (admitted.nativeCarrierVersion !== 1 || !bootstrap.nativeData || !carrierFactory) {
+            throw new IpcError('unsupported-version');
+          }
+          native = carrierFactory(bootstrap.nativeData, admitted, ledger);
+        }
         if (dirty) void drain();
         return admitted;
       } catch (error) { close(ipcError(error)); throw failure; }

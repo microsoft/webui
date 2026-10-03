@@ -16,8 +16,14 @@
 
 mod app_sdk;
 mod bridge;
+#[cfg(feature = "native-capture")]
+pub(crate) mod capture;
+#[cfg(feature = "native-clipboard")]
+pub(crate) mod clipboard;
 mod command;
 mod create;
+#[cfg(feature = "native-dialogs")]
+pub(crate) mod dialogs;
 mod event;
 #[cfg(feature = "application-ipc")]
 mod ipc;
@@ -31,10 +37,16 @@ mod ipc_deadline;
 mod ipc_http;
 #[cfg(feature = "application-ipc")]
 mod ipc_policy;
+#[cfg(feature = "local-server")]
+mod local_controls;
 mod message;
+mod native_frame;
 mod nonclient;
+#[cfg(feature = "native-picker")]
+pub(crate) mod picker;
 mod protocol;
 mod request;
+mod startup;
 mod state;
 mod wakeup;
 mod webview;
@@ -42,6 +54,8 @@ mod webview;
 use std::cell::Cell;
 #[cfg(feature = "application-ipc")]
 use std::rc::Rc;
+#[cfg(feature = "local-server")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::{DesktopEvent, DesktopRuntime, WindowId, WindowOptions, WindowStateStore};
@@ -52,7 +66,6 @@ use windows::Win32::Foundation::{E_ACCESSDENIED, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::HiDpi;
-use windows::Win32::UI::Input::KeyboardAndMouse;
 use windows::Win32::UI::WindowsAndMessaging;
 
 use crate::DesktopFrame;
@@ -66,6 +79,33 @@ pub(super) const APP_REQUEST_FILTER: PCWSTR = w!("https://app.webui.localhost/*"
 /// Private message used to wake the UI thread for queued commands.
 pub(super) const WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 1;
 pub(super) const APP_WAKE_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 3;
+/// UI-only owner-loss wake, independent of the bounded window-command queue.
+#[cfg(feature = "local-server")]
+pub(super) const OWNER_LOST_MESSAGE: u32 = WindowsAndMessaging::WM_APP + 4;
+#[cfg(feature = "local-server")]
+static NEXT_OWNER_CLOSE_COOKIE: AtomicUsize = AtomicUsize::new(1);
+
+#[cfg(feature = "local-server")]
+fn next_owner_close_cookie() -> Result<usize> {
+    NEXT_OWNER_CLOSE_COOKIE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .map_err(|_| anyhow::anyhow!("native window generation exhausted; restart the desktop host before opening another local-server frame"))
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn post_owner_lost(
+    hwnd: windows::Win32::Foundation::HWND,
+    cookie: usize,
+) -> std::result::Result<(), crate::HostCloseError> {
+    // SAFETY: PostMessageW is thread-safe and never waits for the UI loop.
+    // The receiver checks both its window generation and weak lifetime.
+    unsafe {
+        WindowsAndMessaging::PostMessageW(Some(hwnd), OWNER_LOST_MESSAGE, WPARAM(cookie), LPARAM(0))
+    }
+    .map_err(|error| crate::HostCloseError::WakeFailed {
+        message: error.to_string(),
+    })
+}
 mod tasks;
 /// Coalesced, payload-free native IPC completion/control wake.
 #[cfg(feature = "application-ipc")]
@@ -97,73 +137,414 @@ pub fn run_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Resul
 ///
 /// Returns an error if COM, the native window, or WebView2 cannot initialize.
 pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
-    let store = WindowStateStore::for_window(frame.window.remember_state, frame.app_id.as_deref())?;
+    run_content(FrameContent::Bundle(frame))
+}
+
+#[cfg(feature = "local-server")]
+pub(crate) fn run_local_server_frame(frame: crate::LocalServerFrame) -> Result<()> {
+    run_content(FrameContent::Local(frame))
+}
+
+enum FrameContent {
+    Bundle(DesktopFrame),
+    #[cfg(feature = "local-server")]
+    Local(crate::LocalServerFrame),
+}
+
+impl FrameContent {
+    fn window(&self) -> &WindowOptions {
+        match self {
+            Self::Bundle(frame) => &frame.window,
+            #[cfg(feature = "local-server")]
+            Self::Local(frame) => &frame.window,
+        }
+    }
+    fn app_id(&self) -> Option<&str> {
+        match self {
+            Self::Bundle(frame) => frame.app_id.as_deref(),
+            #[cfg(feature = "local-server")]
+            Self::Local(frame) => frame.app_id.as_deref(),
+        }
+    }
+    fn events(&self) -> &crate::EventRegistry {
+        match self {
+            Self::Bundle(frame) => &frame.events,
+            #[cfg(feature = "local-server")]
+            Self::Local(frame) => &frame.events,
+        }
+    }
+    fn window_handle(&self) -> &crate::WindowHandle {
+        match self {
+            Self::Bundle(frame) => &frame.window_handle,
+            #[cfg(feature = "local-server")]
+            Self::Local(frame) => &frame.window_handle,
+        }
+    }
+    fn background(&self) -> Arc<crate::window::LiveBackground> {
+        match self {
+            Self::Bundle(frame) => frame.runtime.live_background(),
+            #[cfg(feature = "local-server")]
+            Self::Local(frame) => Arc::clone(&frame.live_background),
+        }
+    }
+}
+
+fn run_content(frame: FrameContent) -> Result<()> {
+    let trace = startup::StartupTrace::begin();
+    #[cfg(feature = "local-server")]
+    if let FrameContent::Local(local) = &frame {
+        local.lifetime().require_active()?;
+    }
+    #[cfg(feature = "local-server")]
+    let owner_close_cookie = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(_) => Some(next_owner_close_cookie()?),
+    };
+    let store = WindowStateStore::for_window(frame.window().remember_state, frame.app_id())?;
+    trace.mark("store");
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
-    let runtime = app_sdk::Runtime::initialize()?;
+    trace.mark("com_dpi");
+    let runtime = if native_frame::enabled(frame.window()) {
+        None
+    } else {
+        Some(app_sdk::Runtime::initialize()?)
+    };
+    trace.mark("app_sdk_runtime");
 
     let saved = state::load_saved_state(store.as_ref());
-    let window_frame = FrameWindow::new(&frame.window, saved.as_ref())?;
-    let app_window = app_sdk::WindowFrame::attach(&runtime, window_frame.hwnd, &frame.window)?;
-
-    let profile = webview::browser_profile(frame.app_id.as_deref())?;
+    let window_frame = FrameWindow::new(frame.window(), saved.as_ref())?;
+    trace.mark("window_created");
+    let early_overlay = !frame.window().fullscreen
+        && matches!(
+            frame.window().titlebar,
+            crate::TitlebarStyle::Overlay { .. } | crate::TitlebarStyle::HiddenInset
+        );
+    if native_frame::enabled(frame.window()) {
+        native_frame::prepare_startup_window(window_frame.hwnd, frame.window(), saved.is_some())?;
+    }
+    if early_overlay {
+        if !native_frame::enabled(frame.window()) {
+            nonclient::prepare_overlay_startup(window_frame.hwnd)?;
+        }
+        window_frame.show()?;
+        trace.mark("early_overlay_visible");
+    }
+    let profile = webview::browser_profile(frame.app_id())?;
+    trace.mark("environment_started");
     let environment = webview::create_environment(&profile.path).with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
-    let content = window_frame.hwnd;
-    let controller = webview::create_controller(&environment, content)?;
-    webview::configure_controller_background(&controller, frame.window.background)?;
-    webview::configure_window_effect(window_frame.hwnd, frame.window.effect);
+    trace.mark("environment_created");
+    let native_window = if runtime.is_none() {
+        Some(native_frame::WindowFrame::attach(
+            None,
+            window_frame.hwnd,
+            frame.window(),
+        )?)
+    } else {
+        None
+    };
+    let browser_frame = native_frame::enabled(frame.window())
+        .then(|| native_frame::BrowserWindow::new(window_frame.hwnd))
+        .transpose()?;
+    let content = browser_frame
+        .as_ref()
+        .map_or(window_frame.hwnd, |browser| browser.hwnd);
+    if browser_frame.is_some() {
+        native_frame::resize_browser(window_frame.hwnd, content)?;
+    }
+    let pending_controller = webview::begin_create_controller(&environment, content)?;
+    trace.mark("controller_started");
+    let app_window = if let Some(native) = native_window {
+        native
+    } else {
+        native_frame::WindowFrame::attach(runtime.as_ref(), window_frame.hwnd, frame.window())?
+    };
+    if early_overlay && !native_frame::enabled(frame.window()) {
+        nonclient::finish_overlay_startup(window_frame.hwnd)?;
+    }
+    if browser_frame.is_some() {
+        native_frame::resize_browser(window_frame.hwnd, content)?;
+    }
+    trace.mark("app_window_attached");
+    window_frame.show()?;
+    let controller = pending_controller.finish()?;
+    trace.mark("controller_created");
+    webview::configure_controller_background(&controller, frame.window().background)?;
+    webview::configure_window_effect(window_frame.hwnd, frame.window().effect);
+    message::set_controller_bounds(&controller, content)?;
+    // SAFETY: The live controller contains only its initial blank document;
+    // app navigation still waits for all security and resource handlers.
+    unsafe { controller.SetIsVisible(true)? };
+    webview::focus_controller_from_frame(window_frame.hwnd, &controller)
+        .context("Failed to transfer native keyboard focus into WebView2")?;
+    trace.mark("controller_visible");
     // SAFETY: The controller was created successfully, so it owns a WebView2.
     let webview = unsafe { controller.CoreWebView2()? };
-    webview::configure_settings(&webview, frame.window.devtools)?;
+    webview::configure_settings(&webview, frame.window().devtools)?;
+    trace.mark("webview_configured");
+    #[cfg(feature = "native-picker")]
+    let picker_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-picker")]
+    if let Some(services) = &picker_services {
+        let cookie = owner_close_cookie.ok_or_else(|| {
+            anyhow::anyhow!("local-server picker has no exact owning window generation")
+        })?;
+        services.attach_picker(window_frame.hwnd.0 as usize, cookie);
+    }
+    #[cfg(feature = "native-dialogs")]
+    let dialog_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-dialogs")]
+    if let Some(services) = &dialog_services {
+        services.attach_dialogs(window_frame.hwnd.0 as usize);
+    }
+    #[cfg(feature = "local-server")]
+    let local_controls = match &frame {
+        FrameContent::Local(local)
+            if !matches!(frame.window().titlebar, crate::TitlebarStyle::Native) =>
+        {
+            Some(local_controls::LocalControls::new(
+                local.origin().clone(),
+                local.lifetime().clone(),
+            ))
+        }
+        _ => None,
+    };
+    #[cfg(feature = "native-capture")]
+    let capture_services = match &frame {
+        FrameContent::Bundle(_) => None,
+        FrameContent::Local(local) => Some(local.native_services()?),
+    };
+    #[cfg(feature = "native-capture")]
+    let capture_registration = capture_services
+        .as_ref()
+        .map(|services| capture::install(&services.capture_for_revoke(), window_frame.hwnd))
+        .transpose()?;
+    #[cfg(feature = "native-clipboard")]
+    if let Some(services) = &capture_services {
+        services.attach_clipboard(window_frame.hwnd.0 as usize);
+    }
     #[cfg(feature = "application-ipc")]
-    let ipc = ipc::WindowsIpc::new(frame.ipc_bridge(), &webview, window_frame.hwnd)?;
+    let ipc = match &frame {
+        FrameContent::Bundle(bundle) => Some(ipc::WindowsIpc::new(
+            bundle.ipc_bridge(),
+            &webview,
+            window_frame.hwnd,
+        )?),
+        #[cfg(feature = "local-server")]
+        FrameContent::Local(local) => local
+            .ipc_bridge()
+            .map(|bridge| {
+                ipc::WindowsIpc::new_local(
+                    bridge,
+                    &webview,
+                    window_frame.hwnd,
+                    local.origin().clone(),
+                    local.lifetime().clone(),
+                )
+            })
+            .transpose()?,
+    };
     #[cfg(feature = "application-ipc")]
-    let _ipc_shutdown = ipc::Shutdown(Rc::clone(&ipc));
+    let _ipc_shutdown = ipc.as_ref().map(|ipc| ipc::Shutdown(Rc::clone(ipc)));
 
-    let navigation_starting = webview::register_navigation_guard(&webview, frame.events.clone())?;
+    let navigation_starting = webview::register_navigation_guard(
+        &webview,
+        frame.events().clone(),
+        webview::NavigationGuardContext {
+            #[cfg(feature = "native-capture")]
+            capture: capture_services.clone(),
+            #[cfg(feature = "local-server")]
+            controls: local_controls.clone(),
+            #[cfg(feature = "local-server")]
+            origin: match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some(local.origin().clone()),
+            },
+            #[cfg(feature = "local-server")]
+            lifetime: match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some(local.lifetime().clone()),
+            },
+        },
+    )?;
+    trace.mark("navigation_guard");
+    #[cfg(feature = "local-server")]
+    let local_navigation = match (&frame, owner_close_cookie) {
+        (FrameContent::Bundle(_), _) => None,
+        (FrameContent::Local(local), Some(cookie)) => Some(webview::register_local_frame_guards(
+            &webview,
+            window_frame.hwnd,
+            local.lifetime().clone(),
+            cookie,
+            Arc::clone(&local.frame_policy),
+        )?),
+        (FrameContent::Local(_), None) => {
+            return Err(anyhow::anyhow!(
+                "local-server window generation is missing; restart the desktop host"
+            ));
+        }
+    };
     let navigation_completed = webview::register_navigation_completed(
         &webview,
-        frame.events.clone(),
+        frame.events().clone(),
         window_frame.hwnd,
-        frame.runtime.live_background(),
+        frame.background(),
+        webview::CompletionOwner {
+            #[cfg(feature = "native-capture")]
+            capture: capture_services.clone(),
+            #[cfg(feature = "local-server")]
+            controls: local_controls.clone(),
+            #[cfg(feature = "local-server")]
+            lifetime: owner_close_cookie.and_then(|cookie| match &frame {
+                FrameContent::Bundle(_) => None,
+                FrameContent::Local(local) => Some((local.lifetime().clone(), cookie)),
+            }),
+        },
     )?;
-    webview::inject_drag_script(&webview)?;
-    app_window.install_metrics(&webview)?;
-    let web_message_received = bridge::register_message_handler(
-        &webview,
-        window_frame.hwnd,
-        #[cfg(feature = "application-ipc")]
-        Rc::downgrade(&ipc),
-    )?;
+    trace.mark("navigation_completed");
+    if matches!(&frame, FrameContent::Bundle(_)) {
+        let metrics = app_window.metrics_script();
+        webview::inject_bundle_script(&webview, metrics.as_deref())?;
+    }
+    trace.mark("bundle_script");
+    // Local-server controls are a separate, document-nonce-bound host bridge,
+    // never the packaged app's unconditional native command path.
+    let controls = matches!(&frame, FrameContent::Bundle(_));
+    let needs_message_handler = controls;
+    #[cfg(feature = "local-server")]
+    let needs_message_handler = needs_message_handler || local_controls.is_some();
+    #[cfg(feature = "application-ipc")]
+    let needs_message_handler = needs_message_handler || ipc.is_some();
+    let web_message_received = if needs_message_handler {
+        Some(bridge::register_message_handler(
+            &webview,
+            window_frame.hwnd,
+            controls,
+            #[cfg(feature = "local-server")]
+            local_controls.clone(),
+            #[cfg(feature = "application-ipc")]
+            ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
+        )?)
+    } else {
+        None
+    };
+    trace.mark("message_handler");
     let application_tasks = tasks::ApplicationTasks::new(window_frame.hwnd);
-    let web_resource_requested = protocol::register_runtime_handler(
-        &environment,
-        &webview,
-        &frame,
-        std::rc::Rc::downgrade(&application_tasks),
-        #[cfg(feature = "application-ipc")]
-        Rc::downgrade(&ipc),
-    )?;
-    message::set_controller_bounds(&controller, content)?;
-    // SAFETY: The controller is live and owns the WebView2 surface.
-    unsafe { controller.SetIsVisible(true)? };
-
+    let web_resource_requested = match &frame {
+        FrameContent::Bundle(bundle) => Some(protocol::register_runtime_handler(
+            &environment,
+            &webview,
+            bundle,
+            protocol::RuntimeHandlerOptions {
+                tasks: std::rc::Rc::downgrade(&application_tasks),
+                trace,
+                #[cfg(feature = "application-ipc")]
+                ipc: ipc.as_ref().map(Rc::downgrade).unwrap_or_default(),
+            },
+        )?),
+        #[cfg(feature = "local-server")]
+        FrameContent::Local(_) => None,
+    };
+    trace.mark("resource_handler");
+    #[cfg(feature = "local-server")]
+    let owner_close_registration = match (&frame, owner_close_cookie) {
+        (FrameContent::Bundle(_), _) => None,
+        (FrameContent::Local(local), Some(cookie)) => {
+            let handle = window_frame.hwnd.0 as usize;
+            #[cfg(feature = "native-capture")]
+            let capture = capture_services
+                .as_ref()
+                .map(|services| services.capture_for_revoke());
+            #[cfg(feature = "native-clipboard")]
+            let clipboard = capture_services
+                .as_ref()
+                .map(|services| services.clipboard_for_revoke());
+            #[cfg(feature = "native-dialogs")]
+            let dialogs = dialog_services
+                .as_ref()
+                .map(|services| services.dialogs_for_revoke());
+            #[cfg(feature = "native-picker")]
+            let picker = picker_services.clone();
+            Some(local.lifetime().register_close_fallible(Arc::new(move || {
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &capture {
+                    // Retire bytes synchronously on owner revocation, before
+                    // the asynchronous close wake and without waking Futures
+                    // under HostLifetime's close lock.
+                    capture.close();
+                }
+                #[cfg(feature = "native-clipboard")]
+                if let Some(clipboard) = &clipboard {
+                    // No future wake under HostLifetime's close lock.
+                    clipboard.close_silent();
+                }
+                #[cfg(feature = "native-dialogs")]
+                if let Some(dialogs) = &dialogs {
+                    dialogs.close_silent();
+                }
+                #[cfg(feature = "native-picker")]
+                if let Some(picker) = &picker {
+                    // Retire synchronously, post cancellation to its own STA;
+                    // no arbitrary Future waker runs under the host lock.
+                    picker.picker_close_silent();
+                }
+                let hwnd = windows::Win32::Foundation::HWND(handle as *mut std::ffi::c_void);
+                post_owner_lost(hwnd, cookie)
+            }))?)
+        }
+        (FrameContent::Local(_), None) => {
+            return Err(anyhow::anyhow!(
+                "local-server window generation is missing; restart the desktop host"
+            ));
+        }
+    };
     let state = Box::new(FrameState {
         app_window,
         content,
         application_tasks,
         #[cfg(feature = "application-ipc")]
-        ipc: Rc::clone(&ipc),
+        ipc: ipc.as_ref().map(Rc::clone),
         controller,
+        #[cfg(feature = "native-picker")]
+        picker: picker_services,
+        #[cfg(feature = "native-dialogs")]
+        dialogs: dialog_services
+            .as_ref()
+            .map(|services| services.dialogs_for_revoke()),
+        #[cfg(feature = "native-clipboard")]
+        clipboard: capture_services
+            .as_ref()
+            .map(|services| services.clipboard_for_revoke()),
+        #[cfg(feature = "local-server")]
+        local_controls,
+        #[cfg(feature = "native-capture")]
+        capture_registration,
         _navigation_starting: navigation_starting,
+        #[cfg(feature = "local-server")]
+        _local_navigation: local_navigation,
+        #[cfg(feature = "local-server")]
+        _owner_close_registration: owner_close_registration,
+        #[cfg(feature = "local-server")]
+        local_lifetime: match &frame {
+            FrameContent::Bundle(_) => None,
+            FrameContent::Local(local) => Some(local.lifetime().clone()),
+        },
+        #[cfg(feature = "local-server")]
+        owner_close_cookie,
         _navigation_completed: navigation_completed,
         _web_message_received: web_message_received,
         _web_resource_requested: web_resource_requested,
-        events: frame.events.clone(),
-        window_handle: frame.window_handle.clone(),
-        options: frame.window.clone(),
+        events: frame.events().clone(),
+        window_handle: frame.window_handle().clone(),
+        options: frame.window().clone(),
         webview: webview.clone(),
         store,
         fullscreen: Cell::new(false),
@@ -173,26 +554,63 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     // Installing a wakeup flushes an existing backlog. WebView2 initialization
     // pumps messages, so the native receiver must exist before attachment.
     install_wakeup(window_frame.hwnd)?;
+    trace.mark("state_installed");
     #[cfg(feature = "application-ipc")]
-    ipc.install(crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT)?;
+    if let Some(ipc) = &ipc {
+        let script = if ipc.is_local() {
+            #[cfg(feature = "local-server")]
+            {
+                crate::ipc_assets::LOCAL_NATIVE_BOOTSTRAP_SCRIPT
+            }
+            #[cfg(not(feature = "local-server"))]
+            {
+                crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+            }
+        } else {
+            crate::ipc_assets::NATIVE_BOOTSTRAP_SCRIPT
+        };
+        ipc.install(script)?;
+    }
+    #[cfg(feature = "local-server")]
+    if let FrameContent::Local(local) = &frame {
+        local.lifetime().require_active()?;
+    }
 
-    if frame.window.fullscreen {
+    if frame.window().fullscreen {
         state::with_window_state(window_frame.hwnd, |state| {
             command::set_fullscreen(window_frame.hwnd, state, true);
         });
     }
 
+    if nonclient::mark_startup_ready(window_frame.hwnd) {
+        // SAFETY: Startup is complete and the deferred close can now run
+        // through the normal state-aware destruction path.
+        unsafe { WindowsAndMessaging::DestroyWindow(window_frame.hwnd)? };
+        let _ = frame.events().dispatch(&DesktopEvent::Exiting);
+        return Ok(());
+    }
     window_frame.show()?;
+    trace.mark("final_show");
     message::refresh_frame(window_frame.hwnd);
+    trace.mark("frame_refreshed");
     // SAFETY: `window_frame.hwnd` is a live window owned by this thread.
     unsafe {
         let _ = Gdi::UpdateWindow(window_frame.hwnd);
-        let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
+    window_frame.focus_after_startup();
     message::publish(window_frame.hwnd, &DesktopEvent::Ready);
-    webview::navigate_to_startup_url(&webview)?;
+    trace.mark("ready_published");
+    match &frame {
+        FrameContent::Bundle(_) => webview::navigate_to_startup_url(&webview)?,
+        #[cfg(feature = "local-server")]
+        FrameContent::Local(local) => {
+            local.lifetime().require_active()?;
+            webview::navigate_to_url(&webview, &local.options.url())?;
+        }
+    }
+    trace.mark("navigation_started");
     let message_loop_result = message::message_loop();
-    let _ = frame.events.dispatch(&DesktopEvent::Exiting);
+    let _ = frame.events().dispatch(&DesktopEvent::Exiting);
     message_loop_result
 }
 

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "local-server")]
+use std::sync::Arc;
 
 use crate::window::live_background_script;
 use crate::{Rgba, WindowCommand, WindowHandle};
@@ -119,6 +121,64 @@ fn schedule_drain(id: u64) {
     unsafe { dispatch_async_f(dispatch_get_main_queue(), context, drain_on_main_queue) };
 }
 
+#[cfg(feature = "local-server")]
+fn owner_close_callback(
+    #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
+    #[cfg(feature = "native-dialogs")] dialogs: Option<Arc<crate::native_dialogs::DialogState>>,
+    schedule: impl Fn() + Send + Sync + 'static,
+) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        #[cfg(feature = "native-capture")]
+        if let Some(capture) = &capture {
+            // This runs synchronously under HostLifetime's close lock. Never
+            // invoke a Rust Future waker or wait for AppKit here.
+            capture.close();
+        }
+        #[cfg(feature = "native-clipboard")]
+        if let Some(clipboard) = &clipboard {
+            clipboard.close_silent();
+        }
+        #[cfg(feature = "native-dialogs")]
+        if let Some(dialogs) = &dialogs {
+            dialogs.close_silent();
+        }
+        schedule();
+    })
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn install_owner_close(
+    window: &NSWindow,
+    lifetime: &crate::HostLifetime,
+    #[cfg(feature = "native-capture")] capture: Option<Arc<crate::capture::CaptureState>>,
+    #[cfg(feature = "native-clipboard")] clipboard: Option<Arc<crate::clipboard::ClipboardState>>,
+    #[cfg(feature = "native-dialogs")] dialogs: Option<Arc<crate::native_dialogs::DialogState>>,
+) -> crate::Result<(CommandWake, crate::local_server::HostCloseRegistration)> {
+    let window = Weak::new(window);
+    let state = lifetime.clone();
+    let target = register_target(Rc::new(move || {
+        if !state.is_active() {
+            if let Some(window) = window.load() {
+                // Unlike performClose, this bypasses cancellable close
+                // requests once the authenticated owner is gone.
+                window.close();
+            }
+        }
+    }));
+    let id = target.id;
+    let registration = lifetime.register_close(owner_close_callback(
+        #[cfg(feature = "native-capture")]
+        capture,
+        #[cfg(feature = "native-clipboard")]
+        clipboard,
+        #[cfg(feature = "native-dialogs")]
+        dialogs,
+        move || schedule_drain(id),
+    ))?;
+    Ok((target, registration))
+}
+
 unsafe extern "C" fn drain_on_main_queue(context: *mut c_void) {
     // SAFETY: `context` was created by `Box::into_raw` in `schedule_drain` and is
     // delivered exactly once by dispatch_async_f.
@@ -199,5 +259,123 @@ pub(super) fn update_document_background(webview: &WKWebView, color: Rgba) {
             &NSString::from_str(&live_background_script(color)),
             Some(&completion),
         );
+    }
+}
+
+#[cfg(feature = "local-server")]
+fn local_caption_insets_script(fullscreen: bool) -> &'static str {
+    if fullscreen {
+        "document.documentElement?.style.setProperty('--webui-titlebar-inset-start','0px')"
+    } else {
+        "document.documentElement?.style.setProperty('--webui-titlebar-inset-start','78px')"
+    }
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn update_local_caption_insets(webview: &WKWebView, fullscreen: bool) {
+    let completion = RcBlock::new(|_: *mut AnyObject, error: *mut NSError| {
+        if !error.is_null() {
+            // SAFETY: WebKit keeps the error alive for this completion callback.
+            let error = unsafe { &*error };
+            eprintln!(
+                "WebUI: failed to update native caption insets: {}",
+                error.localizedDescription()
+            );
+        }
+    });
+    // SAFETY: This runs on the AppKit thread against the live main-frame view.
+    unsafe {
+        webview.evaluateJavaScript_completionHandler(
+            &NSString::from_str(local_caption_insets_script(fullscreen)),
+            Some(&completion),
+        );
+    }
+}
+
+#[cfg(all(test, feature = "local-server"))]
+mod local_caption_tests {
+    use super::local_caption_insets_script;
+
+    #[test]
+    fn fullscreen_releases_and_restores_native_caption_space() {
+        assert!(local_caption_insets_script(true).contains("'0px'"));
+        assert!(local_caption_insets_script(false).contains("'78px'"));
+        assert!(local_caption_insets_script(true).contains("--webui-titlebar-inset-start"));
+    }
+}
+
+#[cfg(all(test, feature = "native-clipboard"))]
+#[allow(clippy::disallowed_methods)]
+mod capture_close_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn composed_owner_revoke_retires_png_and_clipboard_before_wake() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let capture = crate::capture::CaptureState::new(lifetime.clone(), 17);
+        let clipboard =
+            crate::clipboard::ClipboardState::new(lifetime.clone(), Arc::clone(&capture));
+        capture.test_store_retained(25_000);
+        assert_eq!(capture.test_retained_len(), 25_000);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&queued);
+        let observed = Arc::clone(&capture);
+        let during_wake = Arc::clone(&capture);
+        let observed_clipboard = Arc::clone(&clipboard);
+        let during_wake_clipboard = Arc::clone(&clipboard);
+        let _registration = lifetime
+            .register_close(owner_close_callback(
+                Some(capture),
+                Some(clipboard),
+                #[cfg(feature = "native-dialogs")]
+                None,
+                move || {
+                    assert_eq!(during_wake.test_retained_len(), 0);
+                    assert!(during_wake_clipboard.test_is_closed());
+                    counter.fetch_add(1, Ordering::AcqRel);
+                },
+            ))
+            .unwrap();
+        owner.revoke().unwrap();
+        assert_eq!(observed.test_retained_len(), 0);
+        assert!(observed_clipboard.test_is_closed());
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        owner.revoke().unwrap();
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        owner.retry_close().unwrap();
+        assert_eq!(observed.test_retained_len(), 0);
+        assert!(observed_clipboard.test_is_closed());
+        assert_eq!(queued.load(Ordering::Acquire), 2);
+    }
+}
+
+#[cfg(all(test, feature = "native-capture", not(feature = "native-clipboard")))]
+#[allow(clippy::disallowed_methods)]
+mod capture_only_close_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn capture_only_owner_revoke_discards_png_before_native_close_wake() {
+        let (owner, lifetime) = crate::HostLifetime::new();
+        let capture = crate::capture::CaptureState::new(lifetime.clone(), 18);
+        capture.test_store_retained(25_000);
+        let observed = Arc::clone(&capture);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let callback_wakes = Arc::clone(&wakes);
+        let _registration = lifetime
+            .register_close(owner_close_callback(
+                Some(capture),
+                #[cfg(feature = "native-dialogs")]
+                None,
+                move || {
+                    assert_eq!(observed.test_retained_len(), 0);
+                    callback_wakes.fetch_add(1, Ordering::AcqRel);
+                },
+            ))
+            .unwrap();
+        owner.revoke().unwrap();
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
     }
 }

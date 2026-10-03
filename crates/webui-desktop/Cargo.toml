@@ -23,7 +23,41 @@ required-features = ["cli"]
 
 [features]
 default = []
+# Host-only pre-frame native error display; deliberately independent of native.
+startup-failure = [
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "dep:windows",
+    "objc2-app-kit?/NSAlert",
+]
+local-server = ["native", "dep:getrandom", "dep:libc", "dep:socket2", "objc2-web-kit?/WKNavigationResponse"]
+native-url-activation = ["local-server", "dep:url"]
+native-services = ["local-server", "dep:url"]
+native-picker = [
+    "native-services",
+    "objc2-app-kit?/NSOpenPanel",
+    "objc2-app-kit?/NSSavePanel",
+    "objc2-app-kit?/NSPanel",
+    "objc2-app-kit?/block2",
+    "windows?/Win32_UI_Shell",
+]
+native-dialogs = ["native-services", "objc2-app-kit?/NSAlert", "objc2-app-kit?/block2"]
+native-capture = [
+    "native-services",
+    "objc2-app-kit?/NSBitmapImageRep",
+    "objc2-app-kit?/NSImageRep",
+    "objc2-web-kit?/WKSnapshotConfiguration",
+]
+native-clipboard = [
+    "native-capture",
+    "objc2-app-kit?/NSPasteboard",
+    "windows?/Win32_System_DataExchange",
+]
 application-ipc = [
+    "dep:base64",
+    "dep:libc",
+    "dep:socket2",
     "dep:futures-channel",
     "dep:futures-executor",
     "dep:futures-util",
@@ -32,8 +66,6 @@ application-ipc = [
     "objc2-foundation?/NSStream",
     "objc2-web-kit?/WKScriptMessageHandlerWithReply",
     "objc2-web-kit?/WKContentWorld",
-    "objc2-web-kit?/WKFrameInfo",
-    "objc2-web-kit?/WKSecurityOrigin",
 ]
 native = [
     "dep:anyhow",
@@ -49,10 +81,15 @@ native = [
     "dep:gtk4",
     "dep:webkit6",
 ]
+# Opt-in Windows DWM captions for standard-button overlay windows.
+native-dwm-frame = ["native"]
 source = ["dep:microsoft-webui", "dep:sha2"]
+verified-update = ["dep:sha2"]
+packaging = ["dep:libc", "dep:sha2"]
 cli = ["native", "source", "dep:clap", "dep:console", "dep:expand-tilde", "dep:microsoft-webui-desktop-build"]
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 microsoft-webui = { path = "../webui", version = "0.0.30", features = ["cli"], optional = true }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.30" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.30" }
@@ -64,6 +101,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }
 thiserror = { workspace = true }
+url = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-executor = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
@@ -78,19 +116,22 @@ getrandom = { workspace = true, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
 objc2 = { workspace = true, optional = true }
-objc2-app-kit = { workspace = true, optional = true, features = ["std", "objc2-core-foundation", "NSApplication", "NSAppearance", "NSButton", "NSColor", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSVisualEffectView", "NSWindow"] }
-objc2-foundation = { workspace = true, optional = true, features = ["std", "block2", "NSData", "NSDictionary", "NSDistributedNotificationCenter", "NSURL", "NSURLRequest", "NSURLResponse", "NSString", "NSObject", "NSNotification", "NSGeometry", "NSValue", "NSTimer", "NSDate"] }
-objc2-web-kit = { workspace = true, optional = true, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKURLSchemeHandler", "WKURLSchemeTask", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript"] }
+objc2-app-kit = { workspace = true, optional = true, features = ["std", "objc2-core-foundation", "NSApplication", "NSAppearance", "NSButton", "NSColor", "NSControl", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSVisualEffectView", "NSWindow"] }
+objc2-foundation = { workspace = true, optional = true, features = ["std", "block2", "NSData", "NSDictionary", "NSDistributedNotificationCenter", "NSURL", "NSURLRequest", "NSURLResponse", "NSString", "NSObject", "NSNotification", "NSOperation", "NSGeometry", "NSValue", "NSTimer", "NSDate", "NSRunLoop", "NSBundle"] }
+objc2-web-kit = { workspace = true, optional = true, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKURLSchemeHandler", "WKURLSchemeTask", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript"] }
 block2 = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+socket2 = { workspace = true, optional = true }
 windows-sys = { workspace = true }
 webview2-com = { workspace = true, optional = true }
-windows = { workspace = true, optional = true, features = ["Foundation", "Graphics", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, optional = true, features = ["Foundation", "Graphics", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Networking_WinSock", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-core = { workspace = true, optional = true }
 windows-future = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+socket2 = { workspace = true, optional = true }
 gtk4 = { workspace = true, optional = true, features = ["v4_10"] }
 webkit6 = { workspace = true, optional = true, features = ["v2_42"] }
 
@@ -100,6 +141,16 @@ tempfile = { workspace = true }
 criterion = { workspace = true }
 # This internal test helper follows the workspace version across releases.
 microsoft-webui-test-utils = { path = "../webui-test-utils" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+block2 = { workspace = true }
+# Only the controlled native acceptance fixture clicks AppKit's OK button.
+objc2-app-kit = { workspace = true, features = ["NSActionCell", "NSButtonCell", "NSCell"] }
+
+[[test]]
+name = "local_server_api"
+path = "tests/public_api/local_server.rs"
+required-features = ["local-server"]
 
 [[test]]
 name = "ipc_contract"
@@ -112,14 +163,32 @@ path = "tests/codecs.rs"
 required-features = ["application-ipc"]
 
 [[test]]
+name = "capture_allocations"
+path = "tests/capture_allocations.rs"
+required-features = ["native-capture"]
+
+[[test]]
 name = "windows_portable_package"
 path = "tests/windows_portable_package.rs"
 required-features = ["source"]
 
 [[test]]
+name = "precompiled_package"
+path = "tests/precompiled_package.rs"
+required-features = ["packaging"]
+
+[[test]]
 name = "cli_package_e2e"
 path = "tests/cli_package_e2e.rs"
 required-features = ["cli"]
+
+[[test]]
+name = "linux_local_server"
+path = "tests/linux_local_server.rs"
+# This real GTK/WebKitGTK fixture is an explicit local-server opt-in. The
+# package-local desktop gate's ordinary feature matrix must not auto-discover
+# an empty Linux-only test binary on macOS.
+required-features = ["local-server"]
 
 [[bench]]
 name = "navigation"
@@ -130,10 +199,60 @@ name = "macos_response"
 harness = false
 required-features = ["native"]
 
+[[bench]]
+name = "macos_menu"
+harness = false
+required-features = ["native"]
+
 [[example]]
 name = "no-ipc-native"
 path = "tests/fixtures/no-ipc-native.rs"
 required-features = ["native", "source"]
+
+[[example]]
+name = "local-server-smoke"
+path = "tests/fixtures/local-server-smoke.rs"
+required-features = ["local-server"]
+
+[[example]]
+name = "local-url-activation"
+path = "tests/fixtures/local-url-activation.rs"
+required-features = ["native-url-activation"]
+
+[[example]]
+name = "local-server-quit"
+path = "tests/fixtures/local-server-quit.rs"
+required-features = ["local-server", "application-ipc"]
+
+[[example]]
+name = "native-geometry"
+path = "tests/fixtures/native-geometry.rs"
+required-features = ["native-services"]
+
+[[example]]
+name = "native-capture"
+path = "tests/fixtures/native-capture.rs"
+required-features = ["native-capture"]
+
+[[example]]
+name = "native-directory"
+path = "tests/fixtures/native-directory.rs"
+required-features = ["native-picker"]
+
+[[example]]
+name = "startup-failure"
+path = "tests/fixtures/startup-failure.rs"
+required-features = ["startup-failure"]
+
+[[example]]
+name = "native-theme"
+path = "tests/fixtures/native-theme.rs"
+required-features = ["native-services"]
+
+[[example]]
+name = "local-server-ipc"
+path = "tests/fixtures/native-ipc/local-server.rs"
+required-features = ["native", "local-server", "application-ipc"]
 
 [[example]]
 name = "webui-native-ipc-fixture"

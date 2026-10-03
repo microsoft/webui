@@ -82,6 +82,38 @@ pub(super) fn decode(value: &jsc::Value) -> Option<Control> {
     decode_json(&bounded_eval(value, BOUNDED_CONTROL)?)
 }
 
+// Owned HTTP documents must explicitly negotiate carrier v1. Bundled GTK's
+// nine-field hello remains unchanged; only this local-only decoder accepts
+// the ten-field native-carrier control before projecting those nine fields
+// into the common bounded schema parser.
+const BOUNDED_LOCAL_HELLO: &str = r#"(v)=>{
+ 'use strict';
+ if(!v||typeof v!=='object'||Array.isArray(v))return null;
+ const keys=['kind','wireVersion','contractName','contractMajor','schemaHash','callId',
+             'navigation','documentNonce','challenge','nativeCarrierVersion'];
+ const own=Object.keys(v);
+ if(own.length!==keys.length||own.some(k=>!keys.includes(k))||
+    v.kind!=='hello'||v.nativeCarrierVersion!==1)return null;
+ const text=(s,n)=>{if(typeof s!=='string'||s.length>n)return false;
+  for(let i=0;i<s.length;i++){let c=s.charCodeAt(i);
+   if(c>=0xd800&&c<=0xdbff){if(++i>=s.length)return false;c=s.charCodeAt(i);if(c<0xdc00||c>0xdfff)return false;}
+   else if(c>=0xdc00&&c<=0xdfff)return false;}return true;};
+ if(!Number.isInteger(v.wireVersion)||v.wireVersion<0||v.wireVersion>4294967295||
+    !Number.isInteger(v.contractMajor)||v.contractMajor<0||v.contractMajor>4294967295||
+    !text(v.contractName,256)||!text(v.schemaHash,64)||!text(v.callId,32)||!v.callId.length||
+    !text(v.navigation,20)||!text(v.documentNonce,32)||!text(v.challenge,32))return null;
+ return JSON.stringify({kind:'hello',wireVersion:v.wireVersion,contractName:v.contractName,
+  contractMajor:v.contractMajor,schemaHash:v.schemaHash,callId:v.callId,
+  navigation:v.navigation,documentNonce:v.documentNonce,challenge:v.challenge});
+}"#;
+
+pub(super) fn decode_local(value: &jsc::Value) -> Option<Control> {
+    if let Some(disconnect @ Control::Disconnect { .. }) = decode(value) {
+        return Some(disconnect);
+    }
+    decode_json(&bounded_eval(value, BOUNDED_LOCAL_HELLO)?)
+}
+
 fn decode_json(json: &str) -> Option<Control> {
     if json.len() > MAX_CONTROL_BYTES {
         return None;
@@ -194,5 +226,31 @@ mod tests {
             ),
             Some(Control::Disconnect { generation: 1, .. })
         ));
+    }
+
+    #[test]
+    fn owned_linux_hello_requires_exact_carrier_version_and_shape() {
+        let context = jsc::Context::new();
+        let valid = r#"{"kind":"hello","wireVersion":3,"contractName":"test.frame.echo","contractMajor":1,"schemaHash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","callId":"1","navigation":"1","documentNonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","challenge":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","nativeCarrierVersion":1}"#;
+        let message = jsc::Value::from_json(&context, valid);
+        assert!(matches!(decode_local(&message), Some(Control::Hello(_))));
+        assert!(
+            decode(&message).is_none(),
+            "bundled GTK must not accept the local shape"
+        );
+        for invalid in [
+            valid.replace("\"nativeCarrierVersion\":1", "\"nativeCarrierVersion\":2"),
+            valid.replace(",\"nativeCarrierVersion\":1", ""),
+            valid.replace(
+                "\"nativeCarrierVersion\":1",
+                "\"nativeCarrierVersion\":\"1\"",
+            ),
+            valid.replace(
+                "\"nativeCarrierVersion\":1",
+                "\"nativeCarrierVersion\":1,\"extra\":1",
+            ),
+        ] {
+            assert!(decode_local(&jsc::Value::from_json(&context, &invalid)).is_none());
+        }
     }
 }

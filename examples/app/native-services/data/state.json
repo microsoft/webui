@@ -1,0 +1,8 @@
+{
+  "title": "Native services",
+  "status": "Ready",
+  "detail": "Choose an action to exercise an explicitly enabled host capability.",
+  "busy": false,
+  "hasCapture": false,
+  "captureUrl": ""
+}

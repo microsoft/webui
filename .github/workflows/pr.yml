@@ -107,6 +107,18 @@ jobs:
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
 
+      - name: Test Linux local-server journeys
+        run: |
+          # Allow only this test binary to create WebKitGTK sandbox namespaces.
+          # Keep both AppArmor's global restriction and WebKit's sandbox enabled.
+          profile=crates/webui-desktop/tests/fixtures/linux-local-server/linux-apparmor
+          sudo apparmor_parser -r "$profile"
+          trap 'sudo apparmor_parser -R "$profile"' EXIT
+          GDK_BACKEND=x11 GTK_A11Y=none xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- \
+            cargo test -p microsoft-webui-desktop --no-default-features \
+              --features local-server,application-ipc \
+              --test linux_local_server -- --ignored --format=pretty
+
       - name: Test release native IPC source/package and no-IPC
         run: |
           # Allow only fixture executables to create WebKitGTK sandbox namespaces.
@@ -156,6 +168,11 @@ jobs:
         run: |
           cargo test -p microsoft-webui-desktop --no-default-features --features native
           cargo bench -p microsoft-webui-desktop --features native --bench macos_response --profile dev -- --test
+
+      - name: Test opt-in macOS native services
+        run: |
+          cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
+          cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-capture,native-dialogs --lib capture_only_owner_revoke_discards_png_before_native_close_wake
 
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
@@ -232,6 +249,9 @@ jobs:
       - name: Test native desktop SDK
         run: cargo test -p microsoft-webui-desktop --no-default-features --features native
 
+      - name: Test opt-in Windows native services
+        run: cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
+
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked
 
@@ -270,6 +290,10 @@ jobs:
           skip-build: 'true'
           rust-targets: ${{ matrix.platform.target }}
           install-linux-desktop-dependencies: ${{ matrix.platform.target != 'aarch64-unknown-linux-gnu' }}
+
+      - name: Cross-check opt-in Windows ARM64 native services
+        if: matrix.platform.target == 'aarch64-pc-windows-msvc'
+        run: cargo check --locked --target aarch64-pc-windows-msvc -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
 
       - name: Build and export native package
         if: runner.os != 'Windows'

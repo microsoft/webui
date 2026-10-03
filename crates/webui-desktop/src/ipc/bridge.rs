@@ -23,6 +23,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(all(
+    test,
+    feature = "local-server",
+    any(target_os = "macos", target_os = "windows")
+))]
+#[allow(clippy::disallowed_methods)]
+#[path = "local_pin_tests.rs"]
+mod local_pin_tests;
+
 /// Host provenance is independent of development permissions.
 #[derive(Clone, Debug)]
 pub enum IpcHost {
@@ -36,14 +45,39 @@ pub enum IpcHost {
         /// Canonical fixed application origin, supplied by the adapter.
         origin: String,
     },
+    /// An explicitly retained, bound local listener. The frame holds a
+    /// duplicate of the listener; a port number or daemon-loss signal alone
+    /// cannot construct this principal.
+    #[cfg(feature = "local-server")]
+    LocalOwned(Arc<crate::local_server::OwnedLocalServerIpc>),
 }
 impl IpcHost {
     pub(super) fn is_source(&self) -> bool {
-        matches!(self, Self::Source { .. })
+        match self {
+            Self::Source { .. } => true,
+            #[cfg(feature = "local-server")]
+            Self::LocalOwned(_) => true,
+            Self::Packaged { .. } => false,
+        }
     }
     pub(super) fn origin(&self) -> &str {
         match self {
             Self::Source { origin } | Self::Packaged { origin } => origin,
+            #[cfg(feature = "local-server")]
+            Self::LocalOwned(owned) => owned.origin.as_str(),
+        }
+    }
+    pub(super) fn active(&self) -> bool {
+        match self {
+            #[cfg(feature = "local-server")]
+            Self::LocalOwned(owned) => owned.lifetime.is_active(),
+            _ => true,
+        }
+    }
+    pub(super) fn release_listener_pin(&self) {
+        #[cfg(feature = "local-server")]
+        if let Self::LocalOwned(owned) = self {
+            owned.release_listener_pin();
         }
     }
 }
@@ -64,7 +98,17 @@ impl IpcWindowOwner {
         if registry.notifications.len() > options.limits.max_callbacks_per_document {
             return Err(IpcError::new(IpcErrorCode::InvalidPayload, "startup notification definitions exceed the document callback limit", "raise max_callbacks_per_document within its SDK ceiling or register fewer startup receivers"));
         }
-        if !matches!(host.origin(), "webui://app" | "https://app.webui.localhost") {
+        let allowed = match &host {
+            IpcHost::Source { origin } | IpcHost::Packaged { origin } => {
+                matches!(
+                    origin.as_str(),
+                    "webui://app" | "https://app.webui.localhost"
+                )
+            }
+            #[cfg(feature = "local-server")]
+            IpcHost::LocalOwned(owned) => owned.lifetime.is_active(),
+        };
+        if !allowed {
             return Err(fail(IpcErrorCode::PermissionDenied));
         }
         let budget = Budget::new(
@@ -223,7 +267,7 @@ impl IpcInputPermit {
             .core
             .upgrade()
             .ok_or_else(|| fail(IpcErrorCode::Closed))?;
-        if lock(&core.state).closed {
+        if lock(&core.state).closed || !core.host.active() {
             return Err(fail(IpcErrorCode::Closed));
         }
         if additional_bytes > self.max.saturating_sub(self.input.bytes()) {
@@ -285,9 +329,9 @@ impl IpcBridge {
     /// Whether this live frame has an explicitly configured application schema.
     /// Disabled/default frames need no native bootstrap or wake-source setup.
     pub fn is_enabled(&self) -> bool {
-        self.core
-            .upgrade()
-            .is_some_and(|core| core.registry.is_enabled() && !lock(&core.state).closed)
+        self.core.upgrade().is_some_and(|core| {
+            core.registry.is_enabled() && core.host.active() && !lock(&core.state).closed
+        })
     }
 
     /// Install the single coalesced native wake source.
@@ -341,7 +385,7 @@ impl IpcBridge {
             .core
             .upgrade()
             .ok_or_else(|| fail(IpcErrorCode::Closed))?;
-        if lock(&core.state).closed {
+        if lock(&core.state).closed || !core.host.active() {
             return Err(fail(IpcErrorCode::Closed));
         }
         if bytes > core.options.limits.max_frame_bytes {
@@ -406,6 +450,9 @@ impl IpcBridge {
             .upgrade()
             .ok_or_else(|| fail(IpcErrorCode::Closed))
             .and_then(|core| {
+                if !core.host.active() {
+                    return Err(fail(IpcErrorCode::Closed));
+                }
                 let result = submit(&core, request);
                 if result.is_err() {
                     core.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -492,6 +539,9 @@ fn submit(
 }
 
 fn authenticate(core: &Arc<Core>, request: &OwnedIpcHttpRequest) -> Result<u64, IpcError> {
+    if !core.host.active() {
+        return Err(fail(IpcErrorCode::Closed));
+    }
     if request.body.len() > core.options.limits.max_frame_bytes {
         return Err(fail(IpcErrorCode::PayloadTooLarge));
     }
@@ -816,6 +866,7 @@ fn notify(core: &Arc<Core>, frame: IpcFrame, credits: InputCredits) -> Result<()
                 next,
             });
         }
+
         (
             deliveries,
             reserve,

@@ -8,10 +8,9 @@ use super::{
     ipc_policy::{self, Control, HelloCall, MAX_CONTROL_UNITS},
     protocol::read_pwstr_bounded,
 };
-use crate::{
-    ipc::{Admission, IpcError, IpcErrorCode, NativeControl, SessionInfo},
-    native_ipc::hello_reply_json,
-};
+#[cfg(feature = "local-server")]
+use crate::ipc::native_data::{DataRequest, NativeData, MAX_MESSAGE_UNITS};
+use crate::ipc::{Admission, IpcError, IpcErrorCode, NativeControl, SessionInfo};
 use serde_json::Value;
 use std::rc::Rc;
 use webview2_com::{
@@ -70,8 +69,26 @@ impl WindowsIpc {
     ) -> WindowsResult<()> {
         // SAFETY: Both out-parameters are live, native-owned CoTaskMem strings.
         let source = read_pwstr_bounded(8192, |out| unsafe { args.Source(out) })?;
-        if !ipc_policy::app_url(&source) || !self.trusted_source() {
+        if !self.trusted_url(&source) || !self.trusted_source() {
             return Ok(());
+        }
+        #[cfg(feature = "local-server")]
+        if self.is_local() {
+            let Ok(raw) = read_pwstr_bounded(MAX_MESSAGE_UNITS, |out| unsafe {
+                args.WebMessageAsJson(out)
+            }) else {
+                return Ok(());
+            };
+            if raw.len() > MAX_CONTROL_UNITS {
+                if let Ok(data) = serde_json::from_str::<DataRequest>(&raw) {
+                    self.data_message(data);
+                }
+                return Ok(());
+            }
+            if let Ok(data) = serde_json::from_str::<DataRequest>(&raw) {
+                self.data_message(data);
+                return Ok(());
+            }
         }
         let Ok(raw) = read_pwstr_bounded(MAX_CONTROL_UNITS, |out| unsafe {
             args.WebMessageAsJson(out)
@@ -100,12 +117,68 @@ impl WindowsIpc {
                 }
             }
             control => {
-                if let Some(call) = control.into_hello() {
+                if let Some(call) = control.into_hello(self.is_local()) {
                     self.hello(call);
                 }
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "local-server")]
+    fn data_message(self: &Rc<Self>, request: DataRequest) {
+        let (navigation, session) = {
+            let document = self.document.borrow();
+            let Some(proof) = document
+                .proof
+                .as_ref()
+                .filter(|proof| document.accepts(proof))
+            else {
+                return;
+            };
+            let (Some(generation), Some(token), Some(limits)) = (
+                document.generation,
+                document.token.as_ref(),
+                document.limits.as_ref(),
+            ) else {
+                return;
+            };
+            (
+                proof.navigation,
+                SessionInfo {
+                    generation,
+                    token: token.clone(),
+                    limits: limits.clone(),
+                },
+            )
+        };
+        let weak = Rc::downgrade(self);
+        let cursor = Rc::clone(&self.data);
+        let bridge = self.bridge.clone();
+        let result = self.spawn(async move {
+            let response =
+                NativeData::exchange(&cursor, bridge, navigation, session, request).await;
+            let Some(ipc) = weak
+                .upgrade()
+                .filter(|ipc| ipc.current(navigation) && ipc.trusted_source())
+            else {
+                return;
+            };
+            if ipc.arm_data_deadline().is_err() {
+                ipc.transport_failed(IpcErrorCode::Transport);
+                return;
+            }
+            if let Ok(json) = serde_json::to_vec(&response) {
+                if json.len() <= MAX_MESSAGE_UNITS && ipc.post_json(&json).is_err() {
+                    ipc.transport_failed(IpcErrorCode::Transport);
+                }
+            } else {
+                ipc.transport_failed(IpcErrorCode::Transport);
+            }
+        });
+        if result.is_err() {
+            self.transport_failed(IpcErrorCode::Overloaded);
+        }
     }
 
     fn hello(self: &Rc<Self>, call: HelloCall) {
@@ -164,12 +237,17 @@ impl WindowsIpc {
             }
             return;
         }
-        let response = hello_reply_json(call, &result);
+        let response = if self.is_local() {
+            crate::native_ipc::hello_reply_json_local(call, &result)
+        } else {
+            crate::native_ipc::hello_reply_json(call, &result)
+        };
         if let Ok(session) = &result {
             let mut document = self.document.borrow_mut();
             document.generation = Some(session.generation);
             document.token = Some(session.token.clone());
             document.max_frame_bytes = Some(session.limits.max_frame_bytes);
+            document.limits = Some(session.limits.clone());
         }
         if response
             .map_err(|_| ())
@@ -234,8 +312,10 @@ mod tests {
             },
         };
         for result in [Ok(session), Err(error)] {
-            let response: Value =
-                serde_json::from_slice(&hello_reply_json(&call, &result).unwrap()).unwrap();
+            let response: Value = serde_json::from_slice(
+                &crate::native_ipc::hello_reply_json(&call, &result).unwrap(),
+            )
+            .unwrap();
             assert_eq!(response["kind"], "helloResult");
             assert_eq!(response["callId"], "1");
             assert_eq!(response["navigation"], "9");

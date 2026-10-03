@@ -465,6 +465,12 @@ impl Core {
             (document, waiters, waker)
         };
         if terminal {
+            // The terminal state and document revocation above must happen
+            // first. Release the socket before user-owned callback drops or
+            // blocked workers can delay retirement completion.
+            self.host.release_listener_pin();
+        }
+        if terminal {
             if let Some(Ok(timer)) = self.timer.get() {
                 timer.stop();
             }

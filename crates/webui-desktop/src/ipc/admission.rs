@@ -184,7 +184,8 @@ impl Drop for AdmissionDelivery {
     }
 }
 fn check_identity(core: &Core, document: &CommittedMainDocument) -> Result<(), IpcError> {
-    if document.navigation == 0
+    if !core.host.active()
+        || document.navigation == 0
         || document.origin.len() > 256
         || document.origin != core.host.origin()
     {

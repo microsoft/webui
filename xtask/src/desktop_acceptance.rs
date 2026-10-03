@@ -25,6 +25,13 @@ const COMMANDS: &[(&str, &[&str])] = &[
             "crates/webui-desktop/src/generated/ipc",
         ],
     ),
+    (
+        "node",
+        &[
+            "--test",
+            "crates/webui-desktop-build/tests/support/target-output.test.mjs",
+        ],
+    ),
     ("node", &["crates/webui-desktop-build/tests/run-rust.mjs"]),
     (
         "node",

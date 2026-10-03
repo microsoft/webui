@@ -190,6 +190,11 @@ pub(super) fn report(
         equals(report, condition, &Value::from(true))
             .map_err(|error| format!("{mode}: {error}"))?;
     }
+    let macos = text(metadata, "platform")? == "darwin";
+    equals(report, "wk_subframe_host_guard", &Value::from(macos))
+        .map_err(|error| format!("{mode}: {error}"))?;
+    equals(report, "wk_main_frame_host_close", &Value::from(macos))
+        .map_err(|error| format!("{mode}: {error}"))?;
     match field(report, "persisted_restores")?.as_u64() {
         Some(0..=2) => Ok(()),
         _ => Err(format!("{mode}: persisted_restores must be 0, 1, or 2")),
@@ -227,9 +232,30 @@ mod tests {
             "retired_session_rejected": true, "same_document_generation": true,
             "history_fresh_admission": true, "native_disconnect_before_navigation": true,
             "history_renderer_callbacks_verified": true,
+            "wk_subframe_host_guard": true, "wk_main_frame_host_close": true,
         });
         let metadata = json!({"platform": "darwin", "native_backend": "WKWebView"});
         assert!(report(&result, "source", "abc", &metadata).is_ok());
+        for (platform, backend) in [("win32", "WebView2"), ("linux", "WebKitGTK")] {
+            let mut portable = result.clone();
+            portable["platform"] = json!(platform);
+            portable["native_backend"] = json!(backend);
+            portable["wk_subframe_host_guard"] = json!(false);
+            portable["wk_main_frame_host_close"] = json!(false);
+            assert!(report(
+                &portable,
+                "source",
+                "abc",
+                &json!({"platform": platform, "native_backend": backend})
+            )
+            .is_ok());
+        }
+        result["wk_subframe_host_guard"] = json!(false);
+        assert!(report(&result, "source", "abc", &metadata).is_err());
+        result["wk_subframe_host_guard"] = json!(true);
+        result["wk_main_frame_host_close"] = json!(false);
+        assert!(report(&result, "source", "abc", &metadata).is_err());
+        result["wk_main_frame_host_close"] = json!(true);
         result["cancellation_recovery"] = json!(false);
         assert!(report(&result, "source", "abc", &metadata).is_err());
         result["cancellation_recovery"] = json!(true);

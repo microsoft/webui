@@ -5,6 +5,18 @@ use crate::DesktopProtocolResponse;
 
 pub(crate) const NATIVE_BOOTSTRAP_SCRIPT: &str = include_str!("generated/ipc/native-bootstrap.js");
 pub(crate) const BROWSER_RUNTIME: &[u8] = include_bytes!("generated/ipc/desktop-runtime.js");
+#[cfg(all(
+    feature = "local-server",
+    any(target_os = "macos", target_os = "windows")
+))]
+pub(crate) const LOCAL_NATIVE_BOOTSTRAP_SCRIPT: &str =
+    include_str!("generated/ipc/local-native-bootstrap.js");
+#[cfg(all(
+    feature = "local-server",
+    any(target_os = "macos", target_os = "windows", target_os = "linux")
+))]
+pub(crate) const LOCAL_BROWSER_RUNTIME: &[u8] =
+    include_bytes!("generated/ipc/local-desktop-runtime.js");
 
 pub(crate) fn response(path: &str) -> Option<DesktopProtocolResponse> {
     let body = match path {

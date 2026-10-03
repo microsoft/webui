@@ -79,6 +79,13 @@ impl FrameWindow {
     }
 
     pub(super) fn show(&self) -> Result<()> {
+        if super::nonclient::startup_close_requested(self.hwnd) {
+            return Ok(());
+        }
+        // SAFETY: The owner retains this live HWND on the calling thread.
+        if unsafe { WindowsAndMessaging::IsWindowVisible(self.hwnd) }.as_bool() {
+            return Ok(());
+        }
         // The first ShowWindow call can restore a maximized window according to
         // the launcher's STARTUPINFO. Publish the configured frame unchanged.
         // SAFETY: The window is live; only visibility and frame layout change.
@@ -98,6 +105,17 @@ impl FrameWindow {
             )?;
         }
         Ok(())
+    }
+
+    pub(super) fn focus_after_startup(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse;
+        // SAFETY: The owner retains this live HWND on its creating UI thread.
+        unsafe {
+            let focused = KeyboardAndMouse::GetFocus();
+            if focused != self.hwnd && !WindowsAndMessaging::IsChild(self.hwnd, focused).as_bool() {
+                let _ = KeyboardAndMouse::SetFocus(Some(self.hwnd));
+            }
+        }
     }
 
     /// Keep DWM's shadow and system-managed corners for custom frames.
@@ -220,6 +238,70 @@ mod tests {
     use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::WS_CAPTION;
 
+    std::thread_local! {
+        static FRAME_CALCULATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    extern "system" fn count_frame_calculations(
+        hwnd: HWND,
+        message: u32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        if message == WindowsAndMessaging::WM_NCCALCSIZE {
+            FRAME_CALCULATIONS.set(FRAME_CALCULATIONS.get() + 1);
+        }
+        super::super::message::window_proc(hwnd, message, w_param, l_param)
+    }
+
+    #[test]
+    fn showing_a_visible_startup_frame_does_not_recalculate_its_native_caption() {
+        let frame = FrameWindow::new(
+            &WindowOptions {
+                center: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        // SAFETY: The test owns the window and replaces its known procedure
+        // with a same-thread counter which forwards every message to it.
+        unsafe {
+            assert_ne!(
+                WindowsAndMessaging::SetWindowLongPtrW(
+                    frame.hwnd,
+                    WindowsAndMessaging::GWLP_WNDPROC,
+                    count_frame_calculations as *const () as isize,
+                ),
+                0
+            );
+        }
+        FRAME_CALCULATIONS.set(0);
+        frame.show().unwrap();
+        let first = FRAME_CALCULATIONS.get();
+        assert!(first > 0);
+        frame.show().unwrap();
+        assert_eq!(FRAME_CALCULATIONS.get(), first);
+    }
+
+    #[test]
+    fn a_deferred_startup_close_is_not_undone_by_later_show_calls() {
+        let frame = FrameWindow::new(
+            &WindowOptions {
+                center: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        frame.show().unwrap();
+        super::super::nonclient::defer_startup_close(frame.hwnd);
+        frame.show().unwrap();
+        // SAFETY: The fixture owns this live window on the calling thread.
+        assert!(!unsafe { WindowsAndMessaging::IsWindowVisible(frame.hwnd) }.as_bool());
+        assert!(super::super::nonclient::mark_startup_ready(frame.hwnd));
+    }
+
     struct TestFrame(FrameWindow);
 
     impl Drop for TestFrame {
@@ -300,6 +382,50 @@ mod tests {
         let (outer, client) = frame_rectangles(&frame);
 
         assert!(client.bottom - client.top < outer.bottom - outer.top);
+    }
+
+    #[test]
+    fn finishing_startup_does_not_replace_focus_already_inside_the_window() {
+        use windows::Win32::UI::Input::KeyboardAndMouse;
+        let frame = TestFrame(
+            FrameWindow::new(
+                &WindowOptions {
+                    center: false,
+                    ..WindowOptions::default()
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        frame.0.show().unwrap();
+        // SAFETY: The fixture owns the parent and child on this UI thread.
+        let child = unsafe {
+            WindowsAndMessaging::CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                None,
+                WindowsAndMessaging::WS_CHILD | WindowsAndMessaging::WS_VISIBLE,
+                0,
+                0,
+                40,
+                20,
+                Some(frame.0.hwnd),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        // SAFETY: Both focus operations target this thread's live test windows.
+        unsafe {
+            let _ = KeyboardAndMouse::SetFocus(Some(child));
+            assert_eq!(KeyboardAndMouse::GetFocus(), child);
+            frame.0.focus_after_startup();
+            assert_eq!(KeyboardAndMouse::GetFocus(), child);
+            let _ = KeyboardAndMouse::SetFocus(None);
+            frame.0.focus_after_startup();
+            assert_eq!(KeyboardAndMouse::GetFocus(), frame.0.hwnd);
+        }
     }
 
     #[test]

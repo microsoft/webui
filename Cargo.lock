@@ -2192,6 +2192,7 @@ name = "microsoft-webui-desktop"
 version = "0.0.30"
 dependencies = [
  "anyhow",
+ "base64",
  "block2",
  "clap",
  "console",
@@ -2219,8 +2220,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "tempfile",
  "thiserror",
+ "url",
  "webkit6",
  "webview2-com",
  "windows",
@@ -2573,6 +2576,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-services-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-executor",
+ "microsoft-webui-desktop",
+ "microsoft-webui-handler",
+ "microsoft-webui-tokens",
+ "serde_json",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2699,6 +2714,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.2",
+ "block2",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",

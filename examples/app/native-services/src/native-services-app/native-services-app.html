@@ -1,0 +1,60 @@
+<template shadowrootmode="open">
+  <main>
+    <header>
+      <p class="eyebrow">WebUI Desktop</p>
+      <h1>Native services</h1>
+      <p class="lede">A narrow, host-authorized demo of system UI and visible-content capture.</p>
+    </header>
+
+    <section class="actions" aria-label="Native service actions">
+      <article>
+        <div class="icon" aria-hidden="true">01</div>
+        <h2>Directory picker</h2>
+        <p>Open the OS-owned folder chooser. The page receives only the host's summarized result.</p>
+        <button type="button" ?disabled="{{busy}}" @click="{pickDirectory()}">Choose directory</button>
+      </article>
+
+      <article>
+        <div class="icon" aria-hidden="true">02</div>
+        <h2>Dialogs</h2>
+        <p>Present bounded, host-authored native copy with explicit acknowledgement or confirmation.</p>
+        <div class="button-row">
+          <button type="button" ?disabled="{{busy}}" @click="{showError()}">Show error</button>
+          <button type="button" class="secondary" ?disabled="{{busy}}" @click="{confirmAction()}">Ask to confirm</button>
+        </div>
+      </article>
+
+      <article>
+        <div class="icon" aria-hidden="true">03</div>
+        <h2>Visible capture</h2>
+        <p>Capture the current native webview viewport as a bounded PNG without screen-recording access.</p>
+        <button type="button" ?disabled="{{busy}}" @click="{captureView()}">Capture this view</button>
+      </article>
+
+      <article>
+        <div class="icon" aria-hidden="true">04</div>
+        <h2>Clipboard</h2>
+        <p>Copy the latest retained PNG after native acknowledgement and immediate byte-for-byte readback.</p>
+        <button type="button" ?disabled="{{busy || !hasCapture}}" @click="{copyCapture()}">Copy latest capture</button>
+      </article>
+    </section>
+
+    <section class="result" aria-live="polite" aria-busy="{{busy}}">
+      <div>
+        <p class="result-label">Latest result</p>
+        <h2>{{status}}</h2>
+        <p>{{detail}}</p>
+      </div>
+      <if condition="hasCapture">
+        <figure>
+          <img src="{{captureUrl}}" alt="Latest visible native webview capture">
+          <figcaption>Latest capture retained by this window</figcaption>
+        </figure>
+      </if>
+    </section>
+
+    <footer>
+      <p>All capabilities are opt-in Cargo features. This page has no generic native IPC grant.</p>
+    </footer>
+  </main>
+</template>

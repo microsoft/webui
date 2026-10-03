@@ -7,7 +7,7 @@ use crate::DesktopMenu;
 use objc2::rc::Retained;
 use objc2::runtime::Sel;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSEventModifierFlags, NSMenu, NSMenuItem};
+use objc2_app_kit::{NSEventModifierFlags, NSMenu, NSMenuItem, NSWindow};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 /// Own both the menu and its command receiver: AppKit menu targets are weak.
 #[must_use = "retain the native menu owner until the window session ends"]
@@ -24,11 +24,11 @@ impl NativeMenu {
 
 /// Build the application's main menu.
 ///
-/// When `menus` is empty, a minimal default App/Edit menu is installed so the
-/// app can quit (`Cmd+Q`) and use standard text-editing shortcuts (`Cmd+C`,
-/// `Cmd+V`, ...) even though the manifest declared no menu bar.
+/// When `menus` is empty, standard App/Edit/Window menus provide native
+/// lifecycle, editing, and window shortcuts without a custom menu bar.
 pub(super) fn build_main_menu<F>(
     mtm: MainThreadMarker,
+    window: &NSWindow,
     menus: &[DesktopMenu],
     dispatch: F,
 ) -> NativeMenu
@@ -39,6 +39,7 @@ where
     if menus.is_empty() {
         bar.addItem(&submenu_item(mtm, &default_app_menu(mtm)));
         bar.addItem(&submenu_item(mtm, &default_edit_menu(mtm)));
+        bar.addItem(&submenu_item(mtm, &default_window_menu(mtm, window)));
         return NativeMenu {
             menu: bar,
             _target: None,
@@ -136,6 +137,61 @@ fn default_edit_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
     menu.addItem(&standard_item(mtm, "Paste", sel!(paste:), "v"));
     menu.addItem(&standard_item(mtm, "Select All", sel!(selectAll:), "a"));
     menu
+}
+
+fn default_window_menu(mtm: MainThreadMarker, window: &NSWindow) -> Retained<NSMenu> {
+    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Window"));
+    menu.addItem(&window_item(
+        mtm,
+        window,
+        "Close Window",
+        sel!(performClose:),
+        "w",
+    ));
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    menu.addItem(&window_item(
+        mtm,
+        window,
+        "Minimize",
+        sel!(performMiniaturize:),
+        "m",
+    ));
+    menu.addItem(&window_item(mtm, window, "Zoom", sel!(performZoom:), ""));
+    let (title, action, key, modifiers) = fullscreen_command();
+    let fullscreen = window_item(mtm, window, title, action, key);
+    fullscreen.setKeyEquivalentModifierMask(modifiers);
+    menu.addItem(&fullscreen);
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    menu.addItem(&standard_item(
+        mtm,
+        "Bring All to Front",
+        sel!(arrangeInFront:),
+        "",
+    ));
+    menu
+}
+
+fn fullscreen_command() -> (&'static str, Sel, &'static str, NSEventModifierFlags) {
+    (
+        "Toggle Full Screen",
+        sel!(toggleFullScreen:),
+        "f",
+        NSEventModifierFlags::Control | NSEventModifierFlags::Command,
+    )
+}
+
+fn window_item(
+    mtm: MainThreadMarker,
+    window: &NSWindow,
+    title: &str,
+    action: Sel,
+    key_equivalent: &str,
+) -> Retained<NSMenuItem> {
+    let item = standard_item(mtm, title, action, key_equivalent);
+    // SAFETY: This native menu and its weak target belong to the same live
+    // window session; AppKit does not retain menu targets.
+    unsafe { item.setTarget(Some(window)) };
+    item
 }
 
 fn standard_item(
@@ -245,10 +301,25 @@ fn menu_command_script(command: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
+    use objc2::sel;
+    use objc2_app_kit::NSEventModifierFlags;
+
     #[test]
     fn command_script_embeds_id_as_json() {
         let script = super::menu_command_script("open-preferences");
         assert!(script.contains("webui:menu-command"));
         assert!(script.contains("id:\"open-preferences\""));
+    }
+
+    #[test]
+    fn default_window_fullscreen_uses_native_toggle_and_standard_shortcut() {
+        let (title, action, key, modifiers) = super::fullscreen_command();
+        assert_eq!(title, "Toggle Full Screen");
+        assert_eq!(action, sel!(toggleFullScreen:));
+        assert_eq!(key, "f");
+        assert_eq!(
+            modifiers,
+            NSEventModifierFlags::Command | NSEventModifierFlags::Control
+        );
     }
 }

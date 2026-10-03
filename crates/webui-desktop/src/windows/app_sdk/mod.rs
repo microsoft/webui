@@ -26,6 +26,7 @@ use bindings::Microsoft::UI::Windowing::{
     AppWindow, AppWindowPresenter, AppWindowPresenterKind, AppWindowTitleBar, IconShowOptions,
     TitleBarHeightOption,
 };
+pub(super) use metrics::Metrics;
 pub(super) use runtime::Runtime;
 
 pub(super) struct WindowFrame {
@@ -44,13 +45,17 @@ struct Caption {
 
 impl WindowFrame {
     pub(super) fn attach(runtime: &Runtime, hwnd: HWND, options: &WindowOptions) -> Result<Self> {
+        let trace = super::startup::StartupTrace::begin();
         let id = runtime
             .window_id(hwnd)
             .context("cannot map HWND to WindowId")?;
+        trace.mark("caption_window_id");
         let window = AppWindow::GetFromWindowId(id).context("cannot attach AppWindow to HWND")?;
+        trace.mark("caption_app_window");
         window
             .AssociateWithDispatcherQueue(runtime.dispatcher())
             .context("cannot associate AppWindow with its UI dispatcher")?;
+        trace.mark("caption_dispatcher");
         let overlay = if matches!(
             options.titlebar,
             TitlebarStyle::Overlay { .. } | TitlebarStyle::HiddenInset
@@ -58,15 +63,19 @@ impl WindowFrame {
             let titlebar = window
                 .TitleBar()
                 .context("cannot acquire AppWindow titlebar")?;
+            trace.mark("caption_titlebar");
             titlebar
                 .SetExtendsContentIntoTitleBar(true)
                 .context("cannot extend content into native titlebar")?;
+            trace.mark("caption_extended");
             titlebar
                 .SetPreferredHeightOption(height_option(options.caption_button_size))
                 .context("cannot set native titlebar height")?;
+            trace.mark("caption_height");
             titlebar
                 .SetIconShowOptions(IconShowOptions::HideIconAndSystemMenu)
                 .context("cannot hide native titlebar icon")?;
+            trace.mark("caption_icon");
             Some(Caption {
                 titlebar,
                 input: InputNonClientPointerSource::GetForWindowId(id)
@@ -86,21 +95,19 @@ impl WindowFrame {
             window,
             overlay,
         };
+        trace.mark("caption_constructed");
         frame
             .refresh(hwnd)
             .context("cannot initialize titlebar input regions")?;
+        trace.mark("caption_refreshed");
         Ok(frame)
     }
 
-    pub(super) fn install_metrics(&self, webview: &ICoreWebView2) -> Result<()> {
-        if let Some(metrics) = self
-            .overlay
+    pub(super) fn metrics_script(&self) -> Option<String> {
+        self.overlay
             .as_ref()
             .and_then(|caption| caption.metrics.get())
-        {
-            crate::windows::webview::add_document_script(webview, &metrics.script())?;
-        }
-        Ok(())
+            .map(metrics::Metrics::script)
     }
 
     pub(super) fn publish_metrics(&self, webview: &ICoreWebView2) -> Result<()> {
