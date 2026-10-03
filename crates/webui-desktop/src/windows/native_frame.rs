@@ -11,8 +11,10 @@ use windows::Win32::UI::{Controls::MARGINS, HiDpi, WindowsAndMessaging as wm};
 
 use super::app_sdk::{self, Metrics, Runtime};
 mod browser;
+mod geometry;
 use crate::{CaptionButtonSize, TitlebarStyle, WindowOptions};
 pub(super) use browser::{resize_browser, BrowserWindow};
+pub(super) use geometry::{prepare_startup_window, resize_client};
 
 pub(super) fn enabled(options: &WindowOptions) -> bool {
     cfg!(feature = "native-dwm-frame")
