@@ -1752,11 +1752,11 @@ export class TemplateElement extends HTMLElement {
   // ── Template parsing ──────────────────────────────────────────
 
   private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
-    return cloneTemplateContent(meta);
+    return cloneTemplateContent(meta, this.ownerDocument);
   }
 
   private $createStagingRoot(meta: TemplateBlockMeta): HTMLElement {
-    const wrapper = document.createElement('div');
+    const wrapper = this.ownerDocument.createElement('div');
     const fragment = this.$parseTemplate(meta);
     wrapper.appendChild(fragment);
     customElements.upgrade(wrapper);
@@ -1770,7 +1770,7 @@ export class TemplateElement extends HTMLElement {
       root.appendChild(first);
       return;
     }
-    const fragment = document.createDocumentFragment();
+    const fragment = this.ownerDocument.createDocumentFragment();
     while (stagingRoot.firstChild) {
       fragment.appendChild(stagingRoot.firstChild);
     }
@@ -1806,6 +1806,7 @@ export class TemplateElement extends HTMLElement {
   // ═══════════════════════════════════════════════════════════════
 
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
+    const ownerDocument = this.ownerDocument;
     const instance: TemplateInstance = {
       scope, container: root as ParentNode & Node, nodes: childNodesArray(root),
       texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
@@ -1840,8 +1841,8 @@ export class TemplateElement extends HTMLElement {
         let node: Node;
         let end: Comment | undefined;
         if (raw) {
-          const start = document.createComment(rawMarker(rawIndex));
-          end = document.createComment(rawMarker(rawIndex, true));
+          const start = ownerDocument.createComment(rawMarker(rawIndex));
+          end = ownerDocument.createComment(rawMarker(rawIndex, true));
           rawIndex++;
           instance.texts.push({
             node: start,
@@ -1853,7 +1854,7 @@ export class TemplateElement extends HTMLElement {
           });
           node = start;
         } else {
-          const textNode = document.createTextNode('');
+          const textNode = ownerDocument.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope });
           node = textNode;
         }
@@ -1876,7 +1877,7 @@ export class TemplateElement extends HTMLElement {
         const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        const anchor = document.createComment('');
+        const anchor = ownerDocument.createComment('');
         instance.conds.push({
           condition: condition as CompiledCondition,
           blockIndex,
@@ -1902,7 +1903,7 @@ export class TemplateElement extends HTMLElement {
         const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        const anchor = document.createComment('');
+        const anchor = ownerDocument.createComment('');
         const binding: RepeatBinding = {
           markerId: i, collection, itemVar, blockIndex,
           container: parent as ParentNode & Node, start: anchor, end: null,
@@ -1962,6 +1963,7 @@ export class TemplateElement extends HTMLElement {
     scope?: ScopeFrame,
     pathStart = 0,
   ): TemplateInstance {
+    const ownerDocument = this.ownerDocument;
     const instance: TemplateInstance = {
       scope,
       container: (pathStart > 0 ? ssrRoot.parentNode : ssrRoot) as (ParentNode & Node) | null,
@@ -2058,7 +2060,7 @@ export class TemplateElement extends HTMLElement {
           }
           let textNode = previous?.nodeType === 3 ? previous as Text : null;
           if (textNode === null) {
-            textNode = document.createTextNode('');
+            textNode = ownerDocument.createTextNode('');
             ssrParent.insertBefore(textNode, insertRef);
           }
           instance.texts.push({ node: textNode, parts, scope });
@@ -2096,7 +2098,7 @@ export class TemplateElement extends HTMLElement {
           condAnchor = marker;
         } else {
           // No marker — insert anchor at the slot position
-          condAnchor = document.createComment('');
+          condAnchor = ownerDocument.createComment('');
           const [, beforeIndex] = slotMeta;
           const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
           ssrParent.insertBefore(condAnchor, insertRef);
@@ -2159,7 +2161,7 @@ export class TemplateElement extends HTMLElement {
           anchor = marker;
         } else {
           // No marker — insert anchor at the slot position for client-created content
-          anchor = document.createComment('');
+          anchor = ownerDocument.createComment('');
           const [, beforeIndex] = slotMeta;
           const tplParent = tplElements[parentIndex];
           const staticCount = tplParent ? tplParent.childNodes.length : 0;
@@ -2207,7 +2209,7 @@ export class TemplateElement extends HTMLElement {
             } else {
               const itemParent = itemMarkers[j].parentNode;
               const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
-              const wrapper = document.createElement('div');
+              const wrapper = ownerDocument.createElement('div');
               let cursor = itemMarkers[j].nextSibling;
               while (cursor && cursor !== nextBound) {
                 const next = cursor.nextSibling;
@@ -2347,7 +2349,7 @@ export class TemplateElement extends HTMLElement {
     // Multi-root, text-only, or root-level structural content needs the full range.
     const condNodes = this.$collectConditionalRange(condAnchor);
     if (condNodes.length === 0) return null;
-    const wrapper = document.createElement('div');
+    const wrapper = this.ownerDocument.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
     const inst = this.$hydrate(wrapper, blockMeta, tplDom, scope);
     inst.nodes = childNodesArray(wrapper);
@@ -2883,7 +2885,7 @@ export class TemplateElement extends HTMLElement {
       const first = instance.nodes[0] ?? null;
       const container = first?.parentNode as (ParentNode & Node) | null;
       if (first && container) {
-        const anchor = document.createComment('');
+        const anchor = this.ownerDocument.createComment('');
         container.insertBefore(anchor, first);
         this.$swapOwnedRange(c.owner, instance.nodes, anchor);
         c.anchor = anchor;

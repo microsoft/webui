@@ -28,9 +28,12 @@ const EMPTY_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze
 const NO_LINK_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
 const templateContentCache = new WeakMap<TemplateBlockMeta, TemplateContent>();
 
-/** Clone cached template DOM for one client-created block instance. */
-export function cloneTemplateContent(meta: TemplateBlockMeta): DocumentFragment {
-  return getTemplateFragment(meta).cloneNode(true) as DocumentFragment;
+/** Import cached template DOM into the document that will own the live instance. */
+export function cloneTemplateContent(
+  meta: TemplateBlockMeta,
+  ownerDocument: Document,
+): DocumentFragment {
+  return ownerDocument.importNode(getTemplateFragment(meta), true);
 }
 
 /** Return cached, context-preserving template DOM for SSR path mapping. */
