@@ -20,6 +20,7 @@ class TestOwnerProbe extends WebUIElement {
 TestOwnerProbe.define('test-owner-probe');
 
 class TestOwnerElement extends WebUIElement {
+  @observable label = 'initial';
   @observable showConditional = true;
   @observable items = [{ id: 'first' }];
 }
