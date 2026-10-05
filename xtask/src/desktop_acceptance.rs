@@ -20,9 +20,9 @@ const COMMANDS: &[(&str, &[&str])] = &[
     (
         "node",
         &[
-            "packages/webui-desktop/scripts/sync-bootstrap.mjs",
+            "packages/webui-desktop/scripts/stage-rust-assets.mjs",
             "--check",
-            "crates/webui-desktop/src/generated/ipc",
+            "target/webui-desktop-assets/ipc",
         ],
     ),
     (

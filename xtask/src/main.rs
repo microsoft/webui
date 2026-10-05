@@ -4,6 +4,7 @@
 mod build_examples;
 mod build_wasm;
 mod desktop_acceptance;
+mod desktop_assets;
 mod desktop_tests;
 mod dev;
 mod e2e;
@@ -52,28 +53,36 @@ fn main() -> ExitCode {
         #[cfg(feature = "windows-app-sdk-tools")]
         Some("windows-app-sdk-bindings") => windows_app_sdk::run(args.get(2)),
         Some("check") => check(),
+        Some("desktop-assets") => desktop_assets::run(),
+        Some("package-check") => match desktop_assets::package_check() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("package check failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some("fmt") => run_steps(&[Step::FMT]),
-        Some("clippy") => run_steps(&[Step::CLIPPY]),
+        Some("clippy") => with_desktop_assets(|| run_steps(&[Step::CLIPPY])),
         Some("deny") => run_steps(&[Step::DENY]),
-        Some("test") => run_steps(&[Step::TEST]),
-        Some("test-desktop") => run_steps(&[Step::TEST_DESKTOP]),
-        Some("desktop-acceptance") => match desktop_acceptance::run() {
+        Some("test") => with_desktop_assets(|| run_steps(&[Step::TEST])),
+        Some("test-desktop") => with_desktop_assets(|| run_steps(&[Step::TEST_DESKTOP])),
+        Some("desktop-acceptance") => with_desktop_assets(|| match desktop_acceptance::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("desktop acceptance failed: {error}");
                 ExitCode::FAILURE
             }
-        },
-        Some("native-ipc") => native_ipc::run(&args[2..]),
-        Some("build") => run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES]),
+        }),
+        Some("native-ipc") => with_desktop_assets(|| native_ipc::run(&args[2..])),
+        Some("build") => with_desktop_assets(|| run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES])),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
         Some("docs") => run_steps(&[Step::DOCS]),
-        Some("bench") => {
+        Some("bench") => with_desktop_assets(|| {
             let target = args.get(2).map(|s| s.as_str());
             let extra_args: Vec<&str> = args.iter().skip(3).map(String::as_str).collect();
             bench(target, &extra_args)
-        }
+        }),
         Some("run") => {
             let integration = args.get(2).map(|s| s.as_str());
             let app = args.get(3).map(|s| s.as_str());
@@ -147,6 +156,8 @@ fn usage() -> ExitCode {
         "Usage: cargo xtask <COMMAND>\n\n\
          Commands:\n  \
            check   Run all checks (fmt, clippy, deny, test, build, bench validate, docs)\n  \
+           desktop-assets  Build desktop browser assets into target/ for Cargo consumers\n  \
+           package-check  Build transient desktop assets and verify all Cargo packages\n  \
            fmt     Check formatting\n  \
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
@@ -666,6 +677,14 @@ fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
 fn check() -> ExitCode {
     let total_start = Instant::now();
 
+    if let Err(error) = desktop_assets::generate() {
+        eprintln!(
+            "  {} Desktop browser asset generation failed: {error}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
     // Phase 1: Sequential lint checks (fail-fast)
     eprintln!("\n{} Phase 1 — lint", console::style("▸").cyan().bold());
     if run_steps(&[
@@ -701,6 +720,17 @@ fn check() -> ExitCode {
         console::style(format!("({total:.1}s)")).dim(),
     );
     ExitCode::SUCCESS
+}
+
+fn with_desktop_assets(action: impl FnOnce() -> ExitCode) -> ExitCode {
+    if let Err(error) = desktop_assets::generate() {
+        eprintln!(
+            "  {} Desktop browser asset generation failed: {error}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+    action()
 }
 
 // ── Proto generation ────────────────────────────────────────────────────
@@ -833,9 +863,9 @@ impl Step {
             run_command_quiet(
                 "node",
                 &[
-                    "packages/webui-desktop/scripts/sync-bootstrap.mjs",
+                    "packages/webui-desktop/scripts/stage-rust-assets.mjs",
                     "--check",
-                    "crates/webui-desktop/src/generated/ipc",
+                    "target/webui-desktop-assets/ipc",
                 ],
                 None,
             )

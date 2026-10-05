@@ -263,7 +263,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
 pub(super) fn prove_child_isolation() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = root.join("tests/fixtures/linux-local-isolation.c");
-    let mediator = root.join("src/generated/ipc/linux-local-mediator.js");
+    let mediator =
+        std::path::Path::new(env!("WEBUI_DESKTOP_IPC_ASSET_DIR")).join("linux-local-mediator.js");
     let temporary = tempfile::tempdir()?;
     let executable = temporary.path().join("linux-local-isolation");
     let flags = Command::new("pkg-config")

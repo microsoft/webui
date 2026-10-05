@@ -367,6 +367,10 @@ Press and desktop are opt-in native command sidecars. The Rust CLI discovers
 their installed binaries, verifies compatible versions, and launches them
 directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
+Desktop browser IPC assets are compiled from their TypeScript source into
+build output, not retained as generated source files. Release staging includes
+those compiled bytes in the Rust crate archive, so downstream Cargo builds
+remain self-contained and do not require a JavaScript toolchain.
 
 ### Desktop boundary
 

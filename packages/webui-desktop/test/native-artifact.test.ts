@@ -12,10 +12,15 @@ import { defaultLimits, type NativeIpcBootstrap } from '../src/index.js';
 import { schema, save, item, frame, IpcFrame, Kind, turn } from './helpers.js';
 
 test('built runtime and bootstrap admit exactly nine native hello fields and complete Save', async () => {
+  const sizeLimits = new Map([
+    ['native-bootstrap.js', 9464],
+    ['desktop-runtime.js', 33167],
+  ]);
   for (const name of ['native-bootstrap.js', 'desktop-runtime.js']) {
     const bundled = readFileSync(`dist/${name}`);
-    const previous = readFileSync(resolve('../../crates/webui-desktop/src/generated/ipc', name));
-    assert(bundled.byteLength <= previous.byteLength + 1024, `Default artifact grew unexpectedly: ${name}`);
+    const staged = readFileSync(resolve('../../target/webui-desktop-assets/ipc', name));
+    assert.deepEqual(bundled, staged);
+    assert(bundled.byteLength <= sizeLimits.get(name)!, `Default artifact grew unexpectedly: ${name}`);
     assert.equal(bundled.includes(Buffer.from('ipcDataResult')), false);
   }
   const artifact = readFileSync('dist/native-bootstrap.js', 'utf8');
@@ -99,8 +104,8 @@ test('built runtime and bootstrap admit exactly nine native hello fields and com
 test('only the dedicated self-contained local artifacts negotiate and deliver native frames', async () => {
   for (const name of ['local-native-bootstrap.js', 'local-desktop-runtime.js']) {
     const built = readFileSync(`dist/${name}`);
-    const checkedIn = readFileSync(resolve('../../crates/webui-desktop/src/generated/ipc', name));
-    assert.deepEqual(built, checkedIn);
+    const staged = readFileSync(resolve('../../target/webui-desktop-assets/ipc', name));
+    assert.deepEqual(built, staged);
   }
   const bundledRuntime = readFileSync('dist/desktop-runtime.js', 'utf8');
   const bundledBootstrap = readFileSync('dist/native-bootstrap.js', 'utf8');

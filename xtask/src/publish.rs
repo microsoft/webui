@@ -1476,7 +1476,10 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
     args.push("--no-verify");
     args.push("--allow-dirty");
 
-    run_command_quiet("cargo", &args, None).map_err(|e| format!("cargo package failed: {e}"))?;
+    crate::desktop_assets::stage_built_assets(root)?;
+    crate::desktop_assets::with_packaged_assets(root, || {
+        run_command_quiet("cargo", &args, None).map_err(|e| format!("cargo package failed: {e}"))
+    })?;
 
     for crate_name in &publishable {
         eprintln!(

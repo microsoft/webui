@@ -20,7 +20,7 @@
   "scripts": {
     "build": "tsc && node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
+    "test": "pnpm build && node scripts/stage-rust-assets.mjs --write && tsc -p tsconfig.test.json && node --test dist-test/**/*.test.js"
   },
   "dependencies": {},
   "optionalDependencies": {

@@ -33,8 +33,14 @@ use super::ipc_control::{self, Control, MAX_CONTROL_BYTES};
 const WORLD: &str = "webui.local.ipc.private";
 const CONTROL_HANDLER: &str = "webuiDesktopIpc";
 const DATA_HANDLER: &str = "webuiDesktopIpcData";
-const MAIN_ENTRY: &str = include_str!("../generated/ipc/linux-local-entry.js");
-const PRIVATE_MEDIATOR: &str = include_str!("../generated/ipc/linux-local-mediator.js");
+const MAIN_ENTRY: &str = include_str!(concat!(
+    env!("WEBUI_DESKTOP_IPC_ASSET_DIR"),
+    "/linux-local-entry.js"
+));
+const PRIVATE_MEDIATOR: &str = include_str!(concat!(
+    env!("WEBUI_DESKTOP_IPC_ASSET_DIR"),
+    "/linux-local-mediator.js"
+));
 
 thread_local! {
     static TARGETS: RefCell<HashMap<u64, Weak<GtkLocalIpc>>> = RefCell::new(HashMap::new());

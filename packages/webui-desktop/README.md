@@ -313,7 +313,12 @@ The TypeScript build emits normal ESM and declarations under `dist/`.
 `scripts/build.mjs` emits deterministic browser artifacts:
 
 - `dist/native-bootstrap.js`: self-contained document-start IIFE;
-- `dist/desktop-runtime.js`: self-contained ESM runtime for a reserved SDK asset.
+- `dist/desktop-runtime.js`: self-contained ESM runtime for a reserved SDK asset;
+- `dist/local-native-bootstrap.js`: local-server native carrier bootstrap;
+- `dist/local-desktop-runtime.js`: local-server native carrier runtime.
+
+`scripts/stage-rust-assets.mjs` also bundles the two Linux isolated-world entry
+points while staging the complete Rust asset set.
 
 The canonical envelope source is
 `crates/webui-desktop/proto/webui_desktop.proto`. `generate-wire.mjs` updates the
@@ -322,19 +327,18 @@ fixed framework envelope helpers. Application payload codecs are emitted by
 writer helpers. No proto parser, compiler, Node API, base64 codec, third-party
 protobuf runtime, or JSON application DTO code ships in the runtime.
 
-Native embedding is an **explicit separate operation**, never a side effect of
-the package build:
+Repository builds stage the deterministic browser artifacts outside the source
+tree for Rust to embed:
 
 ```sh
-node scripts/sync-bootstrap.mjs --write ../../crates/webui-desktop/src/generated/ipc
-node scripts/sync-bootstrap.mjs --check ../../crates/webui-desktop/src/generated/ipc
+cargo xtask desktop-assets
+node scripts/stage-rust-assets.mjs --check ../../target/webui-desktop-assets/ipc
 ```
 
-The SDK integrator owns that destination, checks in both artifacts, embeds them
-from inside the published crate, and serves identical reserved assets for source
-and bundle modes. `--check` compares bytes without rewriting them. The parent
-workspace build should run `tsc && node scripts/build.mjs`; package manifest,
-publish wiring and native embedding are integration-owned.
+Generated JavaScript is never committed. Repository Cargo builds copy the
+staged bytes into `OUT_DIR`; release packaging temporarily adds the same bytes
+to the Rust crate archive so downstream Cargo consumers do not need Node,
+pnpm, or esbuild. `--check` compares bytes without rewriting them.
 
 Tests use real `node:test`, generated WebUI payload codecs, bounded fake transports,
 fake native channels, compile-time negative assertions, and the actual built

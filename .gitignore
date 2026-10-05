@@ -24,3 +24,4 @@ packages/webui/bin/webui.exe
 
 # Built from source by PR FFI checks.
 crates/webui-ffi/tests/fixtures/protocol.bin
+crates/webui-desktop/assets/ipc/

@@ -47,6 +47,9 @@ mod hydration;
 mod icon_path;
 #[cfg(feature = "application-ipc")]
 pub mod ipc;
+#[cfg(test)]
+#[path = "../runtime/ipc_asset_build.rs"]
+mod ipc_asset_build_tests;
 #[cfg(feature = "application-ipc")]
 mod ipc_assets;
 #[cfg(feature = "local-server")]

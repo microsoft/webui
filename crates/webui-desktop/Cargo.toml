@@ -10,8 +10,26 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "desktop", "webview", "ipc", "ssr"]
 categories = ["gui", "web-programming"]
-# The native acceptance fixture uses local-only test utilities; keep it out of the crate archive.
-exclude = ["tests/fixtures/native-ipc/**"]
+include = [
+    "/assets/ipc/**",
+    "/benches/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/runtime/**",
+    "/src/**",
+    "/tests/*.rs",
+    "/tests/public_api/**",
+    "/tests/support/**",
+    "/tests/fixtures/*.c",
+    "/tests/fixtures/*.js",
+    "/tests/fixtures/*.mjs",
+    "/tests/fixtures/*.py",
+    "/tests/fixtures/*.rs",
+    "/tests/fixtures/*.ts",
+    "/tests/fixtures/linux-local-server/**",
+    "/tests/fixtures/typed-ipc/**",
+]
 
 [lib]
 name = "webui_desktop"
