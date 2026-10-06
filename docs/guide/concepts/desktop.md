@@ -408,7 +408,10 @@ through a narrow same-origin host endpoint or an explicitly generated
 application IPC registry. The `@microsoft/webui-desktop/native` TypeScript
 entry is required only for that opt-in typed application IPC transport; these
 host-only services do not import it. Never forward an arbitrary
-renderer-supplied file path to the document opener.
+renderer-supplied file path to the document opener. Same-origin alone does not
+authenticate another local process that can connect to the loopback port:
+protect sensitive HTTP actions with a host-generated per-window capability, as
+the example does, or use the document-bound authenticated IPC transport.
 
 The runnable WebUI 0.0.30
 [`native-services` example](https://github.com/microsoft/webui/tree/main/examples/app/native-services)

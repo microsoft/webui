@@ -3,6 +3,9 @@
 
 import { WebUIElement, attr } from '@microsoft/webui-framework';
 
+const capability = new URLSearchParams(location.search).get('native-capability');
+if (capability) history.replaceState(null, '', location.pathname);
+
 interface ActionResult {
   status: string;
   detail: string;
@@ -79,9 +82,10 @@ export class NativeServicesApp extends WebUIElement {
   }
 
   private request(path: string): Promise<Response> {
+    if (!capability) return Promise.reject(new Error('Native host capability is unavailable.'));
     return fetch(path, {
       method: 'POST',
-      headers: { 'X-WebUI-Native-Demo': '1' },
+      headers: { 'X-WebUI-Native-Capability': capability },
     });
   }
 

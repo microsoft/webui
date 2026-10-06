@@ -3,15 +3,18 @@
 
 import { expect, test } from '@playwright/test';
 
+const capability = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const demoUrl = `/?native-capability=${capability}`;
+
 test('reports picker cancellation without treating it as an error', async ({ page }) => {
   await page.route('**/api/picker', route => {
-    expect(route.request().headers()['x-webui-native-demo']).toBe('1');
+    expect(route.request().headers()['x-webui-native-capability']).toBe(capability);
     return route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({ status: 'Picker cancelled', detail: 'No directory was selected.' }),
     });
   });
-  await page.goto('/');
+  await page.goto(demoUrl);
   await page.getByRole('button', { name: 'Choose directory' }).click();
   await expect(page.getByRole('heading', { name: 'Picker cancelled' })).toBeVisible();
   await expect(page.getByText('No directory was selected.')).toBeVisible();
@@ -25,7 +28,7 @@ test('previews capture and enables clipboard only after success', async ({ page 
       'base64',
     ),
   }));
-  await page.goto('/');
+  await page.goto(demoUrl);
   const copy = page.getByRole('button', { name: 'Copy latest capture' });
   await expect(copy).toBeDisabled();
   await page.getByRole('button', { name: 'Capture this view' }).click();
@@ -53,7 +56,7 @@ test('clears a prior capture when recapture fails', async ({ page }) => {
       body: JSON.stringify({ status: 'Unavailable', detail: 'The second capture failed.' }),
     });
   });
-  await page.goto('/');
+  await page.goto(demoUrl);
   const capture = page.getByRole('button', { name: 'Capture this view' });
   const copy = page.getByRole('button', { name: 'Copy latest capture' });
   await capture.click();
@@ -70,7 +73,7 @@ test('surfaces a typed host failure and restores controls', async ({ page }) => 
     contentType: 'application/json',
     body: JSON.stringify({ status: 'Unavailable', detail: 'Native dialogs are unsupported on this platform.' }),
   }));
-  await page.goto('/');
+  await page.goto(demoUrl);
   await page.getByRole('button', { name: 'Show error' }).click();
   await expect(page.getByRole('heading', { name: 'Action failed' })).toBeVisible();
   await expect(page.getByText('Native dialogs are unsupported on this platform.')).toBeVisible();

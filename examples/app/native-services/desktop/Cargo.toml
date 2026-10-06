@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 futures-executor = { workspace = true }
+getrandom = { workspace = true }
 microsoft-webui-desktop = { path = "../../../../crates/webui-desktop", features = [
     "native-picker",
     "native-dialogs",

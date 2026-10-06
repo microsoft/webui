@@ -3,7 +3,10 @@
 This WebUI 0.0.30 app demonstrates the opt-in Rust-host directory picker,
 native dialogs, visible-webview PNG capture, and verified PNG clipboard write.
 It deliberately uses four narrow same-origin HTTP actions rather than granting
-the page generic native IPC or filesystem access.
+the page generic native IPC or filesystem access. Each launch generates a
+private capability in the native startup URL, removes it from the visible URL
+after load, and requires it on every action so another local process cannot
+invoke the loopback endpoints by copying a fixed request header.
 
 On macOS or Windows, from the repository root:
 

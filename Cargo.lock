@@ -2582,6 +2582,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-executor",
+ "getrandom 0.4.3",
  "microsoft-webui-desktop",
  "microsoft-webui-handler",
  "microsoft-webui-tokens",
