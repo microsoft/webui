@@ -447,9 +447,8 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 /// Writes `protocol.bin`, any external CSS files, and static component assets
 /// to `out_dir`.
 /// Creates `out_dir` if it does not exist. Component dependencies publish before
-/// roots, and unchanged component inputs keep their modification times. Old
-/// immutable payloads remain readable until [`component_asset_output::prune`]
-/// is called after consumers of older roots have finished.
+/// roots, unchanged component inputs keep their modification times, and existing
+/// files outside the current build are left alone.
 ///
 /// # Errors
 ///
@@ -984,9 +983,6 @@ fn validate_output_file_names(
     let mut names =
         HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
     names.insert(protocol_name.to_os_string());
-    if !result.component_asset_files.is_empty() {
-        names.insert(component_asset_output::manifest_path(Path::new("")).into_os_string());
-    }
     for (name, _) in &result.css_files {
         let file_name = OsString::from(name);
         if !names.insert(file_name.clone()) {
@@ -2774,7 +2770,7 @@ mod tests {
     }
 
     #[test]
-    fn build_to_disk_preserves_noop_inputs_and_supports_quiescent_cleanup() {
+    fn build_to_disk_preserves_noop_inputs_and_leaves_older_payloads() {
         let app = create_app_dir(&[
             ("index.html", "<main>Entry</main>"),
             ("lazy-panel.html", "<p>Initial</p>"),
@@ -2799,12 +2795,11 @@ mod tests {
             )
             .unwrap();
             build_to_disk(options(), out.path()).unwrap();
-            component_asset_output::prune(out.path()).unwrap();
-            assert_eq!(
-                fs::read_dir(out.path().join("components")).unwrap().count(),
-                1
-            );
         }
+        assert_eq!(
+            fs::read_dir(out.path().join("components")).unwrap().count(),
+            6
+        );
     }
 
     #[test]

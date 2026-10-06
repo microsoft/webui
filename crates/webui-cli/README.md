@@ -111,19 +111,6 @@ It closes its NDJSON body after sending the resume for the final descriptor;
 the CLI's final `advance` completes the response. There is no terminal control
 command.
 
-### `webui prune-component-assets`
-
-After all bundler/HTTP readers and publishers stop or are coordinated, remove
-obsolete payloads while retaining current component inputs:
-
-```bash
-webui prune-component-assets --component-assets-out ./.webui --quiescent
-```
-
-The flag confirms quiescence; it does not stop other processes. See the
-[cleanup reference](https://microsoft.github.io/webui/guide/cli/#webui-prune-component-assets)
-for the complete lifecycle and bookkeeping requirements.
-
 ### `webui inspect`
 
 Convert a compiled protocol to JSON for debugging.

@@ -246,12 +246,14 @@ features, not dependencies of the SSR handler.
 Builds without route directives may request stand-alone component asset roots.
 The compiler emits content-addressed ESM inputs for asset-owned components plus
 thin stable root entries that statically import their conservative
-template/style closures. Publication writes immutable dependencies before
-switching roots. Immutable dependencies remain available until the publication
-owner explicitly retires them after readers of older roots finish; neither time
-nor a generation count proves quiescence. CLI and library hosts share this
-publication contract. Development HTTP delivery reads dependencies from the
-publication directory instead of retaining every generation in memory.
+template/style closures. Publication writes dependencies before overwriting
+stable roots and preserves unchanged files. The output directory remains owned
+by the application build: WebUI does not delete older generated inputs or other
+files, and a developer may clear the disposable build directory when a clean
+output is needed. Hosts serialize publishers targeting the same directory. CLI
+and library hosts share this publication contract. Development HTTP delivery
+reads dependencies from the generated input directory instead of retaining
+their bytes in memory.
 These files describe semantic ownership
 and dependency edges, but do not choose production chunks, public paths,
 caching, or delivery. The application bundler owns those decisions and may
@@ -480,7 +482,7 @@ engineering another; they are not public application-authoring guides.
 | --- | --- |
 | Protobuf fields and fragment shapes | `crates/webui-protocol/proto/webui.proto` |
 | Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `packages/webui/src/projection/{graph,manifest,diagnostics}.ts`, `crates/webui-protocol/src/projection_manifest.rs` |
-| Component asset ownership, registration, and publication lifetime | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
+| Component asset ownership, registration, and publication | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
 | Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/guide/concepts/directives/` |
 | State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/guide/concepts/state-management/index.md`, `docs/guide/concepts/directives/if.md` |
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |

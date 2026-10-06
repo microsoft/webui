@@ -36,27 +36,21 @@ lifetime; application promise eviction is not module-cache invalidation.
 Applications own bundler-specific recovery or explicit document reload.
 Speculation never triggers a reload.
 
-## Publication lifetime
+## Publication
 
-CLI and library writers share dependency-first, per-root atomic publication.
-Immutable payload filenames bind their bytes; existing content-addressed paths
-must compare equal or publication fails. Unchanged files are not staged or
-replaced. A finalizer failure restores prior roots and bookkeeping. Payloads
-stay available even if a reader observed a root during a rolled-back update.
+CLI and library writers share dependency-first publication. Immutable payload
+filenames bind their bytes; existing content-addressed paths must compare equal
+or publication fails. Unchanged files are not staged or replaced. A finalizer
+failure restores stable roots changed by that publication. Immutable payloads
+already made visible remain available to concurrent readers. Hosts must
+serialize publishers targeting the same generated input directory.
 
-Hosts serialize writers to one directory. Immutable dependencies remain on disk
-until the owner explicitly establishes that readers of older roots have
-finished. `prune` removes only obsolete compiler-owned payload paths and requires
-reader/publisher quiescence. No time interval or generation count guarantees
-that property. Persistent disk usage therefore grows until coordinated cleanup;
-there is no automatic finite disk bound for arbitrary uncoordinated readers.
-
-The CLI exposes this operation as `prune-component-assets`, requiring an
-explicit output directory and `--quiescent` acknowledgment. It does not establish
-quiescence itself and refuses cleanup without existing, parseable publication
-bookkeeping.
+The generated input directory is owned by the application build. Publication
+overwrites current stable roots and writes required content-addressed payloads,
+but never deletes older generated inputs or unrelated files. Build pipelines
+that require a clean directory remove and recreate their disposable output
+before building.
 
 The development HTTP server retains current root descriptors in memory and
-reads immutable dependencies from the publication directory. Without an
-explicit output directory, a server-owned temporary directory lasts until
-shutdown. There is no resident cache of historical dependency generations.
+reads payloads from the generated input directory. Without an explicit output
+directory, a server-owned temporary directory lasts until shutdown.

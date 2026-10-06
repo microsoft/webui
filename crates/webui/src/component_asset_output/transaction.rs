@@ -1,16 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use super::{
-    is_owned_file_name, is_root_file, ComponentAssetFile, Context, PublishedFiles, Result,
-    WebUIError,
-};
-use std::collections::HashSet;
+use super::{is_root_file, ComponentAssetFile, Context, Result, WebUIError};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 enum PublishedChange {
-    Created(PathBuf),
+    CreatedRoot(PathBuf),
     Replaced {
         destination: PathBuf,
         backup: PathBuf,
@@ -39,52 +35,73 @@ impl<'a> Publication<'a> {
     ) -> Result<()> {
         for file in files {
             if is_root_file(file) == roots {
-                self.replace(&file.name)?;
+                if roots {
+                    self.replace_root(&file.name)?;
+                } else {
+                    self.publish_payload(&file.name)?;
+                }
             }
         }
         Ok(())
     }
 
-    pub(super) fn remove_stale(
-        &mut self,
-        previous: &PublishedFiles,
-        current: &PublishedFiles,
-    ) -> Result<()> {
-        let current_roots: HashSet<&str> = current.roots.iter().map(String::as_str).collect();
-        for file in &previous.roots {
-            if current_roots.contains(file.as_str())
-                || !is_owned_file_name(file)
-                || file.starts_with("components/")
-            {
-                continue;
-            }
-            let destination = self.output_dir.join(file);
-            if destination.is_file() {
-                self.back_up(file, &destination)?;
-                fs::remove_file(&destination).context("Failed to remove stale component root")?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn replace(&mut self, relative: &str) -> Result<()> {
+    fn publish_payload(&self, relative: &str) -> Result<()> {
         let source = self.temporary_dir.join(relative);
         let destination = self.output_dir.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
-        if destination.exists() {
-            if !destination.is_file() {
-                return Err(WebUIError::InvalidBuildOptions(format!(
-                    "Cannot publish component asset over non-file {}",
-                    destination.display()
-                )));
+        match fs::hard_link(&source, &destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if fs::read(&source).with_context(|| {
+                    format!("Failed to read staged component asset {}", source.display())
+                })? == fs::read(&destination).with_context(|| {
+                    format!(
+                        "Failed to read published component asset {}",
+                        destination.display()
+                    )
+                })? {
+                    Ok(())
+                } else {
+                    Err(WebUIError::InvalidBuildOptions(format!(
+                        "Component asset content hash collision for {}",
+                        destination.display()
+                    )))
+                }
             }
-            self.back_up(relative, &destination)?;
-        } else if !relative.starts_with("components/") {
-            self.changes
-                .push(PublishedChange::Created(destination.clone()));
+            Err(error) => {
+                Err(error).with_context(|| format!("Failed to publish {}", destination.display()))
+            }
+        }
+    }
+
+    fn replace_root(&mut self, relative: &str) -> Result<()> {
+        let source = self.temporary_dir.join(relative);
+        let destination = self.output_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) => {
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(WebUIError::InvalidBuildOptions(format!(
+                        "Cannot publish component asset over non-file or symlink {}",
+                        destination.display()
+                    )));
+                }
+                self.back_up(relative, &destination)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.changes
+                    .push(PublishedChange::CreatedRoot(destination.clone()));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", destination.display()));
+            }
         }
         fs::rename(&source, &destination)
             .with_context(|| format!("Failed to publish {}", destination.display()))
@@ -109,7 +126,7 @@ impl<'a> Publication<'a> {
         let mut failure = None;
         while let Some(change) = self.changes.pop() {
             let result = match change {
-                PublishedChange::Created(destination) => remove_if_file(&destination),
+                PublishedChange::CreatedRoot(destination) => remove_if_file(&destination),
                 PublishedChange::Replaced {
                     destination,
                     backup,

@@ -1567,11 +1567,9 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-For a persistent component input directory, run
-`webui prune-component-assets --component-assets-out ./.webui --quiescent`
-only after all bundler/HTTP readers and publishers have stopped or been
-coordinated. The flag acknowledges quiescence; it does not stop other processes.
-See [component asset cleanup](./guide/cli/#webui-prune-component-assets).
+WebUI overwrites current component roots but does not delete older generated
+payloads or unrelated files from a developer-owned output directory. Remove and
+recreate the disposable directory when a clean build is required.
 
 On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to

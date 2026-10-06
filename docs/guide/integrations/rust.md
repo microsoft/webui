@@ -509,16 +509,10 @@ stable roots and preserves unchanged input modification times. `publish_with()`
 also runs a caller's atomic output finalizer inside the asset rollback boundary.
 Serialize publishers targeting one directory.
 
-Publication, including `build_to_disk()`, retains old immutable dependencies
-because readers may still be resolving previously read roots. After all such
-consumers have finished and while no publishers are running, call
-`webui::component_asset_output::prune(out_dir)` to
-remove obsolete payloads while preserving the current graph and application
-files. Offline build pipelines can prune after each completed consumer build;
-watch pipelines must explicitly coordinate or stop their readers and publishers
-first. Shell-based pipelines can use
-[`webui prune-component-assets`](/guide/cli/#webui-prune-component-assets)
-with the same quiescence requirement.
+Publication, including `build_to_disk()`, overwrites current stable roots but
+does not delete older generated payloads or unrelated files. If your pipeline
+requires a clean output, remove and recreate its disposable build directory
+before calling WebUI.
 
 Load themes with `webui::resolve_theme_path()` and `webui::load_token_file()`.
 When `theme` is set, missing required CSS tokens fail as parser diagnostics

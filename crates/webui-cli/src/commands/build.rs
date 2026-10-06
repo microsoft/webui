@@ -78,19 +78,11 @@ fn validate_output_file_names(
     metafile: Option<&Path>,
 ) -> Result<()> {
     let mut paths = OutputPathSet::with_capacity(
-        1 + usize::from(!result.component_asset_files.is_empty())
-            + result.css_files.len()
+        1 + result.css_files.len()
             + result.component_asset_files.len()
             + usize::from(metafile.is_some()),
     );
     paths.insert(&out_dir.join(protocol_name))?;
-    if !result.component_asset_files.is_empty()
-        && !paths.insert(&component_asset_output::manifest_path(component_assets_out))?
-    {
-        anyhow::bail!(
-            "component asset manifest collides with another build output. Choose a distinct --out or --component-assets-out path."
-        );
-    }
     for (name, _) in &result.css_files {
         if !paths.insert(&out_dir.join(name))? {
             anyhow::bail!(
@@ -108,6 +100,11 @@ fn validate_output_file_names(
         }
     }
     if let Some(metafile) = metafile {
+        component_asset_output::validate_metafile_path(
+            component_assets_out,
+            metafile,
+            &result.component_asset_files,
+        )?;
         if !paths.insert(metafile)? {
             anyhow::bail!(
                 "metafile output '{}' collides with another build output. Choose a distinct --metafile path.",
@@ -648,43 +645,6 @@ mod tests {
         assert!(result.is_err());
         assert!(!out_dir.path().join("protocol.bin").exists());
         assert!(!collision.exists());
-    }
-
-    #[test]
-    fn test_build_rejects_metafile_collision_with_component_asset_manifest() {
-        let app_dir = create_app_dir(&[
-            ("index.html", "<app-shell></app-shell>"),
-            ("app-shell.html", "<div></div>"),
-            ("lazy-panel.html", "<p>Lazy</p>"),
-        ]);
-        let out_dir = TempDir::new().unwrap();
-        let asset_dir = TempDir::new().unwrap();
-        let manifest = component_asset_output::manifest_path(asset_dir.path());
-
-        let result = run(&BuildArgs {
-            app_args: AppArgs {
-                app: app_dir.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: Some(Plugin::WebUI),
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
-                legal_comments: LegalComments::Inline,
-            },
-            out: out_dir.path().to_path_buf(),
-            emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: Some(asset_dir.path().to_path_buf()),
-            metafile: Some(manifest.clone()),
-            theme: None,
-        });
-
-        assert!(result.is_err());
-        assert!(!out_dir.path().join("protocol.bin").exists());
-        assert!(!manifest.exists());
     }
 
     #[cfg(unix)]
