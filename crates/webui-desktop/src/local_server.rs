@@ -7,7 +7,7 @@
 use std::net::TcpListener;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 #[cfg(all(
     feature = "application-ipc",
@@ -96,7 +96,7 @@ impl CloseCallback {
 }
 
 /// Failure to notify the native window that its verified host retired.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum HostCloseError {
     /// The host has not yet revoked this lifetime.
     #[error("host lifetime is still active; help: call revoke() before retry_close()")]
@@ -109,10 +109,16 @@ pub enum HostCloseError {
     },
 }
 
+struct HostCloseState {
+    callback: Option<CloseCallback>,
+    dispatching: bool,
+    result: Option<std::result::Result<(), HostCloseError>>,
+}
+
 struct HostLifetimeInner {
     active: AtomicBool,
-    close: Mutex<Option<CloseCallback>>,
-    close_failed: AtomicBool,
+    close: Mutex<HostCloseState>,
+    close_completed: Condvar,
 }
 
 /// Weak, host-revocable admission signal for one local HTTP window.
@@ -148,10 +154,11 @@ impl Drop for HostCloseRegistration {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if close
+                .callback
                 .as_ref()
                 .is_some_and(|current| current.same(&self.callback))
             {
-                close.take();
+                close.callback.take();
             }
         }
     }
@@ -163,8 +170,12 @@ impl HostLifetime {
     pub fn new() -> (HostLifetimeOwner, Self) {
         let inner = Arc::new(HostLifetimeInner {
             active: AtomicBool::new(true),
-            close: Mutex::new(None),
-            close_failed: AtomicBool::new(false),
+            close: Mutex::new(HostCloseState {
+                callback: None,
+                dispatching: false,
+                result: None,
+            }),
+            close_completed: Condvar::new(),
         });
         (
             HostLifetimeOwner(Arc::clone(&inner)),
@@ -217,13 +228,13 @@ impl HostLifetime {
         if !inner.active.load(Ordering::Acquire) {
             return Err(retired_host());
         }
-        if close.is_some() {
+        if close.callback.is_some() {
             return Err(DesktopError::UnsupportedRuntime {
                 message: "this host lifetime already owns a running desktop window".to_string(),
                 help: "Create one HostLifetime per local-server window".to_string(),
             });
         }
-        *close = Some(callback.clone());
+        close.callback = Some(callback.clone());
         Ok(HostCloseRegistration {
             lifetime: self.clone(),
             callback,
@@ -244,11 +255,7 @@ impl HostLifetimeOwner {
     /// listener bound and call [`Self::retry_close`] deliberately.
     pub fn revoke(&self) -> std::result::Result<(), HostCloseError> {
         if !self.0.active.swap(false, Ordering::AcqRel) {
-            return if self.0.close_failed.load(Ordering::Acquire) {
-                self.dispatch_close()
-            } else {
-                Ok(())
-            };
+            return self.completed_close_result();
         }
         self.dispatch_close()
     }
@@ -271,16 +278,51 @@ impl HostLifetimeOwner {
     }
 
     fn dispatch_close(&self) -> std::result::Result<(), HostCloseError> {
-        let close = self
+        let callback = {
+            let mut close = self
+                .0
+                .close
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            while close.dispatching {
+                close = self
+                    .0
+                    .close_completed
+                    .wait(close)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            close.dispatching = true;
+            close.callback.clone()
+        };
+        let result = callback.as_ref().map_or(Ok(()), CloseCallback::dispatch);
+        let mut close = self
             .0
             .close
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let result = close.as_ref().map_or(Ok(()), CloseCallback::dispatch);
-        self.0
-            .close_failed
-            .store(result.is_err(), Ordering::Release);
+        close.result = Some(result.clone());
+        close.dispatching = false;
+        self.0.close_completed.notify_all();
         result
+    }
+
+    fn completed_close_result(&self) -> std::result::Result<(), HostCloseError> {
+        let mut close = self
+            .0
+            .close
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while close.dispatching || close.result.is_none() {
+            close = self
+                .0
+                .close_completed
+                .wait(close)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        match &close.result {
+            Some(result) => result.clone(),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1208,6 +1250,48 @@ mod tests {
         drop(registration);
         assert!(owner.retry_close().is_ok());
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn concurrent_revoke_waits_for_the_in_flight_close_result() {
+        let (owner, lifetime) = HostLifetime::new();
+        let owner = Arc::new(owner);
+        let (entered_sender, entered_receiver) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let callback_release = Arc::clone(&release);
+        let _registration = lifetime
+            .register_close_fallible(Arc::new(move || {
+                entered_sender.send(()).unwrap();
+                callback_release.wait();
+                Err(HostCloseError::WakeFailed {
+                    message: "injected delayed failure".to_string(),
+                })
+            }))
+            .unwrap();
+
+        let first_owner = Arc::clone(&owner);
+        let first = std::thread::spawn(move || first_owner.revoke());
+        entered_receiver.recv().unwrap();
+
+        let second_owner = Arc::clone(&owner);
+        let (second_sender, second_receiver) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            second_sender.send(second_owner.revoke()).unwrap();
+        });
+        assert!(second_receiver
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+
+        release.wait();
+        assert!(matches!(
+            first.join().unwrap(),
+            Err(HostCloseError::WakeFailed { .. })
+        ));
+        assert!(matches!(
+            second_receiver.recv().unwrap(),
+            Err(HostCloseError::WakeFailed { .. })
+        ));
+        second.join().unwrap();
     }
 
     #[test]
