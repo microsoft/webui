@@ -92,7 +92,7 @@ impl SecureRoot {
                 "path escapes the serving root",
             ));
         }
-        let file = File::open(&path)?;
+        let file = open_node(&path)?;
         let metadata = file.metadata()?;
         if metadata.is_dir() {
             return Ok(OpenedNode::Directory);
@@ -109,6 +109,24 @@ impl SecureRoot {
             length: metadata.len(),
         })
     }
+}
+
+#[cfg(windows)]
+fn open_node(path: &Path) -> std::io::Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_node(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 pub(crate) enum OpenedNode {
