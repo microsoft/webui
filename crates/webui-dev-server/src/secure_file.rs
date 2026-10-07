@@ -30,8 +30,16 @@ impl SecureRoot {
         after_canonicalize: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<Self> {
         let path = std::fs::canonicalize(path)?;
+        let expected_identity = directory_identity(&std::fs::symlink_metadata(&path)?)?;
         after_canonicalize()?;
-        let directory = Arc::new(open_directory_no_follow(&path)?);
+        let directory = open_directory_no_follow(&path)?;
+        if directory_identity(&directory.metadata()?)? != expected_identity {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "serving root changed during initialization",
+            ));
+        }
+        let directory = Arc::new(directory);
         Ok(Self { path, directory })
     }
 
@@ -326,6 +334,19 @@ fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
     Ok(directory)
 }
 
+#[cfg(unix)]
+fn directory_identity(metadata: &std::fs::Metadata) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !metadata.is_dir() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "serving root is not a directory",
+        ));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
 pub(crate) enum OpenedNode {
     File {
         path: PathBuf,
@@ -446,6 +467,30 @@ mod tests {
         });
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_root_directory_replaced_after_canonicalize() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let root_path = directory.path().join("root");
+        let displaced = directory.path().join("displaced");
+        let replacement = directory.path().join("replacement");
+        std::fs::create_dir(&root_path)?;
+        std::fs::create_dir(&replacement)?;
+
+        let result = SecureRoot::new_unix(root_path.clone(), || {
+            std::fs::rename(&root_path, &displaced)?;
+            std::fs::rename(&replacement, &root_path)?;
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == ErrorKind::PermissionDenied
+        ));
         Ok(())
     }
 

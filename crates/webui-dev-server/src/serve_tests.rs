@@ -82,6 +82,35 @@ async fn serves_nested_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[actix_web::test]
+async fn serves_index_files_for_directory_urls() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root_bytes = b"root index";
+    let nested_bytes = b"nested index";
+    std::fs::write(directory.path().join("index.html"), root_bytes)?;
+    std::fs::create_dir(directory.path().join("guide"))?;
+    std::fs::write(directory.path().join("guide/index.html"), nested_bytes)?;
+    let cfg = config(directory.path().to_path_buf(), NotFoundStrategy::Plain);
+
+    let root_response = serve_static_file(
+        &TestRequest::with_uri("/").to_http_request(),
+        Arc::clone(&cfg),
+    )
+    .await;
+    let nested_response =
+        serve_static_file(&TestRequest::with_uri("/guide/").to_http_request(), cfg).await;
+
+    assert_eq!(root_response.status(), StatusCode::OK);
+    assert!(to_bytes(root_response.into_body())
+        .await?
+        .starts_with(root_bytes));
+    assert_eq!(nested_response.status(), StatusCode::OK);
+    assert!(to_bytes(nested_response.into_body())
+        .await?
+        .starts_with(nested_bytes));
+    Ok(())
+}
+
 #[cfg(any(unix, windows))]
 #[actix_web::test]
 async fn serves_in_root_directory_symlink() -> Result<(), Box<dyn std::error::Error>> {
