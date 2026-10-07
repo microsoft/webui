@@ -175,12 +175,13 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
         )?
     };
 
-    let static_cfg = StaticServeConfig {
-        root: out_dir.clone(),
-        base_path: base_path.clone(),
-        livereload: livereload.clone(),
-        not_found: NotFoundStrategy::File(PathBuf::from("404.html")),
-    };
+    let static_cfg = StaticServeConfig::new(
+        out_dir.clone(),
+        base_path.clone(),
+        livereload.clone(),
+        NotFoundStrategy::File(PathBuf::from("404.html")),
+    )
+    .context("Cannot initialize static file serving")?;
     let static_data = web::Data::new(static_cfg);
     let lr_data = web::Data::new(livereload.clone());
 

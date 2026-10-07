@@ -23,6 +23,7 @@ pub mod inject;
 pub mod livereload;
 pub mod path;
 pub mod reporter;
+mod secure_file;
 pub mod serve;
 #[doc(hidden)]
 pub mod shutdown;

@@ -15,6 +15,7 @@
 //! requests on the fly via the WebUI handler. webui-press uses it to
 //! serve the prebuilt `out_dir`.
 
+use std::io::{Error, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ use console::style;
 
 use crate::livereload::LiveReload;
 use crate::path::{resolve_safe_path, strip_base_path};
+use crate::secure_file::{OpenedNode, SecureRoot};
 
 /// What to serve when a requested file isn't found.
 #[derive(Clone)]
@@ -46,8 +48,8 @@ pub enum NotFoundStrategy {
 /// joining fallback paths on successful requests.
 #[derive(Clone)]
 pub struct StaticServeConfig {
-    /// Directory from which files are served.
-    pub root: PathBuf,
+    /// Directory capability from which files are served.
+    root: SecureRoot,
     /// Application basePath. Use `"/"` when the app is hosted at root.
     /// Must be normalized via
     /// [`normalize_base_path`](crate::path::normalize_base_path).
@@ -58,6 +60,31 @@ pub struct StaticServeConfig {
     pub livereload: LiveReload,
     /// What to serve on miss.
     pub not_found: NotFoundStrategy,
+}
+
+impl StaticServeConfig {
+    /// Create a static-file configuration rooted at `root`.
+    ///
+    /// The root must exist so it can be anchored once during setup. Every
+    /// request is confined beneath this trusted root before its file is read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `root` cannot be canonicalized or opened.
+    #[must_use = "the configuration or its I/O error must be handled"]
+    pub fn new(
+        root: PathBuf,
+        base_path: String,
+        livereload: LiveReload,
+        not_found: NotFoundStrategy,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            root: SecureRoot::new(root)?,
+            base_path,
+            livereload,
+            not_found,
+        })
+    }
 }
 
 /// Serve `req` from `cfg`, returning the appropriate `HttpResponse`.
@@ -92,7 +119,7 @@ pub async fn serve_static_file(req: &HttpRequest, cfg: Arc<StaticServeConfig>) -
             .finish();
     }
 
-    let resolved = match resolve_safe_path(&cfg.root, remainder) {
+    let resolved = match resolve_safe_path(cfg.root.path(), remainder) {
         Some(p) => p,
         None => return not_found_response(Arc::clone(&cfg)).await,
     };
@@ -173,15 +200,8 @@ async fn run_fallback_load(
 }
 
 fn load_file(path: PathBuf, detect_directory: bool, cfg: &StaticServeConfig) -> FileLoad {
-    if detect_directory && path.is_dir() {
-        return FileLoad::Directory;
-    }
-    match std::fs::read(&path) {
-        Ok(bytes) => FileLoad::Found {
-            path,
-            bytes,
-            status: StatusCode::OK,
-        },
+    match load_opened_file(path, detect_directory, StatusCode::OK, cfg) {
+        Ok(file) => file,
         Err(_) => load_fallback(cfg),
     }
 }
@@ -190,15 +210,46 @@ fn load_fallback(cfg: &StaticServeConfig) -> FileLoad {
     let NotFoundStrategy::File(relative) = &cfg.not_found else {
         return FileLoad::NotFound;
     };
-    let path = cfg.root.join(relative);
-    match std::fs::read(&path) {
-        Ok(bytes) => FileLoad::Found {
-            path,
-            bytes,
-            status: StatusCode::NOT_FOUND,
-        },
+    match load_opened_file(cfg.root.join(relative), false, StatusCode::NOT_FOUND, cfg) {
+        Ok(file) => file,
         Err(_) => FileLoad::NotFound,
     }
+}
+
+fn load_opened_file(
+    path: PathBuf,
+    detect_directory: bool,
+    status: StatusCode,
+    cfg: &StaticServeConfig,
+) -> std::io::Result<FileLoad> {
+    let OpenedNode::File {
+        path,
+        mut file,
+        length,
+    } = cfg.root.open(path)?
+    else {
+        return if detect_directory {
+            Ok(FileLoad::Directory)
+        } else {
+            Err(Error::new(
+                ErrorKind::InvalidInput,
+                "cannot serve a directory as a file",
+            ))
+        };
+    };
+    let capacity = usize::try_from(length).map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidData,
+            "file length exceeds the addressable buffer size",
+        )
+    })?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.read_to_end(&mut bytes)?;
+    Ok(FileLoad::Found {
+        path,
+        bytes,
+        status,
+    })
 }
 
 async fn not_found_response(cfg: Arc<StaticServeConfig>) -> HttpResponse {
@@ -262,76 +313,5 @@ fn file_load_invariant_response() -> HttpResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    use actix_web::body::to_bytes;
-    use actix_web::http::header::LOCATION;
-    use actix_web::test::TestRequest;
-
-    use super::*;
-
-    fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> {
-        Arc::new(StaticServeConfig {
-            root,
-            base_path: "/".to_owned(),
-            livereload: LiveReload::new("/__test/livereload"),
-            not_found,
-        })
-    }
-
-    #[actix_web::test]
-    async fn serves_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let bytes = b"console.log('served');";
-        std::fs::write(directory.path().join("app.js"), bytes)?;
-        let request = TestRequest::with_uri("/app.js").to_http_request();
-
-        let response = serve_static_file(
-            &request,
-            config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(to_bytes(response.into_body()).await?.as_ref(), bytes);
-        Ok(())
-    }
-
-    #[actix_web::test]
-    async fn redirects_directory_without_trailing_slash() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let directory = tempfile::tempdir()?;
-        std::fs::create_dir(directory.path().join("guide"))?;
-        let request = TestRequest::with_uri("/guide").to_http_request();
-
-        let response = serve_static_file(
-            &request,
-            config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(response.headers().get(LOCATION), Some(&"/guide/".parse()?));
-        Ok(())
-    }
-
-    #[actix_web::test]
-    async fn serves_custom_not_found_file() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let bytes = b"custom not found";
-        std::fs::write(directory.path().join("404.txt"), bytes)?;
-        let request = TestRequest::with_uri("/missing.txt").to_http_request();
-
-        let response = serve_static_file(
-            &request,
-            config(
-                directory.path().to_path_buf(),
-                NotFoundStrategy::File(PathBuf::from("404.txt")),
-            ),
-        )
-        .await;
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(to_bytes(response.into_body()).await?.as_ref(), bytes);
-        Ok(())
-    }
-}
+#[path = "serve_tests.rs"]
+mod tests;

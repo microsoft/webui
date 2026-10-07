@@ -19,12 +19,15 @@ use webui_dev_server::{serve_static_file, LiveReload, NotFoundStrategy, StaticSe
 const FIXTURE_BYTES: usize = 4 * 1024;
 
 fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> {
-    Arc::new(StaticServeConfig {
-        root,
-        base_path: "/".to_owned(),
-        livereload: LiveReload::new("/__bench/livereload"),
-        not_found,
-    })
+    Arc::new(
+        StaticServeConfig::new(
+            root,
+            "/".to_owned(),
+            LiveReload::new("/__bench/livereload"),
+            not_found,
+        )
+        .unwrap_or_else(|error| panic!("benchmark static-file config failed: {error}")),
+    )
 }
 
 fn assert_response(
