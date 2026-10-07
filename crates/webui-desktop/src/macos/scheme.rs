@@ -33,8 +33,6 @@ pub(super) struct SchemeHandlerIvars {
     tasks: Rc<super::tasks::MainTasks>,
     pending: Rc<RefCell<HashMap<usize, Arc<AtomicBool>>>>,
     #[cfg(feature = "application-ipc")]
-    state: Option<std::rc::Rc<super::ipc::MacIpc>>,
-    #[cfg(feature = "application-ipc")]
     ipc: Option<std::rc::Rc<super::ipc_scheme::IpcScheme>>,
 }
 
@@ -106,17 +104,10 @@ impl DesktopSchemeHandler {
             tasks: super::tasks::MainTasks::new(),
             pending: Rc::default(),
             #[cfg(feature = "application-ipc")]
-            state,
-            #[cfg(feature = "application-ipc")]
             ipc,
         });
         // SAFETY: NSObject init has the expected signature for this subclass.
         unsafe { msg_send![super(this), init] }
-    }
-
-    #[cfg(feature = "application-ipc")]
-    pub(super) fn ipc_state(&self) -> Option<std::rc::Rc<super::ipc::MacIpc>> {
-        self.ivars().state.clone()
     }
 }
 
@@ -282,7 +273,6 @@ mod tests {
             tasks: super::super::tasks::MainTasks::new(),
             pending: Rc::default(),
             #[cfg(feature = "application-ipc")]
-            state: None,
             #[cfg(feature = "application-ipc")]
             ipc: None,
         };

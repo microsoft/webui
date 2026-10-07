@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+try {
+  const bridge = window.webkit?.messageHandlers?.webuiHost;
+  if (typeof bridge?.postMessage !== 'function') throw Error('subframe webuiHost bridge absent');
+  bridge.postMessage('"close"');
+  parent.postMessage('host-probe-posted', '*');
+} catch (error) {
+  parent.postMessage(`host-probe-failed:${error}`, '*');
+}
+</script>

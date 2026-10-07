@@ -59,13 +59,7 @@ impl Drop for BrowserProfile {
 }
 
 fn identity_path(base: &Path, id: &str) -> io::Result<PathBuf> {
-    if id.is_empty()
-        || id.len() > 255
-        || id.ends_with('.')
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-    {
+    if !crate::app_identity::valid_app_id(id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "app_id must contain 1–255 ASCII letters, digits, dots, underscores or hyphens, with no trailing dot",

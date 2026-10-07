@@ -234,11 +234,6 @@ impl ServePaths {
             })
             .transpose()?;
 
-        validate_component_asset_output_paths(
-            component_assets_out.as_deref(),
-            metafile.as_deref(),
-        )?;
-
         Ok(Self {
             app_dir,
             state_file,
@@ -747,24 +742,6 @@ fn validate_component_asset_output_watch_root(
     Ok(())
 }
 
-fn validate_component_asset_output_paths(
-    component_assets_out: Option<&std::path::Path>,
-    metafile: Option<&std::path::Path>,
-) -> Result<()> {
-    let (Some(component_assets_out), Some(metafile)) = (component_assets_out, metafile) else {
-        return Ok(());
-    };
-    let manifest = component_asset_output::manifest_path(component_assets_out);
-    if output_paths::paths_collide(&manifest, metafile)? {
-        bail!(
-            "Metafile output {} collides with the internal component asset manifest.\nhelp: Choose a distinct --metafile path outside {}.",
-            metafile.display(),
-            manifest.display()
-        );
-    }
-    Ok(())
-}
-
 fn validate_component_asset_metafile_paths(
     component_assets_out: Option<&std::path::Path>,
     metafile: Option<&std::path::Path>,
@@ -773,18 +750,7 @@ fn validate_component_asset_metafile_paths(
     let (Some(component_assets_out), Some(metafile)) = (component_assets_out, metafile) else {
         return Ok(());
     };
-    for file in files {
-        let asset = component_assets_out.join(&file.name);
-        if output_paths::paths_collide(&asset, metafile)? {
-            bail!(
-                "Metafile output {} collides with generated component asset {}.\nhelp: Choose a distinct --metafile path outside {}.",
-                metafile.display(),
-                asset.display(),
-                component_assets_out.display()
-            );
-        }
-    }
-    Ok(())
+    component_asset_output::validate_metafile_path(component_assets_out, metafile, files)
 }
 
 fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
@@ -3470,28 +3436,10 @@ mod tests {
     }
 
     #[test]
-    fn test_metafile_cannot_overwrite_component_asset_manifest() {
-        let root = tempfile::tempdir().unwrap();
-        let output = root.path().join(".webui");
-        let manifest = component_asset_output::manifest_path(&output);
-
-        let error =
-            validate_component_asset_output_paths(Some(&output), Some(&manifest)).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("collides with the internal component asset manifest"));
-
-        validate_component_asset_output_paths(
-            Some(&output),
-            Some(&root.path().join("component-assets.meta.json")),
-        )
-        .unwrap();
-    }
-
-    #[test]
     fn test_metafile_cannot_overwrite_generated_component_asset() {
         let root = tempfile::tempdir().unwrap();
         let output = root.path().join(".webui");
+        fs::create_dir_all(output.join("components")).unwrap();
         let root_asset = webui::ComponentAssetFile {
             name: "lazy-panel.webui.js".to_string(),
             content: "export default {};".to_string(),
@@ -3506,6 +3454,19 @@ mod tests {
             let metafile = output.join(&file.name);
             let error =
                 validate_component_asset_metafile_paths(Some(&output), Some(&metafile), &files)
+                    .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("collides with generated component asset"));
+        }
+
+        let retained_root = output.join("old-panel.webui.js");
+        let retained_payload = output.join("components/old-panel.0000000000000000.webui.js");
+        fs::write(&retained_root, "old root").unwrap();
+        fs::write(&retained_payload, "old payload").unwrap();
+        for metafile in [&retained_root, &retained_payload] {
+            let error =
+                validate_component_asset_metafile_paths(Some(&output), Some(metafile), &files)
                     .unwrap_err();
             assert!(error
                 .to_string()

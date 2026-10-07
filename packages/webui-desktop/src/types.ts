@@ -13,7 +13,13 @@ export interface Hello {
   contractMajor: number;
   schemaHash: string;
 }
-export interface SessionInfo { generation: string; token: string; limits: IpcLimits }
+export interface SessionInfo {
+  generation: string;
+  token: string;
+  limits: IpcLimits;
+  /** Present only after native has authenticated the document and agreed to carrier v1. */
+  nativeCarrierVersion?: 1;
+}
 export interface BinaryReceiver {
   receive(frame: Uint8Array): Promise<void>;
   closed(error: IpcError): void;
@@ -26,13 +32,26 @@ export interface IpcTransport {
 export type NativeControl =
   | { kind: 'ready'; generation: string }
   | { kind: 'closed'; generation: string; code: IpcErrorCode };
-export interface DocumentActivation { navigation: string; documentNonce: string; challenge: string }
+export interface DocumentActivation {
+  navigation: string;
+  documentNonce: string;
+  challenge: string;
+  /** Set only by native activation for an eligible local-server main document. */
+  nativeCarrierVersion?: 1;
+}
+/** Separate from bounded admission/control; never carries application DTOs. */
+export interface NativeDataLane {
+  postMessage(message: Readonly<Record<string, unknown>>): unknown;
+  subscribe(listener: (message: unknown) => void): Subscription;
+}
 export interface NativeIpcBootstrap {
   readonly documentNonce: string;
   activate(activation: DocumentActivation): boolean;
   hello(hello: Hello): Promise<SessionInfo>;
   subscribeControl(listener: (control: NativeControl) => void): Subscription;
   disconnect(generation: string, token: string): void;
+  /** Unavailable until native admission of a v1 local-server document. */
+  readonly nativeData?: NativeDataLane | undefined;
 }
 declare global {
   interface Window { readonly __webuiDesktopIpcV2?: NativeIpcBootstrap }

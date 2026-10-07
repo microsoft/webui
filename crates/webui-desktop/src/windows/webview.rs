@@ -17,6 +17,11 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Controller2, ICoreWebView2Environment, ICoreWebView2EnvironmentOptions,
     ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2NavigationStartingEventHandler,
     ICoreWebView2WebMessageReceivedEventArgs, COREWEBVIEW2_COLOR,
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+};
+#[cfg(feature = "local-server")]
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2ContentLoadingEventHandler, ICoreWebView2NewWindowRequestedEventHandler,
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR,
@@ -24,6 +29,8 @@ use webview2_com::{
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
 };
+#[cfg(feature = "local-server")]
+use webview2_com::{ContentLoadingEventHandler, NewWindowRequestedEventHandler};
 use windows::core::{Error as WindowsError, Interface, Result as WindowsResult, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, HWND};
 use windows::Win32::Graphics::Dwm::{
@@ -124,35 +131,38 @@ pub(super) fn browser_profile(
     })
 }
 
-/// Create the WebView2 controller hosted inside the native window.
-pub(super) fn create_controller(
+pub(super) struct PendingController {
+    receiver: mpsc::Receiver<WindowsResult<ICoreWebView2Controller>>,
+}
+
+impl PendingController {
+    pub(super) fn finish(self) -> Result<ICoreWebView2Controller> {
+        webview2_com::wait_with_pump(self.receiver)?.map_err(Into::into)
+    }
+}
+
+pub(super) fn begin_create_controller(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
-) -> Result<ICoreWebView2Controller> {
+) -> Result<PendingController> {
     let (tx, rx) = mpsc::channel();
     let environment = environment.clone();
-    CreateCoreWebView2ControllerCompletedHandler::wait_for_async_operation(
-        Box::new(move |handler| {
-            // SAFETY: `hwnd` is a live window owned by this thread and the
-            // environment reference stays alive for the async operation.
-            unsafe {
-                environment
-                    .CreateCoreWebView2Controller(hwnd, &handler)
-                    .map_err(webview2_com::Error::WindowsError)
-            }
-        }),
-        Box::new(
-            move |error_code, controller: Option<ICoreWebView2Controller>| {
-                error_code?;
-                tx.send(controller.ok_or_else(|| WindowsError::from(E_FAIL)))
-                    .map_err(|_| WindowsError::from(E_FAIL))?;
-                Ok(())
-            },
-        ),
-    )?;
-    rx.recv()
-        .map_err(|_| anyhow::anyhow!("WebView2 controller creation was cancelled"))?
-        .map_err(Into::into)
+    let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+        move |error_code, controller: Option<ICoreWebView2Controller>| {
+            let result =
+                error_code.and_then(|_| controller.ok_or_else(|| WindowsError::from(E_FAIL)));
+            tx.send(result).map_err(|_| WindowsError::from(E_FAIL))?;
+            Ok(())
+        },
+    ));
+    // SAFETY: `hwnd` is a live window owned by this thread. WebView2 retains
+    // the completion handler and the cloned environment for the async operation.
+    unsafe {
+        environment
+            .CreateCoreWebView2Controller(hwnd, &handler)
+            .map_err(webview2_com::Error::WindowsError)?;
+    }
+    Ok(PendingController { receiver: rx })
 }
 
 /// Apply the developer-tools policy to the WebView2 settings.
@@ -166,15 +176,53 @@ pub(super) fn configure_settings(webview: &ICoreWebView2, devtools: bool) -> Res
     Ok(())
 }
 
+pub(super) fn focus_controller_from_frame(
+    window: HWND,
+    controller: &ICoreWebView2Controller,
+) -> Result<()> {
+    // SAFETY: This only reads focus on the owning UI thread. Preserve any
+    // already-focused child or other native control instead of taking its focus.
+    if unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } != window {
+        return Ok(());
+    }
+    // SAFETY: The live controller belongs to this UI apartment and native frame.
+    unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)? };
+    Ok(())
+}
+
 /// Route navigations through the app event registry while keeping the
 /// app-origin allowlist as the final, non-overridable authority.
+pub(super) struct NavigationGuardContext {
+    #[cfg(feature = "native-capture")]
+    pub(super) capture: Option<crate::NativeServices>,
+    #[cfg(feature = "local-server")]
+    pub(super) controls: Option<std::rc::Rc<super::local_controls::LocalControls>>,
+    #[cfg(feature = "local-server")]
+    pub(super) origin: Option<crate::LoopbackOrigin>,
+    #[cfg(feature = "local-server")]
+    pub(super) lifetime: Option<crate::HostLifetime>,
+}
+
 pub(super) fn register_navigation_guard(
     webview: &ICoreWebView2,
     events: EventRegistry,
+    context: NavigationGuardContext,
 ) -> Result<ICoreWebView2NavigationStartingEventHandler> {
     let webview_for_events = webview.clone();
+    #[cfg(not(feature = "local-server"))]
+    let _ = &context;
     let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
+            #[cfg(feature = "local-server")]
+            if context
+                .lifetime
+                .as_ref()
+                .is_some_and(|lifetime| !lifetime.is_active())
+            {
+                // SAFETY: The callback receives live native navigation arguments.
+                unsafe { args.SetCancel(true)? };
+                return Ok(());
+            }
             // SAFETY: WebView2 passes a live args interface for the callback's
             // duration; the URL is copied out before the callback returns.
             let uri = read_pwstr(|out| unsafe { args.Uri(out) })?;
@@ -184,9 +232,45 @@ pub(super) fn register_navigation_guard(
             };
             let prevented = events.dispatch(&event) == EventResponse::PreventDefault;
             mirror_event(&webview_for_events, &event);
-            if prevented || !is_allowed_navigation_url(&uri) {
+            let allowed = {
+                #[cfg(feature = "local-server")]
+                {
+                    context.origin.as_ref().map_or_else(
+                        || is_allowed_navigation_url(&uri),
+                        |origin| {
+                            context
+                                .lifetime
+                                .as_ref()
+                                .is_some_and(|lifetime| lifetime.allows_navigation(origin, &uri))
+                        },
+                    )
+                }
+                #[cfg(not(feature = "local-server"))]
+                {
+                    is_allowed_navigation_url(&uri)
+                }
+            };
+            if prevented || !allowed {
                 // SAFETY: Same live args interface as above.
                 unsafe { args.SetCancel(true)? };
+            } else {
+                #[cfg(feature = "local-server")]
+                if let Some(controls) = &context.controls {
+                    let mut navigation_id = 0;
+                    // SAFETY: The main-document args belong to this STA.
+                    unsafe { args.NavigationId(&mut navigation_id)? };
+                    controls.start(navigation_id);
+                }
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &context.capture {
+                    let mut navigation_id = 0;
+                    // SAFETY: These live event arguments belong to this STA.
+                    if let Err(error) = unsafe { args.NavigationId(&mut navigation_id) } {
+                        capture.capture_for_revoke().close();
+                        return Err(error);
+                    }
+                    capture.capture_navigation_started(navigation_id);
+                }
             }
         }
         Ok(())
@@ -196,6 +280,71 @@ pub(super) fn register_navigation_guard(
     // which stores it in the window state for the lifetime of the window.
     unsafe { webview.add_NavigationStarting(&handler, &mut token)? };
     Ok(handler)
+}
+
+/// Keep every non-main document and popup out of the first local-server mode.
+#[cfg(feature = "local-server")]
+pub(super) struct LocalNavigationGuards {
+    _frames: ICoreWebView2NavigationStartingEventHandler,
+    _popups: ICoreWebView2NewWindowRequestedEventHandler,
+    _content: ICoreWebView2ContentLoadingEventHandler,
+}
+
+#[cfg(feature = "local-server")]
+pub(super) fn register_local_frame_guards(
+    webview: &ICoreWebView2,
+    hwnd: HWND,
+    lifetime: crate::HostLifetime,
+    owner_close_cookie: usize,
+    frame_policy: std::sync::Arc<crate::frame_policy::FramePolicy>,
+) -> Result<LocalNavigationGuards> {
+    let frame_lifetime = lifetime.clone();
+    let frames = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+        if let Some(args) = args {
+            // SAFETY: WebView2 supplies a live event argument in this callback.
+            let uri = read_pwstr(|out| unsafe { args.Uri(out) })?;
+            if !frame_lifetime.is_active() || !frame_policy.allows(&uri) {
+                unsafe { args.SetCancel(true)? };
+            }
+        }
+        Ok(())
+    }));
+    let popups = NewWindowRequestedEventHandler::create(Box::new(|_sender, args| {
+        if let Some(args) = args {
+            // SAFETY: WebView2 supplies a live event argument in this callback.
+            unsafe { args.SetHandled(true)? };
+        }
+        Ok(())
+    }));
+    let view = webview.clone();
+    let handle = hwnd.0 as usize;
+    let content = ContentLoadingEventHandler::create(Box::new(move |_sender, _args| {
+        if !lifetime.is_active() {
+            // SAFETY: The callback runs on the live WebView2 UI thread. Stop
+            // the in-flight document before its scripts can run, then close
+            // independently of the bounded native command queue.
+            if let Err(error) = unsafe { view.Stop() } {
+                eprintln!("WebUI: failed to stop retired local-server document: {error}");
+            }
+            let hwnd = HWND(handle as *mut std::ffi::c_void);
+            if let Err(error) = super::post_owner_lost(hwnd, owner_close_cookie) {
+                eprintln!("WebUI: failed to schedule retired local-server window close: {error}");
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0_i64;
+    // SAFETY: Both handlers are retained by the returned guard for the view lifetime.
+    unsafe {
+        webview.add_FrameNavigationStarting(&frames, &mut token)?;
+        webview.add_NewWindowRequested(&popups, &mut token)?;
+        webview.add_ContentLoading(&content, &mut token)?;
+    }
+    Ok(LocalNavigationGuards {
+        _frames: frames,
+        _popups: popups,
+        _content: content,
+    })
 }
 
 /// Apply the requested backdrop effect, degrading silently on older Windows.
@@ -297,10 +446,26 @@ pub(super) fn update_document_background(webview: &ICoreWebView2, color: Rgba) -
     Ok(())
 }
 
-/// Install the host bridge and drag-region helper script on every document.
-pub(super) fn inject_drag_script(webview: &ICoreWebView2) -> Result<()> {
-    add_document_script(webview, HOST_BRIDGE_SCRIPT)?;
-    add_document_script(webview, DRAG_REGION_SCRIPT)
+/// Install the packaged host bridge, drag regions, and optional titlebar
+/// metrics in one pre-document registration.
+pub(super) fn inject_bundle_script(webview: &ICoreWebView2, metrics: Option<&str>) -> Result<()> {
+    let source = bundle_document_script(metrics);
+    add_document_script(webview, &source)
+}
+
+fn bundle_document_script(metrics: Option<&str>) -> String {
+    let metrics_len = metrics.map_or(0, str::len);
+    let mut source = String::with_capacity(
+        HOST_BRIDGE_SCRIPT.len() + DRAG_REGION_SCRIPT.len() + metrics_len + 2,
+    );
+    source.push_str(HOST_BRIDGE_SCRIPT);
+    source.push(';');
+    source.push_str(DRAG_REGION_SCRIPT);
+    if let Some(metrics) = metrics {
+        source.push(';');
+        source.push_str(metrics);
+    }
+    source
 }
 
 /// Register a script that runs before any page script on every document.
@@ -367,14 +532,67 @@ fn decode_host_message(raw: &str) -> Option<DesktopHostMessage> {
 }
 
 /// Report completed navigations to app handlers and web content.
+pub(super) struct CompletionOwner {
+    #[cfg(feature = "native-capture")]
+    pub(super) capture: Option<crate::NativeServices>,
+    #[cfg(feature = "local-server")]
+    pub(super) controls: Option<std::rc::Rc<super::local_controls::LocalControls>>,
+    #[cfg(feature = "local-server")]
+    pub(super) lifetime: Option<(crate::HostLifetime, usize)>,
+}
+
 pub(super) fn register_navigation_completed(
     webview: &ICoreWebView2,
     events: EventRegistry,
     hwnd: HWND,
     live_background: Arc<LiveBackground>,
+    owner: CompletionOwner,
 ) -> Result<ICoreWebView2NavigationCompletedEventHandler> {
     let webview_for_uri = webview.clone();
-    let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, _args| {
+    #[cfg(not(feature = "local-server"))]
+    let _ = &owner;
+    let handler = NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+        #[cfg(feature = "local-server")]
+        if owner
+            .lifetime
+            .as_ref()
+            .is_some_and(|(lifetime, _)| !lifetime.is_active())
+        {
+            // SAFETY: The view is live for this UI-thread native callback.
+            if let Err(error) = unsafe { webview_for_uri.Stop() } {
+                eprintln!("WebUI: failed to stop retired local-server document: {error}");
+            }
+            if let Some((_, cookie)) = owner.lifetime.as_ref() {
+                if let Err(error) = super::post_owner_lost(hwnd, *cookie) {
+                    eprintln!(
+                        "WebUI: failed to schedule retired local-server window close: {error}"
+                    );
+                }
+            }
+            return Ok(());
+        }
+        #[cfg(feature = "local-server")]
+        if let Some(args) = &args {
+            // SAFETY: WebView2 supplies this live result on the owning STA.
+            let mut success = windows::core::BOOL::default();
+            let mut navigation_id = 0;
+            // SAFETY: These live event arguments belong to this STA.
+            unsafe { args.IsSuccess(&mut success)? };
+            if success.as_bool() {
+                // SAFETY: Matching the completed native navigation ID prevents
+                // an older completion from making a newer epoch capturable.
+                unsafe { args.NavigationId(&mut navigation_id)? };
+                #[cfg(feature = "native-capture")]
+                if let Some(capture) = &owner.capture {
+                    capture.capture_navigation_finished(navigation_id);
+                }
+                if let Some(controls) = &owner.controls {
+                    controls.completed(&webview_for_uri, navigation_id);
+                }
+            }
+        }
+        #[cfg(not(feature = "local-server"))]
+        let _ = &args;
         super::state::with_window_state(hwnd, |state| {
             if let Err(error) = state.app_window.publish_metrics(&state.webview) {
                 eprintln!("WebUI: failed to publish native titlebar measurements: {error}");
@@ -415,7 +633,11 @@ fn is_allowed_navigation_url(url: &str) -> bool {
 /// and dynamic app routes; packaged assets are already served by the runtime.
 pub(super) fn navigate_to_startup_url(webview: &ICoreWebView2) -> Result<()> {
     let url = startup_url();
-    let url = CoTaskMemPWSTR::from(url.as_str());
+    navigate_to_url(webview, &url)
+}
+
+pub(super) fn navigate_to_url(webview: &ICoreWebView2, url: &str) -> Result<()> {
+    let url = CoTaskMemPWSTR::from(url);
     // SAFETY: `webview` is live and the URL buffer outlives this call.
     unsafe { webview.Navigate(*url.as_ref().as_pcwstr())? };
     Ok(())
@@ -425,6 +647,75 @@ pub(super) fn navigate_to_startup_url(webview: &ICoreWebView2) -> Result<()> {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_keyboard_focus_reaches_the_webview_child() {
+        use windows::Win32::UI::{Input::KeyboardAndMouse, WindowsAndMessaging as wm};
+
+        let _com = super::super::initialize_com().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let options = crate::WindowOptions {
+            titlebar: crate::TitlebarStyle::Native,
+            center: false,
+            ..crate::WindowOptions::default()
+        };
+        let frame = super::super::create::FrameWindow::new(&options, None).unwrap();
+        frame.show().unwrap();
+        let environment = create_environment(profile.path()).unwrap();
+        let controller = begin_create_controller(&environment, frame.hwnd)
+            .unwrap()
+            .finish()
+            .unwrap();
+        super::super::message::set_controller_bounds(&controller, frame.hwnd).unwrap();
+        // SAFETY: The fixture owns the visible native frame and its WebView2.
+        let (forwarded, preserved_startup, preserved_control) = unsafe {
+            controller.SetIsVisible(true).unwrap();
+            let _ = KeyboardAndMouse::SetFocus(Some(frame.hwnd));
+            focus_controller_from_frame(frame.hwnd, &controller).unwrap();
+            let browser_focus = KeyboardAndMouse::GetFocus();
+            let forwarded = wm::IsChild(frame.hwnd, browser_focus).as_bool();
+            frame.focus_after_startup();
+            let preserved_startup = KeyboardAndMouse::GetFocus() == browser_focus;
+            let control = wm::CreateWindowExW(
+                Default::default(),
+                windows::core::w!("BUTTON"),
+                None,
+                wm::WS_CHILD | wm::WS_VISIBLE,
+                0,
+                0,
+                40,
+                20,
+                Some(frame.hwnd),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let _ = KeyboardAndMouse::SetFocus(Some(control));
+            focus_controller_from_frame(frame.hwnd, &controller).unwrap();
+            (
+                forwarded,
+                preserved_startup,
+                KeyboardAndMouse::GetFocus() == control,
+            )
+        };
+        // SAFETY: Explicitly close the fixture's controller before its parent and environment.
+        unsafe { controller.Close().unwrap() };
+        drop(controller);
+        drop(environment);
+        assert!(
+            forwarded,
+            "startup keyboard focus must reach the browser instead of remaining on the outer frame"
+        );
+        assert!(
+            preserved_startup,
+            "finishing startup must preserve focus on the live WebView2 child"
+        );
+        assert!(
+            preserved_control,
+            "native focus handoff must not replace an already-focused control"
+        );
+    }
 
     #[test]
     fn startup_url_normalizes_paths() {
@@ -472,5 +763,15 @@ mod tests {
     fn host_bridge_script_defines_the_documented_global() {
         assert!(HOST_BRIDGE_SCRIPT.contains("window.webuiHostPostMessage"));
         assert!(DRAG_REGION_SCRIPT.contains("window.webuiHostPostMessage"));
+    }
+
+    #[test]
+    fn bundle_document_script_combines_each_startup_script_once() {
+        let metrics = "window.testTitlebarMetrics=true;";
+        let source = bundle_document_script(Some(metrics));
+
+        assert_eq!(source.matches(HOST_BRIDGE_SCRIPT).count(), 1);
+        assert_eq!(source.matches(DRAG_REGION_SCRIPT).count(), 1);
+        assert_eq!(source.matches(metrics).count(), 1);
     }
 }

@@ -246,12 +246,14 @@ features, not dependencies of the SSR handler.
 Builds without route directives may request stand-alone component asset roots.
 The compiler emits content-addressed ESM inputs for asset-owned components plus
 thin stable root entries that statically import their conservative
-template/style closures. Publication writes immutable dependencies before
-switching roots. Immutable dependencies remain available until the publication
-owner explicitly retires them after readers of older roots finish; neither time
-nor a generation count proves quiescence. CLI and library hosts share this
-publication contract. Development HTTP delivery reads dependencies from the
-publication directory instead of retaining every generation in memory.
+template/style closures. Publication writes dependencies before overwriting
+stable roots and preserves unchanged files. The output directory remains owned
+by the application build: WebUI does not delete older generated inputs or other
+files, and a developer may clear the disposable build directory when a clean
+output is needed. Hosts serialize publishers targeting the same directory. CLI
+and library hosts share this publication contract. Development HTTP delivery
+reads dependencies from the generated input directory instead of retaining
+their bytes in memory.
 These files describe semantic ownership
 and dependency edges, but do not choose production chunks, public paths,
 caching, or delivery. The application bundler owns those decisions and may
@@ -354,7 +356,7 @@ non-streaming output does not acquire streaming markers or state.
 | `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
 | C FFI, .NET, Python, WASM | Load a protocol once and expose the same logical rendering, partial, token, and streaming capabilities with host-native ownership and errors. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs and share a validated client projection across page builds. |
-| `webui-desktop` | Package the compiled artifact and run it through a native webview and Rust host without an embedded HTTP server. |
+| `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
 
 FFI uses opaque handles and explicit ownership; .NET wraps those lifetimes in
 safe handles, Python uses a direct PyO3 binding, and Node uses a native addon.
@@ -367,18 +369,91 @@ Press and desktop are opt-in native command sidecars. The Rust CLI discovers
 their installed binaries, verifies compatible versions, and launches them
 directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
+Desktop browser IPC assets are compiled from their TypeScript source into
+build output, not retained as generated source files. Release staging includes
+those compiled bytes in the Rust crate archive, so downstream Cargo builds
+remain self-contained and do not require a JavaScript toolchain.
 
 ### Desktop boundary
 
 The desktop shell uses WebView2 on Windows, WKWebView on macOS, and
-WebKitGTK on Linux. One platform-neutral frame owns the compiled protocol,
-window, state providers, assets, and capabilities; OS-specific adapters own
-native lifecycle and FFI. Source builds and immutable bundles feed the same
-custom-protocol request dispatcher. Rust providers can supply route state and
-application API responses, so browser routing uses the same authoritative
-protocol as server deployments. npm distributes desktop binaries only through
-an explicit desktop support install, keeping webview dependencies out of the
-default CLI.
+WebKitGTK on Linux. Native frame presentation is independent of browser
+readiness. Windows can expose a prepared overlay frame before native caption
+and browser initialization, but its client geometry must remain stable while
+caption ownership transfers to the selected native frame backend. Standard
+overlay captions may use DWM directly; extended native caption styles retain
+the Windows App SDK. The browser's drawing and input surface must not cover
+the native caption controls, while the document retains its full client
+viewport and matching safe-area information. Startup close keeps the
+native handle alive for outstanding callbacks without showing the frame again.
+Application navigation starts only after its native guards, resource handlers,
+and pre-document bridges are installed. For source and immutable bundle inputs, a frame owns
+the compiled protocol, window, state providers, assets, and capabilities;
+both inputs feed the same custom-protocol request dispatcher. Rust providers
+can supply route state and application API responses, so browser routing uses
+the same authoritative protocol as server deployments. An opt-in local-server
+frame instead owns native window/event state and navigates directly to the
+trusted host's already-bound exact loopback HTTP origin. It does not compile,
+load a second protocol, render, or proxy that server's responses. The host
+retains listener ownership and authenticates any attached process; loopback
+syntax alone is not authentication. A separate, weak frame lifetime is revoked
+by the verified host owner before releasing its listener/connection; native
+navigation and pre-script document checks reject that lifetime while the UI
+closes asynchronously. Failure to schedule native close is surfaced for
+deliberate retry; revocation alone cannot guarantee window destruction.
+An owned host keeps its bound listener through window
+closure, since admission revocation alone cannot retract already-issued
+HTTP requests. Attached-owner loss does not terminate that daemon, but cannot
+prevent a daemon from releasing its port before observation. Exact origin and
+host revocation cannot authenticate a replacement at that address; privileged
+document admission requires a separately verified process/generation identity
+or live authenticated channel.
+This first native mode admits only same-origin top-level document navigation;
+popups and subframe document commits are denied by default. A Mac or Windows
+host may grant an exact local preview origin for unprivileged subframe loads
+without promoting it to main-document or native authority. Browser-created
+`about:blank` children may also exist. WebKitGTK cannot identify a navigation's
+target frame before requesting it, so a denied subframe request may still reach
+the HTTP server. On macOS and Windows, a custom titlebar may expose bounded
+window controls only to the current main document of the verified, live
+local-server origin; native titlebars and separately sandboxed preview
+subframes receive none. An inherited-origin child able to script its parent
+shares the parent's browser authority and is not a boundary for untrusted
+content.
+This is independent of native application IPC, which requires a separately
+proven owned listener and current main document. On Linux, a top-frame-only
+isolated content world mediates the
+native data lane because WebKitGTK callbacks do not identify the sending
+frame; this grants no authority to preview subframes.
+OS adapters own native lifecycle and FFI. npm distributes desktop
+binaries only through an explicit desktop support install, keeping webview
+dependencies out of the default CLI.
+Native browser data belongs to the application, not a viewer or preview
+window. Mac local-server frames default to an ephemeral WebKit store even
+with an app ID; an explicit persistent request must prove that the running
+packaged `.app` owns the exact bundle identity before using WebKit's
+app-wide default store. A missing or mismatched identity fails before any
+webview opens. Windows retains its existing app-ID-owned WebView2 profile
+selection; unsupported platforms do not silently claim persistence.
+An opt-in macOS or Windows local-server host may retain one bounded, native
+PNG of its visible webview viewport per window/document epoch. Windows uses
+the owning WebView2 STA and a bounded writable COM stream; Mac uses WKWebView.
+The intended content
+boundary is the current web view, not OS windows or a scroll document; hosts
+must establish allowed preview-frame readiness independently. The tested
+platform evidence and limits live in `specs/desktop-capture.md`. Navigation
+and native teardown invalidate the resource. Neither capture nor chunk reads
+create ambient renderer authority; generated application IPC access remains
+an explicit, separately budgeted host choice.
+Only a trusted macOS host may separately ask AppKit to write that still-live
+PNG to the clipboard. Its native acknowledgement is an awaitable operation,
+not authority to open an external URL or a renderer grant; the host owns any
+later, independently validated browser-opening decision.
+An explicitly opted-in macOS local-server frame may accept bounded incoming
+custom-scheme URLs from AppKit into a single-window Rust host callback. This
+OS-to-host path is distinct from browser navigation, application IPC, and
+outgoing trusted-host OS openers; it grants no renderer authority. The app
+owns OS scheme association and any launch/second-instance delivery policy.
 
 Optional application IPC is distinct from resource requests and window-control
 messages. Proto3 application contracts generate typed Rust and TypeScript
@@ -407,7 +482,7 @@ engineering another; they are not public application-authoring guides.
 | --- | --- |
 | Protobuf fields and fragment shapes | `crates/webui-protocol/proto/webui.proto` |
 | Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `packages/webui/src/projection/{graph,manifest,diagnostics}.ts`, `crates/webui-protocol/src/projection_manifest.rs` |
-| Component asset ownership, registration, and publication lifetime | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
+| Component asset ownership, registration, and publication | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
 | Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/guide/concepts/directives/` |
 | State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/guide/concepts/state-management/index.md`, `docs/guide/concepts/directives/if.md` |
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |
@@ -415,6 +490,7 @@ engineering another; they are not public application-authoring guides.
 | Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
 | Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
+| Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/guide/integrations/`, `docs/guide/cli/`, package READMEs, `examples/` |
 

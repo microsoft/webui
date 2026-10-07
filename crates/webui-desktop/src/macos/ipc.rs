@@ -5,9 +5,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use block2::RcBlock;
+#[cfg(feature = "local-server")]
+use objc2::rc::Retained;
 use objc2::rc::Weak;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadOnly;
+#[cfg(feature = "local-server")]
+use objc2_foundation::NSTimer;
 use objc2_foundation::{NSError, NSString};
 use objc2_web_kit::{WKContentWorld, WKWebView};
 
@@ -30,10 +34,36 @@ pub(super) struct MacIpc {
     pub(super) session: RefCell<Option<SessionInfo>>,
     pending_controls: RefCell<Vec<NativeControl>>,
     webview: RefCell<Weak<WKWebView>>,
+    #[cfg(feature = "local-server")]
+    pub(super) local: Option<(crate::LoopbackOrigin, crate::HostLifetime)>,
+    #[cfg(feature = "local-server")]
+    pub(super) data: Rc<RefCell<crate::ipc::native_data::NativeData>>,
+    #[cfg(feature = "local-server")]
+    data_timer: RefCell<Option<Retained<NSTimer>>>,
 }
 
 impl MacIpc {
     pub(super) fn new(bridge: IpcBridge) -> Rc<Self> {
+        Self::new_with_local(bridge, None)
+    }
+
+    #[cfg(feature = "local-server")]
+    pub(super) fn new_local(
+        bridge: IpcBridge,
+        origin: crate::LoopbackOrigin,
+        lifetime: crate::HostLifetime,
+    ) -> Rc<Self> {
+        Self::new_with_local(bridge, Some((origin, lifetime)))
+    }
+
+    fn new_with_local(
+        bridge: IpcBridge,
+        #[cfg(feature = "local-server")] local: Option<(
+            crate::LoopbackOrigin,
+            crate::HostLifetime,
+        )>,
+        #[cfg(not(feature = "local-server"))] _local: Option<()>,
+    ) -> Rc<Self> {
         let wake = MainWake::new();
         let state = Rc::new(Self {
             bridge,
@@ -45,6 +75,12 @@ impl MacIpc {
             session: RefCell::new(None),
             pending_controls: RefCell::new(Vec::new()),
             webview: RefCell::new(Weak::default()),
+            #[cfg(feature = "local-server")]
+            local,
+            #[cfg(feature = "local-server")]
+            data: Rc::new(RefCell::new(Default::default())),
+            #[cfg(feature = "local-server")]
+            data_timer: RefCell::new(None),
         });
         state.wake.attach(&state);
         if state.bridge.attach_waker(state.wake.clone()).is_err() {
@@ -93,6 +129,8 @@ impl MacIpc {
         self.hello_started.set(false);
         self.session.borrow_mut().take();
         self.pending_controls.borrow_mut().clear();
+        #[cfg(feature = "local-server")]
+        self.clear_data();
         self.bridge.navigate(next);
         let old = self
             .tasks
@@ -199,7 +237,7 @@ impl MacIpc {
             return;
         };
         self.epoch.set(epoch);
-        if !webview_url_is_trusted(webview) {
+        if !self.trusted_webview(webview) {
             self.fail_document();
             return;
         }
@@ -235,18 +273,22 @@ impl MacIpc {
         let Some(webview) = self.webview.borrow().load() else {
             return;
         };
-        if !self.is_current(navigation) || !webview_url_is_trusted(&webview) {
+        if !self.is_current(navigation) || !self.trusted_webview(&webview) {
             return;
         }
         let identity = CommittedMainDocument {
             navigation,
-            origin: super::APP_ORIGIN.into(),
+            origin: self.origin().into(),
         };
         let Ok(proof) = self.bridge.begin_document(identity, nonce) else {
             self.fail_document();
             return;
         };
-        let Ok(script) = crate::native_ipc::activation_script(&proof) else {
+        let Ok(script) = (if self.is_local() {
+            crate::native_ipc::activation_script_local(&proof)
+        } else {
+            crate::native_ipc::activation_script(&proof)
+        }) else {
             self.fail_document();
             return;
         };
@@ -284,6 +326,8 @@ impl MacIpc {
         }
         self.session.borrow_mut().take();
         self.pending_controls.borrow_mut().clear();
+        #[cfg(feature = "local-server")]
+        self.clear_data();
         let previous = self
             .tasks
             .replace(Rc::new(NativeIpcTasks::new(self.wake.clone(), 128)));
@@ -357,6 +401,108 @@ impl MacIpc {
         self.proof.borrow_mut().take();
         self.session.borrow_mut().take();
         self.pending_controls.borrow_mut().clear();
+        #[cfg(feature = "local-server")]
+        self.clear_data();
+    }
+
+    pub(super) fn is_local(&self) -> bool {
+        #[cfg(feature = "local-server")]
+        {
+            self.local.is_some()
+        }
+        #[cfg(not(feature = "local-server"))]
+        {
+            false
+        }
+    }
+
+    pub(super) fn origin(&self) -> &str {
+        #[cfg(feature = "local-server")]
+        if let Some((origin, _)) = &self.local {
+            return origin.as_str();
+        }
+        super::APP_ORIGIN
+    }
+
+    pub(super) fn trusted_webview(&self, webview: &WKWebView) -> bool {
+        // SAFETY: Current URL is read on the owning WebKit main thread.
+        let Some(url) = (unsafe { webview.URL() }) else {
+            return false;
+        };
+        #[cfg(feature = "local-server")]
+        if let Some((origin, lifetime)) = &self.local {
+            return lifetime.is_active()
+                && url
+                    .absoluteString()
+                    .is_some_and(|value| origin.allows(&value.to_string()))
+                && url.user().is_none()
+                && url.password().is_none();
+        }
+
+        trusted_url(&url)
+    }
+
+    pub(super) fn trusted_current_webview(&self) -> bool {
+        self.webview
+            .borrow()
+            .load()
+            .is_some_and(|view| self.trusted_webview(&view))
+    }
+
+    pub(super) fn trusted_frame(
+        &self,
+        scheme: Option<&str>,
+        host: Option<&str>,
+        port: isize,
+    ) -> bool {
+        #[cfg(feature = "local-server")]
+        if let Some((origin, lifetime)) = &self.local {
+            return lifetime.is_active()
+                && scheme.zip(host).is_some_and(|(scheme, host)| {
+                    origin.matches_security_origin(scheme, host, port)
+                });
+        }
+        scheme == Some("webui") && host == Some("app") && port == 0
+    }
+
+    #[cfg(feature = "local-server")]
+    fn clear_data(&self) {
+        if let Some(timer) = self.data_timer.borrow_mut().take() {
+            timer.invalidate();
+        }
+        self.data.borrow_mut().reset();
+    }
+
+    /// At most one native run-loop timer per local document, rearmed only when
+    /// a cursor is retained. Invalidation on navigation prevents stale timers
+    /// from touching a replacement document.
+    #[cfg(feature = "local-server")]
+    pub(super) fn arm_data_deadline(self: &Rc<Self>) {
+        if let Some(timer) = self.data_timer.borrow_mut().take() {
+            timer.invalidate();
+        }
+        let Some(until) = self.data.borrow().next_deadline() else {
+            return;
+        };
+        let interval = until
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs_f64()
+            .max(0.001);
+        let navigation = self.navigation();
+        let weak = Rc::downgrade(self);
+        let block = RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
+            let Some(state) = weak.upgrade().filter(|state| state.is_current(navigation)) else {
+                return;
+            };
+            state.data.borrow_mut().expire(std::time::Instant::now());
+            state.arm_data_deadline();
+        });
+        // SAFETY: This callback and its timer are created/invalidated only on
+        // WebKit's main run loop; it captures a weak document owner.
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block)
+        };
+        *self.data_timer.borrow_mut() = Some(timer);
     }
 }
 
@@ -364,11 +510,6 @@ impl Drop for MacIpc {
     fn drop(&mut self) {
         self.close();
     }
-}
-
-fn webview_url_is_trusted(webview: &WKWebView) -> bool {
-    // SAFETY: Only used on the owning main thread with a live WebView.
-    unsafe { webview.URL() }.is_some_and(|url| trusted_url(&url))
 }
 
 fn evaluate(

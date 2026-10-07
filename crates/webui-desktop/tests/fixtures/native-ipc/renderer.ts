@@ -69,10 +69,15 @@ export async function run(restored = false): Promise<void> {
     onError(error) { console.error('NATIVE_IPC_CALLBACK_FAILURE', error); },
   });
   const generation = (await connection.host.sessionGeneration(undefined)).value;
+  const platformResponse = await fetch('/fixture-platform');
+  assert(platformResponse.ok, 'native fixture platform metadata unavailable');
+  const platform = await platformResponse.text();
+  assert(['darwin', 'win32', 'linux'].includes(platform), 'unknown native fixture platform');
   if (retired) assert(generation > retired.generation, 'BFCache restore reused the old generation');
   connection.renderer.onChanged(() => { counts.notifications++; });
   previousDocument = { connection, generation, counts };
   const stage = new URLSearchParams(location.search).get('native-stage');
+  if (!stage && platform === 'darwin') await checkMacHostMessageGuard(connection);
   if (stage) {
     if (stage === 'history-a' || stage === 'history-b') {
       const visit = sessionStorage.getItem('native-ipc-history');
@@ -80,7 +85,7 @@ export async function run(restored = false): Promise<void> {
         await verifyHistoryConnection(connection, visit, retired, retiredCounts);
       }
     }
-    await runLifecycle(connection, stage, retired);
+    await runLifecycle(connection, stage, retired, platform);
     return;
   }
   await checkSameDocument(connection);
@@ -148,6 +153,40 @@ export async function run(restored = false): Promise<void> {
   else location.replace('/?native-stage=after-navigation');
 }
 
+async function checkMacHostMessageGuard(connection: AppConnection): Promise<void> {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', 'allow-scripts'); // An opaque, untrusted frame.
+  frame.src = '/host-probe.html';
+  const posted = new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener('message', onMessage);
+      reject(new Error('sandboxed host-probe iframe did not execute'));
+    }, 10_000);
+    function onMessage(event: MessageEvent): void {
+      if (event.source !== frame.contentWindow) return;
+      window.clearTimeout(timeout);
+      window.removeEventListener('message', onMessage);
+      if (event.origin !== 'null' || event.data !== 'host-probe-posted') {
+        reject(new Error(`invalid opaque host-probe receipt: ${event.origin} ${event.data}`));
+      } else resolve();
+    }
+    window.addEventListener('message', onMessage);
+    frame.onerror = () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener('message', onMessage);
+      reject(new Error('sandboxed host-probe iframe could not load'));
+    };
+  });
+  document.body.append(frame);
+  await posted; // The child verified the bridge and invoked direct "close".
+  // A surviving native document and a completed typed RPC prove that the
+  // untrusted frame did not close the actual native window.
+  assert((await connection.host.sessionGeneration(undefined)).value > 0n,
+    'native IPC unavailable after subframe window-control attempt');
+  const receipt = await fetch('/fixture-host-guard-observed', { method: 'POST', cache: 'no-store' });
+  assert(receipt.ok && await receipt.text() === 'observed', 'native host-guard receipt missing');
+}
+
 async function verifyHistoryConnection(
   connection: AppConnection,
   visit: string,
@@ -174,9 +213,11 @@ async function verifyHistoryConnection(
   await connection.host.historyVerified(proof);
 }
 
-async function runLifecycle(connection: AppConnection, stage: string, retired?: DocumentConnection): Promise<void> {
+async function runLifecycle(
+  connection: AppConnection, stage: string, retired: DocumentConnection | undefined, platform: string,
+): Promise<void> {
   if (stage === 'history-a' || stage === 'history-b') {
-    await runHistory(connection, stage, retired);
+    await runHistory(connection, stage, retired, platform);
     return;
   }
   if (stage === 'after-close') {
@@ -264,7 +305,9 @@ async function holdForNavigation(connection: AppConnection, phase: string): Prom
   return hold;
 }
 
-async function runHistory(connection: AppConnection, stage: string, retired?: DocumentConnection): Promise<void> {
+async function runHistory(
+  connection: AppConnection, stage: string, retired: DocumentConnection | undefined, platform: string,
+): Promise<void> {
   const visit = sessionStorage.getItem('native-ipc-history');
   if (stage === 'history-b' && visit === 'first-b') {
     await connection.host.lifecycleCheck(item(0, 'history-forward'));
@@ -283,9 +326,22 @@ async function runHistory(connection: AppConnection, stage: string, retired?: Do
     await connection.host.lifecycleCheck(item(0, 'history-return'));
     confirmHistoryNavigation(sessionStorage, 'history-return', (await retired?.connection.closed)?.code);
     sessionStorage.removeItem('native-ipc-history');
-    // Native shutdown can revoke the document before event acceptance arrives.
-    void connection.host.done(undefined).catch(error => {
-      assert(error instanceof IpcError && error.code === 'closed', 'unexpected final event error');
-    });
+    if (platform === 'darwin') {
+      // The fixture host does not request_close on macOS. Only this trusted
+      // top document can produce the required native WindowClosed event.
+      await connection.host.done(undefined);
+      const ready = await fetch('/fixture-main-host-close-ready', { method: 'POST', cache: 'no-store' });
+      assert(ready.ok && await ready.text() === 'ready', 'native Done not complete before main host close');
+      const webuiHost = (window as Window & {
+        webkit?: { messageHandlers?: { webuiHost?: { postMessage(body: string): void } } };
+      }).webkit?.messageHandlers?.webuiHost;
+      assert(webuiHost, 'main-frame webuiHost bridge absent');
+      webuiHost.postMessage('"close"');
+    } else {
+      // Native shutdown can revoke the document before event acceptance arrives.
+      void connection.host.done(undefined).catch(error => {
+        assert(error instanceof IpcError && error.code === 'closed', 'unexpected final event error');
+      });
+    }
   }
 }

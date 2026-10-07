@@ -12,13 +12,20 @@ use windows::Win32::Graphics::Gdi;
 use windows::Win32::UI::HiDpi;
 use windows::Win32::UI::WindowsAndMessaging::{self, MSG};
 
+#[cfg(feature = "native-capture")]
+use super::capture::CAPTURE_WAKE_MESSAGE;
 use super::command::execute_window_command;
 use super::event::{logical_dimension, physical_to_logical, size_event_transition};
-use super::nonclient::{initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame};
+use super::nonclient::{
+    defer_startup_close, initialize_frame, non_client_calc_size, non_client_hit_test, redraw_frame,
+    startup_background, startup_is_ready,
+};
 use super::state::{save_window_state, set_window_state, with_window_state, FrameState};
 use super::webview::mirror_event;
 #[cfg(feature = "application-ipc")]
 use super::IPC_WAKE_MESSAGE;
+#[cfg(feature = "local-server")]
+use super::OWNER_LOST_MESSAGE;
 use super::{WAKE_MESSAGE, WINDOW_ID};
 
 /// Pump native messages until the window closes.
@@ -46,6 +53,26 @@ pub(super) extern "system" fn window_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
+    if cfg!(feature = "native-dwm-frame")
+        && super::nonclient::is_dwm_frame(hwnd)
+        && msg != WindowsAndMessaging::WM_NCCALCSIZE
+    {
+        let mut result = LRESULT(0);
+        // SAFETY: The unchanged native message and writable result belong to this UI thread.
+        if unsafe {
+            windows::Win32::Graphics::Dwm::DwmDefWindowProc(
+                hwnd,
+                msg,
+                w_param,
+                l_param,
+                &mut result,
+            )
+        }
+        .as_bool()
+        {
+            return result;
+        }
+    }
     match msg {
         WindowsAndMessaging::WM_NCCREATE => {
             if let Err(error) = initialize_frame(hwnd, l_param) {
@@ -57,6 +84,19 @@ pub(super) extern "system" fn window_proc(
             // SAFETY: Frame configuration is installed before default creation.
             unsafe { WindowsAndMessaging::DefWindowProcW(hwnd, msg, w_param, l_param) }
         }
+        WindowsAndMessaging::WM_SETFOCUS => {
+            // COM focus changes can reenter the window procedure; release the state borrow first.
+            let controller =
+                super::state::with_window_state_result(hwnd, |state| state.controller.clone());
+            if let Some(controller) = controller {
+                if let Err(error) = super::webview::focus_controller_from_frame(hwnd, &controller) {
+                    eprintln!(
+                        "WebUI: failed to transfer native keyboard focus into WebView2: {error}"
+                    );
+                }
+            }
+            LRESULT(0)
+        }
         super::APP_WAKE_MESSAGE => {
             let tasks = super::state::with_window_state_result(hwnd, |state| {
                 state.application_tasks.clone()
@@ -66,11 +106,25 @@ pub(super) extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        #[cfg(feature = "native-capture")]
+        CAPTURE_WAKE_MESSAGE => {
+            with_window_state(hwnd, |state| {
+                if let Some(registration) = &state.capture_registration {
+                    registration.drain(
+                        w_param.0,
+                        &state.webview,
+                        &state.controller,
+                        (hwnd, state.content),
+                    );
+                }
+            });
+            LRESULT(0)
+        }
         #[cfg(feature = "application-ipc")]
         IPC_WAKE_MESSAGE => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
             // Release the native state borrow before polling COM completions.
-            if let Some(ipc) = ipc {
+            if let Some(Some(ipc)) = ipc {
                 ipc.drain(w_param.0);
             }
             LRESULT(0)
@@ -78,13 +132,34 @@ pub(super) extern "system" fn window_proc(
         #[cfg(feature = "application-ipc")]
         WindowsAndMessaging::WM_TIMER => {
             let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
-            if let Some(ipc) = ipc {
+            if let Some(Some(ipc)) = ipc {
                 ipc.expire_hello(w_param.0);
+                #[cfg(feature = "local-server")]
+                ipc.expire_data(w_param.0);
             }
             LRESULT(0)
         }
         WAKE_MESSAGE => {
             drain_commands(hwnd);
+            LRESULT(0)
+        }
+        #[cfg(feature = "local-server")]
+        OWNER_LOST_MESSAGE => {
+            let retired = super::state::with_window_state_result(hwnd, |state| {
+                crate::local_server::should_close_for_cookie(
+                    state.local_lifetime.as_ref(),
+                    state.owner_close_cookie,
+                    w_param.0,
+                )
+            })
+            .unwrap_or(false);
+            if retired {
+                // SAFETY: A retired local frame must close regardless of
+                // cancellable callbacks or a saturated window-command queue.
+                if let Err(error) = unsafe { WindowsAndMessaging::DestroyWindow(hwnd) } {
+                    eprintln!("WebUI: failed to close retired local-server window: {error}");
+                }
+            }
             LRESULT(0)
         }
         WindowsAndMessaging::WM_NCCALCSIZE => non_client_calc_size(hwnd, msg, w_param, l_param),
@@ -95,6 +170,12 @@ pub(super) extern "system" fn window_proc(
             LRESULT(0)
         }
         WindowsAndMessaging::WM_DPICHANGED => {
+            #[cfg(feature = "native-capture")]
+            with_window_state(hwnd, |state| {
+                if let Some(registration) = &state.capture_registration {
+                    registration.owner_viewport_changed();
+                }
+            });
             apply_suggested_rect(hwnd, l_param);
             refresh_frame(hwnd);
             dispatch_scale_changed(hwnd, w_param);
@@ -271,6 +352,9 @@ pub(super) fn refresh_frame(hwnd: HWND) {
 }
 
 fn resize_content(hwnd: HWND, state: &FrameState) -> Result<()> {
+    if state.content != hwnd {
+        super::native_frame::resize_browser(hwnd, state.content)?;
+    }
     if state.app_window.refresh(hwnd)? {
         state.app_window.publish_metrics(&state.webview)?;
     }
@@ -300,6 +384,10 @@ fn dispatch_moved(hwnd: HWND) {
 
 /// Offer the close request to handlers before destroying the window.
 fn close_window(hwnd: HWND) {
+    if !startup_is_ready(hwnd) {
+        defer_startup_close(hwnd);
+        return;
+    }
     let prevented = super::state::with_window_state_result(hwnd, |state| {
         let event = DesktopEvent::WindowCloseRequested {
             window_id: WINDOW_ID,
@@ -320,12 +408,17 @@ fn close_window(hwnd: HWND) {
 
 /// Paint the configured background so there is no flash before first paint.
 fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
-    let Some(color) =
-        super::state::with_window_state_result(hwnd, |state| state.options.background).flatten()
-    else {
+    let color = super::state::with_window_state_result(hwnd, |state| state.options.background)
+        .flatten()
+        .or_else(|| startup_background(hwnd));
+    let native_glass = cfg!(feature = "native-dwm-frame")
+        && super::nonclient::is_dwm_frame(hwnd)
+        && super::state::window_style_bits(hwnd, WindowsAndMessaging::GWL_STYLE)
+            & WindowsAndMessaging::WS_CAPTION.0
+            != 0;
+    if color.is_none() && !native_glass {
         return LRESULT(0);
-    };
-    let rgb = u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16);
+    }
     let hdc = Gdi::HDC(w_param.0 as *mut std::ffi::c_void);
     let mut rect = RECT::default();
     // SAFETY: `hwnd` is a live window and `rect` is writable storage.
@@ -335,19 +428,62 @@ fn erase_background(hwnd: HWND, w_param: WPARAM) -> LRESULT {
     // SAFETY: Windows supplies the device context in `w_param` for this
     // message, `rect` is initialized, and the brush is deleted before return.
     unsafe {
-        let brush = Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb));
-        let _ = Gdi::FillRect(hdc, &rect, brush);
-        let _ = Gdi::DeleteObject(brush.into());
+        if let Some(color) = color {
+            let rgb = u32::from(color.r) | (u32::from(color.g) << 8) | (u32::from(color.b) << 16);
+            let brush = Gdi::CreateSolidBrush(windows::Win32::Foundation::COLORREF(rgb));
+            let _ = Gdi::FillRect(hdc, &rect, brush);
+            let _ = Gdi::DeleteObject(brush.into());
+        }
+        if native_glass {
+            match super::native_frame::caption_rect(hwnd) {
+                Ok(caption) => {
+                    // DWM's extended frame requires zero-alpha pixels beneath native controls.
+                    let black = Gdi::GetStockObject(Gdi::BLACK_BRUSH);
+                    let _ = Gdi::FillRect(hdc, &caption, Gdi::HBRUSH(black.0));
+                }
+                Err(error) => eprintln!("WebUI: failed to clear native caption glass: {error}"),
+            }
+        }
     }
     LRESULT(1)
 }
 
 /// Publish the final close event and release the frame state.
 fn destroy_window(hwnd: HWND) {
+    #[cfg(feature = "native-picker")]
+    with_window_state(hwnd, |state| {
+        if let Some(picker) = &state.picker {
+            picker.notify_picker_closed();
+        }
+    });
+    #[cfg(feature = "native-dialogs")]
+    with_window_state(hwnd, |state| {
+        if let Some(dialogs) = &state.dialogs {
+            dialogs.notify_closed();
+        }
+    });
+    #[cfg(feature = "native-clipboard")]
+    with_window_state(hwnd, |state| {
+        if let Some(clipboard) = &state.clipboard {
+            clipboard.notify_closed();
+        }
+    });
+    #[cfg(feature = "local-server")]
+    with_window_state(hwnd, |state| {
+        if let Some(controls) = &state.local_controls {
+            controls.close();
+        }
+    });
+    #[cfg(feature = "native-capture")]
+    with_window_state(hwnd, |state| {
+        if let Some(registration) = &state.capture_registration {
+            registration.close();
+        }
+    });
     #[cfg(feature = "application-ipc")]
     {
         let ipc = super::state::with_window_state_result(hwnd, |state| state.ipc.clone());
-        if let Some(ipc) = ipc {
+        if let Some(Some(ipc)) = ipc {
             ipc.close();
         }
     }
@@ -382,15 +518,19 @@ pub(super) fn set_controller_bounds(
 ) -> Result<()> {
     let size = get_window_size(hwnd);
     // SAFETY: `controller` is a live WebView2 controller for this window.
-    unsafe {
-        controller.SetBounds(RECT {
-            left: 0,
-            top: 0,
-            right: size.cx,
-            bottom: size.cy,
-        })?;
-    }
+    unsafe { controller.SetBounds(full_client_bounds(size))? };
     Ok(())
+}
+
+/// The overlay caption is native non-client input ABOVE this full client
+/// surface, not an additional WebView2-excluding strip.
+fn full_client_bounds(size: SIZE) -> RECT {
+    RECT {
+        left: 0,
+        top: 0,
+        right: size.cx,
+        bottom: size.cy,
+    }
 }
 
 /// Return the window's current DPI for physical-to-logical conversion.
@@ -411,5 +551,23 @@ pub(super) fn get_window_size(hwnd: HWND) -> SIZE {
     SIZE {
         cx: client_rect.right.saturating_sub(client_rect.left),
         cy: client_rect.bottom.saturating_sub(client_rect.top),
+    }
+}
+
+#[cfg(test)]
+mod overlay_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn webview_fills_entire_client_even_under_native_caption() {
+        assert_eq!(
+            full_client_bounds(SIZE { cx: 1280, cy: 720 }),
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1280,
+                bottom: 720,
+            }
+        );
     }
 }

@@ -1,0 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+# Ubuntu 24.04 restricts user namespaces for unconfined applications. Permit
+# only this integration test's binary to create the namespaces WebKitGTK's
+# bubblewrap sandbox needs; do not disable the WebKit sandbox or the
+# system-wide AppArmor restriction. Loaded only for the Linux CI journey step.
+profile webui-linux-local-server-test /**/target/debug/deps/linux_local_server-* flags=(unconfined) {
+  userns,
+}

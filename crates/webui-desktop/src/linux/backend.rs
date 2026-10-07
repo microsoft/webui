@@ -107,7 +107,7 @@ pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     Ok(())
 }
 
-fn run_application(app: &impl IsA<gio::Application>) -> glib::ExitCode {
+pub(super) fn run_application(app: &impl IsA<gio::Application>) -> glib::ExitCode {
     // The embedding host has already parsed its arguments. Passing them to
     // GApplication makes positional arguments look like files to open.
     app.run_with_args::<&str>(&[])
@@ -250,7 +250,7 @@ fn build_window(
     Ok(())
 }
 
-fn configure_constraints(window: &ApplicationWindow, options: &crate::WindowOptions) {
+pub(super) fn configure_constraints(window: &ApplicationWindow, options: &crate::WindowOptions) {
     let min_width = options
         .min_width
         .map_or(-1, |value| safe_dimension(value, -1));
@@ -651,7 +651,7 @@ pub(super) fn dispatch_event(
     response
 }
 
-fn restore_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
+pub(super) fn restore_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
     let Some(store) = store else {
         return;
     };
@@ -674,7 +674,7 @@ fn restore_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
     }
 }
 
-fn persist_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
+pub(super) fn persist_state(window: &ApplicationWindow, store: Option<&WindowStateStore>) {
     let Some(store) = store else {
         return;
     };
@@ -713,7 +713,7 @@ fn display_bounds(window: &ApplicationWindow) -> Vec<DisplayBounds> {
     bounds
 }
 
-fn to_gdk_rgba(color: Rgba) -> gdk::RGBA {
+pub(super) fn to_gdk_rgba(color: Rgba) -> gdk::RGBA {
     gdk::RGBA::new(
         f32::from(color.r) / 255.0,
         f32::from(color.g) / 255.0,
@@ -728,7 +728,7 @@ fn report_effect_limit(effect: WindowEffect) {
     }
 }
 
-fn safe_dimension(value: u32, fallback: i32) -> i32 {
+pub(super) fn safe_dimension(value: u32, fallback: i32) -> i32 {
     i32::try_from(value).unwrap_or(fallback).max(1)
 }
 

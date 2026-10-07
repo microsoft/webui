@@ -67,6 +67,8 @@ Common commands:
 | `cargo xtask clippy` | Run clippy lints |
 | `cargo xtask test` | Run all tests |
 | `cargo xtask build` | Build the workspace and examples |
+| `cargo xtask desktop-assets` | Build desktop browser assets into ignored target output |
+| `cargo xtask package-check` | Generate transient assets and verify Cargo package archives |
 | `cargo xtask dev <app>` | Run an example app in development mode |
 | `cargo xtask bench <target>` | Run benchmarks |
 | `cargo xtask build-windows-local` | Manually build and stage Windows MSVC artifacts on macOS |

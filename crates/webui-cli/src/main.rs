@@ -38,9 +38,6 @@ fn main() {
             commands::sidecar::execute(commands::sidecar::Sidecar::Press, args).map(|()| 0)
         }
         Commands::Inspect(args) => commands::inspect::execute(args).map(|()| 0),
-        Commands::PruneComponentAssets(args) => {
-            commands::prune_component_assets::execute(args).map(|()| 0)
-        }
         Commands::Serve(args) => commands::serve::execute(args),
     };
 
@@ -54,37 +51,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn component_asset_pruning_requires_explicit_directory_and_quiescence() {
-        assert!(Cli::try_parse_from([
-            "webui",
-            "prune-component-assets",
-            "--component-assets-out",
-            "generated",
-            "--quiescent",
-        ])
-        .is_ok());
-        for args in [
-            vec!["webui", "prune-component-assets"],
-            vec!["webui", "prune-component-assets", "--quiescent"],
-            vec![
-                "webui",
-                "prune-component-assets",
-                "--component-assets-out",
-                "generated",
-            ],
-            vec!["webui", "build", "--out", "generated", "--quiescent"],
-            vec!["webui", "serve", "--quiescent"],
-        ] {
-            assert_eq!(
-                Cli::try_parse_from(args)
-                    .err()
-                    .map(|error| error.exit_code()),
-                Some(2)
-            );
-        }
-    }
 
     #[test]
     fn shutdown_timeout_is_opt_in_and_positive() -> Result<(), clap::Error> {

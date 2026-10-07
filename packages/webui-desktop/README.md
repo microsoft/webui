@@ -166,8 +166,11 @@ codec or application allocations.
 ## Native adapter seam
 
 Inject **the built `dist/native-bootstrap.js` bytes** at document start, only in
-eligible main frames, identically for source and packaged applications. The
-artifact installs an immutable, frozen `window.__webuiDesktopIpcV2`:
+eligible main frames, identically for source and packaged applications. An
+owned local-server frame with `application_ipc` instead uses the separate
+`dist/local-native-bootstrap.js` asset; it must never inject the bundled
+bootstrap into an HTTP document. Both install an immutable, frozen
+`window.__webuiDesktopIpcV2`:
 
 ```ts
 interface NativeIpcBootstrap {
@@ -176,6 +179,7 @@ interface NativeIpcBootstrap {
     navigation: string;
     documentNonce: string;
     challenge: string;
+    nativeCarrierVersion?: 1;
   }): boolean;
   hello(hello: Hello): Promise<SessionInfo>;
   subscribeControl(listener: (control: NativeControl) => void): Subscription;
@@ -197,8 +201,10 @@ The single hello waits for activation and has a five-second deadline covering
 that wait. Connection, transport and bootstrap boundaries project only
 `wireVersion`, `contractName`, `contractMajor` and `schemaHash`; local method
 descriptors, codecs and extra own properties never cross native admission.
-The posted hello has exactly nine fields, adding `navigation`, `documentNonce`,
-`challenge`, `callId: "1"` and `kind: "hello"`. Native success and structured
+The bundled hello has exactly nine fields, adding `navigation`, `documentNonce`,
+`challenge`, `callId: "1"` and `kind: "hello"`. An owned local-server
+document adds `nativeCarrierVersion: 1` to that hello and requires the same
+version in the successful native reply. Native success and structured
 error replies must echo the navigation, nonce, challenge and call ID with
 `kind: "helloResult"`. Stale proof or call ID replies cannot settle
 the handshake. SessionInfo strips proof fields.
@@ -234,6 +240,34 @@ proof and session token cannot gain authority. GTK callbacks must not fabricate
 main-frame identity. IPC-enabled GTK views disable page caching so history
 navigation creates a fresh bootstrap, and cancelled revoked navigations stay
 closed.
+
+### Owned local-server carrier
+
+For an owned, IPC-enabled local-server frame on macOS, Windows or Linux, import
+`createDesktopTransport` from `@microsoft/webui-desktop/native` instead of
+the ordinary package root. The native host must retain its bound listener and
+opt in with `LocalServerAppBuilder::application_ipc`; an attached daemon
+cannot enable this capability. The host
+can use `bind_owned_local_server(address)` to bind an exclusive Windows or Linux
+`std::net::TcpListener` before starting its server. The SDK retains a
+duplicate only until trusted IPC retirement; close the native frame before
+waiting for the server's port to become free.
+The host
+can mount `local_ipc_runtime_asset()` at `LOCAL_IPC_RUNTIME_PATH` on its existing
+same-origin server, or bundle the native package export itself. The ordinary
+package root and default embedded runtime do not include the native data
+carrier.
+
+Local IPC uses a private native message data lane, not the HTTP listener or
+the 4 KiB native control lane. It reuses the existing generated schema and
+binary IPC frame engine. A missing or mismatched carrier version fails the
+opt-in transport before it can send session credentials to HTTP; there is no
+HTTP fallback. The Rust host validates the live listener, exact committed main
+document and host lifetime before admitting page authority. The server must
+serve its own routes, assets and headers normally; the SDK does not proxy them.
+On Linux, the WebKitGTK callback has no sender frame identity, so the private
+native handlers live in an isolated content world with only a top-frame
+mediator. This does not enable preview subframe navigation or native authority.
 
 ## Resource bounds
 
@@ -279,7 +313,12 @@ The TypeScript build emits normal ESM and declarations under `dist/`.
 `scripts/build.mjs` emits deterministic browser artifacts:
 
 - `dist/native-bootstrap.js`: self-contained document-start IIFE;
-- `dist/desktop-runtime.js`: self-contained ESM runtime for a reserved SDK asset.
+- `dist/desktop-runtime.js`: self-contained ESM runtime for a reserved SDK asset;
+- `dist/local-native-bootstrap.js`: local-server native carrier bootstrap;
+- `dist/local-desktop-runtime.js`: local-server native carrier runtime.
+
+`scripts/stage-rust-assets.mjs` also bundles the two Linux isolated-world entry
+points while staging the complete Rust asset set.
 
 The canonical envelope source is
 `crates/webui-desktop/proto/webui_desktop.proto`. `generate-wire.mjs` updates the
@@ -288,19 +327,18 @@ fixed framework envelope helpers. Application payload codecs are emitted by
 writer helpers. No proto parser, compiler, Node API, base64 codec, third-party
 protobuf runtime, or JSON application DTO code ships in the runtime.
 
-Native embedding is an **explicit separate operation**, never a side effect of
-the package build:
+Repository builds stage the deterministic browser artifacts outside the source
+tree for Rust to embed:
 
 ```sh
-node scripts/sync-bootstrap.mjs --write ../../crates/webui-desktop/src/generated/ipc
-node scripts/sync-bootstrap.mjs --check ../../crates/webui-desktop/src/generated/ipc
+cargo xtask desktop-assets
+node scripts/stage-rust-assets.mjs --check ../../target/webui-desktop-assets/ipc
 ```
 
-The SDK integrator owns that destination, checks in both artifacts, embeds them
-from inside the published crate, and serves identical reserved assets for source
-and bundle modes. `--check` compares bytes without rewriting them. The parent
-workspace build should run `tsc && node scripts/build.mjs`; package manifest,
-publish wiring and native embedding are integration-owned.
+Generated JavaScript is never committed. Repository Cargo builds copy the
+staged bytes into `OUT_DIR`; release packaging temporarily adds the same bytes
+to the Rust crate archive so downstream Cargo consumers do not need Node,
+pnpm, or esbuild. `--check` compares bytes without rewriting them.
 
 Tests use real `node:test`, generated WebUI payload codecs, bounded fake transports,
 fake native channels, compile-time negative assertions, and the actual built

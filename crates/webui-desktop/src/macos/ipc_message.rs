@@ -54,13 +54,13 @@ impl DesktopIpcMessageHandler {
 }
 
 fn handle(state: &Rc<MacIpc>, message: &WKScriptMessage, reply: &Reply) {
-    if !trusted_message(message) {
+    if !trusted_message(state, message) {
         reject(reply);
         return;
     }
     // SAFETY: WebKit retains message and its body during this native callback.
     let body = unsafe { message.body() };
-    let Some(control) = ipc_control::decode(&body) else {
+    let Some(control) = ipc_control::decode(&body, state.is_local()) else {
         reject(reply);
         return;
     };
@@ -79,17 +79,20 @@ fn handle(state: &Rc<MacIpc>, message: &WKScriptMessage, reply: &Reply) {
     }
 }
 
-fn trusted_message(message: &WKScriptMessage) -> bool {
+pub(super) fn trusted_message(state: &MacIpc, message: &WKScriptMessage) -> bool {
     // SAFETY: Actual WebKit frame metadata, never fields supplied by JS.
     unsafe {
         let frame = message.frameInfo();
         let origin = frame.securityOrigin();
-        trusted_frame(
-            frame.isMainFrame(),
-            bounded_string(&origin.protocol(), 16).as_deref(),
-            bounded_string(&origin.host(), 16).as_deref(),
-            origin.port(),
-        )
+        let scheme = bounded_string(&origin.protocol(), 16);
+        let host = bounded_string(&origin.host(), 64);
+        frame.isMainFrame()
+            && (if state.is_local() {
+                state.trusted_frame(scheme.as_deref(), host.as_deref(), origin.port())
+            } else {
+                trusted_frame(true, scheme.as_deref(), host.as_deref(), origin.port())
+            })
+            && state.trusted_current_webview()
     }
 }
 
@@ -104,6 +107,7 @@ fn hello_reply(state: &Rc<MacIpc>, hello: HelloControl, reply: &Reply, mtm: Main
             reply,
             &hello,
             &Err(ipc_control::error(IpcErrorCode::PermissionDenied)),
+            state.is_local(),
         );
         return;
     }
@@ -134,7 +138,7 @@ fn hello_reply(state: &Rc<MacIpc>, hello: HelloControl, reply: &Reply, mtm: Main
         if let Ok(session) = &result {
             *state.session.borrow_mut() = Some(session.clone());
         }
-        if !send_reply(&reply, &hello, &result) {
+        if !send_reply(&reply, &hello, &result, state.is_local()) {
             if let Ok(session) = &result {
                 let _ = bridge.disconnect_authenticated(session.generation, &session.token);
             }
@@ -153,7 +157,7 @@ fn hello_reply(state: &Rc<MacIpc>, hello: HelloControl, reply: &Reply, mtm: Main
     }
 }
 
-fn reject(reply: &Reply) {
+pub(super) fn reject(reply: &Reply) {
     let text = NSString::from_str("Invalid desktop IPC control");
     reply.call((std::ptr::null_mut(), Retained::as_ptr(&text).cast_mut()));
 }
@@ -162,8 +166,13 @@ fn send_reply(
     reply: &Reply,
     hello: &HelloControl,
     result: &Result<crate::ipc::SessionInfo, crate::ipc::IpcError>,
+    carrier: bool,
 ) -> bool {
-    let Ok(bytes) = ipc_control::reply_json(hello, result) else {
+    let Ok(bytes) = (if carrier {
+        crate::native_ipc::hello_reply_json_local(hello, result)
+    } else {
+        crate::native_ipc::hello_reply_json(hello, result)
+    }) else {
         reject(reply);
         return false;
     };
@@ -172,6 +181,10 @@ fn send_reply(
         return false;
     }
     // Only SDK-produced bounded control JSON enters Foundation serialization.
+    native_json_reply(reply, bytes)
+}
+
+pub(super) fn native_json_reply(reply: &Reply, bytes: Vec<u8>) -> bool {
     let data = NSData::from_vec(bytes);
     match NSJSONSerialization::JSONObjectWithData_options_error(
         &data,
@@ -246,7 +259,7 @@ mod tests {
                 assert_eq!(get("challenge"), "02".repeat(16));
                 counter.set(counter.get() + 1);
             });
-            send_reply(&reply, &hello, &result);
+            send_reply(&reply, &hello, &result, false);
             assert_eq!(calls.get(), 1);
         }
     }

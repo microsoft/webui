@@ -1,0 +1,25 @@
+{
+  "name": "native-services-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "pnpm run build:protocol && pnpm run build:client",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui --theme=@microsoft/webui-examples-theme",
+    "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --theme=@microsoft/webui-examples-theme --servedir ./dist --port 3022 --watch",
+    "start": "pnpm build && cargo run -p native-services-demo",
+    "test": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots"
+  },
+  "dependencies": {
+    "@microsoft/webui-framework": "workspace:*"
+  },
+  "devDependencies": {
+    "@microsoft/webui-examples-theme": "workspace:*",
+    "@playwright/test": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  }
+}

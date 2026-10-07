@@ -239,6 +239,14 @@ impl DesktopAppBuilder {
 pub struct DesktopApp;
 
 impl DesktopApp {
+    /// Create an opt-in native frame for an already-running loopback HTTP app.
+    ///
+    /// This does not start a server, compile sources, load a bundle, or grant IPC.
+    #[cfg(feature = "local-server")]
+    #[must_use]
+    pub fn from_local_server(options: crate::LocalServerOptions) -> crate::LocalServerAppBuilder {
+        crate::LocalServerAppBuilder::new(options)
+    }
     /// Construct a source-backed app without compiling or rendering it yet.
     ///
     /// Source-only asset and theme settings belong on `config`. Register shared

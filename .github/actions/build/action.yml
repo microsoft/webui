@@ -108,6 +108,10 @@ runs:
       with:
         dotnet-version: ${{ inputs.dotnet }}
 
+    - name: Generate desktop browser assets
+      shell: bash
+      run: cargo xtask desktop-assets
+
     - name: Build workspace
       if: inputs.skip-build != 'true'
       shell: bash

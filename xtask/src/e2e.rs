@@ -123,6 +123,16 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
+        name: "native-services",
+        dir: "examples/app/native-services",
+        ports: &[3022],
+        scripts: &["start:server"],
+        build_client: true,
+        pre_script: None,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
+    PlaywrightSuite {
         name: "todo-webui",
         dir: "examples/app/todo-webui",
         ports: &[3006],

@@ -81,14 +81,7 @@ impl WindowStateStore {
         if !remember_state {
             return Ok(None);
         }
-        let Some(app_id) = app_id.filter(|id| {
-            !id.is_empty()
-                && id.len() <= 255
-                && !id.ends_with('.')
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        }) else {
+        let Some(app_id) = app_id.filter(|id| crate::app_identity::valid_app_id(id)) else {
             return Err(WindowStateError::Io {
                 context: "configuring window-state identity".to_string(),
                 source: std::io::Error::new(

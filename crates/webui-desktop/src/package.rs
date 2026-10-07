@@ -1,19 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#[cfg(feature = "source")]
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "source")]
+use std::path::Component;
+use std::path::Path;
+#[cfg(feature = "source")]
+use std::path::PathBuf;
 
-use crate::bundle::{
-    copy_file_to, lexical_absolute_path, normalized_absolute_path, reject_path_overlap,
-    DesktopBundleManifest, DesktopPackageTarget,
-};
-use crate::error::{DesktopError, Result};
+#[cfg(feature = "source")]
+use crate::bundle::{copy_file_to, DesktopBundleManifest, DesktopPackageTarget};
+use crate::bundle::{lexical_absolute_path, normalized_absolute_path, reject_path_overlap};
+#[cfg(feature = "source")]
+use crate::error::DesktopError;
+use crate::error::Result;
 
 #[path = "package_windows.rs"]
-mod windows;
+pub(crate) mod windows;
 
 /// Options for packaging a desktop bundle.
+#[cfg(feature = "source")]
 pub struct DesktopPackageOptions {
     /// Desktop bundle directory created by `webui desktop build`.
     pub bundle_dir: PathBuf,
@@ -31,6 +38,7 @@ pub struct DesktopPackageOptions {
 }
 
 /// Result of a package operation.
+#[cfg(feature = "source")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DesktopPackageResult {
     /// Package output path.
@@ -44,6 +52,7 @@ pub struct DesktopPackageResult {
 /// Returns [`DesktopError`] if the manifest cannot be read, package files
 /// cannot be written, output paths overlap package inputs, or a Windows
 /// runner's required bootstrap deployment files are missing.
+#[cfg(feature = "source")]
 pub fn package_desktop_bundle(options: DesktopPackageOptions) -> Result<DesktopPackageResult> {
     let manifest_path = options.bundle_dir.join("manifest.webui-desktop.json");
     let manifest = DesktopBundleManifest::load(&manifest_path)?;
@@ -59,6 +68,7 @@ pub fn package_desktop_bundle(options: DesktopPackageOptions) -> Result<DesktopP
     }
 }
 
+#[cfg(feature = "source")]
 fn package_portable(
     options: &DesktopPackageOptions,
     manifest: &DesktopBundleManifest,
@@ -87,6 +97,7 @@ fn package_portable(
     Ok(DesktopPackageResult { output_path })
 }
 
+#[cfg(feature = "source")]
 fn package_macos_app(
     options: &DesktopPackageOptions,
     manifest: &DesktopBundleManifest,
@@ -124,12 +135,17 @@ fn package_macos_app(
     Ok(DesktopPackageResult { output_path })
 }
 
+#[cfg(feature = "source")]
 fn validate_package_output(output_path: &Path, options: &DesktopPackageOptions) -> Result<()> {
     validate_input_overlap(output_path, &options.bundle_dir, "bundle")?;
     validate_input_overlap(output_path, &options.runner_exe, "runner")
 }
 
-fn validate_input_overlap(output_path: &Path, input: &Path, label: &'static str) -> Result<()> {
+pub(super) fn validate_input_overlap(
+    output_path: &Path,
+    input: &Path,
+    label: &'static str,
+) -> Result<()> {
     let output = normalized_absolute_path(output_path)?;
     let lexical_output = lexical_absolute_path(output_path)?;
     let canonical_input = normalized_absolute_path(input)?;
@@ -141,6 +157,7 @@ fn validate_input_overlap(output_path: &Path, input: &Path, label: &'static str)
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn prepare_output_dir(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_dir_all(path).map_err(|source| DesktopError::Io {
@@ -154,6 +171,7 @@ fn prepare_output_dir(path: &Path) -> Result<()> {
     })
 }
 
+#[cfg(feature = "source")]
 fn copy_runner(runner_exe: &Path, dest_dir: &Path) -> Result<String> {
     let name = runner_exe
         .file_name()
@@ -164,6 +182,7 @@ fn copy_runner(runner_exe: &Path, dest_dir: &Path) -> Result<String> {
     Ok(name.to_string_lossy().into_owned())
 }
 
+#[cfg(feature = "source")]
 fn copy_bundle_dir(source: &Path, dest: &Path) -> Result<()> {
     let mut stack = vec![source.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -206,6 +225,7 @@ fn copy_bundle_dir(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn copy_portable_icon(
     options: &DesktopPackageOptions,
     manifest: &DesktopBundleManifest,
@@ -221,6 +241,7 @@ fn copy_portable_icon(
     copy_file_to(&source, &resources.join(file_name))
 }
 
+#[cfg(feature = "source")]
 fn copy_macos_icon(
     options: &DesktopPackageOptions,
     manifest: &DesktopBundleManifest,
@@ -241,6 +262,7 @@ fn copy_macos_icon(
     Ok(Some(icon_name.to_string()))
 }
 
+#[cfg(feature = "source")]
 fn resolve_bundle_relative_file(bundle_dir: &Path, path: &Path, label: &str) -> Result<PathBuf> {
     validate_bundle_relative_path(path, label)?;
     let bundle_root = bundle_dir
@@ -262,6 +284,7 @@ fn resolve_bundle_relative_file(bundle_dir: &Path, path: &Path, label: &str) -> 
     Ok(canonical)
 }
 
+#[cfg(feature = "source")]
 fn validate_bundle_relative_path(path: &Path, label: &str) -> Result<()> {
     for component in path.components() {
         match component {
@@ -279,12 +302,39 @@ fn validate_bundle_relative_path(path: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "source")]
 fn write_info_plist(
     path: &Path,
     manifest: &DesktopBundleManifest,
     executable_name: &str,
     icon_file: Option<&str>,
 ) -> Result<()> {
+    let plist = info_plist_fields(
+        PlistIdentity {
+            app_id: &manifest.app_id,
+            app_name: &manifest.app_name,
+            version: &manifest.version,
+        },
+        executable_name,
+        icon_file,
+    );
+    fs::write(path, plist).map_err(|source| DesktopError::Io {
+        context: format!("writing macOS Info.plist {}", path.display()),
+        source,
+    })
+}
+
+pub(super) struct PlistIdentity<'a> {
+    pub app_id: &'a str,
+    pub app_name: &'a str,
+    pub version: &'a str,
+}
+
+pub(super) fn info_plist_fields(
+    identity: PlistIdentity<'_>,
+    executable_name: &str,
+    icon_file: Option<&str>,
+) -> String {
     let icon_block = icon_file.map_or_else(String::new, |icon| {
         let mut block = String::with_capacity(64 + icon.len());
         block.push_str("  <key>CFBundleIconFile</key>\n  <string>");
@@ -292,7 +342,7 @@ fn write_info_plist(
         block.push_str("</string>\n");
         block
     });
-    let plist = format!(
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -317,19 +367,15 @@ fn write_info_plist(
 </plist>
 "#,
         xml_escape(executable_name),
-        xml_escape(&manifest.app_id),
-        xml_escape(&manifest.app_name),
+        xml_escape(identity.app_id),
+        xml_escape(identity.app_name),
         icon_block,
-        xml_escape(&manifest.version),
-        xml_escape(&manifest.version)
-    );
-    fs::write(path, plist).map_err(|source| DesktopError::Io {
-        context: format!("writing macOS Info.plist {}", path.display()),
-        source,
-    })
+        xml_escape(identity.version),
+        xml_escape(identity.version)
+    )
 }
 
-fn safe_package_name(name: &str) -> String {
+pub(super) fn safe_package_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -360,7 +406,7 @@ fn xml_escape(value: &str) -> String {
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "source"))]
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;

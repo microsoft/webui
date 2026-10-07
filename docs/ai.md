@@ -1392,6 +1392,112 @@ Installer generation and signing are not supported. The
 runtime-only build continues to support all `DesktopRuntime::from_bundle*`
 entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
 source/bundle construction, window customization, and scoped event subscriptions.
+An existing Rust HTTP app can instead opt into a native window for its bound
+loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
+render that server's routes again. Local-server application IPC is a separate
+owned-listener grant, not enabled by the `local-server` feature alone.
+`webui_desktop::bind_owned_local_server(address)` needs only `local-server`.
+It binds an exclusive loopback listener without enabling application IPC;
+retain the listener until the native window closes.
+Incoming macOS custom-scheme URLs require the separate `native-url-activation`
+Cargo feature (which includes `local-server`). Hosts calling
+`LocalServerFrame::on_url_activation("myapp", handler)` must enable this flag;
+the method and activation types are absent with `local-server` alone.
+Delivery is bounded and host-only: it does not register the scheme with the OS,
+navigate the browser or prove cold/warm OS delivery. See the
+[desktop local-server guide](/guide/concepts/desktop#existing-http-application).
+
+macOS local-server browser data stays ephemeral even with `app_id` unless
+the packaged Rust host calls `.app_id(bundle_id).persistent_website_data()`
+before `.build()`. The ID must match the running `.app` bundle, or building
+fails before opening a webview. The public WebKit store is shared across
+windows and allowed frames, not per viewer; normal cookie expiry applies.
+Windows keeps its existing app-ID-owned WebView2 profile. Linux rejects this
+request. See [desktop website data](./guide/concepts/desktop.md#existing-http-application).
+On macOS and Windows, a local-server host can set
+`WindowOptions.titlebar = TitlebarStyle::Overlay { height }` to float native
+controls over web content. On macOS that height also centers standard caption
+controls within the header band outside fullscreen. Include
+`window_css_block(&window, DesktopPlatform::current())` in the host-rendered
+document head, and use `[webui-drag]` with `[webui-no-drag]` on interactive
+children. No separate titlebar strip or application IPC grant is required;
+window controls use a fixed, main-document-only command set. Linux
+local-server frames require the native titlebar.
+For nonce-only `style-src`, pass the current response nonce to
+`window_css_block_with_nonce(&window, DesktopPlatform::current(), nonce)?`
+instead of disabling CSP or rewriting a response.
+For a failure **before** creating a local-server frame, a Rust host can opt
+into the independent `startup-failure` feature and call
+`StartupFailure::new(title, summary, help)` followed by
+`present_startup_failure(&failure)` on the macOS main thread (or a Windows
+host thread), before creating a frame. Supply only
+short checked user-safe copy, not the raw error or its chain; first persist the
+original failure in a durable host log, handle alert errors separately, and
+still return the original failure. The native alert returns only after OK
+acknowledgement. Linux returns `Unsupported`. No webview, renderer
+grant, or automatic hook is added. See
+[before-frame startup failures](./guide/concepts/desktop.md#before-frame-startup-failures).
+On macOS, ordinary local-server window close, owner revocation, and AppKit
+Quit return to the Rust host after `WindowClosed` and IPC retirement, so it
+can drain its backend off the UI thread. Quit is cancellable. See the
+[desktop SDK guide](./guide/concepts/desktop.md) for veto, retry, and failure
+behavior, including terminal window teardown before an unexpected AppKit stop
+returns an error.
+The default macOS Window menu targets this window and includes Toggle Full
+Screen (`Control+Command+F`); custom menus retain their explicit entries.
+On macOS and Windows, an exact `.localhost` preview subdomain needs an
+unprivileged `frame.frame_policy()` grant; it never gains native IPC or
+window controls. Linux currently denies preview subframe document commits.
+For Rust-hosted staged release bytes, `verified-update` provides a host-only
+SHA-256 or SHA-512/size check from independently authenticated expected metadata
+(`ExpectedUpdate` or `ExpectedUpdateSha512`). A digest of the download is not an
+authenticated expectation; neither path proves provenance, archive identity,
+signature, or install safety. See
+[staged release byte integrity](/guide/concepts/desktop#staged-release-byte-integrity).
+With `native-services`, a trusted macOS Rust host can await
+`services.set_theme(ThemeMode::Light | ThemeMode::Dark | ThemeMode::System)`
+and query `services.current_theme()` for the effective native appearance
+of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
+the host persists preferences and owns SSR CSS. No renderer grant is added.
+See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
+With the separate `native-picker` feature, a trusted macOS or Windows Rust host
+can await `services.pick_directory(DirectoryPickerOptions::new())?.await?` for
+one bounded, absolute folder path or explicit cancellation. Linux returns
+`PickerUnsupported`. Windows uses a dedicated COM STA; the 120-second
+deadline can finish logically while OS work still holds Busy, without a hard
+dialog-teardown guarantee. No renderer grant is added; actual selection through
+the native panel has not yet been verified with a user. See
+[trusted-host OS openers](./guide/concepts/desktop.md#trusted-host-os-openers).
+With `native-dialogs`, a trusted local-server host can await one OS-owned
+error acknowledgement or confirmation without granting renderer IPC. Construct
+bounded `ErrorDialog` or `ConfirmDialog` copy explicitly; do not display raw
+error chains. Navigation/close and a finite deadline cancel delivery, and
+`Cancelled` is a distinct user response. See
+[live native dialogs](./guide/concepts/desktop.md#trusted-host-os-openers).
+With `native-capture`, the macOS or Windows trusted host can request a bounded,
+visible webview PNG (WK snapshot or WebView2 `CapturePreview` on its owning STA)
+after its own preview-readiness handshake, then read/release the opaque
+resource in paced chunks. Windows rejects oversized viewports before native
+capture and has no verified runtime/iframe-pixel evidence. No renderer or
+screen-capture permission is added.
+See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos-and-windows).
+A macOS or Windows trusted host with `native-clipboard` may separately await
+a native PNG clipboard write for that still-retained capture before any
+host-controlled URL opener; no issue-opening or renderer grant is automatic.
+Windows uses the registered `PNG` format, not `CF_DIB`, and remains
+runtime-unverified. See
+[explicit PNG clipboard write](./guide/concepts/desktop.md#explicit-macos-and-windows-png-clipboard-write).
+For an already-compiled Rust host that owns its sealed WebUI assets and
+workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
+and call `package_precompiled_host` with its host executable, target triple,
+identity, optional icon, and explicit executable/data file mappings. This
+creates a macOS `.app` or Windows/Linux portable directory without compiling
+a second render bundle or shipping Node. It refuses unsafe mappings and
+existing output. Mapped resources are preflight-sealed one at a time, then
+reopened and verified against the copied output, bounding open descriptors
+independently of mapping count. Distribution, signing, installers, and
+Windows shared runtime prerequisites remain consumer-owned. See
+[precompiled host layout](./guide/concepts/desktop.md#precompiled-host-layout).
 Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
 for live presentation changes from Rust; these do not change the stable app ID
 or packaged defaults. The background applies to the native surface, current
@@ -1401,6 +1507,8 @@ background, and the remaining initial window options can all be set through
 changes use `set_size(width, height)`; titlebar style remains startup-only.
 On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
 symlink escapes; source hosts can set an absolute path for Dock artwork.
+Without custom menus, macOS supplies native App, Edit, and Window roles;
+the Window actions target this app's own window.
 `titlebar.height` sizes the application band; Windows caption buttons default
 to 32 DIPs independently. Pass `--caption-button-size tall` for
 48-DIP buttons without changing the application band height.
@@ -1459,11 +1567,9 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-For a persistent component input directory, run
-`webui prune-component-assets --component-assets-out ./.webui --quiescent`
-only after all bundler/HTTP readers and publishers have stopped or been
-coordinated. The flag acknowledges quiescence; it does not stop other processes.
-See [component asset cleanup](./guide/cli/#webui-prune-component-assets).
+WebUI overwrites current component roots but does not delete older generated
+payloads or unrelated files from a developer-owned output directory. Remove and
+recreate the disposable directory when a clean build is required.
 
 On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
