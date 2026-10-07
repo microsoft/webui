@@ -1226,7 +1226,7 @@ async fn handle_component_templates(
 }
 
 enum DiskAsset {
-    Found { canonical: PathBuf, bytes: Vec<u8> },
+    Found(Vec<u8>),
     Missing,
     Forbidden,
 }
@@ -1262,23 +1262,12 @@ fn read_contained_asset(
     }
 
     match fs::read(&canonical) {
-        Ok(bytes) => Ok(DiskAsset::Found { canonical, bytes }),
+        Ok(bytes) => Ok(DiskAsset::Found(bytes)),
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(DiskAsset::Missing),
         Err(source) => Err(DiskAssetError::Read {
             path: canonical,
             source,
         }),
-    }
-}
-
-fn read_application_asset(path: PathBuf, canonical_base: &Path) -> DiskAsset {
-    let Ok(Some(canonical)) = canonicalize_asset(path) else {
-        return DiskAsset::Missing;
-    };
-    match read_contained_asset(canonical, canonical_base) {
-        Ok(asset) => asset,
-        // Application asset failures intentionally retain the SPA fallback.
-        Err(_) => DiskAsset::Missing,
     }
 }
 
@@ -1311,6 +1300,41 @@ fn log_component_asset_error(error: &DiskAssetError) {
                 "Failed to read component asset {}: {source}",
                 path.display()
             );
+        }
+    }
+}
+
+#[inline(never)]
+async fn component_asset_response(
+    relative: &str,
+    context: &web::Data<ServerContext>,
+) -> Option<HttpResponse> {
+    let directory = context.component_assets_dir.as_ref()?;
+    let path = directory.join(relative);
+    let task_context = context.clone();
+    // Keep resolution, containment, and reading in one blocking-pool task.
+    match tokio::task::spawn_blocking(move || {
+        let Some(directory) = task_context.component_assets_dir.as_deref() else {
+            return Ok(DiskAsset::Missing);
+        };
+        read_component_asset(path, directory)
+    })
+    .await
+    {
+        Ok(Ok(DiskAsset::Found(bytes))) => Some(
+            HttpResponse::Ok()
+                .content_type("text/javascript; charset=utf-8")
+                .body(bytes),
+        ),
+        Ok(Ok(DiskAsset::Forbidden)) => Some(HttpResponse::Forbidden().body("Forbidden")),
+        Ok(Ok(DiskAsset::Missing)) => None,
+        Ok(Err(error)) => {
+            log_component_asset_error(&error);
+            Some(HttpResponse::InternalServerError().body("Failed to read component asset"))
+        }
+        Err(error) => {
+            log::error!("Component asset filesystem task failed: {error}");
+            Some(HttpResponse::InternalServerError().body("Failed to read component asset"))
         }
     }
 }
@@ -1349,38 +1373,8 @@ async fn handle_asset(
     }
 
     if relative.starts_with("components/") && relative.ends_with(".webui.js") {
-        if let Some(directory) = &context.component_assets_dir {
-            let path = directory.join(&relative);
-            let task_context = context.clone();
-            // Keep resolution, containment, and reading in one blocking-pool task.
-            match tokio::task::spawn_blocking(move || {
-                let Some(directory) = task_context.component_assets_dir.as_deref() else {
-                    return Ok(DiskAsset::Missing);
-                };
-                read_component_asset(path, directory)
-            })
-            .await
-            {
-                Ok(Ok(DiskAsset::Found { bytes, .. })) => {
-                    return HttpResponse::Ok()
-                        .content_type("text/javascript; charset=utf-8")
-                        .body(bytes);
-                }
-                Ok(Ok(DiskAsset::Forbidden)) => {
-                    return HttpResponse::Forbidden().body("Forbidden");
-                }
-                Ok(Ok(DiskAsset::Missing)) => {}
-                Ok(Err(error)) => {
-                    log_component_asset_error(&error);
-                    return HttpResponse::InternalServerError()
-                        .body("Failed to read component asset");
-                }
-                Err(error) => {
-                    log::error!("Component asset filesystem task failed: {error}");
-                    return HttpResponse::InternalServerError()
-                        .body("Failed to read component asset");
-                }
-            }
+        if let Some(response) = component_asset_response(&relative, &context).await {
+            return response;
         }
     }
 
@@ -1391,38 +1385,30 @@ async fn handle_asset(
     };
 
     let asset_path = assets_dir.join(&relative);
-    let task_context = context.clone();
-    // The ordinary asset path uses the same batching so Actix workers never
-    // perform filesystem calls directly.
-    let asset = match tokio::task::spawn_blocking(move || {
-        let Some(assets_dir) = task_context.assets_dir.as_deref() else {
-            return DiskAsset::Missing;
-        };
-        read_application_asset(asset_path, assets_dir)
-    })
-    .await
-    {
-        Ok(asset) => asset,
-        Err(error) => {
-            log::error!("Application asset filesystem task failed: {error}");
-            return HttpResponse::InternalServerError().body("Failed to read asset");
+
+    let canonical = match asset_path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => {
+            // File not found: let the Accept header decide whether this was a
+            // route navigation/partial request or a missing asset fetch.
+            return spa_fallback(&req, &context).await;
         }
     };
 
-    match asset {
-        DiskAsset::Found { canonical, bytes } => {
-            let content_type = from_path(&canonical).first_or_octet_stream();
-            HttpResponse::Ok()
-                .content_type(content_type.as_ref())
-                .body(bytes)
-        }
-        DiskAsset::Forbidden => HttpResponse::Forbidden().body("Forbidden"),
-        DiskAsset::Missing => {
-            // File not found: let the Accept header decide whether this was a
-            // route navigation/partial request or a missing asset fetch.
-            spa_fallback(&req, &context).await
-        }
+    if !canonical.starts_with(assets_dir) {
+        return HttpResponse::Forbidden().body("Forbidden");
     }
+
+    let body = match fs::read(&canonical) {
+        Ok(bytes) => bytes,
+        Err(_) => return spa_fallback(&req, &context).await,
+    };
+
+    let content_type = from_path(&canonical).first_or_octet_stream();
+
+    HttpResponse::Ok()
+        .content_type(content_type.as_ref())
+        .body(body)
 }
 
 fn accept_media_q(params: &str) -> f32 {
