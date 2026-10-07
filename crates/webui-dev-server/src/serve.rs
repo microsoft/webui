@@ -226,7 +226,7 @@ fn load_opened_file(
         path,
         mut file,
         length,
-    } = cfg.root.open(path)?
+    } = cfg.root.open(path, detect_directory)?
     else {
         return if detect_directory {
             Ok(FileLoad::Directory)

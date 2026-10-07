@@ -6,14 +6,16 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct SecureRoot {
     path: PathBuf,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     directory: Arc<File>,
+    #[cfg(windows)]
+    final_path: PathBuf,
 }
 
 impl SecureRoot {
@@ -21,10 +23,16 @@ impl SecureRoot {
         let path = std::fs::canonicalize(path)?;
         #[cfg(unix)]
         let directory = Arc::new(File::open(&path)?);
+        #[cfg(windows)]
+        let directory = Arc::new(open_node(&path)?);
+        #[cfg(windows)]
+        let final_path = final_path(&directory)?;
         Ok(Self {
             path,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             directory,
+            #[cfg(windows)]
+            final_path,
         })
     }
 
@@ -37,7 +45,21 @@ impl SecureRoot {
     }
 
     #[cfg(unix)]
-    pub(crate) fn open(&self, path: PathBuf) -> std::io::Result<OpenedNode> {
+    pub(crate) fn open(
+        &self,
+        path: PathBuf,
+        detect_directory: bool,
+    ) -> std::io::Result<OpenedNode> {
+        self.open_unix(path, detect_directory, || Ok(()))
+    }
+
+    #[cfg(unix)]
+    fn open_unix(
+        &self,
+        path: PathBuf,
+        detect_directory: bool,
+        after_metadata_check: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<OpenedNode> {
         use std::os::fd::AsRawFd;
         use std::path::Component;
 
@@ -57,22 +79,21 @@ impl SecureRoot {
                 .as_ref()
                 .map_or_else(|| self.directory.as_raw_fd(), AsRawFd::as_raw_fd);
             if components.peek().is_none() {
-                let metadata = metadata_at(parent_descriptor, name)?;
-                if metadata.file_type == libc::S_IFDIR {
-                    return Ok(OpenedNode::Directory);
+                if detect_directory {
+                    let metadata = metadata_at(parent_descriptor, name)?;
+                    if metadata.file_type == libc::S_IFDIR {
+                        return Ok(OpenedNode::Directory);
+                    }
+                    if metadata.file_type != libc::S_IFREG {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "cannot serve a non-regular file",
+                        ));
+                    }
                 }
-                if metadata.file_type != libc::S_IFREG {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        "cannot serve a non-regular file",
-                    ));
-                }
+                after_metadata_check()?;
                 let file = open_at(parent_descriptor, name, false)?;
-                return Ok(OpenedNode::File {
-                    path,
-                    file,
-                    length: metadata.length,
-                });
+                return opened_file(path, file);
             }
             let child = open_at(parent_descriptor, name, true)?;
             parent = Some(child);
@@ -83,8 +104,12 @@ impl SecureRoot {
         ))
     }
 
-    #[cfg(not(unix))]
-    pub(crate) fn open(&self, path: PathBuf) -> std::io::Result<OpenedNode> {
+    #[cfg(windows)]
+    pub(crate) fn open(
+        &self,
+        path: PathBuf,
+        _detect_directory: bool,
+    ) -> std::io::Result<OpenedNode> {
         let path = std::fs::canonicalize(path)?;
         if !path.starts_with(&self.path) {
             return Err(Error::new(
@@ -92,7 +117,19 @@ impl SecureRoot {
                 "path escapes the serving root",
             ));
         }
+        self.open_checked_windows(path)
+    }
+
+    #[cfg(windows)]
+    fn open_checked_windows(&self, path: PathBuf) -> std::io::Result<OpenedNode> {
         let file = open_node(&path)?;
+        let opened_path = final_path(&file)?;
+        if !opened_path.starts_with(&self.final_path) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "opened file escapes the serving root",
+            ));
+        }
         let metadata = file.metadata()?;
         if metadata.is_dir() {
             return Ok(OpenedNode::Directory);
@@ -109,6 +146,23 @@ impl SecureRoot {
             length: metadata.len(),
         })
     }
+
+    #[cfg(all(not(unix), not(windows)))]
+    pub(crate) fn open(
+        &self,
+        path: PathBuf,
+        _detect_directory: bool,
+    ) -> std::io::Result<OpenedNode> {
+        let path = std::fs::canonicalize(path)?;
+        if !path.starts_with(&self.path) {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "path escapes the serving root",
+            ));
+        }
+        let file = File::open(&path)?;
+        opened_file(path, file)
+    }
 }
 
 #[cfg(windows)]
@@ -124,9 +178,61 @@ fn open_node(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-#[cfg(all(not(unix), not(windows)))]
-fn open_node(path: &Path) -> std::io::Result<File> {
-    File::open(path)
+#[cfg(windows)]
+fn final_path(file: &File) -> std::io::Result<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        // SAFETY: the file owns a valid handle and `buffer` provides the
+        // writable capacity reported to `GetFinalPathNameByHandleW`.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                u32::try_from(buffer.len()).map_err(|_| {
+                    Error::new(ErrorKind::InvalidData, "resolved path exceeds u32 length")
+                })?,
+                0,
+            )
+        };
+        if length == 0 {
+            return Err(Error::last_os_error());
+        }
+        let length = usize::try_from(length)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "resolved path is too long"))?;
+        if length < buffer.len() {
+            return Ok(PathBuf::from(OsString::from_wide(&buffer[..length])));
+        }
+        buffer.resize(
+            length
+                .checked_add(1)
+                .ok_or_else(|| Error::new(ErrorKind::InvalidData, "resolved path is too long"))?,
+            0,
+        );
+    }
+}
+
+fn opened_file(path: PathBuf, file: File) -> std::io::Result<OpenedNode> {
+    let metadata = file.metadata()?;
+    if metadata.is_dir() {
+        return Ok(OpenedNode::Directory);
+    }
+    if !metadata.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "cannot serve a non-regular file",
+        ));
+    }
+    Ok(OpenedNode::File {
+        path,
+        file,
+        length: metadata.len(),
+    })
 }
 
 pub(crate) enum OpenedNode {
@@ -141,7 +247,6 @@ pub(crate) enum OpenedNode {
 #[cfg(unix)]
 struct EntryMetadata {
     file_type: libc::mode_t,
-    length: u64,
 }
 
 #[cfg(unix)]
@@ -198,10 +303,65 @@ fn metadata_at(
     }
     // SAFETY: successful `fstatat` initialized the complete `stat` value.
     let metadata = unsafe { metadata.assume_init() };
-    let length = u64::try_from(metadata.st_size)
-        .map_err(|_| Error::new(ErrorKind::InvalidData, "file has a negative length"))?;
     Ok(EntryMetadata {
         file_type: metadata.st_mode & libc::S_IFMT,
-        length,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_file_replaced_after_metadata_check() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("asset.js");
+        std::fs::write(&path, b"safe")?;
+        let root = SecureRoot::new(directory.path().to_path_buf())?;
+
+        let result = root.open_unix(path.clone(), true, || {
+            std::fs::remove_file(&path)?;
+            let path = CString::new(path.as_os_str().as_bytes())?;
+            // SAFETY: `path` is NUL-terminated and points to writable
+            // filesystem storage owned by this test.
+            if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
+                return Err(Error::last_os_error());
+            }
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_junction_swap_after_path_check() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_dir;
+
+        let directory = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let candidate = directory.path().join("candidate");
+        let displaced = directory.path().join("displaced");
+        std::fs::create_dir(&candidate)?;
+        std::fs::write(candidate.join("asset.js"), b"safe")?;
+        std::fs::write(outside.path().join("asset.js"), b"outside")?;
+        let root = SecureRoot::new(directory.path().to_path_buf())?;
+        let checked = std::fs::canonicalize(candidate.join("asset.js"))?;
+        assert!(checked.starts_with(root.path()));
+
+        std::fs::rename(&candidate, displaced)?;
+        symlink_dir(outside.path(), &candidate)?;
+
+        let result = root.open_checked_windows(checked);
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == ErrorKind::PermissionDenied
+        ));
+        Ok(())
+    }
 }
