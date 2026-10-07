@@ -364,6 +364,7 @@ const CRITERION_BENCHES: &[(&str, &str)] = &[
     ("microsoft-webui-state", "state_bench"),
     ("microsoft-webui-ffi", "protocol_bench"),
     ("microsoft-webui-dev-server", "watch_hash_bench"),
+    ("microsoft-webui-dev-server", "static_file_bench"),
     ("microsoft-webui", "contact_book_bench"),
     ("microsoft-webui", "streaming_bench"),
     ("microsoft-webui", "component_assets_bench"),

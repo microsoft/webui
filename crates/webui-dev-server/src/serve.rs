@@ -91,21 +91,26 @@ pub async fn serve_static_file(req: &HttpRequest, cfg: &StaticServeConfig) -> Ht
         None => return not_found_response(cfg).await,
     };
 
-    // If a directory was requested without a trailing slash, redirect.
-    let final_path = if resolved.is_dir() {
-        if !path.ends_with('/') {
-            return HttpResponse::TemporaryRedirect()
-                .insert_header((LOCATION, format!("{path}/")))
-                .finish();
-        }
-        resolved.join("index.html")
+    let redirect = if path.ends_with('/') {
+        None
     } else {
-        resolved
+        Some(format!("{path}/"))
     };
-
-    match tokio::fs::read(&final_path).await {
-        Ok(bytes) => serve_file_response(&cfg.livereload, &final_path, bytes),
-        Err(_) => not_found_response(cfg).await,
+    let fallback = not_found_path(cfg);
+    match run_file_load(resolved, redirect.is_some(), fallback).await {
+        Ok(FileLoad::Found {
+            path,
+            bytes,
+            status,
+        }) => file_response(&cfg.livereload, &path, bytes, status),
+        Ok(FileLoad::Directory) => match redirect {
+            Some(location) => HttpResponse::TemporaryRedirect()
+                .insert_header((LOCATION, location))
+                .finish(),
+            None => file_load_invariant_response(),
+        },
+        Ok(FileLoad::NotFound) => plain_not_found_response(),
+        Err(error) => file_task_error_response(error),
     }
 }
 
@@ -139,16 +144,182 @@ pub fn serve_file_response(livereload: &LiveReload, path: &Path, bytes: Vec<u8>)
         .body(body)
 }
 
-async fn not_found_response(cfg: &StaticServeConfig) -> HttpResponse {
-    if let NotFoundStrategy::File(rel) = &cfg.not_found {
-        let path = cfg.root.join(rel);
-        if let Ok(bytes) = tokio::fs::read(&path).await {
-            let mut resp = serve_file_response(&cfg.livereload, &path, bytes);
-            *resp.status_mut() = StatusCode::NOT_FOUND;
-            return resp;
-        }
+enum FileLoad {
+    Found {
+        path: PathBuf,
+        bytes: Vec<u8>,
+        status: StatusCode,
+    },
+    Directory,
+    NotFound,
+}
+
+async fn run_file_load(
+    path: PathBuf,
+    detect_directory: bool,
+    fallback: Option<PathBuf>,
+) -> Result<FileLoad, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || load_file(path, detect_directory, fallback)).await
+}
+
+async fn run_fallback_load(fallback: PathBuf) -> Result<FileLoad, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || load_fallback(Some(fallback))).await
+}
+
+fn load_file(path: PathBuf, detect_directory: bool, fallback: Option<PathBuf>) -> FileLoad {
+    match std::fs::read(&path) {
+        Ok(bytes) => FileLoad::Found {
+            path,
+            bytes,
+            status: StatusCode::OK,
+        },
+        Err(_) if detect_directory && path.is_dir() => FileLoad::Directory,
+        Err(_) => load_fallback(fallback),
     }
+}
+
+fn load_fallback(path: Option<PathBuf>) -> FileLoad {
+    let Some(path) = path else {
+        return FileLoad::NotFound;
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => FileLoad::Found {
+            path,
+            bytes,
+            status: StatusCode::NOT_FOUND,
+        },
+        Err(_) => FileLoad::NotFound,
+    }
+}
+
+fn not_found_path(cfg: &StaticServeConfig) -> Option<PathBuf> {
+    match &cfg.not_found {
+        NotFoundStrategy::Plain => None,
+        NotFoundStrategy::File(relative) => Some(cfg.root.join(relative)),
+    }
+}
+
+async fn not_found_response(cfg: &StaticServeConfig) -> HttpResponse {
+    let Some(fallback) = not_found_path(cfg) else {
+        return plain_not_found_response();
+    };
+    match run_fallback_load(fallback).await {
+        Ok(FileLoad::Found {
+            path,
+            bytes,
+            status,
+        }) => file_response(&cfg.livereload, &path, bytes, status),
+        Ok(_) => plain_not_found_response(),
+        Err(error) => file_task_error_response(error),
+    }
+}
+
+fn file_response(
+    livereload: &LiveReload,
+    path: &Path,
+    bytes: Vec<u8>,
+    status: StatusCode,
+) -> HttpResponse {
+    let mut response = serve_file_response(livereload, path, bytes);
+    *response.status_mut() = status;
+    response
+}
+
+fn plain_not_found_response() -> HttpResponse {
     HttpResponse::NotFound()
         .content_type("text/plain; charset=utf-8")
         .body("404 Not Found")
+}
+
+#[cold]
+#[inline(never)]
+fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
+    log::error!("Static-file blocking task failed: {error}");
+    HttpResponse::InternalServerError()
+        .content_type("text/plain; charset=utf-8")
+        .body("Internal Server Error")
+}
+
+#[cold]
+#[inline(never)]
+fn file_load_invariant_response() -> HttpResponse {
+    log::error!("Static-file loader reported a directory without a redirect target");
+    HttpResponse::InternalServerError()
+        .content_type("text/plain; charset=utf-8")
+        .body("Internal Server Error")
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::body::to_bytes;
+    use actix_web::http::header::LOCATION;
+    use actix_web::test::TestRequest;
+
+    use super::*;
+
+    fn config(root: PathBuf, not_found: NotFoundStrategy) -> StaticServeConfig {
+        StaticServeConfig {
+            root,
+            base_path: "/".to_owned(),
+            livereload: LiveReload::new("/__test/livereload"),
+            not_found,
+        }
+    }
+
+    #[actix_web::test]
+    async fn serves_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let bytes = b"console.log('served');";
+        std::fs::write(directory.path().join("app.js"), bytes)?;
+        let request = TestRequest::with_uri("/app.js").to_http_request();
+
+        let response = serve_static_file(
+            &request,
+            &config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(to_bytes(response.into_body()).await?.as_ref(), bytes);
+        Ok(())
+    }
+
+    #[actix_web::test]
+    async fn redirects_directory_without_trailing_slash() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("guide"))?;
+        let request = TestRequest::with_uri("/guide").to_http_request();
+
+        let response = serve_static_file(
+            &request,
+            &config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers().get(LOCATION), Some(&"/guide/".parse()?));
+        Ok(())
+    }
+
+    #[actix_web::test]
+    async fn serves_custom_not_found_file() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let bytes = b"custom not found";
+        std::fs::write(directory.path().join("404.txt"), bytes)?;
+        let request = TestRequest::with_uri("/missing.txt").to_http_request();
+
+        let response = serve_static_file(
+            &request,
+            &config(
+                directory.path().to_path_buf(),
+                NotFoundStrategy::File(PathBuf::from("404.txt")),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(to_bytes(response.into_body()).await?.as_ref(), bytes);
+        Ok(())
+    }
 }
