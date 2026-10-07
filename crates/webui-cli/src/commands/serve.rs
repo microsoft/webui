@@ -1199,15 +1199,22 @@ async fn handle_component_templates(
             .content_type("application/json")
             .body(r#"{"error":"missing ?t= parameter"}"#);
     }
-    let Ok(state) = context.state.lock() else {
-        return HttpResponse::InternalServerError()
-            .content_type("application/json")
-            .body(r#"{"error":"lock poisoned"}"#);
+    // Snapshot the protocol and rebuild status from one generation, then drop
+    // the mutex before graph traversal and response serialization.
+    let protocol = match context.state.lock() {
+        Ok(state) => {
+            if let Some(error) = state.rebuild_error.as_deref() {
+                return rebuild_error_json_response(error);
+            }
+            state.protocol.clone()
+        }
+        Err(_) => {
+            return HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .body(r#"{"error":"lock poisoned"}"#);
+        }
     };
-    if let Some(error) = state.rebuild_error.as_deref() {
-        return rebuild_error_json_response(error);
-    }
-    let Some(ref protocol) = state.protocol else {
+    let Some(protocol) = protocol else {
         return HttpResponse::InternalServerError()
             .content_type("application/json")
             .body(r#"{"error":"no protocol"}"#);
@@ -1813,7 +1820,9 @@ mod tests {
     use actix_web::test as actix_test;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
+    use webui_protocol::{
+        ComponentData, FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute,
+    };
 
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -2973,6 +2982,125 @@ mod tests {
         assert_eq!(body.as_ref(), expected.as_bytes());
         let wire: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(wire["state"], serde_json::json!({"name": "Ada"}));
+    }
+
+    #[actix_web::test]
+    async fn component_template_http_response_matches_protocol_api() {
+        let mut document = WebUIProtocol::default();
+        document.components.insert(
+            "first-card".to_string(),
+            ComponentData {
+                template: "<p>first</p>".to_string(),
+                ..Default::default()
+            },
+        );
+        document.components.insert(
+            "second-card".to_string(),
+            ComponentData {
+                template: "<p>second</p>".to_string(),
+                ..Default::default()
+            },
+        );
+        let protocol = Arc::new(Protocol::new(document));
+        let expected = protocol
+            .render_component_templates(&["first-card", "second-card"], "")
+            .unwrap();
+        let context = test_route_context(protocol);
+        let app = actix_test::init_service(App::new().app_data(context).route(
+            "/_webui/templates",
+            web::get().to(handle_component_templates),
+        ))
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/_webui/templates?t=first-card,second-card")
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(&actix_test::read_body(response).await).unwrap();
+        assert_eq!(body, expected);
+    }
+
+    #[actix_web::test]
+    async fn component_template_rebuild_error_precedes_stale_protocol() {
+        let protocol = Arc::new(Protocol::new(WebUIProtocol::default()));
+        let context = test_route_context(protocol);
+        context.state.lock().unwrap().rebuild_error = Some("template rebuild failed".to_string());
+        let app = actix_test::init_service(App::new().app_data(context).route(
+            "/_webui/templates",
+            web::get().to(handle_component_templates),
+        ))
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/_webui/templates?t=stale-card")
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: Value = serde_json::from_slice(&actix_test::read_body(response).await).unwrap();
+        assert_eq!(body["error"], "template rebuild failed");
+    }
+
+    #[test]
+    fn component_template_render_releases_shared_state_lock() {
+        const COMPONENT_COUNT: usize = 256;
+        const TEMPLATE_BYTES: usize = 64 * 1024;
+
+        let template = "x".repeat(TEMPLATE_BYTES);
+        let mut document = WebUIProtocol::default();
+        let mut query = String::from("/_webui/templates?t=");
+        for index in 0..COMPONENT_COUNT {
+            let tag = format!("large-card-{index}");
+            if index > 0 {
+                query.push(',');
+            }
+            query.push_str(&tag);
+            document.components.insert(
+                tag,
+                ComponentData {
+                    template: template.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+        let protocol = Arc::new(Protocol::new(document));
+        let context = test_route_context(Arc::clone(&protocol));
+        let render_context = context.clone();
+        let render_thread = std::thread::spawn(move || {
+            let request = actix_test::TestRequest::get().uri(&query).to_http_request();
+            actix_web::rt::System::new().block_on(async move {
+                handle_component_templates(request, render_context)
+                    .await
+                    .status()
+            })
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut lock_released_during_render = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(_state) = context.state.try_lock() {
+                if Arc::strong_count(&protocol) >= 3 {
+                    lock_released_during_render = true;
+                    break;
+                }
+            }
+            std::thread::yield_now();
+        }
+
+        let status = render_thread.join().unwrap();
+        assert!(
+            lock_released_during_render,
+            "component template rendering must not hold the rebuild-state mutex"
+        );
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[actix_web::test]
