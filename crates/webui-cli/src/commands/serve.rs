@@ -3013,9 +3013,11 @@ mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut lock_released_during_render = false;
         while std::time::Instant::now() < deadline {
-            if Arc::strong_count(&protocol) >= 3 && context.state.try_lock().is_ok() {
-                lock_released_during_render = true;
-                break;
+            if let Ok(_state) = context.state.try_lock() {
+                if Arc::strong_count(&protocol) >= 3 {
+                    lock_released_during_render = true;
+                    break;
+                }
             }
             std::thread::yield_now();
         }
