@@ -16,12 +16,14 @@
 //! serve the prebuilt `out_dir`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use actix_web::http::header::{
     CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, X_CONTENT_TYPE_OPTIONS,
 };
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse};
+use console::style;
 
 use crate::livereload::LiveReload;
 use crate::path::{resolve_safe_path, strip_base_path};
@@ -37,8 +39,11 @@ pub enum NotFoundStrategy {
     File(PathBuf),
 }
 
-/// Configuration for [`serve_static_file`]. Cheap to clone — paths are
-/// shared across requests.
+/// Configuration for [`serve_static_file`].
+///
+/// Share one instance across requests with [`Arc`]. This lets blocking file
+/// tasks consult the fallback strategy only after a miss, without cloning or
+/// joining fallback paths on successful requests.
 #[derive(Clone)]
 pub struct StaticServeConfig {
     /// Directory from which files are served.
@@ -59,8 +64,9 @@ pub struct StaticServeConfig {
 ///
 /// This function is not an actix handler itself — it's invoked by a
 /// caller's `default_service` handler so the caller can attach app
-/// state, middleware, and additional routes around it.
-pub async fn serve_static_file(req: &HttpRequest, cfg: &StaticServeConfig) -> HttpResponse {
+/// state, middleware, and additional routes around it. The owned [`Arc`]
+/// keeps the configuration available to its blocking file task.
+pub async fn serve_static_file(req: &HttpRequest, cfg: Arc<StaticServeConfig>) -> HttpResponse {
     let path = req.path();
 
     let remainder = match strip_base_path(path, &cfg.base_path) {
@@ -74,7 +80,7 @@ pub async fn serve_static_file(req: &HttpRequest, cfg: &StaticServeConfig) -> Ht
                     .insert_header((LOCATION, cfg.base_path.clone()))
                     .finish();
             }
-            return not_found_response(cfg).await;
+            return not_found_response(Arc::clone(&cfg)).await;
         }
     };
 
@@ -88,27 +94,25 @@ pub async fn serve_static_file(req: &HttpRequest, cfg: &StaticServeConfig) -> Ht
 
     let resolved = match resolve_safe_path(&cfg.root, remainder) {
         Some(p) => p,
-        None => return not_found_response(cfg).await,
+        None => return not_found_response(Arc::clone(&cfg)).await,
     };
 
-    let redirect = if path.ends_with('/') {
-        None
-    } else {
-        Some(format!("{path}/"))
-    };
-    let fallback = not_found_path(cfg);
-    match run_file_load(resolved, redirect.is_some(), fallback).await {
+    let detect_directory = !path.ends_with('/');
+    match run_file_load(resolved, detect_directory, Arc::clone(&cfg)).await {
         Ok(FileLoad::Found {
             path,
             bytes,
             status,
         }) => file_response(&cfg.livereload, &path, bytes, status),
-        Ok(FileLoad::Directory) => match redirect {
-            Some(location) => HttpResponse::TemporaryRedirect()
-                .insert_header((LOCATION, location))
-                .finish(),
-            None => file_load_invariant_response(),
-        },
+        Ok(FileLoad::Directory) => {
+            if detect_directory {
+                HttpResponse::TemporaryRedirect()
+                    .insert_header((LOCATION, format!("{path}/")))
+                    .finish()
+            } else {
+                file_load_invariant_response()
+            }
+        }
         Ok(FileLoad::NotFound) => plain_not_found_response(),
         Err(error) => file_task_error_response(error),
     }
@@ -157,31 +161,36 @@ enum FileLoad {
 async fn run_file_load(
     path: PathBuf,
     detect_directory: bool,
-    fallback: Option<PathBuf>,
+    cfg: Arc<StaticServeConfig>,
 ) -> Result<FileLoad, tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || load_file(path, detect_directory, fallback)).await
+    tokio::task::spawn_blocking(move || load_file(path, detect_directory, &cfg)).await
 }
 
-async fn run_fallback_load(fallback: PathBuf) -> Result<FileLoad, tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || load_fallback(Some(fallback))).await
+async fn run_fallback_load(
+    cfg: Arc<StaticServeConfig>,
+) -> Result<FileLoad, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || load_fallback(&cfg)).await
 }
 
-fn load_file(path: PathBuf, detect_directory: bool, fallback: Option<PathBuf>) -> FileLoad {
+fn load_file(path: PathBuf, detect_directory: bool, cfg: &StaticServeConfig) -> FileLoad {
+    if detect_directory && path.is_dir() {
+        return FileLoad::Directory;
+    }
     match std::fs::read(&path) {
         Ok(bytes) => FileLoad::Found {
             path,
             bytes,
             status: StatusCode::OK,
         },
-        Err(_) if detect_directory && path.is_dir() => FileLoad::Directory,
-        Err(_) => load_fallback(fallback),
+        Err(_) => load_fallback(cfg),
     }
 }
 
-fn load_fallback(path: Option<PathBuf>) -> FileLoad {
-    let Some(path) = path else {
+fn load_fallback(cfg: &StaticServeConfig) -> FileLoad {
+    let NotFoundStrategy::File(relative) = &cfg.not_found else {
         return FileLoad::NotFound;
     };
+    let path = cfg.root.join(relative);
     match std::fs::read(&path) {
         Ok(bytes) => FileLoad::Found {
             path,
@@ -192,18 +201,11 @@ fn load_fallback(path: Option<PathBuf>) -> FileLoad {
     }
 }
 
-fn not_found_path(cfg: &StaticServeConfig) -> Option<PathBuf> {
-    match &cfg.not_found {
-        NotFoundStrategy::Plain => None,
-        NotFoundStrategy::File(relative) => Some(cfg.root.join(relative)),
-    }
-}
-
-async fn not_found_response(cfg: &StaticServeConfig) -> HttpResponse {
-    let Some(fallback) = not_found_path(cfg) else {
+async fn not_found_response(cfg: Arc<StaticServeConfig>) -> HttpResponse {
+    if matches!(&cfg.not_found, NotFoundStrategy::Plain) {
         return plain_not_found_response();
-    };
-    match run_fallback_load(fallback).await {
+    }
+    match run_fallback_load(Arc::clone(&cfg)).await {
         Ok(FileLoad::Found {
             path,
             bytes,
@@ -234,7 +236,11 @@ fn plain_not_found_response() -> HttpResponse {
 #[cold]
 #[inline(never)]
 fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
-    log::error!("Static-file blocking task failed: {error}");
+    eprintln!(
+        "  {} {} {error}",
+        style("✘").red().bold(),
+        style("static-file task failed:").red().bold()
+    );
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")
         .body("Internal Server Error")
@@ -243,7 +249,13 @@ fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
 #[cold]
 #[inline(never)]
 fn file_load_invariant_response() -> HttpResponse {
-    log::error!("Static-file loader reported a directory without a redirect target");
+    eprintln!(
+        "  {} {}",
+        style("✘").red().bold(),
+        style("static-file loader reported a directory without a redirect target")
+            .red()
+            .bold()
+    );
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")
         .body("Internal Server Error")
@@ -257,13 +269,13 @@ mod tests {
 
     use super::*;
 
-    fn config(root: PathBuf, not_found: NotFoundStrategy) -> StaticServeConfig {
-        StaticServeConfig {
+    fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> {
+        Arc::new(StaticServeConfig {
             root,
             base_path: "/".to_owned(),
             livereload: LiveReload::new("/__test/livereload"),
             not_found,
-        }
+        })
     }
 
     #[actix_web::test]
@@ -275,7 +287,7 @@ mod tests {
 
         let response = serve_static_file(
             &request,
-            &config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
+            config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
         )
         .await;
 
@@ -293,7 +305,7 @@ mod tests {
 
         let response = serve_static_file(
             &request,
-            &config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
+            config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
         )
         .await;
 
@@ -311,7 +323,7 @@ mod tests {
 
         let response = serve_static_file(
             &request,
-            &config(
+            config(
                 directory.path().to_path_buf(),
                 NotFoundStrategy::File(PathBuf::from("404.txt")),
             ),

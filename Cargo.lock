@@ -2259,7 +2259,6 @@ dependencies = [
  "ctrlc",
  "futures-util",
  "libc",
- "log",
  "mime_guess",
  "notify",
  "notify-debouncer-mini",

@@ -24,7 +24,6 @@ async-stream = { workspace = true }
 mime_guess = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
-log = { workspace = true }
 time = { workspace = true }
 thiserror = { workspace = true }
 ctrlc = { workspace = true, features = ["termination"] }

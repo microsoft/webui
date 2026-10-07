@@ -223,7 +223,7 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
 /// responder. A trivial wrapper because actix needs a function pointer
 /// and the shared crate ships an `&HttpRequest`-taking helper.
 async fn static_handler(req: HttpRequest, cfg: web::Data<StaticServeConfig>) -> HttpResponse {
-    serve_static_file(&req, cfg.get_ref()).await
+    serve_static_file(&req, cfg.into_inner()).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
