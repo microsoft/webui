@@ -6,13 +6,13 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct SecureRoot {
     path: PathBuf,
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
     directory: Arc<File>,
     #[cfg(windows)]
     final_path: PathBuf,
@@ -24,12 +24,10 @@ impl SecureRoot {
         #[cfg(unix)]
         let directory = Arc::new(File::open(&path)?);
         #[cfg(windows)]
-        let directory = Arc::new(open_node(&path)?);
-        #[cfg(windows)]
-        let final_path = final_path(&directory)?;
+        let final_path = final_path(&open_node(&path)?)?;
         Ok(Self {
             path,
-            #[cfg(any(unix, windows))]
+            #[cfg(unix)]
             directory,
             #[cfg(windows)]
             final_path,
@@ -81,6 +79,9 @@ impl SecureRoot {
             if components.peek().is_none() {
                 if detect_directory {
                     let metadata = metadata_at(parent_descriptor, name)?;
+                    if metadata.file_type == libc::S_IFLNK {
+                        return self.open_following_in_root(path.clone());
+                    }
                     if metadata.file_type == libc::S_IFDIR {
                         return Ok(OpenedNode::Directory);
                     }
@@ -92,10 +93,22 @@ impl SecureRoot {
                     }
                 }
                 after_metadata_check()?;
-                let file = open_at(parent_descriptor, name, false)?;
+                let file = match open_at(parent_descriptor, name, false) {
+                    Ok(file) => file,
+                    Err(error) if Self::is_link_resolution_error(&error) => {
+                        return self.open_following_in_root(path.clone());
+                    }
+                    Err(error) => return Err(error),
+                };
                 return opened_file(path, file);
             }
-            let child = open_at(parent_descriptor, name, true)?;
+            let child = match open_at(parent_descriptor, name, true) {
+                Ok(child) => child,
+                Err(error) if Self::is_link_resolution_error(&error) => {
+                    return self.open_following_in_root(path.clone());
+                }
+                Err(error) => return Err(error),
+            };
             parent = Some(child);
         }
         Err(Error::new(
@@ -104,25 +117,70 @@ impl SecureRoot {
         ))
     }
 
+    #[cfg(unix)]
+    fn open_following_in_root(&self, response_path: PathBuf) -> std::io::Result<OpenedNode> {
+        let checked_path = std::fs::canonicalize(&response_path)?;
+        let relative_path = checked_path.strip_prefix(&self.path).map_err(|_| {
+            Error::new(ErrorKind::PermissionDenied, "path escapes the serving root")
+        })?;
+        self.open_canonical_at(response_path, relative_path)
+    }
+
+    #[cfg(unix)]
+    fn open_canonical_at(
+        &self,
+        response_path: PathBuf,
+        relative_path: &Path,
+    ) -> std::io::Result<OpenedNode> {
+        use std::os::fd::AsRawFd;
+        use std::path::Component;
+
+        let mut components = relative_path.components().peekable();
+        let mut parent = None;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "resolved path contains an invalid component",
+                ));
+            };
+            let parent_descriptor = parent
+                .as_ref()
+                .map_or_else(|| self.directory.as_ref(), |file: &File| file);
+            if components.peek().is_none() {
+                return opened_file(
+                    response_path,
+                    open_at(parent_descriptor.as_raw_fd(), name, false)?,
+                );
+            }
+            parent = Some(open_at(parent_descriptor.as_raw_fd(), name, true)?);
+        }
+        Ok(OpenedNode::Directory)
+    }
+
     #[cfg(windows)]
     pub(crate) fn open(
         &self,
         path: PathBuf,
         _detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
-        let path = std::fs::canonicalize(path)?;
-        if !path.starts_with(&self.path) {
+        let checked_path = std::fs::canonicalize(&path)?;
+        if !checked_path.starts_with(&self.path) {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "path escapes the serving root",
             ));
         }
-        self.open_checked_windows(path)
+        self.open_checked_windows(path, checked_path)
     }
 
     #[cfg(windows)]
-    fn open_checked_windows(&self, path: PathBuf) -> std::io::Result<OpenedNode> {
-        let file = open_node(&path)?;
+    fn open_checked_windows(
+        &self,
+        response_path: PathBuf,
+        checked_path: PathBuf,
+    ) -> std::io::Result<OpenedNode> {
+        let file = open_node(&checked_path)?;
         let opened_path = final_path(&file)?;
         if !opened_path.starts_with(&self.final_path) {
             return Err(Error::new(
@@ -130,21 +188,15 @@ impl SecureRoot {
                 "opened file escapes the serving root",
             ));
         }
-        let metadata = file.metadata()?;
-        if metadata.is_dir() {
-            return Ok(OpenedNode::Directory);
-        }
-        if !metadata.is_file() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "cannot serve a non-regular file",
-            ));
-        }
-        Ok(OpenedNode::File {
-            path,
-            file,
-            length: metadata.len(),
-        })
+        opened_file(response_path, file)
+    }
+
+    #[cfg(unix)]
+    fn is_link_resolution_error(error: &Error) -> bool {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::ELOOP) | Some(libc::ENOTDIR)
+        )
     }
 
     #[cfg(all(not(unix), not(windows)))]
@@ -203,6 +255,7 @@ fn final_path(file: &File) -> std::io::Result<PathBuf> {
         if length == 0 {
             return Err(Error::last_os_error());
         }
+
         let length = usize::try_from(length)
             .map_err(|_| Error::new(ErrorKind::InvalidData, "resolved path is too long"))?;
         if length < buffer.len() {
@@ -338,6 +391,28 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_canonical_target_replaced_by_symlink() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let outside = tempfile::NamedTempFile::new()?;
+        let target = directory.path().join("target");
+        let alias = directory.path().join("asset.js");
+        std::fs::write(&target, b"safe")?;
+        symlink(&target, &alias)?;
+        let root = SecureRoot::new(directory.path().to_path_buf())?;
+        let checked = std::fs::canonicalize(&alias)?;
+        let relative = checked.strip_prefix(root.path())?;
+
+        std::fs::remove_file(&target)?;
+        symlink(outside.path(), &target)?;
+
+        assert!(root.open_canonical_at(alias, relative).is_err());
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[test]
     fn rejects_junction_swap_after_path_check() -> Result<(), Box<dyn std::error::Error>> {
@@ -357,7 +432,7 @@ mod tests {
         std::fs::rename(&candidate, displaced)?;
         symlink_dir(outside.path(), &candidate)?;
 
-        let result = root.open_checked_windows(checked);
+        let result = root.open_checked_windows(checked.clone(), checked);
         assert!(matches!(
             result,
             Err(error) if error.kind() == ErrorKind::PermissionDenied
