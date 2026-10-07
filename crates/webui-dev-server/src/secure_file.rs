@@ -19,18 +19,33 @@ pub(crate) struct SecureRoot {
 }
 
 impl SecureRoot {
+    #[cfg(unix)]
+    pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
+        Self::new_unix(path, || Ok(()))
+    }
+
+    #[cfg(unix)]
+    fn new_unix(
+        path: PathBuf,
+        after_canonicalize: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
+        let path = std::fs::canonicalize(path)?;
+        after_canonicalize()?;
+        let directory = Arc::new(open_directory_no_follow(&path)?);
+        Ok(Self { path, directory })
+    }
+
+    #[cfg(windows)]
     pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
         let path = std::fs::canonicalize(path)?;
-        #[cfg(unix)]
-        let directory = Arc::new(File::open(&path)?);
-        #[cfg(windows)]
         let final_path = final_path(&open_node(&path)?)?;
+        Ok(Self { path, final_path })
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
         Ok(Self {
-            path,
-            #[cfg(unix)]
-            directory,
-            #[cfg(windows)]
-            final_path,
+            path: std::fs::canonicalize(path)?,
         })
     }
 
@@ -288,6 +303,29 @@ fn opened_file(path: PathBuf, file: File) -> std::io::Result<OpenedNode> {
     })
 }
 
+#[cfg(unix)]
+fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::fd::AsRawFd;
+    use std::path::Component;
+
+    let mut directory = File::open(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = open_at(directory.as_raw_fd(), name, true)?;
+            }
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "serving root contains an invalid component",
+                ));
+            }
+        }
+    }
+    Ok(directory)
+}
+
 pub(crate) enum OpenedNode {
     File {
         path: PathBuf,
@@ -384,6 +422,26 @@ mod tests {
             if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
                 return Err(Error::last_os_error());
             }
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_root_replaced_after_canonicalize() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let root_path = directory.path().join("root");
+        let displaced = directory.path().join("displaced");
+        std::fs::create_dir(&root_path)?;
+
+        let result = SecureRoot::new_unix(root_path.clone(), || {
+            std::fs::rename(&root_path, &displaced)?;
+            symlink(Path::new("/"), &root_path)?;
             Ok(())
         });
 
