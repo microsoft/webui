@@ -20,7 +20,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -1225,6 +1225,120 @@ async fn handle_component_templates(
         .json(result)
 }
 
+enum DiskAsset {
+    Found(Vec<u8>),
+    Missing,
+    Forbidden,
+}
+
+enum DiskAssetError {
+    Resolve {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ResolveBase {
+        source: std::io::Error,
+    },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+fn canonicalize_asset(path: PathBuf) -> Result<Option<PathBuf>, DiskAssetError> {
+    match path.canonicalize() {
+        Ok(canonical) => Ok(Some(canonical)),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(DiskAssetError::Resolve { path, source }),
+    }
+}
+
+fn read_contained_asset(
+    canonical: PathBuf,
+    canonical_base: &Path,
+) -> Result<DiskAsset, DiskAssetError> {
+    if !canonical.starts_with(canonical_base) {
+        return Ok(DiskAsset::Forbidden);
+    }
+
+    match fs::read(&canonical) {
+        Ok(bytes) => Ok(DiskAsset::Found(bytes)),
+        Err(source) if source.kind() == ErrorKind::NotFound => Ok(DiskAsset::Missing),
+        Err(source) => Err(DiskAssetError::Read {
+            path: canonical,
+            source,
+        }),
+    }
+}
+
+fn read_component_asset(path: PathBuf, directory: &Path) -> Result<DiskAsset, DiskAssetError> {
+    let Some(canonical) = canonicalize_asset(path)? else {
+        return Ok(DiskAsset::Missing);
+    };
+    let mut canonical_base = directory
+        .canonicalize()
+        .map_err(|source| DiskAssetError::ResolveBase { source })?;
+    canonical_base.push("components");
+    read_contained_asset(canonical, &canonical_base)
+}
+
+#[cold]
+#[inline(never)]
+fn log_component_asset_error(error: &DiskAssetError) {
+    match error {
+        DiskAssetError::Resolve { path, source } => {
+            log::error!(
+                "Failed to resolve component asset {}: {source}",
+                path.display()
+            );
+        }
+        DiskAssetError::ResolveBase { source } => {
+            log::error!("Failed to resolve component asset directory: {source}");
+        }
+        DiskAssetError::Read { path, source } => {
+            log::error!(
+                "Failed to read component asset {}: {source}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[inline(never)]
+async fn component_asset_response(
+    relative: &str,
+    context: &web::Data<ServerContext>,
+) -> Option<HttpResponse> {
+    let directory = context.component_assets_dir.as_ref()?;
+    let path = directory.join(relative);
+    let task_context = context.clone();
+    // Keep resolution, containment, and reading in one blocking-pool task.
+    match tokio::task::spawn_blocking(move || {
+        let Some(directory) = task_context.component_assets_dir.as_deref() else {
+            return Ok(DiskAsset::Missing);
+        };
+        read_component_asset(path, directory)
+    })
+    .await
+    {
+        Ok(Ok(DiskAsset::Found(bytes))) => Some(
+            HttpResponse::Ok()
+                .content_type("text/javascript; charset=utf-8")
+                .body(bytes),
+        ),
+        Ok(Ok(DiskAsset::Forbidden)) => Some(HttpResponse::Forbidden().body("Forbidden")),
+        Ok(Ok(DiskAsset::Missing)) => None,
+        Ok(Err(error)) => {
+            log_component_asset_error(&error);
+            Some(HttpResponse::InternalServerError().body("Failed to read component asset"))
+        }
+        Err(error) => {
+            log::error!("Component asset filesystem task failed: {error}");
+            Some(HttpResponse::InternalServerError().body("Failed to read component asset"))
+        }
+    }
+}
+
 async fn handle_asset(
     req: HttpRequest,
     path: web::Path<String>,
@@ -1259,49 +1373,8 @@ async fn handle_asset(
     }
 
     if relative.starts_with("components/") && relative.ends_with(".webui.js") {
-        if let Some(directory) = &context.component_assets_dir {
-            let path = directory.join(&relative);
-            let canonical = match tokio::fs::canonicalize(&path).await {
-                Ok(path) => Some(path),
-                Err(error) if error.kind() == ErrorKind::NotFound => None,
-                Err(error) => {
-                    log::error!(
-                        "Failed to resolve component asset {}: {error}",
-                        path.display()
-                    );
-                    return HttpResponse::InternalServerError()
-                        .body("Failed to read component asset");
-                }
-            };
-            if let Some(canonical) = canonical {
-                let base = match tokio::fs::canonicalize(directory).await {
-                    Ok(base) => base,
-                    Err(error) => {
-                        log::error!("Failed to resolve component asset directory: {error}");
-                        return HttpResponse::InternalServerError()
-                            .body("Failed to read component asset");
-                    }
-                };
-                if !canonical.starts_with(base.join("components")) {
-                    return HttpResponse::Forbidden().body("Forbidden");
-                }
-                match tokio::fs::read(&canonical).await {
-                    Ok(bytes) => {
-                        return HttpResponse::Ok()
-                            .content_type("text/javascript; charset=utf-8")
-                            .body(bytes);
-                    }
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => {
-                        log::error!(
-                            "Failed to read component asset {}: {error}",
-                            canonical.display()
-                        );
-                        return HttpResponse::InternalServerError()
-                            .body("Failed to read component asset");
-                    }
-                }
-            }
+        if let Some(response) = component_asset_response(&relative, &context).await {
+            return response;
         }
     }
 
@@ -1314,7 +1387,7 @@ async fn handle_asset(
     let asset_path = assets_dir.join(&relative);
 
     let canonical = match asset_path.canonicalize() {
-        Ok(p) => p,
+        Ok(path) => path,
         Err(_) => {
             // File not found: let the Accept header decide whether this was a
             // route navigation/partial request or a missing asset fetch.
@@ -3619,6 +3692,74 @@ mod tests {
                 &app,
                 actix_test::TestRequest::get()
                     .uri("/components/escaped.webui.js")
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_handle_asset_preserves_application_bytes_mime_and_containment() {
+        let files = create_app_dir(&[
+            ("public/data/fixture.json", r#"{"source":"application"}"#),
+            ("private.json", r#"{"source":"private"}"#),
+        ]);
+        let public = files.path().join("public").canonicalize().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            files.path().join("private.json"),
+            public.join("escaped.json"),
+        )
+        .unwrap();
+
+        let mut context = Arc::try_unwrap(test_server_context(0).into_inner())
+            .ok()
+            .unwrap();
+        context.assets_dir = Some(public);
+        context.api_port = None;
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(web::Data::new(context))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/data/fixture.json")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"));
+        assert_eq!(
+            actix_test::read_body(response).await.as_ref(),
+            br#"{"source":"application"}"#
+        );
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/data/%2e%2e/%2e%2e/private.json")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        #[cfg(unix)]
+        {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri("/escaped.json")
                     .to_request(),
             )
             .await;
