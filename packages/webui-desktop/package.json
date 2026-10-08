@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-desktop",
-  "version": "0.0.30",
+  "version": "3.0.0",
   "description": "Opt-in native desktop CLI and typed browser IPC runtime for WebUI",
   "license": "MIT",
   "type": "module",

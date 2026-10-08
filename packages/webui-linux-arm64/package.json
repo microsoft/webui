@@ -16,5 +16,5 @@
   "publishConfig": {
     "tag": "latest"
   },
-  "version": "0.0.30"
+  "version": "3.0.0"
 }

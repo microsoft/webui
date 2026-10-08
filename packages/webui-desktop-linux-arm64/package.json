@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-desktop-linux-arm64",
-  "version": "0.0.30",
+  "version": "3.0.0",
   "description": "WebUI desktop sidecar for Linux ARM64",
   "license": "MIT",
   "os": ["linux"],

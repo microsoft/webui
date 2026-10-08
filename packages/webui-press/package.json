@@ -2,7 +2,7 @@
   "name": "@microsoft/webui-press",
   "description": "Opt-in native WebUI Press sidecar",
   "license": "MIT",
-  "version": "0.0.30",
+  "version": "3.0.0",
   "publishConfig": {
     "tag": "latest"
   },

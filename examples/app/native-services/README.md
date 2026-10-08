@@ -1,6 +1,6 @@
 # Native services demo
 
-This WebUI 0.0.30 app demonstrates the opt-in Rust-host directory picker,
+This WebUI app demonstrates the opt-in Rust-host directory picker,
 native dialogs, visible-webview PNG capture, and verified PNG clipboard write.
 It deliberately uses four narrow same-origin HTTP actions rather than granting
 the page generic native IPC or filesystem access. Each launch generates a
