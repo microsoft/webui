@@ -110,8 +110,9 @@ content typography, not the full template's CSS or entry script. Configured
 assets there rather than in shell regions. Component discovery continues to
 accept npm packages alongside local roots; browser registration imports can use
 the existing <code>&lt;script type="module" bundle&gt;</code> syntax and bundler aliases.
-Native npm discovery names components from <code>&lt;tag&gt;.html</code> files, using the package's
-<code>components/</code> directory when present or the package root otherwise. Folder names,
+Native npm discovery names components from <code>&lt;tag&gt;.html</code> files beneath the
+package's <code>components/</code> directory by default. Package <code>webui.components</code> metadata
+selects alternate roots, for example <code>["./src/components"]</code>. Folder names,
 template exports, and CEM names do not determine native component names. Use
 package module exports for browser registrations. See
 <a href="/webui/guide/concepts/components#external-component-sources">External components</a>.</p><h2 id="markdown-local-state">Markdown-local state <a class="header-anchor" href="/webui/guide/webui-press/#markdown-local-state" aria-label="Link to Markdown-local state">#</a></h2><p>Put initial example data in the Markdown file that uses it, rather than in

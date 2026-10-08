@@ -970,7 +970,14 @@ the message. <code>--format json</code> emits one JSON object per error on stdou
   help: use the form each="item in collection", e.g. each="todo in todos"
 </code></pre></code-block><p>Full flag tables, exit codes, and the error-code list:
 <a href="/webui/guide/cli/">CLI Reference</a>.</p><h3 id="external-component-discovery">External component discovery <a class="header-anchor" href="/webui/ai/#external-component-discovery" aria-label="Link to External component discovery">#</a></h3><p>Native <code>--components</code> discovery derives names from <code>&lt;component-name&gt;.html</code>,
-scanning a package's <code>components/</code> directory when present or its root otherwise.
+scanning the package's <code>components/</code> directory by default, with no package-root
+fallback. A package can select alternate ordinary HTML roots with
+<code>"webui": &#123; "components": ["./src/components"] &#125;</code> in its <code>package.json</code>.
+Only the listed directories are scanned; <code>[]</code> disables ordinary fallback.
+Roots must be readable package-relative directories, including their symlink
+targets. Invalid metadata and paths are errors. FAST CEM assets remain separately
+resolved. Explicit local paths and the app directory are scanned as given; do
+not repeat the app directory in <code>--components</code>.
 Template/style exports and CEM names are not interpreted by default discovery;
 FAST's special metadata-based layouts remain separate.
 Npm collection spellings <code>@scope/*</code> and <code>@scope/package/*</code> are accepted.

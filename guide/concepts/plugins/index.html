@@ -179,19 +179,24 @@ to <code>DiscoveryPlugin</code>. Return <code>DiscoveredComponent</code> values 
 component validation and compilation:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">pub</span> <span class="hl-keyword">trait</span> DiscoveryPlugin &#123;
     <span class="hl-keyword">fn</span> <span class="hl-attr">cache_namespace</span>(<span class="hl-keyword">&amp;</span>self) -&gt; <span class="hl-keyword">&amp;</span><span class="hl-keyword">'static</span> <span class="hl-keyword">str</span>;
     <span class="hl-keyword">fn</span> <span class="hl-attr">discover_local</span>(<span class="hl-keyword">&amp;</span>self, root: <span class="hl-keyword">&amp;</span>Path) -&gt; Result&lt;Vec&lt;DiscoveredComponent&gt;&gt;;
-    <span class="hl-keyword">fn</span> <span class="hl-attr">package_cache_files</span>(
+    <span class="hl-keyword">fn</span> <span class="hl-attr">prepare_package</span>(
         <span class="hl-keyword">&amp;</span>self,
         package: PackageContext&lt;'<span class="hl-keyword">_</span>&gt;,
-    ) -&gt; Result&lt;Vec&lt;PathBuf&gt;&gt;;
-    <span class="hl-keyword">fn</span> <span class="hl-attr">discover_package</span>(
-        <span class="hl-keyword">&amp;</span>self,
-        package: PackageContext&lt;'<span class="hl-keyword">_</span>&gt;,
-    ) -&gt; Result&lt;Vec&lt;DiscoveredComponent&gt;&gt;;
+    ) -&gt; Result&lt;PreparedPackage&gt;;
 &#125;
 </code></pre></code-block><p>Call <code>discover_source_with_plugin(source, search_dir, plugin)</code> to resolve a
-source with a custom layout. <code>package_cache_files</code> must return deterministic
-paths for every package file that can affect discovery, including optional
-files that do not yet exist.</p><h3 id="parserplugin-trait">ParserPlugin Trait <a class="header-anchor" href="/webui/guide/concepts/plugins/#parserplugin-trait" aria-label="Link to ParserPlugin Trait">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">pub</span> <span class="hl-keyword">type</span> ComponentSourceTransform <span class="hl-keyword">=</span>
+source with a custom layout. Every package plugin receives its name, canonical
+root, and parsed <code>package.json</code> through <code>PackageContext</code>; <code>manifest</code> is always
+available. Package metadata changes automatically invalidate discovery caches.
+Plugins interpret their own fields and formats, such as FAST's CEM.
+Return <code>PreparedPackage::Files</code> with an ordered list of <code>ComponentFileSource</code>
+values: the tag name, selected HTML and optional CSS files, and script ownership.
+Construct each selected file with <code>ComponentFile::new</code>, supplying its canonical
+owning package root and source path. Resolve optional files and CEM naming before
+returning; the shared loader uses that fixed plan
+for both cache lookup and loading, without repeating discovery.</p><p>Return <code>PreparedPackage::Uncached</code> for already computed <code>DiscoveredComponent</code>
+values whose inputs are not represented by file sources. Such results bypass
+the cache rather than claiming an input snapshot the framework cannot verify.</p><h3 id="parserplugin-trait">ParserPlugin Trait <a class="header-anchor" href="/webui/guide/concepts/plugins/#parserplugin-trait" aria-label="Link to ParserPlugin Trait">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">pub</span> <span class="hl-keyword">type</span> ComponentSourceTransform <span class="hl-keyword">=</span>
     <span class="hl-keyword">for</span><span class="hl-keyword">&lt;</span><span class="hl-keyword">'a</span><span class="hl-keyword">&gt;</span> <span class="hl-keyword">fn</span>(ComponentSource&lt;<span class="hl-keyword">'a</span>&gt;) -&gt; Result&lt;Option&lt;TransformedComponentSource&gt;&gt;;
 
 <span class="hl-keyword">pub</span> <span class="hl-keyword">struct</span> ComponentProcessing &#123;
