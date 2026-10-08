@@ -8,9 +8,9 @@ different validated package layout into the same `DiscoveredComponent` runtime
 contract. Built-in WebUI and FAST discovery plugins are provided.
 
 Default WebUI discovery uses `<component-name>.html`: the filename is the
-custom element name. Without `webui.components` metadata, the entire package
-tree is scanned; no directory name receives special precedence. A package
-can declare its ordinary HTML catalog roots in `package.json`:
+custom element name. npm packages are scanned beneath `components/` by default,
+without falling back to the package root. To use another layout, declare the
+ordinary HTML catalog roots in `package.json`:
 
 ```json
 { "webui": { "components": ["./src/components"] } }

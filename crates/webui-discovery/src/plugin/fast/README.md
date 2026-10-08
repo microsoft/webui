@@ -43,9 +43,9 @@ the converted `.template-webui.html` variant for this discovery plugin.
 FAST also includes ordinary `<component-name>.html` files not declared in the
 manifest, using default filename, CSS, and script-ownership rules. This fallback
 also works when the manifest is absent or contains no component declarations.
-Package `webui.components` metadata selects the ordinary HTML roots; without
-that field the entire package is scanned, including directories outside
-`components/`. An empty array disables only the ordinary fallback.
+The ordinary fallback scans `components/` by default. Package `webui.components`
+metadata selects alternate roots; an empty array disables only that fallback.
+An absent default directory contributes no ordinary HTML components.
 CEM-declared assets are resolved separately and may live outside those roots.
 
 Manifest declarations win name conflicts. Generated `.template.html` and

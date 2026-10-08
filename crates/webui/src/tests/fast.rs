@@ -260,6 +260,7 @@ fn exported_fast_template_builds_and_renders_for_both_fast_versions() {
     let package = project.path().join("node_modules/custom-button");
     fs::create_dir_all(&app).unwrap();
     fs::create_dir_all(package.join("dist/esm")).unwrap();
+    fs::create_dir_all(package.join("components")).unwrap();
     fs::write(
         app.join("index.html"),
         "<html><body><custom-button></custom-button><custom-note></custom-note></body></html>",
@@ -302,8 +303,16 @@ fn exported_fast_template_builds_and_renders_for_both_fast_versions() {
         "button { color: blue; }",
     )
     .unwrap();
-    fs::write(package.join("custom-note.html"), "<span>{{note}}</span>").unwrap();
-    fs::write(package.join("custom-button.html"), "Wrong duplicate").unwrap();
+    fs::write(
+        package.join("components/custom-note.html"),
+        "<span>{{note}}</span>",
+    )
+    .unwrap();
+    fs::write(
+        package.join("components/custom-button.html"),
+        "Wrong duplicate",
+    )
+    .unwrap();
 
     for (plugin, handler) in [
         (

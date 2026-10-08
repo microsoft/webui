@@ -95,7 +95,8 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
         let components = catalog.discover(|_| true)?;
         if components.is_empty() && !catalog.is_disabled() {
             bail!(
-                "No component templates in {}. Add <component-name>.html files; \
+                "No component templates in {}. Add <component-name>.html files under \
+                 components/ or declare webui.components in package.json; \
                  the filename is the custom element name.",
                 package.root.display()
             );

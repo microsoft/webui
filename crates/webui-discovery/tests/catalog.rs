@@ -22,7 +22,10 @@ fn large_script_siblings_preserve_discovery_and_ownership() -> TestResult {
     let root = tempfile::tempdir()?;
     let package = root.path().join("node_modules/large-catalog");
     fs::create_dir_all(&package)?;
-    fs::write(package.join("package.json"), "{}")?;
+    fs::write(
+        package.join("package.json"),
+        r#"{"webui":{"components":["./"]}}"#,
+    )?;
     fs::write(package.join("test-card.html"), "<span>Card</span>")?;
     let script = package.join("test-card.js");
     fs::File::create(&script)?.set_len(64 * 1024 * 1024)?;
@@ -174,7 +177,10 @@ fn native_packages_use_html_basenames_without_directory_name_requirements() -> T
     let root = tempfile::tempdir()?;
     let package = root.path().join("node_modules/@fixture/names");
     fs::create_dir_all(&package)?;
-    fs::write(package.join("package.json"), r#"{"name":"@fixture/names"}"#)?;
+    fs::write(
+        package.join("package.json"),
+        r#"{"name":"@fixture/names","webui":{"components":["./"]}}"#,
+    )?;
     fs::write(package.join("test-flat.html"), "<span>Flat</span>")?;
     fs::write(package.join("test-flat.css"), "span { color: blue; }")?;
     fs::create_dir_all(package.join("node_modules/other"))?;
@@ -251,6 +257,11 @@ fn fast_keeps_manifest_names_and_special_template_style_paths() -> TestResult {
         Some(":host { color: blue; }")
     );
     assert!(result.components[0].is_client_owned);
+    assert!(discover_source("@fixture/fast", root.path()).is_err());
+    fs::write(
+        package.join("package.json"),
+        r#"{"webui":{"components":["./dist"]}}"#,
+    )?;
     let native = discover_source("@fixture/fast", root.path())?;
     assert_eq!(native.components[0].tag_name, "card.template-webui");
     Ok(())

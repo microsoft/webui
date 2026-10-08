@@ -4385,18 +4385,20 @@ mod tests {
         }
 
         #[test]
-        fn absent_catalog_metadata_builds_templates_inside_and_outside_components() -> TestResult {
+        fn absent_catalog_metadata_scans_only_components_and_excludes_reports() -> TestResult {
             let root = tempfile::tempdir()?;
             let package = root.path().join("node_modules/@fixture/catalog");
             write(&package, "package.json", r#"{"name":"@fixture/catalog"}"#)?;
             write(&package, "components/inside-card.html", "<p>Inside</p>")?;
             write(&package, "outside-card.html", "<p>Outside</p>")?;
+            for report in [
+                "test_results/coverage/lcov-report/core/initial-state.ts.html",
+                "test_results/coverage/lcov-report/initial-state.ts.html",
+            ] {
+                write(&package, report, "<p>Coverage report</p>")?;
+            }
             let app = root.path().join("app");
-            write(
-                &app,
-                "index.html",
-                "<inside-card></inside-card><outside-card></outside-card>",
-            )?;
+            write(&app, "index.html", "<inside-card></inside-card>")?;
             for plugin in [
                 None,
                 Some(Plugin::WebUI),
@@ -4409,7 +4411,8 @@ mod tests {
                     plugin,
                     ..BuildOptions::default()
                 })?;
-                assert_eq!(result.stats.component_count, 2);
+                assert_eq!(result.stats.component_count, 1);
+                assert!(!result.protocol.fragments.contains_key("outside-card"));
                 let mut writer = StringWriter { buf: String::new() };
                 WebUIHandler::new().render(
                     &Protocol::new(result.protocol),
@@ -4418,7 +4421,8 @@ mod tests {
                     &mut writer,
                 )?;
                 assert!(writer.buf.contains("<p>Inside</p>"));
-                assert!(writer.buf.contains("<p>Outside</p>"));
+                assert!(!writer.buf.contains("<p>Outside</p>"));
+                assert!(!writer.buf.contains("Coverage report"));
             }
             Ok(())
         }

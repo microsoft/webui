@@ -12,16 +12,26 @@ use crate::DiscoveredComponent;
 pub(crate) struct PackageCatalog<'a> {
     package: PackageContext<'a>,
     roots: Vec<PathBuf>,
+    explicitly_disabled: bool,
 }
 
 impl<'a> PackageCatalog<'a> {
     pub(crate) fn new(package: PackageContext<'a>) -> Result<Self> {
-        let roots = roots(package)?;
-        Ok(Self { package, roots })
+        let declared = declared_roots(package)?;
+        let explicitly_disabled = declared.as_ref().is_some_and(Vec::is_empty);
+        let roots = match declared {
+            Some(roots) => roots,
+            None => default_roots(package)?,
+        };
+        Ok(Self {
+            package,
+            roots,
+            explicitly_disabled,
+        })
     }
 
     pub(crate) fn is_disabled(&self) -> bool {
-        self.roots.is_empty()
+        self.explicitly_disabled
     }
 
     pub(crate) fn has_templates(&self, include: impl Fn(&Path) -> bool) -> Result<bool> {
@@ -75,19 +85,19 @@ fn read_context(package: &str, root: &Path) -> String {
     )
 }
 
-fn roots(package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
+fn declared_roots(package: PackageContext<'_>) -> Result<Option<Vec<PathBuf>>> {
     let manifest = package
         .manifest
         .as_object()
         .ok_or_else(|| invalid_metadata(package.name, "package.json must be an object"))?;
     let Some(webui) = manifest.get("webui") else {
-        return Ok(vec![package.root.to_path_buf()]);
+        return Ok(None);
     };
     let webui = webui
         .as_object()
         .ok_or_else(|| invalid_metadata(package.name, "'webui' must be an object"))?;
     let Some(components) = webui.get("components") else {
-        return Ok(vec![package.root.to_path_buf()]);
+        return Ok(None);
     };
     let components = components
         .as_array()
@@ -99,7 +109,22 @@ fn roots(package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
             .ok_or_else(|| invalid_metadata(package.name, "each root must be a string"))?;
         roots.push(resolve_root(package, relative)?);
     }
-    Ok(roots)
+    Ok(Some(roots))
+}
+
+fn default_roots(package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
+    let root = package.root.join("components");
+    match fs::symlink_metadata(&root) {
+        Ok(_) => Ok(vec![resolve_root(package, "components")?]),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Cannot inspect default component catalog '{}'. \
+                 help: Check directory permissions or set webui.components in package.json.",
+                root.display()
+            )
+        }),
+    }
 }
 
 fn resolve_root(package: PackageContext<'_>, relative: &str) -> Result<PathBuf> {
@@ -181,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_metadata_scans_the_entire_package_without_implicit_catalogs() -> TestResult {
+    fn absent_metadata_scans_only_components_with_explicit_root_opt_in() -> TestResult {
         let root = tempfile::tempdir()?;
         let package = root.path().join("node_modules/@fixture/catalog");
         write(&package, "components/first-card.html", "<p>Components</p>")?;
@@ -192,11 +217,19 @@ mod tests {
         for manifest in ["{}", r#"{"webui":{}}"#] {
             write(&package, "package.json", manifest)?;
             for plugin in PLUGINS {
-                assert_eq!(
-                    tags(root.path(), plugin)?,
-                    ["first-card", "published-card", "flat-card", "source-card"]
-                );
+                assert_eq!(tags(root.path(), plugin)?, ["first-card"]);
             }
+        }
+        write(
+            &package,
+            "package.json",
+            r#"{"webui":{"components":["./"]}}"#,
+        )?;
+        for plugin in PLUGINS {
+            assert_eq!(
+                tags(root.path(), plugin)?,
+                ["first-card", "published-card", "flat-card", "source-card"]
+            );
         }
         Ok(())
     }
@@ -207,6 +240,7 @@ mod tests {
             let root = tempfile::tempdir()?;
             let package = root.path().join("node_modules/@fixture/catalog");
             write(&package, "package.json", "{}")?;
+            write(&package, "components/default-card.html", "<p>Default</p>")?;
             write(&package, "flat-card.html", "<p>Flat</p>")?;
             write(
                 &package,
@@ -214,10 +248,7 @@ mod tests {
                 "<p>Source</p>",
             )?;
             write(&package, "extra/extra-card.html", "<p>Extra</p>")?;
-            assert_eq!(
-                tags(root.path(), plugin)?,
-                ["extra-card", "flat-card", "source-card.v2"]
-            );
+            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
             write(
                 &package,
                 "package.json",
@@ -261,7 +292,39 @@ mod tests {
             fs::remove_dir(package.join("extra"))?;
             assert!(tags(root.path(), plugin).is_err());
             write(&package, "package.json", "{}")?;
-            assert_eq!(tags(root.path(), plugin)?, ["flat-card", "source-card.v2"]);
+            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_default_catalog_never_falls_back_and_tracks_creation_and_removal() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("node_modules/@fixture/catalog");
+        write(&package, "package.json", "{}")?;
+        write(&package, "flat-card.html", "<p>Outside</p>")?;
+        write(&package, "src/components/source-card.html", "<p>Source</p>")?;
+        for plugin in PLUGINS {
+            assert!(tags(root.path(), plugin).is_err());
+            assert!(
+                discover_source_with_plugin("@fixture", root.path(), plugin)?
+                    .components
+                    .is_empty()
+            );
+        }
+        write(&package, "components/default-card.html", "<p>Default</p>")?;
+        for plugin in PLUGINS {
+            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
+            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
+        }
+        fs::remove_file(package.join("components/default-card.html"))?;
+        fs::remove_dir(package.join("components"))?;
+        for plugin in PLUGINS {
+            assert!(tags(root.path(), plugin).is_err());
+        }
+        write(&package, "components", "Not a directory")?;
+        for plugin in PLUGINS {
+            assert!(discover_source_with_plugin("@fixture", root.path(), plugin).is_err());
         }
         Ok(())
     }
@@ -313,7 +376,11 @@ mod tests {
         let package = root.path().join("node_modules/@fixture/catalog");
         write(&package, "flat-card.html", "<p>Flat</p>")?;
         for plugin in PLUGINS {
-            write(&package, "package.json", "{}")?;
+            write(
+                &package,
+                "package.json",
+                r#"{"webui":{"components":["./"]}}"#,
+            )?;
             assert_eq!(tags(root.path(), plugin)?, ["flat-card"]);
             for manifest in [
                 r#"{"webui":null}"#,

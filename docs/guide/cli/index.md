@@ -1030,10 +1030,10 @@ webui build ./my-app --out ./dist --components @reactive-ui/button
 
 **Default WebUI package requirements:**
 
-Provide `<component-name>.html` files in the package. By default the entire
-package tree is scanned, without preferring a `components/` directory.
+Provide `<component-name>.html` files beneath the package's `components/`
+directory. There is no implicit package-root fallback.
 Set `"webui": { "components": ["./src/components"] }` in the package's
-`package.json` to scan only those ordinary HTML roots, or use an empty array
+`package.json` to select alternate ordinary HTML roots, or use an empty array
 to disable ordinary HTML discovery. Declared roots must be readable directories
 within the package.
 The filename determines the component name, including in nested directories.

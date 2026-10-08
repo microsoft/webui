@@ -206,10 +206,9 @@ In addition to discovering components in your app directory, WebUI can load comp
 
 Install the package into `node_modules/`. Default WebUI discovery derives the
 component name from each hyphenated `<component-name>.html` filename, exactly as
-for local components. Without `webui.components` in `package.json`, it scans the
-entire package tree, including templates both inside and outside `components/`.
-Directories named `components/` or `src/components/` have no special precedence.
-Nested directories are supported; a directory does not need to repeat the component name.
+for local components. It scans the package's `components/` directory by default.
+Nested directories are supported; a directory does not need to repeat the
+component name.
 
 ```text
 package.json
@@ -225,8 +224,9 @@ package JavaScript exports do not make unrelated components scripted. Import
 authored browser registrations through the package's module exports separately.
 Scriptless components need neither a registration import nor a projection entry.
 
-To keep discovery within authored sources, declare the catalog roots in the
-package's `package.json`:
+Other package directories such as `dist/` are not scanned by default. There is
+no implicit fallback when `components/` is absent. To use another layout, declare
+the catalog roots in the package's `package.json`:
 
 ```json
 {
@@ -239,9 +239,10 @@ package's `package.json`:
 When present, this array supplies the only ordinary HTML roots. Use `[]` for
 no ordinary HTML components. Paths use forward slashes and must be readable
 directories inside the resolved package, including any symlink targets.
-Absolute paths, `..` traversal, missing directories, and invalid metadata are
-errors, not reasons to scan somewhere else. Overlapping roots do not suppress
-duplicate component errors.
+Absolute paths, `..` traversal, missing declared directories, and invalid metadata
+are errors, not reasons to scan somewhere else. Overlapping roots do not suppress
+duplicate component errors. Use `["./"]` only when whole-package discovery is
+intentional.
 
 Hidden directories and nested `node_modules/` are skipped. These catalog rules
 also apply to FAST's ordinary HTML fallback; CEM-declared assets keep their

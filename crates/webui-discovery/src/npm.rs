@@ -923,14 +923,20 @@ mod tests {
     fn default_discovery_reads_package_but_not_fast_metadata() -> Result<()> {
         let root = tempfile::tempdir()?;
         let package = root.path().join("node_modules/native-package");
-        fs::create_dir_all(&package)?;
+        fs::create_dir_all(package.join("components"))?;
         fs::write(
             package.join("package.json"),
             r#"{"customElements":"custom-elements.json"}"#,
         )?;
         fs::write(package.join("custom-elements.json"), [0xff])?;
-        fs::write(package.join("native-card.html"), "<span>Native</span>")?;
-        fs::write(package.join("native-card.css"), "span { color: blue; }")?;
+        fs::write(
+            package.join("components/native-card.html"),
+            "<span>Native</span>",
+        )?;
+        fs::write(
+            package.join("components/native-card.css"),
+            "span { color: blue; }",
+        )?;
         let result = crate::discover_source("native-package", root.path())?;
         assert_eq!(result.components.len(), 1);
         assert_eq!(result.components[0].tag_name, "native-card");
@@ -1033,7 +1039,8 @@ mod tests {
 
         let pkg_json = serde_json::json!({
             "name": name,
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "webui": { "components": ["./"] }
         });
         fs::write(
             pkg_dir.join("package.json"),

@@ -77,8 +77,8 @@ Filesystem and package resolution are build-time concerns; paths from packages
 must be validated before they are opened.
 The shared package resolver supplies package metadata to all discovery plugins;
 framework-specific indices remain plugin-owned.
-Packages may explicitly constrain ordinary HTML discovery to catalog roots;
-without that metadata their whole package tree is the discovery scope.
+Ordinary HTML discovery defaults to the package's component catalog;
+explicit package metadata selects alternate roots.
 Framework-declared assets remain independent of those ordinary catalog roots.
 Application directories and explicit local sources retain their caller-chosen
 boundaries.

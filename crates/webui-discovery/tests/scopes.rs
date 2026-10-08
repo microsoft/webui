@@ -85,7 +85,11 @@ fn npm_sources_accept_package_and_collection_identifiers() -> TestResult {
     let root = tempfile::tempdir()?;
     for name in ["my-widget", "my_widget", "my.widget", "@fixture/ui-kit"] {
         let directory = package(root.path(), name, "{}")?;
-        fs::write(directory.join("test-card.html"), "<span>Card</span>")?;
+        fs::create_dir(directory.join("components"))?;
+        fs::write(
+            directory.join("components/test-card.html"),
+            "<span>Card</span>",
+        )?;
         for source in [name.to_string(), format!("{name}/*")] {
             assert_eq!(discover_source(&source, root.path())?.components.len(), 1);
         }
@@ -100,8 +104,9 @@ fn native_scope_skips_utilities_but_reports_invalid_component_files() -> TestRes
     fs::create_dir_all(child.join("node_modules/unrelated"))?;
     let component = package(root.path(), "@fixture/button", "{}")?;
     package(root.path(), "@fixture/utils", r#"{"main":"./index.js"}"#)?;
+    fs::create_dir(component.join("components"))?;
     fs::write(
-        component.join("test-button.html"),
+        component.join("components/test-button.html"),
         "<button>Example</button>",
     )?;
     let result = discover_source("@fixture", &child)?;
@@ -111,7 +116,7 @@ fn native_scope_skips_utilities_but_reports_invalid_component_files() -> TestRes
     assert_eq!(wildcard.components.len(), 1);
     assert_eq!(wildcard.components[0].tag_name, "test-button");
 
-    fs::write(component.join("test-button.html"), [0xff])?;
+    fs::write(component.join("components/test-button.html"), [0xff])?;
     let error = discover_source("@fixture", &child)
         .err()
         .ok_or("scope must surface bad HTML")?;

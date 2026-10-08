@@ -148,7 +148,8 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
             if components.is_empty() && !catalog.is_disabled() {
                 bail!(
                     "No components found in package '{}'. Declare FAST components through \
-                     customElements or provide <component-name>.html files.",
+                     customElements, provide <component-name>.html files under components/, \
+                     or declare webui.components in package.json.",
                     package.name
                 );
             }

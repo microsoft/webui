@@ -1600,8 +1600,8 @@ Full flag tables, exit codes, and the error-code list:
 ### External component discovery
 
 Native `--components` discovery derives names from `<component-name>.html`,
-scanning the entire package tree by default, without preferring `components/`.
-A package can constrain ordinary HTML discovery with
+scanning the package's `components/` directory by default, with no package-root
+fallback. A package can select alternate ordinary HTML roots with
 `"webui": { "components": ["./src/components"] }` in its `package.json`.
 Only the listed directories are scanned; `[]` disables ordinary fallback.
 Roots must be readable package-relative directories, including their symlink
