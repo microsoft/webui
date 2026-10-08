@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use webui_discovery::{
     discover_source, discover_source_with_plugin, DiscoveredComponent, DiscoveryPlugin,
-    FastDiscoveryPlugin, PackageContext, WebUIDiscoveryPlugin,
+    FastDiscoveryPlugin, PackageContext, PreparedPackage, WebUIDiscoveryPlugin,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -201,20 +201,14 @@ impl DiscoveryPlugin for InlinePlugin {
     fn discover_local(&self, _root: &Path) -> anyhow::Result<Vec<DiscoveredComponent>> {
         Ok(Vec::new())
     }
-    fn package_cache_files(&self, _package: PackageContext<'_>) -> anyhow::Result<Vec<PathBuf>> {
-        Ok(Vec::new())
-    }
-    fn discover_package(
-        &self,
-        package: PackageContext<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredComponent>> {
-        Ok(vec![DiscoveredComponent {
+    fn prepare_package(&self, package: PackageContext<'_>) -> anyhow::Result<PreparedPackage> {
+        Ok(PreparedPackage::Uncached(vec![DiscoveredComponent {
             tag_name: "inline-component".to_string(),
             html_content: "<span>Inline</span>".to_string(),
             css_content: None,
             is_client_owned: false,
             source: package.name.to_string(),
-        }])
+        }]))
     }
 }
 

@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Component discovery cache for avoiding repeated filesystem traversal.
+//! Cache of materialized package components.
 //!
 //! Caches discovered component data at `~/.webui/cache/components/` and
-//! invalidates when package metadata or a plugin-declared source changes.
+//! validates them against prepared inputs and the bytes actually loaded.
 
 use anyhow::{Context, Result};
 use expand_tilde::expand_tilde;
@@ -12,20 +12,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::DiscoveredComponent;
+use crate::prepared::LoadedPackage;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-const HASH_BUFFER_SIZE: usize = 8 * 1024;
 
 pub(crate) struct CacheKey<'a> {
     pub(crate) namespace: &'a str,
     pub(crate) source: &'a str,
     pub(crate) package_json: &'a Path,
-    pub(crate) fingerprint: u64,
 }
 
 /// Serialized cache entry stored as JSON on disk.
@@ -33,7 +31,7 @@ pub(crate) struct CacheKey<'a> {
 struct CacheEntry {
     /// The original source identifier (e.g., `@scope/button`)
     source: String,
-    // Hash of package metadata and plugin-declared discovery inputs.
+    // Fingerprint of prepared decisions and the bytes in this result.
     version_hash: u64,
     /// Discovered components from this source
     components: Vec<CachedComponent>,
@@ -50,8 +48,8 @@ struct CachedComponent {
 
 /// File-based component discovery cache.
 ///
-/// Stores discovered component data at `~/.webui/cache/components/`
-/// to avoid re-traversing npm packages on every build.
+/// Stores component data at `~/.webui/cache/components/`, validated against
+/// prepared source inputs on every lookup.
 pub struct DiscoveryCache {
     cache_dir: PathBuf,
 }
@@ -78,61 +76,13 @@ impl DiscoveryCache {
         format!("{:016x}", hasher.finish())
     }
 
-    // Compute a version hash from every input affecting discovery.
-    pub(crate) fn fingerprint(
-        package_json: Option<&Path>,
-        dependencies: &[PathBuf],
-    ) -> Result<u64> {
-        let mut hasher = DefaultHasher::new();
-        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
-        for path in package_json
-            .into_iter()
-            .chain(dependencies.iter().map(PathBuf::as_path))
-        {
-            path.hash(&mut hasher);
-            match fs::symlink_metadata(path) {
-                Ok(metadata) => {
-                    true.hash(&mut hasher);
-                    metadata.file_type().is_symlink().hash(&mut hasher);
-                    if metadata.file_type().is_symlink() {
-                        fs::read_link(path)
-                            .with_context(|| {
-                                format!("Failed to read symlink for hashing: {}", path.display())
-                            })?
-                            .hash(&mut hasher);
-                    }
-                    let followed = fs::metadata(path).with_context(|| {
-                        format!("Failed to inspect for hashing: {}", path.display())
-                    })?;
-                    followed.is_file().hash(&mut hasher);
-                    followed.is_dir().hash(&mut hasher);
-                    if followed.is_file() {
-                        let mut file = fs::File::open(path).with_context(|| {
-                            format!("Failed to read for hashing: {}", path.display())
-                        })?;
-                        hash_contents(&mut file, &mut buffer)
-                            .with_context(|| {
-                                format!("Failed to read for hashing: {}", path.display())
-                            })?
-                            .hash(&mut hasher);
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    false.hash(&mut hasher);
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("Failed to read for hashing: {}", path.display())
-                    });
-                }
-            }
-        }
-        Ok(hasher.finish())
-    }
-
     /// Look up cached components for a source. Returns `None` if the cache
     /// is missing, corrupt, or invalidated.
-    pub(crate) fn get(&self, lookup: &CacheKey<'_>) -> Result<Option<Vec<DiscoveredComponent>>> {
+    pub(crate) fn get(
+        &self,
+        lookup: &CacheKey<'_>,
+        fingerprint: u64,
+    ) -> Result<Option<Vec<DiscoveredComponent>>> {
         let key = Self::cache_key(lookup.namespace, lookup.source, lookup.package_json);
         let cache_file = self.cache_dir.join(format!("{key}.json"));
 
@@ -152,7 +102,7 @@ impl DiscoveryCache {
         };
 
         // Validate version hash
-        if entry.version_hash != lookup.fingerprint {
+        if entry.version_hash != fingerprint {
             return Ok(None);
         }
 
@@ -172,18 +122,15 @@ impl DiscoveryCache {
     }
 
     /// Store discovered components in the cache using atomic write.
-    pub(crate) fn put(
-        &self,
-        lookup: &CacheKey<'_>,
-        components: &[DiscoveredComponent],
-    ) -> Result<()> {
+    pub(crate) fn put(&self, lookup: &CacheKey<'_>, loaded: &LoadedPackage) -> Result<()> {
         let key = Self::cache_key(lookup.namespace, lookup.source, lookup.package_json);
         let cache_file = self.cache_dir.join(format!("{key}.json"));
 
         let entry = CacheEntry {
             source: lookup.source.to_string(),
-            version_hash: lookup.fingerprint,
-            components: components
+            version_hash: loaded.fingerprint(),
+            components: loaded
+                .components()
                 .iter()
                 .map(|c| CachedComponent {
                     tag_name: c.tag_name.clone(),
@@ -211,64 +158,57 @@ impl DiscoveryCache {
     }
 }
 
-fn hash_contents(reader: &mut impl Read, buffer: &mut [u8; HASH_BUFFER_SIZE]) -> io::Result<u64> {
-    let mut hasher = DefaultHasher::new();
-    loop {
-        match reader.read(buffer) {
-            Ok(0) => return Ok(hasher.finish()),
-            Ok(count) => hasher.write(&buffer[..count]),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "cache_stream_tests.rs"]
-mod stream_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{prepared, ComponentFile, ComponentFileSource};
 
-    fn lookup<'a>(source: &'a str, package_json: &'a Path, fingerprint: u64) -> CacheKey<'a> {
+    fn lookup<'a>(source: &'a str, package_json: &'a Path) -> CacheKey<'a> {
         CacheKey {
             namespace: "test",
             source,
             package_json,
-            fingerprint,
         }
     }
 
-    #[test]
-    fn test_cache_round_trip() {
-        let cache = DiscoveryCache::open().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
+    fn input(root: &Path, name: &str) -> ComponentFile {
+        ComponentFile {
+            package_root: root.into(),
+            path: root.join(name),
+        }
+    }
 
-        // Create a fake package.json
-        let pkg_json = tmp.path().join("package.json");
-        fs::write(&pkg_json, r#"{"name":"test","version":"1.0.0"}"#).unwrap();
-
-        let components = vec![DiscoveredComponent {
+    fn fixture() -> Result<(tempfile::TempDir, PathBuf, Vec<ComponentFileSource>)> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("node_modules/test-pkg");
+        fs::create_dir_all(&root)?;
+        let root = root.canonicalize()?;
+        let package_json = root.join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"version":1,"webui":{"components":["./"]}}"#,
+        )?;
+        fs::write(root.join("test-comp.html"), "<div>test</div>")?;
+        let inputs = vec![ComponentFileSource {
             tag_name: "test-comp".to_string(),
-            html_content: "<div>test</div>".to_string(),
-            css_content: Some(".test { color: red; }".to_string()),
+            html: input(&root, "test-comp.html"),
+            css: None,
             is_client_owned: false,
-            source: "test-pkg".to_string(),
         }];
-        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
+        Ok((temp, package_json, inputs))
+    }
 
-        // Put
-        cache
-            .put(&lookup("test-pkg", &pkg_json, fingerprint), &components)
-            .unwrap();
-
-        // Get
-        let cached = cache
-            .get(&lookup("test-pkg", &pkg_json, fingerprint))
-            .unwrap();
-        assert!(cached.is_some());
-        let cached = cached.unwrap();
+    #[test]
+    fn test_cache_round_trip() -> Result<()> {
+        let cache = DiscoveryCache::open()?;
+        let (_temp, package_json, mut inputs) = fixture()?;
+        let root = inputs[0].html.package_root.clone();
+        fs::write(root.join("test-comp.css"), ".test { color: red; }")?;
+        inputs[0].css = Some(input(&root, "test-comp.css"));
+        let loaded = prepared::load("test-pkg", &fs::read_to_string(&package_json)?, inputs)?;
+        let key = lookup("test-pkg", &package_json);
+        cache.put(&key, &loaded)?;
+        let cached = cache.get(&key, loaded.fingerprint())?.unwrap();
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].tag_name, "test-comp");
         assert_eq!(cached[0].html_content, "<div>test</div>");
@@ -277,38 +217,21 @@ mod tests {
             cached[0].css_content.as_deref(),
             Some(".test { color: red; }")
         );
+        Ok(())
     }
 
     #[test]
-    fn test_cache_invalidation_on_content_change() {
-        let cache = DiscoveryCache::open().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-
-        let pkg_json = tmp.path().join("package.json");
-        fs::write(&pkg_json, r#"{"name":"test","version":"1.0.0"}"#).unwrap();
-
-        let components = vec![DiscoveredComponent {
-            tag_name: "test-comp".to_string(),
-            html_content: "<div>v1</div>".to_string(),
-            css_content: None,
-            is_client_owned: false,
-            source: "test-pkg".to_string(),
-        }];
-        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
-
-        cache
-            .put(&lookup("test-pkg", &pkg_json, fingerprint), &components)
-            .unwrap();
-
-        // Modify package.json
-        fs::write(&pkg_json, r#"{"name":"test","version":"2.0.0"}"#).unwrap();
-
-        // Cache should be invalidated
-        let changed_fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
-        let cached = cache
-            .get(&lookup("test-pkg", &pkg_json, changed_fingerprint))
-            .unwrap();
-        assert!(cached.is_none());
+    fn test_cache_invalidation_on_content_change() -> Result<()> {
+        let cache = DiscoveryCache::open()?;
+        let (_temp, package_json, inputs) = fixture()?;
+        let before = prepared::fingerprint(r#"{"version":1}"#, &inputs)?;
+        let after = prepared::fingerprint(r#"{"version":2}"#, &inputs)?;
+        let loaded = prepared::load("test-pkg", r#"{"version":1}"#, inputs)?;
+        let key = lookup("test-pkg", &package_json);
+        cache.put(&key, &loaded)?;
+        assert!(cache.get(&key, before)?.is_some());
+        assert!(cache.get(&key, after)?.is_none());
+        Ok(())
     }
 
     #[test]
@@ -319,10 +242,7 @@ mod tests {
         let pkg_json = tmp.path().join("package.json");
         fs::write(&pkg_json, r#"{"name":"unknown"}"#).unwrap();
 
-        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
-        let cached = cache
-            .get(&lookup("unknown-pkg", &pkg_json, fingerprint))
-            .unwrap();
+        let cached = cache.get(&lookup("unknown-pkg", &pkg_json), 0).unwrap();
         assert!(cached.is_none());
     }
 
@@ -340,55 +260,60 @@ mod tests {
         fs::write(&cache_file, "NOT VALID JSON!!!").unwrap();
 
         // Should gracefully return None, not error
-        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
-        let cached = cache
-            .get(&lookup("test-pkg", &pkg_json, fingerprint))
-            .unwrap();
+        let cached = cache.get(&lookup("test-pkg", &pkg_json), 0).unwrap();
         assert!(cached.is_none());
     }
 
     #[test]
-    fn test_cache_invalidation_tracks_plugin_files() {
-        let cache = DiscoveryCache::open().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-        let pkg_json = tmp.path().join("package.json");
-        let template = tmp.path().join("button.template.html");
-        let styles = tmp.path().join("button.styles.css");
-        fs::write(&pkg_json, r#"{"name":"test"}"#).unwrap();
-        fs::write(&template, "<button>one</button>").unwrap();
-        let components = vec![DiscoveredComponent {
-            tag_name: "test-button".to_string(),
-            html_content: "<button>one</button>".to_string(),
-            css_content: None,
-            is_client_owned: false,
-            source: "test-pkg".to_string(),
-        }];
-        let dependencies = vec![template, styles.clone()];
-        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &dependencies).unwrap();
-        cache
-            .put(&lookup("test-pkg", &pkg_json, fingerprint), &components)
-            .unwrap();
-
-        fs::write(&styles, "button { color: red; }").unwrap();
-
-        let changed_fingerprint =
-            DiscoveryCache::fingerprint(Some(&pkg_json), &dependencies).unwrap();
-        let cached = cache
-            .get(&lookup("test-pkg", &pkg_json, changed_fingerprint))
-            .unwrap();
-        assert!(cached.is_none());
+    fn test_cache_invalidation_tracks_optional_styles_and_ownership() -> Result<()> {
+        let (_temp, _package_json, mut inputs) = fixture()?;
+        let before = prepared::fingerprint("{}", &inputs)?;
+        let root = inputs[0].html.package_root.clone();
+        fs::write(root.join("test-comp.css"), "")?;
+        inputs[0].css = Some(input(&root, "test-comp.css"));
+        let styled = prepared::fingerprint("{}", &inputs)?;
+        assert_ne!(styled, before);
+        inputs[0].is_client_owned = true;
+        assert_ne!(prepared::fingerprint("{}", &inputs)?, styled);
+        Ok(())
     }
 
     #[test]
-    fn test_fingerprint_tracks_directory_probe_appearance() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let candidate = tmp.path().join("node_modules/fixture-package");
-        let dependencies = vec![candidate.clone()];
-        let missing = DiscoveryCache::fingerprint(None, &dependencies).unwrap();
+    fn test_fingerprint_tracks_prepared_inventory() -> Result<()> {
+        let (_temp, _package_json, inputs) = fixture()?;
+        assert_ne!(
+            prepared::fingerprint("{}", &[])?,
+            prepared::fingerprint("{}", &inputs)?
+        );
+        Ok(())
+    }
 
-        fs::create_dir_all(&candidate).unwrap();
-
-        let present = DiscoveryCache::fingerprint(None, &dependencies).unwrap();
-        assert_ne!(present, missing);
+    #[test]
+    fn content_aba_is_published_under_observed_bytes_not_the_lookup_fingerprint() -> Result<()> {
+        use crate::{DiscoveryPlugin, WebUIDiscoveryPlugin};
+        let (temp, package_json, inputs) = fixture()?;
+        let template = inputs[0].html.path.clone();
+        let modified = fs::metadata(&template)?.modified()?;
+        let metadata = fs::read_to_string(&package_json)?;
+        let original = prepared::fingerprint(&metadata, &inputs)?;
+        fs::write(&template, "<div>transient</div>")?;
+        let loaded = prepared::load("test-pkg", &metadata, inputs)?;
+        fs::write(&template, "<div>test</div>")?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&template)?
+            .set_modified(modified)?;
+        assert_ne!(loaded.fingerprint(), original);
+        let cache = DiscoveryCache::open()?;
+        let key = CacheKey {
+            namespace: WebUIDiscoveryPlugin.cache_namespace(),
+            source: "test-pkg",
+            package_json: &package_json,
+        };
+        cache.put(&key, &loaded)?;
+        assert!(cache.get(&key, original)?.is_none());
+        let result = crate::discover_source("test-pkg", temp.path())?;
+        assert_eq!(result.components[0].html_content, "<div>test</div>");
+        Ok(())
     }
 }

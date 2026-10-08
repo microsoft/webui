@@ -3,11 +3,12 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 use crate::npm::{validate_package_asset_path, PackageContext};
-use crate::DiscoveredComponent;
+use crate::ComponentFileSource;
 
 pub(crate) struct PackageCatalog<'a> {
     package: PackageContext<'a>,
@@ -36,7 +37,7 @@ impl<'a> PackageCatalog<'a> {
 
     pub(crate) fn has_templates(&self, include: impl Fn(&Path) -> bool) -> Result<bool> {
         for root in &self.roots {
-            if super::has_templates_matching(root, &include)
+            if super::has_templates_matching(root, &include, self.package.root)
                 .with_context(|| read_context(self.package.name, root))?
             {
                 return Ok(true);
@@ -45,30 +46,15 @@ impl<'a> PackageCatalog<'a> {
         Ok(false)
     }
 
-    pub(crate) fn cache_files(self, include: impl Fn(&Path) -> bool) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::with_capacity(self.roots.len());
-        for root in self.roots {
-            super::append_cache_files(&root, &include, Some(self.package.root), &mut files)
-                .with_context(|| read_context(self.package.name, &root))?;
-            files.push(root);
-        }
-        Ok(files)
-    }
-
-    pub(crate) fn discover(
+    pub(crate) fn prepare(
         &self,
         include: impl Fn(&Path) -> bool,
-    ) -> Result<Vec<DiscoveredComponent>> {
+    ) -> Result<Vec<ComponentFileSource>> {
         let mut components = Vec::new();
+        let boundary: Arc<Path> = self.package.root.into();
         for root in &self.roots {
-            super::append_components(
-                self.package.name,
-                root,
-                &include,
-                Some(self.package.root),
-                &mut components,
-            )
-            .with_context(|| read_context(self.package.name, root))?;
+            super::prepare_components(root, &include, &boundary, &mut components)
+                .with_context(|| read_context(self.package.name, root))?;
         }
         Ok(components)
     }
@@ -386,6 +372,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn dangling_template_links_fail_named_and_scoped_discovery() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let (root, package) = fixture("{}")?;
+        fs::create_dir(package.join("components"))?;
+        symlink("missing.html", package.join("components/broken-card.html"))?;
+        symlink("missing.html", package.join("components/index.html"))?;
+        for with_valid_component in [false, true] {
+            if with_valid_component {
+                write(&package, "components/real-card.html", "<p>Real</p>")?;
+            }
+            for plugin in PLUGINS {
+                for source in ["@fixture/catalog", "@fixture"] {
+                    let error = discover_source_with_plugin(source, root.path(), plugin)
+                        .expect_err("A qualifying template link must not disappear");
+                    assert!(
+                        format!("{error:#}").contains("broken-card.html"),
+                        "{error:#}"
+                    );
+                }
+            }
+        }
+        fs::remove_file(package.join("components/broken-card.html"))?;
+        for plugin in PLUGINS {
+            assert_eq!(tags(root.path(), plugin)?, ["real-card"]);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn declared_roots_and_catalog_assets_cannot_escape_through_symlinks() -> TestResult {
         use std::os::unix::fs::symlink;
         let (root, package) = fixture(r#"{"webui":{"components":["./catalog"]}}"#)?;
@@ -474,16 +490,16 @@ mod tests {
             assert_eq!(tags(root.path(), plugin)?, ["real-card"]);
         }
         let manifest = serde_json::json!({"webui":{"components":["./catalog"]}});
+        let canonical_package = package.canonicalize()?;
         let context = PackageContext {
             name: "@fixture/catalog",
-            root: &package,
+            root: &canonical_package,
             manifest: &manifest,
         };
         let script = package.join("catalog/real-card.js");
         symlink(root.path().join("outside/file.txt"), &script)?;
         for plugin in PLUGINS {
-            assert!(plugin.package_cache_files(context).is_err());
-            assert!(plugin.discover_package(context).is_err());
+            assert!(plugin.prepare_package(context).is_err());
             assert!(tags(root.path(), plugin).is_err());
         }
         fs::remove_file(script)?;
@@ -492,8 +508,7 @@ mod tests {
             package.join("catalog/real-card.css"),
         )?;
         for plugin in PLUGINS {
-            assert!(plugin.package_cache_files(context).is_err());
-            assert!(plugin.discover_package(context).is_err());
+            assert!(plugin.prepare_package(context).is_err());
         }
         Ok(())
     }

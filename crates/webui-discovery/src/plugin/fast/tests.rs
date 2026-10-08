@@ -116,8 +116,6 @@ fn package_relative_inferred_template_symlink_cannot_escape_package() {
     let module = ResolvedCemModule {
         root: external,
         relative_path: PathBuf::from("component.js"),
-        package_json: None,
-        resolution_dependencies: Vec::new(),
         exported_template: None,
         exported_styles: None,
         is_client_owned: false,

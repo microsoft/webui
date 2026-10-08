@@ -211,14 +211,10 @@ component validation and compilation:
 pub trait DiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str;
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>>;
-    fn package_cache_files(
+    fn prepare_package(
         &self,
         package: PackageContext<'_>,
-    ) -> Result<Vec<PathBuf>>;
-    fn discover_package(
-        &self,
-        package: PackageContext<'_>,
-    ) -> Result<Vec<DiscoveredComponent>>;
+    ) -> Result<PreparedPackage>;
 }
 ```
 
@@ -227,9 +223,16 @@ source with a custom layout. Every package plugin receives its name, canonical
 root, and parsed `package.json` through `PackageContext`; `manifest` is always
 available. Package metadata changes automatically invalidate discovery caches.
 Plugins interpret their own fields and formats, such as FAST's CEM.
-`package_cache_files` must return deterministic
-paths for every package file that can affect discovery, including optional
-files that do not yet exist; `package.json` is already included.
+Return `PreparedPackage::Files` with an ordered list of `ComponentFileSource`
+values: the tag name, selected HTML and optional CSS files, and script ownership.
+Construct each selected file with `ComponentFile::new`, supplying its canonical
+owning package root and source path. Resolve optional files and CEM naming before
+returning; the shared loader uses that fixed plan
+for both cache lookup and loading, without repeating discovery.
+
+Return `PreparedPackage::Uncached` for already computed `DiscoveredComponent`
+values whose inputs are not represented by file sources. Such results bypass
+the cache rather than claiming an input snapshot the framework cannot verify.
 
 ### ParserPlugin Trait
 

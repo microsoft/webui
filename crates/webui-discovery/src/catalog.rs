@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use walkdir::{DirEntry, WalkDir};
@@ -9,7 +10,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::npm::{
     package_asset_metadata, read_optional_file, read_required_file, validate_package_asset_path,
 };
-use crate::{has_sibling_script, DiscoveredComponent};
+use crate::{has_sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent};
 
 mod package;
 pub(crate) use package::PackageCatalog;
@@ -69,30 +70,53 @@ fn validate_catalog_link(path: &Path, root: &Path, include: &impl Fn(&Path) -> b
         return Ok(());
     }
     let template = path.with_extension("html");
-    if template_tag(&template).is_some() && include(&template) && template.is_file() {
+    if template_tag(&template).is_some()
+        && include(&template)
+        && (extension == "html" || template.is_file())
+    {
         validate_package_asset_path(root, path, "component catalog asset")?;
     }
     Ok(())
 }
 
-fn append_cache_files(
+fn prepare_components(
     root: &Path,
     include: impl Fn(&Path) -> bool,
-    package_root: Option<&Path>,
-    files: &mut Vec<PathBuf>,
+    package_root: &Arc<Path>,
+    components: &mut Vec<ComponentFileSource>,
 ) -> Result<()> {
-    for template in templates(root, include, package_root) {
+    let mut sibling = PathBuf::new();
+    for template in templates(root, include, Some(package_root)) {
         let template = template?;
-        for extension in ["css", "ts", "js"] {
-            files.push(template.with_extension(extension));
-        }
-        files.push(template);
+        sibling.clear();
+        sibling.push(&template);
+        sibling.set_extension("css");
+        let css = if package_asset_metadata(package_root, &sibling)?
+            .is_some_and(|metadata| metadata.is_file())
+        {
+            Some(ComponentFile::new(Arc::clone(package_root), &sibling)?)
+        } else {
+            None
+        };
+        let tag_name = template_tag(&template)
+            .context("Component template has no valid tag name")?
+            .to_string();
+        components.push(ComponentFileSource {
+            tag_name,
+            css,
+            is_client_owned: has_sibling_script(&mut sibling, Some(package_root))?,
+            html: ComponentFile::new(Arc::clone(package_root), &template)?,
+        });
     }
     Ok(())
 }
 
-fn has_templates_matching(root: &Path, include: impl Fn(&Path) -> bool) -> Result<bool> {
-    templates(root, include, None)
+fn has_templates_matching(
+    root: &Path,
+    include: impl Fn(&Path) -> bool,
+    package_root: &Path,
+) -> Result<bool> {
+    templates(root, include, Some(package_root))
         .next()
         .transpose()
         .map(|template| template.is_some())
@@ -111,8 +135,12 @@ fn append_components(
     package_root: Option<&Path>,
     components: &mut Vec<DiscoveredComponent>,
 ) -> Result<()> {
+    let mut sibling = PathBuf::new();
     for template in templates(root, include, package_root) {
         let template = template?;
+        sibling.clear();
+        sibling.push(&template);
+        sibling.set_extension("css");
         let tag_name = template
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -120,8 +148,8 @@ fn append_components(
         components.push(DiscoveredComponent {
             tag_name: tag_name.to_string(),
             html_content: read_required_file(&template, "component template")?,
-            css_content: read_styles(&template.with_extension("css"), package_root)?,
-            is_client_owned: has_sibling_script(&template, package_root)?,
+            css_content: read_styles(&sibling, package_root)?,
+            is_client_owned: has_sibling_script(&mut sibling, package_root)?,
             source: source.to_string(),
         });
     }
@@ -143,6 +171,7 @@ fn read_styles(path: &Path, package_root: Option<&Path>) -> Result<Option<String
 mod tests {
     use super::*;
     use crate::cache::{CacheKey, DiscoveryCache};
+    use crate::{prepared, ComponentFileSource};
     use std::fs;
 
     #[test]
@@ -158,8 +187,20 @@ mod tests {
         )?;
         let package = package.canonicalize()?;
         let package_json = package.join("package.json");
-        let mut files = Vec::new();
-        append_cache_files(&package.join("components"), |_| true, None, &mut files)?;
+        let inputs = vec![ComponentFileSource {
+            tag_name: "test-text".to_string(),
+            html: ComponentFile {
+                package_root: package.as_path().into(),
+                path: package.join("components/test-text/test-text.html"),
+            },
+            css: None,
+            is_client_owned: true,
+        }];
+        let loaded = prepared::load(
+            "fixture-catalog",
+            &fs::read_to_string(&package_json)?,
+            inputs,
+        )?;
         let cache = DiscoveryCache::open()?;
         for namespace in ["webui", "webui-v2"] {
             cache.put(
@@ -167,15 +208,8 @@ mod tests {
                     namespace,
                     source: "fixture-catalog",
                     package_json: &package_json,
-                    fingerprint: DiscoveryCache::fingerprint(Some(&package_json), &files)?,
                 },
-                &[DiscoveredComponent {
-                    tag_name: "test-text".to_string(),
-                    html_content: "<span>Static</span>".to_string(),
-                    css_content: None,
-                    is_client_owned: true,
-                    source: "fixture-catalog".to_string(),
-                }],
+                &loaded,
             )?;
         }
 

@@ -11,14 +11,14 @@ use crate::npm::{
     read_required_file, resolve_bare_module_specifier, resolve_self_module_specifier,
     validate_package_asset_path, ComponentDeclaration, PackageContext,
 };
-use crate::{has_sibling_script, DiscoveredComponent};
+use crate::{
+    has_sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent, PreparedPackage,
+};
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use walkdir::WalkDir;
-
-// Initial estimate for module, template, and style dependencies.
-const FAST_CACHE_FILES_PER_COMPONENT: usize = 16;
 
 /// Discovery for FAST generated component layouts.
 #[derive(Debug, Default, Clone, Copy)]
@@ -34,7 +34,7 @@ impl FastDiscoveryPlugin {
 
 impl DiscoveryPlugin for FastDiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str {
-        "fast-package-roots-v1"
+        "fast-prepared-v1"
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
@@ -48,93 +48,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
         PackageCatalog::new(package)?.has_templates(ordinary_html)
     }
 
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        let declarations = declarations(package)?;
-        let names: HashSet<_> = declarations
-            .iter()
-            .map(|item| item.tag_name.as_str())
-            .collect();
-        let mut files =
-            PackageCatalog::new(package)?.cache_files(|path| fallback_html(path, &names))?;
-        if package.manifest.get("customElements").is_some() {
-            files.push(crate::npm::custom_elements_manifest_path(package)?);
-        }
-        if declarations.is_empty() {
-            return Ok(files);
-        }
-        let assets = exported_assets(package, declarations.len())?;
-        let capacity = if assets.template.is_some() {
-            4
-        } else {
-            1 + declarations.len() * FAST_CACHE_FILES_PER_COMPONENT
-        };
-        files.reserve(capacity);
-        let uses_package_template = assets.template.is_some();
-        for declaration in declarations {
-            let module = resolve_declaration_module(package, &declaration, !uses_package_template)?;
-            files.extend(module.resolution_dependencies.iter().cloned());
-            if let Some(package_json) = &module.package_json {
-                files.push(package_json.clone());
-            }
-            let module_path =
-                package_path(&module.root, &module.relative_path).with_context(|| {
-                    format!(
-                        "FAST component <{}> in package '{}' has an invalid CEM module path",
-                        declaration.tag_name, package.name
-                    )
-                })?;
-            validate_module_asset(&module, &module_path, "FAST component module")?;
-            files.push(module_path);
-            if uses_package_template {
-                continue;
-            }
-            let chosen_styles = assets.styles.as_ref().or(module.exported_styles.as_ref());
-            if let Some(template) = &module.exported_template {
-                if let Some(styles) = chosen_styles {
-                    files.push(styles.clone());
-                } else {
-                    for styles in fast_style_candidates(template) {
-                        validate_module_asset(&module, &styles, "FAST component styles")?;
-                        files.push(styles);
-                    }
-                }
-                files.push(template.clone());
-                continue;
-            }
-            let declaration_name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
-            for candidate in
-                fast_template_candidates(&module.root, &module.relative_path, declaration_name)
-            {
-                validate_module_asset(&module, &candidate, "FAST component template")?;
-                files.push(candidate.clone());
-                if chosen_styles.is_none() {
-                    for styles in fast_style_candidates(&candidate) {
-                        validate_module_asset(&module, &styles, "FAST component styles")?;
-                        files.push(styles);
-                    }
-                }
-            }
-            if assets.styles.is_none() {
-                files.extend(module.exported_styles);
-            }
-        }
-        if let Some(template) = assets.template {
-            if let Some(styles) = assets.styles {
-                files.push(styles);
-            } else {
-                for styles in fast_style_candidates(&template) {
-                    validate_package_asset_path(package.root, &styles, "FAST component styles")?;
-                    files.push(styles);
-                }
-            }
-            files.push(template);
-        } else {
-            files.extend(assets.styles);
-        }
-        Ok(files)
-    }
-
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
+    fn prepare_package(&self, package: PackageContext<'_>) -> Result<PreparedPackage> {
         let declarations = declarations(package)?;
         let catalog = PackageCatalog::new(package)?;
         let mut components = {
@@ -142,7 +56,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                 .iter()
                 .map(|item| item.tag_name.as_str())
                 .collect();
-            catalog.discover(|path| fallback_html(path, &names))?
+            catalog.prepare(|path| fallback_html(path, &names))?
         };
         if declarations.is_empty() {
             if components.is_empty() && !catalog.is_disabled() {
@@ -153,16 +67,20 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                     package.name
                 );
             }
-            return Ok(components);
+            return Ok(PreparedPackage::Files(components));
         }
 
         let assets = exported_assets(package, declarations.len())?;
         components.reserve(declarations.len());
         let source_is_client_owned = package_has_authored_script(package.manifest);
+        let package_root: Arc<Path> = package.root.into();
         let mut seen_templates = HashSet::with_capacity(declarations.len());
         for declaration in declarations {
             let uses_package_template = assets.template.is_some();
             let module = resolve_declaration_module(package, &declaration, !uses_package_template)?;
+            let module_path = package_path(&module.root, &module.relative_path)
+                .context("FAST component has an invalid CEM module path")?;
+            validate_module_asset(&module, &module_path, "FAST component module")?;
             let template_path = if let Some(path) = &assets.template {
                 path.clone()
             } else {
@@ -174,41 +92,32 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                     template_path.display()
                 );
             }
-            let html_content = read_required_file(&template_path, "FAST component template")?;
+            let module_root: Arc<Path> = module.root.as_path().into();
+            let template_root = if uses_package_template {
+                &package_root
+            } else {
+                &module_root
+            };
             let module_styles = if uses_package_template {
                 None
             } else {
                 module.exported_styles.as_ref()
             };
-            let css_content = match (&assets.styles, module_styles) {
-                (Some(path), _) | (None, Some(path)) => {
-                    Some(read_required_file(path, "FAST component styles")?)
-                }
-                (None, None) => {
-                    let styles = resolve_fast_styles(&template_path);
-                    if let Some(path) = &styles {
-                        if uses_package_template {
-                            validate_package_asset_path(
-                                package.root,
-                                path,
-                                "FAST component styles",
-                            )?;
-                        } else {
-                            validate_module_asset(&module, path, "FAST component styles")?;
-                        }
-                    }
-                    read_optional_file(styles.as_deref(), "FAST component styles")?
-                }
+            let css = match (&assets.styles, module_styles) {
+                (Some(path), _) => Some(ComponentFile::new(Arc::clone(&package_root), path)?),
+                (None, Some(path)) => Some(ComponentFile::new(Arc::clone(&module_root), path)?),
+                (None, None) => resolve_package_styles(template_root, &template_path)?
+                    .map(|path| ComponentFile::new(Arc::clone(template_root), &path))
+                    .transpose()?,
             };
-            components.push(DiscoveredComponent {
+            components.push(ComponentFileSource {
                 tag_name: declaration.tag_name,
-                html_content,
-                css_content,
+                html: ComponentFile::new(Arc::clone(template_root), &template_path)?,
+                css,
                 is_client_owned: source_is_client_owned || module.is_client_owned,
-                source: package.name.to_string(),
             });
         }
-        Ok(components)
+        Ok(PreparedPackage::Files(components))
     }
 }
 
@@ -295,8 +204,6 @@ fn validate_module_asset(module: &ResolvedCemModule, path: &Path, kind: &str) ->
 struct ResolvedCemModule {
     root: PathBuf,
     relative_path: PathBuf,
-    package_json: Option<PathBuf>,
-    resolution_dependencies: Vec<PathBuf>,
     exported_template: Option<PathBuf>,
     exported_styles: Option<PathBuf>,
     is_client_owned: bool,
@@ -339,8 +246,6 @@ fn resolve_declaration_module_inner(
         return Ok(ResolvedCemModule {
             root: package.root.to_path_buf(),
             relative_path: relative_path.to_path_buf(),
-            package_json: None,
-            resolution_dependencies: Vec::new(),
             exported_template: None,
             exported_styles: None,
             is_client_owned: false,
@@ -359,8 +264,6 @@ fn resolve_declaration_module_inner(
                     specifier,
                     manifest,
                 )?,
-                package_json: None,
-                resolution_dependencies: Vec::new(),
                 exported_template: None,
                 exported_styles: None,
                 is_client_owned: false,
@@ -379,11 +282,6 @@ fn resolve_declaration_module_inner(
                 package.name
             )
         })?;
-        let mut resolution_dependencies = resolved.resolution_dependencies;
-        if !specifier.starts_with('@') {
-            resolution_dependencies.extend(local_module);
-            resolution_dependencies.extend(local_candidates);
-        }
         let exported_template = if resolve_assets {
             package_export_path_from_metadata(
                 &resolved.name,
@@ -420,8 +318,6 @@ fn resolve_declaration_module_inner(
         return Ok(ResolvedCemModule {
             root: resolved.root,
             relative_path: resolved.relative_path,
-            package_json: Some(resolved.package_json),
-            resolution_dependencies,
             exported_template,
             exported_styles,
             is_client_owned,
@@ -430,8 +326,6 @@ fn resolve_declaration_module_inner(
     Ok(ResolvedCemModule {
         root: package.root.to_path_buf(),
         relative_path: relative_path.to_path_buf(),
-        package_json: None,
-        resolution_dependencies: Vec::new(),
         exported_template: None,
         exported_styles: None,
         is_client_owned: false,
@@ -461,6 +355,7 @@ fn discover_local_templates(
 ) -> Result<Vec<DiscoveredComponent>> {
     let source = root.display().to_string();
     let mut components = Vec::new();
+    let mut sibling = PathBuf::new();
     for entry in WalkDir::new(root).sort_by_file_name() {
         let entry = entry.with_context(|| format!("Failed to scan {}", root.display()))?;
         let path = entry.path();
@@ -475,13 +370,15 @@ fn discover_local_templates(
             continue;
         };
         let html_content = read_required_file(path, "component template")?;
+        sibling.clear();
+        sibling.push(path);
         let css_content =
             read_optional_file(resolve_local_styles(path).as_deref(), "component styles")?;
         components.push(DiscoveredComponent {
             tag_name: tag_name.to_string(),
             html_content,
             css_content,
-            is_client_owned: has_sibling_script(path, None)?,
+            is_client_owned: has_sibling_script(&mut sibling, None)?,
             source: source.clone(),
         });
     }
@@ -510,6 +407,16 @@ fn resolve_fast_styles(template_path: &Path) -> Option<PathBuf> {
     fast_style_candidates(template_path)
         .into_iter()
         .find(|candidate| candidate.is_file())
+}
+
+fn resolve_package_styles(root: &Path, template: &Path) -> Result<Option<PathBuf>> {
+    for path in fast_style_candidates(template) {
+        validate_package_asset_path(root, &path, "FAST component styles")?;
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 fn fast_style_candidates(template_path: &Path) -> Vec<PathBuf> {
@@ -614,6 +521,7 @@ fn resolve_fast_template(
     declaration_name: &str,
 ) -> Result<PathBuf> {
     for candidate in fast_template_candidates(root, module_path, declaration_name) {
+        validate_package_asset_path(root, &candidate, "FAST component template")?;
         if candidate.is_file() {
             return Ok(candidate);
         }

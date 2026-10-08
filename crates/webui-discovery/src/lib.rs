@@ -14,12 +14,14 @@ mod cache;
 mod catalog;
 mod npm;
 mod plugin;
+mod prepared;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 pub use npm::PackageContext;
 pub use plugin::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
+pub use prepared::{ComponentFile, ComponentFileSource, PreparedPackage};
 
 /// A component discovered from an external source, ready for registration.
 #[derive(Debug, Clone)]
@@ -133,12 +135,14 @@ pub fn discover_source_with_plugin(
 /// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
 /// errors into `false`, which could silently classify an inaccessible authored
 /// component as scriptless and bypass projection-manifest coverage.
-pub(crate) fn has_sibling_script(html_path: &Path, package_root: Option<&Path>) -> Result<bool> {
-    let mut candidate = html_path.to_path_buf();
+pub(crate) fn has_sibling_script(
+    candidate: &mut PathBuf,
+    package_root: Option<&Path>,
+) -> Result<bool> {
     for ext in ["ts", "js"] {
         candidate.set_extension(ext);
         let exists = if let Some(root) = package_root {
-            npm::package_asset_metadata(root, &candidate)?.is_some()
+            npm::package_asset_metadata(root, candidate)?.is_some()
         } else {
             candidate.try_exists().with_context(|| {
                 format!(

@@ -5,9 +5,9 @@
 
 use crate::catalog::PackageCatalog;
 use crate::npm::PackageContext;
-use crate::DiscoveredComponent;
+use crate::{DiscoveredComponent, PreparedPackage};
 use anyhow::{bail, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod fast;
 pub use fast::FastDiscoveryPlugin;
@@ -41,24 +41,17 @@ pub trait DiscoveryPlugin {
         Ok(true)
     }
 
-    /// Return every package file whose contents or existence affects discovery.
+    /// Resolve a package's component inventory and source choices once.
     ///
-    /// Paths must be deterministic. Missing optional candidates should still be
-    /// included so creating one invalidates a prior cache entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when package metadata needed to identify dependencies
-    /// is invalid.
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>>;
-
-    /// Discover components in a validated npm package.
+    /// File-backed plans are loaded by the shared cache layer without repeating
+    /// discovery. Return [`PreparedPackage::Uncached`] for computed components
+    /// whose input observations are not represented by a file-backed plan.
     ///
     /// # Errors
     ///
     /// Returns an error when required package metadata or component sources are
     /// missing or invalid.
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>>;
+    fn prepare_package(&self, package: PackageContext<'_>) -> Result<PreparedPackage>;
 }
 
 /// Default discovery using component filenames and matching sibling files.
@@ -75,7 +68,7 @@ impl WebUIDiscoveryPlugin {
 
 impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str {
-        "webui-package-roots-v1"
+        "webui-prepared-v1"
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
@@ -86,13 +79,9 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
         PackageCatalog::new(package)?.has_templates(|_| true)
     }
 
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        PackageCatalog::new(package)?.cache_files(|_| true)
-    }
-
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
+    fn prepare_package(&self, package: PackageContext<'_>) -> Result<PreparedPackage> {
         let catalog = PackageCatalog::new(package)?;
-        let components = catalog.discover(|_| true)?;
+        let components = catalog.prepare(|_| true)?;
         if components.is_empty() && !catalog.is_disabled() {
             bail!(
                 "No component templates in {}. Add <component-name>.html files under \
@@ -101,6 +90,6 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
                 package.root.display()
             );
         }
-        Ok(components)
+        Ok(PreparedPackage::Files(components))
     }
 }
