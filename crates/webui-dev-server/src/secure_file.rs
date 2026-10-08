@@ -210,11 +210,13 @@ impl SecureRoot {
         response_path: PathBuf,
         detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
-        let file = open_node(&response_path)?;
-        let metadata = file.metadata()?;
-        if detect_directory && metadata.is_dir() {
+        let metadata = windows_node_metadata(&response_path)?;
+        // A directory result only selects a redirect; every served byte still
+        // comes from an opened handle validated below.
+        if detect_directory && metadata.is_plain_directory() {
             return Ok(OpenedNode::Directory);
         }
+        let file = open_node(&response_path)?;
         let opened_path = final_path(&file)?;
         if !opened_path.starts_with(&self.final_path) {
             return Err(Error::new(
@@ -222,7 +224,15 @@ impl SecureRoot {
                 "opened file escapes the serving root",
             ));
         }
-        opened_file_with_metadata(response_path, file, metadata)
+        if metadata.is_plain_file() {
+            return Ok(OpenedNode::File {
+                path: response_path,
+                file,
+                length: metadata.length,
+            });
+        }
+        let opened_metadata = file.metadata()?;
+        opened_file_with_metadata(response_path, file, opened_metadata)
     }
 
     #[cfg(unix)]
@@ -253,7 +263,6 @@ impl SecureRoot {
 
 #[cfg(windows)]
 fn open_node(path: &Path) -> std::io::Result<File> {
-    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
 
     use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
@@ -262,14 +271,7 @@ fn open_node(path: &Path) -> std::io::Result<File> {
         FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
-    let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
-    if encoded.contains(&0) {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            "path contains an embedded NUL",
-        ));
-    }
-    encoded.push(0);
+    let encoded = encode_windows_path(path)?;
     // SAFETY: `encoded` is NUL-terminated and remains live for the call.
     // A successful handle is transferred immediately into the returned file.
     let handle = unsafe {
@@ -288,6 +290,77 @@ fn open_node(path: &Path) -> std::io::Result<File> {
     }
     // SAFETY: `CreateFileW` returned an owned, valid handle.
     Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+fn encode_windows_path(path: &Path) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if encoded.contains(&0) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "path contains an embedded NUL",
+        ));
+    }
+    encoded.push(0);
+    Ok(encoded)
+}
+
+#[cfg(windows)]
+fn windows_node_metadata(path: &Path) -> std::io::Result<WindowsNodeMetadata> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA,
+    };
+
+    let encoded = encode_windows_path(path)?;
+    let mut metadata = std::mem::MaybeUninit::<WIN32_FILE_ATTRIBUTE_DATA>::uninit();
+    // SAFETY: `encoded` is NUL-terminated and `metadata` provides enough
+    // writable storage for the requested standard attribute data.
+    if unsafe {
+        GetFileAttributesExW(
+            encoded.as_ptr(),
+            GetFileExInfoStandard,
+            metadata.as_mut_ptr().cast(),
+        )
+    } == 0
+    {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: successful `GetFileAttributesExW` initialized the value.
+    let metadata = unsafe { metadata.assume_init() };
+    Ok(WindowsNodeMetadata {
+        attributes: metadata.dwFileAttributes,
+        length: (u64::from(metadata.nFileSizeHigh) << 32) | u64::from(metadata.nFileSizeLow),
+    })
+}
+
+#[cfg(windows)]
+struct WindowsNodeMetadata {
+    attributes: u32,
+    length: u64,
+}
+
+#[cfg(windows)]
+impl WindowsNodeMetadata {
+    fn is_plain_directory(&self) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+
+        self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+            && self.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    }
+
+    fn is_plain_file(&self) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+
+        self.attributes
+            & (FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            == 0
+    }
 }
 
 #[cfg(windows)]
@@ -330,6 +403,7 @@ fn final_path(file: &File) -> std::io::Result<PathBuf> {
     }
 }
 
+#[cfg(not(windows))]
 fn opened_file(path: PathBuf, file: File) -> std::io::Result<OpenedNode> {
     let metadata = file.metadata()?;
     opened_file_with_metadata(path, file, metadata)
