@@ -41,9 +41,7 @@ impl LoadedStates {
     }
 }
 
-/// Top-level state keys reserved by the docs renderer. Global and custom-page
-/// state objects whose top-level fields are flattened onto the page state must
-/// not shadow these names so the canonical docs state always wins.
+// Flattened user state must not shadow the canonical docs state.
 const RESERVED_STATE_KEYS: &[&str] = &[
     "site",
     "navigation",
@@ -60,6 +58,60 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "label",
     "icon",
 ];
+
+pub(crate) fn parse_markdown_state(value: &serde_yaml::Value) -> Result<Value> {
+    let mapping = value.as_mapping().ok_or_else(|| {
+        markdown_state_error("state must be an object, not a scalar, array, or null")
+    })?;
+    for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
+        if RESERVED_STATE_KEYS.contains(&key) {
+            return Err(markdown_state_error(&format!(
+                "top-level key '{key}' is reserved by Press; move it under an application-specific key"
+            )));
+        }
+    }
+
+    // Validate before serialization: JSON otherwise coerces numeric keys and
+    // non-finite numbers, and YAML tags carry semantics JSON cannot preserve.
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_yaml::Value::Mapping(map) => {
+                for (key, value) in map {
+                    if !matches!(key, serde_yaml::Value::String(_)) {
+                        return Err(markdown_state_error(
+                            "all state object keys must be strings; quote numeric or boolean keys",
+                        ));
+                    }
+                    pending.push(value);
+                }
+            }
+            serde_yaml::Value::Sequence(items) => pending.extend(items),
+            serde_yaml::Value::Number(number) => {
+                if number.as_f64().is_some_and(|value| !value.is_finite()) {
+                    return Err(markdown_state_error(
+                        "state numbers must be finite; replace .nan and .inf with JSON-compatible values",
+                    ));
+                }
+            }
+            serde_yaml::Value::Tagged(_) => {
+                return Err(markdown_state_error(
+                    "custom YAML tags are not supported in state; use plain JSON-compatible values",
+                ));
+            }
+            _ => {}
+        }
+    }
+    serde_json::to_value(value).map_err(|error| markdown_state_error(&error.to_string()))
+}
+
+#[cold]
+#[inline(never)]
+fn markdown_state_error(reason: &str) -> Error {
+    Error::Markdown(format!(
+        "Invalid frontmatter state: {reason}.\nhelp: Set state to a JSON-compatible object, for example state: {{ example: {{ count: 2 }} }}, or omit it."
+    ))
+}
 
 pub(crate) struct StateLoader {
     cache: HashMap<PathBuf, Value>,
@@ -179,18 +231,15 @@ pub(crate) fn load_render_states(config: &DocsConfig, config_dir: &Path) -> Resu
     })
 }
 
-/// Merge docs state with global state first and custom-page state second.
-///
-/// Global state fills missing non-reserved top-level keys. Custom-page state is
-/// applied afterward and may replace global keys, but reserved docs keys are
-/// never replaced.
+// Global state fills missing non-reserved keys. Markdown or custom-page state
+// replaces global keys shallowly, but never replaces canonical docs keys.
 pub(crate) fn merge_page_state(
     mut state: Value,
     global: Option<&Value>,
-    custom_page: Option<&Value>,
+    local: Option<&Value>,
 ) -> Value {
     merge_top_level_state(&mut state, global, false);
-    merge_top_level_state(&mut state, custom_page, true);
+    merge_top_level_state(&mut state, local, true);
     state
 }
 

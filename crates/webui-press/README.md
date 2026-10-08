@@ -207,6 +207,40 @@ layout: doc
 | `title`       | string | First H1, falls back to sidebar text, then site name |
 | `description` | string | Falls back to `site.description`                     |
 | `layout`      | string | `doc` (see below)                                    |
+| `state`       | object | No local overrides; inherits shared config state    |
+
+Put page-specific initial state directly in frontmatter:
+
+```markdown
+---
+title: Button examples
+state:
+  example:
+    label: Save
+    count: 2
+---
+
+<example-preview :example="{{example}}"></example-preview>
+```
+
+The receiving component declares `@observable example` and uses its nested
+fields in its own template. For initial hydration, keep Markdown
+complex-property bindings aligned with the top-level state key and receiving
+observable; entry-level nested-to-renamed-observable mappings are not supported.
+
+`state` must be a JSON-compatible object with string keys and finite numbers.
+Nested arrays, objects, strings, booleans, and null values are supported.
+Omit `state` or use `{}` for no overrides. Top-level null/scalar/array state,
+custom YAML tags, non-string object keys, non-finite numbers, and reserved top-level
+Press keys fail with a filename and actionable help.
+
+Local keys shallowly replace global config `state`/`stateFile` keys only on
+that Markdown page; nested objects are replaced, not deep-merged. The merged
+state feeds SSR and hydration in both display modes. Markdown frontmatter has
+no `stateFile` support and does not populate `pageData`. `customPages` still
+replaces Markdown entirely, including its frontmatter.
+See the [Markdown-local state reference](https://microsoft.github.io/webui/guide/webui-press#markdown-local-state)
+for the complete reserved-key list and syntax.
 
 ### Layouts
 
@@ -363,13 +397,15 @@ components and Markdown-authored custom elements can bind to it directly:
 Shared state cannot override reserved docs keys such as `site`, `navigation`,
 `sidebar`, `page`, `hero`, `footer`, `prev`, `next`, `pageData`,
 `regions`, `headTags`, `tokens`, `label`, or `icon`. Global state is applied
-first. Custom page state is applied afterward for that page, so non-reserved
-custom page keys can override global keys.
+first. Markdown-local state or custom-page state is applied afterward for that
+page, so non-reserved local keys can override global keys. Markdown-local state
+rejects reserved top-level keys instead of silently skipping them.
 
 The merged render state is embedded into each generated page's `#webui-data`
 hydration block. Do not put secrets in `state` or `stateFile`, and keep shared
 state small. Large global JSON files are duplicated into every output page; use
-custom page state or static JSON assets for large page-specific datasets.
+Markdown-local state, custom-page state, or static JSON assets for large
+page-specific datasets.
 
 ### Compile-time named regions
 

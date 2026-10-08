@@ -71,6 +71,61 @@ template exports, and CEM names do not determine native component names. Use
 package module exports for browser registrations. See
 [External components](/guide/concepts/components#external-component-sources).
 
+## Markdown-local state
+
+Put initial example data in the Markdown file that uses it, rather than in
+the site's global config:
+
+```markdown
+---
+title: Button examples
+state:
+  example:
+    label: Save
+    count: 2
+    disabled: false
+    items: [one, two]
+---
+
+# Button examples
+
+<example-preview :example="{{example}}"></example-preview>
+```
+
+For this interactive example, the receiving component declares
+`@observable example` and uses `example.label`, `example.count`, and
+`example.disabled` inside its own template. Keep Markdown complex-property
+bindings aligned with their top-level state key and receiving observable.
+Mapping a nested value to a differently named observable at the Markdown entry
+level does not currently preserve that value during initial hydration.
+
+`state` must be an inline JSON-compatible object. Nested objects, arrays,
+strings, finite numbers, booleans, and `null` values are supported. Object
+keys must be strings; quote numeric or boolean keys. Omit `state` or use `{}`
+when no page-local data is needed. A top-level `null`, scalar, array, custom YAML tag,
+non-finite number, or malformed YAML fails the build with the Markdown filename
+and a corrective hint. Markdown frontmatter does not support `stateFile`.
+
+Global config `state` or `stateFile` supplies shared defaults. Markdown state
+then **shallowly replaces matching top-level keys** for that page only. In the
+example above, local `example` replaces the entire global `example` object;
+its nested fields are not deep-merged. Other global keys remain available,
+and local data never flows into other Markdown pages or the generated 404.
+
+Press owns these top-level keys: `site`, `navigation`, `sidebar`, `page`,
+`hero`, `footer`, `prev`, `next`, `pageData`, `regions`, `headTags`, `tokens`,
+`label`, and `icon`. Using any of them directly under Markdown `state` fails
+the build. Put application fields beneath your own key, such as
+`example.label`. Global and custom-page state retain their existing behavior:
+reserved keys cannot replace canonical Press values.
+
+The merged page state drives both initial SSR and the projected hydration
+payload in `--show=all` and `--show=content`, including live rebuilds.
+Treat all render state as browser-visible; never put secrets in it.
+`customPages` still replaces Markdown at its URL entirely, so that Markdown's
+frontmatter is not read. Custom-page state keeps its existing top-level merge
+and `pageData` access; Markdown state does not populate `pageData`.
+
 ## Named regions
 
 WebUI Press templates expose compile-time named regions that a site can keep,
