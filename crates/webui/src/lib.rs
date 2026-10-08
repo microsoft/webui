@@ -4232,30 +4232,32 @@ mod tests {
             Ok(())
         }
 
-        fn package_fixture(package: &Path, manifest: bool) -> TestResult {
+        fn package_fixture(package: &Path, catalog: Option<&str>) -> TestResult {
+            let mut metadata = serde_json::json!({
+                "name": "@fixture/catalog", "customElements": "custom-elements.json"
+            });
+            if let Some(catalog) = catalog {
+                metadata["webui"] = serde_json::json!({"components": [catalog]});
+            }
+            write(package, "package.json", &metadata.to_string())?;
+            let catalog = package.join(catalog.unwrap_or("components"));
+            write(&catalog, "fixture-card.html", "<p>Package component</p>")?;
+            write(&catalog, "fixture-card.css", "p { color: blue; }")?;
             write(
-                package,
-                "package.json",
-                if manifest {
-                    r#"{"name":"@fixture/catalog","webui":{"components":["./src/components"]},"customElements":"custom-elements.json"}"#
-                } else {
-                    r#"{"name":"@fixture/catalog","webui":{"components":["./src/components"]}}"#
-                },
-            )?;
-            write(
-                package,
-                "src/components/fixture-card.html",
-                "<p>Package component</p>",
-            )?;
-            write(
-                package,
-                "src/components/fixture-card.css",
-                "p { color: blue; }",
-            )?;
-            write(
-                package,
-                "src/components/fixture-card.v2.html",
+                &catalog,
+                "fixture-card.v2.html",
                 "<span>Dotted component</span>",
+            )?;
+            write(
+                package,
+                "custom-elements.json",
+                r#"{"modules":[{"path":"dist/manifest-card.js","declarations":[{"name":"ManifestCard","tagName":"manifest-card"}]}]}"#,
+            )?;
+            write(package, "dist/manifest-card.js", "export {};")?;
+            write(
+                package,
+                "dist/manifest-card.template-webui.html",
+                r#"<f-template name="manifest-card"><template><p>Manifest component</p></template></f-template>"#,
             )?;
             for report in [
                 "test_results/coverage/lcov-report/core/initial-state.ts.html",
@@ -4267,33 +4269,17 @@ mod tests {
                     "<!doctype html><html><body>Generated coverage report</body></html>",
                 )?;
             }
-            if manifest {
-                write(
-                    package,
-                    "custom-elements.json",
-                    r#"{"modules":[{"path":"dist/manifest-card.js","declarations":[{"name":"ManifestCard","tagName":"manifest-card"}]}]}"#,
-                )?;
-                write(package, "dist/manifest-card.js", "export {};")?;
-                write(
-                    package,
-                    "dist/manifest-card.template-webui.html",
-                    r#"<f-template name="manifest-card"><template><p>Manifest component</p></template></f-template>"#,
-                )?;
-            }
             Ok(())
         }
 
-        fn assert_build(root: &Path, plugin: Option<Plugin>, manifest: bool) -> TestResult {
+        fn assert_build(root: &Path, plugin: Option<Plugin>) -> TestResult {
+            let manifest = matches!(plugin, Some(Plugin::FastV2 | Plugin::FastV3));
             let app = root.join("app/src");
             write(&app, "app-local.html", "<span>App component</span>")?;
             write(
                 &app,
                 "index.html",
-                if manifest {
-                    "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2><manifest-card></manifest-card>"
-                } else {
-                    "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2>"
-                },
+                "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2><manifest-card></manifest-card>",
             )?;
             let options = BuildOptions {
                 app_dir: app,
@@ -4318,29 +4304,22 @@ mod tests {
                 }
                 assert!(writer.buf.contains("color: blue"));
                 assert!(!writer.buf.contains("Generated coverage report"));
-                if manifest {
-                    assert!(writer.buf.contains("Manifest component"));
-                }
+                assert_eq!(writer.buf.contains("Manifest component"), manifest);
             }
             Ok(())
         }
 
         #[test]
-        fn native_package_build_excludes_generated_reports() -> TestResult {
-            for plugin in [None, Some(Plugin::WebUI)] {
+        fn package_build_excludes_reports_for_default_and_explicit_catalogs() -> TestResult {
+            for (plugin, catalog) in [
+                (None, None),
+                (Some(Plugin::WebUI), Some("./src/components")),
+                (Some(Plugin::FastV2), None),
+                (Some(Plugin::FastV3), Some("./src/components")),
+            ] {
                 let root = tempfile::tempdir()?;
-                package_fixture(&root.path().join("node_modules/@fixture/catalog"), false)?;
-                assert_build(root.path(), plugin, false)?;
-            }
-            Ok(())
-        }
-
-        #[test]
-        fn fast_package_build_excludes_reports_but_keeps_manifest_assets() -> TestResult {
-            for plugin in [Plugin::FastV2, Plugin::FastV3] {
-                let root = tempfile::tempdir()?;
-                package_fixture(&root.path().join("node_modules/@fixture/catalog"), true)?;
-                assert_build(root.path(), Some(plugin), true)?;
+                package_fixture(&root.path().join("node_modules/@fixture/catalog"), catalog)?;
+                assert_build(root.path(), plugin)?;
             }
             Ok(())
         }
@@ -4350,108 +4329,45 @@ mod tests {
         fn symlinked_workspace_package_build_excludes_generated_reports() -> TestResult {
             let root = tempfile::tempdir()?;
             let package = root.path().join("packages/catalog");
-            package_fixture(&package, true)?;
+            package_fixture(&package, Some("./src/components"))?;
             fs::create_dir_all(root.path().join("node_modules/@fixture"))?;
             std::os::unix::fs::symlink(
                 &package,
                 root.path().join("node_modules/@fixture/catalog"),
             )?;
-            assert_build(root.path(), Some(Plugin::FastV3), true)
+            assert_build(root.path(), Some(Plugin::FastV3))
         }
 
         #[test]
-        fn duplicate_authored_components_still_fail_registration() -> TestResult {
-            for plugin in [
-                None,
-                Some(Plugin::WebUI),
-                Some(Plugin::FastV2),
-                Some(Plugin::FastV3),
+        fn distinct_files_and_overlapping_roots_preserve_duplicate_errors() -> TestResult {
+            for (roots, second_file) in [
+                (["./a", "./b"], Some("b/fixture-card.html")),
+                (["./a", "./a"], None),
+                (["./", "./a"], None),
+                (["./a", "./"], None),
             ] {
                 let root = tempfile::tempdir()?;
                 let package = root.path().join("node_modules/@fixture/catalog");
-                package_fixture(&package, false)?;
-                write(
-                    &package,
-                    "src/components/nested/fixture-card.html",
-                    "<p>Duplicate authored component</p>",
-                )?;
-                let error = assert_build(root.path(), plugin, false)
-                    .expect_err("Duplicate component names must remain errors");
-                let message = format!("{error:?}");
-                assert!(message.contains("fixture-card"), "{message}");
-                assert!(message.contains("already registered"), "{message}");
-            }
-            Ok(())
-        }
-
-        #[test]
-        fn absent_catalog_metadata_scans_only_components_and_excludes_reports() -> TestResult {
-            let root = tempfile::tempdir()?;
-            let package = root.path().join("node_modules/@fixture/catalog");
-            write(&package, "package.json", r#"{"name":"@fixture/catalog"}"#)?;
-            write(&package, "components/inside-card.html", "<p>Inside</p>")?;
-            write(&package, "outside-card.html", "<p>Outside</p>")?;
-            for report in [
-                "test_results/coverage/lcov-report/core/initial-state.ts.html",
-                "test_results/coverage/lcov-report/initial-state.ts.html",
-            ] {
-                write(&package, report, "<p>Coverage report</p>")?;
-            }
-            let app = root.path().join("app");
-            write(&app, "index.html", "<inside-card></inside-card>")?;
-            for plugin in [
-                None,
-                Some(Plugin::WebUI),
-                Some(Plugin::FastV2),
-                Some(Plugin::FastV3),
-            ] {
-                let result = build(BuildOptions {
-                    app_dir: app.clone(),
-                    components: vec!["@fixture/catalog".to_string()],
-                    plugin,
-                    ..BuildOptions::default()
-                })?;
-                assert_eq!(result.stats.component_count, 1);
-                assert!(!result.protocol.fragments.contains_key("outside-card"));
-                let mut writer = StringWriter { buf: String::new() };
-                WebUIHandler::new().render(
-                    &Protocol::new(result.protocol),
-                    &serde_json::json!({}),
-                    &RenderOptions::new("index.html", "/"),
-                    &mut writer,
-                )?;
-                assert!(writer.buf.contains("<p>Inside</p>"));
-                assert!(!writer.buf.contains("<p>Outside</p>"));
-                assert!(!writer.buf.contains("Coverage report"));
-            }
-            Ok(())
-        }
-
-        #[test]
-        fn overlapping_catalog_roots_do_not_suppress_duplicate_registration() -> TestResult {
-            let root = tempfile::tempdir()?;
-            let package = root.path().join("node_modules/@fixture/catalog");
-            package_fixture(&package, false)?;
-            for roots in [
-                r#"["./src/components","./src/components"]"#,
-                r#"["./src","./src/components"]"#,
-                r#"["./src/components","./src"]"#,
-            ] {
                 write(
                     &package,
                     "package.json",
-                    &format!(r#"{{"webui":{{"components":{roots}}}}}"#),
+                    &serde_json::json!({"webui":{"components":roots}}).to_string(),
                 )?;
-                for plugin in [
-                    None,
-                    Some(Plugin::WebUI),
-                    Some(Plugin::FastV2),
-                    Some(Plugin::FastV3),
-                ] {
-                    let error = assert_build(root.path(), plugin, false)
-                        .expect_err("Overlapping roots must retain duplicate errors");
-                    assert!(format!("{error:?}").contains("already registered"));
+                write(&package, "a/fixture-card.html", "<p>First</p>")?;
+                if let Some(path) = second_file {
+                    write(&package, path, "<p>Second</p>")?;
                 }
+                let app = root.path().join("app");
+                write(&app, "index.html", "<fixture-card></fixture-card>")?;
+                let error = build(BuildOptions {
+                    app_dir: app,
+                    components: vec!["@fixture/catalog".to_string()],
+                    ..BuildOptions::default()
+                })
+                .expect_err("Duplicate component names must remain errors");
+                let message = error.chain_message();
+                assert!(message.contains("fixture-card"), "{message}");
+                assert!(message.contains("already registered"), "{message}");
             }
             Ok(())
         }

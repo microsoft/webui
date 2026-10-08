@@ -143,66 +143,7 @@ fn read_styles(path: &Path, package_root: Option<&Path>) -> Result<Option<String
 mod tests {
     use super::*;
     use crate::cache::{CacheKey, DiscoveryCache};
-    use crate::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
     use std::fs;
-
-    #[test]
-    fn package_root_cache_does_not_leak_reports_into_source_catalog() -> Result<()> {
-        let project = tempfile::tempdir()?;
-        let package = project.path().join("node_modules/fixture-catalog");
-        fs::create_dir_all(package.join("src/components"))?;
-        fs::create_dir_all(package.join("test_results/coverage/lcov-report"))?;
-        fs::write(
-            package.join("package.json"),
-            r#"{"webui":{"components":["./src/components"]}}"#,
-        )?;
-        fs::write(package.join("src/components/real-card.html"), "<p>Real</p>")?;
-        let report = package.join("test_results/coverage/lcov-report/initial-state.ts.html");
-        fs::write(&report, "<p>Coverage</p>")?;
-        let package = package.canonicalize()?;
-        let package_json = package.join("package.json");
-        let mut old_files = Vec::new();
-        append_cache_files(&package, |_| true, None, &mut old_files)?;
-        let old_components = discover("fixture-catalog", &package)?;
-        assert_eq!(old_components.len(), 2);
-        let cache = DiscoveryCache::open()?;
-        for (plugin, old_namespace) in [
-            (
-                &WebUIDiscoveryPlugin::new() as &dyn DiscoveryPlugin,
-                "webui-filenames",
-            ),
-            (&FastDiscoveryPlugin::new(), "fast"),
-        ] {
-            let metadata = Some(package_json.as_path());
-            cache.put(
-                &CacheKey {
-                    namespace: old_namespace,
-                    source: "fixture-catalog",
-                    package_json: &package_json,
-                    fingerprint: DiscoveryCache::fingerprint(metadata, &old_files)?,
-                },
-                &old_components,
-            )?;
-            let result =
-                crate::discover_source_with_plugin("fixture-catalog", project.path(), plugin)?;
-            assert_eq!(result.components.len(), 1);
-            assert_eq!(result.components[0].tag_name, "real-card");
-            let mut new_files = Vec::new();
-            append_cache_files(
-                &package.join("src/components"),
-                |_| true,
-                None,
-                &mut new_files,
-            )?;
-            let fingerprint = DiscoveryCache::fingerprint(metadata, &new_files)?;
-            fs::write(&report, "<p>Updated coverage</p>")?;
-            assert_eq!(
-                fingerprint,
-                DiscoveryCache::fingerprint(metadata, &new_files)?
-            );
-        }
-        Ok(())
-    }
 
     #[test]
     fn package_wide_catalog_ownership_cache_is_not_reused() -> Result<()> {

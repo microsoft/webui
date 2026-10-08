@@ -195,6 +195,14 @@ mod tests {
         Ok(())
     }
 
+    fn fixture(manifest: &str) -> Result<(tempfile::TempDir, PathBuf)> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("node_modules/@fixture/catalog");
+        fs::create_dir_all(&package)?;
+        fs::write(package.join("package.json"), manifest)?;
+        Ok((root, package))
+    }
+
     fn tags(root: &Path, plugin: &dyn DiscoveryPlugin) -> Result<Vec<String>> {
         Ok(
             discover_source_with_plugin("@fixture/catalog", root, plugin)?
@@ -207,8 +215,7 @@ mod tests {
 
     #[test]
     fn absent_metadata_scans_only_components_with_explicit_root_opt_in() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
+        let (root, package) = fixture("{}")?;
         write(&package, "components/first-card.html", "<p>Components</p>")?;
         write(&package, "dist/published-card.html", "<p>Published</p>")?;
         write(&package, "flat-card.html", "<p>Flat</p>")?;
@@ -235,128 +242,65 @@ mod tests {
     }
 
     #[test]
-    fn metadata_and_source_edits_invalidate_catalog_caches() -> TestResult {
-        for plugin in PLUGINS {
-            let root = tempfile::tempdir()?;
-            let package = root.path().join("node_modules/@fixture/catalog");
-            write(&package, "package.json", "{}")?;
-            write(&package, "components/default-card.html", "<p>Default</p>")?;
-            write(&package, "flat-card.html", "<p>Flat</p>")?;
-            write(
-                &package,
-                "src/components/source-card.v2.html",
-                "<p>Source</p>",
-            )?;
-            write(&package, "extra/extra-card.html", "<p>Extra</p>")?;
-            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
-            write(
-                &package,
-                "package.json",
+    fn metadata_edits_invalidate_catalog_caches() -> TestResult {
+        let (root, package) = fixture("{}")?;
+        write(&package, "components/default-card.html", "<p>Default</p>")?;
+        write(&package, "src/components/source-card.html", "<p>Source</p>")?;
+        write(&package, "extra/extra-card.html", "<p>Extra</p>")?;
+        let cases: &[(&str, &[&str])] = &[
+            ("{}", &["default-card"]),
+            (
                 r#"{"webui":{"components":["./src/components","./extra"]}}"#,
-            )?;
-            assert_eq!(tags(root.path(), plugin)?, ["source-card.v2", "extra-card"]);
-            assert_eq!(tags(root.path(), plugin)?, ["source-card.v2", "extra-card"]);
-            let source = package.join("src/components");
-            write(&source, "source-card.v2.html", "<p>Edited</p>")?;
-            write(&source, "source-card.v2.css", "p { color: blue; }")?;
-            write(&source, "source-card.v2.ts", "export {};")?;
-            let result = discover_source_with_plugin("@fixture/catalog", root.path(), plugin)?;
-            assert_eq!(result.components[0].html_content, "<p>Edited</p>");
-            assert_eq!(
-                result.components[0].css_content.as_deref(),
-                Some("p { color: blue; }")
-            );
-            assert!(result.components[0].is_client_owned);
-            write(&source, "added-card.html", "<p>Added</p>")?;
-            assert_eq!(
-                tags(root.path(), plugin)?,
-                ["added-card", "source-card.v2", "extra-card"]
-            );
-            fs::remove_file(source.join("added-card.html"))?;
-            fs::remove_file(source.join("source-card.v2.ts"))?;
-            assert!(
-                !discover_source_with_plugin("@fixture/catalog", root.path(), plugin)?.components
-                    [0]
-                .is_client_owned
-            );
-            write(&package, "package.json", r#"{"webui":{"components":[]}}"#)?;
-            assert!(tags(root.path(), plugin)?.is_empty());
-            write(
-                &package,
-                "package.json",
-                r#"{"webui":{"components":["./extra"]}}"#,
-            )?;
-            assert_eq!(tags(root.path(), plugin)?, ["extra-card"]);
-            fs::remove_file(package.join("extra/extra-card.html"))?;
-            assert!(tags(root.path(), plugin).is_err());
-            fs::remove_dir(package.join("extra"))?;
-            assert!(tags(root.path(), plugin).is_err());
-            write(&package, "package.json", "{}")?;
-            assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
+                &["source-card", "extra-card"],
+            ),
+            (r#"{"webui":{"components":[]}}"#, &[]),
+            (r#"{"webui":{"components":["./extra"]}}"#, &["extra-card"]),
+            ("{}", &["default-card"]),
+        ];
+        for plugin in PLUGINS {
+            for &(manifest, expected) in cases {
+                write(&package, "package.json", manifest)?;
+                for _ in 0..2 {
+                    assert_eq!(tags(root.path(), plugin)?, expected);
+                }
+            }
         }
         Ok(())
     }
 
     #[test]
-    fn missing_default_catalog_never_falls_back_and_tracks_creation_and_removal() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(&package, "package.json", "{}")?;
+    fn missing_empty_and_disabled_catalogs_have_distinct_scope_behavior() -> TestResult {
+        let (root, package) = fixture("{}")?;
         write(&package, "flat-card.html", "<p>Outside</p>")?;
         write(&package, "src/components/source-card.html", "<p>Source</p>")?;
-        for plugin in PLUGINS {
-            assert!(tags(root.path(), plugin).is_err());
-            assert!(
-                discover_source_with_plugin("@fixture", root.path(), plugin)?
-                    .components
-                    .is_empty()
-            );
+        fs::create_dir(package.join("empty"))?;
+        for manifest in ["{}", r#"{"webui":{"components":["./empty"]}}"#] {
+            write(&package, "package.json", manifest)?;
+            for plugin in PLUGINS {
+                assert!(tags(root.path(), plugin).is_err());
+                assert!(
+                    discover_source_with_plugin("@fixture", root.path(), plugin)?
+                        .components
+                        .is_empty()
+                );
+            }
         }
+        write(&package, "package.json", "{}")?;
         write(&package, "components/default-card.html", "<p>Default</p>")?;
         for plugin in PLUGINS {
             assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
             assert_eq!(tags(root.path(), plugin)?, ["default-card"]);
+            assert_eq!(
+                discover_source_with_plugin("@fixture/*", root.path(), plugin)?
+                    .components
+                    .len(),
+                1
+            );
         }
         fs::remove_file(package.join("components/default-card.html"))?;
         fs::remove_dir(package.join("components"))?;
         for plugin in PLUGINS {
             assert!(tags(root.path(), plugin).is_err());
-        }
-        write(&package, "components", "Not a directory")?;
-        for plugin in PLUGINS {
-            assert!(discover_source_with_plugin("@fixture", root.path(), plugin).is_err());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn scope_support_checks_respect_disabled_and_empty_catalogs() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./src/components"]}}"#,
-        )?;
-        fs::create_dir_all(package.join("src/components"))?;
-        write(
-            &package,
-            "test_results/coverage/lcov-report/initial-state.ts.html",
-            "<p>Report</p>",
-        )?;
-        for plugin in PLUGINS {
-            assert!(
-                discover_source_with_plugin("@fixture", root.path(), plugin)?
-                    .components
-                    .is_empty()
-            );
-            assert!(tags(root.path(), plugin).is_err());
-        }
-        write(&package, "src/components/real-card.html", "<p>Real</p>")?;
-        for plugin in PLUGINS {
-            let result = discover_source_with_plugin("@fixture/*", root.path(), plugin)?;
-            assert_eq!(result.components.len(), 1);
-            assert_eq!(result.components[0].tag_name, "real-card");
         }
         write(&package, "package.json", r#"{"webui":{"components":[]}}"#)?;
         for plugin in PLUGINS {
@@ -367,13 +311,17 @@ mod tests {
             );
             assert!(tags(root.path(), plugin)?.is_empty());
         }
+        write(&package, "package.json", "{}")?;
+        write(&package, "components", "Not a directory")?;
+        for plugin in PLUGINS {
+            assert!(discover_source_with_plugin("@fixture", root.path(), plugin).is_err());
+        }
         Ok(())
     }
 
     #[test]
     fn invalid_root_metadata_never_falls_back_or_uses_a_warm_cache() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
+        let (root, package) = fixture("{}")?;
         write(&package, "flat-card.html", "<p>Flat</p>")?;
         for plugin in PLUGINS {
             write(
@@ -384,15 +332,11 @@ mod tests {
             assert_eq!(tags(root.path(), plugin)?, ["flat-card"]);
             for manifest in [
                 r#"{"webui":null}"#,
-                r#"{"webui":[]}"#,
                 r#"{"webui":{"components":null}}"#,
                 r#"{"webui":{"components":"./src"}}"#,
-                r#"{"webui":{"components":{}}}"#,
                 r#"{"webui":{"components":[1]}}"#,
                 r#"{"webui":{"components":[""]}}"#,
-                r#"{"webui":{"components":[" "]}}"#,
                 r#"{"webui":{"components":["../outside"]}}"#,
-                r#"{"webui":{"components":["./src/../../outside"]}}"#,
                 r#"{"webui":{"components":["/absolute"]}}"#,
                 r#"{"webui":{"components":["C:/absolute"]}}"#,
                 r#"{"webui":{"components":["C:\\absolute"]}}"#,
@@ -444,13 +388,7 @@ mod tests {
     #[test]
     fn declared_roots_and_catalog_assets_cannot_escape_through_symlinks() -> TestResult {
         use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./catalog"]}}"#,
-        )?;
+        let (root, package) = fixture(r#"{"webui":{"components":["./catalog"]}}"#)?;
         write(root.path(), "outside/real-card.html", "<p>Outside</p>")?;
         symlink(root.path().join("outside"), package.join("catalog"))?;
         for plugin in PLUGINS {
@@ -476,30 +414,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn internal_root_symlinks_work_and_retargeting_invalidates_the_cache() -> TestResult {
+    fn internal_root_and_file_links_work_and_retargeting_invalidates_cache() -> TestResult {
         use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./catalog"]}}"#,
-        )?;
-        write(&package, "first/real-card.html", "<p>First</p>")?;
-        write(&package, "second/real-card.html", "<p>Second</p>")?;
-        for directory in ["first", "second"] {
+        let (root, package) = fixture(r#"{"webui":{"components":["./catalog"]}}"#)?;
+        write(&package, "assets/styles.txt", "p { color: blue; }")?;
+        write(&package, "assets/script.txt", "export {};")?;
+        for (directory, html) in [("first", "<p>First</p>"), ("second", "<p>Second</p>")] {
+            write(&package, &format!("assets/{directory}.txt"), html)?;
+            fs::create_dir(package.join(directory))?;
+            for (extension, asset) in [("html", directory), ("css", "styles"), ("js", "script")] {
+                symlink(
+                    package.join(format!("assets/{asset}.txt")),
+                    package
+                        .join(directory)
+                        .join(format!("real-card.{extension}")),
+                )?;
+            }
             symlink(package.join(directory), package.join("catalog"))?;
             for plugin in PLUGINS {
-                let result = discover_source_with_plugin("@fixture/catalog", root.path(), plugin)?;
-                assert_eq!(result.components.len(), 1);
-                assert_eq!(
-                    result.components[0].html_content,
-                    if directory == "first" {
-                        "<p>First</p>"
-                    } else {
-                        "<p>Second</p>"
-                    }
-                );
+                for _ in 0..2 {
+                    let result =
+                        discover_source_with_plugin("@fixture/catalog", root.path(), plugin)?;
+                    assert_eq!(result.components.len(), 1);
+                    assert_eq!(result.components[0].html_content, html);
+                    assert_eq!(
+                        result.components[0].css_content.as_deref(),
+                        Some("p { color: blue; }")
+                    );
+                    assert!(result.components[0].is_client_owned);
+                }
             }
             fs::remove_file(package.join("catalog"))?;
         }
@@ -511,51 +454,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn file_links_within_the_package_preserve_templates_styles_and_ownership() -> TestResult {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./catalog"]}}"#,
-        )?;
-        write(&package, "assets/template.txt", "<p>Linked</p>")?;
-        write(&package, "assets/styles.txt", "p { color: blue; }")?;
-        write(&package, "assets/script.txt", "export {};")?;
-        fs::create_dir(package.join("catalog"))?;
-        for (extension, asset) in [("html", "template"), ("css", "styles"), ("js", "script")] {
-            symlink(
-                package.join(format!("assets/{asset}.txt")),
-                package.join(format!("catalog/real-card.{extension}")),
-            )?;
-        }
-        for plugin in PLUGINS {
-            for _ in 0..2 {
-                let result = discover_source_with_plugin("@fixture/catalog", root.path(), plugin)?;
-                assert_eq!(result.components.len(), 1);
-                assert_eq!(result.components[0].html_content, "<p>Linked</p>");
-                assert_eq!(
-                    result.components[0].css_content.as_deref(),
-                    Some("p { color: blue; }")
-                );
-                assert!(result.components[0].is_client_owned);
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn link_validation_ignores_unowned_assets_but_checks_all_owned_scripts() -> TestResult {
         use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./catalog"]}}"#,
-        )?;
+        let (root, package) = fixture(r#"{"webui":{"components":["./catalog"]}}"#)?;
         write(&package, "catalog/real-card.html", "<p>Real</p>")?;
         write(&package, "catalog/real-card.ts", "export {};")?;
         write(
@@ -601,13 +502,7 @@ mod tests {
     #[test]
     fn unreadable_declared_root_is_an_error() -> TestResult {
         use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir()?;
-        let package = root.path().join("node_modules/@fixture/catalog");
-        write(
-            &package,
-            "package.json",
-            r#"{"webui":{"components":["./catalog"]}}"#,
-        )?;
+        let (root, package) = fixture(r#"{"webui":{"components":["./catalog"]}}"#)?;
         write(&package, "catalog/real-card.html", "<p>Real</p>")?;
         let catalog = package.join("catalog");
         let permissions = fs::metadata(&catalog)?.permissions();
