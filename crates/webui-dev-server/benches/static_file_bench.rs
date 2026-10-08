@@ -14,13 +14,15 @@ use actix_web::http::header::LOCATION;
 use actix_web::http::StatusCode;
 use actix_web::test::TestRequest;
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use webui_dev_server::{serve_static_file, LiveReload, NotFoundStrategy, StaticServeConfig};
+use webui_dev_server::{
+    serve_prepared_static_file, LiveReload, NotFoundStrategy, PreparedStaticServeConfig,
+};
 
 const FIXTURE_BYTES: usize = 4 * 1024;
 
-fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> {
+fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<PreparedStaticServeConfig> {
     Arc::new(
-        StaticServeConfig::new(
+        PreparedStaticServeConfig::new(
             root,
             "/".to_owned(),
             LiveReload::new("/__bench/livereload"),
@@ -33,10 +35,10 @@ fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> 
 fn assert_response(
     runtime: &tokio::runtime::Runtime,
     request: &actix_web::HttpRequest,
-    config: &Arc<StaticServeConfig>,
+    config: &Arc<PreparedStaticServeConfig>,
     expected_status: StatusCode,
 ) {
-    let response = runtime.block_on(serve_static_file(request, Arc::clone(config)));
+    let response = runtime.block_on(serve_prepared_static_file(request, Arc::clone(config)));
     assert_eq!(response.status(), expected_status);
     let body = runtime
         .block_on(to_bytes(response.into_body()))
@@ -47,9 +49,9 @@ fn assert_response(
 fn assert_redirect(
     runtime: &tokio::runtime::Runtime,
     request: &actix_web::HttpRequest,
-    config: &Arc<StaticServeConfig>,
+    config: &Arc<PreparedStaticServeConfig>,
 ) {
-    let response = runtime.block_on(serve_static_file(request, Arc::clone(config)));
+    let response = runtime.block_on(serve_prepared_static_file(request, Arc::clone(config)));
     assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(
         response
@@ -104,7 +106,7 @@ fn static_file_bench(c: &mut Criterion) {
 
     group.bench_function("hit_4k", |b| {
         b.iter(|| {
-            black_box(runtime.block_on(serve_static_file(
+            black_box(runtime.block_on(serve_prepared_static_file(
                 black_box(&hit_request),
                 Arc::clone(black_box(&hit_config)),
             )));
@@ -112,7 +114,7 @@ fn static_file_bench(c: &mut Criterion) {
     });
     group.bench_function("custom_404_4k", |b| {
         b.iter(|| {
-            black_box(runtime.block_on(serve_static_file(
+            black_box(runtime.block_on(serve_prepared_static_file(
                 black_box(&miss_request),
                 Arc::clone(black_box(&miss_config)),
             )));
@@ -120,7 +122,7 @@ fn static_file_bench(c: &mut Criterion) {
     });
     group.bench_function("custom_404_hit_4k", |b| {
         b.iter(|| {
-            black_box(runtime.block_on(serve_static_file(
+            black_box(runtime.block_on(serve_prepared_static_file(
                 black_box(&hit_request),
                 Arc::clone(black_box(&miss_config)),
             )));
@@ -128,7 +130,7 @@ fn static_file_bench(c: &mut Criterion) {
     });
     group.bench_function("directory_redirect", |b| {
         b.iter(|| {
-            black_box(runtime.block_on(serve_static_file(
+            black_box(runtime.block_on(serve_prepared_static_file(
                 black_box(&directory_request),
                 Arc::clone(black_box(&hit_config)),
             )));

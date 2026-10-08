@@ -42,14 +42,10 @@ pub enum NotFoundStrategy {
 }
 
 /// Configuration for [`serve_static_file`].
-///
-/// Share one instance across requests with [`Arc`]. This lets blocking file
-/// tasks consult the fallback strategy only after a miss, without cloning or
-/// joining fallback paths on successful requests.
 #[derive(Clone)]
 pub struct StaticServeConfig {
-    /// Directory capability from which files are served.
-    root: SecureRoot,
+    /// Directory from which files are served.
+    pub root: PathBuf,
     /// Application basePath. Use `"/"` when the app is hosted at root.
     /// Must be normalized via
     /// [`normalize_base_path`](crate::path::normalize_base_path).
@@ -62,8 +58,21 @@ pub struct StaticServeConfig {
     pub not_found: NotFoundStrategy,
 }
 
-impl StaticServeConfig {
-    /// Create a static-file configuration rooted at `root`.
+/// Prevalidated static-file configuration for repeated requests.
+///
+/// Prefer this configuration with [`serve_prepared_static_file`] in
+/// long-running servers. It anchors the serving root once and shares that
+/// capability across blocking file tasks.
+#[derive(Clone)]
+pub struct PreparedStaticServeConfig {
+    root: SecureRoot,
+    base_path: String,
+    livereload: LiveReload,
+    not_found: NotFoundStrategy,
+}
+
+impl PreparedStaticServeConfig {
+    /// Create a prepared static-file configuration rooted at `root`.
     ///
     /// The root must exist so it can be anchored once during setup. Every
     /// request is confined beneath this trusted root before its file is read.
@@ -87,13 +96,45 @@ impl StaticServeConfig {
     }
 }
 
+impl TryFrom<StaticServeConfig> for PreparedStaticServeConfig {
+    type Error = std::io::Error;
+
+    fn try_from(config: StaticServeConfig) -> Result<Self, Self::Error> {
+        Self::new(
+            config.root,
+            config.base_path,
+            config.livereload,
+            config.not_found,
+        )
+    }
+}
+
 /// Serve `req` from `cfg`, returning the appropriate `HttpResponse`.
 ///
 /// This function is not an actix handler itself — it's invoked by a
 /// caller's `default_service` handler so the caller can attach app
-/// state, middleware, and additional routes around it. The owned [`Arc`]
-/// keeps the configuration available to its blocking file task.
-pub async fn serve_static_file(req: &HttpRequest, cfg: Arc<StaticServeConfig>) -> HttpResponse {
+/// state, middleware, and additional routes around it.
+///
+/// This compatibility entry point prepares the serving root for each call.
+/// Long-running servers should prepare once and use
+/// [`serve_prepared_static_file`] instead.
+pub async fn serve_static_file(req: &HttpRequest, cfg: &StaticServeConfig) -> HttpResponse {
+    let config = cfg.clone();
+    match tokio::task::spawn_blocking(move || PreparedStaticServeConfig::try_from(config)).await {
+        Ok(Ok(config)) => serve_prepared_static_file(req, Arc::new(config)).await,
+        Ok(Err(error)) => static_config_error_response(error),
+        Err(error) => file_task_error_response(error),
+    }
+}
+
+/// Serve `req` from a prevalidated static-file configuration.
+///
+/// Share one configuration across requests with [`Arc`] to keep blocking
+/// filesystem work batched without rebuilding the root capability.
+pub async fn serve_prepared_static_file(
+    req: &HttpRequest,
+    cfg: Arc<PreparedStaticServeConfig>,
+) -> HttpResponse {
     let path = req.path();
 
     let remainder = match strip_base_path(path, &cfg.base_path) {
@@ -188,25 +229,25 @@ enum FileLoad {
 async fn run_file_load(
     path: PathBuf,
     detect_directory: bool,
-    cfg: Arc<StaticServeConfig>,
+    cfg: Arc<PreparedStaticServeConfig>,
 ) -> Result<FileLoad, tokio::task::JoinError> {
     tokio::task::spawn_blocking(move || load_file(path, detect_directory, &cfg)).await
 }
 
 async fn run_fallback_load(
-    cfg: Arc<StaticServeConfig>,
+    cfg: Arc<PreparedStaticServeConfig>,
 ) -> Result<FileLoad, tokio::task::JoinError> {
     tokio::task::spawn_blocking(move || load_fallback(&cfg)).await
 }
 
-fn load_file(path: PathBuf, detect_directory: bool, cfg: &StaticServeConfig) -> FileLoad {
+fn load_file(path: PathBuf, detect_directory: bool, cfg: &PreparedStaticServeConfig) -> FileLoad {
     match load_opened_file(path, detect_directory, StatusCode::OK, cfg) {
         Ok(file) => file,
         Err(_) => load_fallback(cfg),
     }
 }
 
-fn load_fallback(cfg: &StaticServeConfig) -> FileLoad {
+fn load_fallback(cfg: &PreparedStaticServeConfig) -> FileLoad {
     let NotFoundStrategy::File(relative) = &cfg.not_found else {
         return FileLoad::NotFound;
     };
@@ -220,7 +261,7 @@ fn load_opened_file(
     path: PathBuf,
     detect_directory: bool,
     status: StatusCode,
-    cfg: &StaticServeConfig,
+    cfg: &PreparedStaticServeConfig,
 ) -> std::io::Result<FileLoad> {
     let OpenedNode::File {
         path,
@@ -252,7 +293,7 @@ fn load_opened_file(
     })
 }
 
-async fn not_found_response(cfg: Arc<StaticServeConfig>) -> HttpResponse {
+async fn not_found_response(cfg: Arc<PreparedStaticServeConfig>) -> HttpResponse {
     if matches!(&cfg.not_found, NotFoundStrategy::Plain) {
         return plain_not_found_response();
     }
@@ -291,6 +332,19 @@ fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
         "  {} {} {error}",
         style("✘").red().bold(),
         style("static-file task failed:").red().bold()
+    );
+    HttpResponse::InternalServerError()
+        .content_type("text/plain; charset=utf-8")
+        .body("Internal Server Error")
+}
+
+#[cold]
+#[inline(never)]
+fn static_config_error_response(error: std::io::Error) -> HttpResponse {
+    eprintln!(
+        "  {} {} {error}",
+        style("✘").red().bold(),
+        style("static-file setup failed:").red().bold()
     );
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")

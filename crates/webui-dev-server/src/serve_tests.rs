@@ -11,7 +11,10 @@ use actix_web::test::TestRequest;
 
 use crate::livereload::LiveReload;
 
-use super::{serve_static_file, NotFoundStrategy, StaticServeConfig};
+use super::{
+    serve_prepared_static_file, serve_static_file, NotFoundStrategy, PreparedStaticServeConfig,
+    StaticServeConfig,
+};
 
 #[cfg(unix)]
 fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
@@ -33,9 +36,9 @@ fn symlink_directory(original: &std::path::Path, link: &std::path::Path) -> std:
     std::os::windows::fs::symlink_dir(original, link)
 }
 
-fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> {
+fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<PreparedStaticServeConfig> {
     Arc::new(
-        StaticServeConfig::new(
+        PreparedStaticServeConfig::new(
             root,
             "/".to_owned(),
             LiveReload::new("/__test/livereload"),
@@ -46,13 +49,33 @@ fn config(root: PathBuf, not_found: NotFoundStrategy) -> Arc<StaticServeConfig> 
 }
 
 #[actix_web::test]
+async fn borrowed_public_config_remains_supported() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let bytes = b"console.log('legacy config');";
+    std::fs::write(directory.path().join("app.js"), bytes)?;
+    let config = StaticServeConfig {
+        root: directory.path().to_path_buf(),
+        base_path: "/".to_owned(),
+        livereload: LiveReload::new("/__test/livereload"),
+        not_found: NotFoundStrategy::Plain,
+    };
+    let request = TestRequest::with_uri("/app.js").to_http_request();
+
+    let response = serve_static_file(&request, &config).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(to_bytes(response.into_body()).await?.as_ref(), bytes);
+    Ok(())
+}
+
+#[actix_web::test]
 async fn serves_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let bytes = b"console.log('served');";
     std::fs::write(directory.path().join("app.js"), bytes)?;
     let request = TestRequest::with_uri("/app.js").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -71,7 +94,7 @@ async fn serves_nested_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(directory.path().join("assets/app.css"), bytes)?;
     let request = TestRequest::with_uri("/assets/app.css").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -92,13 +115,13 @@ async fn serves_index_files_for_directory_urls() -> Result<(), Box<dyn std::erro
     std::fs::write(directory.path().join("guide/index.html"), nested_bytes)?;
     let cfg = config(directory.path().to_path_buf(), NotFoundStrategy::Plain);
 
-    let root_response = serve_static_file(
+    let root_response = serve_prepared_static_file(
         &TestRequest::with_uri("/").to_http_request(),
         Arc::clone(&cfg),
     )
     .await;
     let nested_response =
-        serve_static_file(&TestRequest::with_uri("/guide/").to_http_request(), cfg).await;
+        serve_prepared_static_file(&TestRequest::with_uri("/guide/").to_http_request(), cfg).await;
 
     assert_eq!(root_response.status(), StatusCode::OK);
     assert!(to_bytes(root_response.into_body())
@@ -122,7 +145,7 @@ async fn serves_in_root_directory_symlink() -> Result<(), Box<dyn std::error::Er
     symlink_directory(&assets, &directory.path().join("assets"))?;
     let request = TestRequest::with_uri("/assets/app.css").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -143,7 +166,7 @@ async fn uses_requested_symlink_extension_for_mime() -> Result<(), Box<dyn std::
     symlink_file(&target, &directory.path().join("style.css"))?;
     let request = TestRequest::with_uri("/style.css").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -164,7 +187,7 @@ async fn redirects_directory_without_trailing_slash() -> Result<(), Box<dyn std:
     std::fs::create_dir(directory.path().join("guide"))?;
     let request = TestRequest::with_uri("/guide").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -182,7 +205,7 @@ async fn serves_custom_not_found_file() -> Result<(), Box<dyn std::error::Error>
     std::fs::write(directory.path().join("404.txt"), bytes)?;
     let request = TestRequest::with_uri("/missing.txt").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(
             directory.path().to_path_buf(),
@@ -206,7 +229,7 @@ async fn serves_in_root_symlinked_not_found_file() -> Result<(), Box<dyn std::er
     symlink_file(&target, &directory.path().join("404.txt"))?;
     let request = TestRequest::with_uri("/missing.txt").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(
             directory.path().to_path_buf(),
@@ -231,7 +254,7 @@ async fn rejects_symlink_that_escapes_root() -> Result<(), Box<dyn std::error::E
     symlink(outside.path(), directory.path().join("escape"))?;
     let request = TestRequest::with_uri("/escape/secret.txt").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(directory.path().to_path_buf(), NotFoundStrategy::Plain),
     )
@@ -256,7 +279,7 @@ async fn rejects_fallback_symlink_that_escapes_root() -> Result<(), Box<dyn std:
     symlink(outside.path(), directory.path().join("404.txt"))?;
     let request = TestRequest::with_uri("/missing.txt").to_http_request();
 
-    let response = serve_static_file(
+    let response = serve_prepared_static_file(
         &request,
         config(
             directory.path().to_path_buf(),

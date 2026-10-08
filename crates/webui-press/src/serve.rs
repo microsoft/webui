@@ -33,8 +33,9 @@ use console::style;
 use webui_dev_server::path::normalize_base_path;
 use webui_dev_server::shutdown::Control;
 use webui_dev_server::{
-    default_ignore_paths, serve_static_file, spawn_rebuild_worker, spawn_watcher, sse_handler,
-    LiveReload, NotFoundStrategy, StaticServeConfig, WatchConfig, WatcherHandle,
+    default_ignore_paths, serve_prepared_static_file, spawn_rebuild_worker, spawn_watcher,
+    sse_handler, LiveReload, NotFoundStrategy, PreparedStaticServeConfig, WatchConfig,
+    WatcherHandle,
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
@@ -175,7 +176,7 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
         )?
     };
 
-    let static_cfg = StaticServeConfig::new(
+    let static_cfg = PreparedStaticServeConfig::new(
         out_dir.clone(),
         base_path.clone(),
         livereload.clone(),
@@ -223,8 +224,11 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
 /// Default actix handler — delegates to the shared static-file
 /// responder. A trivial wrapper because actix needs a function pointer
 /// and the shared crate ships an `&HttpRequest`-taking helper.
-async fn static_handler(req: HttpRequest, cfg: web::Data<StaticServeConfig>) -> HttpResponse {
-    serve_static_file(&req, cfg.into_inner()).await
+async fn static_handler(
+    req: HttpRequest,
+    cfg: web::Data<PreparedStaticServeConfig>,
+) -> HttpResponse {
+    serve_prepared_static_file(&req, cfg.into_inner()).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

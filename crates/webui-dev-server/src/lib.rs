@@ -32,6 +32,9 @@ pub mod worker;
 
 pub use livereload::{sse_handler, LiveReload, ReloadEvent};
 pub use reporter::{local_hms, RebuildReporter};
-pub use serve::{serve_file_response, serve_static_file, NotFoundStrategy, StaticServeConfig};
+pub use serve::{
+    serve_file_response, serve_prepared_static_file, serve_static_file, NotFoundStrategy,
+    PreparedStaticServeConfig, StaticServeConfig,
+};
 pub use watch::{default_ignore_paths, spawn_watcher, WatchConfig, WatcherHandle};
 pub use worker::{spawn_rebuild_worker, RebuildError, RebuildWorker, TickSender};
