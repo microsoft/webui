@@ -114,7 +114,45 @@ Native npm discovery names components from <code>&lt;tag&gt;.html</code> files, 
 <code>components/</code> directory when present or the package root otherwise. Folder names,
 template exports, and CEM names do not determine native component names. Use
 package module exports for browser registrations. See
-<a href="/webui/guide/concepts/components#external-component-sources">External components</a>.</p><h2 id="named-regions">Named regions <a class="header-anchor" href="/webui/guide/webui-press/#named-regions" aria-label="Link to Named regions">#</a></h2><p>WebUI Press templates expose compile-time named regions that a site can keep,
+<a href="/webui/guide/concepts/components#external-component-sources">External components</a>.</p><h2 id="markdown-local-state">Markdown-local state <a class="header-anchor" href="/webui/guide/webui-press/#markdown-local-state" aria-label="Link to Markdown-local state">#</a></h2><p>Put initial example data in the Markdown file that uses it, rather than in
+the site's global config:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">---</span>
+title: Button examples
+state:
+  example:
+    label: Save
+    count: 2
+    disabled: false
+    items: [one, two]
+<span class="hl-keyword">---</span>
+
+<span class="hl-keyword">#</span> Button examples
+
+<span class="hl-keyword">&lt;</span><span class="hl-tag">example-preview</span> <span class="hl-attr">:example</span>=<span class="hl-keyword">"</span><span class="hl-string">&#123;&#123;example&#125;&#125;</span><span class="hl-keyword">"</span><span class="hl-keyword">&gt;</span><span class="hl-keyword">&lt;/</span><span class="hl-tag">example-preview</span><span class="hl-keyword">&gt;</span>
+</code></pre></code-block><p>For this interactive example, the receiving component declares
+<code>@observable example</code> and uses <code>example.label</code>, <code>example.count</code>, and
+<code>example.disabled</code> inside its own template. Keep Markdown complex-property
+bindings aligned with their top-level state key and receiving observable.
+Mapping a nested value to a differently named observable at the Markdown entry
+level does not currently preserve that value during initial hydration.</p><p><code>state</code> must be an inline JSON-compatible object. Nested objects, arrays,
+strings, finite numbers, booleans, and <code>null</code> values are supported. Object
+keys must be strings; quote numeric or boolean keys. Omit <code>state</code> or use <code>&#123;&#125;</code>
+when no page-local data is needed. A top-level <code>null</code>, scalar, array, custom YAML tag,
+non-finite number, or malformed YAML fails the build with the Markdown filename
+and a corrective hint. Markdown frontmatter does not support <code>stateFile</code>.</p><p>Global config <code>state</code> or <code>stateFile</code> supplies shared defaults. Markdown state
+then <strong>shallowly replaces matching top-level keys</strong> for that page only. In the
+example above, local <code>example</code> replaces the entire global <code>example</code> object;
+its nested fields are not deep-merged. Other global keys remain available,
+and local data never flows into other Markdown pages or the generated 404.</p><p>Press owns these top-level keys: <code>site</code>, <code>navigation</code>, <code>sidebar</code>, <code>page</code>,
+<code>hero</code>, <code>footer</code>, <code>prev</code>, <code>next</code>, <code>pageData</code>, <code>regions</code>, <code>headTags</code>, <code>tokens</code>,
+<code>label</code>, and <code>icon</code>. Using any of them directly under Markdown <code>state</code> fails
+the build. Put application fields beneath your own key, such as
+<code>example.label</code>. Global and custom-page state retain their existing behavior:
+reserved keys cannot replace canonical Press values.</p><p>The merged page state drives both initial SSR and the projected hydration
+payload in <code>--show=all</code> and <code>--show=content</code>, including live rebuilds.
+Treat all render state as browser-visible; never put secrets in it.
+<code>customPages</code> still replaces Markdown at its URL entirely, so that Markdown's
+frontmatter is not read. Custom-page state keeps its existing top-level merge
+and <code>pageData</code> access; Markdown state does not populate <code>pageData</code>.</p><h2 id="named-regions">Named regions <a class="header-anchor" href="/webui/guide/webui-press/#named-regions" aria-label="Link to Named regions">#</a></h2><p>WebUI Press templates expose compile-time named regions that a site can keep,
 replace, clear, or augment with state and browser code. Regions are resolved
 before component discovery and protocol compilation, so their components receive
 normal SSR, CSS, projection, and script bundling.</p><h2 id="declare-fallback-content">Declare fallback content <a class="header-anchor" href="/webui/guide/webui-press/#declare-fallback-content" aria-label="Link to Declare fallback content">#</a></h2><p>A paired marker renders its child markup when the site has no matching

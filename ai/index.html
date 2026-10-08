@@ -986,7 +986,29 @@ Content mode retains the complete document, themes, SSR, and hydration.
 Content colors follow the OS, including live preference changes, without
 reading the full site's saved manual theme. Full mode retains its persisted
 theme control and applies that choice to native theme tokens and controls.
-See <a href="/webui/guide/webui-press">WebUI Press</a> for layout and asset behavior.</p><p>In a WebUI Press template, use paired regions for fallback markup and
+See <a href="/webui/guide/webui-press">WebUI Press</a> for layout and asset behavior.</p><p>Keep initial example data local to its Markdown file using YAML frontmatter:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">---</span>
+title: Button examples
+state:
+  example:
+    label: Save
+    count: 2
+<span class="hl-keyword">---</span>
+
+<span class="hl-keyword">&lt;</span><span class="hl-tag">example-preview</span> <span class="hl-attr">:example</span>=<span class="hl-keyword">"</span><span class="hl-string">&#123;&#123;example&#125;&#125;</span><span class="hl-keyword">"</span><span class="hl-keyword">&gt;</span><span class="hl-keyword">&lt;/</span><span class="hl-tag">example-preview</span><span class="hl-keyword">&gt;</span>
+</code></pre></code-block><p>The receiving component declares <code>@observable example</code> and binds its nested
+fields inside its template. Keep Markdown complex-property bindings aligned
+with that top-level state key; entry-level nested-to-renamed-observable mappings
+do not currently preserve the initial hydration value.</p><p>Frontmatter <code>state</code> is an inline JSON-compatible object, not a file path.
+Global config <code>state</code>/<code>stateFile</code> supplies defaults; local keys shallowly
+replace matching global keys for this page only, without deep-merging objects.
+The same merged state drives SSR and hydration in both display modes.
+Omit <code>state</code> or use <code>&#123;&#125;</code> for no local data. Non-object state, non-string object
+keys, custom YAML tags, non-finite numbers, and reserved top-level Press keys are build
+errors. Namespace examples to avoid reserved keys such as <code>page</code>, <code>site</code>,
+<code>label</code>, and <code>icon</code>; <code>example.label</code> is fine. Never store secrets in render state.
+<code>customPages</code> replaces Markdown rather than supplementing it, and Markdown
+state does not populate <code>pageData</code>. See the
+<a href="/webui/guide/webui-press#markdown-local-state">full state contract and reserved-key list</a>.</p><p>In a WebUI Press template, use paired regions for fallback markup and
 self-closing regions for empty insertion points:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">webui-press-region</span> <span class="hl-attr">name</span>=<span class="hl-string">"</span><span class="hl-string">home.afterHero</span><span class="hl-string">"</span> <span class="hl-attr">layout</span>=<span class="hl-string">"</span><span class="hl-string">home</span><span class="hl-string">"</span>&gt;
   &lt;<span class="hl-tag">project-summary</span>&gt;&lt;/<span class="hl-tag">project-summary</span>&gt;
 &lt;/<span class="hl-tag">webui-press-region</span>&gt;
