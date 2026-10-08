@@ -3,6 +3,7 @@
 
 //! Discovery contracts and the default filename-based implementation.
 
+use crate::catalog::PackageCatalog;
 use crate::npm::PackageContext;
 use crate::DiscoveredComponent;
 use anyhow::{bail, Result};
@@ -12,18 +13,12 @@ mod fast;
 pub use fast::FastDiscoveryPlugin;
 
 /// Maps a resolved local or npm package layout to WebUI component registrations.
+///
+/// Package resolution supplies parsed metadata through [`PackageContext::manifest`]
+/// and includes `package.json` in cache invalidation for every plugin.
 pub trait DiscoveryPlugin {
     /// Stable cache namespace for this discovery layout.
     fn cache_namespace(&self) -> &'static str;
-
-    /// Opt into reading, parsing, and cache-hashing `package.json` contents.
-    ///
-    /// Filename-only discovery does not need package metadata. Plugins that
-    /// interpret package fields must opt in before accessing `PackageContext::manifest`.
-    #[must_use]
-    fn requires_package_metadata(&self) -> bool {
-        false
-    }
 
     /// Discover components below a local source root.
     ///
@@ -80,7 +75,7 @@ impl WebUIDiscoveryPlugin {
 
 impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str {
-        "webui-filenames"
+        "webui-package-roots-v1"
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
@@ -88,21 +83,21 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     }
 
     fn supports_package(&self, package: PackageContext<'_>) -> Result<bool> {
-        crate::catalog::has_templates(&crate::catalog::root(package)?)
+        PackageCatalog::new(package)?.has_templates(|_| true)
     }
 
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        crate::catalog::cache_files(&crate::catalog::root(package)?)
+        PackageCatalog::new(package)?.cache_files(|_| true)
     }
 
     fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
-        let root = crate::catalog::root(package)?;
-        let components = crate::catalog::discover(package.name, &root)?;
-        if components.is_empty() {
+        let catalog = PackageCatalog::new(package)?;
+        let components = catalog.discover(|_| true)?;
+        if components.is_empty() && !catalog.is_disabled() {
             bail!(
                 "No component templates in {}. Add <component-name>.html files; \
                  the filename is the custom element name.",
-                root.display()
+                package.root.display()
             );
         }
         Ok(components)

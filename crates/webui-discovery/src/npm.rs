@@ -23,9 +23,8 @@ pub struct PackageContext<'a> {
     pub name: &'a str,
     /// Canonical package root.
     pub root: &'a Path,
-    /// Parsed `package.json`, present only when the plugin opts into
-    /// [`DiscoveryPlugin::requires_package_metadata`].
-    pub manifest: Option<&'a serde_json::Value>,
+    /// Parsed `package.json`, available to every package discovery plugin.
+    pub manifest: &'a serde_json::Value,
 }
 
 pub(crate) struct ComponentDeclaration {
@@ -373,26 +372,19 @@ fn resolve_single(
         bail!("No package.json found at {}", pkg_json_path.display());
     }
 
-    let pkg_json = if plugin.requires_package_metadata() {
-        let content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
-        Some(
-            serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?,
-        )
-    } else {
-        None
-    };
-    let metadata_path = pkg_json.as_ref().map(|_| pkg_json_path.as_path());
+    let content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
+    let pkg_json = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?;
     let package = PackageContext {
         name,
         root: &pkg_dir,
-        manifest: pkg_json.as_ref(),
+        manifest: &pkg_json,
     };
     if scope_member && !plugin.supports_package(package)? {
         return Ok(Vec::new());
     }
     let cache_files = plugin.package_cache_files(package)?;
-    let fingerprint = DiscoveryCache::fingerprint(metadata_path, &cache_files)?;
+    let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json_path), &cache_files)?;
     let cache_key = CacheKey {
         namespace: plugin.cache_namespace(),
         source: name,
@@ -405,7 +397,7 @@ fn resolve_single(
     let components = plugin.discover_package(package)?;
 
     // Do not persist a mixed snapshot if package files changed during discovery.
-    if DiscoveryCache::fingerprint(metadata_path, &cache_files)? == fingerprint {
+    if DiscoveryCache::fingerprint(Some(&pkg_json_path), &cache_files)? == fingerprint {
         cache.put(&cache_key, &components)?;
     }
 
@@ -417,15 +409,6 @@ pub(crate) fn package_component_declarations(
 ) -> Result<Vec<ComponentDeclaration>> {
     let path = custom_elements_manifest_path(package)?;
     parse_custom_elements_manifest(&path)
-}
-
-pub(crate) fn package_metadata(package: PackageContext<'_>) -> Result<&serde_json::Value> {
-    package.manifest.with_context(|| {
-        format!(
-            "Discovery of '{}' needs package metadata. Opt in with requires_package_metadata().",
-            package.name
-        )
-    })
 }
 
 pub(crate) fn package_export_path(
@@ -746,6 +729,25 @@ pub(crate) fn validate_package_asset_path(
     validate_package_path_boundary(root, relative, field_name)
 }
 
+pub(crate) fn package_asset_metadata(root: &Path, path: &Path) -> Result<Option<fs::Metadata>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Cannot inspect component catalog asset {}", path.display())
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        validate_package_asset_path(root, path, "component catalog asset")?;
+        return fs::metadata(path)
+            .map(Some)
+            .with_context(|| format!("Cannot inspect component catalog asset {}", path.display()));
+    }
+    Ok(Some(metadata))
+}
+
 fn validate_package_path_boundary(root: &Path, relative: &Path, field_name: &str) -> Result<()> {
     let canonical_root = fs::canonicalize(root)
         .with_context(|| format!("Failed to resolve package root {}", root.display()))?;
@@ -784,7 +786,8 @@ fn validate_package_path_boundary(root: &Path, relative: &Path, field_name: &str
 
 pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Result<PathBuf> {
     let package_json = package.root.join("package.json");
-    let relative = package_metadata(package)?
+    let relative = package
+        .manifest
         .get("customElements")
         .and_then(serde_json::Value::as_str)
         .with_context(|| format!("No 'customElements' field in {}", package_json.display()))?;
@@ -913,7 +916,88 @@ mod tests {
     use super::*;
     use crate::{FastDiscoveryPlugin, WebUIDiscoveryPlugin};
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[test]
+    fn default_discovery_reads_package_but_not_fast_metadata() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("node_modules/native-package");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            package.join("package.json"),
+            r#"{"customElements":"custom-elements.json"}"#,
+        )?;
+        fs::write(package.join("custom-elements.json"), [0xff])?;
+        fs::write(package.join("native-card.html"), "<span>Native</span>")?;
+        fs::write(package.join("native-card.css"), "span { color: blue; }")?;
+        let result = crate::discover_source("native-package", root.path())?;
+        assert_eq!(result.components.len(), 1);
+        assert_eq!(result.components[0].tag_name, "native-card");
+        assert!(!result.components[0].is_client_owned);
+        assert!(crate::discover_source_with_plugin(
+            "native-package",
+            root.path(),
+            &FastDiscoveryPlugin::new()
+        )
+        .is_err());
+        fs::write(package.join("package.json"), [0xff])?;
+        assert!(crate::discover_source("native-package", root.path()).is_err());
+        Ok(())
+    }
+
+    struct MetadataPlugin {
+        calls: AtomicUsize,
+    }
+
+    impl DiscoveryPlugin for MetadataPlugin {
+        fn cache_namespace(&self) -> &'static str {
+            "shared-metadata-test"
+        }
+
+        fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
+            WebUIDiscoveryPlugin::new().discover_local(root)
+        }
+
+        fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
+            assert!(package.manifest["revision"].is_number());
+            Ok(vec![package.root.join("native-card.html")])
+        }
+
+        fn discover_package(
+            &self,
+            package: PackageContext<'_>,
+        ) -> Result<Vec<DiscoveredComponent>> {
+            assert!(package.manifest["revision"].is_number());
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.discover_local(package.root)
+        }
+    }
+
+    #[test]
+    fn package_metadata_is_available_and_invalidates_cache_for_every_plugin() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("node_modules/native-package");
+        fs::create_dir_all(&package)?;
+        fs::write(package.join("package.json"), r#"{"revision":1}"#)?;
+        fs::write(package.join("native-card.html"), "<span>Native</span>")?;
+        let plugin = MetadataPlugin {
+            calls: AtomicUsize::new(0),
+        };
+        for _ in 0..2 {
+            crate::discover_source_with_plugin("native-package", root.path(), &plugin)?;
+        }
+        assert_eq!(plugin.calls.load(Ordering::Relaxed), 1);
+        fs::write(package.join("package.json"), r#"{"revision":2}"#)?;
+        crate::discover_source_with_plugin("native-package", root.path(), &plugin)?;
+        assert_eq!(plugin.calls.load(Ordering::Relaxed), 2);
+        fs::write(package.join("package.json"), [0xff])?;
+        assert!(
+            crate::discover_source_with_plugin("native-package", root.path(), &plugin).is_err()
+        );
+        assert_eq!(plugin.calls.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
 
     fn ordered_json(source: &str) -> OrderedJson {
         parse_ordered_json(source, Path::new("package.json")).unwrap()
@@ -1553,7 +1637,7 @@ mod tests {
         let context = PackageContext {
             name: "fixture-package",
             root: &package,
-            manifest: Some(&manifest),
+            manifest: &manifest,
         };
 
         let error = custom_elements_manifest_path(context).unwrap_err();

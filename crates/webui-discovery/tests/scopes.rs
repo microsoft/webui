@@ -269,6 +269,7 @@ fn fast_manifest_components_take_precedence_and_plain_components_fill_gaps() -> 
         root.path(),
         "@fixture/mixed",
         r#"{
+        "webui":{"components":["./components"]},
         "customElements":"custom-elements.json",
         "exports":{"./template-webui.html":"./dist/button.template-webui.html"}
     }"#,
@@ -310,5 +311,24 @@ fn fast_manifest_components_take_precedence_and_plain_components_fill_gaps() -> 
         .components
         .iter()
         .any(|component| component.tag_name == "plain-card"));
+    fs::write(
+        mixed.join("package.json"),
+        r#"{
+        "webui":{"components":[]},
+        "customElements":"custom-elements.json",
+        "exports":{"./template-webui.html":"./dist/button.template-webui.html"}
+    }"#,
+    )?;
+    let result =
+        discover_source_with_plugin("@fixture/mixed", root.path(), &FastDiscoveryPlugin::new())?;
+    assert_eq!(result.components.len(), 1);
+    assert_eq!(result.components[0].tag_name, "fast-button");
+    fs::remove_file(mixed.join("dist/button.template-webui.html"))?;
+    assert!(discover_source_with_plugin(
+        "@fixture/mixed",
+        root.path(),
+        &FastDiscoveryPlugin::new()
+    )
+    .is_err());
     Ok(())
 }

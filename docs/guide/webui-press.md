@@ -65,8 +65,9 @@ content typography, not the full template's CSS or entry script. Configured
 assets there rather than in shell regions. Component discovery continues to
 accept npm packages alongside local roots; browser registration imports can use
 the existing `<script type="module" bundle>` syntax and bundler aliases.
-Native npm discovery names components from `<tag>.html` files, using the package's
-`components/` directory when present or the package root otherwise. Folder names,
+Native npm discovery names components from `<tag>.html` files across the package
+tree. Package `webui.components` metadata can restrict ordinary HTML discovery
+to explicit directories, for example `["./src/components"]`. Folder names,
 template exports, and CEM names do not determine native component names. Use
 package module exports for browser registrations. See
 [External components](/guide/concepts/components#external-component-sources).

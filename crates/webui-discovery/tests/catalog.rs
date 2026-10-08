@@ -52,7 +52,7 @@ fn native_catalog_supports_ancestor_resolution_and_cache_invalidation() -> TestR
     )?;
     fs::write(
         package.join("package.json"),
-        r#"{"name":"@fixture/catalog","exports":{"./button.js":"./dist/button.js"}}"#,
+        r#"{"name":"@fixture/catalog","webui":{"components":["./components"]},"exports":{"./button.js":"./dist/button.js"}}"#,
     )?;
     let first = discover_source("@fixture/catalog", &site)?;
     assert_eq!(first.components.len(), 1);
@@ -131,7 +131,10 @@ fn invalid_nearest_package_does_not_fall_back_to_an_ancestor() -> TestResult {
     for directory in [root.path(), site.as_path()] {
         let package = directory.join("node_modules/@fixture/catalog");
         write_component(&package, "test-button")?;
-        fs::write(package.join("package.json"), "{}")?;
+        fs::write(
+            package.join("package.json"),
+            r#"{"webui":{"components":["./components"]}}"#,
+        )?;
     }
     fs::remove_dir_all(site.join("node_modules/@fixture/catalog/components"))?;
     fs::write(
@@ -205,7 +208,7 @@ fn native_packages_use_html_basenames_without_directory_name_requirements() -> T
         .iter()
         .map(|component| component.tag_name.as_str())
         .collect();
-    assert_eq!(tags, ["test-nested", "test-root"]);
+    assert_eq!(tags, ["test-nested", "test-root", "test-flat"]);
     Ok(())
 }
 

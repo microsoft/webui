@@ -206,9 +206,10 @@ In addition to discovering components in your app directory, WebUI can load comp
 
 Install the package into `node_modules/`. Default WebUI discovery derives the
 component name from each hyphenated `<component-name>.html` filename, exactly as
-for local components. It scans the package's `components/` directory when present,
-otherwise the package root. Nested directories are supported; a directory does
-not need to repeat the component name.
+for local components. Without `webui.components` in `package.json`, it scans the
+entire package tree, including templates both inside and outside `components/`.
+Directories named `components/` or `src/components/` have no special precedence.
+Nested directories are supported; a directory does not need to repeat the component name.
 
 ```text
 package.json
@@ -224,9 +225,27 @@ package JavaScript exports do not make unrelated components scripted. Import
 authored browser registrations through the package's module exports separately.
 Scriptless components need neither a registration import nor a projection entry.
 
-When `components/` exists, other package directories such as `dist/` are not
-scanned for duplicate source templates. Hidden directories and nested
-`node_modules/` are skipped.
+To keep discovery within authored sources, declare the catalog roots in the
+package's `package.json`:
+
+```json
+{
+  "webui": {
+    "components": ["./src/components"]
+  }
+}
+```
+
+When present, this array supplies the only ordinary HTML roots. Use `[]` for
+no ordinary HTML components. Paths use forward slashes and must be readable
+directories inside the resolved package, including any symlink targets.
+Absolute paths, `..` traversal, missing directories, and invalid metadata are
+errors, not reasons to scan somewhere else. Overlapping roots do not suppress
+duplicate component errors.
+
+Hidden directories and nested `node_modules/` are skipped. These catalog rules
+also apply to FAST's ordinary HTML fallback; CEM-declared assets keep their
+separate manifest-based resolution, even when `webui.components` is empty.
 
 **Scoped packages:** A bare scope such as `@reactive-ui` checks each installed
 sub-package in the nearest matching scope directory for named HTML components.
@@ -246,11 +265,15 @@ webui build ./my-app --out ./dist --components ./shared/components
 Local path discovery works identically to app directory scanning - HTML files with
 hyphenated names are registered as components, matching CSS files are auto-paired,
 and a sibling `.ts` or `.js` file marks that component as authored/interactive.
+Explicit local paths are scanned as given, without selecting a package catalog.
+Your app directory is already scanned and does not need to be repeated in
+`--components`.
 
 ### Caching
 
 npm package discovery results are cached at `~/.webui/cache/components/` and
-updated automatically when the selected discovery plugin's source inputs change.
+updated automatically when package metadata or the selected discovery plugin's
+source inputs change.
 Local path sources are always re-scanned.
 
 See the [CLI Reference](/guide/cli/) for full `--components` usage.

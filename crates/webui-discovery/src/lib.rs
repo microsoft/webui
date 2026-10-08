@@ -133,15 +133,21 @@ pub fn discover_source_with_plugin(
 /// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
 /// errors into `false`, which could silently classify an inaccessible authored
 /// component as scriptless and bypass projection-manifest coverage.
-pub(crate) fn has_sibling_script(html_path: &Path) -> Result<bool> {
+pub(crate) fn has_sibling_script(html_path: &Path, package_root: Option<&Path>) -> Result<bool> {
+    let mut candidate = html_path.to_path_buf();
     for ext in ["ts", "js"] {
-        let candidate = html_path.with_extension(ext);
-        if candidate.try_exists().with_context(|| {
-            format!(
-                "Failed to inspect component script: {}",
-                candidate.display()
-            )
-        })? {
+        candidate.set_extension(ext);
+        let exists = if let Some(root) = package_root {
+            npm::package_asset_metadata(root, &candidate)?.is_some()
+        } else {
+            candidate.try_exists().with_context(|| {
+                format!(
+                    "Failed to inspect component script: {}",
+                    candidate.display()
+                )
+            })?
+        };
+        if exists {
             return Ok(true);
         }
     }

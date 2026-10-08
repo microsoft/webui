@@ -223,9 +223,13 @@ pub trait DiscoveryPlugin {
 ```
 
 Call `discover_source_with_plugin(source, search_dir, plugin)` to resolve a
-source with a custom layout. `package_cache_files` must return deterministic
+source with a custom layout. Every package plugin receives its name, canonical
+root, and parsed `package.json` through `PackageContext`; `manifest` is always
+available. Package metadata changes automatically invalidate discovery caches.
+Plugins interpret their own fields and formats, such as FAST's CEM.
+`package_cache_files` must return deterministic
 paths for every package file that can affect discovery, including optional
-files that do not yet exist.
+files that do not yet exist; `package.json` is already included.
 
 ### ParserPlugin Trait
 

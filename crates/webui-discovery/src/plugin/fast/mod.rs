@@ -4,12 +4,12 @@
 //! FAST manifest naming and converted template/style layouts.
 
 use super::DiscoveryPlugin;
+use crate::catalog::PackageCatalog;
 use crate::npm::{
     bare_module_package_name, package_component_declarations, package_export_path,
-    package_export_path_from_metadata, package_has_authored_script, package_metadata,
-    read_optional_file, read_required_file, resolve_bare_module_specifier,
-    resolve_self_module_specifier, validate_package_asset_path, ComponentDeclaration,
-    PackageContext,
+    package_export_path_from_metadata, package_has_authored_script, read_optional_file,
+    read_required_file, resolve_bare_module_specifier, resolve_self_module_specifier,
+    validate_package_asset_path, ComponentDeclaration, PackageContext,
 };
 use crate::{has_sibling_script, DiscoveredComponent};
 use anyhow::{bail, Context, Result};
@@ -34,11 +34,7 @@ impl FastDiscoveryPlugin {
 
 impl DiscoveryPlugin for FastDiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str {
-        "fast"
-    }
-
-    fn requires_package_metadata(&self) -> bool {
-        true
+        "fast-package-roots-v1"
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
@@ -46,10 +42,10 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
     }
 
     fn supports_package(&self, package: PackageContext<'_>) -> Result<bool> {
-        if package_metadata(package)?.get("customElements").is_some() {
+        if package.manifest.get("customElements").is_some() {
             return Ok(true);
         }
-        crate::catalog::has_templates_matching(&crate::catalog::root(package)?, ordinary_html)
+        PackageCatalog::new(package)?.has_templates(ordinary_html)
     }
 
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
@@ -59,10 +55,8 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
             .map(|item| item.tag_name.as_str())
             .collect();
         let mut files =
-            crate::catalog::cache_files_matching(&crate::catalog::root(package)?, |path| {
-                fallback_html(path, &names)
-            })?;
-        if package_metadata(package)?.get("customElements").is_some() {
+            PackageCatalog::new(package)?.cache_files(|path| fallback_html(path, &names))?;
+        if package.manifest.get("customElements").is_some() {
             files.push(crate::npm::custom_elements_manifest_path(package)?);
         }
         if declarations.is_empty() {
@@ -142,19 +136,16 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 
     fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
         let declarations = declarations(package)?;
+        let catalog = PackageCatalog::new(package)?;
         let mut components = {
             let names: HashSet<_> = declarations
                 .iter()
                 .map(|item| item.tag_name.as_str())
                 .collect();
-            crate::catalog::discover_matching(
-                package.name,
-                &crate::catalog::root(package)?,
-                |path| fallback_html(path, &names),
-            )?
+            catalog.discover(|path| fallback_html(path, &names))?
         };
         if declarations.is_empty() {
-            if components.is_empty() {
+            if components.is_empty() && !catalog.is_disabled() {
                 bail!(
                     "No components found in package '{}'. Declare FAST components through \
                      customElements or provide <component-name>.html files.",
@@ -166,7 +157,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 
         let assets = exported_assets(package, declarations.len())?;
         components.reserve(declarations.len());
-        let source_is_client_owned = package_has_authored_script(package_metadata(package)?);
+        let source_is_client_owned = package_has_authored_script(package.manifest);
         let mut seen_templates = HashSet::with_capacity(declarations.len());
         for declaration in declarations {
             let uses_package_template = assets.template.is_some();
@@ -221,7 +212,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 }
 
 fn declarations(package: PackageContext<'_>) -> Result<Vec<ComponentDeclaration>> {
-    if package_metadata(package)?.get("customElements").is_some() {
+    if package.manifest.get("customElements").is_some() {
         package_component_declarations(package)
     } else {
         Ok(Vec::new())
@@ -355,7 +346,7 @@ fn resolve_declaration_module_inner(
         });
     }
     let bare_package = bare_module_package_name(specifier)?;
-    let manifest = package_metadata(package)?;
+    let manifest = package.manifest;
     let self_name = manifest.get("name").and_then(serde_json::Value::as_str);
     if let Some(self_name) = self_name {
         if bare_package == Some(self_name) {
@@ -489,7 +480,7 @@ fn discover_local_templates(
             tag_name: tag_name.to_string(),
             html_content,
             css_content,
-            is_client_owned: has_sibling_script(path)?,
+            is_client_owned: has_sibling_script(path, None)?,
             source: source.clone(),
         });
     }

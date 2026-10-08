@@ -4218,6 +4218,241 @@ mod tests {
         assert!(!message.contains("add --token-a"), "msg: {message}");
     }
 
+    mod package_discovery {
+        use super::*;
+
+        type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+        fn write(root: &Path, name: &str, content: &str) -> TestResult {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, content)?;
+            Ok(())
+        }
+
+        fn package_fixture(package: &Path, manifest: bool) -> TestResult {
+            write(
+                package,
+                "package.json",
+                if manifest {
+                    r#"{"name":"@fixture/catalog","webui":{"components":["./src/components"]},"customElements":"custom-elements.json"}"#
+                } else {
+                    r#"{"name":"@fixture/catalog","webui":{"components":["./src/components"]}}"#
+                },
+            )?;
+            write(
+                package,
+                "src/components/fixture-card.html",
+                "<p>Package component</p>",
+            )?;
+            write(
+                package,
+                "src/components/fixture-card.css",
+                "p { color: blue; }",
+            )?;
+            write(
+                package,
+                "src/components/fixture-card.v2.html",
+                "<span>Dotted component</span>",
+            )?;
+            for report in [
+                "test_results/coverage/lcov-report/core/initial-state.ts.html",
+                "test_results/coverage/lcov-report/initial-state.ts.html",
+            ] {
+                write(
+                    package,
+                    report,
+                    "<!doctype html><html><body>Generated coverage report</body></html>",
+                )?;
+            }
+            if manifest {
+                write(
+                    package,
+                    "custom-elements.json",
+                    r#"{"modules":[{"path":"dist/manifest-card.js","declarations":[{"name":"ManifestCard","tagName":"manifest-card"}]}]}"#,
+                )?;
+                write(package, "dist/manifest-card.js", "export {};")?;
+                write(
+                    package,
+                    "dist/manifest-card.template-webui.html",
+                    r#"<f-template name="manifest-card"><template><p>Manifest component</p></template></f-template>"#,
+                )?;
+            }
+            Ok(())
+        }
+
+        fn assert_build(root: &Path, plugin: Option<Plugin>, manifest: bool) -> TestResult {
+            let app = root.join("app/src");
+            write(&app, "app-local.html", "<span>App component</span>")?;
+            write(
+                &app,
+                "index.html",
+                if manifest {
+                    "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2><manifest-card></manifest-card>"
+                } else {
+                    "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2>"
+                },
+            )?;
+            let options = BuildOptions {
+                app_dir: app,
+                components: vec!["@fixture/catalog".to_string()],
+                plugin,
+                css: CssStrategy::Style,
+                ..BuildOptions::default()
+            };
+            for _ in 0..2 {
+                let result = build(options.clone())?;
+                assert_eq!(result.stats.component_count, if manifest { 4 } else { 3 });
+                assert!(!result.protocol.fragments.contains_key("initial-state.ts"));
+                let mut writer = StringWriter { buf: String::new() };
+                WebUIHandler::new().render(
+                    &Protocol::new(result.protocol),
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )?;
+                for text in ["App component", "Package component", "Dotted component"] {
+                    assert!(writer.buf.contains(text), "Missing rendered {text}");
+                }
+                assert!(writer.buf.contains("color: blue"));
+                assert!(!writer.buf.contains("Generated coverage report"));
+                if manifest {
+                    assert!(writer.buf.contains("Manifest component"));
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn native_package_build_excludes_generated_reports() -> TestResult {
+            for plugin in [None, Some(Plugin::WebUI)] {
+                let root = tempfile::tempdir()?;
+                package_fixture(&root.path().join("node_modules/@fixture/catalog"), false)?;
+                assert_build(root.path(), plugin, false)?;
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn fast_package_build_excludes_reports_but_keeps_manifest_assets() -> TestResult {
+            for plugin in [Plugin::FastV2, Plugin::FastV3] {
+                let root = tempfile::tempdir()?;
+                package_fixture(&root.path().join("node_modules/@fixture/catalog"), true)?;
+                assert_build(root.path(), Some(plugin), true)?;
+            }
+            Ok(())
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn symlinked_workspace_package_build_excludes_generated_reports() -> TestResult {
+            let root = tempfile::tempdir()?;
+            let package = root.path().join("packages/catalog");
+            package_fixture(&package, true)?;
+            fs::create_dir_all(root.path().join("node_modules/@fixture"))?;
+            std::os::unix::fs::symlink(
+                &package,
+                root.path().join("node_modules/@fixture/catalog"),
+            )?;
+            assert_build(root.path(), Some(Plugin::FastV3), true)
+        }
+
+        #[test]
+        fn duplicate_authored_components_still_fail_registration() -> TestResult {
+            for plugin in [
+                None,
+                Some(Plugin::WebUI),
+                Some(Plugin::FastV2),
+                Some(Plugin::FastV3),
+            ] {
+                let root = tempfile::tempdir()?;
+                let package = root.path().join("node_modules/@fixture/catalog");
+                package_fixture(&package, false)?;
+                write(
+                    &package,
+                    "src/components/nested/fixture-card.html",
+                    "<p>Duplicate authored component</p>",
+                )?;
+                let error = assert_build(root.path(), plugin, false)
+                    .expect_err("Duplicate component names must remain errors");
+                let message = format!("{error:?}");
+                assert!(message.contains("fixture-card"), "{message}");
+                assert!(message.contains("already registered"), "{message}");
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn absent_catalog_metadata_builds_templates_inside_and_outside_components() -> TestResult {
+            let root = tempfile::tempdir()?;
+            let package = root.path().join("node_modules/@fixture/catalog");
+            write(&package, "package.json", r#"{"name":"@fixture/catalog"}"#)?;
+            write(&package, "components/inside-card.html", "<p>Inside</p>")?;
+            write(&package, "outside-card.html", "<p>Outside</p>")?;
+            let app = root.path().join("app");
+            write(
+                &app,
+                "index.html",
+                "<inside-card></inside-card><outside-card></outside-card>",
+            )?;
+            for plugin in [
+                None,
+                Some(Plugin::WebUI),
+                Some(Plugin::FastV2),
+                Some(Plugin::FastV3),
+            ] {
+                let result = build(BuildOptions {
+                    app_dir: app.clone(),
+                    components: vec!["@fixture/catalog".to_string()],
+                    plugin,
+                    ..BuildOptions::default()
+                })?;
+                assert_eq!(result.stats.component_count, 2);
+                let mut writer = StringWriter { buf: String::new() };
+                WebUIHandler::new().render(
+                    &Protocol::new(result.protocol),
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )?;
+                assert!(writer.buf.contains("<p>Inside</p>"));
+                assert!(writer.buf.contains("<p>Outside</p>"));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn overlapping_catalog_roots_do_not_suppress_duplicate_registration() -> TestResult {
+            let root = tempfile::tempdir()?;
+            let package = root.path().join("node_modules/@fixture/catalog");
+            package_fixture(&package, false)?;
+            for roots in [
+                r#"["./src/components","./src/components"]"#,
+                r#"["./src","./src/components"]"#,
+                r#"["./src/components","./src"]"#,
+            ] {
+                write(
+                    &package,
+                    "package.json",
+                    &format!(r#"{{"webui":{{"components":{roots}}}}}"#),
+                )?;
+                for plugin in [
+                    None,
+                    Some(Plugin::WebUI),
+                    Some(Plugin::FastV2),
+                    Some(Plugin::FastV3),
+                ] {
+                    let error = assert_build(root.path(), plugin, false)
+                        .expect_err("Overlapping roots must retain duplicate errors");
+                    assert!(format!("{error:?}").contains("already registered"));
+                }
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_build_to_disk_returns_accurate_stats() {
         let app = create_app_dir(&[

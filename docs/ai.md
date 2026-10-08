@@ -1600,7 +1600,14 @@ Full flag tables, exit codes, and the error-code list:
 ### External component discovery
 
 Native `--components` discovery derives names from `<component-name>.html`,
-scanning a package's `components/` directory when present or its root otherwise.
+scanning the entire package tree by default, without preferring `components/`.
+A package can constrain ordinary HTML discovery with
+`"webui": { "components": ["./src/components"] }` in its `package.json`.
+Only the listed directories are scanned; `[]` disables ordinary fallback.
+Roots must be readable package-relative directories, including their symlink
+targets. Invalid metadata and paths are errors. FAST CEM assets remain separately
+resolved. Explicit local paths and the app directory are scanned as given; do
+not repeat the app directory in `--components`.
 Template/style exports and CEM names are not interpreted by default discovery;
 FAST's special metadata-based layouts remain separate.
 Npm collection spellings `@scope/*` and `@scope/package/*` are accepted.
