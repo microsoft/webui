@@ -199,25 +199,22 @@ impl SecureRoot {
     pub(crate) fn open(
         &self,
         path: PathBuf,
-        _detect_directory: bool,
+        detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
-        let checked_path = std::fs::canonicalize(&path)?;
-        if !checked_path.starts_with(&self.path) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "path escapes the serving root",
-            ));
-        }
-        self.open_checked_windows(path, checked_path)
+        self.open_checked_windows(path, detect_directory)
     }
 
     #[cfg(windows)]
     fn open_checked_windows(
         &self,
         response_path: PathBuf,
-        checked_path: PathBuf,
+        detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
-        let file = open_node(&checked_path)?;
+        let file = open_node(&response_path)?;
+        let metadata = file.metadata()?;
+        if detect_directory && metadata.is_dir() {
+            return Ok(OpenedNode::Directory);
+        }
         let opened_path = final_path(&file)?;
         if !opened_path.starts_with(&self.final_path) {
             return Err(Error::new(
@@ -225,7 +222,7 @@ impl SecureRoot {
                 "opened file escapes the serving root",
             ));
         }
-        opened_file(response_path, file)
+        opened_file_with_metadata(response_path, file, metadata)
     }
 
     #[cfg(unix)]
@@ -256,15 +253,41 @@ impl SecureRoot {
 
 #[cfg(windows)]
 fn open_node(path: &Path) -> std::io::Result<File> {
-    use std::fs::OpenOptions;
-    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
 
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
 
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
+    let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if encoded.contains(&0) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "path contains an embedded NUL",
+        ));
+    }
+    encoded.push(0);
+    // SAFETY: `encoded` is NUL-terminated and remains live for the call.
+    // A successful handle is transferred immediately into the returned file.
+    let handle = unsafe {
+        CreateFileW(
+            encoded.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `CreateFileW` returned an owned, valid handle.
+    Ok(unsafe { File::from_raw_handle(handle) })
 }
 
 #[cfg(windows)]
@@ -309,6 +332,14 @@ fn final_path(file: &File) -> std::io::Result<PathBuf> {
 
 fn opened_file(path: PathBuf, file: File) -> std::io::Result<OpenedNode> {
     let metadata = file.metadata()?;
+    opened_file_with_metadata(path, file, metadata)
+}
+
+fn opened_file_with_metadata(
+    path: PathBuf,
+    file: File,
+    metadata: std::fs::Metadata,
+) -> std::io::Result<OpenedNode> {
     if metadata.is_dir() {
         return Ok(OpenedNode::Directory);
     }
@@ -553,7 +584,7 @@ mod tests {
         std::fs::rename(&candidate, displaced)?;
         symlink_dir(outside.path(), &candidate)?;
 
-        let result = root.open_checked_windows(checked.clone(), checked);
+        let result = root.open_checked_windows(checked, false);
         assert!(matches!(
             result,
             Err(error) if error.kind() == ErrorKind::PermissionDenied
