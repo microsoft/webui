@@ -66,7 +66,7 @@ For a native runner:
 
 ```toml
 [dependencies]
-webui-desktop = { package = "microsoft-webui-desktop", version = "0.0.30", default-features = false, features = ["native"] }
+webui-desktop = { package = "microsoft-webui-desktop", version = "3.0.0", default-features = false, features = ["native"] }
 serde_json = "1.0"
 
 [features]
@@ -413,7 +413,7 @@ authenticate another local process that can connect to the loopback port:
 protect sensitive HTTP actions with a host-generated per-window capability, as
 the example does, or use the document-bound authenticated IPC transport.
 
-The runnable WebUI 0.0.30
+The runnable WebUI 3.0.0
 [`native-services` example](https://github.com/microsoft/webui/tree/main/examples/app/native-services)
 uses four narrow same-origin actions for the directory picker, dialogs,
 visible-content capture, and PNG clipboard write:

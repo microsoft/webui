@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-framework",
-  "version": "0.0.30",
+  "version": "3.0.0",
   "publishConfig": {
     "tag": "latest"
   },
