@@ -1084,4 +1084,61 @@ mod tests {
         assert_eq!(state["example"]["site"], "nested-is-allowed");
         assert_eq!(body, "# Example\n");
     }
+
+    #[test]
+    fn parse_frontmatter_rejects_invalid_state() {
+        for state in [
+            "null",
+            "example",
+            "42",
+            "false",
+            "[]",
+            "{nested: {1: value}}",
+            "{nested: {true: value}}",
+            "{nested: {.nan: value}}",
+            "{nested: {value: .inf}}",
+            "{nested: [1, .nan]}",
+            "{nested: !example value}",
+            "!example {value: tagged}",
+            "{nested: {value: first, value: second}}",
+            "{value: first}\nstate: {value: second}",
+            "{broken: [}",
+        ] {
+            let raw = format!("---\nstate: {state}\n---\n\n# Invalid");
+            let message = parse_frontmatter(&raw).expect_err(state).to_string();
+            assert!(
+                message.contains("state") || message.contains("YAML"),
+                "{message}"
+            );
+            assert!(message.contains("help:"), "{message}");
+        }
+    }
+
+    #[test]
+    fn parse_frontmatter_rejects_reserved_state_keys() {
+        for key in [
+            "site",
+            "navigation",
+            "sidebar",
+            "page",
+            "hero",
+            "footer",
+            "prev",
+            "next",
+            "pageData",
+            "regions",
+            "headTags",
+            "tokens",
+            "label",
+            "icon",
+        ] {
+            let raw = format!("---\nstate:\n  {key}: override\n---\n\n# Reserved");
+            let message = parse_frontmatter(&raw).expect_err(key).to_string();
+            assert!(
+                message.contains(key) && message.contains("reserved"),
+                "{message}"
+            );
+            assert!(message.contains("help:"), "{message}");
+        }
+    }
 }

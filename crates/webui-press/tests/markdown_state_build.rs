@@ -172,23 +172,7 @@ fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> Tes
         successful_build(root.path(), mode)?;
         let output_path = root.path().join("dist/invalid/index.html");
         let previous_output = fs::read_to_string(&output_path)?;
-        for state in [
-            "null",
-            "example",
-            "42",
-            "false",
-            "[]",
-            "{nested: {1: value}}",
-            "{nested: {true: value}}",
-            "{nested: {.nan: value}}",
-            "{nested: {value: .inf}}",
-            "{nested: [1, .nan]}",
-            "{nested: !example value}",
-            "!example {value: tagged}",
-            "{nested: {value: first, value: second}}",
-            "{value: first}\nstate: {value: second}",
-            "{broken: [}",
-        ] {
+        for state in ["null", "{site: override}", "{broken: [}"] {
             fs::write(
                 root.path().join("content/invalid.md"),
                 format!("---\nstate: {state}\n---\n\n# Invalid"),
@@ -203,44 +187,6 @@ fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> Tes
             );
             assert!(message.contains("help:"), "{message}");
             assert_eq!(fs::read_to_string(&output_path)?, previous_output);
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn cli_rejects_reserved_markdown_state_keys() -> TestResult {
-    let root = fixture()?;
-    for mode in ["all", "content"] {
-        for key in [
-            "site",
-            "navigation",
-            "sidebar",
-            "page",
-            "hero",
-            "footer",
-            "prev",
-            "next",
-            "pageData",
-            "regions",
-            "headTags",
-            "tokens",
-            "label",
-            "icon",
-        ] {
-            fs::write(
-                root.path().join("content/reserved.md"),
-                format!("---\nstate:\n  {key}: override\n---\n\n# Reserved"),
-            )?;
-            let output = build(root.path(), mode)?;
-            assert!(!output.status.success(), "{mode} accepted reserved {key}");
-            let message = String::from_utf8_lossy(&output.stderr);
-            assert!(message.contains("reserved.md"), "{message}");
-            assert!(
-                message.contains(key) && message.contains("reserved"),
-                "{message}"
-            );
-            assert!(message.contains("help:"), "{message}");
         }
     }
     Ok(())
