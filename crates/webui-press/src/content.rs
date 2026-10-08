@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
-use crate::state::{load_render_states, merge_page_state, LoadedStates};
+use crate::state::{load_render_states, merge_page_state, parse_markdown_state, LoadedStates};
 use crate::types::{DocsConfig, NavLink, PageDescriptor, ShowMode, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
@@ -59,6 +59,7 @@ struct Frontmatter {
     title: Option<String>,
     description: Option<String>,
     layout: Option<String>,
+    state: Option<Value>,
 }
 
 fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
@@ -68,6 +69,7 @@ fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
                 title: None,
                 description: None,
                 layout: None,
+                state: None,
             },
             content,
         ));
@@ -98,8 +100,11 @@ fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
         ""
     };
 
-    let yaml: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(yaml_str)
-        .map_err(|e| crate::error::Error::Markdown(format!("Invalid frontmatter YAML: {e}")))?;
+    let yaml: serde_yaml::Mapping = serde_yaml::from_str(yaml_str).map_err(|e| {
+        Error::Markdown(format!(
+            "Invalid frontmatter YAML: {e}\nhelp: Use valid YAML with unique object keys between the --- delimiters."
+        ))
+    })?;
 
     Ok((
         Frontmatter {
@@ -112,6 +117,7 @@ fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
                 .get("layout")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            state: yaml.get("state").map(parse_markdown_state).transpose()?,
         },
         body,
     ))
@@ -492,6 +498,7 @@ pub(crate) fn process_content_with_states(
                 let mut title = config.site.title.clone();
                 let mut description = config.site.description.clone();
                 let mut layout = "doc".to_string();
+                let mut markdown_state = None;
 
                 // Check custom page override
                 let logical_path = format!("/{}", &url_path[base_path.len()..]);
@@ -510,6 +517,7 @@ pub(crate) fn process_content_with_states(
                     let (fm, body) = parse_frontmatter(&raw).map_err(|e| {
                         crate::error::Error::Markdown(format!("{}: {e}", full_path.display()))
                     })?;
+                    markdown_state = fm.state;
 
                     is_home = fm.layout.as_deref() == Some("home");
                     layout = if is_home {
@@ -659,11 +667,11 @@ pub(crate) fn process_content_with_states(
                     ("icon", Value::String("🌙".to_string())),
                 ]);
 
-                // Flatten shared state first, then custom-page state. Component
-                // templates can bind directly to these fields (e.g.
-                // `<for each="item in files">`) while reserved docs keys keep
-                // their canonical values.
-                let state = merge_page_state(state, states.global(), custom_state);
+                let state = merge_page_state(
+                    state,
+                    states.global(),
+                    custom_state.or(markdown_state.as_ref()),
+                );
 
                 Ok((
                     idx,
@@ -1025,6 +1033,7 @@ mod tests {
         let (fm, body) = parse_frontmatter("# Hello\nworld\n").expect("ok");
         assert!(fm.title.is_none());
         assert!(fm.layout.is_none());
+        assert!(fm.state.is_none());
         assert_eq!(body, "# Hello\nworld\n");
     }
 
@@ -1053,5 +1062,26 @@ mod tests {
         let raw = "---\ntitle: : : :\n---\nBody\n";
         let result = parse_frontmatter(raw);
         assert!(result.is_err(), "expected error, got {result:?}");
+    }
+
+    #[test]
+    fn parse_frontmatter_preserves_json_compatible_state() {
+        let raw = concat!(
+            "---\nstate:\n  example:\n    label: 'Save'\n    count: 2\n",
+            "    enabled: false\n    optional: null\n    ratio: 0.5\n",
+            "    items: [one, two]\n    '1': string-key\n    site: nested-is-allowed\n",
+            "---\n# Example\n"
+        );
+        let (fm, body) = parse_frontmatter(raw).expect("valid state");
+        let state = fm.state.expect("local state");
+        assert_eq!(state["example"]["label"], "Save");
+        assert_eq!(state["example"]["count"], 2);
+        assert_eq!(state["example"]["enabled"], false);
+        assert_eq!(state["example"]["optional"], Value::Null);
+        assert_eq!(state["example"]["ratio"], 0.5);
+        assert_eq!(state["example"]["items"][1], "two");
+        assert_eq!(state["example"]["1"], "string-key");
+        assert_eq!(state["example"]["site"], "nested-is-allowed");
+        assert_eq!(body, "# Example\n");
     }
 }
