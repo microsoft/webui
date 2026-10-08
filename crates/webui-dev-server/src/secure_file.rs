@@ -14,6 +14,8 @@ pub(crate) struct SecureRoot {
     path: PathBuf,
     #[cfg(unix)]
     directory: Arc<File>,
+    #[cfg(unix)]
+    directory_identity: (u64, u64),
     #[cfg(windows)]
     final_path: PathBuf,
 }
@@ -30,17 +32,15 @@ impl SecureRoot {
         after_canonicalize: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<Self> {
         let path = std::fs::canonicalize(path)?;
-        let expected_identity = directory_identity(&std::fs::symlink_metadata(&path)?)?;
         after_canonicalize()?;
         let directory = open_directory_no_follow(&path)?;
-        if directory_identity(&directory.metadata()?)? != expected_identity {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "serving root changed during initialization",
-            ));
-        }
+        let directory_identity = directory_identity(&directory.metadata()?)?;
         let directory = Arc::new(directory);
-        Ok(Self { path, directory })
+        Ok(Self {
+            path,
+            directory,
+            directory_identity,
+        })
     }
 
     #[cfg(windows)]
@@ -71,7 +71,21 @@ impl SecureRoot {
         path: PathBuf,
         detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
+        self.validate_directory_identity()?;
         self.open_unix(path, detect_directory, || Ok(()))
+    }
+
+    #[cfg(unix)]
+    fn validate_directory_identity(&self) -> std::io::Result<()> {
+        let current_identity = directory_identity(&std::fs::symlink_metadata(&self.path)?)?;
+        if current_identity == self.directory_identity {
+            Ok(())
+        } else {
+            Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "serving root changed after initialization",
+            ))
+        }
     }
 
     #[cfg(unix)]
@@ -480,15 +494,19 @@ mod tests {
         let replacement = directory.path().join("replacement");
         std::fs::create_dir(&root_path)?;
         std::fs::create_dir(&replacement)?;
+        std::fs::write(root_path.join("asset.js"), b"original")?;
+        std::fs::write(replacement.join("asset.js"), b"replacement")?;
 
-        let result = SecureRoot::new_unix(root_path.clone(), || {
+        let root = SecureRoot::new_unix(root_path.clone(), || {
             std::fs::rename(&root_path, &displaced)?;
             std::fs::rename(&replacement, &root_path)?;
             Ok(())
-        });
+        })?;
+        std::fs::rename(&root_path, &replacement)?;
+        std::fs::rename(&displaced, &root_path)?;
 
         assert!(matches!(
-            result,
+            root.open(root_path.join("asset.js"), true),
             Err(error) if error.kind() == ErrorKind::PermissionDenied
         ));
         Ok(())
