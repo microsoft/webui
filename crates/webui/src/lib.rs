@@ -4218,6 +4218,161 @@ mod tests {
         assert!(!message.contains("add --token-a"), "msg: {message}");
     }
 
+    mod package_discovery {
+        use super::*;
+
+        type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+        fn write(root: &Path, name: &str, content: &str) -> TestResult {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, content)?;
+            Ok(())
+        }
+
+        fn package_fixture(package: &Path, catalog: Option<&str>) -> TestResult {
+            let mut metadata = serde_json::json!({
+                "name": "@fixture/catalog", "customElements": "custom-elements.json"
+            });
+            if let Some(catalog) = catalog {
+                metadata["webui"] = serde_json::json!({"components": [catalog]});
+            }
+            write(package, "package.json", &metadata.to_string())?;
+            let catalog = package.join(catalog.unwrap_or("components"));
+            write(&catalog, "fixture-card.html", "<p>Package component</p>")?;
+            write(&catalog, "fixture-card.css", "p { color: blue; }")?;
+            write(
+                &catalog,
+                "fixture-card.v2.html",
+                "<span>Dotted component</span>",
+            )?;
+            write(
+                package,
+                "custom-elements.json",
+                r#"{"modules":[{"path":"dist/manifest-card.js","declarations":[{"name":"ManifestCard","tagName":"manifest-card"}]}]}"#,
+            )?;
+            write(package, "dist/manifest-card.js", "export {};")?;
+            write(
+                package,
+                "dist/manifest-card.template-webui.html",
+                r#"<f-template name="manifest-card"><template><p>Manifest component</p></template></f-template>"#,
+            )?;
+            for report in [
+                "test_results/coverage/lcov-report/core/initial-state.ts.html",
+                "test_results/coverage/lcov-report/initial-state.ts.html",
+            ] {
+                write(
+                    package,
+                    report,
+                    "<!doctype html><html><body>Generated coverage report</body></html>",
+                )?;
+            }
+            Ok(())
+        }
+
+        fn assert_build(root: &Path, plugin: Option<Plugin>) -> TestResult {
+            let manifest = matches!(plugin, Some(Plugin::FastV2 | Plugin::FastV3));
+            let app = root.join("app/src");
+            write(&app, "app-local.html", "<span>App component</span>")?;
+            write(
+                &app,
+                "index.html",
+                "<app-local></app-local><fixture-card></fixture-card><fixture-card.v2></fixture-card.v2><manifest-card></manifest-card>",
+            )?;
+            let options = BuildOptions {
+                app_dir: app,
+                components: vec!["@fixture/catalog".to_string()],
+                plugin,
+                css: CssStrategy::Style,
+                ..BuildOptions::default()
+            };
+            for _ in 0..2 {
+                let result = build(options.clone())?;
+                assert_eq!(result.stats.component_count, if manifest { 4 } else { 3 });
+                assert!(!result.protocol.fragments.contains_key("initial-state.ts"));
+                let mut writer = StringWriter { buf: String::new() };
+                WebUIHandler::new().render(
+                    &Protocol::new(result.protocol),
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )?;
+                for text in ["App component", "Package component", "Dotted component"] {
+                    assert!(writer.buf.contains(text), "Missing rendered {text}");
+                }
+                assert!(writer.buf.contains("color: blue"));
+                assert!(!writer.buf.contains("Generated coverage report"));
+                assert_eq!(writer.buf.contains("Manifest component"), manifest);
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn package_build_excludes_reports_for_default_and_explicit_catalogs() -> TestResult {
+            for (plugin, catalog) in [
+                (None, None),
+                (Some(Plugin::WebUI), Some("./src/components")),
+                (Some(Plugin::FastV2), None),
+                (Some(Plugin::FastV3), Some("./src/components")),
+            ] {
+                let root = tempfile::tempdir()?;
+                package_fixture(&root.path().join("node_modules/@fixture/catalog"), catalog)?;
+                assert_build(root.path(), plugin)?;
+            }
+            Ok(())
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn symlinked_workspace_package_build_excludes_generated_reports() -> TestResult {
+            let root = tempfile::tempdir()?;
+            let package = root.path().join("packages/catalog");
+            package_fixture(&package, Some("./src/components"))?;
+            fs::create_dir_all(root.path().join("node_modules/@fixture"))?;
+            std::os::unix::fs::symlink(
+                &package,
+                root.path().join("node_modules/@fixture/catalog"),
+            )?;
+            assert_build(root.path(), Some(Plugin::FastV3))
+        }
+
+        #[test]
+        fn distinct_files_and_overlapping_roots_preserve_duplicate_errors() -> TestResult {
+            for (roots, second_file) in [
+                (["./a", "./b"], Some("b/fixture-card.html")),
+                (["./a", "./a"], None),
+                (["./", "./a"], None),
+                (["./a", "./"], None),
+            ] {
+                let root = tempfile::tempdir()?;
+                let package = root.path().join("node_modules/@fixture/catalog");
+                write(
+                    &package,
+                    "package.json",
+                    &serde_json::json!({"webui":{"components":roots}}).to_string(),
+                )?;
+                write(&package, "a/fixture-card.html", "<p>First</p>")?;
+                if let Some(path) = second_file {
+                    write(&package, path, "<p>Second</p>")?;
+                }
+                let app = root.path().join("app");
+                write(&app, "index.html", "<fixture-card></fixture-card>")?;
+                let error = build(BuildOptions {
+                    app_dir: app,
+                    components: vec!["@fixture/catalog".to_string()],
+                    ..BuildOptions::default()
+                })
+                .expect_err("Duplicate component names must remain errors");
+                let message = error.chain_message();
+                assert!(message.contains("fixture-card"), "{message}");
+                assert!(message.contains("already registered"), "{message}");
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_build_to_disk_returns_accurate_stats() {
         let app = create_app_dir(&[

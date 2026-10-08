@@ -8,10 +8,22 @@ different validated package layout into the same `DiscoveredComponent` runtime
 contract. Built-in WebUI and FAST discovery plugins are provided.
 
 Default WebUI discovery uses `<component-name>.html`: the filename is the
-custom element name. npm packages are scanned beneath `components/` when
-present, otherwise beneath the package root. Nested directories are supported;
-their names do not determine component names. Matching `.css` files provide
-styles and matching `.ts`/`.js` siblings mark authored components.
+custom element name. npm packages are scanned beneath `components/` by default,
+without falling back to the package root. To use another layout, declare the
+ordinary HTML catalog roots in `package.json`:
+
+```json
+{ "webui": { "components": ["./src/components"] } }
+```
+
+Only these directories are scanned when the field is present; `[]` disables
+ordinary HTML discovery. Paths must be readable directories within the resolved
+package, including symlink targets. Invalid metadata or paths fail discovery.
+Overlapping roots do not suppress duplicate component errors.
+Nested directories are supported; their names do not determine component names.
+Matching `.css` files provide styles and matching `.ts`/`.js` siblings mark
+authored components. Explicit local sources are scanned as given and do not
+read this package metadata.
 
 Template/style exports and Custom Elements Manifest names are not interpreted
 by default discovery. Browser registrations are imported through package module

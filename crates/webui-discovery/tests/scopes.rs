@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use webui_discovery::{
     discover_source, discover_source_with_plugin, DiscoveredComponent, DiscoveryPlugin,
-    FastDiscoveryPlugin, PackageContext, WebUIDiscoveryPlugin,
+    FastDiscoveryPlugin, PackageContext, PreparedPackage, WebUIDiscoveryPlugin,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -85,7 +85,11 @@ fn npm_sources_accept_package_and_collection_identifiers() -> TestResult {
     let root = tempfile::tempdir()?;
     for name in ["my-widget", "my_widget", "my.widget", "@fixture/ui-kit"] {
         let directory = package(root.path(), name, "{}")?;
-        fs::write(directory.join("test-card.html"), "<span>Card</span>")?;
+        fs::create_dir(directory.join("components"))?;
+        fs::write(
+            directory.join("components/test-card.html"),
+            "<span>Card</span>",
+        )?;
         for source in [name.to_string(), format!("{name}/*")] {
             assert_eq!(discover_source(&source, root.path())?.components.len(), 1);
         }
@@ -100,8 +104,9 @@ fn native_scope_skips_utilities_but_reports_invalid_component_files() -> TestRes
     fs::create_dir_all(child.join("node_modules/unrelated"))?;
     let component = package(root.path(), "@fixture/button", "{}")?;
     package(root.path(), "@fixture/utils", r#"{"main":"./index.js"}"#)?;
+    fs::create_dir(component.join("components"))?;
     fs::write(
-        component.join("test-button.html"),
+        component.join("components/test-button.html"),
         "<button>Example</button>",
     )?;
     let result = discover_source("@fixture", &child)?;
@@ -111,7 +116,7 @@ fn native_scope_skips_utilities_but_reports_invalid_component_files() -> TestRes
     assert_eq!(wildcard.components.len(), 1);
     assert_eq!(wildcard.components[0].tag_name, "test-button");
 
-    fs::write(component.join("test-button.html"), [0xff])?;
+    fs::write(component.join("components/test-button.html"), [0xff])?;
     let error = discover_source("@fixture", &child)
         .err()
         .ok_or("scope must surface bad HTML")?;
@@ -196,20 +201,14 @@ impl DiscoveryPlugin for InlinePlugin {
     fn discover_local(&self, _root: &Path) -> anyhow::Result<Vec<DiscoveredComponent>> {
         Ok(Vec::new())
     }
-    fn package_cache_files(&self, _package: PackageContext<'_>) -> anyhow::Result<Vec<PathBuf>> {
-        Ok(Vec::new())
-    }
-    fn discover_package(
-        &self,
-        package: PackageContext<'_>,
-    ) -> anyhow::Result<Vec<DiscoveredComponent>> {
-        Ok(vec![DiscoveredComponent {
+    fn prepare_package(&self, package: PackageContext<'_>) -> anyhow::Result<PreparedPackage> {
+        Ok(PreparedPackage::Uncached(vec![DiscoveredComponent {
             tag_name: "inline-component".to_string(),
             html_content: "<span>Inline</span>".to_string(),
             css_content: None,
             is_client_owned: false,
             source: package.name.to_string(),
-        }])
+        }]))
     }
 }
 
@@ -269,6 +268,7 @@ fn fast_manifest_components_take_precedence_and_plain_components_fill_gaps() -> 
         root.path(),
         "@fixture/mixed",
         r#"{
+        "webui":{"components":["./components"]},
         "customElements":"custom-elements.json",
         "exports":{"./template-webui.html":"./dist/button.template-webui.html"}
     }"#,
@@ -310,5 +310,24 @@ fn fast_manifest_components_take_precedence_and_plain_components_fill_gaps() -> 
         .components
         .iter()
         .any(|component| component.tag_name == "plain-card"));
+    fs::write(
+        mixed.join("package.json"),
+        r#"{
+        "webui":{"components":[]},
+        "customElements":"custom-elements.json",
+        "exports":{"./template-webui.html":"./dist/button.template-webui.html"}
+    }"#,
+    )?;
+    let result =
+        discover_source_with_plugin("@fixture/mixed", root.path(), &FastDiscoveryPlugin::new())?;
+    assert_eq!(result.components.len(), 1);
+    assert_eq!(result.components[0].tag_name, "fast-button");
+    fs::remove_file(mixed.join("dist/button.template-webui.html"))?;
+    assert!(discover_source_with_plugin(
+        "@fixture/mixed",
+        root.path(),
+        &FastDiscoveryPlugin::new()
+    )
+    .is_err());
     Ok(())
 }

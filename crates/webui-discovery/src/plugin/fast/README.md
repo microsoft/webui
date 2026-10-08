@@ -2,9 +2,11 @@
 
 FAST reads each package's `customElements` manifest as its component inventory
 and loads converted `*.template-webui.html` files for those declarations.
-It explicitly opts into package metadata loading. Other discovery plugins do
-not incur this metadata work unless they independently opt in. Package-level
-script ownership analysis is performed only for FAST manifest declarations.
+Package resolution supplies parsed metadata to every discovery plugin.
+Both built-ins use `webui.components` for ordinary HTML catalogs; FAST also
+interprets its CEM.
+Package-level script ownership analysis is performed only for FAST manifest
+declarations.
 
 ## Package assets
 
@@ -41,6 +43,10 @@ the converted `.template-webui.html` variant for this discovery plugin.
 FAST also includes ordinary `<component-name>.html` files not declared in the
 manifest, using default filename, CSS, and script-ownership rules. This fallback
 also works when the manifest is absent or contains no component declarations.
+The ordinary fallback scans `components/` by default. Package `webui.components`
+metadata selects alternate roots; an empty array disables only that fallback.
+An absent default directory contributes no ordinary HTML components.
+CEM-declared assets are resolved separately and may live outside those roots.
 
 Manifest declarations win name conflicts. Generated `.template.html` and
 `.template-webui.html` assets are not accidentally registered as default names.

@@ -1031,7 +1031,11 @@ webui build ./my-app --out ./dist --components @reactive-ui/button
 **Default WebUI package requirements:**
 
 Provide `<component-name>.html` files beneath the package's `components/`
-directory, or the package root when no `components/` directory exists.
+directory. There is no implicit package-root fallback.
+Set `"webui": { "components": ["./src/components"] }` in the package's
+`package.json` to select alternate ordinary HTML roots, or use an empty array
+to disable ordinary HTML discovery. Declared roots must be readable directories
+within the package.
 The filename determines the component name, including in nested directories.
 Matching `.css` supplies styles; a matching `.ts` or `.js` sibling marks that
 component as authored. Package exports and CEM metadata do not select or rename
@@ -1076,11 +1080,11 @@ webui build ./my-app --out ./dist \
 ### Caching
 
 Discovered npm package components are cached at `~/.webui/cache/components/`.
-Changes to the selected plugin's templates, stylesheets, scripts, or manifests
-invalidate its cached result, including optional file creation and removal.
-Default/WebUI/none discovery does not use package metadata, so metadata-only
-`package.json` edits do not invalidate its cache. Plugins that use package
-metadata, such as FAST, also invalidate on `package.json` changes.
+Source selection is reevaluated on each build. Changes to component inventory,
+template/style contents, or script ownership invalidate cached results,
+including optional file creation and removal.
+Package discovery caches also invalidate on `package.json` changes, including
+edits to `webui.components`.
 Local path sources are always re-scanned.
 
 ## Next Steps

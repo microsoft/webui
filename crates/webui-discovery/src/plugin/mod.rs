@@ -3,27 +3,22 @@
 
 //! Discovery contracts and the default filename-based implementation.
 
+use crate::catalog::PackageCatalog;
 use crate::npm::PackageContext;
-use crate::DiscoveredComponent;
+use crate::{DiscoveredComponent, PreparedPackage};
 use anyhow::{bail, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod fast;
 pub use fast::FastDiscoveryPlugin;
 
 /// Maps a resolved local or npm package layout to WebUI component registrations.
+///
+/// Package resolution supplies parsed metadata through [`PackageContext::manifest`]
+/// and includes `package.json` in cache invalidation for every plugin.
 pub trait DiscoveryPlugin {
     /// Stable cache namespace for this discovery layout.
     fn cache_namespace(&self) -> &'static str;
-
-    /// Opt into reading, parsing, and cache-hashing `package.json` contents.
-    ///
-    /// Filename-only discovery does not need package metadata. Plugins that
-    /// interpret package fields must opt in before accessing `PackageContext::manifest`.
-    #[must_use]
-    fn requires_package_metadata(&self) -> bool {
-        false
-    }
 
     /// Discover components below a local source root.
     ///
@@ -46,24 +41,17 @@ pub trait DiscoveryPlugin {
         Ok(true)
     }
 
-    /// Return every package file whose contents or existence affects discovery.
+    /// Resolve a package's component inventory and source choices once.
     ///
-    /// Paths must be deterministic. Missing optional candidates should still be
-    /// included so creating one invalidates a prior cache entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when package metadata needed to identify dependencies
-    /// is invalid.
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>>;
-
-    /// Discover components in a validated npm package.
+    /// File-backed plans are loaded by the shared cache layer without repeating
+    /// discovery. Return [`PreparedPackage::Uncached`] for computed components
+    /// whose input observations are not represented by a file-backed plan.
     ///
     /// # Errors
     ///
     /// Returns an error when required package metadata or component sources are
     /// missing or invalid.
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>>;
+    fn prepare_package(&self, package: PackageContext<'_>) -> Result<PreparedPackage>;
 }
 
 /// Default discovery using component filenames and matching sibling files.
@@ -80,7 +68,7 @@ impl WebUIDiscoveryPlugin {
 
 impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str {
-        "webui-filenames"
+        "webui-prepared-v1"
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
@@ -88,23 +76,20 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     }
 
     fn supports_package(&self, package: PackageContext<'_>) -> Result<bool> {
-        crate::catalog::has_templates(&crate::catalog::root(package)?)
+        PackageCatalog::new(package)?.has_templates(|_| true)
     }
 
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        crate::catalog::cache_files(&crate::catalog::root(package)?)
-    }
-
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
-        let root = crate::catalog::root(package)?;
-        let components = crate::catalog::discover(package.name, &root)?;
-        if components.is_empty() {
+    fn prepare_package(&self, package: PackageContext<'_>) -> Result<PreparedPackage> {
+        let catalog = PackageCatalog::new(package)?;
+        let components = catalog.prepare(|_| true)?;
+        if components.is_empty() && !catalog.is_disabled() {
             bail!(
-                "No component templates in {}. Add <component-name>.html files; \
+                "No component templates in {}. Add <component-name>.html files under \
+                 components/ or declare webui.components in package.json; \
                  the filename is the custom element name.",
-                root.display()
+                package.root.display()
             );
         }
-        Ok(components)
+        Ok(PreparedPackage::Files(components))
     }
 }

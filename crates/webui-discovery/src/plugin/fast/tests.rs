@@ -61,7 +61,7 @@ fn undeclared_unscoped_module_stays_package_relative_when_name_is_hoisted() {
     let package = PackageContext {
         name: "aggregate",
         root: &aggregate,
-        manifest: Some(&manifest),
+        manifest: &manifest,
     };
     let declaration = ComponentDeclaration {
         tag_name: "fixture-button".to_string(),
@@ -106,7 +106,7 @@ fn package_relative_inferred_template_symlink_cannot_escape_package() {
     let package = PackageContext {
         name: "aggregate",
         root: &aggregate,
-        manifest: Some(&manifest),
+        manifest: &manifest,
     };
     let declaration = ComponentDeclaration {
         tag_name: "fixture-card".to_string(),
@@ -116,8 +116,6 @@ fn package_relative_inferred_template_symlink_cannot_escape_package() {
     let module = ResolvedCemModule {
         root: external,
         relative_path: PathBuf::from("component.js"),
-        package_json: None,
-        resolution_dependencies: Vec::new(),
         exported_template: None,
         exported_styles: None,
         is_client_owned: false,
@@ -147,7 +145,7 @@ fn package_self_reference_resolves_against_containing_root() {
     let package = PackageContext {
         name: "self-package",
         root: &package_root,
-        manifest: Some(&manifest),
+        manifest: &manifest,
     };
     let declaration = ComponentDeclaration {
         tag_name: "fixture-card".to_string(),

@@ -75,6 +75,17 @@ matching `.ts` or `.js` sibling to distinguish authored client behavior from
 scriptless HTML; other plugins may supply their own ownership evidence.
 Filesystem and package resolution are build-time concerns; paths from packages
 must be validated before they are opened.
+The shared package resolver supplies package metadata to all discovery plugins;
+framework-specific indices remain plugin-owned.
+Ordinary HTML discovery defaults to the package's component catalog;
+explicit package metadata selects alternate roots.
+Framework-declared assets remain independent of those ordinary catalog roots.
+Application directories and explicit local sources retain their caller-chosen
+boundaries.
+Package discovery resolves an immutable inventory and source choices before
+cache lookup. Published cache entries describe those choices and the bytes
+actually loaded, rather than a later filesystem sample. Computed plugin results
+without that input evidence are not cached.
 
 `webui-parser` scans HTML and CSS deterministically and compiles entry pages
 and reusable components into fragment records. Static HTML is coalesced; dynamic

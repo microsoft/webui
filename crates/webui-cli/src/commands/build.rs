@@ -1062,15 +1062,19 @@ mod tests {
         let project_dir = TempDir::new().unwrap();
         let nm = project_dir.path().join("node_modules");
         let pkg_dir = nm.join("test-widget");
-        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::create_dir_all(pkg_dir.join("components")).unwrap();
 
         // Create the npm package files
         fs::write(
-            pkg_dir.join("test-widget.html"),
+            pkg_dir.join("components/test-widget.html"),
             r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
         )
         .unwrap();
-        fs::write(pkg_dir.join("test-widget.css"), ".btn { padding: 4px; }").unwrap();
+        fs::write(
+            pkg_dir.join("components/test-widget.css"),
+            ".btn { padding: 4px; }",
+        )
+        .unwrap();
 
         let pkg_json = serde_json::json!({
             "name": "test-widget",
@@ -1144,9 +1148,9 @@ mod tests {
             ),
         ] {
             let pkg_dir = scope_dir.join(sub);
-            fs::create_dir_all(&pkg_dir).unwrap();
+            fs::create_dir_all(pkg_dir.join("components")).unwrap();
 
-            fs::write(pkg_dir.join(format!("{tag}.html")), html).unwrap();
+            fs::write(pkg_dir.join("components").join(format!("{tag}.html")), html).unwrap();
 
             let pkg_json = serde_json::json!({
                 "name": format!("@myui/{sub}"),
@@ -1192,7 +1196,10 @@ mod tests {
         })
         .unwrap();
 
-        assert!(out_dir.path().join("protocol.bin").exists());
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert!(protocol.fragments.contains_key("myui-btn"));
+        assert!(protocol.fragments.contains_key("myui-txt"));
     }
 
     #[test]
