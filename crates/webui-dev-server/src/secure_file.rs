@@ -45,8 +45,23 @@ impl SecureRoot {
 
     #[cfg(windows)]
     pub(crate) fn new(path: PathBuf) -> std::io::Result<Self> {
+        Self::new_windows(path, || Ok(()))
+    }
+
+    #[cfg(windows)]
+    fn new_windows(
+        path: PathBuf,
+        after_canonicalize: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
         let path = std::fs::canonicalize(path)?;
+        after_canonicalize()?;
         let final_path = final_path(&open_node(&path)?)?;
+        if final_path != path {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "serving root changed during initialization",
+            ));
+        }
         Ok(Self { path, final_path })
     }
 
@@ -636,6 +651,31 @@ mod tests {
         symlink(outside.path(), &target)?;
 
         assert!(root.open_canonical_at(alias, relative).is_err());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_root_junction_replaced_after_canonicalize() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::windows::fs::symlink_dir;
+
+        let directory = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let root_path = directory.path().join("root");
+        let displaced = directory.path().join("displaced");
+        std::fs::create_dir(&root_path)?;
+
+        let result = SecureRoot::new_windows(root_path.clone(), || {
+            std::fs::rename(&root_path, &displaced)?;
+            symlink_dir(outside.path(), &root_path)?;
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == ErrorKind::PermissionDenied
+        ));
         Ok(())
     }
 

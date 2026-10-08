@@ -24,7 +24,6 @@ use actix_web::http::header::{
 };
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse};
-use console::style;
 
 use crate::livereload::LiveReload;
 use crate::path::{resolve_safe_path, strip_base_path};
@@ -328,11 +327,7 @@ fn plain_not_found_response() -> HttpResponse {
 #[cold]
 #[inline(never)]
 fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
-    eprintln!(
-        "  {} {} {error}",
-        style("✘").red().bold(),
-        style("static-file task failed:").red().bold()
-    );
+    eprintln!("static-file task failed: {error}");
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")
         .body("Internal Server Error")
@@ -341,11 +336,7 @@ fn file_task_error_response(error: tokio::task::JoinError) -> HttpResponse {
 #[cold]
 #[inline(never)]
 fn static_config_error_response(error: std::io::Error) -> HttpResponse {
-    eprintln!(
-        "  {} {} {error}",
-        style("✘").red().bold(),
-        style("static-file setup failed:").red().bold()
-    );
+    eprintln!("static-file setup failed: {error}");
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")
         .body("Internal Server Error")
@@ -354,13 +345,7 @@ fn static_config_error_response(error: std::io::Error) -> HttpResponse {
 #[cold]
 #[inline(never)]
 fn file_load_invariant_response() -> HttpResponse {
-    eprintln!(
-        "  {} {}",
-        style("✘").red().bold(),
-        style("static-file loader reported a directory without a redirect target")
-            .red()
-            .bold()
-    );
+    eprintln!("static-file loader reported a directory without a redirect target");
     HttpResponse::InternalServerError()
         .content_type("text/plain; charset=utf-8")
         .body("Internal Server Error")
