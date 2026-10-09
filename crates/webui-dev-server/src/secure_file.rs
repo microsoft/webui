@@ -250,11 +250,8 @@ impl SecureRoot {
         let relative_path = response_path.strip_prefix(&self.path).map_err(|_| {
             Error::new(ErrorKind::PermissionDenied, "path escapes the serving root")
         })?;
-        match open_relative_no_reparse(&self.directory, relative_path)? {
-            Some(file) => {
-                return opened_windows_file(response_path, file, known_length);
-            }
-            None => {}
+        if let Some(file) = open_relative_no_reparse(&self.directory, relative_path)? {
+            return opened_windows_file(response_path, file, known_length);
         }
 
         let metadata = if detect_directory {
