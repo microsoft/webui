@@ -211,6 +211,18 @@ impl SecureRoot {
     }
 
     #[cfg(windows)]
+    pub(crate) fn classify_windows_path(&self, path: &Path) -> std::io::Result<WindowsPathKind> {
+        let metadata = windows_node_metadata(path)?;
+        Ok(if metadata.is_plain_directory() {
+            WindowsPathKind::PlainDirectory
+        } else if metadata.is_reparse_point() {
+            WindowsPathKind::ReparsePoint
+        } else {
+            WindowsPathKind::Other
+        })
+    }
+
+    #[cfg(windows)]
     pub(crate) fn open(
         &self,
         path: PathBuf,
@@ -225,12 +237,15 @@ impl SecureRoot {
         response_path: PathBuf,
         detect_directory: bool,
     ) -> std::io::Result<OpenedNode> {
-        let metadata = windows_node_metadata(&response_path)?;
-        // A directory result only selects a redirect; every served byte still
-        // comes from an opened handle validated below.
-        if detect_directory && metadata.is_plain_directory() {
-            return Ok(OpenedNode::Directory);
-        }
+        let metadata = if detect_directory {
+            let metadata = windows_node_metadata(&response_path)?;
+            if metadata.is_plain_directory() {
+                return Ok(OpenedNode::Directory);
+            }
+            Some(metadata)
+        } else {
+            None
+        };
         let file = open_node(&response_path)?;
         let opened_path = final_path(&file)?;
         if !opened_path.starts_with(&self.final_path) {
@@ -239,7 +254,7 @@ impl SecureRoot {
                 "opened file escapes the serving root",
             ));
         }
-        if metadata.is_plain_file() {
+        if let Some(metadata) = metadata.filter(WindowsNodeMetadata::is_plain_file) {
             return Ok(OpenedNode::File {
                 path: response_path,
                 file,
@@ -376,6 +391,19 @@ impl WindowsNodeMetadata {
             & (FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
             == 0
     }
+
+    fn is_reparse_point(&self) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        self.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+}
+
+#[cfg(windows)]
+pub(crate) enum WindowsPathKind {
+    PlainDirectory,
+    ReparsePoint,
+    Other,
 }
 
 #[cfg(windows)]

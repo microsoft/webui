@@ -27,6 +27,8 @@ use actix_web::{HttpRequest, HttpResponse};
 
 use crate::livereload::LiveReload;
 use crate::path::{resolve_safe_path, strip_base_path};
+#[cfg(windows)]
+use crate::secure_file::WindowsPathKind;
 use crate::secure_file::{OpenedNode, SecureRoot};
 
 /// What to serve when a requested file isn't found.
@@ -165,6 +167,21 @@ pub async fn serve_prepared_static_file(
     };
 
     let detect_directory = !path.ends_with('/');
+    #[cfg(windows)]
+    let detect_directory = if detect_directory {
+        match cfg.root.classify_windows_path(&resolved) {
+            Ok(WindowsPathKind::PlainDirectory) => {
+                return HttpResponse::TemporaryRedirect()
+                    .insert_header((LOCATION, format!("{path}/")))
+                    .finish();
+            }
+            Ok(WindowsPathKind::ReparsePoint) => true,
+            Ok(WindowsPathKind::Other) => false,
+            Err(_) => return not_found_response(Arc::clone(&cfg)).await,
+        }
+    } else {
+        false
+    };
     match run_file_load(resolved, detect_directory, Arc::clone(&cfg)).await {
         Ok(FileLoad::Found {
             path,
