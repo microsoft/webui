@@ -6,13 +6,13 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct SecureRoot {
     path: PathBuf,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     directory: Arc<File>,
     #[cfg(unix)]
     directory_identity: (u64, u64),
@@ -55,14 +55,19 @@ impl SecureRoot {
     ) -> std::io::Result<Self> {
         let path = std::fs::canonicalize(path)?;
         after_canonicalize()?;
-        let final_path = final_path(&open_node(&path)?)?;
+        let directory = open_node(&path)?;
+        let final_path = final_path(&directory)?;
         if final_path != path {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "serving root changed during initialization",
             ));
         }
-        Ok(Self { path, final_path })
+        Ok(Self {
+            path,
+            directory: Arc::new(directory),
+            final_path,
+        })
     }
 
     #[cfg(all(not(unix), not(windows)))]
@@ -85,6 +90,7 @@ impl SecureRoot {
         &self,
         path: PathBuf,
         detect_directory: bool,
+        _known_length: Option<u64>,
     ) -> std::io::Result<OpenedNode> {
         self.validate_directory_identity()?;
         self.open_unix(path, detect_directory, || Ok(()))
@@ -217,6 +223,8 @@ impl SecureRoot {
             WindowsPathKind::PlainDirectory
         } else if metadata.is_reparse_point() {
             WindowsPathKind::ReparsePoint
+        } else if metadata.is_plain_file() {
+            WindowsPathKind::PlainFile(metadata.length)
         } else {
             WindowsPathKind::Other
         })
@@ -227,8 +235,9 @@ impl SecureRoot {
         &self,
         path: PathBuf,
         detect_directory: bool,
+        known_length: Option<u64>,
     ) -> std::io::Result<OpenedNode> {
-        self.open_checked_windows(path, detect_directory)
+        self.open_checked_windows(path, detect_directory, known_length)
     }
 
     #[cfg(windows)]
@@ -236,7 +245,18 @@ impl SecureRoot {
         &self,
         response_path: PathBuf,
         detect_directory: bool,
+        known_length: Option<u64>,
     ) -> std::io::Result<OpenedNode> {
+        let relative_path = response_path.strip_prefix(&self.path).map_err(|_| {
+            Error::new(ErrorKind::PermissionDenied, "path escapes the serving root")
+        })?;
+        match open_relative_no_reparse(&self.directory, relative_path)? {
+            Some(file) => {
+                return opened_windows_file(response_path, file, known_length);
+            }
+            None => {}
+        }
+
         let metadata = if detect_directory {
             let metadata = windows_node_metadata(&response_path)?;
             if metadata.is_plain_directory() {
@@ -278,6 +298,7 @@ impl SecureRoot {
         &self,
         path: PathBuf,
         _detect_directory: bool,
+        _known_length: Option<u64>,
     ) -> std::io::Result<OpenedNode> {
         let path = std::fs::canonicalize(path)?;
         if !path.starts_with(&self.path) {
@@ -289,6 +310,92 @@ impl SecureRoot {
         let file = File::open(&path)?;
         opened_file(path, file)
     }
+}
+
+#[cfg(windows)]
+fn open_relative_no_reparse(root: &File, path: &Path) -> std::io::Result<Option<File>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        NtCreateFile, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Foundation::{
+        RtlNtStatusToDosError, HANDLE, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE,
+        STATUS_REPARSE_POINT_ENCOUNTERED, UNICODE_STRING,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut encoded = encode_windows_path(path)?;
+    let length = encoded
+        .len()
+        .checked_sub(1)
+        .and_then(|length| length.checked_mul(2))
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "path is too long"))?;
+    let maximum_length = length
+        .checked_add(2)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "path is too long"))?;
+    let name = UNICODE_STRING {
+        Length: length,
+        MaximumLength: maximum_length,
+        Buffer: encoded.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "object attributes are too large"))?,
+        RootDirectory: root.as_raw_handle(),
+        ObjectName: &name,
+        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: the root owns a live directory handle, `name` and `attributes`
+    // remain valid for the call, and successful ownership transfers below.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &attributes,
+            &mut io_status,
+            std::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status == STATUS_REPARSE_POINT_ENCOUNTERED {
+        return Ok(None);
+    }
+    if status < 0 {
+        // SAFETY: converting the status does not dereference any pointers.
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(Error::from_raw_os_error(code as i32));
+    }
+    // SAFETY: successful `NtCreateFile` returned an owned, valid handle.
+    Ok(Some(unsafe { File::from_raw_handle(handle) }))
+}
+
+#[cfg(windows)]
+fn opened_windows_file(
+    path: PathBuf,
+    file: File,
+    known_length: Option<u64>,
+) -> std::io::Result<OpenedNode> {
+    if let Some(length) = known_length {
+        return Ok(OpenedNode::File { path, file, length });
+    }
+    let metadata = file.metadata()?;
+    opened_file_with_metadata(path, file, metadata)
 }
 
 #[cfg(windows)]
@@ -402,6 +509,7 @@ impl WindowsNodeMetadata {
 #[cfg(windows)]
 pub(crate) enum WindowsPathKind {
     PlainDirectory,
+    PlainFile(u64),
     ReparsePoint,
     Other,
 }
@@ -654,7 +762,7 @@ mod tests {
         std::fs::rename(&displaced, &root_path)?;
 
         assert!(matches!(
-            root.open(root_path.join("asset.js"), true),
+            root.open(root_path.join("asset.js"), true, None),
             Err(error) if error.kind() == ErrorKind::PermissionDenied
         ));
         Ok(())
@@ -726,7 +834,7 @@ mod tests {
         std::fs::rename(&candidate, displaced)?;
         symlink_dir(outside.path(), &candidate)?;
 
-        let result = root.open_checked_windows(checked, false);
+        let result = root.open_checked_windows(checked, false, None);
         assert!(matches!(
             result,
             Err(error) if error.kind() == ErrorKind::PermissionDenied

@@ -168,21 +168,24 @@ pub async fn serve_prepared_static_file(
 
     let detect_directory = !path.ends_with('/');
     #[cfg(windows)]
-    let detect_directory = if detect_directory {
+    let (detect_directory, known_length) = if detect_directory {
         match cfg.root.classify_windows_path(&resolved) {
             Ok(WindowsPathKind::PlainDirectory) => {
                 return HttpResponse::TemporaryRedirect()
                     .insert_header((LOCATION, format!("{path}/")))
                     .finish();
             }
-            Ok(WindowsPathKind::ReparsePoint) => true,
-            Ok(WindowsPathKind::Other) => false,
+            Ok(WindowsPathKind::PlainFile(length)) => (false, Some(length)),
+            Ok(WindowsPathKind::ReparsePoint) => (true, None),
+            Ok(WindowsPathKind::Other) => (false, None),
             Err(_) => return not_found_response(Arc::clone(&cfg)).await,
         }
     } else {
-        false
+        (false, None)
     };
-    match run_file_load(resolved, detect_directory, Arc::clone(&cfg)).await {
+    #[cfg(not(windows))]
+    let known_length = None;
+    match run_file_load(resolved, detect_directory, known_length, Arc::clone(&cfg)).await {
         Ok(FileLoad::Found {
             path,
             bytes,
@@ -245,9 +248,10 @@ enum FileLoad {
 async fn run_file_load(
     path: PathBuf,
     detect_directory: bool,
+    known_length: Option<u64>,
     cfg: Arc<PreparedStaticServeConfig>,
 ) -> Result<FileLoad, tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || load_file(path, detect_directory, &cfg)).await
+    tokio::task::spawn_blocking(move || load_file(path, detect_directory, known_length, &cfg)).await
 }
 
 async fn run_fallback_load(
@@ -256,8 +260,13 @@ async fn run_fallback_load(
     tokio::task::spawn_blocking(move || load_fallback(&cfg)).await
 }
 
-fn load_file(path: PathBuf, detect_directory: bool, cfg: &PreparedStaticServeConfig) -> FileLoad {
-    match load_opened_file(path, detect_directory, StatusCode::OK, cfg) {
+fn load_file(
+    path: PathBuf,
+    detect_directory: bool,
+    known_length: Option<u64>,
+    cfg: &PreparedStaticServeConfig,
+) -> FileLoad {
+    match load_opened_file(path, detect_directory, known_length, StatusCode::OK, cfg) {
         Ok(file) => file,
         Err(_) => load_fallback(cfg),
     }
@@ -267,7 +276,13 @@ fn load_fallback(cfg: &PreparedStaticServeConfig) -> FileLoad {
     let NotFoundStrategy::File(relative) = &cfg.not_found else {
         return FileLoad::NotFound;
     };
-    match load_opened_file(cfg.root.join(relative), false, StatusCode::NOT_FOUND, cfg) {
+    match load_opened_file(
+        cfg.root.join(relative),
+        false,
+        None,
+        StatusCode::NOT_FOUND,
+        cfg,
+    ) {
         Ok(file) => file,
         Err(_) => FileLoad::NotFound,
     }
@@ -276,6 +291,7 @@ fn load_fallback(cfg: &PreparedStaticServeConfig) -> FileLoad {
 fn load_opened_file(
     path: PathBuf,
     detect_directory: bool,
+    known_length: Option<u64>,
     status: StatusCode,
     cfg: &PreparedStaticServeConfig,
 ) -> std::io::Result<FileLoad> {
@@ -283,7 +299,7 @@ fn load_opened_file(
         path,
         mut file,
         length,
-    } = cfg.root.open(path, detect_directory)?
+    } = cfg.root.open(path, detect_directory, known_length)?
     else {
         return if detect_directory {
             Ok(FileLoad::Directory)
