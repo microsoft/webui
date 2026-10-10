@@ -167,12 +167,18 @@ internal static class NativeBindings
     private static extern void webui_protocol_destroy_raw(IntPtr protocolPtr);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_handler_render(
+    internal static extern IntPtr webui_handler_render_result(
         WebUIHandlerSafeHandle handlerPtr,
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr webui_render_result_bytes(IntPtr resultPtr, out nuint outLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void webui_render_result_destroy(IntPtr resultPtr);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_protocol_render_partial(
@@ -363,6 +369,32 @@ internal static class NativeBindings
         finally
         {
             webui_free(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Copies a rendered document from a native render result and destroys the result.
+    /// </summary>
+    /// <remarks>
+    /// The native result carries the document length, so the full render is
+    /// decoded in one pass without a terminator scan, and output containing a
+    /// NUL character is returned intact.
+    /// </remarks>
+    internal static string ReadAndDestroyRenderResult(IntPtr resultPtr)
+    {
+        try
+        {
+            IntPtr bytes = webui_render_result_bytes(resultPtr, out nuint length);
+            if (bytes == IntPtr.Zero)
+            {
+                throw new WebUIException(GetLastError() ?? "Failed to read the rendered document.");
+            }
+
+            return ReadBorrowedString(bytes, length)!;
+        }
+        finally
+        {
+            webui_render_result_destroy(resultPtr);
         }
     }
 

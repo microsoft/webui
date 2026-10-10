@@ -243,7 +243,7 @@ enum Frame {
 }
 
 struct ComponentEndFrame {
-    saved_local_vars: HashMap<String, Value>,
+    saved_local_vars: crate::ScopeMap,
     component_slot: u32,
     owns_css_tree: bool,
 }

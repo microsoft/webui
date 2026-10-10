@@ -9,6 +9,11 @@
 typedef void webui_protocol_t;
 
 /**
+ * Opaque owned document returned by [`webui_handler_render_result`].
+ */
+typedef void webui_render_result_t;
+
+/**
  * Opaque C handle for a host-driven progressive response.
  */
 typedef void webui_streaming_session_t;
@@ -133,7 +138,8 @@ void webui_protocol_destroy(webui_protocol_t *protocol_ptr);
 /**
  * Set the CSP nonce for inline `<script>` tags on a handler instance.
  *
- * When set, all subsequent renders via [`webui_handler_render`] will include
+ * When set, all subsequent renders via [`webui_handler_render`] or
+ * [`webui_handler_render_result`] will include
  * `nonce="VALUE"` on inline script tags and emit a
  * `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
  *
@@ -156,6 +162,11 @@ void webui_handler_set_nonce(void *handler_ptr, const char *nonce);
 /**
  * Render using a protocol previously returned by [`webui_protocol_create`].
  *
+ * Returns a NUL-terminated copy of the document that must be released with
+ * [`webui_free`]. Hosts that track lengths should prefer
+ * [`webui_handler_render_result`], which hands the same document over without
+ * an interior-NUL scan, a shrinking reallocation, or a host-side `strlen`.
+ *
  * # Safety
  *
  * * `handler_ptr` must be a valid handler pointer.
@@ -167,6 +178,56 @@ char *webui_handler_render(void *handler_ptr,
                            const char *data_json,
                            const char *entry_id,
                            const char *request_path);
+
+/**
+ * Render like [`webui_handler_render`], returning an owned document handle.
+ *
+ * Read the document with [`webui_render_result_bytes`] and release it with
+ * [`webui_render_result_destroy`]. The rendered buffer is handed over as is,
+ * so large documents avoid the NUL scan and copy of the string form. The
+ * handle owns the document and stays valid after the handler or protocol it
+ * was rendered with is destroyed.
+ *
+ * Returns `NULL` on error; call [`webui_last_error`] for details.
+ *
+ * # Safety
+ *
+ * * `handler_ptr` must be a valid handler pointer.
+ * * `protocol_ptr` must be a valid loaded protocol pointer.
+ * * String arguments must be valid null-terminated UTF-8.
+ */
+webui_render_result_t *webui_handler_render_result(void *handler_ptr,
+                                                   const webui_protocol_t *protocol_ptr,
+                                                   const char *data_json,
+                                                   const char *entry_id,
+                                                   const char *request_path);
+
+/**
+ * Borrow a rendered document and write its length in bytes to `out_len`.
+ *
+ * The returned UTF-8 bytes are borrowed from `result_ptr`, are not
+ * NUL-terminated, and remain valid only until [`webui_render_result_destroy`].
+ * They may be read for exactly `out_len` bytes. Returns `NULL` on error.
+ *
+ * # Safety
+ *
+ * * `result_ptr` must be a live result handle with no concurrent destroy.
+ * * `out_len` must be non-null and writable.
+ */
+const uint8_t *webui_render_result_bytes(const webui_render_result_t *result_ptr,
+                                         uintptr_t *out_len);
+
+/**
+ * Release a document returned by [`webui_handler_render_result`].
+ *
+ * Invalidates the pointer previously returned by [`webui_render_result_bytes`].
+ *
+ * # Safety
+ *
+ * `result_ptr` must be a pointer returned by [`webui_handler_render_result`],
+ * or `NULL` for a no-op. A non-null pointer must not be used after this call.
+ */
+void webui_render_result_destroy(webui_render_result_t *result_ptr);
 
 /**
  * Produce a complete partial response using a loaded protocol handle.
@@ -196,6 +257,11 @@ char *webui_protocol_render_component_templates(const webui_protocol_t *protocol
 
 /**
  * Free a string returned by a WebUI FFI function.
+ *
+ * Only strings belong here. Opaque handles have their own release
+ * functions: a document from [`webui_handler_render_result`] is released
+ * with [`webui_render_result_destroy`], and streaming steps and sessions with
+ * [`webui_streaming_step_destroy`] and [`webui_streaming_session_destroy`].
  *
  * # Safety
  *

@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using Xunit;
 
 namespace Microsoft.WebUI.Tests;
@@ -85,6 +86,39 @@ public class WebUIHandlerTests
         Assert.Contains("\"kept\":\"SECOND\"", second);
         Assert.Contains("\"dropped\":\"SECRET\"", first);
         Assert.Contains("\"dropped\":\"SECRET\"", second);
+    }
+
+    [Fact]
+    public void Handler_Render_DecodesLargeMultiByteDocumentWhole()
+    {
+        byte[] protocolBytes = File.ReadAllBytes(
+            Path.Join(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+        string kept = string.Concat(Enumerable.Repeat("Zoë 🐍 ✓ ", 20_000));
+
+        using var protocol = new Protocol(protocolBytes);
+        using var handler = new WebUIHandler("webui");
+        string html = handler.Render(protocol, "{\"kept\":\"" + kept + "\"}", "index.html", "/");
+
+        Assert.Contains(kept, html);
+        Assert.EndsWith("</html>", html.TrimEnd());
+    }
+
+    [Fact]
+    public void Handler_Render_ReturnsNulCharactersInOutput()
+    {
+        byte[] protocolBytes = File.ReadAllBytes(
+            Path.Join(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+
+        using var protocol = new Protocol(protocolBytes);
+        using var handler = new WebUIHandler("webui");
+        string html = handler.Render(
+            protocol,
+            "{\"kept\":\"before\\u0000after\"}",
+            "index.html",
+            "/");
+
+        Assert.Contains("before\0after", html);
+        Assert.EndsWith("</html>", html.TrimEnd());
     }
 
     [Fact]

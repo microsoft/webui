@@ -31,9 +31,16 @@ use webui_handler::{
     SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
+mod render_capacity;
+use render_capacity::RenderCapacityHint;
+
 /// Opaque C handle for a loaded WebUI protocol.
 #[allow(non_camel_case_types)]
 pub type webui_protocol_t = c_void;
+
+/// Opaque owned document returned by [`webui_handler_render_result`].
+#[allow(non_camel_case_types)]
+pub type webui_render_result_t = c_void;
 
 // ---------------------------------------------------------------------------
 // Thread-local error storage (POSIX dlerror() pattern)
@@ -79,6 +86,22 @@ struct HandlerContext {
 /// Opaque decoded protocol context shared across repeated host calls.
 struct ProtocolContext {
     protocol: Arc<Protocol>,
+    /// Output reservation for full renders of this protocol.
+    render_capacity: RenderCapacityHint,
+}
+
+impl ProtocolContext {
+    fn new(protocol: Protocol) -> Self {
+        Self {
+            protocol: Arc::new(protocol),
+            render_capacity: RenderCapacityHint::default(),
+        }
+    }
+}
+
+/// Owns one rendered document and the bytes borrowed from it.
+struct RenderResultContext {
+    html: String,
 }
 
 webui_handler::define_string_response_writer!(StringResponseWriter, content);
@@ -209,9 +232,9 @@ pub unsafe extern "C" fn webui_protocol_create(
         // SAFETY: The caller guarantees that the input range is readable.
         let bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
         match Protocol::from_protobuf(bytes) {
-            Ok(protocol) => Box::into_raw(Box::new(ProtocolContext {
-                protocol: Arc::new(protocol),
-            })) as *mut webui_protocol_t,
+            Ok(protocol) => {
+                Box::into_raw(Box::new(ProtocolContext::new(protocol))) as *mut webui_protocol_t
+            }
             Err(error) => {
                 set_last_error(format!("failed to parse protobuf protocol: {error}"));
                 std::ptr::null_mut()
@@ -243,7 +266,8 @@ pub unsafe extern "C" fn webui_protocol_destroy(protocol_ptr: *mut webui_protoco
 
 /// Set the CSP nonce for inline `<script>` tags on a handler instance.
 ///
-/// When set, all subsequent renders via [`webui_handler_render`] will include
+/// When set, all subsequent renders via [`webui_handler_render`] or
+/// [`webui_handler_render_result`] will include
 /// `nonce="VALUE"` on inline script tags and emit a
 /// `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
 ///
@@ -298,6 +322,11 @@ pub unsafe extern "C" fn webui_handler_set_nonce(handler_ptr: *mut c_void, nonce
 
 /// Render using a protocol previously returned by [`webui_protocol_create`].
 ///
+/// Returns a NUL-terminated copy of the document that must be released with
+/// [`webui_free`]. Hosts that track lengths should prefer
+/// [`webui_handler_render_result`], which hands the same document over without
+/// an interior-NUL scan, a shrinking reallocation, or a host-side `strlen`.
+///
 /// # Safety
 ///
 /// * `handler_ptr` must be a valid handler pointer.
@@ -314,28 +343,18 @@ pub unsafe extern "C" fn webui_handler_render(
     clear_last_error();
 
     match std::panic::catch_unwind(|| {
-        if handler_ptr.is_null()
-            || protocol_ptr.is_null()
-            || data_json.is_null()
-            || entry_id.is_null()
-            || request_path.is_null()
-        {
-            set_last_error("one or more required arguments are null");
+        // SAFETY: The caller upholds this function's pointer contract.
+        let Some(html) = (unsafe {
+            render_full_document(handler_ptr, protocol_ptr, data_json, entry_id, request_path)
+        }) else {
             return std::ptr::null_mut();
-        }
-
-        // SAFETY: The caller guarantees both opaque pointers are valid.
-        let context = unsafe { &*(handler_ptr as *const HandlerContext) };
-        let protocol_context = unsafe { &*(protocol_ptr as *const ProtocolContext) };
-        // SAFETY: The caller guarantees all string pointers are valid.
-        unsafe {
-            render_decoded_protocol(
-                context,
-                &protocol_context.protocol,
-                data_json,
-                entry_id,
-                request_path,
-            )
+        };
+        match CString::new(html) {
+            Ok(s) => s.into_raw(),
+            Err(e) => {
+                set_last_error(format!("rendered output contains interior NUL byte: {e}"));
+                std::ptr::null_mut()
+            }
         }
     }) {
         Ok(ptr) => ptr,
@@ -346,19 +365,155 @@ pub unsafe extern "C" fn webui_handler_render(
     }
 }
 
-unsafe fn render_decoded_protocol(
-    context: &HandlerContext,
-    protocol: &Protocol,
+/// Render like [`webui_handler_render`], returning an owned document handle.
+///
+/// Read the document with [`webui_render_result_bytes`] and release it with
+/// [`webui_render_result_destroy`]. The rendered buffer is handed over as is,
+/// so large documents avoid the NUL scan and copy of the string form. The
+/// handle owns the document and stays valid after the handler or protocol it
+/// was rendered with is destroyed.
+///
+/// Returns `NULL` on error; call [`webui_last_error`] for details.
+///
+/// # Safety
+///
+/// * `handler_ptr` must be a valid handler pointer.
+/// * `protocol_ptr` must be a valid loaded protocol pointer.
+/// * String arguments must be valid null-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_render_result(
+    handler_ptr: *mut c_void,
+    protocol_ptr: *const webui_protocol_t,
     data_json: *const c_char,
     entry_id: *const c_char,
     request_path: *const c_char,
-) -> *mut c_char {
+) -> *mut webui_render_result_t {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        // SAFETY: The caller upholds this function's pointer contract.
+        let Some(mut html) = (unsafe {
+            render_full_document(handler_ptr, protocol_ptr, data_json, entry_id, request_path)
+        }) else {
+            return std::ptr::null_mut();
+        };
+        // A capacity reserved for a much larger earlier render must not stay
+        // allocated for as long as the host holds this smaller document.
+        if html.capacity() / 2 > html.len() {
+            html.shrink_to_fit();
+        }
+        Box::into_raw(Box::new(RenderResultContext { html })) as *mut webui_render_result_t
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_handler_render_result");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Borrow a rendered document and write its length in bytes to `out_len`.
+///
+/// The returned UTF-8 bytes are borrowed from `result_ptr`, are not
+/// NUL-terminated, and remain valid only until [`webui_render_result_destroy`].
+/// They may be read for exactly `out_len` bytes. Returns `NULL` on error.
+///
+/// # Safety
+///
+/// * `result_ptr` must be a live result handle with no concurrent destroy.
+/// * `out_len` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_render_result_bytes(
+    result_ptr: *const webui_render_result_t,
+    out_len: *mut usize,
+) -> *const u8 {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if result_ptr.is_null() || out_len.is_null() {
+            set_last_error("result_ptr and out_len must not be null");
+            return std::ptr::null();
+        }
+        // SAFETY: The caller guarantees a live result handle.
+        let context = unsafe { &*(result_ptr as *const RenderResultContext) };
+        // SAFETY: The caller guarantees `out_len` is writable.
+        unsafe { *out_len = context.html.len() };
+        context.html.as_ptr()
+    }) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            set_last_error("panic in webui_render_result_bytes");
+            std::ptr::null()
+        }
+    }
+}
+
+/// Release a document returned by [`webui_handler_render_result`].
+///
+/// Invalidates the pointer previously returned by [`webui_render_result_bytes`].
+///
+/// # Safety
+///
+/// `result_ptr` must be a pointer returned by [`webui_handler_render_result`],
+/// or `NULL` for a no-op. A non-null pointer must not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn webui_render_result_destroy(result_ptr: *mut webui_render_result_t) {
+    clear_last_error();
+    if result_ptr.is_null() {
+        return;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: The caller guarantees this is one live owned result.
+        drop(unsafe { Box::from_raw(result_ptr as *mut RenderResultContext) });
+    }));
+    if result.is_err() {
+        set_last_error("panic in webui_render_result_destroy");
+    }
+}
+
+/// Validate the shared full-render arguments and render one document.
+///
+/// Returns `None` after recording the failure for [`webui_last_error`].
+///
+/// # Safety
+///
+/// Non-null arguments must satisfy [`webui_handler_render`]'s contract.
+unsafe fn render_full_document(
+    handler_ptr: *mut c_void,
+    protocol_ptr: *const webui_protocol_t,
+    data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+) -> Option<String> {
+    if handler_ptr.is_null()
+        || protocol_ptr.is_null()
+        || data_json.is_null()
+        || entry_id.is_null()
+        || request_path.is_null()
+    {
+        set_last_error("one or more required arguments are null");
+        return None;
+    }
+
+    // SAFETY: The caller guarantees both opaque pointers are valid.
+    let context = unsafe { &*(handler_ptr as *const HandlerContext) };
+    let protocol_context = unsafe { &*(protocol_ptr as *const ProtocolContext) };
+    // SAFETY: The caller guarantees all string pointers are valid.
+    unsafe { render_decoded_protocol(context, protocol_context, data_json, entry_id, request_path) }
+}
+
+unsafe fn render_decoded_protocol(
+    context: &HandlerContext,
+    protocol_context: &ProtocolContext,
+    data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+) -> Option<String> {
     // SAFETY: The caller validates all pointers before invoking this helper.
     let data_str = match unsafe { CStr::from_ptr(data_json) }.to_str() {
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in data_json: {e}"));
-            return std::ptr::null_mut();
+            return None;
         }
     };
     // SAFETY: The caller validates all pointers before invoking this helper.
@@ -366,7 +521,7 @@ unsafe fn render_decoded_protocol(
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
-            return std::ptr::null_mut();
+            return None;
         }
     };
     // SAFETY: The caller validates all pointers before invoking this helper.
@@ -374,7 +529,7 @@ unsafe fn render_decoded_protocol(
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in request_path: {e}"));
-            return std::ptr::null_mut();
+            return None;
         }
     };
 
@@ -382,7 +537,7 @@ unsafe fn render_decoded_protocol(
         Ok(d) => d,
         Err(e) => {
             set_last_error(format!("failed to parse data JSON: {e}"));
-            return std::ptr::null_mut();
+            return None;
         }
     };
 
@@ -392,21 +547,20 @@ unsafe fn render_decoded_protocol(
         options = options.with_nonce(nonce);
     }
 
-    let mut writer = StringResponseWriter::with_capacity(0);
+    let mut writer = StringResponseWriter::with_capacity(protocol_context.render_capacity.get());
     match context
         .handler
-        .render(protocol, &data, &options, &mut writer)
+        .render(&protocol_context.protocol, &data, &options, &mut writer)
     {
-        Ok(_) => match CString::new(writer.content) {
-            Ok(s) => s.into_raw(),
-            Err(e) => {
-                set_last_error(format!("rendered output contains interior NUL byte: {e}"));
-                std::ptr::null_mut()
-            }
-        },
+        Ok(_) => {
+            protocol_context
+                .render_capacity
+                .record(writer.content.len());
+            Some(writer.content)
+        }
         Err(e) => {
             set_last_error(format!("render failed: {e}"));
-            std::ptr::null_mut()
+            None
         }
     }
 }
@@ -575,6 +729,11 @@ pub unsafe extern "C" fn webui_protocol_render_component_templates(
 }
 
 /// Free a string returned by a WebUI FFI function.
+///
+/// Only strings belong here. Opaque handles have their own release
+/// functions: a document from [`webui_handler_render_result`] is released
+/// with [`webui_render_result_destroy`], and streaming steps and sessions with
+/// [`webui_streaming_step_destroy`] and [`webui_streaming_session_destroy`].
 ///
 /// # Safety
 ///

@@ -72,6 +72,11 @@ void webui_free(char *string_ptr);
 Free a string returned by a WebUI protocol operation such as
 `webui_handler_render`. Passing `NULL` is a safe no-op.
 
+Never pass an opaque handle to `webui_free`: release a document from
+`webui_handler_render_result` with `webui_render_result_destroy`, and streaming
+steps and sessions with their own destroy functions. C converts these `void *`
+handles to `char *` silently, so the compiler will not catch the mistake.
+
 ### webui_last_error
 
 ```c
@@ -132,9 +137,10 @@ using the same handler.
 ### Reserved `$webui` state channel
 
 A top-level `$webui` object in the render state JSON passed to
-`webui_handler_render` (or a streaming session) may carry `headEnd`,
-`bodyStart`, and `bodyEnd` strings, each emitted **raw** at the matching
-structural boundary (before `</head>`, after `<body>`, before `</body>`):
+`webui_handler_render`, `webui_handler_render_result`, or a streaming session
+may carry `headEnd`, `bodyStart`, and `bodyEnd` strings, each emitted **raw**
+at the matching structural boundary (before `</head>`, after `<body>`, before
+`</body>`):
 
 ```json
 {"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
@@ -183,6 +189,48 @@ Render a protocol handle created by `webui_protocol_create` with JSON state data
 - `request_path`, null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
+
+### webui_handler_render_result
+
+```c
+webui_render_result_t *webui_handler_render_result(void *handler_ptr,
+                                                   const webui_protocol_t *protocol_ptr,
+                                                   const char *data_json,
+                                                   const char *entry_id,
+                                                   const char *request_path);
+const uint8_t *webui_render_result_bytes(const webui_render_result_t *result_ptr,
+                                         uintptr_t *out_len);
+void webui_render_result_destroy(webui_render_result_t *result_ptr);
+```
+
+Render exactly like `webui_handler_render`, but return an opaque document
+handle instead of a NUL-terminated copy. `webui_render_result_bytes` borrows the
+UTF-8 document and writes its length to `out_len`; the bytes are not
+NUL-terminated and stay valid until `webui_render_result_destroy`. Passing
+`NULL` to `webui_render_result_destroy` is a safe no-op.
+
+Prefer this form when the host tracks lengths. It hands over the rendered
+buffer as is, avoiding the interior-NUL scan and shrinking reallocation of the
+string form and the host's `strlen`, which is measurable for multi-megabyte
+documents. A host can keep the handle alive as the backing store of its
+response and destroy it once the response has been sent. The handle owns its
+document, so it stays valid after the handler or protocol is destroyed.
+
+```c
+webui_render_result_t *result = webui_handler_render_result(
+    handler, protocol, json, "index.html", request_path);
+if (result != NULL) {
+    uintptr_t html_len = 0;
+    const uint8_t *html = webui_render_result_bytes(result, &html_len);
+    send_all(socket, html, html_len);
+    webui_render_result_destroy(result);
+}
+```
+
+Both render forms reserve their output buffer from the smaller of the last two
+full renders of the same protocol handle. Repeated renders of a page avoid
+growing the document from empty, and one large page does not inflate the
+buffer of a smaller page rendered after it.
 
 ### Partial, component-template, and token helpers
 
@@ -310,11 +358,14 @@ Two rules to remember:
 
 1. **Free what you receive.** Every non-`NULL` string returned by a render or
    protocol operation is heap-allocated. You must free it with `webui_free()`.
+   Opaque handles are released with their own destroy function from the table
+   below, never with `webui_free()`.
 2. **Don't free error strings.** The pointer from `webui_last_error()` is owned by the library. It remains valid until your next FFI call on the same thread.
 
 | Pointer source | Who frees it? | How? |
 |---|---|---|
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
+| `webui_handler_render_result` handle and borrowed bytes | Caller | `webui_render_result_destroy(result)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
 | Streaming update bytes | Caller | `webui_free(ptr)` |
 | Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
@@ -483,9 +534,13 @@ string html = handler.Render(
     "/");
 ```
 
-Custom P/Invoke bindings should mirror this lifecycle and receive returned
-strings as `IntPtr`, copy them with `Marshal.PtrToStringUTF8`, then release them
-with `webui_free`.
+`Render` reads the full document through `webui_handler_render_result`: it copies
+the borrowed bytes with `Marshal.PtrToStringUTF8(ptr, length)` and then calls
+`webui_render_result_destroy`. This skips a terminator scan of large documents
+and returns output that contains a `\0` character intact. Custom P/Invoke
+bindings should mirror this lifecycle, receive returned pointers as `IntPtr`,
+and copy other returned strings with `Marshal.PtrToStringUTF8` before releasing
+them with `webui_free`.
 
 The package also wraps the streaming session, so an ASP.NET endpoint can pace a
 progressive response without touching the native ABI:
