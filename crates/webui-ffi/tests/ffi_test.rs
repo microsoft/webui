@@ -19,8 +19,9 @@ use std::ffi::{c_void, CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
-    webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
+    webui_handler_render, webui_handler_render_result, webui_handler_set_nonce, webui_last_error,
+    webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
+    webui_protocol_tokens, webui_render_result_bytes, webui_render_result_destroy,
     webui_streaming_session_advance, webui_streaming_session_create,
     webui_streaming_session_destroy, webui_streaming_session_resume, webui_streaming_session_start,
     webui_streaming_session_update, webui_streaming_step_boundary_declaration_id,
@@ -926,6 +927,96 @@ fn protocol_supports_repeated_full_renders() {
         }
 
         webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn render_result_matches_string_render_as_output_size_changes() {
+    let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        // Each render reserves its buffer from the previous render's size, so
+        // shrinking and regrowing output must still produce identical bytes.
+        for payload_len in [64 * 1024, 16, 64 * 1024] {
+            let state = CString::new(format!(r#"{{"kept":"{}"}}"#, "x".repeat(payload_len)))
+                .expect("state should not contain NUL");
+
+            let result = webui_handler_render_result(
+                handler,
+                prepared,
+                state.as_ptr(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            );
+            assert!(
+                !result.is_null(),
+                "render_result failed: {}",
+                last_error_string().unwrap_or_else(|| "<none>".to_string())
+            );
+            assert!(webui_render_result_bytes(result, std::ptr::null_mut()).is_null());
+            let mut out_len = 0usize;
+            let bytes = webui_render_result_bytes(result, &mut out_len);
+            assert!(!bytes.is_null());
+            let owned = std::slice::from_raw_parts(bytes, out_len).to_vec();
+            webui_render_result_destroy(result);
+
+            let ptr = webui_handler_render(
+                handler,
+                prepared,
+                state.as_ptr(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            );
+            assert!(
+                !ptr.is_null(),
+                "render failed: {}",
+                last_error_string().unwrap_or_else(|| "<none>".to_string())
+            );
+            let expected = CStr::from_ptr(ptr).to_bytes().to_vec();
+            webui_free(ptr);
+
+            assert!(owned.len() > payload_len);
+            assert_eq!(owned, expected);
+        }
+
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn render_result_rejects_null_arguments() {
+    unsafe {
+        let handler = webui_handler_create();
+        let c_json = CString::new("{}").expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let result = webui_handler_render_result(
+            handler,
+            std::ptr::null(),
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(result.is_null());
+        assert!(last_error_string().is_some());
+
+        let mut out_len = 7usize;
+        assert!(webui_render_result_bytes(std::ptr::null(), &mut out_len).is_null());
+        assert!(last_error_string().is_some());
+        assert_eq!(out_len, 7);
+
+        webui_render_result_destroy(std::ptr::null_mut());
+        assert!(last_error_string().is_none());
+
         webui_handler_destroy(handler);
     }
 }

@@ -184,6 +184,46 @@ Render a protocol handle created by `webui_protocol_create` with JSON state data
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
 
+### webui_handler_render_result
+
+```c
+webui_render_result_t *webui_handler_render_result(void *handler_ptr,
+                                                   const webui_protocol_t *protocol_ptr,
+                                                   const char *data_json,
+                                                   const char *entry_id,
+                                                   const char *request_path);
+const uint8_t *webui_render_result_bytes(const webui_render_result_t *result_ptr,
+                                         uintptr_t *out_len);
+void webui_render_result_destroy(webui_render_result_t *result_ptr);
+```
+
+Render exactly like `webui_handler_render`, but return an opaque document
+handle instead of a NUL-terminated copy. `webui_render_result_bytes` borrows the
+UTF-8 document and writes its length to `out_len`; the bytes are not
+NUL-terminated and stay valid until `webui_render_result_destroy`. Passing
+`NULL` to `webui_render_result_destroy` is a safe no-op.
+
+Prefer this form when the host tracks lengths. It hands over the rendered
+buffer as is, avoiding the interior-NUL scan and shrinking reallocation of the
+string form and the host's `strlen`, which is measurable for multi-megabyte
+documents. A host can keep the handle alive as the backing store of its
+response and destroy it once the response has been sent.
+
+```c
+webui_render_result_t *result = webui_handler_render_result(
+    handler, protocol, json, "index.html", request_path);
+if (result != NULL) {
+    uintptr_t html_len = 0;
+    const uint8_t *html = webui_render_result_bytes(result, &html_len);
+    send_all(socket, html, html_len);
+    webui_render_result_destroy(result);
+}
+```
+
+Both render forms reserve their output buffer from the size of the previous
+full render of the same protocol handle, so repeated renders of a page avoid
+growing the document from empty.
+
 ### Partial, component-template, and token helpers
 
 | Function | Result |
@@ -315,6 +355,7 @@ Two rules to remember:
 | Pointer source | Who frees it? | How? |
 |---|---|---|
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
+| `webui_handler_render_result` handle and borrowed bytes | Caller | `webui_render_result_destroy(result)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
 | Streaming update bytes | Caller | `webui_free(ptr)` |
 | Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
