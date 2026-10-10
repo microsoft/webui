@@ -534,9 +534,13 @@ string html = handler.Render(
     "/");
 ```
 
-Custom P/Invoke bindings should mirror this lifecycle and receive returned
-strings as `IntPtr`, copy them with `Marshal.PtrToStringUTF8`, then release them
-with `webui_free`.
+`Render` reads the full document through `webui_handler_render_result`: it copies
+the borrowed bytes with `Marshal.PtrToStringUTF8(ptr, length)` and then calls
+`webui_render_result_destroy`. This skips a terminator scan of large documents
+and returns output that contains a `\0` character intact. Custom P/Invoke
+bindings should mirror this lifecycle, receive returned pointers as `IntPtr`,
+and copy other returned strings with `Marshal.PtrToStringUTF8` before releasing
+them with `webui_free`.
 
 The package also wraps the streaming session, so an ASP.NET endpoint can pace a
 progressive response without touching the native ABI:

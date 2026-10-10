@@ -65,7 +65,7 @@ public sealed class WebUIHandler : IDisposable
         ArgumentNullException.ThrowIfNull(entryId);
         ArgumentNullException.ThrowIfNull(requestPath);
 
-        IntPtr resultPtr = NativeBindings.webui_handler_render(
+        IntPtr resultPtr = NativeBindings.webui_handler_render_result(
             _handle,
             protocol.Handle,
             stateJson,
@@ -78,7 +78,7 @@ public sealed class WebUIHandler : IDisposable
             throw new WebUIException(error);
         }
 
-        return NativeBindings.ReadAndFreeString(resultPtr)!;
+        return NativeBindings.ReadAndDestroyRenderResult(resultPtr);
     }
 
     /// <summary>
