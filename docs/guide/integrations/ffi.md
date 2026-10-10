@@ -72,6 +72,11 @@ void webui_free(char *string_ptr);
 Free a string returned by a WebUI protocol operation such as
 `webui_handler_render`. Passing `NULL` is a safe no-op.
 
+Never pass an opaque handle to `webui_free`: release a document from
+`webui_handler_render_result` with `webui_render_result_destroy`, and streaming
+steps and sessions with their own destroy functions. C converts these `void *`
+handles to `char *` silently, so the compiler will not catch the mistake.
+
 ### webui_last_error
 
 ```c
@@ -132,9 +137,10 @@ using the same handler.
 ### Reserved `$webui` state channel
 
 A top-level `$webui` object in the render state JSON passed to
-`webui_handler_render` (or a streaming session) may carry `headEnd`,
-`bodyStart`, and `bodyEnd` strings, each emitted **raw** at the matching
-structural boundary (before `</head>`, after `<body>`, before `</body>`):
+`webui_handler_render`, `webui_handler_render_result`, or a streaming session
+may carry `headEnd`, `bodyStart`, and `bodyEnd` strings, each emitted **raw**
+at the matching structural boundary (before `</head>`, after `<body>`, before
+`</body>`):
 
 ```json
 {"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
@@ -207,7 +213,8 @@ Prefer this form when the host tracks lengths. It hands over the rendered
 buffer as is, avoiding the interior-NUL scan and shrinking reallocation of the
 string form and the host's `strlen`, which is measurable for multi-megabyte
 documents. A host can keep the handle alive as the backing store of its
-response and destroy it once the response has been sent.
+response and destroy it once the response has been sent. The handle owns its
+document, so it stays valid after the handler or protocol is destroyed.
 
 ```c
 webui_render_result_t *result = webui_handler_render_result(
@@ -351,6 +358,8 @@ Two rules to remember:
 
 1. **Free what you receive.** Every non-`NULL` string returned by a render or
    protocol operation is heap-allocated. You must free it with `webui_free()`.
+   Opaque handles are released with their own destroy function from the table
+   below, never with `webui_free()`.
 2. **Don't free error strings.** The pointer from `webui_last_error()` is owned by the library. It remains valid until your next FFI call on the same thread.
 
 | Pointer source | Who frees it? | How? |

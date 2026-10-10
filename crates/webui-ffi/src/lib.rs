@@ -266,7 +266,8 @@ pub unsafe extern "C" fn webui_protocol_destroy(protocol_ptr: *mut webui_protoco
 
 /// Set the CSP nonce for inline `<script>` tags on a handler instance.
 ///
-/// When set, all subsequent renders via [`webui_handler_render`] will include
+/// When set, all subsequent renders via [`webui_handler_render`] or
+/// [`webui_handler_render_result`] will include
 /// `nonce="VALUE"` on inline script tags and emit a
 /// `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
 ///
@@ -368,7 +369,9 @@ pub unsafe extern "C" fn webui_handler_render(
 ///
 /// Read the document with [`webui_render_result_bytes`] and release it with
 /// [`webui_render_result_destroy`]. The rendered buffer is handed over as is,
-/// so large documents avoid the NUL scan and copy of the string form.
+/// so large documents avoid the NUL scan and copy of the string form. The
+/// handle owns the document and stays valid after the handler or protocol it
+/// was rendered with is destroyed.
 ///
 /// Returns `NULL` on error; call [`webui_last_error`] for details.
 ///
@@ -726,6 +729,11 @@ pub unsafe extern "C" fn webui_protocol_render_component_templates(
 }
 
 /// Free a string returned by a WebUI FFI function.
+///
+/// Only strings belong here. Opaque handles have their own release
+/// functions: a document from [`webui_handler_render_result`] is released
+/// with [`webui_render_result_destroy`], and streaming steps and sessions with
+/// [`webui_streaming_step_destroy`] and [`webui_streaming_session_destroy`].
 ///
 /// # Safety
 ///
