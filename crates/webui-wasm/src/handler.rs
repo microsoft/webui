@@ -13,8 +13,9 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError,
-    Protocol as HandlerProtocol, RenderOptions, ResponseWriter, SessionOptions,
-    StreamStep as HandlerStreamStep, StreamingSession as HandlerStreamingSession, WebUIHandler,
+    Protocol as HandlerProtocol, RenderCapacityHints, RenderOptions, ResponseWriter,
+    SessionOptions, StreamStep as HandlerStreamStep, StreamingSession as HandlerStreamingSession,
+    WebUIHandler,
 };
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
@@ -117,6 +118,7 @@ impl Default for WasmRenderOptions {
 pub struct Protocol {
     inner: Arc<HandlerProtocol>,
     handler: Arc<WebUIHandler>,
+    output_capacity_hints: RenderCapacityHints,
 }
 
 #[wasm_bindgen]
@@ -131,6 +133,7 @@ impl Protocol {
         Ok(Self {
             inner: Arc::new(inner),
             handler: Arc::new(create_handler(plugin)),
+            output_capacity_hints: RenderCapacityHints::new(),
         })
     }
 
@@ -141,7 +144,7 @@ impl Protocol {
             parse_render_options(options).map_err(|error| JsValue::from_str(&error.to_string()))?;
         let state =
             parse_state_json(state_json).map_err(|error| JsValue::from_str(&error.to_string()))?;
-        render_protocol_to_string_value(&self.handler, &self.inner, &state, &options)
+        self.render_value(&state, &options)
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
@@ -404,29 +407,41 @@ pub(crate) fn render_protocol_to_string(
         entry: entry.to_string(),
         request_path: request_path.to_string(),
     };
-    let protocol = HandlerProtocol::new(protocol.clone());
-    let handler = create_handler(plugin);
-    render_protocol_to_string_value(&handler, &protocol, &state, &options)
+    let protocol = Protocol {
+        inner: Arc::new(HandlerProtocol::new(protocol.clone())),
+        handler: Arc::new(create_handler(plugin)),
+        output_capacity_hints: RenderCapacityHints::new(),
+    };
+    protocol.render_value(&state, &options)
 }
 
 fn parse_state_json(state_json: &str) -> Result<Value, WasmError> {
     serde_json::from_str(state_json).map_err(WasmError::State)
 }
 
-fn render_protocol_to_string_value(
-    handler: &WebUIHandler,
-    protocol: &HandlerProtocol,
-    state: &Value,
-    options: &WasmRenderOptions,
-) -> Result<String, WasmError> {
-    let mut writer = StringWriter::with_capacity(4096);
-    handler.render(
-        protocol,
-        state,
-        &RenderOptions::new(&options.entry, &options.request_path),
-        &mut writer,
-    )?;
-    Ok(writer.content)
+impl Protocol {
+    fn render_value(
+        &self,
+        state: &Value,
+        options: &WasmRenderOptions,
+    ) -> Result<String, WasmError> {
+        let capacity = self
+            .output_capacity_hints
+            .load(&options.entry, &options.request_path);
+        let mut writer = StringWriter::with_capacity(capacity);
+        self.handler.render(
+            &self.inner,
+            state,
+            &RenderOptions::new(&options.entry, &options.request_path),
+            &mut writer,
+        )?;
+        self.output_capacity_hints.store(
+            &options.entry,
+            &options.request_path,
+            writer.content.len(),
+        );
+        Ok(writer.content)
+    }
 }
 
 fn render_protocol_to_callback_value(
@@ -562,6 +577,43 @@ mod tests {
 
         assert_eq!(first, "first");
         assert_eq!(second, "second");
+    }
+
+    #[test]
+    fn protocol_render_learns_route_output_capacity() {
+        use std::collections::HashMap;
+        use webui_protocol::{FragmentList, WebUIFragment};
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<p>capacity</p>".repeat(1024)),
+                    WebUIFragment::signal("name".to_string(), true),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let bytes = WebUIProtocol::new(fragments)
+            .to_protobuf()
+            .expect("protocol should serialize");
+        let protocol = Protocol::new(&bytes, None).expect("protocol should load");
+        let cold_capacity = protocol.output_capacity_hints.load("index.html", "/");
+
+        let first = protocol
+            .render(r#"{"name":"first"}"#, None)
+            .expect("first render should succeed");
+        let second = protocol
+            .render(r#"{"name":"first"}"#, None)
+            .expect("second render should succeed");
+
+        assert!(first.len() > cold_capacity);
+        assert_eq!(
+            protocol.output_capacity_hints.load("index.html", "/"),
+            first.len()
+        );
+        assert_eq!(second, first);
     }
 
     #[test]

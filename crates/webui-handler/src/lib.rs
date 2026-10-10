@@ -9,12 +9,15 @@
 pub mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
+mod render_capacity;
 mod response_writer;
 pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 pub(crate) mod streaming;
 
+#[doc(hidden)]
+pub use render_capacity::RenderCapacityHints;
 #[doc(hidden)]
 pub use response_writer::{
     append_attribute_to_bytes, append_attribute_to_string, append_boolean_attribute_to_bytes,

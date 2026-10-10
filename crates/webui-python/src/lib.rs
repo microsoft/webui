@@ -17,7 +17,7 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError, Protocol,
-    RenderOptions, SessionOptions, StreamStep as HandlerStreamStep,
+    RenderCapacityHints, RenderOptions, SessionOptions, StreamStep as HandlerStreamStep,
     StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 
@@ -190,6 +190,7 @@ impl BindingError {
 struct NativeRenderer {
     protocol: Arc<Protocol>,
     handler: Arc<WebUIHandler>,
+    output_capacity_hints: RenderCapacityHints,
 }
 
 #[pymethods]
@@ -309,6 +310,7 @@ impl NativeRenderer {
         Ok(Self {
             protocol: Arc::new(protocol),
             handler,
+            output_capacity_hints: RenderCapacityHints::new(),
         })
     }
 
@@ -319,10 +321,18 @@ impl NativeRenderer {
     ) -> Result<Vec<u8>, BindingError> {
         let state = serde_json::from_slice::<Value>(input.as_bytes())
             .map_err(|error| BindingError::state(format!("failed to parse state JSON: {error}")))?;
-        let mut writer = BytesWriter::with_capacity(4096);
+        let capacity = self
+            .output_capacity_hints
+            .load(&options.entry_id, &options.request_path);
+        let mut writer = BytesWriter::with_capacity(capacity);
         self.handler
             .render(&self.protocol, &state, &options.borrowed(), &mut writer)
             .map_err(render_binding_error)?;
+        self.output_capacity_hints.store(
+            &options.entry_id,
+            &options.request_path,
+            writer.bytes.len(),
+        );
         Ok(writer.bytes)
     }
 }
