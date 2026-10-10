@@ -22,7 +22,6 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
@@ -31,6 +30,9 @@ use webui_handler::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, Protocol, RenderOptions,
     SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
+
+mod render_capacity;
+use render_capacity::RenderCapacityHint;
 
 /// Opaque C handle for a loaded WebUI protocol.
 #[allow(non_camel_case_types)]
@@ -84,33 +86,16 @@ struct HandlerContext {
 /// Opaque decoded protocol context shared across repeated host calls.
 struct ProtocolContext {
     protocol: Arc<Protocol>,
-    /// Length of the most recent full render of this protocol.
-    ///
-    /// Hosts render the same page repeatedly with similar state, so the next
-    /// output buffer is reserved from this instead of growing a multi-megabyte
-    /// document by doubling (and copying) from empty.
-    last_render_len: AtomicUsize,
+    /// Output reservation for full renders of this protocol.
+    render_capacity: RenderCapacityHint,
 }
-
-/// Upper bound on the output reserved from a previous render's size.
-const MAX_RENDER_CAPACITY_HINT: usize = 32 * 1024 * 1024;
 
 impl ProtocolContext {
     fn new(protocol: Protocol) -> Self {
         Self {
             protocol: Arc::new(protocol),
-            last_render_len: AtomicUsize::new(0),
+            render_capacity: RenderCapacityHint::default(),
         }
-    }
-
-    /// Output capacity to reserve for the next full render.
-    fn render_capacity_hint(&self) -> usize {
-        let last = self.last_render_len.load(Ordering::Relaxed);
-        last.saturating_add(last / 8).min(MAX_RENDER_CAPACITY_HINT)
-    }
-
-    fn record_render_len(&self, len: usize) {
-        self.last_render_len.store(len, Ordering::Relaxed);
     }
 }
 
@@ -559,13 +544,15 @@ unsafe fn render_decoded_protocol(
         options = options.with_nonce(nonce);
     }
 
-    let mut writer = StringResponseWriter::with_capacity(protocol_context.render_capacity_hint());
+    let mut writer = StringResponseWriter::with_capacity(protocol_context.render_capacity.get());
     match context
         .handler
         .render(&protocol_context.protocol, &data, &options, &mut writer)
     {
         Ok(_) => {
-            protocol_context.record_render_len(writer.content.len());
+            protocol_context
+                .render_capacity
+                .record(writer.content.len());
             Some(writer.content)
         }
         Err(e) => {

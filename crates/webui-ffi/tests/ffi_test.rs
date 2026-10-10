@@ -942,7 +942,7 @@ fn render_result_matches_string_render_as_output_size_changes() {
         let c_entry = CString::new("index.html").expect("static string");
         let c_path = CString::new("/").expect("static string");
 
-        // Each render reserves its buffer from the previous render's size, so
+        // Each render reserves its buffer from recent render sizes, so
         // shrinking and regrowing output must still produce identical bytes.
         for payload_len in [64 * 1024, 16, 64 * 1024] {
             let state = CString::new(format!(r#"{{"kept":"{}"}}"#, "x".repeat(payload_len)))

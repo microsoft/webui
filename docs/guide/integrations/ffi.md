@@ -220,9 +220,10 @@ if (result != NULL) {
 }
 ```
 
-Both render forms reserve their output buffer from the size of the previous
-full render of the same protocol handle, so repeated renders of a page avoid
-growing the document from empty.
+Both render forms reserve their output buffer from the smaller of the last two
+full renders of the same protocol handle. Repeated renders of a page avoid
+growing the document from empty, and one large page does not inflate the
+buffer of a smaller page rendered after it.
 
 ### Partial, component-template, and token helpers
 
