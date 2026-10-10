@@ -7,6 +7,23 @@ use std::borrow::Cow;
 
 use serde_json::Value;
 
+/// Objects with at most this many members are searched by direct comparison.
+///
+/// State objects reached from templates are usually small records (list items,
+/// nested settings). Comparing a handful of keys is cheaper than hashing the
+/// lookup key, which is what an order-preserving `serde_json::Map` does.
+const LINEAR_MEMBER_LOOKUP_MAX: usize = 8;
+
+#[inline]
+fn object_member<'a>(map: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a Value> {
+    if map.len() <= LINEAR_MEMBER_LOOKUP_MAX {
+        return map
+            .iter()
+            .find_map(|(name, value)| (name == key).then_some(value));
+    }
+    map.get(key)
+}
+
 /// Finds a value in a JSON object by dotted path and returns a borrowed value when possible.
 ///
 /// Most lookups borrow directly from `state`. Synthetic values such as array
@@ -19,7 +36,7 @@ pub fn find_value_by_dotted_path_ref<'a>(path: &str, state: &'a Value) -> Option
     for part in path.split('.') {
         match current_value {
             Value::Object(map) => {
-                current_value = map.get(part)?;
+                current_value = object_member(map, part)?;
             }
             Value::Array(arr) if part == "length" => {
                 return Some(Cow::Owned(Value::Number(serde_json::Number::from(
@@ -168,6 +185,25 @@ mod tests {
         let data = test_json!({ "items": [1, 2, 3] });
         let value = find_value_by_dotted_path("items.length", &data);
         assert_eq!(value, Some(Value::Number(serde_json::Number::from(3))));
+    }
+
+    #[test]
+    fn test_member_lookup_on_both_sides_of_linear_limit() {
+        for size in [LINEAR_MEMBER_LOOKUP_MAX, LINEAR_MEMBER_LOOKUP_MAX + 1] {
+            let mut map = serde_json::Map::new();
+            for index in 0..size {
+                map.insert(format!("key{index}"), Value::from(index));
+            }
+            let data = Value::Object(map);
+            for index in 0..size {
+                assert_eq!(
+                    find_value_by_dotted_path(&format!("key{index}"), &data),
+                    Some(Value::from(index)),
+                    "size {size}"
+                );
+            }
+            assert_eq!(find_value_by_dotted_path("key", &data), None, "size {size}");
+        }
     }
 
     #[test]

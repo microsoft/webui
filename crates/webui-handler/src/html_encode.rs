@@ -33,8 +33,10 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
         return Cow::Borrowed(input);
     };
 
-    // Slow path: allocate and build the escaped string.
-    let mut out = String::with_capacity(input.len() + 6);
+    // Slow path: size the output exactly, since URL-like values grow by five
+    // bytes per `/` and would otherwise reallocate partway through.
+    let extra: usize = bytes[pos..].iter().map(|&b| escaped_extra_len(b)).sum();
+    let mut out = String::with_capacity(input.len() + extra);
     out.push_str(&input[..pos]);
 
     let mut start = pos;
@@ -57,6 +59,17 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     out.push_str(&input[start..]);
 
     Cow::Owned(out)
+}
+
+/// Bytes [`encode_safe`] adds when it replaces `b` with its entity.
+#[inline]
+const fn escaped_extra_len(b: u8) -> usize {
+    match b {
+        b'&' => 4,
+        b'<' | b'>' => 3,
+        b'"' | b'\'' | b'/' => 5,
+        _ => 0,
+    }
 }
 
 #[inline]

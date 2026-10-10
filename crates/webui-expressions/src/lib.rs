@@ -58,8 +58,8 @@ where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
     // Single-term conditions carry no logical operators, so the traversal in
-    // `count_logical_operators` (and the allocation backing its stack) is pure
-    // overhead for the most common template conditions.
+    // `count_logical_operators` is pure overhead for the most common template
+    // conditions.
     if matches!(
         condition.expr,
         Some(condition_expr::Expr::Identifier(_)) | Some(condition_expr::Expr::Predicate(_))
@@ -80,6 +80,55 @@ where
     evaluate_expr(condition, &resolver)
 }
 
+/// Inline capacity of [`PendingExprs`].
+///
+/// The depth-first walk keeps at most one pending node per open compound plus
+/// the node being visited, so any condition within the five-operator limit
+/// fits inline and only trees that will be rejected anyway reach the heap.
+const INLINE_PENDING_EXPRS: usize = 8;
+
+/// LIFO stack of sub-expressions still to visit, kept on the call stack.
+///
+/// Compound conditions are evaluated on every render of every `<if>` and
+/// boolean attribute, so the operator check must not allocate per call.
+struct PendingExprs<'a> {
+    inline: [Option<&'a ConditionExpr>; INLINE_PENDING_EXPRS],
+    inline_len: usize,
+    overflow: Vec<&'a ConditionExpr>,
+}
+
+impl<'a> PendingExprs<'a> {
+    fn new(root: &'a ConditionExpr) -> Self {
+        let mut inline = [None; INLINE_PENDING_EXPRS];
+        inline[0] = Some(root);
+        Self {
+            inline,
+            inline_len: 1,
+            overflow: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, expr: &'a ConditionExpr) {
+        if self.inline_len < INLINE_PENDING_EXPRS {
+            self.inline[self.inline_len] = Some(expr);
+            self.inline_len += 1;
+        } else {
+            self.overflow.push(expr);
+        }
+    }
+
+    fn pop(&mut self) -> Option<&'a ConditionExpr> {
+        if let Some(expr) = self.overflow.pop() {
+            return Some(expr);
+        }
+        if self.inline_len == 0 {
+            return None;
+        }
+        self.inline_len -= 1;
+        self.inline[self.inline_len].take()
+    }
+}
+
 // Helper function to count logical operators and check if they're mixed
 fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
     let mut count = 0;
@@ -87,7 +136,7 @@ fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
     let mut has_mixed = false;
 
     // We need to use a stack to avoid recursion
-    let mut stack = vec![condition];
+    let mut stack = PendingExprs::new(condition);
 
     while let Some(expr) = stack.pop() {
         match &expr.expr {
@@ -1040,6 +1089,28 @@ mod tests {
         assert!(matches!(
             evaluate(&condition, &state),
             Err(ExpressionError::TooManyOperators(6))
+        ));
+    }
+
+    #[test]
+    fn test_operator_count_is_exact_beyond_inline_stack() {
+        // A left-deep tree keeps one pending node per open compound, so twelve
+        // operators spill past the inline stack; the reported count must
+        // still cover every node.
+        let mut condition = ConditionExpr::identifier("a");
+        for i in 0..12 {
+            condition = ConditionExpr::compound(
+                condition,
+                LogicalOperator::Or,
+                ConditionExpr::identifier(format!("var{}", i)),
+            );
+        }
+
+        let state = test_json!({ "a": true });
+
+        assert!(matches!(
+            evaluate(&condition, &state),
+            Err(ExpressionError::TooManyOperators(12))
         ));
     }
 

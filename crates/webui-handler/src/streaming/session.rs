@@ -4,7 +4,7 @@
 //! Public borrowed session API and shared owned continuation state.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{Number, Value};
@@ -358,8 +358,8 @@ pub(crate) struct SessionCore {
     /// True between a committed occurrence and the `advance` that writes the
     /// parent bytes following it.
     awaiting_advance: bool,
-    local_vars: HashMap<String, Value>,
-    component_attrs: HashMap<String, Value>,
+    local_vars: crate::ScopeMap,
+    component_attrs: crate::ScopeMap,
     route_base: Option<String>,
     rendered_components: HashSet<String>,
     document_style_resources: HashSet<String>,
@@ -376,7 +376,7 @@ pub(crate) struct SessionCore {
     reachable_components: Option<Vec<String>>,
     streaming: Option<StreamingProgress>,
     json_scratch: Vec<u8>,
-    scope_pool: Vec<HashMap<String, Value>>,
+    scope_pool: Vec<crate::ScopeMap>,
 }
 
 pub(crate) struct SessionCall<'call, 'data> {
@@ -401,8 +401,8 @@ impl SessionCore {
             done: false,
             failed: false,
             awaiting_advance: false,
-            local_vars: HashMap::new(),
-            component_attrs: HashMap::new(),
+            local_vars: crate::ScopeMap::default(),
+            component_attrs: crate::ScopeMap::default(),
             route_base: None,
             rendered_components: HashSet::new(),
             document_style_resources: HashSet::new(),
@@ -976,13 +976,17 @@ mod tests {
             .core
             .scope_pool
             .first()
-            .map(HashMap::capacity)
+            .map(crate::ScopeMap::capacity)
             .unwrap_or_else(|| panic!("the completed component should recycle its scope map"));
 
         response.advance()?;
         assert!(matches!(response.core.route_children, Cow::Owned(_)));
         assert_eq!(
-            response.core.scope_pool.first().map(HashMap::capacity),
+            response
+                .core
+                .scope_pool
+                .first()
+                .map(crate::ScopeMap::capacity),
             Some(pooled_capacity),
             "a suspension step must preserve the scope-map pool"
         );

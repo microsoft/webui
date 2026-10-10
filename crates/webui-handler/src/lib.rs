@@ -45,6 +45,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write as _};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 use streaming::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
@@ -473,9 +474,55 @@ impl VisibleLoopScope {
     const EMPTY: Self = Self { start: 0, end: 0 };
 }
 
+/// Map backing a render scope: component props or loop/local variables.
+pub(crate) type ScopeMap = HashMap<String, Value, BuildHasherDefault<ScopeKeyHasher>>;
+
+/// Multiply-rotate hasher (the FxHash scheme used by rustc) for [`ScopeMap`].
+///
+/// Scope keys are prop and variable names from the compiled protocol, never
+/// request data, so SipHash's flooding resistance buys nothing here. Large
+/// pages insert and probe these maps tens of thousands of times per render,
+/// where SipHash was a measurable share of render time.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScopeKeyHasher(u64);
+
+impl ScopeKeyHasher {
+    const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+    #[inline]
+    fn add_word(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(Self::SEED);
+    }
+}
+
+impl Hasher for ScopeKeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let (words, tail) = bytes.as_chunks::<8>();
+        for word in words {
+            self.add_word(u64::from_le_bytes(*word));
+        }
+        if !tail.is_empty() {
+            let mut word = [0u8; 8];
+            word[..tail.len()].copy_from_slice(tail);
+            self.add_word(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, byte: u8) {
+        self.add_word(u64::from(byte));
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LocalValueSources<'ctx, 'protocol, 'state> {
-    owned: &'ctx HashMap<String, Value>,
+    owned: &'ctx ScopeMap,
     borrowed: &'ctx BorrowedScope<'protocol, 'state>,
 }
 
@@ -559,7 +606,7 @@ impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
         self.overflow.clear();
     }
 
-    fn clone_into_owned(&self, target: &mut HashMap<String, Value>) {
+    fn clone_into_owned(&self, target: &mut ScopeMap) {
         for (name, value) in self.inline[..self.inline_len].iter().flatten() {
             target.insert((*name).to_owned(), (*value).clone());
         }
@@ -876,7 +923,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_asset_style_links: &'protocol str,
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
-    pub(crate) local_vars: HashMap<String, Value>,
+    pub(crate) local_vars: ScopeMap,
     /// Component-local values that still point into immutable request state.
     local_borrowed_vars: BorrowedScope<'protocol, 'state>,
     /// Borrowed loop bindings, in lexical order.
@@ -885,7 +932,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// bodies hide outer loop monikers while still allowing their own loops.
     visible_loop_scope: VisibleLoopScope,
     /// Accumulates component attribute values between attrStart and the component fragment.
-    pub(crate) component_attrs: HashMap<String, Value>,
+    pub(crate) component_attrs: ScopeMap,
     /// State-backed component attributes accumulated without cloning.
     component_borrowed_attrs: BorrowedScope<'protocol, 'state>,
     /// True only while parser-produced component opening-tag attributes are
@@ -1006,7 +1053,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// local/attr map here instead of dropping it, so a sibling reuses the
     /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
     /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
-    pub(crate) scope_pool: Vec<HashMap<String, Value>>,
+    pub(crate) scope_pool: Vec<ScopeMap>,
     /// Resources delivered into the Document CSS tree. The empty set does not
     /// allocate, and streaming retains it across checkpoints.
     pub(crate) document_style_resources: HashSet<String>,
@@ -1099,7 +1146,43 @@ const INLINE_SCOPE_SLOTS: usize = 4;
 /// Deeper renders spill into a lazily allocated slice, which keeps them fully
 /// memoized without charging that cost to the common shallow case.
 const INLINE_RENDER_FRAGMENT_LISTS: usize = 8;
+/// Style-closure units deduplicated inline before falling back to hashing.
+const INLINE_STYLE_UNITS: usize = 8;
 const COMPONENT_ASSET_MANIFEST_ID: &str = "webui-component-assets";
+
+/// Delivery units already emitted by one style-closure walk.
+///
+/// Every Shadow root walks its closure on every render and most closures hold
+/// only a few units, so a linear scan over an inline array replaces a hash set
+/// allocated per walk. Larger closures continue in a hash set.
+struct EmittedStyleUnits<'a> {
+    inline: [&'a str; INLINE_STYLE_UNITS],
+    inline_len: usize,
+    overflow: HashSet<&'a str>,
+}
+
+impl<'a> EmittedStyleUnits<'a> {
+    fn new() -> Self {
+        Self {
+            inline: [""; INLINE_STYLE_UNITS],
+            inline_len: 0,
+            overflow: HashSet::new(),
+        }
+    }
+
+    /// Record `name`, returning `false` when it was already emitted.
+    fn insert(&mut self, name: &'a str) -> bool {
+        if self.inline[..self.inline_len].contains(&name) {
+            return false;
+        }
+        if self.inline_len < INLINE_STYLE_UNITS {
+            self.inline[self.inline_len] = name;
+            self.inline_len += 1;
+            return true;
+        }
+        self.overflow.insert(name)
+    }
+}
 
 struct ComponentAssetStyleManifest<'a>(&'a [ComponentAssetStylePreload]);
 
@@ -1171,16 +1254,26 @@ fn push_escaped_html_attribute(output: &mut String, value: &str) {
     }
 }
 
+/// Drop an owned component prop that a state-backed value now shadows.
+///
+/// `HashMap::remove` hashes its key even when the map is empty, which is the
+/// case for components whose props are all state-backed.
+fn remove_owned_component_attr(attrs: &mut ScopeMap, name: &str) {
+    if !attrs.is_empty() {
+        attrs.remove(name);
+    }
+}
+
 /// Take a cleared scope map from the pool, or a fresh empty one when the pool is
 /// empty. A fresh `HashMap` does not allocate until its first insert.
-fn take_scope_map(pool: &mut Vec<HashMap<String, Value>>) -> HashMap<String, Value> {
+fn take_scope_map(pool: &mut Vec<ScopeMap>) -> ScopeMap {
     pool.pop().unwrap_or_default()
 }
 
 /// Return a spent scope map to the pool, clearing it but retaining its bucket
 /// capacity for a sibling root to reuse. Drops the map once the pool is full so
 /// retained memory stays bounded.
-fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<String, Value>) {
+fn recycle_scope_map(pool: &mut Vec<ScopeMap>, mut map: ScopeMap) {
     if pool.len() < SCOPE_POOL_CAP {
         map.clear();
         pool.push(map);
@@ -1406,19 +1499,26 @@ where
 }
 
 fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Result<()> {
+    // `<` is rare in serialized state, so a single-byte scan that confirms the
+    // following `/` is cheaper than a substring search over the whole payload.
+    let bytes = json.as_bytes();
     let mut start = 0;
-    while start < json.len() {
-        let rest = &json[start..];
-        let Some(offset) = rest.find("</") else {
-            writer.write(rest)?;
-            return Ok(());
-        };
-
-        if offset > 0 {
-            writer.write(&rest[..offset])?;
+    let mut search = 0;
+    while let Some(offset) = json[search..].find('<') {
+        let index = search + offset;
+        if bytes.get(index + 1) != Some(&b'/') {
+            search = index + 1;
+            continue;
+        }
+        if index > start {
+            writer.write(&json[start..index])?;
         }
         writer.write("<\\/")?;
-        start += offset + 2;
+        start = index + 2;
+        search = start;
+    }
+    if start < json.len() {
+        writer.write(&json[start..])?;
     }
     Ok(())
 }
@@ -2560,7 +2660,7 @@ impl WebUIHandler {
         // so the emitted cascade is identical either way. Bundling is a
         // build-wide decision, so the two never mix within one protocol.
         let unit_count = WebUIProtocol::style_closure_unit_count(closure);
-        let mut emitted_resources = HashSet::with_capacity(unit_count);
+        let mut emitted_resources = EmittedStyleUnits::new();
 
         for position in 0..unit_count {
             let unit = context
@@ -3793,7 +3893,7 @@ impl WebUIHandler {
                     );
                     if let Some(value) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
-                        context.component_attrs.remove(name);
+                        remove_owned_component_attr(&mut context.component_attrs, name);
                         context.component_borrowed_attrs.insert(name, value);
                     } else if let Some(value) = self.resolve_value_owned(&attr.value, context) {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
@@ -3868,7 +3968,7 @@ impl WebUIHandler {
                 if context.collecting_component_attrs && !attr.attr_skip {
                     if let Some(borrowed) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
-                        context.component_attrs.remove(name);
+                        remove_owned_component_attr(&mut context.component_attrs, name);
                         context.component_borrowed_attrs.insert(name, borrowed);
                     } else {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
@@ -3901,7 +4001,7 @@ impl WebUIHandler {
             .render_fragments
             .list(index)
             .ok_or_else(|| HandlerError::MissingFragment(template_id.to_string()))?;
-        let mut raw_value = String::new();
+        let mut raw_value = String::with_capacity(template_attr_capacity(fragments.fragments));
         for frag in fragments.fragments {
             match frag.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
@@ -3983,11 +4083,11 @@ impl WebUIHandler {
             component_asset_style_links: protocol.component_asset_style_links(),
             state,
             writer,
-            local_vars: HashMap::new(),
+            local_vars: ScopeMap::default(),
             local_borrowed_vars: BorrowedScope::default(),
             loop_vars: Vec::new(),
             visible_loop_scope: VisibleLoopScope::EMPTY,
-            component_attrs: HashMap::new(),
+            component_attrs: ScopeMap::default(),
             component_borrowed_attrs: BorrowedScope::default(),
             collecting_component_attrs: false,
             request_path: options.request_path,
@@ -4067,6 +4167,24 @@ impl Default for WebUIHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Bytes reserved for each signal when pre-sizing a template attribute value.
+/// Signals in attribute templates are typically ids, numbers, or path segments.
+const TEMPLATE_SIGNAL_CAPACITY_HINT: usize = 32;
+
+/// Starting capacity for a rendered template attribute value: the exact static
+/// text plus a per-signal estimate, so typical values fill one allocation
+/// instead of regrowing on every append.
+fn template_attr_capacity(fragments: &[WebUIFragment]) -> usize {
+    fragments
+        .iter()
+        .map(|frag| match frag.fragment.as_ref() {
+            Some(Fragment::Raw(raw)) => raw.value.len(),
+            Some(Fragment::Signal(_)) => TEMPLATE_SIGNAL_CAPACITY_HINT,
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Write ` name="value"` to the writer without allocating a format string.
@@ -4218,7 +4336,7 @@ mod tests {
                 {"name": "second"}
             ]
         });
-        let local_vars = HashMap::new();
+        let local_vars = ScopeMap::default();
         let local_borrowed_vars = BorrowedScope::default();
         let loop_vars = Vec::new();
         let items = resolve_borrowed_collection(
@@ -4241,7 +4359,8 @@ mod tests {
     #[test]
     fn owned_local_collection_keeps_precedence() {
         let state = test_json!({"items": [{"name": "global"}]});
-        let local_vars = HashMap::from([("items".to_string(), test_json!([{"name": "local"}]))]);
+        let local_vars =
+            ScopeMap::from_iter([("items".to_string(), test_json!([{"name": "local"}]))]);
         let local_borrowed_vars = BorrowedScope::default();
         assert!(resolve_borrowed_collection(
             "items",
@@ -4262,7 +4381,7 @@ mod tests {
         let contacts = &state["teams"][0]["contacts"];
         let mut local_borrowed_vars = BorrowedScope::default();
         local_borrowed_vars.insert("contacts", contacts);
-        let local_vars = HashMap::new();
+        let local_vars = ScopeMap::default();
         let items = resolve_borrowed_collection(
             "contacts",
             &[],
@@ -4295,7 +4414,7 @@ mod tests {
             name: "item",
             value: item,
         }];
-        let local_vars = HashMap::new();
+        let local_vars = ScopeMap::default();
         let local_borrowed_vars = BorrowedScope::default();
         let children = resolve_borrowed_collection(
             "item.children",
@@ -4331,7 +4450,7 @@ mod tests {
                 value: &state["inner"],
             },
         ];
-        let local_vars = HashMap::new();
+        let local_vars = ScopeMap::default();
         let local_borrowed_vars = BorrowedScope::default();
         let sources = LocalValueSources {
             owned: &local_vars,
@@ -4400,7 +4519,8 @@ mod tests {
         ];
         let mut local_borrowed_vars = BorrowedScope::default();
         local_borrowed_vars.insert("borrowed", &state["borrowed"]);
-        let local_vars = HashMap::from([("owned".to_string(), test_json!({"name": "owned"}))]);
+        let local_vars =
+            ScopeMap::from_iter([("owned".to_string(), test_json!({"name": "owned"}))]);
         let sources = LocalValueSources {
             owned: &local_vars,
             borrowed: &local_borrowed_vars,
@@ -12783,6 +12903,24 @@ mod tests {
             sink.get_content(),
             r#"{"serverOnly":"<\/script><b>","value":42}"#
         );
+    }
+
+    #[test]
+    fn script_safe_json_str_escapes_only_end_tag_openers() -> Result<()> {
+        let cases = [
+            ("", ""),
+            ("</", "<\\/"),
+            ("</a</b", "<\\/a<\\/b"),
+            ("<<//", "<<\\//"),
+            ("a<b>c<", "a<b>c<"),
+            ("x</", "x<\\/"),
+        ];
+        for (json, expected) in cases {
+            let mut sink = TestWriter::new();
+            write_script_safe_json_str(&mut sink, json)?;
+            assert_eq!(sink.get_content(), expected, "input {json:?}");
+        }
+        Ok(())
     }
 
     #[test]
