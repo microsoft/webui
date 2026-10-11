@@ -292,6 +292,18 @@ impl Protocol {
         &self.protocol.tokens
     }
 
+    /// Whether `id` names a fragment list in this protocol, using the same
+    /// lookup [`crate::WebUIHandler::render`] uses to accept an entry.
+    ///
+    /// Bindings that size an output buffer before rendering check this first,
+    /// so a request for an unknown entry doesn't reserve a large buffer only to
+    /// fail.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_fragment(&self, id: &str) -> bool {
+        self.render_fragments.index(id).is_some()
+    }
+
     /// Produce a complete partial-navigation response from serialized state.
     ///
     /// This variant validates serialized host input while borrowing selected raw

@@ -547,7 +547,14 @@ unsafe fn render_decoded_protocol(
         options = options.with_nonce(nonce);
     }
 
-    let mut writer = StringResponseWriter::with_capacity(protocol_context.render_capacity.get());
+    // An unknown entry fails before anything is written, so it must not
+    // reserve a buffer sized from earlier successful renders.
+    let capacity = if protocol_context.protocol.has_fragment(entry_str) {
+        protocol_context.render_capacity.get()
+    } else {
+        0
+    };
+    let mut writer = StringResponseWriter::with_capacity(capacity);
     match context
         .handler
         .render(&protocol_context.protocol, &data, &options, &mut writer)

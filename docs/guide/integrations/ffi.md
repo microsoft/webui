@@ -230,7 +230,8 @@ if (result != NULL) {
 Both render forms reserve their output buffer from the smaller of the last two
 full renders of the same protocol handle. Repeated renders of a page avoid
 growing the document from empty, and one large page does not inflate the
-buffer of a smaller page rendered after it.
+buffer of a smaller page rendered after it. A request for an entry the protocol
+does not contain fails without reserving that buffer.
 
 ### Partial, component-template, and token helpers
 

@@ -4914,6 +4914,10 @@ mod tests {
             Err(HandlerError::MissingFragment(id)) => assert_eq!(id, "absent-entry"),
             other => panic!("expected a missing entry error, got {other:?}"),
         }
+        // Bindings check the entry before sizing an output buffer, so the
+        // check must agree with render's own entry lookup.
+        assert!(protocol.has_fragment("index.html"));
+        assert!(!protocol.has_fragment("absent-entry"));
     }
 
     #[test]
