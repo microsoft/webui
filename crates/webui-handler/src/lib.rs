@@ -49,7 +49,7 @@ use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write as _};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use streaming::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
     prepare_generated_streaming_root, record_checkpoint_tag, streaming_template_already_sent,
@@ -1501,24 +1501,26 @@ where
     write_script_safe_json_str(writer, json)
 }
 
+/// `</` finder shared by every call, so short template strings don't pay to
+/// build one per call.
+static END_TAG_OPENER: LazyLock<memchr::memmem::Finder<'static>> =
+    LazyLock::new(|| memchr::memmem::Finder::new(b"</"));
+
 fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Result<()> {
-    // `<` is rare in serialized state, so a single-byte scan that confirms the
-    // following `/` is cheaper than a substring search over the whole payload.
+    // Most serialized state has no `<`, so a single-byte scan settles it. From
+    // the first `<` on, search for the `</` pair itself so markup-heavy payloads
+    // don't stop at every opening or self-closing tag.
     let bytes = json.as_bytes();
     let mut start = 0;
-    let mut search = 0;
-    while let Some(offset) = json[search..].find('<') {
-        let index = search + offset;
-        if bytes.get(index + 1) != Some(&b'/') {
-            search = index + 1;
-            continue;
+    if let Some(first) = memchr::memchr(b'<', bytes) {
+        for offset in END_TAG_OPENER.find_iter(&bytes[first..]) {
+            let index = first + offset;
+            if index > start {
+                writer.write(&json[start..index])?;
+            }
+            writer.write("<\\/")?;
+            start = index + 2;
         }
-        if index > start {
-            writer.write(&json[start..index])?;
-        }
-        writer.write("<\\/")?;
-        start = index + 2;
-        search = start;
     }
     if start < json.len() {
         writer.write(&json[start..])?;
@@ -12917,11 +12919,32 @@ mod tests {
             ("<<//", "<<\\//"),
             ("a<b>c<", "a<b>c<"),
             ("x</", "x<\\/"),
+            ("a<b>c</d>e</f", "a<b>c<\\/d>e<\\/f"),
+            ("<img src=\"/a.png\"><br/>", "<img src=\"/a.png\"><br/>"),
         ];
         for (json, expected) in cases {
             let mut sink = TestWriter::new();
             write_script_safe_json_str(&mut sink, json)?;
             assert_eq!(sink.get_content(), expected, "input {json:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn script_safe_json_str_finds_end_tag_openers_at_every_offset() -> Result<()> {
+        // The `</` search switches between short-haystack and vectorized
+        // paths, so move openers and `<`/`/` decoys across several blocks.
+        let mut json = String::with_capacity(512);
+        for gap in 0..130 {
+            json.clear();
+            json.push_str("{\"h\":\"<img src=\\\"/a.png\\\">");
+            json.push_str(&"x".repeat(gap));
+            json.push_str("</p><br/>");
+            json.push_str(&"y".repeat(gap % 37));
+            json.push_str("</");
+            let mut sink = TestWriter::new();
+            write_script_safe_json_str(&mut sink, &json)?;
+            assert_eq!(sink.get_content(), json.replace("</", "<\\/"), "gap {gap}");
         }
         Ok(())
     }
