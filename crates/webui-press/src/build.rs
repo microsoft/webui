@@ -88,6 +88,9 @@ pub struct BuildCache {
     /// Dev-mode flag: when true, the bundler skips minification for
     /// faster rebuilds during `webui-press serve`.
     pub dev_mode: bool,
+    /// Additional state inputs discovered from Markdown.
+    /// Refreshed after successful content processing.
+    pub(crate) dependencies: Vec<PathBuf>,
 }
 
 impl BuildCache {
@@ -360,11 +363,25 @@ pub fn build_docs_with_cache(
     // to pay every keystroke.
     let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-    let mut pages =
-        process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
+    let mut dependencies = Vec::new();
+    let content = process_content_with_states(
+        config,
+        &highlighter,
+        &head_injection,
+        &render_states,
+        &mut dependencies,
+    );
+    if content.is_ok() {
+        cache.dependencies = dependencies;
+    } else {
+        cache.dependencies.extend(dependencies);
+        cache.dependencies.sort();
+        cache.dependencies.dedup();
+    }
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
+    let mut pages = content?;
 
     // Step 2: Resolve component sources for the per-page builds
     let mut component_sources: Vec<String> = Vec::new();

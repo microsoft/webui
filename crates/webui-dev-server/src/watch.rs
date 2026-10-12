@@ -220,20 +220,33 @@ where
                 .with_context(|| format!("Cannot watch {}", p.display()))?;
         }
     }
-    let mut explicit_parents = HashSet::new();
+    let mut explicit_parents = HashMap::new();
     for file in &explicit_files {
         if watched_roots.iter().any(|root| file.starts_with(root)) {
             continue;
         }
-        let Some(parent) = file.parent() else {
+        let Some(parent) = file.ancestors().skip(1).find(|parent| parent.is_dir()) else {
             continue;
         };
-        if parent.exists() && explicit_parents.insert(parent.to_path_buf()) {
-            debouncer
-                .watcher()
-                .watch(parent, RecursiveMode::NonRecursive)
-                .with_context(|| format!("Cannot watch {}", parent.display()))?;
-        }
+        let mode = if file.parent() == Some(parent) {
+            RecursiveMode::NonRecursive
+        } else {
+            RecursiveMode::Recursive
+        };
+        explicit_parents
+            .entry(parent)
+            .and_modify(|current| {
+                if mode == RecursiveMode::Recursive {
+                    *current = mode;
+                }
+            })
+            .or_insert(mode);
+    }
+    for (parent, mode) in explicit_parents {
+        debouncer
+            .watcher()
+            .watch(parent, mode)
+            .with_context(|| format!("Cannot watch {}", parent.display()))?;
     }
 
     Ok(WatcherHandle {
@@ -245,12 +258,13 @@ fn normalize_explicit_file(path: &Path) -> Option<PathBuf> {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return Some(canonical);
     }
-    let parent = path
-        .parent()
-        .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent = std::fs::canonicalize(parent).ok()?;
-    Some(parent.join(path.file_name()?))
+    let path = std::path::absolute(path).ok()?;
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            return Some(canonical.join(path.strip_prefix(ancestor).ok()?));
+        }
+    }
+    None
 }
 
 fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
@@ -388,6 +402,29 @@ mod tests {
         let explicit = vec![std::fs::canonicalize(&manifest).unwrap()];
         assert!(!should_ignore_event(&manifest, &ignore, &explicit));
         assert!(should_ignore_event(&bundle, &ignore, &explicit));
+    }
+
+    #[test]
+    fn explicit_file_tracks_missing_parent_directories() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("target/new/state.json");
+        let normalized = normalize_explicit_file(&file)
+            .ok_or_else(|| std::io::Error::other("missing include was discarded"))?;
+        assert_eq!(
+            normalized,
+            std::fs::canonicalize(dir.path())?.join("target/new/state.json")
+        );
+        std::fs::create_dir_all(
+            file.parent()
+                .ok_or_else(|| std::io::Error::other("missing state parent"))?,
+        )?;
+        std::fs::write(&file, "{}")?;
+        assert!(!should_ignore_event(
+            &file,
+            &[PathBuf::from("target")],
+            &[normalized]
+        ));
+        Ok(())
     }
 
     #[test]

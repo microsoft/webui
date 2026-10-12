@@ -7,10 +7,9 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
-import { binary, build, fixture, removeFixtureRoot, write } from './native-fixture.js';
+import { binary, build, fixture, removeFixtureRoot, unusedPort, write } from './native-fixture.js';
 
 const shell = '.nav-bar, docs-site-navigation, docs-sidebar-navigation, docs-search, ' +
   'docs-theme-toggle, .sidebar, .mobile-page-context, .page-nav, .site-footer, .home-hero';
@@ -234,13 +233,3 @@ test('native content serve hydrates SSR nodes and keeps the override after confi
   await expect(page.getByRole('button', { name: 'Preview 2' })).toBeVisible();
   assert.deepEqual(errors, []);
 });
-
-async function unusedPort(): Promise<number> {
-  const server = net.createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  return address.port;
-}

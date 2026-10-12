@@ -3,7 +3,9 @@
 
 import { buildSync } from 'esbuild';
 import { execFileSync } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 
 const workspace = path.resolve(import.meta.dirname, '../../..');
@@ -130,4 +132,14 @@ import '#gallery/preview.ts';
 
 export function build(site: string, ...args: string[]): void {
   execFileSync(binary, ['build', ...args], { cwd: site, stdio: 'pipe', timeout: 60_000 });
+}
+
+export async function unusedPort(): Promise<number> {
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing TCP listener address');
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  return address.port;
 }

@@ -24,7 +24,7 @@
 //!    actual HTTP machinery — this module just wires it up).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
@@ -34,7 +34,7 @@ use webui_dev_server::path::normalize_base_path;
 use webui_dev_server::shutdown::Control;
 use webui_dev_server::{
     default_ignore_paths, serve_static_file, spawn_rebuild_worker, spawn_watcher, sse_handler,
-    LiveReload, NotFoundStrategy, StaticServeConfig, WatchConfig, WatcherHandle,
+    LiveReload, NotFoundStrategy, StaticServeConfig, TickSender, WatchConfig, WatcherHandle,
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
@@ -76,15 +76,6 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
     // `public_dir` are interpreted relative to the process working
     // directory, not relative to config_dir.
     let out_dir = PathBuf::from(&config.out_dir);
-    let content_dir_str = config.content_dir.clone();
-    let public_dir_str = config.public_dir.clone();
-    let projection_manifest_files = projection_manifest_paths(
-        &config_dir,
-        config
-            .bundler
-            .as_ref()
-            .map_or(&[][..], |bundler| bundler.projection_manifests.as_slice()),
-    );
 
     println!(
         "{} {}",
@@ -119,61 +110,62 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
     };
     // Borrow the original config only for setup (basePath, paths) — every
     // rebuild re-reads from disk so live edits to config.json take effect.
-    let _ = config;
-
     let livereload = LiveReload::new(RELOAD_PATH);
 
     // Cache lives across rebuilds. Wrapped in Arc<Mutex<_>> so the
     // worker thread can mutate it; the only contender is the worker
     // itself, so the mutex is uncontended in practice.
     let cache = Arc::new(Mutex::new(initial_cache));
+    let watcher = Arc::new(Mutex::new(None::<WatcherHandle>));
+    let sender = Arc::new(OnceLock::<TickSender>::new());
 
     let worker = {
         let config_path = config_path.clone();
         let config_dir = config_dir.clone();
         let template_dir = template_dir.clone();
         let cache = cache.clone();
+        let watcher = watcher.clone();
+        let sender = sender.clone();
         spawn_rebuild_worker(livereload.clone(), move || {
             let cfg = clone_config_via_reparse(&config_path, show_override)
                 .map_err(|e| format!("config reload failed: {e}"))?;
             let mut guard = cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            build_docs_with_cache(&cfg, &config_dir, &template_dir, &mut guard)
-                .map_err(|e| format!("{e}"))?;
+            let result = build_docs_with_cache(&cfg, &config_dir, &template_dir, &mut guard);
+            let tx = sender
+                .get()
+                .ok_or_else(|| "Press watcher sender is unavailable".to_string())?;
+            let next = source_watcher(
+                &cfg,
+                &config_dir,
+                &config_path,
+                &guard.dependencies,
+                tx.clone(),
+            )
+            .map_err(|error| format!("Cannot refresh Press input watches: {error}"))?;
+            *watcher
+                .lock()
+                .map_err(|error| format!("Press watcher lock failed: {error}"))? = Some(next);
+            result.map_err(|e| format!("{e}"))?;
             // webui-press has no per-rebuild advisories to surface.
             Ok(Vec::new())
         })
     };
 
-    let watcher: WatcherHandle = {
-        let tx = worker.sender();
-        let watched = watch_paths(
-            &config_dir,
-            &config_path,
-            Path::new(&content_dir_str),
-            Path::new(&public_dir_str),
-        );
-        let mut ignore = default_ignore_paths();
-        ignore.push(out_dir.clone());
-        ignore.push(PathBuf::from(".webui-press/cache"));
-        spawn_watcher(
-            WatchConfig {
-                paths: watched,
-                explicit_files: projection_manifest_files,
-                ignore,
-                debounce: DEBOUNCE_DURATION,
-                retry_unchanged_when: None,
-            },
-            move |paths: Vec<PathBuf>| {
-                // Forward the changed paths so the rebuild line names the
-                // triggering file. Coalesce on full: the worker drains all
-                // queued ticks before starting a build, so a dropped tick is
-                // equivalent to a coalesced one.
-                let _ = tx.try_send(paths);
-            },
-        )?
+    let tx = worker.sender();
+    sender
+        .set(tx.clone())
+        .map_err(|_| anyhow!("Press watcher sender was already initialized"))?;
+    let initial_watcher = {
+        let guard = cache
+            .lock()
+            .map_err(|error| anyhow!("Press build cache lock failed: {error}"))?;
+        source_watcher(&config, &config_dir, &config_path, &guard.dependencies, tx)?
     };
+    *watcher
+        .lock()
+        .map_err(|error| anyhow!("Press watcher lock failed: {error}"))? = Some(initial_watcher);
 
     let static_cfg = StaticServeConfig {
         root: out_dir.clone(),
@@ -213,10 +205,49 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
     };
     let server_result = server_result.context("Dev server failed");
 
-    drop(watcher);
     worker.shutdown()?;
+    *watcher
+        .lock()
+        .map_err(|error| anyhow!("Press watcher lock failed: {error}"))? = None;
     server_result?;
     Ok(())
+}
+
+fn source_watcher(
+    config: &DocsConfig,
+    config_dir: &Path,
+    config_path: &Path,
+    dependencies: &[PathBuf],
+    tx: TickSender,
+) -> Result<WatcherHandle> {
+    let mut explicit_files = projection_manifest_paths(
+        config_dir,
+        config
+            .bundler
+            .as_ref()
+            .map_or(&[][..], |bundler| bundler.projection_manifests.as_slice()),
+    );
+    explicit_files.extend_from_slice(dependencies);
+    let mut ignore = default_ignore_paths();
+    ignore.push(PathBuf::from(&config.out_dir));
+    ignore.push(PathBuf::from(".webui-press/cache"));
+    spawn_watcher(
+        WatchConfig {
+            paths: watch_paths(
+                config_dir,
+                config_path,
+                Path::new(&config.content_dir),
+                Path::new(&config.public_dir),
+            ),
+            explicit_files,
+            ignore,
+            debounce: DEBOUNCE_DURATION,
+            retry_unchanged_when: None,
+        },
+        move |paths| {
+            let _ = tx.try_send(paths);
+        },
+    )
 }
 
 /// Default actix handler — delegates to the shared static-file

@@ -5,13 +5,16 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
-use crate::state::{load_render_states, merge_page_state, parse_markdown_state, LoadedStates};
+use crate::state::{
+    load_render_states, merge_page_state, parse_markdown_state, parse_markdown_state_file,
+    LoadedStates, StateLoader,
+};
 use crate::types::{DocsConfig, NavLink, PageDescriptor, ShowMode, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
@@ -60,6 +63,7 @@ struct Frontmatter {
     description: Option<String>,
     layout: Option<String>,
     state: Option<Value>,
+    state_file: Option<String>,
 }
 
 fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
@@ -70,6 +74,7 @@ fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
                 description: None,
                 layout: None,
                 state: None,
+                state_file: None,
             },
             content,
         ));
@@ -118,9 +123,59 @@ fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             state: yaml.get("state").map(parse_markdown_state).transpose()?,
+            state_file: yaml
+                .get("stateFile")
+                .map(parse_markdown_state_file)
+                .transpose()?,
         },
         body,
     ))
+}
+
+struct MarkdownSource {
+    frontmatter: Frontmatter,
+    body: String,
+}
+
+fn load_markdown_sources(
+    registry: &[(String, PathBuf)],
+    config: &DocsConfig,
+    dependencies: &mut Vec<PathBuf>,
+) -> Result<Vec<Option<MarkdownSource>>> {
+    let mut loader = StateLoader::new();
+    let sources = registry
+        .iter()
+        .map(|(url, source)| {
+            let logical = format!("/{}", &url[config.base_path.len()..]);
+            if config
+                .custom_pages
+                .keys()
+                .any(|key| config_paths_match(key, &logical))
+                || !source.exists()
+            {
+                return Ok(None);
+            }
+            let raw = fs::read_to_string(source)
+                .map_err(|error| Error::Io(format!("Cannot read {}: {error}", source.display())))?;
+            let (mut frontmatter, body) = parse_frontmatter(&raw)
+                .map_err(|error| Error::Markdown(format!("{}: {error}", source.display())))?;
+            frontmatter.state = loader
+                .load_markdown_state(
+                    frontmatter.state_file.as_deref(),
+                    frontmatter.state.take(),
+                    source,
+                )
+                .map_err(|error| Error::Markdown(format!("{}: {error}", source.display())))?;
+            Ok(Some(MarkdownSource {
+                frontmatter,
+                body: body.to_string(),
+            }))
+        })
+        .collect::<Result<Vec<_>>>();
+    dependencies.extend(loader.dependencies().cloned());
+    dependencies.sort();
+    dependencies.dedup();
+    sources
 }
 
 fn extract_h1(content: &str) -> Option<String> {
@@ -417,7 +472,13 @@ pub fn process_content(
     head_injection: &str,
 ) -> Result<Vec<PageDescriptor>> {
     let states = load_render_states(config, config_dir)?;
-    process_content_with_states(config, highlighter, head_injection, &states)
+    process_content_with_states(
+        config,
+        highlighter,
+        head_injection,
+        &states,
+        &mut Vec::new(),
+    )
 }
 
 pub(crate) fn process_content_with_states(
@@ -425,6 +486,7 @@ pub(crate) fn process_content_with_states(
     highlighter: &Highlighter,
     head_injection: &str,
     states: &LoadedStates,
+    dependencies: &mut Vec<PathBuf>,
 ) -> Result<Vec<PageDescriptor>> {
     let content_dir = Path::new(&config.content_dir);
     let base_path = &config.base_path;
@@ -481,6 +543,8 @@ pub(crate) fn process_content_with_states(
         }
     }
 
+    let markdown_sources = load_markdown_sources(&registry, config, dependencies)?;
+
     use rayon::prelude::*;
 
     // Per-page processing: parse markdown / load custom HTML, expand
@@ -490,9 +554,10 @@ pub(crate) fn process_content_with_states(
     // highlighter load.
     let results: Vec<(usize, PageDescriptor)> = registry
         .par_iter()
+        .zip(markdown_sources.into_par_iter())
         .enumerate()
         .map(
-            |(idx, (url_path, full_path))| -> Result<(usize, PageDescriptor)> {
+            |(idx, ((url_path, full_path), markdown))| -> Result<(usize, PageDescriptor)> {
                 let mut is_home = false;
                 let mut html = String::new();
                 let mut title = config.site.title.clone();
@@ -511,12 +576,11 @@ pub(crate) fn process_content_with_states(
                 if let Some(entry) = custom_entry {
                     html = entry.html().to_string();
                     layout = entry.layout().to_string();
-                } else if full_path.exists() {
-                    let raw = fs::read_to_string(full_path)
-                        .map_err(|e| crate::error::Error::Io(e.to_string()))?;
-                    let (fm, body) = parse_frontmatter(&raw).map_err(|e| {
-                        crate::error::Error::Markdown(format!("{}: {e}", full_path.display()))
-                    })?;
+                } else if let Some(MarkdownSource {
+                    frontmatter: fm,
+                    body,
+                }) = markdown
+                {
                     markdown_state = fm.state;
 
                     is_home = fm.layout.as_deref() == Some("home");
@@ -525,12 +589,7 @@ pub(crate) fn process_content_with_states(
                     } else {
                         fm.layout.unwrap_or_else(|| "doc".to_string())
                     };
-
                     if !is_home || config.show == ShowMode::Content {
-                        // Canonical page URL: every page is written as
-                        // `<dir>/index.html`, so it is served with a trailing
-                        // slash. In-page anchors need this exact path so they
-                        // aren't resolved against `<base href>`.
                         let page_url = if url_path.ends_with('/') {
                             url_path.to_string()
                         } else {
@@ -539,7 +598,7 @@ pub(crate) fn process_content_with_states(
                         let link_base_url =
                             markdown_link_base_url(full_path, content_dir, base_path);
                         html = render_markdown(
-                            body,
+                            &body,
                             highlighter,
                             base_path,
                             &page_url,
@@ -551,7 +610,7 @@ pub(crate) fn process_content_with_states(
                         description = d;
                     }
 
-                    let h1 = extract_h1(body);
+                    let h1 = extract_h1(&body);
                     let sidebar_text = find_sidebar_text(url_path, config);
                     title = fm
                         .title

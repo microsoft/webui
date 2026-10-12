@@ -12,6 +12,13 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::types::DocsConfig;
 
+pub(crate) fn parse_markdown_state_file(value: &serde_yaml::Value) -> Result<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| markdown_state_error("stateFile must be a relative JSON file path string"))
+}
+
 /// Loaded render state inputs shared by all generated pages.
 #[derive(Debug, Default)]
 pub(crate) struct LoadedStates {
@@ -57,7 +64,24 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "tokens",
     "label",
     "icon",
+    "__proto__",
+    "prototype",
+    "constructor",
 ];
+
+pub(crate) fn validate_application_state(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| markdown_state_error("state/stateFile must be JSON objects"))?;
+    for key in object.keys() {
+        if RESERVED_STATE_KEYS.contains(&key.as_str()) {
+            return Err(markdown_state_error(&format!(
+                "top-level key '{key}' is reserved by Press; move it under an application-specific key"
+            )));
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn parse_markdown_state(value: &serde_yaml::Value) -> Result<Value> {
     let mapping = value.as_mapping().ok_or_else(|| {
@@ -109,19 +133,109 @@ pub(crate) fn parse_markdown_state(value: &serde_yaml::Value) -> Result<Value> {
 #[inline(never)]
 fn markdown_state_error(reason: &str) -> Error {
     Error::Markdown(format!(
-        "Invalid frontmatter state: {reason}.\nhelp: Set state to a JSON-compatible object, for example state: {{ example: {{ count: 2 }} }}, or omit it."
+        "Invalid frontmatter state: {reason}.\nhelp: Use a JSON-compatible object for state, or a relative JSON object file path for stateFile."
     ))
 }
 
 pub(crate) struct StateLoader {
     cache: HashMap<PathBuf, Value>,
+    dependencies: std::collections::HashSet<PathBuf>,
 }
 
 impl StateLoader {
     pub(crate) fn new() -> Self {
         Self {
             cache: HashMap::new(),
+            dependencies: std::collections::HashSet::new(),
         }
+    }
+
+    pub(crate) fn dependencies(&self) -> impl Iterator<Item = &PathBuf> {
+        self.dependencies.iter()
+    }
+
+    pub(crate) fn load_markdown_state(
+        &mut self,
+        file: Option<&str>,
+        inline: Option<Value>,
+        source: &Path,
+    ) -> Result<Option<Value>> {
+        let Some(file) = file else {
+            return Ok(inline);
+        };
+        let directory = source.parent().unwrap_or_else(|| Path::new("."));
+        let value = self.load_json_file(file, directory)?;
+        validate_application_state(value)?;
+        let mut state = value.clone();
+        if let (Value::Object(state), Some(Value::Object(inline))) = (&mut state, inline) {
+            state.extend(inline);
+        }
+        Ok(Some(state))
+    }
+
+    fn load_json_file(&mut self, relative: &str, directory: &Path) -> Result<&Value> {
+        let path = Path::new(relative);
+        if relative.trim().is_empty()
+            || path.is_absolute()
+            || path.has_root()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::Prefix(_)))
+        {
+            return Err(markdown_state_error(&format!(
+                "stateFile '{relative}' must be a non-empty relative JSON file path"
+            )));
+        }
+        let path = directory.join(path);
+        let absolute = std::path::absolute(&path).map_err(|error| {
+            markdown_state_error(&format!(
+                "cannot resolve stateFile {}: {error}",
+                path.display()
+            ))
+        })?;
+        let key = fs::canonicalize(&path).map_err(|error| {
+            self.dependencies.insert(absolute);
+            markdown_state_error(&format!(
+                "cannot resolve stateFile {}: {error}",
+                path.display()
+            ))
+        })?;
+        self.dependencies.insert(key.clone());
+        if !self.cache.contains_key(&key) {
+            const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
+            use std::io::Read;
+            let file = fs::File::open(&key).map_err(|error| {
+                markdown_state_error(&format!(
+                    "cannot read stateFile {}: {error}",
+                    path.display()
+                ))
+            })?;
+            let mut bytes = Vec::new();
+            file.take(MAX_STATE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    markdown_state_error(&format!(
+                        "cannot read stateFile {}: {error}",
+                        path.display()
+                    ))
+                })?;
+            if bytes.len() as u64 > MAX_STATE_BYTES {
+                return Err(markdown_state_error(&format!(
+                    "stateFile {} exceeds the 16 MiB input limit",
+                    path.display()
+                )));
+            }
+            let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+                markdown_state_error(&format!(
+                    "stateFile {} is not valid JSON: {error}",
+                    path.display()
+                ))
+            })?;
+            self.cache.insert(key.clone(), value);
+        }
+        self.cache
+            .get(&key)
+            .ok_or_else(|| markdown_state_error("stateFile cache entry was not loaded"))
     }
 
     pub(crate) fn load_state_value(
@@ -454,5 +568,125 @@ mod tests {
         assert_eq!(merged["headTags"], "<meta name=\"docs\">");
         assert_eq!(merged.get("tokens"), None);
         assert_eq!(merged.get("regions"), None);
+    }
+
+    #[test]
+    fn markdown_state_file_cache_and_shallow_precedence() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("button.md");
+        let metadata = root.path().join("button.json");
+        fs::write(
+            &metadata,
+            r#"{"component":{"title":"Button","page":{"allowed":"nested"},"options":[true,false]}}"#,
+        )?;
+        let file = parse_markdown_state_file(&serde_yaml::from_str("./button.json")?)?;
+        let inline = parse_markdown_state(&serde_yaml::from_str("{example: {count: 2}}")?)?;
+        let mut loader = StateLoader::new();
+        let state = loader
+            .load_markdown_state(Some(&file), Some(inline), &source)?
+            .ok_or("missing local state")?;
+        assert_eq!(state["component"]["title"], "Button");
+        assert_eq!(state["component"]["page"]["allowed"], "nested");
+        assert_eq!(state["example"]["count"], 2);
+        assert_eq!(loader.dependencies().count(), 1);
+        fs::write(&metadata, "not JSON")?;
+        let cached = loader
+            .load_markdown_state(Some(&file), None, &source)?
+            .ok_or("missing cached state")?;
+        assert_eq!(cached["component"]["title"], "Button");
+        let replacement =
+            parse_markdown_state(&serde_yaml::from_str("{component: {title: Inline}}")?)?;
+        let replaced = loader
+            .load_markdown_state(Some(&file), Some(replacement), &source)?
+            .ok_or("missing state")?;
+        assert_eq!(replaced["component"]["title"], "Inline");
+        assert_eq!(replaced["component"].get("options"), None);
+        assert!(StateLoader::new()
+            .load_markdown_state(Some(&file), None, &source)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_state_file_rejects_invalid_paths_and_objects() -> TestResult {
+        for yaml in ["null", "[]", "{component: x.json}", "42", "true"] {
+            assert!(
+                parse_markdown_state_file(&serde_yaml::from_str(yaml)?).is_err(),
+                "{yaml}"
+            );
+        }
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("button.md");
+        for (content, yaml) in [
+            ("[]", "button.json"),
+            ("null", "button.json"),
+            ("{", "button.json"),
+            (r#"{"site":{}}"#, "button.json"),
+            ("{}", "missing.json"),
+            ("{}", "''"),
+        ] {
+            fs::write(root.path().join("button.json"), content)?;
+            let file = parse_markdown_state_file(&serde_yaml::from_str(yaml)?)?;
+            let error = StateLoader::new()
+                .load_markdown_state(Some(&file), None, &source)
+                .err()
+                .ok_or("expected invalid input")?
+                .to_string();
+            assert!(error.contains("help:"), "{error}");
+        }
+        let mut loader = StateLoader::new();
+        assert!(loader
+            .load_json_file(&source.to_string_lossy(), root.path())
+            .is_err());
+        #[cfg(windows)]
+        for path in [
+            r"C:button.json",
+            r"\button.json",
+            r"\\server\share\button.json",
+        ] {
+            assert!(loader.load_json_file(path, root.path()).is_err(), "{path}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_state_file_bounds_reads_and_retains_missing_dependencies() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let mut loader = StateLoader::new();
+        assert!(loader
+            .load_json_file("new/missing.json", root.path())
+            .is_err());
+        assert_eq!(loader.dependencies().count(), 1);
+        let file = root.path().join("large.json");
+        fs::File::create(file)?.set_len(16 * 1024 * 1024 + 1)?;
+        let error = loader
+            .load_json_file("large.json", root.path())
+            .err()
+            .ok_or("expected size limit error")?
+            .to_string();
+        assert!(error.contains("16 MiB input limit"), "{error}");
+        assert_eq!(loader.dependencies().count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn markdown_state_file_combines_with_inline_state() -> TestResult {
+        let root = tempfile::tempdir()?;
+        fs::write(
+            root.path().join("state.json"),
+            r#"{"example":{"label":"File","count":1},"shared":true}"#,
+        )?;
+        let inline = parse_markdown_state(&serde_yaml::from_str("{example: {label: Inline}}")?)?;
+        let state = StateLoader::new()
+            .load_markdown_state(
+                Some("state.json"),
+                Some(inline),
+                &root.path().join("page.md"),
+            )?
+            .ok_or("missing state")?;
+        assert_eq!(state["example"]["label"], "Inline");
+        assert_eq!(state["example"].get("count"), None);
+        assert_eq!(state["shared"], true);
+        Ok(())
     }
 }

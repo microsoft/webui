@@ -79,6 +79,84 @@ fn successful_build(root: &Path, mode: &str) -> TestResult {
 }
 
 #[test]
+fn markdown_json_includes_merge_global_then_file_then_inline() -> TestResult {
+    let root = fixture()?;
+    fs::create_dir_all(root.path().join("target/state"))?;
+    fs::write(
+        root.path().join("target/state/local.json"),
+        r#"{"sample":{"value":"included","globalOnly":true},"items":["included-item"],"shared":"included-shared"}"#,
+    )?;
+    fs::write(
+        root.path().join("content/component.json"),
+        r#"{"sample":{"value":"file-only","page":{"allowed":"nested"}}}"#,
+    )?;
+    fs::write(root.path().join("content/include.md"), format!(
+        "---\nstateFile: ../target/state/local.json\nstate: {{sample: {{value: inline}}}}\n---\n{EXAMPLE}"
+    ))?;
+    fs::write(
+        root.path().join("content/file-only.md"),
+        format!("---\nstateFile: ./component.json\n---\n{EXAMPLE}"),
+    )?;
+    fs::write(root.path().join("content/global.md"), EXAMPLE)?;
+    for mode in ["all", "content"] {
+        successful_build(root.path(), mode)?;
+        let included = fs::read_to_string(root.path().join("dist/include/index.html"))?;
+        assert!(included.contains("data-value=\"inline\""), "{included}");
+        assert!(
+            included.contains("data-global-only=\"\""),
+            "inline replacement must be shallow"
+        );
+        assert!(included.contains("data-item=\"included-item\""));
+        assert!(included.contains("data-shared=\"included-shared\""));
+        let file_only = fs::read_to_string(root.path().join("dist/file-only/index.html"))?;
+        assert!(file_only.contains("data-value=\"file-only\""));
+        assert!(file_only.contains("data-item=\"global-item\""));
+        let global = fs::read_to_string(root.path().join("dist/global/index.html"))?;
+        assert!(global.contains("data-value=\"global\""));
+        assert!(!global.contains("included-shared"));
+        assert!(!fs::read_to_string(root.path().join("dist/404.html"))?.contains("included-shared"));
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_markdown_include_preserves_output_and_reports_source_and_hint() -> TestResult {
+    let root = fixture()?;
+    fs::write(root.path().join("content/include.md"), "# Valid")?;
+    successful_build(root.path(), "content")?;
+    let output_path = root.path().join("dist/include/index.html");
+    let previous = fs::read_to_string(&output_path)?;
+    for (frontmatter, json) in [
+        ("stateFile: null", "{}"),
+        ("stateFile: []", "{}"),
+        ("stateFile: {component: ./data.json}", "{}"),
+        ("stateFile: 42", "{}"),
+        ("stateFile: ./data.json", "[]"),
+        ("stateFile: ./data.json", r#"{"site":"reserved"}"#),
+        ("stateFile: ./data.json", "null"),
+        ("stateFile: ./data.json", "{"),
+        ("stateFile: ./missing.json", "{}"),
+    ] {
+        fs::write(root.path().join("content/data.json"), json)?;
+        fs::write(
+            root.path().join("content/include.md"),
+            format!("---\n{frontmatter}\n---\n# Invalid"),
+        )?;
+        let output = build(root.path(), "content")?;
+        assert!(!output.status.success(), "{frontmatter}: {json}");
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("include.md")
+                && message.contains("state")
+                && message.contains("help:"),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(&output_path)?, previous);
+    }
+    Ok(())
+}
+
+#[test]
 fn cli_build_isolates_markdown_state_in_full_and_content_modes() -> TestResult {
     let root = fixture()?;
     fs::write(
