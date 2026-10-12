@@ -165,6 +165,70 @@ fn cli_build_isolates_markdown_state_in_full_and_content_modes() -> TestResult {
 }
 
 #[test]
+fn cli_build_preserves_yaml_frontmatter_values_and_aliases() -> TestResult {
+    let root = fixture()?;
+    fs::write(
+        root.path().join("content/yaml.md"),
+        concat!(
+            "---\n",
+            "title: &title YAML compatibility\n",
+            "description: >-\n  Folded\n  description\n",
+            "defaults: &defaults {value: anchored, items: [one, two]}\n",
+            "state:\n",
+            "  sample: *defaults\n",
+            "  items: [*title, !!str 42, yes, off, 'true', 'null', '007']\n",
+            "  enabled: true\n",
+            "  disabled: false\n",
+            "  optional: null\n",
+            "  count: 0x2a\n",
+            "  ratio: 1.25\n",
+            "  large: 18446744073709551615\n",
+            "  negative: -9223372036854775808\n",
+            "  literalMerge: {<<: *defaults}\n",
+            "  text: |-\n    First line\n    Second line\n",
+            "---\n\n",
+            "<state-example :sample=\"{{sample}}\" :items=\"{{items}}\"></state-example>\n",
+            "<p data-enabled=\"{{enabled}}\" data-disabled=\"{{disabled}}\" ",
+            "data-optional=\"{{optional}}\" data-count=\"{{count}}\" data-ratio=\"{{ratio}}\" ",
+            "data-large=\"{{large}}\" data-negative=\"{{negative}}\" ",
+            "data-merge=\"{{literalMerge.value}}\" ",
+            "data-title=\"{{page.title}}\" data-description=\"{{page.description}}\">{{text}}</p>\n",
+        ),
+    )?;
+    for mode in ["all", "content"] {
+        successful_build(root.path(), mode)?;
+        let html = fs::read_to_string(root.path().join("dist/yaml/index.html"))?;
+        for expected in [
+            "data-value=\"anchored\"",
+            "data-item=\"YAML compatibility\"",
+            "data-item=\"42\"",
+            "data-item=\"yes\"",
+            "data-item=\"off\"",
+            "data-item=\"true\"",
+            "data-item=\"null\"",
+            "data-item=\"007\"",
+            "data-enabled=\"true\"",
+            "data-disabled=\"false\"",
+            "data-optional=\"\"",
+            "data-count=\"42\"",
+            "data-ratio=\"1.25\"",
+            "data-large=\"18446744073709551615\"",
+            "data-negative=\"-9223372036854775808\"",
+            "data-merge=\"\"",
+            "data-title=\"YAML compatibility\"",
+            "data-description=\"Folded description\"",
+            "First line\nSecond line",
+        ] {
+            assert!(
+                html.contains(expected),
+                "{mode}: missing {expected}: {html}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> TestResult {
     let root = fixture()?;
     for mode in ["all", "content"] {
@@ -172,7 +236,24 @@ fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> Tes
         successful_build(root.path(), mode)?;
         let output_path = root.path().join("dist/invalid/index.html");
         let previous_output = fs::read_to_string(&output_path)?;
-        for state in ["null", "{site: override}", "{broken: [}"] {
+        for state in [
+            "null",
+            "{site: override}",
+            "{broken: [}",
+            "{nested: {1: value}}",
+            "{nested: {true: value}}",
+            "{nested: {value: .inf}}",
+            "{nested: {value: -.inf}}",
+            "{nested: [1, .nan]}",
+            "{nested: !example value}",
+            "{nested: !example [one, two]}",
+            "!example {value: tagged}",
+            "{nested: {!example key: value}}",
+            "{nested: {value: first, value: second}}",
+            "{value: first}\nstate: {value: second}",
+            "{}\ntitle: First\ntitle: Second",
+            "{value: *missing}",
+        ] {
             fs::write(
                 root.path().join("content/invalid.md"),
                 format!("---\nstate: {state}\n---\n\n# Invalid"),
