@@ -460,6 +460,12 @@ TypeScript. The application bundles its browser code first, and a bundler
 adapter emits `webui-projection.json` from the same resolved graph and output
 membership that produced the browser chunks.
 
+Projection includes inherited `@observable` and `@attr` fields, including
+those from statically analyzable class factories such as
+`class Card extends withCounter(WebUIElement) {}`. Not every valid JavaScript
+factory is analyzable: if the compiler cannot prove the exact state keys, the
+projection build reports an error rather than dropping inherited state.
+
 The projection compiler contract is bundler-neutral. The
 `@microsoft/webui/projection.js` subpath currently includes the supported
 esbuild adapter:
