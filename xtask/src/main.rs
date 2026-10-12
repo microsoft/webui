@@ -12,6 +12,7 @@ mod e2e_approve;
 mod hotfix;
 mod license_headers;
 mod native_ipc;
+mod node_tests;
 mod process;
 mod publish;
 mod release_version;
@@ -836,6 +837,7 @@ impl Step {
                 &["test", "--workspace", "--features", DESKTOP_DEV_FEATURES],
                 None,
             )?;
+            node_tests::run()?;
             desktop_tests::run()?;
             run_command_quiet(
                 "pnpm",

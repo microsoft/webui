@@ -65,7 +65,8 @@ Common commands:
 | `cargo xtask check` | Run the full repository quality gate before commits |
 | `cargo xtask fmt` | Check formatting |
 | `cargo xtask clippy` | Run clippy lints |
-| `cargo xtask test` | Run all tests |
+| `cargo xtask test` | Run Rust workspace, WebUI Node package, and desktop contract tests |
+| `cargo xtask e2e` | Run browser end-to-end suites |
 | `cargo xtask build` | Build the workspace and examples |
 | `cargo xtask desktop-assets` | Build desktop browser assets into ignored target output |
 | `cargo xtask package-check` | Generate transient assets and verify Cargo package archives |

@@ -28,6 +28,15 @@ Every code change ships with tests:
 
 Never remove, weaken, or `#[ignore]` an existing test unless explicitly asked.
 
+## WebUI Node package tests
+
+`cargo xtask test` builds the host native addon and the WebUI TypeScript package,
+then runs `pnpm --filter @microsoft/webui test` with `WEBUI_ADDON_PATH` set to the
+artifact reported by Cargo. This includes the projection compiler, adapter,
+class-factory, parser, and native build/render regressions in both the local
+`cargo xtask check` gate and the PR Test job. Browser suites run separately via
+`cargo xtask e2e`.
+
 ## Shared test utilities (`webui-test-utils`)
 
 The `webui-test-utils` crate provides common Rust test helpers, builders, and fixtures. Check it before writing new helpers - avoid duplicating across crates.
