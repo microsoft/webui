@@ -292,9 +292,9 @@ stages:
     - task: Cache@2
       displayName: Restore target cache
       inputs:
-        key: 'cargo-target | ubuntu-22.04-portable | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | ubuntu-22.04-portable | "$(targetTriple)"
+          cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
