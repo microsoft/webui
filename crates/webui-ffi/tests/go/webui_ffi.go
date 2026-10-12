@@ -5,25 +5,16 @@
 package webui_ffi
 
 // #cgo LDFLAGS: -L../../../../target/debug -lwebui_ffi
+// #cgo CFLAGS: -I../../include
 // #cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 // #cgo linux LDFLAGS: -lm -ldl -lpthread
-// #include <stdint.h>
 // #include <stdlib.h>
-//
-// extern void  *webui_handler_create();
-// extern void   webui_handler_destroy(void *handler_ptr);
-// extern void  *webui_protocol_create(const unsigned char *protocol_data,
-//                                     uintptr_t protocol_len);
-// extern void   webui_protocol_destroy(void *protocol_ptr);
-// extern char  *webui_handler_render(void *handler_ptr,
-//                                    const void *protocol_ptr,
-//                                    const char *data_json,
-//                                    const char *entry_id,
-//                                    const char *request_path);
-// extern void   webui_free(char *string_ptr);
-// extern const char *webui_last_error();
+// #include "webui_ffi.h"
 import "C"
-import "unsafe"
+import (
+	"runtime"
+	"unsafe"
+)
 
 // HandlerCreate creates a native handler.
 func HandlerCreate() unsafe.Pointer {
@@ -53,6 +44,9 @@ func ProtocolDestroy(protocol unsafe.Pointer) {
 
 // Render renders with loaded handler and protocol handles.
 func Render(handler, protocol unsafe.Pointer, stateJSON string) (string, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	cState := C.CString(stateJSON)
 	defer C.free(unsafe.Pointer(cState))
 	cEntry := C.CString("index.html")
@@ -64,12 +58,21 @@ func Render(handler, protocol unsafe.Pointer, stateJSON string) (string, error) 
 	if pointer == nil {
 		return "", operationError()
 	}
-	defer C.webui_free(pointer)
-	return C.GoString(pointer), nil
+	defer C.webui_render_free(pointer)
+	var length C.uintptr_t
+	bytes := C.webui_render_bytes(pointer, &length)
+	if bytes == nil {
+		return "", operationError()
+	}
+	if uint64(length) > uint64(^uint(0)>>1) {
+		return "", &ffiError{message: "render result exceeds the Go string size limit"}
+	}
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(bytes)), int(length))), nil
 }
 
 // RenderRaw invokes the loaded-protocol render function with explicit handles.
-func RenderRaw(handler, protocol unsafe.Pointer, stateJSON string) *C.char {
+// The caller must stay on the same OS thread until reading LastError.
+func RenderRaw(handler, protocol unsafe.Pointer, stateJSON string) unsafe.Pointer {
 	cState := C.CString(stateJSON)
 	defer C.free(unsafe.Pointer(cState))
 	cEntry := C.CString("index.html")
@@ -79,7 +82,12 @@ func RenderRaw(handler, protocol unsafe.Pointer, stateJSON string) *C.char {
 	return C.webui_handler_render(handler, protocol, cState, cEntry, cPath)
 }
 
-// Free releases a returned native string.
+// ResultDestroy releases an owned document.
+func ResultDestroy(pointer unsafe.Pointer) {
+	C.webui_render_free(pointer)
+}
+
+// Free releases a native string, not a document handle.
 func Free(pointer *C.char) {
 	C.webui_free(pointer)
 }

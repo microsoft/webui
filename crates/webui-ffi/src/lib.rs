@@ -38,9 +38,9 @@ use render_capacity::RenderCapacityHint;
 #[allow(non_camel_case_types)]
 pub type webui_protocol_t = c_void;
 
-/// Opaque owned document returned by [`webui_handler_render_result`].
+/// Opaque owned document returned by [`webui_handler_render`].
 #[allow(non_camel_case_types)]
-pub type webui_render_result_t = c_void;
+pub type webui_render_t = c_void;
 
 // ---------------------------------------------------------------------------
 // Thread-local error storage (POSIX dlerror() pattern)
@@ -266,8 +266,7 @@ pub unsafe extern "C" fn webui_protocol_destroy(protocol_ptr: *mut webui_protoco
 
 /// Set the CSP nonce for inline `<script>` tags on a handler instance.
 ///
-/// When set, all subsequent renders via [`webui_handler_render`] or
-/// [`webui_handler_render_result`] will include
+/// When set, all subsequent renders via [`webui_handler_render`] will include
 /// `nonce="VALUE"` on inline script tags and emit a
 /// `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
 ///
@@ -322,10 +321,13 @@ pub unsafe extern "C" fn webui_handler_set_nonce(handler_ptr: *mut c_void, nonce
 
 /// Render using a protocol previously returned by [`webui_protocol_create`].
 ///
-/// Returns a NUL-terminated copy of the document that must be released with
-/// [`webui_free`]. Hosts that track lengths should prefer
-/// [`webui_handler_render_result`], which hands the same document over without
-/// an interior-NUL scan, a shrinking reallocation, or a host-side `strlen`.
+/// Read the document with [`webui_render_bytes`] and release it with
+/// [`webui_render_free`]. The rendered buffer is handed over as is,
+/// without a terminator scan or copy. The handle owns the document, preserves
+/// interior NUL bytes, and stays valid after the handler or protocol it was
+/// rendered with is destroyed.
+///
+/// Returns `NULL` on error; call [`webui_last_error`] for details.
 ///
 /// # Safety
 ///
@@ -339,55 +341,7 @@ pub unsafe extern "C" fn webui_handler_render(
     data_json: *const c_char,
     entry_id: *const c_char,
     request_path: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-
-    match std::panic::catch_unwind(|| {
-        // SAFETY: The caller upholds this function's pointer contract.
-        let Some(html) = (unsafe {
-            render_full_document(handler_ptr, protocol_ptr, data_json, entry_id, request_path)
-        }) else {
-            return std::ptr::null_mut();
-        };
-        match CString::new(html) {
-            Ok(s) => s.into_raw(),
-            Err(e) => {
-                set_last_error(format!("rendered output contains interior NUL byte: {e}"));
-                std::ptr::null_mut()
-            }
-        }
-    }) {
-        Ok(ptr) => ptr,
-        Err(_) => {
-            set_last_error("panic in webui_handler_render");
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Render like [`webui_handler_render`], returning an owned document handle.
-///
-/// Read the document with [`webui_render_result_bytes`] and release it with
-/// [`webui_render_result_destroy`]. The rendered buffer is handed over as is,
-/// so large documents avoid the NUL scan and copy of the string form. The
-/// handle owns the document and stays valid after the handler or protocol it
-/// was rendered with is destroyed.
-///
-/// Returns `NULL` on error; call [`webui_last_error`] for details.
-///
-/// # Safety
-///
-/// * `handler_ptr` must be a valid handler pointer.
-/// * `protocol_ptr` must be a valid loaded protocol pointer.
-/// * String arguments must be valid null-terminated UTF-8.
-#[no_mangle]
-pub unsafe extern "C" fn webui_handler_render_result(
-    handler_ptr: *mut c_void,
-    protocol_ptr: *const webui_protocol_t,
-    data_json: *const c_char,
-    entry_id: *const c_char,
-    request_path: *const c_char,
-) -> *mut webui_render_result_t {
+) -> *mut webui_render_t {
     clear_last_error();
 
     match std::panic::catch_unwind(|| {
@@ -402,11 +356,11 @@ pub unsafe extern "C" fn webui_handler_render_result(
         if html.capacity() / 2 > html.len() {
             html.shrink_to_fit();
         }
-        Box::into_raw(Box::new(RenderResultContext { html })) as *mut webui_render_result_t
+        Box::into_raw(Box::new(RenderResultContext { html })) as *mut webui_render_t
     }) {
         Ok(ptr) => ptr,
         Err(_) => {
-            set_last_error("panic in webui_handler_render_result");
+            set_last_error("panic in webui_handler_render");
             std::ptr::null_mut()
         }
     }
@@ -415,7 +369,7 @@ pub unsafe extern "C" fn webui_handler_render_result(
 /// Borrow a rendered document and write its length in bytes to `out_len`.
 ///
 /// The returned UTF-8 bytes are borrowed from `result_ptr`, are not
-/// NUL-terminated, and remain valid only until [`webui_render_result_destroy`].
+/// NUL-terminated, and remain valid only until [`webui_render_free`].
 /// They may be read for exactly `out_len` bytes. Returns `NULL` on error.
 ///
 /// # Safety
@@ -423,8 +377,8 @@ pub unsafe extern "C" fn webui_handler_render_result(
 /// * `result_ptr` must be a live result handle with no concurrent destroy.
 /// * `out_len` must be non-null and writable.
 #[no_mangle]
-pub unsafe extern "C" fn webui_render_result_bytes(
-    result_ptr: *const webui_render_result_t,
+pub unsafe extern "C" fn webui_render_bytes(
+    result_ptr: *const webui_render_t,
     out_len: *mut usize,
 ) -> *const u8 {
     clear_last_error();
@@ -441,22 +395,22 @@ pub unsafe extern "C" fn webui_render_result_bytes(
     }) {
         Ok(bytes) => bytes,
         Err(_) => {
-            set_last_error("panic in webui_render_result_bytes");
+            set_last_error("panic in webui_render_bytes");
             std::ptr::null()
         }
     }
 }
 
-/// Release a document returned by [`webui_handler_render_result`].
+/// Release a document returned by [`webui_handler_render`].
 ///
-/// Invalidates the pointer previously returned by [`webui_render_result_bytes`].
+/// Invalidates the pointer previously returned by [`webui_render_bytes`].
 ///
 /// # Safety
 ///
-/// `result_ptr` must be a pointer returned by [`webui_handler_render_result`],
+/// `result_ptr` must be a pointer returned by [`webui_handler_render`],
 /// or `NULL` for a no-op. A non-null pointer must not be used after this call.
 #[no_mangle]
-pub unsafe extern "C" fn webui_render_result_destroy(result_ptr: *mut webui_render_result_t) {
+pub unsafe extern "C" fn webui_render_free(result_ptr: *mut webui_render_t) {
     clear_last_error();
     if result_ptr.is_null() {
         return;
@@ -466,7 +420,7 @@ pub unsafe extern "C" fn webui_render_result_destroy(result_ptr: *mut webui_rend
         drop(unsafe { Box::from_raw(result_ptr as *mut RenderResultContext) });
     }));
     if result.is_err() {
-        set_last_error("panic in webui_render_result_destroy");
+        set_last_error("panic in webui_render_free");
     }
 }
 
@@ -738,14 +692,14 @@ pub unsafe extern "C" fn webui_protocol_render_component_templates(
 /// Free a string returned by a WebUI FFI function.
 ///
 /// Only strings belong here. Opaque handles have their own release
-/// functions: a document from [`webui_handler_render_result`] is released
-/// with [`webui_render_result_destroy`], and streaming steps and sessions with
+/// functions: a document from [`webui_handler_render`] is released
+/// with [`webui_render_free`], and streaming steps and sessions with
 /// [`webui_streaming_step_destroy`] and [`webui_streaming_session_destroy`].
 ///
 /// # Safety
 ///
 /// `string_ptr` must be a pointer returned by a WebUI FFI function such as
-/// [`webui_handler_render`], or `NULL`
+/// [`webui_protocol_render_partial`], or `NULL`
 /// (in which case this function is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn webui_free(string_ptr: *mut c_char) {

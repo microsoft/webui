@@ -65,7 +65,7 @@ public sealed class WebUIHandler : IDisposable
         ArgumentNullException.ThrowIfNull(entryId);
         ArgumentNullException.ThrowIfNull(requestPath);
 
-        IntPtr resultPtr = NativeBindings.webui_handler_render_result(
+        IntPtr resultPtr = NativeBindings.webui_handler_render(
             _handle,
             protocol.Handle,
             stateJson,

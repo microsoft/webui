@@ -44,11 +44,16 @@ if (protocol == NULL) {
     return;
 }
 
-char *html = webui_handler_render(
+webui_render_t *result = webui_handler_render(
     handler, protocol, state_json, "index.html", request_path
 );
-if (html) {
-    webui_free(html);
+if (result != NULL) {
+    uintptr_t html_len = 0;
+    const uint8_t *html = webui_render_bytes(result, &html_len);
+    if (html != NULL) {
+        fwrite(html, 1, html_len, stdout);
+    }
+    webui_render_free(result);
 }
 
 webui_protocol_destroy(protocol);
@@ -70,10 +75,10 @@ void webui_free(char *string_ptr);
 ```
 
 Free a string returned by a WebUI protocol operation such as
-`webui_handler_render`. Passing `NULL` is a safe no-op.
+`webui_protocol_render_partial`. Passing `NULL` is a safe no-op.
 
 Never pass an opaque handle to `webui_free`: release a document from
-`webui_handler_render_result` with `webui_render_result_destroy`, and streaming
+`webui_handler_render` with `webui_render_free`, and streaming
 steps and sessions with their own destroy functions. C converts these `void *`
 handles to `char *` silently, so the compiler will not catch the mistake.
 
@@ -137,7 +142,7 @@ using the same handler.
 ### Reserved `$webui` state channel
 
 A top-level `$webui` object in the render state JSON passed to
-`webui_handler_render`, `webui_handler_render_result`, or a streaming session
+`webui_handler_render` or a streaming session
 may carry `headEnd`, `bodyStart`, and `bodyEnd` strings, each emitted **raw**
 at the matching structural boundary (before `</head>`, after `<body>`, before
 `</body>`):
@@ -173,11 +178,11 @@ after every render using it has completed. Passing `NULL` to
 ### webui_handler_render
 
 ```c
-char *webui_handler_render(void *handler_ptr,
-                           const webui_protocol_t *protocol_ptr,
-                           const char *data_json,
-                           const char *entry_id,
-                           const char *request_path);
+webui_render_t *webui_handler_render(void *handler_ptr,
+                                            const webui_protocol_t *protocol_ptr,
+                                            const char *data_json,
+                                            const char *entry_id,
+                                            const char *request_path);
 ```
 
 Render a protocol handle created by `webui_protocol_create` with JSON state data.
@@ -187,51 +192,43 @@ Render a protocol handle created by `webui_protocol_create` with JSON state data
 - `data_json`, null-terminated UTF-8 JSON string with the render state.
 - `entry_id`, null-terminated UTF-8 string identifying the entry fragment (e.g., `"index.html"`).
 - `request_path`, null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
-- **Returns** a heap-allocated string on success, or `NULL` on error.
-- The caller **must** free the returned string with `webui_free()`.
+- **Returns** an owned document handle on success, or `NULL` on error.
+- The caller **must** release the handle with `webui_render_free()`.
 
-### webui_handler_render_result
+### webui_render_bytes / webui_render_free
 
 ```c
-webui_render_result_t *webui_handler_render_result(void *handler_ptr,
-                                                   const webui_protocol_t *protocol_ptr,
-                                                   const char *data_json,
-                                                   const char *entry_id,
-                                                   const char *request_path);
-const uint8_t *webui_render_result_bytes(const webui_render_result_t *result_ptr,
+const uint8_t *webui_render_bytes(const webui_render_t *result_ptr,
                                          uintptr_t *out_len);
-void webui_render_result_destroy(webui_render_result_t *result_ptr);
+void webui_render_free(webui_render_t *result_ptr);
 ```
 
-Render exactly like `webui_handler_render`, but return an opaque document
-handle instead of a NUL-terminated copy. `webui_render_result_bytes` borrows the
-UTF-8 document and writes its length to `out_len`; the bytes are not
-NUL-terminated and stay valid until `webui_render_result_destroy`. Passing
-`NULL` to `webui_render_result_destroy` is a safe no-op.
+`webui_render_bytes` borrows the UTF-8 document returned by
+`webui_handler_render` and writes its byte length to a non-null `out_len`.
+The bytes are not NUL-terminated, may contain interior NUL bytes, and stay valid
+until `webui_render_free`. The accessor returns `NULL` on error.
+Passing
+`NULL` to `webui_render_free` is a safe no-op.
 
-Prefer this form when the host tracks lengths. It hands over the rendered
-buffer as is, avoiding the interior-NUL scan and shrinking reallocation of the
-string form and the host's `strlen`, which is measurable for multi-megabyte
-documents. A host can keep the handle alive as the backing store of its
-response and destroy it once the response has been sent. The handle owns its
-document, so it stays valid after the handler or protocol is destroyed.
+Use the explicit byte length, not `strlen` or a string-pointer conversion.
+A host can keep the handle alive as the backing store of its response and
+destroy it once the response has been sent. The handle owns its document, so
+it stays valid after the handler or protocol is destroyed.
 
 ```c
-webui_render_result_t *result = webui_handler_render_result(
+webui_render_t *result = webui_handler_render(
     handler, protocol, json, "index.html", request_path);
 if (result != NULL) {
     uintptr_t html_len = 0;
-    const uint8_t *html = webui_render_result_bytes(result, &html_len);
-    send_all(socket, html, html_len);
-    webui_render_result_destroy(result);
+    const uint8_t *html = webui_render_bytes(result, &html_len);
+    if (html != NULL) {
+        send_all(socket, html, html_len);
+    } else {
+        fprintf(stderr, "Result error: %s\n", webui_last_error());
+    }
+    webui_render_free(result);
 }
 ```
-
-Both render forms reserve their output buffer from the smaller of the last two
-full renders of the same protocol handle. Repeated renders of a page avoid
-growing the document from empty, and one large page does not inflate the
-buffer of a smaller page rendered after it. A request for an entry the protocol
-does not contain fails without reserving that buffer.
 
 ### Partial, component-template, and token helpers
 
@@ -343,7 +340,7 @@ The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:
 4. Each thread has independent error state, safe for concurrent use.
 
 ```c
-char *result = webui_handler_render(
+webui_render_t *result = webui_handler_render(
     handler, protocol, json, "index.html", request_path
 );
 if (result == NULL) {
@@ -365,8 +362,7 @@ Two rules to remember:
 
 | Pointer source | Who frees it? | How? |
 |---|---|---|
-| `webui_handler_render` | Caller | `webui_free(ptr)` |
-| `webui_handler_render_result` handle and borrowed bytes | Caller | `webui_render_result_destroy(result)` |
+| `webui_handler_render` handle and borrowed bytes | Caller | `webui_render_free(result)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
 | Streaming update bytes | Caller | `webui_free(ptr)` |
 | Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
@@ -390,11 +386,11 @@ if (handler == NULL) {
 
 // Render, output includes hydration markers
 void *protocol = webui_protocol_create(protocol_data, protocol_len);
-char *html = webui_handler_render(
+webui_render_t *result = webui_handler_render(
     handler, protocol, state_json, "index.html", "/"
 );
 
-webui_free(html);
+webui_render_free(result);
 webui_protocol_destroy(protocol);
 webui_handler_destroy(handler);
 ```
@@ -433,7 +429,10 @@ lib.webui_handler_render.argtypes = [
     c_void_p, c_void_p, c_char_p, c_char_p, c_char_p
 ]
 lib.webui_handler_render.restype = c_void_p
-lib.webui_free.argtypes = [c_void_p]
+lib.webui_render_bytes.argtypes = [c_void_p, POINTER(c_size_t)]
+lib.webui_render_bytes.restype = POINTER(c_uint8)
+lib.webui_render_free.argtypes = [c_void_p]
+lib.webui_render_free.restype = None
 lib.webui_last_error.restype = c_char_p
 
 protocol_bytes = Path("dist/protocol.bin").read_bytes()
@@ -452,15 +451,22 @@ ptr = lib.webui_handler_render(
 if ptr is None or ptr == 0:
     print("Error:", lib.webui_last_error().decode("utf-8"))
 else:
-    result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
-    lib.webui_free(ptr)
-    print(result)
+    try:
+        length = c_size_t()
+        data = lib.webui_render_bytes(ptr, ctypes.byref(length))
+        if not data:
+            raise RuntimeError(lib.webui_last_error().decode("utf-8"))
+        print(ctypes.string_at(data, length.value).decode("utf-8"))
+    finally:
+        lib.webui_render_free(ptr)
 
 lib.webui_protocol_destroy(protocol)
 lib.webui_handler_destroy(handler)
 ```
 
-> **Why `c_void_p`?** Using `c_void_p` as the return type instead of `c_char_p` prevents `ctypes` from automatically converting the pointer to a Python `bytes` object. This lets you copy the string first, then explicitly free the original pointer with `webui_free()`.
+> **Why `c_void_p`?** The returned pointer is an opaque document handle, not
+> a C string. Read it through `webui_render_bytes` and copy exactly the
+> returned length before destroying the handle.
 
 ## Go
 
@@ -476,10 +482,14 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 )
 
 func render(protocol *C.webui_protocol_t, handler unsafe.Pointer, dataJSON string) (string, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	cJSON := C.CString(dataJSON)
 	defer C.free(unsafe.Pointer(cJSON))
 	cEntry := C.CString("index.html")
@@ -491,9 +501,17 @@ func render(protocol *C.webui_protocol_t, handler unsafe.Pointer, dataJSON strin
 	if ptr == nil {
 		return "", fmt.Errorf("render failed: %s", C.GoString(C.webui_last_error()))
 	}
-	defer C.webui_free(ptr)
+	defer C.webui_render_free(ptr)
 
-	return C.GoString(ptr), nil
+	var length C.uintptr_t
+	bytes := C.webui_render_bytes(ptr, &length)
+	if bytes == nil {
+		return "", fmt.Errorf("read result failed: %s", C.GoString(C.webui_last_error()))
+	}
+	if uint64(length) > uint64(^uint(0)>>1) {
+		return "", fmt.Errorf("render result exceeds the Go string size limit")
+	}
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(bytes)), int(length))), nil
 }
 
 func main() {
@@ -518,7 +536,10 @@ func main() {
 }
 ```
 
-> **Memory note:** `C.GoString(ptr)` copies the string into Go-managed memory, so it's safe to call `webui_free` immediately after.
+> **Memory note:** Converting the explicit-length slice to a Go string copies
+> the bytes before the result is destroyed, including interior NUL bytes.
+> Keep the FFI call and error retrieval on the same OS thread with
+> `runtime.LockOSThread`.
 
 ## C\#
 
@@ -535,9 +556,9 @@ string html = handler.Render(
     "/");
 ```
 
-`Render` reads the full document through `webui_handler_render_result`: it copies
+`Render` reads the full document through `webui_handler_render`: it copies
 the borrowed bytes with `Marshal.PtrToStringUTF8(ptr, length)` and then calls
-`webui_render_result_destroy`. This skips a terminator scan of large documents
+`webui_render_free`. This skips a terminator scan of large documents
 and returns output that contains a `\0` character intact. Custom P/Invoke
 bindings should mirror this lifecycle, receive returned pointers as `IntPtr`,
 and copy other returned strings with `Marshal.PtrToStringUTF8` before releasing
@@ -582,10 +603,12 @@ Any language with C FFI support can use WebUI. The pattern is always the same:
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
 2. Declare the functions you need. For a server, use
    `webui_protocol_create`, `webui_handler_render`,
-   `webui_protocol_destroy`, `webui_free`, and `webui_last_error`.
-3. Pass UTF-8 null-terminated strings for `html` and `data_json`.
+   `webui_render_bytes`, `webui_render_free`,
+   `webui_protocol_destroy`, and `webui_last_error`.
+3. Pass UTF-8 null-terminated strings for state, entry, and request path.
 4. Check the return value, `NULL` means an error occurred.
-5. Copy the returned string into your language's managed memory, then call `webui_free`.
+5. Read the document bytes with their explicit length, copy or send them, then
+   call `webui_render_free`.
 
 ## Next Steps
 

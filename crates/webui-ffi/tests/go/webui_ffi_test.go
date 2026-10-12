@@ -4,6 +4,7 @@
 package webui_ffi
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,8 @@ func fixtureProtocol(t *testing.T) []byte {
 
 func loadedRuntime(t *testing.T) (handler, protocol unsafe.Pointer) {
 	t.Helper()
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
 	handler = HandlerCreate()
 	if handler == nil {
 		t.Fatal("handler should not be nil")
@@ -70,7 +73,7 @@ func TestInvalidJSONSetsError(t *testing.T) {
 	handler, protocol := loadedRuntime(t)
 	pointer := RenderRaw(handler, protocol, "NOT JSON")
 	if pointer != nil {
-		Free(pointer)
+		ResultDestroy(pointer)
 		t.Fatal("expected invalid JSON to fail")
 	}
 	if !strings.Contains(LastError(), "JSON") {
@@ -79,11 +82,13 @@ func TestInvalidJSONSetsError(t *testing.T) {
 }
 
 func TestNullProtocolSetsError(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	handler := HandlerCreate()
 	t.Cleanup(func() { HandlerDestroy(handler) })
 	pointer := RenderRaw(handler, nil, "{}")
 	if pointer != nil {
-		Free(pointer)
+		ResultDestroy(pointer)
 		t.Fatal("expected null protocol to fail")
 	}
 	if LastError() == "" {
@@ -94,5 +99,23 @@ func TestNullProtocolSetsError(t *testing.T) {
 func TestNullDestroyAndFreeAreSafe(t *testing.T) {
 	HandlerDestroy(nil)
 	ProtocolDestroy(nil)
+	ResultDestroy(nil)
 	Free(nil)
+}
+
+func TestPreservesNULAndUTF8AsOutputSizeChanges(t *testing.T) {
+	handler, protocol := loadedRuntime(t)
+	for _, name := range []string{strings.Repeat("é", 65536), "before\x00after", "", strings.Repeat("é", 65536)} {
+		state, err := json.Marshal(map[string]string{"name": name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Render(handler, protocol, string(state))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "<p>Hello, "+name+"!</p>" {
+			t.Fatalf("output mismatch for name length %d", len(name))
+		}
+	}
 }

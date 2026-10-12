@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
 use webui_ffi::{
-    webui_handler_create, webui_handler_destroy, webui_handler_render_result, webui_last_error,
-    webui_protocol_create, webui_protocol_destroy, webui_render_result_destroy,
+    webui_handler_create, webui_handler_destroy, webui_handler_render, webui_last_error,
+    webui_protocol_create, webui_protocol_destroy, webui_render_free,
 };
 use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
 
@@ -112,7 +112,7 @@ fn unknown_entry_does_not_reserve_previous_render_size() {
 
         // Two large successes teach the protocol's capacity hint a large size.
         for _ in 0..2 {
-            let result = webui_handler_render_result(
+            let result = webui_handler_render(
                 handler,
                 prepared,
                 large_state.as_ptr(),
@@ -120,13 +120,13 @@ fn unknown_entry_does_not_reserve_previous_render_size() {
                 path.as_ptr(),
             );
             assert!(!result.is_null(), "{}", last_error_string());
-            webui_render_result_destroy(result);
+            webui_render_free(result);
         }
 
         // Failures don't update the hint, so every attempt would reserve it.
         for attempt in 0..3 {
             let before = requested_bytes();
-            let result = webui_handler_render_result(
+            let result = webui_handler_render(
                 handler,
                 prepared,
                 small_state.as_ptr(),
@@ -144,7 +144,7 @@ fn unknown_entry_does_not_reserve_previous_render_size() {
         }
 
         // A known entry still renders after the failures.
-        let result = webui_handler_render_result(
+        let result = webui_handler_render(
             handler,
             prepared,
             large_state.as_ptr(),
@@ -152,7 +152,7 @@ fn unknown_entry_does_not_reserve_previous_render_size() {
             path.as_ptr(),
         );
         assert!(!result.is_null(), "{}", last_error_string());
-        webui_render_result_destroy(result);
+        webui_render_free(result);
 
         webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);

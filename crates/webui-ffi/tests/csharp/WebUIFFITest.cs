@@ -12,7 +12,9 @@
 //   LD_LIBRARY_PATH=../../../../target/debug dotnet test
 
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Xunit;
 
 namespace WebUIFFITest;
@@ -45,6 +47,12 @@ internal static class WebUIFFI
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr webui_render_bytes(IntPtr resultPtr, out UIntPtr outLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void webui_render_free(IntPtr resultPtr);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     public static extern void webui_free(IntPtr stringPtr);
@@ -108,5 +116,53 @@ public class FreeStringTests
     public void FreeNull()
     {
         WebUIFFI.webui_free(IntPtr.Zero); // should not crash
+        WebUIFFI.webui_render_free(IntPtr.Zero);
+    }
+
+    public class OwnedRenderResultTests
+    {
+        [Theory]
+        [InlineData("World")]
+        [InlineData("é\0after")]
+        [InlineData("")]
+        public void ResultPreservesBytesAfterHandlerAndProtocolDestroy(string name)
+        {
+            byte[] bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "fixtures", "protocol.bin"));
+            IntPtr buffer = Marshal.AllocHGlobal(bytes.Length);
+            IntPtr protocol;
+            try
+            {
+                Marshal.Copy(bytes, 0, buffer, bytes.Length);
+                protocol = WebUIFFI.webui_protocol_create(buffer, (UIntPtr)bytes.Length);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+            Assert.NotEqual(IntPtr.Zero, protocol);
+            IntPtr handler = WebUIFFI.webui_handler_create();
+            IntPtr result;
+            try
+            {
+                result = WebUIFFI.webui_handler_render(
+                    handler, protocol, JsonSerializer.Serialize(new { name }), "index.html", "/");
+            }
+            finally
+            {
+                WebUIFFI.webui_handler_destroy(handler);
+                WebUIFFI.webui_protocol_destroy(protocol);
+            }
+            Assert.NotEqual(IntPtr.Zero, result);
+            try
+            {
+                IntPtr data = WebUIFFI.webui_render_bytes(result, out UIntPtr length);
+                Assert.NotEqual(IntPtr.Zero, data);
+                Assert.Equal("<p>Hello, " + name + "!</p>", Marshal.PtrToStringUTF8(data, checked((int)length)));
+            }
+            finally
+            {
+                WebUIFFI.webui_render_free(result);
+            }
+        }
     }
 }

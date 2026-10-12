@@ -12,12 +12,11 @@ component-template, and token functions. This avoids protobuf decoding and
 deterministic index construction on every request. Release the shared handle with
 `webui_protocol_destroy`.
 
-A full render is returned either as a NUL-terminated string from
-`webui_handler_render` (free with `webui_free`) or as an owned document from
-`webui_handler_render_result`, whose bytes are borrowed with
-`webui_render_result_bytes` until `webui_render_result_destroy`. Prefer the
-document handle when the host tracks lengths; it avoids a NUL scan and copy of
-large documents.
+A full render returns an owned document from `webui_handler_render`. Borrow
+its UTF-8 bytes and explicit length with `webui_render_bytes`, then
+release the document with `webui_render_free`. The bytes are not
+NUL-terminated and may contain interior NUL bytes. Do not pass this handle to
+`webui_free`.
 
 ## Progressive streaming
 

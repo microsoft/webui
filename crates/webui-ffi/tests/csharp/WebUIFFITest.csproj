@@ -10,4 +10,13 @@
     <PackageReference Include="xunit" Version="2.6.6" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.6" />
   </ItemGroup>
+
+  <Target Name="BuildFixtureProtocol"
+          BeforeTargets="Build"
+          Inputs="../fixtures/app/index.html"
+          Outputs="$(OutDir)fixtures/protocol.bin">
+    <MakeDir Directories="$(OutDir)fixtures" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cargo run --quiet -p microsoft-webui-cli -- build ../fixtures/app --out &quot;$(OutDir)fixtures/protocol.bin&quot;" />
+  </Target>
 </Project>

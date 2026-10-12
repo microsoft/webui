@@ -75,7 +75,16 @@ protocol.renderStream(state, (chunk) => res.write(chunk));
 ```c
 void *handler = webui_handler_create_with_plugin("<name>");
 webui_protocol_t *protocol = webui_protocol_create(protocol_data, protocol_len);
-char *html = webui_handler_render(handler, protocol, state_json, "index.html", "/");
+webui_render_t *result = webui_handler_render(
+    handler, protocol, state_json, "index.html", "/");
+if (result != NULL) {
+    uintptr_t length = 0;
+    const uint8_t *html = webui_render_bytes(result, &length);
+    if (html != NULL) {
+        fwrite(html, 1, length, stdout);
+    }
+    webui_render_free(result);
+}
 ```
 
 </webui-press-tab-panel>

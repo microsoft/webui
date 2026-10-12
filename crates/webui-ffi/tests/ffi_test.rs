@@ -19,18 +19,18 @@ use std::ffi::{c_void, CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_render_result, webui_handler_set_nonce, webui_last_error,
-    webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
-    webui_protocol_tokens, webui_render_result_bytes, webui_render_result_destroy,
-    webui_streaming_session_advance, webui_streaming_session_create,
-    webui_streaming_session_destroy, webui_streaming_session_resume, webui_streaming_session_start,
-    webui_streaming_session_update, webui_streaming_step_boundary_declaration_id,
-    webui_streaming_step_boundary_instance_id, webui_streaming_step_boundary_key_number,
-    webui_streaming_step_boundary_key_string, webui_streaming_step_boundary_key_type,
-    webui_streaming_step_boundary_name, webui_streaming_step_boundary_owner,
-    webui_streaming_step_bytes, webui_streaming_step_destroy, webui_streaming_step_done,
-    webui_streaming_step_has_boundary, WEBUI_BOUNDARY_KEY_NONE, WEBUI_BOUNDARY_KEY_NUMBER,
-    WEBUI_BOUNDARY_KEY_STRING, WEBUI_BOUNDARY_MODE_FINAL, WEBUI_BOUNDARY_MODE_UPDATABLE,
+    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
+    webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
+    webui_render_bytes, webui_render_free, webui_streaming_session_advance,
+    webui_streaming_session_create, webui_streaming_session_destroy,
+    webui_streaming_session_resume, webui_streaming_session_start, webui_streaming_session_update,
+    webui_streaming_step_boundary_declaration_id, webui_streaming_step_boundary_instance_id,
+    webui_streaming_step_boundary_key_number, webui_streaming_step_boundary_key_string,
+    webui_streaming_step_boundary_key_type, webui_streaming_step_boundary_name,
+    webui_streaming_step_boundary_owner, webui_streaming_step_bytes, webui_streaming_step_destroy,
+    webui_streaming_step_done, webui_streaming_step_has_boundary, WEBUI_BOUNDARY_KEY_NONE,
+    WEBUI_BOUNDARY_KEY_NUMBER, WEBUI_BOUNDARY_KEY_STRING, WEBUI_BOUNDARY_MODE_FINAL,
+    WEBUI_BOUNDARY_MODE_UPDATABLE,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -76,6 +76,22 @@ unsafe fn read_protocol_tokens(bytes: &[u8]) -> String {
     webui_free(ptr);
     webui_protocol_destroy(prepared);
     tokens
+}
+
+unsafe fn take_rendered_document(result: *mut c_void) -> String {
+    let mut len = 0;
+    // SAFETY: The caller supplies a live result, and len is writable.
+    let bytes = unsafe { webui_render_bytes(result, &mut len) };
+    assert!(
+        !bytes.is_null(),
+        "{}",
+        last_error_string().unwrap_or_default()
+    );
+    // SAFETY: The accessor returned len readable bytes owned by result.
+    let document = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+    // SAFETY: The document was copied and no result borrows remain.
+    unsafe { webui_render_free(result) };
+    String::from_utf8(document).expect("rendered document is UTF-8")
 }
 
 // ---------------------------------------------------------------------------
@@ -465,8 +481,7 @@ fn state_inject_channel_needs_no_new_render_symbol() {
             "render returned NULL: {}",
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
 
         let head_end = result.find("<meta name='he'>").expect("headEnd missing");
         let head_close = result.find("</head>").expect("</head> missing");
@@ -506,8 +521,7 @@ fn malformed_state_inject_is_inert() {
             c_path.as_ptr(),
         );
         assert!(!ptr.is_null());
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
 
         assert!(!result.contains("not-an-object"), "got:\n{result}");
         assert!(!result.contains("$webui"), "got:\n{result}");
@@ -547,8 +561,7 @@ fn handler_set_nonce_applies_to_render() {
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
 
         // Verify the script tag has the nonce attribute
         assert!(
@@ -593,8 +606,7 @@ fn handler_render_without_nonce_has_no_nonce_attribute() {
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
 
         // Script tag should NOT have a nonce attribute
         assert!(
@@ -642,8 +654,7 @@ fn handler_set_nonce_null_clears_nonce() {
         );
         assert!(!ptr.is_null());
 
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
 
         // Nonce should be cleared — no nonce in output
         assert!(
@@ -807,8 +818,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
         webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
 
@@ -874,8 +884,7 @@ fn handler_render_emits_module_preloads_through_the_c_abi() {
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        webui_free(ptr);
+        let result = take_rendered_document(ptr);
         webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
 
@@ -920,8 +929,7 @@ fn protocol_supports_repeated_full_renders() {
                 "prepared render failed: {}",
                 last_error_string().unwrap_or_else(|| "<none>".to_string())
             );
-            let rendered = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-            webui_free(ptr);
+            let rendered = take_rendered_document(ptr);
             assert!(rendered.contains(expected));
             assert!(!rendered.contains("SECRET"));
         }
@@ -932,23 +940,31 @@ fn protocol_supports_repeated_full_renders() {
 }
 
 #[test]
-fn render_result_matches_string_render_as_output_size_changes() {
-    let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
+fn handler_render_preserves_exact_bytes_as_output_size_changes() {
+    let proto_bytes = WebUIProtocol::new(HashMap::from([(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::signal("kept", false)],
+            contains_boundary: false,
+        },
+    )]))
+    .to_protobuf()
+    .expect("serialize test protocol");
 
     unsafe {
-        let plugin_id = CString::new("webui").expect("static string");
-        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let handler = webui_handler_create();
         let prepared = prepare_protocol(&proto_bytes);
         let c_entry = CString::new("index.html").expect("static string");
         let c_path = CString::new("/").expect("static string");
 
         // Each render reserves its buffer from recent render sizes, so
         // shrinking and regrowing output must still produce identical bytes.
-        for payload_len in [64 * 1024, 16, 64 * 1024] {
-            let state = CString::new(format!(r#"{{"kept":"{}"}}"#, "x".repeat(payload_len)))
+        for payload_len in [64 * 1024, 16, 64 * 1024, 0] {
+            let payload = "é".repeat(payload_len);
+            let state = CString::new(format!(r#"{{"kept":"{payload}"}}"#))
                 .expect("state should not contain NUL");
 
-            let result = webui_handler_render_result(
+            let result = webui_handler_render(
                 handler,
                 prepared,
                 state.as_ptr(),
@@ -960,30 +976,14 @@ fn render_result_matches_string_render_as_output_size_changes() {
                 "render_result failed: {}",
                 last_error_string().unwrap_or_else(|| "<none>".to_string())
             );
-            assert!(webui_render_result_bytes(result, std::ptr::null_mut()).is_null());
+            assert!(webui_render_bytes(result, std::ptr::null_mut()).is_null());
             let mut out_len = 0usize;
-            let bytes = webui_render_result_bytes(result, &mut out_len);
+            let bytes = webui_render_bytes(result, &mut out_len);
             assert!(!bytes.is_null());
             let owned = std::slice::from_raw_parts(bytes, out_len).to_vec();
-            webui_render_result_destroy(result);
+            webui_render_free(result);
 
-            let ptr = webui_handler_render(
-                handler,
-                prepared,
-                state.as_ptr(),
-                c_entry.as_ptr(),
-                c_path.as_ptr(),
-            );
-            assert!(
-                !ptr.is_null(),
-                "render failed: {}",
-                last_error_string().unwrap_or_else(|| "<none>".to_string())
-            );
-            let expected = CStr::from_ptr(ptr).to_bytes().to_vec();
-            webui_free(ptr);
-
-            assert!(owned.len() > payload_len);
-            assert_eq!(owned, expected);
+            assert_eq!(owned, payload.as_bytes());
         }
 
         webui_protocol_destroy(prepared);
@@ -992,31 +992,120 @@ fn render_result_matches_string_render_as_output_size_changes() {
 }
 
 #[test]
+fn handler_render_result_preserves_nul_and_outlives_its_inputs() {
+    let proto_bytes = WebUIProtocol::new(HashMap::from([(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::signal("text", false)],
+            contains_boundary: false,
+        },
+    )]))
+    .to_protobuf()
+    .expect("serialize test protocol");
+
+    // SAFETY: All input pointers stay live through render; the result owns its bytes.
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let state = CString::new(r#"{"text":"é\u0000after"}"#).unwrap();
+        let entry = CString::new("index.html").unwrap();
+        let path = CString::new("/").unwrap();
+        let result = webui_handler_render(
+            handler,
+            protocol,
+            state.as_ptr(),
+            entry.as_ptr(),
+            path.as_ptr(),
+        );
+        assert!(!result.is_null());
+        let mut len = 0;
+        let bytes = webui_render_bytes(result, &mut len);
+        assert!(!bytes.is_null());
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+        assert_eq!(
+            std::slice::from_raw_parts(bytes, len),
+            "é\0after".as_bytes()
+        );
+        assert_eq!(take_rendered_document(result), "é\0after");
+    }
+}
+
+#[test]
 fn render_result_rejects_null_arguments() {
     unsafe {
         let handler = webui_handler_create();
+        let proto_bytes = build_protocol_with_body_end();
+        let protocol = prepare_protocol(&proto_bytes);
         let c_json = CString::new("{}").expect("static string");
         let c_entry = CString::new("index.html").expect("static string");
         let c_path = CString::new("/").expect("static string");
 
-        let result = webui_handler_render_result(
-            handler,
-            std::ptr::null(),
-            c_json.as_ptr(),
-            c_entry.as_ptr(),
-            c_path.as_ptr(),
-        );
-        assert!(result.is_null());
-        assert!(last_error_string().is_some());
+        for (handler, protocol, state, entry, path) in [
+            (
+                std::ptr::null_mut(),
+                protocol,
+                c_json.as_ptr(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            ),
+            (
+                handler,
+                std::ptr::null_mut(),
+                c_json.as_ptr(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            ),
+            (
+                handler,
+                protocol,
+                std::ptr::null(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            ),
+            (
+                handler,
+                protocol,
+                c_json.as_ptr(),
+                std::ptr::null(),
+                c_path.as_ptr(),
+            ),
+            (
+                handler,
+                protocol,
+                c_json.as_ptr(),
+                c_entry.as_ptr(),
+                std::ptr::null(),
+            ),
+        ] {
+            let result = webui_handler_render(handler, protocol, state, entry, path);
+            assert!(result.is_null());
+            assert!(last_error_string().is_some());
+        }
+
+        let invalid_utf8 = [0xffu8, 0];
+        let invalid_state = CString::new("NOT JSON").unwrap();
+        for state in [invalid_utf8.as_ptr().cast(), invalid_state.as_ptr()] {
+            assert!(webui_handler_render(
+                handler,
+                protocol,
+                state,
+                c_entry.as_ptr(),
+                c_path.as_ptr()
+            )
+            .is_null());
+            assert!(last_error_string().is_some());
+        }
 
         let mut out_len = 7usize;
-        assert!(webui_render_result_bytes(std::ptr::null(), &mut out_len).is_null());
+        assert!(webui_render_bytes(std::ptr::null(), &mut out_len).is_null());
         assert!(last_error_string().is_some());
         assert_eq!(out_len, 7);
 
-        webui_render_result_destroy(std::ptr::null_mut());
+        webui_render_free(std::ptr::null_mut());
         assert!(last_error_string().is_none());
 
+        webui_protocol_destroy(protocol);
         webui_handler_destroy(handler);
     }
 }

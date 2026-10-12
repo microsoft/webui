@@ -10,6 +10,7 @@ use std::hint::black_box;
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
     webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
+    webui_render_free,
 };
 use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
@@ -98,7 +99,7 @@ fn protocol_bench(c: &mut Criterion) {
                     assert!(!output.is_null(), "full render failed");
                     black_box(output);
                     // SAFETY: output was allocated by webui_handler_render.
-                    unsafe { webui_free(output) };
+                    unsafe { webui_render_free(output) };
                     // SAFETY: request_protocol is live and no longer borrowed.
                     unsafe { webui_protocol_destroy(request_protocol) };
                 });
@@ -119,7 +120,7 @@ fn protocol_bench(c: &mut Criterion) {
                 assert!(!output.is_null(), "prepared full render failed");
                 black_box(output);
                 // SAFETY: output was allocated by webui_handler_render.
-                unsafe { webui_free(output) };
+                unsafe { webui_render_free(output) };
             });
         });
         group.bench_function(

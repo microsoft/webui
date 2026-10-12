@@ -4,6 +4,7 @@
 """Integration tests for the loaded-protocol WebUI C ABI."""
 
 import ctypes
+import json
 import os
 import platform
 import unittest
@@ -47,6 +48,10 @@ lib.webui_handler_render.argtypes = [
     c_char_p,
 ]
 lib.webui_handler_render.restype = c_void_p
+lib.webui_render_bytes.argtypes = [c_void_p, POINTER(c_size_t)]
+lib.webui_render_bytes.restype = POINTER(c_ubyte)
+lib.webui_render_free.argtypes = [c_void_p]
+lib.webui_render_free.restype = None
 lib.webui_free.argtypes = [c_void_p]
 lib.webui_free.restype = None
 lib.webui_last_error.argtypes = []
@@ -84,9 +89,13 @@ def render(handler: c_void_p, protocol: c_void_p, state_json: str) -> str:
     if not pointer:
         raise RuntimeError(get_last_error() or "render failed")
     try:
-        return ctypes.cast(pointer, c_char_p).value.decode("utf-8")
+        length = c_size_t()
+        data = lib.webui_render_bytes(pointer, ctypes.byref(length))
+        if not data:
+            raise RuntimeError(get_last_error() or "failed to read render result")
+        return ctypes.string_at(data, length.value).decode("utf-8")
     finally:
-        lib.webui_free(pointer)
+        lib.webui_render_free(pointer)
 
 
 class TestLoadedProtocol(unittest.TestCase):
@@ -109,6 +118,33 @@ class TestLoadedProtocol(unittest.TestCase):
     def test_reuses_loaded_protocol(self):
         self.assertIn("First", render(self.handler, self.protocol, '{"name":"First"}'))
         self.assertIn("Second", render(self.handler, self.protocol, '{"name":"Second"}'))
+
+    def test_preserves_nul_utf8_and_changing_output_sizes(self):
+        for name in ("é" * 65536, "before\0after", "", "é" * 65536):
+            with self.subTest(length=len(name)):
+                self.assertEqual(
+                    render(self.handler, self.protocol, json.dumps({"name": name})),
+                    f"<p>Hello, {name}!</p>",
+                )
+
+    def test_result_outlives_handler_and_protocol(self):
+        handler = lib.webui_handler_create()
+        protocol = load_protocol()
+        pointer = lib.webui_handler_render(
+            handler, protocol, b'{"name":"independent"}', b"index.html", b"/"
+        )
+        lib.webui_protocol_destroy(protocol)
+        lib.webui_handler_destroy(handler)
+        self.assertTrue(pointer)
+        try:
+            length = c_size_t()
+            data = lib.webui_render_bytes(pointer, ctypes.byref(length))
+            self.assertTrue(data)
+            self.assertEqual(
+                ctypes.string_at(data, length.value), b"<p>Hello, independent!</p>"
+            )
+        finally:
+            lib.webui_render_free(pointer)
 
     def test_invalid_json_sets_error(self):
         pointer = lib.webui_handler_render(
@@ -146,6 +182,15 @@ class TestLoadedProtocol(unittest.TestCase):
 
 
 class TestLifecycle(unittest.TestCase):
+    def test_only_canonical_full_render_symbol_is_exported(self):
+        for symbol in (
+            "webui_handler_render_result",
+            "webui_render_result_bytes",
+            "webui_render_result_destroy",
+        ):
+            with self.subTest(symbol=symbol), self.assertRaises(AttributeError):
+                getattr(lib, symbol)
+
     def test_handler_create_and_destroy(self):
         handler = lib.webui_handler_create()
         self.assertTrue(handler)
@@ -154,6 +199,7 @@ class TestLifecycle(unittest.TestCase):
     def test_null_destroy_and_free_are_safe(self):
         lib.webui_handler_destroy(None)
         lib.webui_protocol_destroy(None)
+        lib.webui_render_free(None)
         lib.webui_free(None)
 
 

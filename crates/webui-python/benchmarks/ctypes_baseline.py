@@ -37,7 +37,10 @@ class CtypesRenderer:
             c_char_p,
         ]
         library.webui_handler_render.restype = c_void_p
-        library.webui_free.argtypes = [c_void_p]
+        library.webui_render_bytes.argtypes = [c_void_p, POINTER(c_size_t)]
+        library.webui_render_bytes.restype = POINTER(c_ubyte)
+        library.webui_render_free.argtypes = [c_void_p]
+        library.webui_render_free.restype = None
         library.webui_last_error.argtypes = []
         library.webui_last_error.restype = c_char_p
 
@@ -56,9 +59,13 @@ class CtypesRenderer:
         if not pointer:
             raise RuntimeError(self._last_error() or "FFI render failed")
         try:
-            return ctypes.string_at(pointer)
+            length = c_size_t()
+            data = self._library.webui_render_bytes(pointer, ctypes.byref(length))
+            if not data:
+                raise RuntimeError(self._last_error() or "failed to read FFI render result")
+            return ctypes.string_at(data, length.value)
         finally:
-            self._library.webui_free(pointer)
+            self._library.webui_render_free(pointer)
 
     def close(self) -> None:
         protocol = getattr(self, "_protocol", None)
