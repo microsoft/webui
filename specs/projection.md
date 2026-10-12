@@ -52,6 +52,38 @@ unresolved bases, and unsupported reactive property forms fail the build
 instead of emitting a guessed or partial manifest. A proven empty key set is
 valid. The final output-membership check then excludes tree-shaken classes.
 
+### Class-factory inheritance
+
+Inheritance may contain nested calls to graph-resolved, named synchronous
+function declarations, including imports, re-exports, and immutable aliases.
+A supported factory either declares one named class and returns it immediately,
+or directly returns a class expression. The returned class must extend one of
+the function's plain identifier parameters; the corresponding positional call
+argument supplies the next inheritance step. Additional configuration parameters
+do not contribute state keys. Each returned class contributes only its proven
+framework-decorated properties, using the factory module's import identities.
+Factory parameters and class-local names must not shadow decorator targets.
+
+This proof does not run application code or evaluate configuration values.
+Inheritance traversal remains iterative, and repeated uses of one factory must
+not lose the supplied base's properties. Conditional returns, extra factory-body
+statements, async/generator factories, default/rest/destructured parameters,
+spread or optional calls, class decorators, and static class members are not
+proven. Factory, constructor, alias, and decorator references must retain their
+module binding identity. Lexical parameters and declarations shadow module
+names even when declared later in their scope. An unproven local binding is
+rejected rather than resolved against a same-named module export.
+Writes to module bindings invalidate them conservatively, including writes in
+call arguments, nested closures, and destructuring. Assignments to an unrelated
+shadowing local binding do not invalidate a module factory. Binding-pattern
+property names and default-value reads are not writes; assignments inside those
+default expressions still are. Parameter defaults and computed method names use
+their evaluation scopes, not the method body's bindings. Static initialization
+blocks own their `var` bindings, and erased TypeScript assertions do not hide
+assignment targets.
+Unproven factories retain the existing strict inheritance/coverage diagnostics;
+they never produce a partial key set or switch a manifest build to full state.
+
 ## Canonical paths and hashes
 
 - `root` is `"."` or a sequence of parent-only `..` segments relative to the

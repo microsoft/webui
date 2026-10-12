@@ -18,12 +18,16 @@ import {
   esbuildProjection,
 } from "@microsoft/webui/projection.js";
 import type {
+  ProjectionManifest,
+} from "@microsoft/webui/projection.js";
+import { assertClassFactoryCase, CLASS_FACTORY_CASES } from "./projection-class-factory-cases.js";
+import type {
   OnStartResult,
   PluginBuild,
 } from "esbuild";
 
 interface ProjectionModule {
-  compileProjection(context: unknown): Promise<unknown>;
+  compileProjection(context: unknown): Promise<ProjectionManifest>;
 }
 
 interface TypeScriptVersionModule {
@@ -188,6 +192,9 @@ Card.define("ts6-card");
         readonly components: Record<string, unknown>;
       };
       assert.ok(manifest.components["ts6-card"]);
+      for (const fixture of CLASS_FACTORY_CASES) {
+        await assertClassFactoryCase(module.compileProjection, fixture);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

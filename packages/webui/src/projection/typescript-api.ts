@@ -20,6 +20,7 @@ interface ParseResult {
 }
 
 export interface ProjectionParser {
+  prepare(moduleIds: readonly string[]): void;
   parse(moduleId: string): ParseResult | undefined;
   close(): void;
 }
@@ -35,6 +36,7 @@ export class TypeScriptApiUnavailableError extends Error {
 }
 
 const EMPTY_PARSER: ProjectionParser = {
+  prepare: () => {},
   parse: () => undefined,
   close: () => {},
 };
@@ -61,6 +63,7 @@ let nativeBuildId = 0;
 interface NativeService {
   readonly api: InstanceType<NativeSyncApi["API"]>;
   readonly fileSystem: NativeFileSystem;
+  activeParsers: number;
 }
 
 export const {
@@ -68,22 +71,61 @@ export const {
   ScriptKind,
   ScriptTarget,
   SyntaxKind,
+  isArrayBindingPattern,
+  isArrayLiteralExpression,
+  isArrowFunction,
+  isAsExpression,
+  isBinaryExpression,
+  isBindingElement,
+  isBlock,
   isCallExpression,
+  isCaseBlock,
+  isCatchClause,
   isClassDeclaration,
   isClassExpression,
+  isComputedPropertyName,
+  isConstructorDeclaration,
+  isDecorator,
   isExportAssignment,
   isExportDeclaration,
   isFunctionDeclaration,
+  isFunctionExpression,
+  isForStatement,
+  isForInStatement,
+  isForOfStatement,
+  isGetAccessorDeclaration,
   isIdentifier,
   isImportDeclaration,
   isNamedImports,
+  isMethodDeclaration,
   isNamespaceExport,
   isNamespaceImport,
+  isNonNullExpression,
+  isObjectBindingPattern,
+  isObjectLiteralExpression,
+  isParenthesizedExpression,
+  isPostfixUnaryExpression,
+  isPrefixUnaryExpression,
   isPropertyAccessExpression,
+  isPropertyAssignment,
   isPropertyDeclaration,
+  isReturnStatement,
+  isSatisfiesExpression,
+  isSetAccessorDeclaration,
+  isShorthandPropertyAssignment,
+  isSpreadAssignment,
+  isSpreadElement,
   isStringLiteral,
+  isVariableDeclarationList,
   isVariableStatement,
+  isWithStatement,
 } = astApi;
+
+export function isTypeAssertionExpression(
+  node: import("typescript/unstable/ast").Node
+): node is import("typescript/unstable/ast").TypeAssertion {
+  return node.kind === SyntaxKind.TypeAssertionExpression;
+}
 
 export function forEachChild(
   node: import("typescript/unstable/ast").Node,
@@ -127,6 +169,8 @@ class LegacyProjectionParser implements ProjectionParser {
     private readonly api: AstApi
   ) {}
 
+  prepare(): void {}
+
   parse(moduleId: string): ParseResult | undefined {
     const node = this.modules.get(moduleId);
     if (node?.source === undefined) return undefined;
@@ -159,7 +203,7 @@ class LegacyProjectionParser implements ProjectionParser {
 }
 
 class NativeProjectionParser implements ProjectionParser {
-  private readonly service: NativeService;
+  private service: NativeService | undefined;
   private snapshot: ReturnType<
     InstanceType<NativeSyncApi["API"]>["updateSnapshot"]
   > | undefined;
@@ -169,48 +213,50 @@ class NativeProjectionParser implements ProjectionParser {
 
   constructor(
     private readonly modules: ReadonlyMap<string, ModuleNode>,
-    syncApi: NativeSyncApi,
-    fileSystemApi: NativeFileSystemApi
+    private readonly syncApi: NativeSyncApi,
+    private readonly fileSystemApi: NativeFileSystemApi
   ) {
-    this.service = getNativeService(syncApi, fileSystemApi);
     this.buildId = nativeBuildId;
     nativeBuildId++;
   }
 
-  parse(moduleId: string): ParseResult | undefined {
-    let virtualPath = this.paths.get(moduleId);
-    if (virtualPath === undefined) {
+  prepare(moduleIds: readonly string[]): void {
+    const pending: string[] = [];
+    for (const moduleId of moduleIds) {
+      if (this.paths.has(moduleId)) continue;
       const node = this.modules.get(moduleId);
-      if (node?.source === undefined) return undefined;
+      if (node?.source === undefined) continue;
+      if (this.service === undefined) {
+        this.service = getNativeService(this.syncApi, this.fileSystemApi);
+        this.service.activeParsers++;
+      }
       const extension = path.extname(moduleId) || ".ts";
-      virtualPath = normalizeVirtualPath(
+      const virtualPath = normalizeVirtualPath(
         path.join(
           process.cwd(),
           ".webui-projection",
           `${this.buildId}-${this.paths.size}${extension}`
         )
       );
-      this.service.fileSystem.writeFile?.(virtualPath, node.source);
-
-      let nextSnapshot: ReturnType<
-        InstanceType<NativeSyncApi["API"]>["updateSnapshot"]
-      >;
-      try {
-        nextSnapshot = this.service.api.updateSnapshot({
-          openFiles: [virtualPath],
-        });
-      } catch (error: unknown) {
-        removeVirtualFiles(this.service.fileSystem, [virtualPath]);
-        throw error;
-      }
-
-      const previousSnapshot = this.snapshot;
-      this.snapshot = nextSnapshot;
-      this.openFiles.push(virtualPath);
       this.paths.set(moduleId, virtualPath);
-      previousSnapshot?.dispose();
+      this.openFiles.push(virtualPath);
+      pending.push(virtualPath);
+      this.service.fileSystem.writeFile?.(virtualPath, node.source);
     }
+    if (pending.length === 0 || this.service === undefined) return;
 
+    const nextSnapshot = this.service.api.updateSnapshot({
+      openFiles: pending,
+    });
+    const previousSnapshot = this.snapshot;
+    this.snapshot = nextSnapshot;
+    previousSnapshot?.dispose();
+  }
+
+  parse(moduleId: string): ParseResult | undefined {
+    if (!this.paths.has(moduleId)) this.prepare([moduleId]);
+    const virtualPath = this.paths.get(moduleId);
+    if (virtualPath === undefined) return undefined;
     const project = this.snapshot?.getDefaultProjectForFile(virtualPath);
     if (project === undefined) return undefined;
     const sourceFile = project.program.getSourceFile(virtualPath);
@@ -223,20 +269,26 @@ class NativeProjectionParser implements ProjectionParser {
   }
 
   close(): void {
+    const service = this.service;
+    if (service === undefined) return;
     try {
       this.snapshot?.dispose();
     } finally {
       this.snapshot = undefined;
       try {
-        if (this.openFiles.length === 0) return;
-        const closed = this.service.api.updateSnapshot({
+        removeVirtualFiles(service.fileSystem, this.openFiles);
+        const closed = service.api.updateSnapshot({
           closeFiles: this.openFiles,
+          fileChanges: { deleted: this.openFiles },
         });
         closed.dispose();
       } finally {
-        removeVirtualFiles(this.service.fileSystem, this.openFiles);
         this.openFiles.length = 0;
         this.paths.clear();
+        this.service = undefined;
+        service.activeParsers--;
+        // The shared native service outlives a build, but its parsed source buffers must not.
+        if (service.activeParsers === 0) service.api.clearSourceFileCache();
       }
     }
   }
@@ -255,6 +307,7 @@ function getNativeService(
         fs: fileSystem,
       }),
       fileSystem,
+      activeParsers: 0,
     };
     return nativeService;
   } catch (error: unknown) {

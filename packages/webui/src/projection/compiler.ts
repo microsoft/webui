@@ -32,6 +32,12 @@ import {
 } from "./manifest.js";
 import { ProjectionError, createDiagnostic } from "./diagnostics.js";
 import type { ProjectionDiagnostic } from "./diagnostics.js";
+import {
+  analyzeClassFactory,
+  hasShadowedDecorator,
+} from "./class-factory.js";
+import type { ClassFactory } from "./class-factory.js";
+import { SourceScopes } from "./scopes.js";
 
 /** The well-known framework package specifier recognized by literal text. */
 const FRAMEWORK_SPECIFIER = "@microsoft/webui-framework";
@@ -61,6 +67,7 @@ const SUPPORTED_EXTENSIONS = new Set([
 /** What a name bound in a module's local scope refers to. */
 type ScopeBinding =
   | { readonly kind: "localClass"; readonly node: ts.ClassLikeDeclaration }
+  | { readonly kind: "localClassFactory"; readonly factory: ClassFactory }
   | { readonly kind: "mutableClass" }
   | { readonly kind: "localAlias"; readonly localName: string }
   | { readonly kind: "localOther" }
@@ -92,11 +99,18 @@ interface ModuleAnalysis {
   readonly exports: Map<string, ExportBinding>;
   readonly starReexports: StarReexport[];
   readonly defineCalls: DefineCallSite[];
+  readonly sourceScopes: SourceScopes;
 }
 
 interface ExactStateKeys {
   readonly hydrationKeys: string[];
   readonly navigationKeys: string[];
+}
+
+interface InheritedClass {
+  readonly moduleId: string;
+  readonly node: ts.ClassLikeDeclaration;
+  readonly baseResolved?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +119,7 @@ interface ExactStateKeys {
 
 type Resolved =
   | { readonly kind: "class"; readonly moduleId: string; readonly node: ts.ClassLikeDeclaration }
+  | { readonly kind: "classFactory"; readonly moduleId: string; readonly factory: ClassFactory }
   | { readonly kind: "frameworkObservable" }
   | { readonly kind: "frameworkAttr" }
   | { readonly kind: "frameworkElement" }
@@ -132,17 +147,7 @@ export function compileProjection(ctx: AdapterContext): ProjectionManifest {
   validateAdapterContext(ctx, diagnostics);
   if (diagnostics.length > 0) throw new ProjectionError(diagnostics);
 
-  let parser: ts.ProjectionParser;
-  try {
-    parser = ts.createProjectionParser(ctx.graph.modules);
-  } catch (error: unknown) {
-    if (error instanceof ts.TypeScriptApiUnavailableError) {
-      throw new ProjectionError([
-        createDiagnostic("PROJ-P001", { help: error.message }),
-      ]);
-    }
-    throw error;
-  }
+  const parser = ts.createProjectionParser(ctx.graph.modules);
   try {
     const analyses = buildAnalyses(ctx, diagnostics, parser);
     const parsed = profile ? performance.now() : 0;
@@ -165,6 +170,13 @@ export function compileProjection(ctx: AdapterContext): ProjectionManifest {
       );
     }
     return manifest;
+  } catch (error: unknown) {
+    if (error instanceof ts.TypeScriptApiUnavailableError) {
+      throw new ProjectionError([
+        createDiagnostic("PROJ-P001", { help: error.message }),
+      ]);
+    }
+    throw error;
   } finally {
     parser.close();
   }
@@ -263,15 +275,19 @@ function buildAnalyses(
   parser: ts.ProjectionParser
 ): AnalysisRegistry {
   const analyses = new AnalysisRegistry(ctx, diagnostics, parser);
+  const candidates: string[] = [];
   for (const [moduleId, node] of ctx.graph.modules) {
     if (
       node.source !== undefined &&
       SUPPORTED_EXTENSIONS.has(getExtension(moduleId)) &&
       containsPotentialDefineCall(node)
     ) {
-      analyses.get(moduleId);
+      candidates.push(moduleId);
     }
   }
+  // Native TypeScript snapshots rebuild the open-file project; open known roots once.
+  parser.prepare(candidates);
+  for (const moduleId of candidates) analyses.get(moduleId);
   return analyses;
 }
 
@@ -384,6 +400,10 @@ function analyzeModule(moduleId: string, sourceFile: ts.SourceFile): ModuleAnaly
       analyzeClassDeclaration(statement, scope, exports);
     } else if (ts.isFunctionDeclaration(statement)) {
       analyzeNamedOtherDeclaration(statement.name?.text, isExported(statement), isDefaultExport(statement), scope, exports);
+      const factory = analyzeClassFactory(statement);
+      if (factory && statement.name) {
+        scope.set(statement.name.text, { kind: "localClassFactory", factory });
+      }
     } else if (ts.isVariableStatement(statement)) {
       analyzeVariableStatement(statement, scope, exports);
     } else if (ts.isExportAssignment(statement)) {
@@ -391,8 +411,15 @@ function analyzeModule(moduleId: string, sourceFile: ts.SourceFile): ModuleAnaly
     }
   }
 
-  const defineCalls = findDefineCalls(moduleId, sourceFile);
-  return { moduleId, scope, exports, starReexports, defineCalls };
+  const defineCalls: DefineCallSite[] = [];
+  const sourceScopes = new SourceScopes(sourceFile, (node) => {
+    const site = tryParseDefineCall(moduleId, node);
+    if (site) defineCalls.push(site);
+  });
+  for (const name of sourceScopes.assigned) {
+    if (scope.has(name)) scope.set(name, { kind: "mutableClass" });
+  }
+  return { moduleId, scope, exports, starReexports, defineCalls, sourceScopes };
 }
 
 function isExported(node: ts.Node): boolean {
@@ -615,23 +642,6 @@ function analyzeExportAssignment(
 // define() call site discovery (full-tree, iterative, explicit stack)
 // ---------------------------------------------------------------------------
 
-function findDefineCalls(moduleId: string, sourceFile: ts.SourceFile): DefineCallSite[] {
-  const sites: DefineCallSite[] = [];
-  const stack: ts.Node[] = [sourceFile];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    const site = tryParseDefineCall(moduleId, node);
-    if (site) sites.push(site);
-
-    const children: ts.Node[] = [];
-    ts.forEachChild(node, (child) => {
-      children.push(child);
-    });
-    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]!);
-  }
-  return sites;
-}
-
 function tryParseDefineCall(moduleId: string, node: ts.Node): DefineCallSite | undefined {
   if (!ts.isCallExpression(node)) return undefined;
   const callee = node.expression;
@@ -683,7 +693,8 @@ function compileDefinedComponents(
     const analysis = analyses.get(site.moduleId);
     if (
       site.form === "customElements" &&
-      analysis?.scope.has("customElements")
+      (analysis?.scope.has("customElements") ||
+        analysis?.sourceScopes.shadows(site.node, "customElements"))
     ) {
       continue;
     }
@@ -792,10 +803,7 @@ function isPotentialWebUIClass(
   startModuleId: string,
   startNode: ts.ClassLikeDeclaration
 ): boolean {
-  const stack: Array<{
-    readonly moduleId: string;
-    readonly node: ts.ClassLikeDeclaration;
-  }> = [{ moduleId: startModuleId, node: startNode }];
+  const stack: InheritedClass[] = [{ moduleId: startModuleId, node: startNode }];
   const visited = new Set<string>();
   let hasFrameworkDecorator = false;
 
@@ -829,13 +837,15 @@ function isPotentialWebUIClass(
       }
     }
 
+    if (current.baseResolved) continue;
     const base = getExtendsExpression(current.node);
     if (!base) continue;
-    const resolved = resolveDecoratorTarget(
+    const resolved = resolveInheritance(
       ctx,
       analyses,
       current.moduleId,
-      base
+      base,
+      stack
     );
     if (resolved.kind === "frameworkElement") return true;
     if (resolved.kind === "class") {
@@ -856,9 +866,15 @@ function resolveClassReferenceExpression(
     return { kind: "class", moduleId, node: expr };
   }
   if (ts.isIdentifier(expr)) {
+    if (analyses.get(moduleId)?.sourceScopes.shadows(expr, expr.text)) {
+      return { kind: "unresolved", reason: "no-export" };
+    }
     return resolveIdentity(ctx, analyses, moduleId, expr.text, "local");
   }
   if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
+    if (analyses.get(moduleId)?.sourceScopes.shadows(expr.expression, expr.expression.text)) {
+      return { kind: "unresolved", reason: "no-export" };
+    }
     const ns = resolveIdentity(ctx, analyses, moduleId, expr.expression.text, "local");
     if (ns.kind !== "namespace") return { kind: "unresolved", reason: "no-export" };
     return resolveIdentity(ctx, analyses, ns.moduleId, expr.name.text, "export");
@@ -986,6 +1002,8 @@ function stepLocal(
   switch (binding.kind) {
     case "localClass":
       return { kind: "class", moduleId: cur.moduleId, node: binding.node };
+    case "localClassFactory":
+      return { kind: "classFactory", moduleId: cur.moduleId, factory: binding.factory };
     case "mutableClass":
       return { kind: "unsafeMutable" };
     case "localAlias":
@@ -1080,14 +1098,14 @@ function computeExactKeys(
 ): ExactStateKeys | undefined {
   const hydrationKeys = new Set<string>();
   const navigationKeys = new Set<string>();
-  const stack: Array<{ moduleId: string; node: ts.ClassLikeDeclaration }> = [
+  const stack: InheritedClass[] = [
     { moduleId: startModuleId, node: startNode },
   ];
   const visitedClasses = new Set<string>();
   let ok = true;
 
   while (stack.length > 0) {
-    const { moduleId, node } = stack.pop()!;
+    const { moduleId, node, baseResolved } = stack.pop()!;
     const classKey = `${moduleId}:${node.pos}:${node.end}`;
     if (visitedClasses.has(classKey)) continue;
     visitedClasses.add(classKey);
@@ -1102,7 +1120,9 @@ function computeExactKeys(
         navigationKeys,
         diagnostics
       ) && ok;
-    ok = climbBaseClass(ctx, analyses, moduleId, node, stack, diagnostics) && ok;
+    if (!baseResolved) {
+      ok = climbBaseClass(ctx, analyses, moduleId, node, stack, diagnostics) && ok;
+    }
   }
 
   return ok
@@ -1200,7 +1220,7 @@ function applyDecorator(
     navigationKeys.add(propertyName);
     return true;
   }
-  if (identity.kind === "other") return true;
+  if (identity.kind === "other" || identity.kind === "classFactory") return true;
 
   diagnostics.push(
     createDiagnostic(
@@ -1243,15 +1263,7 @@ function resolveDecoratorTarget(
   moduleId: string,
   expr: ts.Expression
 ): Resolved {
-  if (ts.isIdentifier(expr)) {
-    return resolveIdentity(ctx, analyses, moduleId, expr.text, "local");
-  }
-  if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
-    const ns = resolveIdentity(ctx, analyses, moduleId, expr.expression.text, "local");
-    if (ns.kind !== "namespace") return { kind: "unresolved", reason: "no-export" };
-    return resolveIdentity(ctx, analyses, ns.moduleId, expr.name.text, "export");
-  }
-  return { kind: "unresolved", reason: "no-export" };
+  return resolveClassReferenceExpression(ctx, analyses, moduleId, expr);
 }
 
 function climbBaseClass(
@@ -1259,13 +1271,13 @@ function climbBaseClass(
   analyses: AnalysisRegistry,
   moduleId: string,
   node: ts.ClassLikeDeclaration,
-  stack: Array<{ moduleId: string; node: ts.ClassLikeDeclaration }>,
+  stack: InheritedClass[],
   diagnostics: ProjectionDiagnostic[]
 ): boolean {
   const heritage = getExtendsExpression(node);
   if (!heritage) return true;
 
-  const resolved = resolveDecoratorTarget(ctx, analyses, moduleId, heritage);
+  const resolved = resolveInheritance(ctx, analyses, moduleId, heritage, stack);
   if (resolved.kind === "frameworkElement") return true;
   if (resolved.kind === "class") {
     stack.push({ moduleId: resolved.moduleId, node: resolved.node });
@@ -1287,11 +1299,48 @@ function climbBaseClass(
       location: moduleId,
       help: isSourceUnavailable
         ? "The base class's module has no available source (external/virtual); its keys cannot be proven."
-        : "Ensure the base class is a statically resolvable class declaration reachable from the adapter graph.",
+        : "Use a resolvable class or a synchronous class factory that directly returns a class extending its constructor parameter. Conditional returns, reassigned factories, and dynamic bases cannot prove exact state.",
       }
     )
   );
   return false;
+}
+
+function resolveInheritance(
+  ctx: AdapterContext,
+  analyses: AnalysisRegistry,
+  moduleId: string,
+  expression: ts.Expression,
+  stack: InheritedClass[]
+): Resolved {
+  let base = expression;
+  while (ts.isCallExpression(base)) {
+    if (base.questionDotToken || base.arguments.some(ts.isSpreadElement)) {
+      return { kind: "unresolved", reason: "no-export" };
+    }
+    const resolved = resolveDecoratorTarget(ctx, analyses, moduleId, base.expression);
+    if (resolved.kind !== "classFactory") {
+      return resolved.kind === "unresolved"
+        ? resolved
+        : { kind: "unresolved", reason: "no-export" };
+    }
+    const argument = base.arguments[resolved.factory.baseParameter];
+    if (!argument) return { kind: "unresolved", reason: "no-export" };
+    stack.push({
+      moduleId: resolved.moduleId,
+      node: resolved.factory.node,
+      baseResolved: true,
+    });
+    base = argument;
+  }
+  if (
+    ts.isClassExpression(base) &&
+    base.name &&
+    hasShadowedDecorator(base, new Set([base.name.text]))
+  ) {
+    return { kind: "unresolved", reason: "no-export" };
+  }
+  return resolveClassReferenceExpression(ctx, analyses, moduleId, base);
 }
 
 function getExtendsExpression(node: ts.ClassLikeDeclaration): ts.Expression | undefined {
