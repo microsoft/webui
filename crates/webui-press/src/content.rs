@@ -1086,6 +1086,107 @@ mod tests {
     }
 
     #[test]
+    fn parse_frontmatter_preserves_yaml_scalar_and_alias_semantics() {
+        let raw = concat!(
+            "---\ntitle: 42\ndescription: false\nlayout: [doc]\n",
+            "state:\n  example:\n    word: yes\n    quoted: 'false'\n",
+            "    maximum: 18446744073709551615\n    minimum: -9223372036854775808\n",
+            "    explicit: !!str 42\n    base: &base {count: 2}\n",
+            "    alias: *base\n    merged: {<<: *base}\n",
+            "---\nBody\n"
+        );
+        let (fm, body) = parse_frontmatter(raw).expect("valid YAML scalars");
+        assert!(fm.title.is_none());
+        assert!(fm.description.is_none());
+        assert!(fm.layout.is_none());
+        let state = fm.state.expect("state");
+        assert_eq!(state["example"]["word"], "yes");
+        assert_eq!(state["example"]["quoted"], "false");
+        assert_eq!(state["example"]["maximum"].as_u64(), Some(u64::MAX));
+        assert_eq!(state["example"]["minimum"].as_i64(), Some(i64::MIN));
+        assert_eq!(state["example"]["explicit"], "42");
+        assert_eq!(state["example"]["alias"]["count"], 2);
+        assert_eq!(state["example"]["merged"]["<<"]["count"], 2);
+        assert_eq!(body, "Body\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_preserves_leading_zero_and_underscored_strings() {
+        let raw = concat!(
+            "---\ntitle: 00123\ndescription: 1_000\nlayout: 00\n",
+            "state: {example: {00123: leading, 1_000: underscored, ",
+            "leading: 00123, underscored: 1_000}}\n---\nBody\n"
+        );
+        let (fm, _) = parse_frontmatter(raw).expect("string scalar classification");
+        assert_eq!(fm.title.as_deref(), Some("00123"));
+        assert_eq!(fm.description.as_deref(), Some("1_000"));
+        assert_eq!(fm.layout.as_deref(), Some("00"));
+        let state = fm.state.expect("state");
+        assert_eq!(state["example"]["00123"], "leading");
+        assert_eq!(state["example"]["1_000"], "underscored");
+        assert_eq!(state["example"]["leading"], "00123");
+        assert_eq!(state["example"]["underscored"], "1_000");
+    }
+
+    #[test]
+    fn parse_frontmatter_keeps_validation_scoped_to_state() {
+        for metadata in [
+            "!str value",
+            ".inf",
+            "{42: value}",
+            "{nested: !example value}",
+            "{nested: [one, .nan]}",
+        ] {
+            let raw = format!(
+                "---\nignored: &metadata {metadata}\nstate: {{example: {{count: 2}}}}\n---\nBody\n"
+            );
+            let (fm, _) = parse_frontmatter(&raw).expect(metadata);
+            assert_eq!(fm.state.expect("state")["example"]["count"], 2);
+
+            let raw = format!(
+                "---\nignored: &metadata {metadata}\nstate: {{example: *metadata}}\n---\nBody\n"
+            );
+            let error = parse_frontmatter(&raw).expect_err(metadata).to_string();
+            assert!(
+                error.contains("state") && error.contains("help:"),
+                "{error}"
+            );
+        }
+        let (fm, _) = parse_frontmatter(
+            "---\ntitle: !str Ignored\ndescription: .inf\n42: ignored\nstate: {count: 2}\n---\nBody\n",
+        ).expect("ignored non-JSON metadata");
+        assert_eq!(fm.title.as_deref(), Some("Ignored"));
+        assert!(fm.description.is_none());
+        assert_eq!(fm.state.expect("state")["count"], 2);
+    }
+
+    #[test]
+    fn parse_frontmatter_preserves_text_and_standard_tags() {
+        let raw = concat!(
+            "---\ntitle: !!str 00123\nstate: !!map\n",
+            "  quoted: ' 00123 '\n  explicit: !!str 1_000\n",
+            "  block: |\n    00123\n    1_000\n",
+            "  yes: yes\n  exponent: 1e999\n",
+            "  boolean: !!bool TRUE\n  count: !!int 0x10\n",
+            "  ratio: !!float 1.5\n  empty: !!null null\n",
+            "  items: !!seq [one, two]\n---\nBody\n",
+        );
+        let (fm, _) = parse_frontmatter(raw).expect("standard YAML core tags");
+        assert_eq!(fm.title.as_deref(), Some("00123"));
+        let state = fm.state.expect("state");
+        assert_eq!(state["quoted"], " 00123 ");
+        assert_eq!(state["explicit"], "1_000");
+        assert_eq!(state["block"], "00123\n1_000\n");
+        assert_eq!(state["yes"], "yes");
+        assert_eq!(state["exponent"], "1e999");
+        assert_eq!(state["boolean"], true);
+        assert_eq!(state["count"], 16);
+        assert_eq!(state["ratio"], 1.5);
+        assert!(state["empty"].is_null());
+        assert_eq!(state["items"][1], "two");
+    }
+
+    #[test]
     fn parse_frontmatter_rejects_invalid_state() {
         for state in [
             "null",
@@ -1096,10 +1197,21 @@ mod tests {
             "{nested: {1: value}}",
             "{nested: {true: value}}",
             "{nested: {.nan: value}}",
+            "{nested: {null: value}}",
+            "{nested: {1.5: value}}",
+            "{nested: {? [one, two]: value}}",
             "{nested: {value: .inf}}",
+            "{nested: {value: -.inf}}",
+            "{nested: {value: !!float .nan}}",
+            "{nested: {id: 18446744073709551617}}",
+            "{nested: {id: -9223372036854775809}}",
             "{nested: [1, .nan]}",
             "{nested: !example value}",
             "!example {value: tagged}",
+            "{nested: !example [one, two]}",
+            "{nested: !str value}",
+            "{nested: !int 42}",
+            "{nested: !time value}",
             "{nested: {value: first, value: second}}",
             "{value: first}\nstate: {value: second}",
             "{broken: [}",

@@ -253,6 +253,11 @@ fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> Tes
             "{value: first}\nstate: {value: second}",
             "{}\ntitle: First\ntitle: Second",
             "{value: *missing}",
+            "{example: {id: 18446744073709551617}}",
+            "{example: {id: -9223372036854775809}}",
+            "{example: !str value}",
+            "{example: !int 42}",
+            "{example: !time value}",
         ] {
             fs::write(
                 root.path().join("content/invalid.md"),
@@ -268,6 +273,85 @@ fn cli_rejects_invalid_markdown_state_without_replacing_previous_output() -> Tes
             );
             assert!(message.contains("help:"), "{message}");
             assert_eq!(fs::read_to_string(&output_path)?, previous_output);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn cli_rejects_duplicate_metadata_keys_without_replacing_previous_output() -> TestResult {
+    let root = fixture()?;
+    for mode in ["all", "content"] {
+        fs::write(root.path().join("content/metadata.md"), "# Valid page")?;
+        successful_build(root.path(), mode)?;
+        let output_path = root.path().join("dist/metadata/index.html");
+        let previous_output = fs::read_to_string(&output_path)?;
+        for metadata in [
+            "42: first\n42: second",
+            "true: first\ntrue: second",
+            "ignored: {42: first, 42: second}",
+            "ignored: {true: first, true: second}",
+        ] {
+            fs::write(
+                root.path().join("content/metadata.md"),
+                format!("---\n{metadata}\nstate: {{count: 2}}\n---\n# Invalid"),
+            )?;
+            let output = build(root.path(), mode)?;
+            assert!(!output.status.success(), "{mode} accepted {metadata}");
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(message.contains("metadata.md"), "{message}");
+            assert!(
+                message.contains("duplicate") && message.contains("help:"),
+                "{message}"
+            );
+            assert_eq!(fs::read_to_string(&output_path)?, previous_output);
+        }
+        fs::write(
+            root.path().join("content/metadata.md"),
+            concat!(
+                "---\n42: number\n'42': string\ntrue: boolean\n'true': text\n",
+                "ignored: {42: number, '42': string, true: boolean, 'true': text}\n",
+                "state: {count: 2}\n---\n# Typed keys\n"
+            ),
+        )?;
+        successful_build(root.path(), mode)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cli_preserves_frontmatter_scalar_classification() -> TestResult {
+    let root = fixture()?;
+    fs::write(
+        root.path().join("content/scalars.md"),
+        concat!(
+            "---\ntitle: 00123\ndescription: 1_000\n",
+            "state:\n  values:\n    leading: 00123\n    underscored: 1_000\n",
+            "    00123: leading-key\n    1_000: underscored-key\n",
+            "    maximum: 18446744073709551615\n    minimum: -9223372036854775808\n",
+            "    explicit: !!str 42\n---\n",
+            "<p data-title=\"{{page.title}}\" data-description=\"{{page.description}}\" ",
+            "data-leading=\"{{values.leading}}\" data-underscored=\"{{values.underscored}}\" ",
+            "data-max=\"{{values.maximum}}\" data-min=\"{{values.minimum}}\" ",
+            "data-explicit=\"{{values.explicit}}\">Scalars</p>\n"
+        ),
+    )?;
+    for mode in ["all", "content"] {
+        successful_build(root.path(), mode)?;
+        let html = fs::read_to_string(root.path().join("dist/scalars/index.html"))?;
+        for expected in [
+            "data-title=\"00123\"",
+            "data-description=\"1_000\"",
+            "data-leading=\"00123\"",
+            "data-underscored=\"1_000\"",
+            "data-max=\"18446744073709551615\"",
+            "data-min=\"-9223372036854775808\"",
+            "data-explicit=\"42\"",
+        ] {
+            assert!(
+                html.contains(expected),
+                "{mode}: missing {expected}: {html}"
+            );
         }
     }
     Ok(())
