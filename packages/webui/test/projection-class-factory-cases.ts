@@ -219,6 +219,28 @@ export const CLASS_FACTORY_CASES: readonly FactoryCase[] = [
     }`,
     keys: ["inherited"],
   },
+  {
+    name: "shared factory properties do not cache the supplied base",
+    source: namedFactory,
+    definition: `
+class First extends mix(Base, { value: '' }) {}
+First.define('first-card');
+class Second extends mix(Other, { value: '' }) { @observable own = ''; }
+Second.define('mixin-card');`,
+    keys: ["actual", "inherited", "own"],
+  },
+  {
+    name: "cached module identity does not bypass lexical shadowing",
+    source: namedFactory,
+    definition: `
+class First extends mix(WebUIElement, { value: '' }) {}
+First.define('first-card');
+function register(mix) {
+  customElements.define('mixin-card', class extends mix(WebUIElement) {
+    @observable own = '';
+  });
+}`,
+  },
 ];
 
 export async function assertClassFactoryCase(

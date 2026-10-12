@@ -151,11 +151,18 @@ export function compileProjection(ctx: AdapterContext): ProjectionManifest {
   try {
     const analyses = buildAnalyses(ctx, diagnostics, parser);
     const parsed = profile ? performance.now() : 0;
-    const candidates = compileDefinedComponents(
+    const provisionalDiagnostics: ProjectionDiagnostic[] = [];
+    analyses.deferDependencies = true;
+    let candidates = compileDefinedComponents(
       ctx,
       analyses,
-      diagnostics
+      provisionalDiagnostics
     );
+    if (analyses.prepareDependencies()) {
+      candidates = compileDefinedComponents(ctx, analyses, diagnostics);
+    } else {
+      for (const diagnostic of provisionalDiagnostics) diagnostics.push(diagnostic);
+    }
     const analyzed = profile ? performance.now() : 0;
 
     if (diagnostics.length > 0) {
@@ -292,6 +299,11 @@ function buildAnalyses(
 }
 
 class AnalysisRegistry {
+  readonly resolutions = new Map<string, Map<string, Resolved>>();
+  readonly ownKeys = new Map<ts.ClassLikeDeclaration, ExactStateKeys>();
+  deferDependencies = false;
+  deferredReads = 0;
+  private readonly pendingDependencies = new Set<string>();
   private readonly analyses = new Map<string, ModuleAnalysis>();
   private readonly attempted = new Set<string>();
 
@@ -309,11 +321,18 @@ class AnalysisRegistry {
     return this.analyses.values();
   }
 
+  prepareDependencies(): boolean {
+    this.deferDependencies = false;
+    if (this.pendingDependencies.size === 0) return false;
+    // Batch only the first unresolved dependency frontier; deeper inputs remain lazy.
+    this.parser.prepare([...this.pendingDependencies]);
+    this.pendingDependencies.clear();
+    return true;
+  }
+
   get(moduleId: string): ModuleAnalysis | undefined {
     const existing = this.analyses.get(moduleId);
     if (existing || this.attempted.has(moduleId)) return existing;
-    this.attempted.add(moduleId);
-
     const node = this.ctx.graph.modules.get(moduleId);
     if (
       node?.source === undefined ||
@@ -321,6 +340,12 @@ class AnalysisRegistry {
     ) {
       return undefined;
     }
+    if (this.deferDependencies) {
+      this.pendingDependencies.add(moduleId);
+      this.deferredReads++;
+      return undefined;
+    }
+    this.attempted.add(moduleId);
     const parsed = this.parser.parse(moduleId);
     if (parsed === undefined) {
       this.diagnostics.push(
@@ -813,26 +838,31 @@ function isPotentialWebUIClass(
     if (visited.has(key)) continue;
     visited.add(key);
 
-    for (const member of current.node.members) {
-      if (!ts.isPropertyDeclaration(member)) continue;
-      const decorators = nodeModifiers(member).filter(
-        (modifier): modifier is ts.Decorator =>
-          modifier.kind === ts.SyntaxKind.Decorator
-      );
-      for (const decorator of decorators) {
-        const parsed = parseDecoratorExpression(decorator.expression);
-        if (parsed.kind === "unsupported") continue;
-        const identity = resolveDecoratorTarget(
-          ctx,
-          analyses,
-          current.moduleId,
-          parsed.calleeExpr
+    const cachedKeys = analyses.ownKeys.get(current.node);
+    if (cachedKeys) {
+      hasFrameworkDecorator ||= cachedKeys.hydrationKeys.length > 0;
+    } else {
+      for (const member of current.node.members) {
+        if (!ts.isPropertyDeclaration(member)) continue;
+        const decorators = nodeModifiers(member).filter(
+          (modifier): modifier is ts.Decorator =>
+            modifier.kind === ts.SyntaxKind.Decorator
         );
-        if (
-          identity.kind === "frameworkObservable" ||
-          identity.kind === "frameworkAttr"
-        ) {
-          hasFrameworkDecorator = true;
+        for (const decorator of decorators) {
+          const parsed = parseDecoratorExpression(decorator.expression);
+          if (parsed.kind === "unsupported") continue;
+          const identity = resolveDecoratorTarget(
+            ctx,
+            analyses,
+            current.moduleId,
+            parsed.calleeExpr
+          );
+          if (
+            identity.kind === "frameworkObservable" ||
+            identity.kind === "frameworkAttr"
+          ) {
+            hasFrameworkDecorator = true;
+          }
         }
       }
     }
@@ -934,6 +964,28 @@ interface ResolutionState {
  * Cycles are detected via a visited-state set and reported as `"circular"`.
  */
 function resolveIdentity(
+  ctx: AdapterContext,
+  analyses: AnalysisRegistry,
+  startModuleId: string,
+  startName: string,
+  startMode: ResolutionMode
+): Resolved {
+  let cache = analyses.resolutions.get(startModuleId);
+  const key = `${startMode[0]}:${startName}`;
+  const cached = cache?.get(key);
+  if (cached) return cached;
+  const deferredReads = analyses.deferredReads;
+  const resolved = resolveUncachedIdentity(ctx, analyses, startModuleId, startName, startMode);
+  if (analyses.deferredReads !== deferredReads) return resolved;
+  if (!cache) {
+    cache = new Map();
+    analyses.resolutions.set(startModuleId, cache);
+  }
+  cache.set(key, resolved);
+  return resolved;
+}
+
+function resolveUncachedIdentity(
   ctx: AdapterContext,
   analyses: AnalysisRegistry,
   startModuleId: string,
@@ -1110,16 +1162,33 @@ function computeExactKeys(
     if (visitedClasses.has(classKey)) continue;
     visitedClasses.add(classKey);
 
-    ok =
-      collectOwnKeys(
+    let own = analyses.ownKeys.get(node);
+    if (!own) {
+      const ownHydration = new Set<string>();
+      const ownNavigation = new Set<string>();
+      const deferredReads = analyses.deferredReads;
+      if (collectOwnKeys(
         ctx,
         analyses,
         moduleId,
         node,
-        hydrationKeys,
-        navigationKeys,
+        ownHydration,
+        ownNavigation,
         diagnostics
-      ) && ok;
+      )) {
+        own = {
+          hydrationKeys: [...ownHydration],
+          navigationKeys: [...ownNavigation],
+        };
+        if (analyses.deferredReads === deferredReads) analyses.ownKeys.set(node, own);
+      } else {
+        ok = false;
+      }
+    }
+    if (own) {
+      for (const key of own.hydrationKeys) hydrationKeys.add(key);
+      for (const key of own.navigationKeys) navigationKeys.add(key);
+    }
     if (!baseResolved) {
       ok = climbBaseClass(ctx, analyses, moduleId, node, stack, diagnostics) && ok;
     }

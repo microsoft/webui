@@ -82,6 +82,92 @@ test("does not create native snapshots for a graph without component candidates"
   assert.equal(clear.mock.callCount(), 0);
 });
 
+test("batches discovered bases without parsing unrelated imports", async (t) => {
+  const original = API.prototype.updateSnapshot;
+  const batches: number[] = [];
+  t.mock.method(API.prototype, "updateSnapshot", function (
+    this: API, options: Parameters<typeof API.prototype.updateSnapshot>[0]
+  ) {
+    batches.push(options?.openFiles?.length ?? 0);
+    return original.call(this, options);
+  });
+  const modules: ModuleNode[] = [];
+  for (let index = 0; index < 20; index++) {
+    modules.push(source(`card-${index}.ts`, `
+import { Base } from './base-${index}.js';
+import './unused.js';
+class Card extends Base {}
+Card.define('card-${index}');
+`, [
+      { specifier: `./base-${index}.js`, resolvedId: id(`base-${index}.ts`), external: false, kind: "static" },
+      { specifier: "./unused.js", resolvedId: id("unused.ts"), external: false, kind: "static" },
+    ]));
+    modules.push(source(`base-${index}.ts`, `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+export class Base extends WebUIElement { @observable value${index} = ''; }
+`, [framework]));
+  }
+  modules.push(source("unused.ts", "invalid syntax {"));
+  const manifest = await compileProjection(context(modules));
+  assert.deepEqual(batches, [20, 20, 0]);
+  for (let index = 0; index < 20; index++) {
+    assert.deepEqual(manifest.components[`card-${index}`]?.hydrationKeys, [`value${index}`]);
+  }
+});
+
+test("preserves syntax diagnostics from deferred dependencies", async () => {
+  await assert.rejects(compileProjection(context([
+    source("card.ts", `
+import { observable } from '@microsoft/webui-framework';
+import { Base } from './broken.js';
+class Card extends Base { @observable value = ''; }
+Card.define('broken-card');
+`, [framework, { specifier: "./broken.js", resolvedId: id("broken.ts"), external: false, kind: "static" }]),
+    source("broken.ts", "export class Base {"),
+  ])), (error: unknown) => {
+    assert.ok(error instanceof Error && "diagnostics" in error);
+    const diagnostics = error.diagnostics as readonly { code: string }[];
+    assert.deepEqual(diagnostics.map(({ code }) => code), ["PROJ-C001", "PROJ-C006"]);
+    return true;
+  });
+});
+
+test("does not cache export fallbacks that encountered deferred modules", async () => {
+  const edge = (specifier: string, name: string): ResolvedImport => ({
+    specifier, resolvedId: id(name), external: false, kind: "static",
+  });
+  const manifest = await compileProjection(context([
+    source("card.ts", `
+import { observable } from './barrel.js';
+import { WebUIElement } from '@microsoft/webui-framework';
+class Card extends WebUIElement { @observable value = ''; }
+Card.define('fallback-card');
+`, [framework, edge("./barrel.js", "barrel.ts")]),
+    source("barrel.ts", `
+export * from './fallback.js';
+export * from './preferred.js';
+// define
+`, [edge("./fallback.js", "fallback.ts"), edge("./preferred.js", "preferred.ts")]),
+    source("fallback.ts", `
+export { observable } from '@microsoft/webui-framework';
+// define
+`, [framework]),
+    source("preferred.ts", "export function observable() {}"),
+  ]));
+  assert.deepEqual(manifest.components["fallback-card"]?.hydrationKeys, []);
+});
+
+test("does not reuse symbol or property results across builds", async () => {
+  for (const field of ["before", "after"]) {
+    const manifest = await compileProjection(context([source("changing.ts", `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+class Card extends WebUIElement { @observable ${field} = ''; }
+Card.define('changing-card');
+`, [framework])]));
+    assert.deepEqual(manifest.components["changing-card"]?.hydrationKeys, [field]);
+  }
+});
+
 test("releases parsed sources after diagnostics and analyzes fresh bytes on retry", async (t) => {
   const clear = t.mock.method(API.prototype, "clearSourceFileCache");
   const name = "card.ts";
