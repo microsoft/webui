@@ -203,6 +203,7 @@ struct StageOptions {
 enum BuildMode {
     Full,
     NativeOnly,
+    PortableOnly,
     PythonOnly,
 }
 
@@ -212,7 +213,11 @@ impl BuildMode {
     }
 
     fn includes_python(self) -> bool {
-        self != Self::NativeOnly
+        matches!(self, Self::Full | Self::PythonOnly)
+    }
+
+    fn includes_desktop(self) -> bool {
+        matches!(self, Self::Full | Self::NativeOnly)
     }
 }
 
@@ -231,7 +236,7 @@ struct BuildOptions {
 /// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>]`
 /// Build and stage one target's release artifacts.
 ///
-/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only]`
+/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only|--portable-only]`
 ///
 /// Produces the native binaries (CLI, FFI library, Node addon) *and* the
 /// `microsoft-webui` wheel for that target, so one command covers a release
@@ -239,6 +244,7 @@ struct BuildOptions {
 /// linked against an old glibc inside a `manylinux` container, while the native
 /// binaries build on the host. Those legs run `--native-only` on the host and
 /// `--python-only` in the container; every other target uses one full run.
+/// Linux can use `--portable-only` to omit the separately built desktop sidecar.
 pub fn run_build(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(path) => path,
@@ -264,7 +270,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
             console::style("▸").cyan().bold(),
             console::style(&options.target_triple).bold(),
         );
-        if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+        if let Err(error) = build_native_target(&root, &options) {
             eprintln!(
                 "  {} Failed to build {}: {error}",
                 console::style("✘").red().bold(),
@@ -273,11 +279,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
-        if let Err(error) = stage_native_targets(
-            &root,
-            std::iter::once(options.target_triple.as_str()),
-            &options.profile,
-        ) {
+        if let Err(error) = stage_build_artifacts(&root, &options) {
             eprintln!(
                 "  {} Failed to stage native release artifacts: {error}",
                 console::style("✘").red().bold(),
@@ -791,6 +793,7 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
             }
             "--native-only" => mode = set_build_mode(mode, BuildMode::NativeOnly)?,
             "--python-only" => mode = set_build_mode(mode, BuildMode::PythonOnly)?,
+            "--portable-only" => mode = set_build_mode(mode, BuildMode::PortableOnly)?,
             argument => return Err(format!("unknown publish-build argument: {argument}")),
         }
         i += 1;
@@ -798,6 +801,10 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
 
     let target_triple =
         target_triple.ok_or_else(|| "publish-build requires one --target".to_string())?;
+
+    if mode == BuildMode::PortableOnly && !target_triple.ends_with("-linux-gnu") {
+        return Err("--portable-only requires a Linux target".to_string());
+    }
 
     Ok(BuildOptions {
         target_triple,
@@ -809,28 +816,57 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
 
 fn set_build_mode(current: BuildMode, requested: BuildMode) -> Result<BuildMode, String> {
     if current != BuildMode::Full && current != requested {
-        return Err("cannot combine --native-only and --python-only".to_string());
+        return Err(
+            "cannot combine --native-only and --python-only or --portable-only".to_string(),
+        );
     }
 
     Ok(requested)
 }
 
-fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
-    let args = native_build_args(triple, profile)?;
+fn build_native_target(root: &Path, options: &BuildOptions) -> Result<(), String> {
+    let args = native_build_args(
+        &options.target_triple,
+        &options.profile,
+        options.mode.includes_desktop(),
+    )?;
     run_command("cargo", &args, Some(root))
 }
 
-fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>, String> {
-    let mut args = Vec::with_capacity(15);
+fn stage_build_artifacts(root: &Path, options: &BuildOptions) -> Result<(), String> {
+    if options.mode != BuildMode::PortableOnly {
+        return stage_native_targets(
+            root,
+            std::iter::once(options.target_triple.as_str()),
+            &options.profile,
+        );
+    }
+    prepare_publish_dirs(root, StageMode::NativeOnly)?;
+    let platform = PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == options.target_triple)
+        .ok_or_else(|| format!("unknown target triple: {}", options.target_triple))?;
+    let build_dir = resolve_build_dir(root, platform.triple, &options.profile);
+    if !stage_platform_artifacts(root, platform, &build_dir, false) {
+        return Err("failed to stage portable artifacts".to_string());
+    }
+    Ok(())
+}
+
+fn native_build_args<'a>(
+    triple: &'a str,
+    profile: &str,
+    include_desktop: bool,
+) -> Result<Vec<&'a str>, String> {
+    let mut args = Vec::with_capacity(17);
     args.push("build");
     match profile {
         "release" => args.push("--release"),
         "debug" => {}
         _ => return Err(format!("unsupported native build profile: {profile}")),
     }
+    args.extend_from_slice(&["--target", triple]);
     args.extend_from_slice(&[
-        "--target",
-        triple,
         "-p",
         "microsoft-webui-cli",
         "-p",
@@ -839,11 +875,15 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
         "microsoft-webui-node",
         "-p",
         "microsoft-webui-press",
-        "-p",
-        "microsoft-webui-desktop",
-        "--features",
-        "microsoft-webui-desktop/cli",
     ]);
+    if include_desktop {
+        args.extend_from_slice(&[
+            "-p",
+            "microsoft-webui-desktop",
+            "--features",
+            "microsoft-webui-desktop/cli",
+        ]);
+    }
     Ok(args)
 }
 
@@ -896,6 +936,11 @@ fn export_target(
                     .join(platform.nuget_rid),
             ),
         ] {
+            if !mode.includes_desktop()
+                && source == root.join("packages").join(platform.desktop_npm_package)
+            {
+                continue;
+            }
             clean_directory(&destination)?;
             copy_directory_contents(&source, &destination)?;
         }
@@ -1140,6 +1185,15 @@ fn stage_one_platform(root: &Path, triple: &str, profile: &str) -> ExitCode {
 
 /// Copy all artifacts for a single platform. Returns true if all found files staged.
 fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bool {
+    stage_platform_artifacts(root, platform, build_dir, true)
+}
+
+fn stage_platform_artifacts(
+    root: &Path,
+    platform: &PlatformEntry,
+    build_dir: &Path,
+    include_desktop: bool,
+) -> bool {
     let mut ok = true;
 
     // NuGet: FFI library → dotnet/runtimes/{rid}/native/
@@ -1177,13 +1231,15 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         .join("packages")
         .join(platform.desktop_npm_package)
         .join("bin");
-    ok &= stage_file(&CopySpec {
-        src: &build_dir.join(desktop_binary),
-        dest_dir: &desktop_dir,
-        dest_name: desktop_binary,
-        label: "npm desktop cli",
-    });
-    if platform.cli_binary.ends_with(".exe") {
+    if include_desktop {
+        ok &= stage_file(&CopySpec {
+            src: &build_dir.join(desktop_binary),
+            dest_dir: &desktop_dir,
+            dest_name: desktop_binary,
+            label: "npm desktop cli",
+        });
+    }
+    if include_desktop && platform.cli_binary.ends_with(".exe") {
         for name in
             std::iter::once(desktop_deployment::BOOTSTRAP_DLL).chain(desktop_deployment::NOTICES)
         {
@@ -2207,7 +2263,7 @@ mod tests {
 
     #[test]
     fn native_build_args_map_debug_to_cargo_dev_profile() {
-        let args = native_build_args("x86_64-unknown-linux-gnu", "debug")
+        let args = native_build_args("x86_64-unknown-linux-gnu", "debug", true)
             .expect("debug profile should be supported");
 
         assert_eq!(args[0], "build");
@@ -2223,10 +2279,100 @@ mod tests {
 
     #[test]
     fn native_build_args_map_release_to_release_flag() {
-        let args = native_build_args("x86_64-unknown-linux-gnu", "release")
+        let args = native_build_args("x86_64-unknown-linux-gnu", "release", true)
             .expect("release profile should be supported");
 
         assert!(args.contains(&"--release"));
+    }
+
+    #[test]
+    fn portable_builds_exclude_desktop_and_python() {
+        for platform in PLATFORMS
+            .iter()
+            .filter(|p| p.triple.ends_with("-linux-gnu"))
+        {
+            let options = parse_build(&["--target", platform.triple, "--portable-only"])
+                .expect("portable build should parse");
+            assert!(options.mode.includes_native());
+            assert!(!options.mode.includes_python());
+            assert!(!options.mode.includes_desktop());
+            let args = native_build_args(platform.triple, "release", false)
+                .expect("portable arguments should build");
+            let packages: Vec<_> = args
+                .windows(2)
+                .filter_map(|pair| (pair[0] == "-p").then_some(pair[1]))
+                .collect();
+            assert_eq!(
+                packages,
+                [
+                    "microsoft-webui-cli",
+                    "microsoft-webui-ffi",
+                    "microsoft-webui-node",
+                    "microsoft-webui-press",
+                ]
+            );
+            assert!(!args.contains(&"--features"));
+            assert!(parse_build(&[
+                "--target",
+                platform.triple,
+                "--portable-only",
+                "--python-only"
+            ])
+            .is_err());
+        }
+        for target in ["x86_64-apple-darwin", "x86_64-pc-windows-msvc"] {
+            assert!(parse_build(&["--target", target, "--portable-only"]).is_err());
+        }
+    }
+
+    #[test]
+    fn portable_staging_and_export_need_no_desktop_binary() {
+        for platform in PLATFORMS
+            .iter()
+            .filter(|p| p.triple.ends_with("-linux-gnu"))
+        {
+            let root = tempfile::TempDir::new().expect("workspace should be created");
+            let output = tempfile::TempDir::new().expect("export root should be created");
+            let build = root
+                .path()
+                .join("target")
+                .join(platform.triple)
+                .join("release");
+            fs::create_dir_all(&build).expect("build directory");
+            for name in [
+                platform.cli_binary,
+                platform.ffi_lib,
+                platform.node_addon,
+                "webui-press",
+            ] {
+                fs::write(build.join(name), "portable").expect("portable fixture");
+            }
+            let options = parse_build(&["--target", platform.triple, "--portable-only"])
+                .expect("portable build should parse");
+            stage_build_artifacts(root.path(), &options).expect("portable staging");
+            export_target(root.path(), output.path(), platform.triple, options.mode)
+                .expect("portable export");
+            let packages = output.path().join("packages");
+            assert!(packages
+                .join(platform.npm_package)
+                .join("bin/webui")
+                .is_file());
+            assert!(packages
+                .join(platform.npm_package)
+                .join("webui.node")
+                .is_file());
+            assert!(packages
+                .join(platform.press_npm_package)
+                .join("bin/webui-press")
+                .is_file());
+            assert!(output
+                .path()
+                .join("dotnet/runtimes")
+                .join(platform.nuget_rid)
+                .join("native/libwebui_ffi.so")
+                .is_file());
+            assert!(!packages.join(platform.desktop_npm_package).exists());
+        }
     }
 
     #[test]

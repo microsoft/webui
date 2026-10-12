@@ -259,7 +259,7 @@ stages:
         artifactName: stage-wasm
 
   - job: BuildLinuxAssets
-    displayName: Build Linux release asset
+    displayName: Build Linux release asset (Ubuntu 22.04)
     strategy:
       matrix:
         LinuxX64:
@@ -273,7 +273,7 @@ stages:
           manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
           pythonNativeTest: 'false'
     pool:
-      vmImage: ubuntu-latest
+      vmImage: ubuntu-22.04
     steps:
     - checkout: self
       clean: true
@@ -292,9 +292,9 @@ stages:
     - task: Cache@2
       displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-target | ubuntu-22.04-portable | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
+          cargo-target | ubuntu-22.04-portable | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
@@ -312,16 +312,30 @@ stages:
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
 
-          source scripts/setup-linux-desktop-target.sh "$TARGET_TRIPLE"
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler binutils
+          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
+            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+          fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
-          # Natives build on the host, but the wheel must link an old glibc, so
-          # the container step below runs the same command with --python-only.
+          # Desktop's GTK/WebKit dependencies require a newer Ubuntu runner.
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
-            --native-only \
+            --portable-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
+          for name in webui webui-press libwebui_node.so libwebui_ffi.so; do
+            required=$(readelf --version-info --wide "target/$TARGET_TRIPLE/release/$name" |
+              grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
+            if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
+              echo "$name requires $required; expected glibc 2.35 or older" >&2
+              exit 1
+            fi
+          done
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
@@ -352,6 +366,40 @@ stages:
       displayName: Upload $(targetTriple) artifact
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
+        artifactName: $(artifactName)
+
+  - job: BuildLinuxDesktop
+    displayName: Build Linux desktop release asset
+    strategy:
+      matrix:
+        LinuxX64:
+          targetTriple: x86_64-unknown-linux-gnu
+          artifactName: stage-desktop-linux-x64
+        LinuxArm64:
+          targetTriple: aarch64-unknown-linux-gnu
+          artifactName: stage-desktop-linux-arm64
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: Bash@3
+      displayName: Build desktop $(targetTriple)
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+          source scripts/setup-linux-desktop-target.sh "$TARGET_TRIPLE"
+          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 build --locked --release \
+            --target "$TARGET_TRIPLE" -p microsoft-webui-desktop \
+            --features microsoft-webui-desktop/cli
+      env:
+        TARGET_TRIPLE: $(targetTriple)
+    - task: PublishPipelineArtifact@1
+      displayName: Upload $(artifactName)
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/target/$(targetTriple)/release/webui-desktop'
         artifactName: $(artifactName)
 
   - job: BuildMacOSAssets
@@ -538,6 +586,7 @@ stages:
     dependsOn:
     - BuildWasmAssets
     - BuildLinuxAssets
+    - BuildLinuxDesktop
     - BuildMacOSAssets
     - BuildWindowsAssets
     pool:
@@ -584,6 +633,18 @@ stages:
         buildType: current
         artifactName: stage-linux-arm64
         targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Linux x64 desktop binary
+      inputs:
+        buildType: current
+        artifactName: stage-desktop-linux-x64
+        targetPath: $(Build.SourcesDirectory)/packages/webui-desktop-linux-x64/bin
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Linux arm64 desktop binary
+      inputs:
+        buildType: current
+        artifactName: stage-desktop-linux-arm64
+        targetPath: $(Build.SourcesDirectory)/packages/webui-desktop-linux-arm64/bin
     - task: DownloadPipelineArtifact@2
       displayName: Download macOS arm64 release asset
       inputs:
