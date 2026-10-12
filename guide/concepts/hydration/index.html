@@ -330,7 +330,11 @@ event-handler attributes, and script URLs are not authorized by the compiler pol
 Trusted Types also does not sanitize HTML already delivered by the server.</p><h2 id="build-time-state-projection">Build-Time State Projection <a class="header-anchor" href="/webui/guide/concepts/hydration/#build-time-state-projection" aria-label="Link to Build-Time State Projection">#</a></h2><p>Exact state projection is opt-in. Rust does not inspect JavaScript or
 TypeScript. The application bundles its browser code first, and a bundler
 adapter emits <code>webui-projection.json</code> from the same resolved graph and output
-membership that produced the browser chunks.</p><p>The projection compiler contract is bundler-neutral. The
+membership that produced the browser chunks.</p><p>Projection includes inherited <code>@observable</code> and <code>@attr</code> fields, including
+those from statically analyzable class factories such as
+<code>class Card extends withCounter(WebUIElement) &#123;&#125;</code>. Not every valid JavaScript
+factory is analyzable: if the compiler cannot prove the exact state keys, the
+projection build reports an error rather than dropping inherited state.</p><p>The projection compiler contract is bundler-neutral. The
 <code>@microsoft/webui/projection.js</code> subpath currently includes the supported
 esbuild adapter:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>npm install -D esbuild typescript
 </code></pre></code-block><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">//</span><span class="hl-comment"> build-client.mjs

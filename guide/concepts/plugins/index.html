@@ -100,7 +100,16 @@ handler.render(<span class="hl-keyword">&amp;</span>protocol, <span class="hl-ke
 protocol.renderStream(state, (chunk) <span class="hl-keyword">=&gt;</span> res.<span class="hl-property">write</span>(chunk));
 </code></pre></code-block></webui-press-tab-panel><webui-press-tab-panel><template shadowrootmode="open"><link rel="stylesheet" href="webui-press-tab-panel.css" data-webui-resource="webui-press-tab-panel" data-webui-strategy="link"><div class="panel"><slot></slot></div></template><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">void</span> <span class="hl-keyword">*</span>handler <span class="hl-keyword">=</span> webui_handler_create_with_plugin(<span class="hl-string">"</span><span class="hl-string">&lt;name&gt;</span><span class="hl-string">"</span>);
 webui_protocol_t <span class="hl-keyword">*</span>protocol <span class="hl-keyword">=</span> webui_protocol_create(protocol_data, protocol_len);
-<span class="hl-keyword">char</span> <span class="hl-keyword">*</span>html <span class="hl-keyword">=</span> webui_handler_render(handler, protocol, state_json, <span class="hl-string">"</span><span class="hl-string">index.html</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>);
+webui_render_t <span class="hl-keyword">*</span>result <span class="hl-keyword">=</span> webui_handler_render(
+    handler, protocol, state_json, <span class="hl-string">"</span><span class="hl-string">index.html</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>);
+<span class="hl-keyword">if</span> (result <span class="hl-keyword">!=</span> <span class="hl-property">NULL</span>) &#123;
+    <span class="hl-property">uintptr_t</span> length <span class="hl-keyword">=</span> <span class="hl-property">0</span>;
+    <span class="hl-keyword">const</span> <span class="hl-property">uint8_t</span> <span class="hl-keyword">*</span>html <span class="hl-keyword">=</span> webui_render_bytes(result, <span class="hl-keyword">&amp;</span>length);
+    <span class="hl-keyword">if</span> (html <span class="hl-keyword">!=</span> <span class="hl-property">NULL</span>) &#123;
+        fwrite(html, <span class="hl-property">1</span>, length, stdout);
+    &#125;
+    webui_render_free(result);
+&#125;
 </code></pre></code-block></webui-press-tab-panel></webui-press-tabs><h3 id="using-the-webui-plugin">Using the WebUI Plugin <a class="header-anchor" href="/webui/guide/concepts/plugins/#using-the-webui-plugin" aria-label="Link to Using the WebUI Plugin">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> Build with WebUI Framework hydration</span><span class="hl-comment">
 </span>webui build ./src --out ./dist --plugin<span class="hl-keyword">=</span>webui \
   --projection-manifest ./dist/webui-projection.json
