@@ -287,6 +287,9 @@ const HMR_ENDPOINT: &str = "/__webui/livereload";
 /// where spurious rebuilds reload the page mid-test.
 const WATCH_DISABLE_ENV: &str = "WEBUI_NO_WATCH";
 
+/// Matches AWC's default buffered response-body limit.
+const MAX_BUFFERED_API_BODY_BYTES: usize = 2 * 1024 * 1024;
+
 fn watch_disabled_by_env() -> bool {
     match std::env::var(WATCH_DISABLE_ENV) {
         Ok(v) => !v.is_empty() && v != "0",
@@ -316,6 +319,7 @@ fn execute_mode(args: &ServeArgs) -> Result<i32> {
 fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     let host_policy = host::HostPolicy::new(args.port, &args.allowed_hosts)?;
     let paths = ServePaths::from_args(args)?;
+    let http_client = build_http_client()?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
     let watch_enabled = args.watch && !watch_disabled_by_env();
@@ -462,6 +466,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         assets_dir: paths.serve_dir,
         component_assets_dir,
         api_port: args.api_port,
+        http_client,
         plugin: args.app_args.plugin,
         base_path: args.base_path.clone(),
         // Pool sized for typical concurrent renders × channel capacity.
@@ -814,6 +819,7 @@ struct ServerContext {
     assets_dir: Option<PathBuf>,
     component_assets_dir: Option<PathBuf>,
     api_port: Option<u16>,
+    http_client: reqwest::Client,
     plugin: Option<Plugin>,
     /// Base path for sub-path deployment.
     base_path: Option<String>,
@@ -876,9 +882,55 @@ fn request_paths(req: &HttpRequest) -> RequestPaths {
     }
 }
 
+fn build_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context(
+            "Failed to initialize the HTTP client for API state and proxy requests; \
+             verify the system TLS and network resolver configuration",
+        )
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BufferedBodyError {
+    #[error("response body exceeds the {limit}-byte limit")]
+    TooLarge { limit: usize },
+    #[error("failed to read response body: {0}")]
+    Read(#[source] reqwest::Error),
+}
+
+async fn read_bounded_body(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, BufferedBodyError> {
+    let content_length = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok());
+    if content_length.is_some_and(|length| length > limit) {
+        return Err(BufferedBodyError::TooLarge { limit });
+    }
+    let initial_capacity = content_length.unwrap_or(0);
+    let mut body = Vec::with_capacity(initial_capacity);
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(BufferedBodyError::Read)?;
+        if chunk.len() > limit - body.len() {
+            return Err(BufferedBodyError::TooLarge { limit });
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 /// Fetch state from the user's API server for a given request path, including query parameters.
-async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
-    let client = reqwest::Client::new();
+async fn fetch_api_state(
+    client: &reqwest::Client,
+    api_port: u16,
+    path: &str,
+) -> Result<Value, String> {
     let url = format!("http://127.0.0.1:{api_port}{path}");
     let resp = client
         .get(&url)
@@ -886,8 +938,7 @@ async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
         .send()
         .await
         .map_err(|e| format!("API proxy error: {e}"))?;
-    let body = resp
-        .bytes()
+    let body = read_bounded_body(resp, MAX_BUFFERED_API_BODY_BYTES)
         .await
         .map_err(|e| format!("API body error: {e}"))?;
     let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
@@ -898,7 +949,7 @@ async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
 /// Resolve state for a request: try API proxy first, then fall back to file state.
 async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
     let (mut state, token_css) = if let Some(api_port) = context.api_port {
-        match fetch_api_state(api_port, request_path).await {
+        match fetch_api_state(&context.http_client, api_port, request_path).await {
             Ok(state) => {
                 let token_css = context.state.lock().ok().and_then(|s| s.token_css.clone());
                 (state, token_css)
@@ -978,9 +1029,9 @@ async fn render_page_response(
         webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
 
     let mut state = if let Some(api_port) = context.api_port {
-        let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{api_port}{request_path}");
-        match client
+        match context
+            .http_client
             .get(&url)
             .header(reqwest::header::ACCEPT, streaming_api::ACCEPT)
             .send()
@@ -1026,7 +1077,7 @@ async fn render_page_response(
                     .await;
                 }
             }
-            Ok(response) => match response.bytes().await {
+            Ok(response) => match read_bounded_body(response, MAX_BUFFERED_API_BODY_BYTES).await {
                 Ok(body) => match parse_api_state(&body) {
                     Ok(state) => state,
                     Err(error) => {
@@ -1649,8 +1700,7 @@ async fn handle_api_proxy(
             return HttpResponse::BadRequest().body(format!("Invalid API proxy method: {error}"));
         }
     };
-    let client = reqwest::Client::new();
-    let mut proxy_req = client.request(method, &url);
+    let mut proxy_req = context.http_client.request(method, &url);
 
     // Forward content-type header if present
     if let Some(ct) = req.headers().get("content-type") {
@@ -1666,7 +1716,7 @@ async fn handle_api_proxy(
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
                 .map(|value| value.as_bytes().to_vec());
-            match resp.bytes().await {
+            match read_bounded_body(resp, MAX_BUFFERED_API_BODY_BYTES).await {
                 Ok(response_body) => {
                     let status = match actix_web::http::StatusCode::from_u16(status.as_u16()) {
                         Ok(status) => status,
@@ -1867,6 +1917,10 @@ mod tests {
         dir
     }
 
+    fn test_http_client() -> reqwest::Client {
+        build_http_client().unwrap()
+    }
+
     fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
         web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
@@ -1883,6 +1937,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: Some(api_port),
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -1908,6 +1963,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: None,
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -1973,6 +2029,127 @@ mod tests {
         let handle = server.handle();
         actix_web::rt::spawn(server);
         (port, handle, request_targets)
+    }
+
+    fn start_http_client_test_server() -> (u16, actix_web::dev::ServerHandle) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(|| {
+            App::new()
+                .route(
+                    "/redirect",
+                    web::get().to(|| async {
+                        HttpResponse::Found()
+                            .insert_header(("location", "/target"))
+                            .finish()
+                    }),
+                )
+                .route(
+                    "/target",
+                    web::get().to(|| async { HttpResponse::Ok().body("redirect followed") }),
+                )
+                .route(
+                    "/api/redirect",
+                    web::get().to(|| async {
+                        HttpResponse::Found()
+                            .insert_header(("location", "/api/target"))
+                            .finish()
+                    }),
+                )
+                .route(
+                    "/api/target",
+                    web::get().to(|| async { HttpResponse::Ok().body("redirect followed") }),
+                )
+                .route(
+                    "/exact",
+                    web::get().to(|| async {
+                        let chunks = vec![
+                            Ok::<_, actix_web::Error>(web::Bytes::from(vec![
+                                b'a';
+                                MAX_BUFFERED_API_BODY_BYTES
+                                    - 1
+                            ])),
+                            Ok(web::Bytes::from_static(b"b")),
+                        ];
+                        HttpResponse::Ok().streaming(tokio_stream::iter(chunks))
+                    }),
+                )
+                .route(
+                    "/over",
+                    web::get().to(|| async {
+                        let chunks = vec![
+                            Ok::<_, actix_web::Error>(web::Bytes::from(vec![
+                                b'a';
+                                MAX_BUFFERED_API_BODY_BYTES
+                            ])),
+                            Ok(web::Bytes::from_static(b"b")),
+                        ];
+                        HttpResponse::Ok().streaming(tokio_stream::iter(chunks))
+                    }),
+                )
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle)
+    }
+
+    #[actix_web::test]
+    async fn test_http_client_disables_redirects() {
+        let (port, handle) = start_http_client_test_server();
+        let response = test_http_client()
+            .get(format!("http://127.0.0.1:{port}/redirect"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/target")
+        );
+
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_api_body_limit_accepts_exact_boundary_and_rejects_chunked_overflow() {
+        let (port, handle) = start_http_client_test_server();
+        let client = test_http_client();
+
+        let exact_response = client
+            .get(format!("http://127.0.0.1:{port}/exact"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(exact_response.content_length(), None);
+        let exact = read_bounded_body(exact_response, MAX_BUFFERED_API_BODY_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(exact.len(), MAX_BUFFERED_API_BODY_BYTES);
+
+        let over_response = client
+            .get(format!("http://127.0.0.1:{port}/over"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(over_response.content_length(), None);
+        let error = read_bounded_body(over_response, MAX_BUFFERED_API_BODY_BYTES)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BufferedBodyError::TooLarge {
+                limit: MAX_BUFFERED_API_BODY_BYTES
+            }
+        ));
+
+        handle.stop(true).await;
     }
 
     #[test]
@@ -2407,7 +2584,7 @@ mod tests {
         let handle = server.handle();
         actix_web::rt::spawn(server);
 
-        let state = fetch_api_state(port, "/search?q=shirt&sort=price-desc")
+        let state = fetch_api_state(&test_http_client(), port, "/search?q=shirt&sort=price-desc")
             .await
             .unwrap();
 
@@ -2501,6 +2678,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: Some(api_port),
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -2761,6 +2939,28 @@ mod tests {
         handle.stop(true).await;
     }
 
+    #[actix_web::test]
+    async fn test_api_proxy_relays_redirect_status_without_following() {
+        let (port, handle) = start_http_client_test_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/api/{tail:.*}", web::route().to(handle_api_proxy)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/api/redirect")
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        handle.stop(true).await;
+    }
+
     #[test]
     fn test_hmr_script_is_injected_when_livereload_present() {
         let app = create_app_dir(&[("index.html", "<h1>Hi</h1>"), ("state.json", "{}")]);
@@ -2868,6 +3068,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: None,
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -2943,6 +3144,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: None,
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3184,6 +3386,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: Some(port),
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3258,6 +3461,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: Some(port),
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3952,6 +4156,7 @@ mod tests {
             assets_dir: None,
             component_assets_dir: None,
             api_port: None,
+            http_client: test_http_client(),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(

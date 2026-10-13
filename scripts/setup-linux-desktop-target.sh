@@ -8,7 +8,7 @@ set -euo pipefail
 target="${1:?pass a Linux Rust target triple}"
 if [[ "$target" == x86_64-unknown-linux-gnu ]]; then
   sudo apt-get update -q
-  sudo apt-get install -y -q protobuf-compiler pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
+  sudo apt-get install -y -q protobuf-compiler pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev
 elif [[ "$target" == aarch64-unknown-linux-gnu ]]; then
   source /etc/os-release
   if [[ "$ID" != ubuntu || -z "${VERSION_CODENAME:-}" ]]; then

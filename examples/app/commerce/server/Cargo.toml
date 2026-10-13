@@ -22,7 +22,6 @@ thiserror = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 native-tls = { workspace = true }
-tokio-native-tls = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }
 microsoft-webui-handler = { path = "../../../../crates/webui-handler" }
 bytes = { workspace = true }
@@ -30,6 +29,11 @@ mime_guess = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+actix-tls = { workspace = true, features = ["connect"] }
+h2 = { workspace = true }
+http = { workspace = true }
 
 [lints]
 workspace = true

@@ -59,11 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let proxy_state = web::Data::new(proxy::ProxyState { routes });
     let apps_data = web::Data::new(apps.clone());
     let shell_data = web::Data::new(shell_state);
-    let proxy_client = web::Data::new(
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?,
-    );
+    let proxy_client = web::Data::new(proxy::build_client()?);
 
     // Spawn all child app servers
     log::info!("Starting app servers…");

@@ -21,6 +21,14 @@ use std::{
 
 // Maximum response body size (16 MB) — generous for HTML/JSON/assets.
 const MAX_BODY_SIZE: usize = 16 * 1024 * 1024;
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub(crate) fn build_client() -> Result<Client, reqwest::Error> {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+}
 
 struct LimitedBody<B> {
     body: B,
@@ -310,7 +318,20 @@ pub(crate) async fn slug_redirect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::Cell, collections::VecDeque, future::poll_fn, rc::Rc};
+    use std::{
+        cell::Cell,
+        collections::VecDeque,
+        future::poll_fn,
+        rc::Rc,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     fn proxy_response<B>(
         status: StatusCode,
@@ -523,6 +544,54 @@ mod tests {
             response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
             "SAMEORIGIN"
         );
+    }
+
+    #[actix_web::test]
+    async fn relays_redirect_status_and_location_without_following() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let server_hits = Arc::clone(&hits);
+        let server = actix_web::rt::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let read = stream.read(&mut request).await.unwrap();
+                server_hits.fetch_add(1, Ordering::Relaxed);
+
+                let response = if request[..read].starts_with(b"GET /destination ") {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 302 Found\r\nLocation: /destination\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let upstream = build_client()
+            .unwrap()
+            .get(format!("http://{address}/redirect"))
+            .send()
+            .await
+            .unwrap();
+        let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap();
+        let headers = convert_response_headers(upstream.headers()).unwrap();
+        let response = proxy_response(
+            status,
+            &headers,
+            TestBody::new([], Rc::new(Cell::new(0))),
+            1024,
+        );
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/destination"
+        );
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+
+        server.abort();
+        let _ = server.await;
     }
 
     #[test]

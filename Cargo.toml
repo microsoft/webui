@@ -55,7 +55,8 @@ actix-server = "2.6.0"
 actix-service = "2.0.3"
 actix-tls = { version = "3.6.0", default-features = false, features = ["accept", "native-tls"] }
 native-tls = { version = "0.2.18", features = ["alpn", "alpn-accept"] }
-tokio-native-tls = "0.3.1"
+h2 = "0.4.20"
+http = "1.4.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "stream"] }
 hmac = "0.13.0"
 sha2 = "0.11.0"

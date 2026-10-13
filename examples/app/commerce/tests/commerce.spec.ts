@@ -8,7 +8,7 @@
  * category switching, product pages, and visual regression screenshots.
  *
  * Start the server before running:
- *   cd examples/app/commerce && cargo run -p marketplace-api --release -- --port 3004
+ *   cd examples/app/commerce && cargo run -p marketplace-api --release -- --port 3004 --no-tls
  */
 
 import { test, expect, type Page } from '@playwright/test';
