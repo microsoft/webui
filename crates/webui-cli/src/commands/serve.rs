@@ -290,6 +290,9 @@ const WATCH_DISABLE_ENV: &str = "WEBUI_NO_WATCH";
 /// Matches AWC's default buffered response-body limit.
 const MAX_BUFFERED_API_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Matches AWC's default request timeout for bounded API responses.
+const API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn watch_disabled_by_env() -> bool {
     match std::env::var(WATCH_DISABLE_ENV) {
         Ok(v) => !v.is_empty() && v != "0",
@@ -900,6 +903,45 @@ enum BufferedBodyError {
     Read(#[source] reqwest::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ApiRequestError {
+    #[error("request timed out after {timeout:?}")]
+    Timeout {
+        timeout: Duration,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+}
+
+async fn send_bounded_api_request(
+    request: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Response, ApiRequestError> {
+    request.timeout(timeout).send().await.map_err(|source| {
+        if source.is_timeout() {
+            ApiRequestError::Timeout { timeout, source }
+        } else {
+            ApiRequestError::Request(source)
+        }
+    })
+}
+
+async fn send_api_stream_candidate(
+    request: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<(reqwest::Response, tokio::time::Instant), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    match tokio::time::timeout_at(deadline, request.send()).await {
+        Ok(Ok(response)) => Ok((response, deadline)),
+        Ok(Err(error)) => Err(format!("API proxy error: {error}")),
+        Err(_) => Err(format!(
+            "API proxy error: request timed out after {timeout:?}"
+        )),
+    }
+}
+
 async fn read_bounded_body(
     response: reqwest::Response,
     limit: usize,
@@ -931,11 +973,20 @@ async fn fetch_api_state(
     api_port: u16,
     path: &str,
 ) -> Result<Value, String> {
+    fetch_api_state_with_timeout(client, api_port, path, API_RESPONSE_TIMEOUT).await
+}
+
+async fn fetch_api_state_with_timeout(
+    client: &reqwest::Client,
+    api_port: u16,
+    path: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     let url = format!("http://127.0.0.1:{api_port}{path}");
-    let resp = client
+    let request = client
         .get(&url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
+        .header(reqwest::header::ACCEPT, "application/json");
+    let resp = send_bounded_api_request(request, timeout)
         .await
         .map_err(|e| format!("API proxy error: {e}"))?;
     let body = read_bounded_body(resp, MAX_BUFFERED_API_BODY_BYTES)
@@ -1030,14 +1081,12 @@ async fn render_page_response(
 
     let mut state = if let Some(api_port) = context.api_port {
         let url = format!("http://127.0.0.1:{api_port}{request_path}");
-        match context
+        let request = context
             .http_client
             .get(&url)
-            .header(reqwest::header::ACCEPT, streaming_api::ACCEPT)
-            .send()
-            .await
-        {
-            Ok(response)
+            .header(reqwest::header::ACCEPT, streaming_api::ACCEPT);
+        match send_api_stream_candidate(request, API_RESPONSE_TIMEOUT).await {
+            Ok((response, _))
                 if streaming_api::is_stream_content_type(
                     response
                         .headers()
@@ -1077,21 +1126,32 @@ async fn render_page_response(
                     .await;
                 }
             }
-            Ok(response) => match read_bounded_body(response, MAX_BUFFERED_API_BODY_BYTES).await {
-                Ok(body) => match parse_api_state(&body) {
-                    Ok(state) => state,
-                    Err(error) => {
-                        log_api_state_warning(&error);
+            Ok((response, deadline)) => {
+                match tokio::time::timeout_at(
+                    deadline,
+                    read_bounded_body(response, MAX_BUFFERED_API_BODY_BYTES),
+                )
+                .await
+                {
+                    Ok(Ok(body)) => match parse_api_state(&body) {
+                        Ok(state) => state,
+                        Err(error) => {
+                            log_api_state_warning(&error);
+                            fallback_state(context)
+                        }
+                    },
+                    Ok(Err(error)) => {
+                        log_api_state_warning(&format!("API body error: {error}"));
                         fallback_state(context)
                     }
-                },
-                Err(error) => {
-                    log_api_state_warning(&format!("API body error: {error}"));
-                    fallback_state(context)
+                    Err(_) => {
+                        log_api_state_warning("API body error: request timed out");
+                        fallback_state(context)
+                    }
                 }
-            },
+            }
             Err(error) => {
-                log_api_state_warning(&format!("API proxy error: {error}"));
+                log_api_state_warning(&error);
                 fallback_state(context)
             }
         }
@@ -1675,6 +1735,15 @@ async fn handle_api_proxy(
     body: web::Bytes,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
+    handle_api_proxy_with_timeout(req, body, context, API_RESPONSE_TIMEOUT).await
+}
+
+async fn handle_api_proxy_with_timeout(
+    req: HttpRequest,
+    body: web::Bytes,
+    context: web::Data<ServerContext>,
+    timeout: Duration,
+) -> HttpResponse {
     let Some(api_port) = context.api_port else {
         return HttpResponse::NotFound().body("Not Found");
     };
@@ -1707,7 +1776,7 @@ async fn handle_api_proxy(
         proxy_req = proxy_req.header(reqwest::header::CONTENT_TYPE, ct.as_bytes());
     }
 
-    let result = proxy_req.body(body).send().await;
+    let result = send_bounded_api_request(proxy_req.body(body), timeout).await;
 
     match result {
         Ok(resp) => {
@@ -2087,6 +2156,27 @@ mod tests {
                         HttpResponse::Ok().streaming(tokio_stream::iter(chunks))
                     }),
                 )
+                .route(
+                    "/stall",
+                    web::get().to(|| async { std::future::pending::<HttpResponse>().await }),
+                )
+                .route(
+                    "/slow-stream",
+                    web::get().to(|| async {
+                        let (tx, rx) = tokio::sync::mpsc::channel(1);
+                        actix_web::rt::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(750)).await;
+                            let _ = tx
+                                .send(Ok::<_, actix_web::Error>(web::Bytes::from_static(
+                                    b"late stream chunk",
+                                )))
+                                .await;
+                        });
+                        HttpResponse::Ok()
+                            .content_type(streaming_api::MEDIA_TYPE)
+                            .streaming(tokio_stream::wrappers::ReceiverStream::new(rx))
+                    }),
+                )
         })
         .listen(listener)
         .unwrap()
@@ -2148,6 +2238,52 @@ mod tests {
                 limit: MAX_BUFFERED_API_BODY_BYTES
             }
         ));
+
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_stalled_state_and_proxy_requests_time_out() {
+        let (port, handle) = start_http_client_test_server();
+        let timeout = Duration::from_millis(20);
+        let client = test_http_client();
+
+        let state_error = fetch_api_state_with_timeout(&client, port, "/stall", timeout)
+            .await
+            .unwrap_err();
+        assert!(state_error.contains("timed out"), "{state_error}");
+
+        let context = test_server_context(port);
+        let request = actix_test::TestRequest::get()
+            .uri("/stall")
+            .to_http_request();
+        let response =
+            handle_api_proxy_with_timeout(request, web::Bytes::new(), context, timeout).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body()).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("timed out"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+
+        handle.stop(false).await;
+    }
+
+    #[actix_web::test]
+    async fn test_streaming_api_body_has_no_total_response_timeout() {
+        let (port, handle) = start_http_client_test_server();
+        let request = test_http_client()
+            .get(format!("http://127.0.0.1:{port}/slow-stream"))
+            .header(reqwest::header::ACCEPT, streaming_api::ACCEPT);
+        let (response, _) = send_api_stream_candidate(request, Duration::from_millis(500))
+            .await
+            .unwrap();
+
+        let body = read_bounded_body(response, MAX_BUFFERED_API_BODY_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(body, b"late stream chunk");
 
         handle.stop(true).await;
     }
