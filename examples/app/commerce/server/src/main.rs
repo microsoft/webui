@@ -105,6 +105,7 @@ fn main() -> Result<()> {
             let server_state = state.clone();
 
             Server::build()
+                .shutdown_timeout(5)
                 .bind("marketplace-api", ("0.0.0.0", port), move || {
                     let factory = App::new()
                         .wrap(actix_web::middleware::Compress::default())
