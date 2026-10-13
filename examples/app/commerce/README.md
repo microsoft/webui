@@ -39,6 +39,11 @@ and `--tls-key`; otherwise use `--no-tls` behind a TLS-terminating proxy or
 ingress. TLS uses the platform-native implementation through `native-tls`
 (SChannel on Windows, OpenSSL on Linux, or Secure Transport on macOS).
 
+Direct HTTPS advertises HTTP/2 and HTTP/1.1 through ALPN on Windows and Linux.
+Apple's native TLS backend does not support server-side ALPN, so macOS
+development must use `--no-tls` behind an HTTP/2 TLS-terminating proxy rather
+than silently reducing direct HTTPS to HTTP/1.1.
+
 ## Running Tests
 
 ```bash

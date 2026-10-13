@@ -23,7 +23,7 @@ use actix_tls::accept::native_tls::{reexports::TlsAcceptor, Acceptor as NativeTl
 use actix_web::{dev::AppConfig, web, App, HttpServer};
 use anyhow::{Context, Result};
 use clap::Parser;
-use native_tls::Identity;
+use native_tls::{Identity, TlsAcceptor as PlatformTlsAcceptor};
 
 use crate::app::AppState;
 use crate::security::security_headers;
@@ -88,22 +88,18 @@ fn main() -> Result<()> {
 
     let state = web::Data::new(app_state);
     let no_tls = args.no_tls;
-    let tls_config = if no_tls {
+    let tls_acceptor = if no_tls {
         None
     } else {
-        Some(build_tls_config(
+        Some(build_tls_acceptor(
             args.tls_cert.as_deref(),
             args.tls_key.as_deref(),
         )?)
     };
-    let tls_acceptor = tls_config
-        .map(native_tls::TlsAcceptor::new)
-        .transpose()
-        .context("Failed to create TLS acceptor")?;
 
     actix_web::rt::System::new().block_on(async move {
         if let Some(tls) = tls_acceptor {
-            eprintln!("  HTTPS listening on https://localhost:{port}");
+            eprintln!("  HTTPS (HTTP/2) listening on https://localhost:{port}");
             let tls_acceptor = TlsAcceptor::from(tls);
             let native_tls_acceptor = NativeTlsAcceptor::new(tls_acceptor);
             let server_state = state.clone();
@@ -133,9 +129,14 @@ fn main() -> Result<()> {
                     native_tls_acceptor
                         .clone()
                         .map_err(|_| ())
-                        .and_then(fn_service(|stream| async move {
-                            Ok::<_, ()>((stream, Protocol::Http1, None))
-                        }))
+                        .and_then(fn_service(
+                            |stream: actix_tls::accept::native_tls::TlsStream<
+                                actix_web::rt::net::TcpStream,
+                            >| async move {
+                                let alpn = stream.get_ref().negotiated_alpn().map_err(|_| ())?;
+                                Ok::<_, ()>((stream, protocol_from_alpn(alpn.as_deref()), None))
+                            },
+                        ))
                         .and_then(http_service)
                 })?
                 .run()
@@ -159,8 +160,11 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Build a platform-native TLS identity from caller-provided PEM files.
-fn build_tls_config(cert_path: Option<&str>, key_path: Option<&str>) -> Result<Identity> {
+/// Build a platform-native TLS acceptor from caller-provided PEM files.
+fn build_tls_acceptor(
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+) -> Result<PlatformTlsAcceptor> {
     let (certificate, key) = match (cert_path, key_path) {
         (Some(cert), Some(key)) => load_pem_files(cert, key)?,
         (None, None) => anyhow::bail!(
@@ -170,8 +174,35 @@ fn build_tls_config(cert_path: Option<&str>, key_path: Option<&str>) -> Result<I
         _ => anyhow::bail!("--tls-cert and --tls-key must be provided together, or use --no-tls"),
     };
 
-    Identity::from_pkcs8(&certificate, &key)
-        .context("Failed to build platform-native TLS identity; the private key must be PKCS#8 PEM")
+    let identity = Identity::from_pkcs8(&certificate, &key).context(
+        "Failed to build platform-native TLS identity; the private key must be PKCS#8 PEM",
+    )?;
+
+    #[cfg(target_vendor = "apple")]
+    {
+        let _ = identity;
+        anyhow::bail!(
+            "Direct HTTPS is unavailable on Apple platforms because native-tls does not support \
+             server-side ALPN there; use --no-tls behind an HTTP/2 TLS-terminating proxy"
+        );
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        let mut builder = PlatformTlsAcceptor::builder(identity);
+        builder.accept_alpn(&["h2", "http/1.1"]);
+        builder
+            .build()
+            .context("Failed to create platform-native TLS acceptor")
+    }
+}
+
+fn protocol_from_alpn(alpn: Option<&[u8]>) -> Protocol {
+    if alpn == Some(b"h2") {
+        Protocol::Http2
+    } else {
+        Protocol::Http1
+    }
 }
 
 fn load_pem_files(cert_path: &str, key_path: &str) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -184,7 +215,8 @@ fn load_pem_files(cert_path: &str, key_path: &str) -> Result<(Vec<u8>, Vec<u8>)>
 }
 #[cfg(test)]
 mod tests {
-    use super::{build_tls_config, ApiArgs};
+    use super::{build_tls_acceptor, protocol_from_alpn, ApiArgs};
+    use actix_http::Protocol;
     use clap::Parser;
 
     #[test]
@@ -195,7 +227,7 @@ mod tests {
 
     #[test]
     fn requires_certificate_and_key_for_tls() {
-        let error = build_tls_config(None, None)
+        let error = build_tls_acceptor(None, None)
             .err()
             .expect("TLS configuration without certificate inputs must fail");
         assert!(error.to_string().contains("--no-tls"));
@@ -203,9 +235,20 @@ mod tests {
 
     #[test]
     fn rejects_partial_certificate_inputs() {
-        let error = build_tls_config(Some("certificate.pem"), None)
+        let error = build_tls_acceptor(Some("certificate.pem"), None)
             .err()
             .expect("TLS configuration with only one PEM path must fail");
         assert!(error.to_string().contains("provided together"));
+    }
+
+    #[test]
+    fn selects_http2_for_h2_alpn() {
+        assert_eq!(protocol_from_alpn(Some(b"h2")), Protocol::Http2);
+    }
+
+    #[test]
+    fn selects_http1_without_h2_alpn() {
+        assert_eq!(protocol_from_alpn(Some(b"http/1.1")), Protocol::Http1);
+        assert_eq!(protocol_from_alpn(None), Protocol::Http1);
     }
 }
