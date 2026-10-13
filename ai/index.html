@@ -995,6 +995,7 @@ reading the full site's saved manual theme. Full mode retains its persisted
 theme control and applies that choice to native theme tokens and controls.
 See <a href="/webui/guide/webui-press">WebUI Press</a> for layout and asset behavior.</p><p>Keep initial example data local to its Markdown file using YAML frontmatter:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">---</span>
 title: Button examples
+stateFile: ./button.json
 state:
   example:
     label: Save
@@ -1006,12 +1007,18 @@ state:
 fields inside its template. Keep Markdown complex-property bindings aligned
 with that top-level state key; entry-level nested-to-renamed-observable mappings
 do not currently preserve the initial hydration value.</p><p>Frontmatter <code>state</code> is an inline JSON-compatible object, not a file path.
-Global config <code>state</code>/<code>stateFile</code> supplies defaults; local keys shallowly
-replace matching global keys for this page only, without deep-merging objects.
+Markdown <code>stateFile</code> accepts one relative JSON file path string. The file must
+contain an object; its top-level keys merge into the page state.
+Paths resolve from the Markdown source; <code>../</code> is supported. Files are cached
+per build (16 MiB each) and automatically watched by <code>serve</code>, even under <code>target</code>.
+Missing includes recover when the file or its parent directories are created.
+Precedence is <strong>global config <code>state</code>/<code>stateFile</code> → Markdown <code>stateFile</code> →
+Markdown inline <code>state</code></strong>. Matching top-level keys are replaced shallowly for
+this page only, without deep-merging objects.
 The same merged state drives SSR and hydration in both display modes.
 Omit <code>state</code> or use <code>&#123;&#125;</code> for no local data. Non-object state, non-string object
 keys, custom YAML tags, non-finite numbers, and reserved top-level Press keys are build
-errors. Namespace examples to avoid reserved keys such as <code>page</code>, <code>site</code>,
+errors, as are invalid or missing includes. Namespace examples to avoid reserved keys such as <code>page</code>, <code>site</code>,
 <code>label</code>, and <code>icon</code>; <code>example.label</code> is fine. Never store secrets in render state.
 <code>customPages</code> replaces Markdown rather than supplementing it, and Markdown
 state does not populate <code>pageData</code>. See the

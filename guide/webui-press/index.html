@@ -134,18 +134,39 @@ state:
 <code>example.disabled</code> inside its own template. Keep Markdown complex-property
 bindings aligned with their top-level state key and receiving observable.
 Mapping a nested value to a differently named observable at the Markdown entry
-level does not currently preserve that value during initial hydration.</p><p><code>state</code> must be an inline JSON-compatible object. Nested objects, arrays,
+level does not currently preserve that value during initial hydration.</p><h3 id="json-state-files">JSON state files <a class="header-anchor" href="/webui/guide/webui-press/#json-state-files" aria-label="Link to JSON state files">#</a></h3><p>Load page state from a JSON file:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">---</span>
+title: Button
+stateFile: ./button.json
+<span class="hl-keyword">---</span>
+</code></pre></code-block><p>The file must contain a JSON object. Its top-level keys become page state:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&#123;
+  <span class="hl-string">"</span><span class="hl-string">example</span><span class="hl-string">"</span>: &#123;
+    <span class="hl-string">"</span><span class="hl-string">label</span><span class="hl-string">"</span>: "Save",
+    <span class="hl-string">"</span><span class="hl-string">count</span><span class="hl-string">"</span>: <span class="hl-property">2</span>
+  &#125;
+&#125;
+</code></pre></code-block><p>This supplies the same <code>example</code> state as an inline frontmatter object.
+<code>stateFile</code> accepts one path string, not a mapping or a list.</p><p>Paths resolve relative to the Markdown source, not <code>config.json</code>. Relative
+<code>../</code> paths are supported; absolute and drive-relative paths are not.
+Each file is read once per build, with a 16 MiB limit. <code>serve</code> watches included
+files automatically, including generated files under <code>target</code>, and discovers
+new dependencies when Markdown changes. Changes, atomic replacements, and
+recreating a missing include or its parent directories trigger rebuilds.
+No browser JSON fetch is needed.</p><p><code>state</code> must be an inline JSON-compatible object. Nested objects, arrays,
 strings, finite numbers, booleans, and <code>null</code> values are supported. Object
 keys must be strings; quote numeric or boolean keys. Omit <code>state</code> or use <code>&#123;&#125;</code>
 when no page-local data is needed. A top-level <code>null</code>, scalar, array, custom YAML tag,
 non-finite number, or malformed YAML fails the build with the Markdown filename
-and a corrective hint. Markdown frontmatter does not support <code>stateFile</code>.</p><p>Global config <code>state</code> or <code>stateFile</code> supplies shared defaults. Markdown state
-then <strong>shallowly replaces matching top-level keys</strong> for that page only. In the
-example above, local <code>example</code> replaces the entire global <code>example</code> object;
+and a corrective hint. Invalid, missing, or non-object JSON includes also fail
+with the Markdown filename and a corrective hint.</p><p>Precedence, from lowest to highest: <strong>global config <code>state</code> or <code>stateFile</code> →
+Markdown <code>stateFile</code> → Markdown inline <code>state</code></strong>. Matching top-level keys are
+replaced shallowly, for that page only. A local <code>example</code> value replaces the
+entire global <code>example</code> object;
 its nested fields are not deep-merged. Other global keys remain available,
 and local data never flows into other Markdown pages or the generated 404.</p><p>Press owns these top-level keys: <code>site</code>, <code>navigation</code>, <code>sidebar</code>, <code>page</code>,
 <code>hero</code>, <code>footer</code>, <code>prev</code>, <code>next</code>, <code>pageData</code>, <code>regions</code>, <code>headTags</code>, <code>tokens</code>,
-<code>label</code>, and <code>icon</code>. Using any of them directly under Markdown <code>state</code> fails
+<code>label</code>, and <code>icon</code>. Prototype-related keys <code>__proto__</code>, <code>prototype</code>, and
+<code>constructor</code> are also reserved. Using any of them directly under Markdown <code>state</code>,
+or at the top level of the included JSON object fails
 the build. Put application fields beneath your own key, such as
 <code>example.label</code>. Global and custom-page state retain their existing behavior:
 reserved keys cannot replace canonical Press values.</p><p>The merged page state drives both initial SSR and the projected hydration
