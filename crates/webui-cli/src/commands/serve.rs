@@ -322,7 +322,7 @@ fn execute_mode(args: &ServeArgs) -> Result<i32> {
 fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     let host_policy = host::HostPolicy::new(args.port, &args.allowed_hosts)?;
     let paths = ServePaths::from_args(args)?;
-    let http_client = build_http_client()?;
+    let api = build_api_context(args.api_port)?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
     let watch_enabled = args.watch && !watch_disabled_by_env();
@@ -468,8 +468,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         livereload: livereload.clone(),
         assets_dir: paths.serve_dir,
         component_assets_dir,
-        api_port: args.api_port,
-        http_client,
+        api,
         plugin: args.app_args.plugin,
         base_path: args.base_path.clone(),
         // Pool sized for typical concurrent renders × channel capacity.
@@ -521,7 +520,7 @@ fn serve_app(
         InitError = (),
     >,
 > {
-    let has_api_proxy = context.api_port.is_some();
+    let has_api_proxy = context.api.is_some();
     let mut app = App::new()
         .wrap_fn(move |req, service| {
             if host_policy.allows(req.request()) {
@@ -821,8 +820,7 @@ struct ServerContext {
     livereload: Option<LiveReload>,
     assets_dir: Option<PathBuf>,
     component_assets_dir: Option<PathBuf>,
-    api_port: Option<u16>,
-    http_client: reqwest::Client,
+    api: Option<ApiContext>,
     plugin: Option<Plugin>,
     /// Base path for sub-path deployment.
     base_path: Option<String>,
@@ -830,6 +828,12 @@ struct ServerContext {
     /// every streaming render so steady-state RPS does not allocate
     /// fresh chunk buffers per flush.
     chunk_pool: Arc<webui::streaming::ChunkPool>,
+}
+
+#[derive(Clone)]
+struct ApiContext {
+    port: u16,
+    client: reqwest::Client,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -893,6 +897,23 @@ fn build_http_client() -> Result<reqwest::Client> {
             "Failed to initialize the HTTP client for API state and proxy requests; \
              verify the system TLS and network resolver configuration",
         )
+}
+
+fn build_api_context(api_port: Option<u16>) -> Result<Option<ApiContext>> {
+    build_api_context_with(api_port, build_http_client)
+}
+
+fn build_api_context_with(
+    api_port: Option<u16>,
+    build_client: impl FnOnce() -> Result<reqwest::Client>,
+) -> Result<Option<ApiContext>> {
+    match api_port {
+        Some(port) => Ok(Some(ApiContext {
+            port,
+            client: build_client()?,
+        })),
+        None => Ok(None),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -999,8 +1020,8 @@ async fn fetch_api_state_with_timeout(
 
 /// Resolve state for a request: try API proxy first, then fall back to file state.
 async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
-    let (mut state, token_css) = if let Some(api_port) = context.api_port {
-        match fetch_api_state(&context.http_client, api_port, request_path).await {
+    let (mut state, token_css) = if let Some(api) = &context.api {
+        match fetch_api_state(&api.client, api.port, request_path).await {
             Ok(state) => {
                 let token_css = context.state.lock().ok().and_then(|s| s.token_css.clone());
                 (state, token_css)
@@ -1079,10 +1100,10 @@ async fn render_page_response(
     let route_params =
         webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
 
-    let mut state = if let Some(api_port) = context.api_port {
-        let url = format!("http://127.0.0.1:{api_port}{request_path}");
-        let request = context
-            .http_client
+    let mut state = if let Some(api) = &context.api {
+        let url = format!("http://127.0.0.1:{}{request_path}", api.port);
+        let request = api
+            .client
             .get(&url)
             .header(reqwest::header::ACCEPT, streaming_api::ACCEPT);
         match send_api_stream_candidate(request, API_RESPONSE_TIMEOUT).await {
@@ -1277,7 +1298,7 @@ async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> Ht
     }
 
     // With API proxy, render on-the-fly with fresh state
-    if context.api_port.is_some() {
+    if context.api.is_some() {
         let paths = build_request_paths("", req.query_string());
         return render_page_response(&context, &paths.route_path, &paths.request_path).await;
     }
@@ -1744,7 +1765,7 @@ async fn handle_api_proxy_with_timeout(
     context: web::Data<ServerContext>,
     timeout: Duration,
 ) -> HttpResponse {
-    let Some(api_port) = context.api_port else {
+    let Some(api) = &context.api else {
         return HttpResponse::NotFound().body("Not Found");
     };
 
@@ -1760,7 +1781,7 @@ async fn handle_api_proxy_with_timeout(
     // Write the port digits straight into the reserved capacity instead of
     // allocating a temporary `String` via `to_string()` on the proxy hot path.
     use std::fmt::Write as _;
-    let _ = write!(url, "{api_port}");
+    let _ = write!(url, "{}", api.port);
     url.push_str(path_and_query);
 
     let method = match reqwest::Method::from_bytes(req.method().as_str().as_bytes()) {
@@ -1769,7 +1790,7 @@ async fn handle_api_proxy_with_timeout(
             return HttpResponse::BadRequest().body(format!("Invalid API proxy method: {error}"));
         }
     };
-    let mut proxy_req = context.http_client.request(method, &url);
+    let mut proxy_req = api.client.request(method, &url);
 
     // Forward content-type header if present
     if let Some(ct) = req.headers().get("content-type") {
@@ -1990,6 +2011,32 @@ mod tests {
         build_http_client().unwrap()
     }
 
+    fn test_api_context(port: u16) -> ApiContext {
+        ApiContext {
+            port,
+            client: test_http_client(),
+        }
+    }
+
+    #[test]
+    fn static_server_context_does_not_build_http_client() {
+        let api = build_api_context_with(None, || {
+            Err(anyhow::anyhow!("HTTP client builder must not run"))
+        })
+        .unwrap();
+
+        assert!(api.is_none());
+    }
+
+    #[test]
+    fn api_server_context_builds_http_client() {
+        let api = build_api_context_with(Some(4321), || Ok(test_http_client()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(api.port, 4321);
+    }
+
     fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
         web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
@@ -2005,8 +2052,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: Some(api_port),
-            http_client: test_http_client(),
+            api: Some(test_api_context(api_port)),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -2031,8 +2077,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: None,
-            http_client: test_http_client(),
+            api: None,
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -2813,8 +2858,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: Some(api_port),
-            http_client: test_http_client(),
+            api: Some(test_api_context(api_port)),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3203,8 +3247,7 @@ mod tests {
             livereload: Some(livereload.clone()),
             assets_dir: None,
             component_assets_dir: None,
-            api_port: None,
-            http_client: test_http_client(),
+            api: None,
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3279,8 +3322,7 @@ mod tests {
             livereload: Some(livereload),
             assets_dir: None,
             component_assets_dir: None,
-            api_port: None,
-            http_client: test_http_client(),
+            api: None,
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3521,8 +3563,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: Some(port),
-            http_client: test_http_client(),
+            api: Some(test_api_context(port)),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -3596,8 +3637,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: Some(port),
-            http_client: test_http_client(),
+            api: Some(test_api_context(port)),
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -4216,7 +4256,7 @@ mod tests {
             .ok()
             .unwrap();
         context.assets_dir = Some(public);
-        context.api_port = None;
+        context.api = None;
         let app = actix_test::init_service(
             App::new()
                 .app_data(web::Data::new(context))
@@ -4291,8 +4331,7 @@ mod tests {
             livereload: None,
             assets_dir: None,
             component_assets_dir: None,
-            api_port: None,
-            http_client: test_http_client(),
+            api: None,
             plugin: None,
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
