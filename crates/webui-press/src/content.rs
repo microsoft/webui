@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
 use crate::state::{
     load_render_states, merge_page_state, parse_markdown_state, parse_markdown_state_file,
-    LoadedStates, StateLoader,
+    LoadedStates, StateDependencies, StateLoader,
 };
 use crate::types::{DocsConfig, NavLink, PageDescriptor, ShowMode, SidebarItem, SidebarSection};
 
@@ -140,7 +140,7 @@ struct MarkdownSource {
 fn load_markdown_sources(
     registry: &[(String, PathBuf)],
     config: &DocsConfig,
-    dependencies: &mut Vec<PathBuf>,
+    dependencies: &mut StateDependencies,
 ) -> Result<Vec<Option<MarkdownSource>>> {
     let mut loader = StateLoader::new();
     let sources = registry
@@ -172,9 +172,7 @@ fn load_markdown_sources(
             }))
         })
         .collect::<Result<Vec<_>>>();
-    dependencies.extend(loader.dependencies().cloned());
-    dependencies.sort();
-    dependencies.dedup();
+    *dependencies = loader.into_dependencies();
     sources
 }
 
@@ -477,7 +475,7 @@ pub fn process_content(
         highlighter,
         head_injection,
         &states,
-        &mut Vec::new(),
+        &mut StateDependencies::default(),
     )
 }
 
@@ -486,7 +484,7 @@ pub(crate) fn process_content_with_states(
     highlighter: &Highlighter,
     head_injection: &str,
     states: &LoadedStates,
-    dependencies: &mut Vec<PathBuf>,
+    dependencies: &mut StateDependencies,
 ) -> Result<Vec<PageDescriptor>> {
     let content_dir = Path::new(&config.content_dir);
     let base_path = &config.base_path;

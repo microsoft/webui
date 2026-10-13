@@ -27,7 +27,7 @@ use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::regions::RegionSet;
-use crate::state::{load_render_states, merge_page_state};
+use crate::state::{load_render_states, merge_page_state, StateDependencies};
 use crate::types::{BuildStats, DocsConfig, PageDescriptor, ShowMode};
 
 webui_handler::define_string_response_writer!(StringWriter, buf);
@@ -89,8 +89,8 @@ pub struct BuildCache {
     /// faster rebuilds during `webui-press serve`.
     pub dev_mode: bool,
     /// Additional state inputs discovered from Markdown.
-    /// Refreshed after successful content processing.
-    pub(crate) dependencies: Vec<PathBuf>,
+    /// Versions describe this build's reads; failed builds retain watch paths.
+    pub(crate) dependencies: StateDependencies,
 }
 
 impl BuildCache {
@@ -289,6 +289,7 @@ pub fn build_docs_with_cache(
     template_dir: &Path,
     cache: &mut BuildCache,
 ) -> Result<BuildStats> {
+    cache.dependencies.begin_build();
     let start = Instant::now();
     let base_path = &config.base_path;
     let out_dir = Path::new(&config.out_dir);
@@ -363,7 +364,7 @@ pub fn build_docs_with_cache(
     // to pay every keystroke.
     let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-    let mut dependencies = Vec::new();
+    let mut dependencies = StateDependencies::default();
     let content = process_content_with_states(
         config,
         &highlighter,
@@ -371,13 +372,12 @@ pub fn build_docs_with_cache(
         &render_states,
         &mut dependencies,
     );
-    if content.is_ok() {
-        cache.dependencies = dependencies;
-    } else {
-        cache.dependencies.extend(dependencies);
-        cache.dependencies.sort();
-        cache.dependencies.dedup();
+    if content.is_err() {
+        dependencies.paths.append(&mut cache.dependencies.paths);
+        dependencies.paths.sort();
+        dependencies.paths.dedup();
     }
+    cache.dependencies = dependencies;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
@@ -1517,6 +1517,28 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    #[test]
+    fn early_build_failure_does_not_recheck_versions_from_a_previous_build() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let file = root.path().join("state.json");
+        fs::write(&file, r#"{"count":1}"#)?;
+        let mut loader = crate::state::StateLoader::new();
+        loader.load_markdown_state(Some("state.json"), None, &root.path().join("page.md"))?;
+        let mut cache = BuildCache {
+            dependencies: loader.into_dependencies(),
+            ..BuildCache::default()
+        };
+        fs::write(&file, r#"{"count":2}"#)?;
+        assert_eq!(cache.dependencies.changed_paths(), cache.dependencies.paths);
+        let mut config = docs_config()?;
+        config.state = Some(Value::Null);
+        config.out_dir = root.path().join("output").to_string_lossy().into_owned();
+        assert!(build_docs_with_cache(&config, root.path(), root.path(), &mut cache).is_err());
+        assert!(cache.dependencies.changed_paths().is_empty());
+        assert_eq!(cache.dependencies.paths, vec![fs::canonicalize(file)?]);
+        Ok(())
+    }
 
     fn test_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
         let mut map = Map::with_capacity(N);

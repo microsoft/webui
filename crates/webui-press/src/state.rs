@@ -3,8 +3,10 @@
 
 //! Shared state loading and merge policy for WebUI Press builds.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fs;
+use std::hash::Hasher;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -137,21 +139,84 @@ fn markdown_state_error(reason: &str) -> Error {
     ))
 }
 
+const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Default)]
+pub(crate) struct StateDependencies {
+    pub(crate) paths: Vec<PathBuf>,
+    versions: HashMap<PathBuf, Option<u64>>,
+}
+
+impl StateDependencies {
+    pub(crate) fn begin_build(&mut self) {
+        self.versions.clear();
+    }
+
+    pub(crate) fn changed_paths(&self) -> Vec<PathBuf> {
+        let mut buffer = [0_u8; 8 * 1024];
+        let mut changed: Vec<_> = self
+            .versions
+            .iter()
+            .filter(|(path, version)| state_file_version(path, &mut buffer) != **version)
+            .map(|(path, _)| path.clone())
+            .collect();
+        changed.sort();
+        changed
+    }
+}
+
+fn state_file_version(path: &Path, buffer: &mut [u8]) -> Option<u64> {
+    // An unavailable input is a version too; a transition queues a build that
+    // surfaces its read error, while an unchanged failure must not loop.
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_STATE_BYTES {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?.take(MAX_STATE_BYTES + 1);
+    let mut hasher = DefaultHasher::new();
+    let mut total = 0;
+    loop {
+        let count = match file.read(buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        if count == 0 {
+            return Some(hasher.finish());
+        }
+        total += count as u64;
+        if total > MAX_STATE_BYTES {
+            return None;
+        }
+        hasher.write(&buffer[..count]);
+    }
+}
+
 pub(crate) struct StateLoader {
     cache: HashMap<PathBuf, Value>,
-    dependencies: std::collections::HashSet<PathBuf>,
+    dependencies: HashMap<PathBuf, Option<u64>>,
 }
 
 impl StateLoader {
     pub(crate) fn new() -> Self {
         Self {
             cache: HashMap::new(),
-            dependencies: std::collections::HashSet::new(),
+            dependencies: HashMap::new(),
         }
     }
 
-    pub(crate) fn dependencies(&self) -> impl Iterator<Item = &PathBuf> {
-        self.dependencies.iter()
+    #[cfg(test)]
+    fn dependencies(&self) -> impl Iterator<Item = &PathBuf> {
+        self.dependencies.keys()
+    }
+
+    pub(crate) fn into_dependencies(self) -> StateDependencies {
+        let mut paths: Vec<_> = self.dependencies.keys().cloned().collect();
+        paths.sort();
+        StateDependencies {
+            paths,
+            versions: self.dependencies,
+        }
     }
 
     pub(crate) fn load_markdown_state(
@@ -194,16 +259,14 @@ impl StateLoader {
             ))
         })?;
         let key = fs::canonicalize(&path).map_err(|error| {
-            self.dependencies.insert(absolute);
+            self.dependencies.insert(absolute, None);
             markdown_state_error(&format!(
                 "cannot resolve stateFile {}: {error}",
                 path.display()
             ))
         })?;
-        self.dependencies.insert(key.clone());
+        self.dependencies.entry(key.clone()).or_insert(None);
         if !self.cache.contains_key(&key) {
-            const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
-            use std::io::Read;
             let file = fs::File::open(&key).map_err(|error| {
                 markdown_state_error(&format!(
                     "cannot read stateFile {}: {error}",
@@ -225,6 +288,9 @@ impl StateLoader {
                     path.display()
                 )));
             }
+            let mut hasher = DefaultHasher::new();
+            hasher.write(&bytes);
+            self.dependencies.insert(key.clone(), Some(hasher.finish()));
             let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
                 markdown_state_error(&format!(
                     "stateFile {} is not valid JSON: {error}",

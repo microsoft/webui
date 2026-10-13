@@ -38,6 +38,7 @@ use webui_dev_server::{
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
+use crate::state::StateDependencies;
 use crate::types::{DocsConfig, ShowMode};
 
 /// Filesystem-event debounce window. Editors often save in multiple bursts;
@@ -157,15 +158,17 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
     sender
         .set(tx.clone())
         .map_err(|_| anyhow!("Press watcher sender was already initialized"))?;
-    let initial_watcher = {
+    {
         let guard = cache
             .lock()
             .map_err(|error| anyhow!("Press build cache lock failed: {error}"))?;
-        source_watcher(&config, &config_dir, &config_path, &guard.dependencies, tx)?
-    };
-    *watcher
-        .lock()
-        .map_err(|error| anyhow!("Press watcher lock failed: {error}"))? = Some(initial_watcher);
+        let initial_watcher =
+            source_watcher(&config, &config_dir, &config_path, &guard.dependencies, tx)?;
+        *watcher
+            .lock()
+            .map_err(|error| anyhow!("Press watcher lock failed: {error}"))? =
+            Some(initial_watcher);
+    }
 
     let static_cfg = StaticServeConfig {
         root: out_dir.clone(),
@@ -217,7 +220,7 @@ fn source_watcher(
     config: &DocsConfig,
     config_dir: &Path,
     config_path: &Path,
-    dependencies: &[PathBuf],
+    dependencies: &StateDependencies,
     tx: TickSender,
 ) -> Result<WatcherHandle> {
     let mut explicit_files = projection_manifest_paths(
@@ -227,11 +230,12 @@ fn source_watcher(
             .as_ref()
             .map_or(&[][..], |bundler| bundler.projection_manifests.as_slice()),
     );
-    explicit_files.extend_from_slice(dependencies);
+    explicit_files.extend_from_slice(&dependencies.paths);
     let mut ignore = default_ignore_paths();
     ignore.push(PathBuf::from(&config.out_dir));
     ignore.push(PathBuf::from(".webui-press/cache"));
-    spawn_watcher(
+    let events = tx.clone();
+    let watcher = spawn_watcher(
         WatchConfig {
             paths: watch_paths(
                 config_dir,
@@ -245,9 +249,21 @@ fn source_watcher(
             retry_unchanged_when: None,
         },
         move |paths| {
-            let _ = tx.try_send(paths);
+            let _ = events.try_send(paths);
         },
-    )
+    )?;
+    // The old watcher may exclude a newly discovered include. Compare with the
+    // bytes used for rendering only after the replacement watch is active.
+    let changed = dependencies.changed_paths();
+    if !changed.is_empty() {
+        match tx.try_send(changed) {
+            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                return Err(anyhow!("Press rebuild worker disconnected"));
+            }
+        }
+    }
+    Ok(watcher)
 }
 
 /// Default actix handler — delegates to the shared static-file
@@ -344,6 +360,38 @@ fn clone_config_via_reparse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_requeues_state_changed_after_the_render_read() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let file = root.path().join("target/state.json");
+        std::fs::create_dir(file.parent().context("state parent")?)?;
+        std::fs::write(&file, r#"{"count":1}"#)?;
+        let mut loader = crate::state::StateLoader::new();
+        loader.load_markdown_state(
+            Some("target/state.json"),
+            None,
+            &root.path().join("page.md"),
+        )?;
+        let dependencies = loader.into_dependencies();
+        std::fs::write(&file, r#"{"count":2}"#)?;
+        let config: DocsConfig = serde_json::from_str(
+            r#"{"site":{"title":"Test"},"basePath":"/","contentDir":"missing","nav":[],"sidebar":[]}"#,
+        )?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let _watcher = source_watcher(
+            &config,
+            root.path(),
+            &root.path().join("config.json"),
+            &dependencies,
+            tx,
+        )?;
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(200))?,
+            dependencies.paths
+        );
+        Ok(())
+    }
 
     #[test]
     fn watch_paths_dedupes_nested_paths() {

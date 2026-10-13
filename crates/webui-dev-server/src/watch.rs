@@ -94,6 +94,8 @@ pub struct WatchConfig {
     /// These files bypass `ignore` filtering, which lets a manifest under an
     /// ignored output directory act as an explicit synchronization point
     /// without forwarding unrelated bundle writes.
+    /// Missing parents are watched non-recursively. Directory changes are
+    /// forwarded as dependent file paths so hosts can refresh their watches.
     pub explicit_files: Vec<PathBuf>,
     /// Subtrees to ignore. An event is suppressed when its path lives
     /// underneath any entry here. Typical values: the build's `out_dir`,
@@ -218,38 +220,36 @@ where
                 .with_context(|| format!("Cannot watch {}", p.display()))?;
         }
     }
-    let mut explicit_parents = HashMap::new();
-    for file in &explicit_files {
-        if watched_roots.iter().any(|root| file.starts_with(root)) {
-            continue;
-        }
-        let Some(parent) = file.ancestors().skip(1).find(|parent| parent.is_dir()) else {
-            continue;
-        };
-        let mode = if file.parent() == Some(parent) {
-            RecursiveMode::NonRecursive
-        } else {
-            RecursiveMode::Recursive
-        };
-        explicit_parents
-            .entry(parent)
-            .and_modify(|current| {
-                if mode == RecursiveMode::Recursive {
-                    *current = mode;
-                }
-            })
-            .or_insert(mode);
-    }
-    for (parent, mode) in explicit_parents {
-        debouncer
-            .watcher()
-            .watch(parent, mode)
-            .with_context(|| format!("Cannot watch {}", parent.display()))?;
-    }
+    watch_explicit_parents(debouncer.watcher(), &explicit_files, &watched_roots)?;
 
     Ok(WatcherHandle {
         _debouncer: debouncer,
     })
+}
+
+fn watch_explicit_parents(
+    watcher: &mut dyn Watcher,
+    explicit_files: &[PathBuf],
+    watched_roots: &[PathBuf],
+) -> Result<()> {
+    let mut explicit_parents = HashSet::new();
+    for file in explicit_files {
+        if watched_roots.iter().any(|root| file.starts_with(root)) {
+            continue;
+        }
+        while let Some(parent) = file.ancestors().skip(1).find(|parent| parent.is_dir()) {
+            if !explicit_parents.insert(parent.to_path_buf()) {
+                break;
+            }
+            watcher
+                .watch(parent, RecursiveMode::NonRecursive)
+                .with_context(|| format!("Cannot watch {}", parent.display()))?;
+            // A generator can create more parents during registration. Advance
+            // before returning without subscribing to unrelated descendants.
+        }
+    }
+
+    Ok(())
 }
 
 fn normalize_explicit_file(path: &Path) -> Option<PathBuf> {
@@ -399,6 +399,47 @@ fn should_forward_path(
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingWatcher {
+        paths: Vec<(PathBuf, RecursiveMode)>,
+    }
+
+    impl Watcher for RecordingWatcher {
+        fn new<F: EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            self.paths.push((path.to_path_buf(), mode));
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> WatcherKind {
+            RecommendedWatcher::kind()
+        }
+    }
+
+    #[test]
+    fn missing_include_does_not_recursively_watch_ignored_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir_all(target.join("debug/build/unrelated")).unwrap();
+        let file = normalize_explicit_file(&target.join("generated/new/state.json")).unwrap();
+        let mut watcher = RecordingWatcher::default();
+        watch_explicit_parents(&mut watcher, &[file], &[]).unwrap();
+        assert_eq!(
+            watcher.paths,
+            vec![(
+                std::fs::canonicalize(target).unwrap(),
+                RecursiveMode::NonRecursive
+            )]
+        );
+    }
 
     #[test]
     fn is_ignored_matches_descendant() {

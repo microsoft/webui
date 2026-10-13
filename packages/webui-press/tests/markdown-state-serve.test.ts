@@ -14,7 +14,7 @@ test('serve watches generated JSON includes, replacements and newly referenced m
   const f = fixture();
   const port = await unusedPort();
   const first = path.join(f.site, 'target/webui-press-state/first.json');
-  const second = path.join(f.site, 'target/webui-press-state/new/second.json');
+  const second = path.join(f.site, 'target/webui-press-state/new/nested/second.json');
   const markdown = path.join(f.site, 'content/doc.md');
   const source = (name: string) => `---
 stateFile: ../target/webui-press-state/${name}.json
@@ -62,16 +62,34 @@ import '@fixture/catalog/button.js';
   write(`${first}.tmp`, '{"count":6}');
   fs.renameSync(`${first}.tmp`, first);
   await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 6');
-  write(markdown, source('new/second'));
+  write(markdown, source('new/nested/second'));
   await expect.poll(() => output, { timeout: 30_000 }).toContain('cannot resolve stateFile');
   assert.ok((await rendered()).includes('Preview 6'), 'failed includes preserve the previous output');
+  const errors = () => output.match(/cannot resolve stateFile/g)?.length ?? 0;
+  let previousErrors = errors();
+  fs.mkdirSync(path.dirname(path.dirname(second)));
+  await expect.poll(errors, { timeout: 30_000 }).toBeGreaterThan(previousErrors);
+  previousErrors = errors();
+  fs.mkdirSync(path.dirname(second));
+  await expect.poll(errors, { timeout: 30_000 }).toBeGreaterThan(previousErrors);
   write(second, '{"count":7}');
   await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 7');
   write(second, '{"count":8}');
   await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 8');
+  previousErrors = errors();
   fs.unlinkSync(second);
-  await expect.poll(() => output.match(/cannot resolve stateFile/g)?.length ?? 0,
-    { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
+  await expect.poll(errors, { timeout: 30_000 }).toBeGreaterThan(previousErrors);
   write(second, '{"count":9}');
   await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 9');
+  previousErrors = errors();
+  fs.unlinkSync(second);
+  fs.rmdirSync(path.dirname(second));
+  await expect.poll(errors, { timeout: 30_000 }).toBeGreaterThan(previousErrors);
+  write(second, '{"count":10}');
+  await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 10');
+  previousErrors = errors();
+  write(markdown, source('rapid/one/two/third'));
+  await expect.poll(errors, { timeout: 30_000 }).toBeGreaterThan(previousErrors);
+  write(path.join(f.site, 'target/webui-press-state/rapid/one/two/third.json'), '{"count":11}');
+  await expect.poll(rendered, { timeout: 30_000 }).toContain('Preview 11');
 });

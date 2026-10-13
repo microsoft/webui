@@ -130,7 +130,8 @@ Paths resolve relative to the Markdown source, not `config.json`. Relative
 Each file is read once per build, with a 16 MiB limit. `serve` watches included
 files automatically, including generated files under `target`, and discovers
 new dependencies when Markdown changes. Changes, atomic replacements, and
-recreating a missing include trigger rebuilds. No browser JSON fetch is needed.
+recreating a missing include or its parent directories trigger rebuilds.
+No browser JSON fetch is needed.
 
 `state` must be an inline JSON-compatible object. Nested objects, arrays,
 strings, finite numbers, booleans, and `null` values are supported. Object

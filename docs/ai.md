@@ -1654,6 +1654,7 @@ Markdown `stateFile` accepts one relative JSON file path string. The file must
 contain an object; its top-level keys merge into the page state.
 Paths resolve from the Markdown source; `../` is supported. Files are cached
 per build (16 MiB each) and automatically watched by `serve`, even under `target`.
+Missing includes recover when the file or its parent directories are created.
 Precedence is **global config `state`/`stateFile` → Markdown `stateFile` →
 Markdown inline `state`**. Matching top-level keys are replaced shallowly for
 this page only, without deep-merging objects.
