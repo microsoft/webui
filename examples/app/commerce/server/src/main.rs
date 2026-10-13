@@ -244,6 +244,8 @@ mod tests {
     use anyhow::{Context, Result};
     use clap::Parser;
     #[cfg(not(target_vendor = "apple"))]
+    use native_tls::Certificate;
+    #[cfg(not(target_vendor = "apple"))]
     use std::path::Path;
 
     // Test-only self-signed localhost identity generated with .NET CertificateRequest.
@@ -359,7 +361,7 @@ oIU51zOAgvknQMLr2aNPzPZJ
         actix_web::rt::spawn(server);
 
         let mut connector = native_tls::TlsConnector::builder();
-        connector.danger_accept_invalid_certs(true);
+        connector.add_root_certificate(Certificate::from_pem(TEST_CERTIFICATE_PEM)?);
         connector.request_alpns(&["h2"]);
         let connector = actix_tls::connect::native_tls::TlsConnector::new(connector.build()?);
         let tcp = actix_web::rt::net::TcpStream::connect(("127.0.0.1", port)).await?;
