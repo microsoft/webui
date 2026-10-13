@@ -137,43 +137,57 @@ struct MarkdownSource {
     body: String,
 }
 
-fn load_markdown_sources(
+fn process_markdown_batches<T>(
     registry: &[(String, PathBuf)],
     config: &DocsConfig,
     dependencies: &mut StateDependencies,
-) -> Result<Vec<Option<MarkdownSource>>> {
+    mut process: impl FnMut(usize, &[(String, PathBuf)], Vec<Option<MarkdownSource>>) -> Result<Vec<T>>,
+) -> Result<Vec<T>> {
     let mut loader = StateLoader::new();
-    let sources = registry
-        .iter()
-        .map(|(url, source)| {
-            let logical = format!("/{}", &url[config.base_path.len()..]);
-            if config
-                .custom_pages
-                .keys()
-                .any(|key| config_paths_match(key, &logical))
-                || !source.exists()
-            {
-                return Ok(None);
-            }
-            let raw = fs::read_to_string(source)
-                .map_err(|error| Error::Io(format!("Cannot read {}: {error}", source.display())))?;
-            let (mut frontmatter, body) = parse_frontmatter(&raw)
-                .map_err(|error| Error::Markdown(format!("{}: {error}", source.display())))?;
-            frontmatter.state = loader
-                .load_markdown_state(
-                    frontmatter.state_file.as_deref(),
-                    frontmatter.state.take(),
-                    source,
-                )
-                .map_err(|error| Error::Markdown(format!("{}: {error}", source.display())))?;
-            Ok(Some(MarkdownSource {
-                frontmatter,
-                body: body.to_string(),
-            }))
-        })
-        .collect::<Result<Vec<_>>>();
+    // Keep source bodies bounded by worker count while sharing the include cache.
+    let batch_size = rayon::current_num_threads();
+    let results = registry.chunks(batch_size).enumerate().try_fold(
+        Vec::with_capacity(registry.len()),
+        |mut results, (batch_index, batch)| {
+            let sources = batch
+                .iter()
+                .map(|(url, source)| {
+                    let logical = format!("/{}", &url[config.base_path.len()..]);
+                    if config
+                        .custom_pages
+                        .keys()
+                        .any(|key| config_paths_match(key, &logical))
+                        || !source.exists()
+                    {
+                        return Ok(None);
+                    }
+                    let raw = fs::read_to_string(source).map_err(|error| {
+                        Error::Io(format!("Cannot read {}: {error}", source.display()))
+                    })?;
+                    let (mut frontmatter, body) = parse_frontmatter(&raw).map_err(|error| {
+                        Error::Markdown(format!("{}: {error}", source.display()))
+                    })?;
+                    frontmatter.state = loader
+                        .load_markdown_state(
+                            frontmatter.state_file.as_deref(),
+                            frontmatter.state.take(),
+                            source,
+                        )
+                        .map_err(|error| {
+                            Error::Markdown(format!("{}: {error}", source.display()))
+                        })?;
+                    Ok(Some(MarkdownSource {
+                        frontmatter,
+                        body: body.to_string(),
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            results.extend(process(batch_index * batch_size, batch, sources)?);
+            Ok(results)
+        },
+    );
     *dependencies = loader.into_dependencies();
-    sources
+    results
 }
 
 fn extract_h1(content: &str) -> Option<String> {
@@ -541,8 +555,6 @@ pub(crate) fn process_content_with_states(
         }
     }
 
-    let markdown_sources = load_markdown_sources(&registry, config, dependencies)?;
-
     use rayon::prelude::*;
 
     // Per-page processing: parse markdown / load custom HTML, expand
@@ -550,7 +562,13 @@ pub(crate) fn process_content_with_states(
     // page on every call — there is no descriptor cache. The dev
     // server keeps a `BuildCache` only to amortize the syntect
     // highlighter load.
-    let results: Vec<(usize, PageDescriptor)> = registry
+    let results: Vec<(usize, PageDescriptor)> =
+        process_markdown_batches(
+            &registry,
+            config,
+            dependencies,
+            |offset, registry, markdown_sources| {
+                registry
         .par_iter()
         .zip(markdown_sources.into_par_iter())
         .enumerate()
@@ -731,7 +749,7 @@ pub(crate) fn process_content_with_states(
                 );
 
                 Ok((
-                    idx,
+                    offset + idx,
                     PageDescriptor {
                         path: url_path.clone(),
                         is_home,
@@ -740,7 +758,9 @@ pub(crate) fn process_content_with_states(
                 ))
             },
         )
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+            },
+        )?;
 
     // Build prev/next links from the sidebar that matches each page's URL.
     // We resolve the active sidebar per-page by checking sidebar_groups
@@ -811,6 +831,66 @@ pub(crate) fn process_content_with_states(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_batches_bound_resident_bodies_and_share_include_cache(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir_in(std::env::current_dir()?)?;
+        let include = root.path().join("shared.json");
+        fs::write(&include, r#"{"example":1}"#)?;
+        let body = "# Page\n".repeat(1024);
+        let mut registry = Vec::with_capacity(5);
+        for index in 0..5 {
+            let source = root.path().join(format!("{index}.md"));
+            fs::write(
+                &source,
+                format!("---\nstateFile: ./shared.json\n---\n{body}"),
+            )?;
+            registry.push((format!("/{index}"), source));
+        }
+        let config: DocsConfig = serde_json::from_str(
+            r#"{"site":{"title":"Test"},"basePath":"/","contentDir":".","nav":[],"sidebar":[]}"#,
+        )?;
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build()?;
+        let mut dependencies = StateDependencies::default();
+        let mut batches = 0;
+        let paths = pool.install(|| {
+            process_markdown_batches(
+                &registry,
+                &config,
+                &mut dependencies,
+                |offset, batch, sources| {
+                    assert!(sources.len() <= 2, "all Markdown bodies were preloaded");
+                    assert_eq!(offset, batches * 2);
+                    assert_eq!(sources.len(), batch.len());
+                    for source in sources.into_iter().flatten() {
+                        assert_eq!(source.body, body);
+                        assert_eq!(
+                            source.frontmatter.state.as_ref().map(|v| &v["example"]),
+                            Some(&Value::from(1))
+                        );
+                    }
+                    if batches == 0 {
+                        fs::write(&include, r#"{"example":2}"#)
+                            .map_err(|error| Error::Io(error.to_string()))?;
+                    }
+                    batches += 1;
+                    Ok(batch.iter().map(|(url, _)| url.clone()).collect())
+                },
+            )
+        })?;
+        assert_eq!(batches, 3);
+        assert_eq!(
+            paths,
+            registry
+                .iter()
+                .map(|(url, _)| url.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(dependencies.paths.len(), 1);
+        assert_eq!(dependencies.changed_paths(), dependencies.paths);
+        Ok(())
+    }
 
     // --- normalize_link --------------------------------------------------
 
