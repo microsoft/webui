@@ -59,6 +59,11 @@ async fn main() -> anyhow::Result<()> {
     let proxy_state = web::Data::new(proxy::ProxyState { routes });
     let apps_data = web::Data::new(apps.clone());
     let shell_data = web::Data::new(shell_state);
+    let proxy_client = web::Data::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?,
+    );
 
     // Spawn all child app servers
     log::info!("Starting app servers…");
@@ -70,15 +75,11 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Starting demo shell on port {}", args.port);
 
     let result = HttpServer::new(move || {
-        let client = awc::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .finish();
-
         App::new()
             .app_data(proxy_state.clone())
             .app_data(apps_data.clone())
             .app_data(shell_data.clone())
-            .app_data(web::Data::new(client))
+            .app_data(proxy_client.clone())
             // Shell UI (rendered from examples/demo/src via WebUIHandler)
             .route("/", web::get().to(shell::shell_page))
             // Shell static assets (bundled JS, sourcemaps, etc.)

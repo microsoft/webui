@@ -4,12 +4,13 @@
 use actix_web::{
     body::{BodySize, BodyStream, MessageBody},
     http::{
-        header::{self, HeaderMap, HeaderName},
+        header::{self, HeaderMap, HeaderName, HeaderValue},
         StatusCode,
     },
     web, HttpRequest, HttpResponse, HttpResponseBuilder,
 };
-use awc::Client;
+use futures_util::StreamExt;
+use reqwest::Client;
 use std::{
     collections::HashMap,
     error::Error as StdError,
@@ -140,29 +141,47 @@ pub(crate) async fn proxy_handler(
     // Preserve upstream content codings byte-for-byte. The proxy streams the
     // encoded body and matching Content-Encoding header instead of risking a
     // decoder pass-through for an unsupported or stacked encoding.
-    let mut forwarded = client
-        .request(req.method().clone(), &target_url)
-        .no_decompress();
+    let method = match reqwest::Method::from_bytes(req.method().as_str().as_bytes()) {
+        Ok(method) => method,
+        Err(error) => {
+            return HttpResponse::BadRequest().body(format!("Invalid proxy method: {error}"));
+        }
+    };
+    let mut forwarded = client.request(method, &target_url);
 
     // Copy relevant headers (skip Host — we set our own)
     for (name, value) in req.headers() {
         if name != "host" {
-            forwarded = forwarded.insert_header((name.clone(), value.clone()));
+            let forwarded_name =
+                match reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        return HttpResponse::BadGateway()
+                            .body(format!("Invalid proxy request header name: {error}"));
+                    }
+                };
+            let forwarded_value = match reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return HttpResponse::BadGateway()
+                        .body(format!("Invalid proxy request header value: {error}"));
+                }
+            };
+            forwarded = forwarded.header(forwarded_name, forwarded_value);
         }
     }
 
     // Add forwarding headers
     if let Some(peer) = req.peer_addr() {
-        forwarded = forwarded.insert_header(("X-Forwarded-For", peer.ip().to_string()));
+        forwarded = forwarded.header("X-Forwarded-For", peer.ip().to_string());
     }
     if let Some(host) = req.headers().get("host") {
-        forwarded =
-            forwarded.insert_header(("X-Forwarded-Host", host.to_str().unwrap_or_default()));
+        forwarded = forwarded.header("X-Forwarded-Host", host.as_bytes());
     }
-    forwarded = forwarded.insert_header(("X-Forwarded-Proto", req.connection_info().scheme()));
+    forwarded = forwarded.header("X-Forwarded-Proto", req.connection_info().scheme());
 
     // Send the request
-    let response = match forwarded.send_body(body).await {
+    let response = match forwarded.body(body).send().await {
         Ok(r) => r,
         Err(e) => {
             log::error!("Proxy error for {slug} → {target_url}: {e}");
@@ -170,7 +189,24 @@ pub(crate) async fn proxy_handler(
         }
     };
 
-    if known_content_length_exceeds(response.headers(), MAX_BODY_SIZE) {
+    let status = match StatusCode::from_u16(response.status().as_u16()) {
+        Ok(status) => status,
+        Err(error) => {
+            log::error!("Proxy response for {slug} has invalid status: {error}");
+            return HttpResponse::BadGateway()
+                .body(format!("App '{slug}' returned an invalid HTTP status"));
+        }
+    };
+    let response_headers = match convert_response_headers(response.headers()) {
+        Ok(headers) => headers,
+        Err(error) => {
+            log::error!("Proxy response for {slug} has invalid headers: {error}");
+            return HttpResponse::BadGateway()
+                .body(format!("App '{slug}' returned invalid HTTP headers"));
+        }
+    };
+
+    if known_content_length_exceeds(&response_headers, MAX_BODY_SIZE) {
         log::error!(
             "Proxy response for {slug} exceeds the {MAX_BODY_SIZE} byte limit declared by Content-Length"
         );
@@ -180,9 +216,27 @@ pub(crate) async fn proxy_handler(
     }
 
     // Build the response back to the client.
-    let status = response.status();
-    let mut builder = proxy_response_builder(status, response.headers());
-    builder.body(LimitedBody::new(BodyStream::new(response), MAX_BODY_SIZE))
+    let mut builder = proxy_response_builder(status, &response_headers);
+    builder.body(LimitedBody::new(
+        BodyStream::new(
+            response
+                .bytes_stream()
+                .map(|chunk| chunk.map_err(|error| std::io::Error::other(error.to_string()))),
+        ),
+        MAX_BODY_SIZE,
+    ))
+}
+
+fn convert_response_headers(headers: &reqwest::header::HeaderMap) -> Result<HeaderMap, String> {
+    let mut converted = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_str().as_bytes())
+            .map_err(|error| format!("invalid header name: {error}"))?;
+        let value = HeaderValue::from_bytes(value.as_bytes())
+            .map_err(|error| format!("invalid header value: {error}"))?;
+        converted.append(name, value);
+    }
+    Ok(converted)
 }
 
 fn known_content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
@@ -256,7 +310,6 @@ pub(crate) async fn slug_redirect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actix_web::http::header::HeaderValue;
     use std::{cell::Cell, collections::VecDeque, future::poll_fn, rc::Rc};
 
     fn proxy_response<B>(

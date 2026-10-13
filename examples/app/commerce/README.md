@@ -33,6 +33,12 @@ pnpm start
 
 Then open http://127.0.0.1:3004
 
+The commerce server does not generate certificates. For direct HTTPS
+development, provide a certificate and PKCS#8 private key PEM with `--tls-cert`
+and `--tls-key`; otherwise use `--no-tls` behind a TLS-terminating proxy or
+ingress. TLS uses the platform-native implementation through `native-tls`
+(SChannel on Windows, OpenSSL on Linux, or Secure Transport on macOS).
+
 ## Running Tests
 
 ```bash

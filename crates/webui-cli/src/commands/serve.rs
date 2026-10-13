@@ -878,16 +878,16 @@ fn request_paths(req: &HttpRequest) -> RequestPaths {
 
 /// Fetch state from the user's API server for a given request path, including query parameters.
 async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
-    let client = awc::Client::new();
+    let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{api_port}{path}");
-    let mut resp = client
+    let resp = client
         .get(&url)
-        .insert_header(("Accept", "application/json"))
+        .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
         .map_err(|e| format!("API proxy error: {e}"))?;
     let body = resp
-        .body()
+        .bytes()
         .await
         .map_err(|e| format!("API body error: {e}"))?;
     let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
@@ -978,15 +978,22 @@ async fn render_page_response(
         webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
 
     let mut state = if let Some(api_port) = context.api_port {
-        let client = awc::Client::new();
+        let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{api_port}{request_path}");
         match client
             .get(&url)
-            .insert_header(("Accept", streaming_api::ACCEPT))
+            .header(reqwest::header::ACCEPT, streaming_api::ACCEPT)
             .send()
             .await
         {
-            Ok(response) if streaming_api::is_stream(response.headers()) => {
+            Ok(response)
+                if streaming_api::is_stream_content_type(
+                    response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok()),
+                ) =>
+            {
                 let status = response.status();
                 if !status.is_success() {
                     // The upstream refused before writing a single record, so no
@@ -1000,7 +1007,9 @@ async fn render_page_response(
                     ));
                     fallback_state(context)
                 } else {
-                    let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
+                    let backend = response
+                        .bytes_stream()
+                        .map(|chunk| chunk.map_err(|error| error.to_string()));
                     let defaults = streaming_state_defaults(context, route_params);
                     return streaming_api::render(
                         backend,
@@ -1017,7 +1026,7 @@ async fn render_page_response(
                     .await;
                 }
             }
-            Ok(mut response) => match response.body().await {
+            Ok(response) => match response.bytes().await {
                 Ok(body) => match parse_api_state(&body) {
                     Ok(state) => state,
                     Err(error) => {
@@ -1634,28 +1643,50 @@ async fn handle_api_proxy(
     let _ = write!(url, "{api_port}");
     url.push_str(path_and_query);
 
-    let client = awc::Client::new();
-    let mut proxy_req = client.request(req.method().clone(), &url);
+    let method = match reqwest::Method::from_bytes(req.method().as_str().as_bytes()) {
+        Ok(method) => method,
+        Err(error) => {
+            return HttpResponse::BadRequest().body(format!("Invalid API proxy method: {error}"));
+        }
+    };
+    let client = reqwest::Client::new();
+    let mut proxy_req = client.request(method, &url);
 
     // Forward content-type header if present
     if let Some(ct) = req.headers().get("content-type") {
-        proxy_req = proxy_req.insert_header(("content-type", ct.clone()));
+        proxy_req = proxy_req.header(reqwest::header::CONTENT_TYPE, ct.as_bytes());
     }
 
-    let result = if body.is_empty() {
-        proxy_req.send().await
-    } else {
-        proxy_req.send_body(body).await
-    };
+    let result = proxy_req.body(body).send().await;
 
     match result {
-        Ok(mut resp) => {
+        Ok(resp) => {
             let status = resp.status();
-            match resp.body().await {
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .map(|value| value.as_bytes().to_vec());
+            match resp.bytes().await {
                 Ok(response_body) => {
+                    let status = match actix_web::http::StatusCode::from_u16(status.as_u16()) {
+                        Ok(status) => status,
+                        Err(error) => {
+                            return HttpResponse::BadGateway()
+                                .body(format!("Invalid API proxy status: {error}"));
+                        }
+                    };
                     let mut builder = HttpResponse::build(status);
-                    if let Some(ct) = resp.headers().get("content-type") {
-                        builder.insert_header(("content-type", ct.clone()));
+                    if let Some(content_type) = content_type {
+                        match actix_web::http::header::HeaderValue::from_bytes(&content_type) {
+                            Ok(value) => {
+                                builder
+                                    .insert_header((actix_web::http::header::CONTENT_TYPE, value));
+                            }
+                            Err(error) => {
+                                return HttpResponse::BadGateway()
+                                    .body(format!("Invalid API proxy content type: {error}"));
+                            }
+                        }
                     }
                     builder.body(response_body)
                 }

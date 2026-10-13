@@ -16,10 +16,14 @@ mod security;
 mod server;
 mod state;
 
-use actix_web::{web, App, HttpServer};
+use actix_http::{HttpService, Protocol};
+use actix_server::Server;
+use actix_service::{fn_service, map_config, IntoServiceFactory, ServiceFactoryExt};
+use actix_tls::accept::native_tls::{reexports::TlsAcceptor, Acceptor as NativeTlsAcceptor};
+use actix_web::{dev::AppConfig, web, App, HttpServer};
 use anyhow::{Context, Result};
 use clap::Parser;
-use rustls::ServerConfig;
+use native_tls::Identity;
 
 use crate::app::AppState;
 use crate::security::security_headers;
@@ -46,12 +50,11 @@ struct ApiArgs {
     #[arg(long)]
     no_tls: bool,
 
-    /// Path to TLS certificate PEM file.  When omitted a self-signed
-    /// certificate is generated for localhost development.
+    /// Path to a TLS certificate PEM file. Required unless --no-tls is set.
     #[arg(long)]
     tls_cert: Option<String>,
 
-    /// Path to TLS private key PEM file.
+    /// Path to a TLS private key PEM file. Required unless --no-tls is set.
     #[arg(long)]
     tls_key: Option<String>,
 
@@ -93,22 +96,61 @@ fn main() -> Result<()> {
             args.tls_key.as_deref(),
         )?)
     };
+    let tls_acceptor = tls_config
+        .map(native_tls::TlsAcceptor::new)
+        .transpose()
+        .context("Failed to create TLS acceptor")?;
 
     actix_web::rt::System::new().block_on(async move {
-        let server = HttpServer::new(move || {
-            App::new()
-                .wrap(actix_web::middleware::Compress::default())
-                .wrap(security_headers())
-                .app_data(state.clone())
-                .configure(configure_app)
-        })
-        .keep_alive(std::time::Duration::from_secs(75))
-        .shutdown_timeout(5);
+        if let Some(tls) = tls_acceptor {
+            eprintln!("  HTTPS listening on https://localhost:{port}");
+            let tls_acceptor = TlsAcceptor::from(tls);
+            let native_tls_acceptor = NativeTlsAcceptor::new(tls_acceptor);
+            let server_state = state.clone();
 
-        if let Some(tls) = tls_config {
-            eprintln!("  HTTPS (HTTP/2) listening on https://localhost:{port}");
-            server.bind_rustls_0_23(("0.0.0.0", port), tls)?.run().await
+            Server::build()
+                .bind("marketplace-api", ("0.0.0.0", port), move || {
+                    let factory = App::new()
+                        .wrap(actix_web::middleware::Compress::default())
+                        .wrap(security_headers())
+                        .app_data(server_state.clone())
+                        .configure(configure_app)
+                        .into_factory()
+                        .map_err(|error: actix_web::Error| error.error_response());
+
+                    let http_service = HttpService::build()
+                        .keep_alive(std::time::Duration::from_secs(75))
+                        .secure()
+                        .finish(map_config(factory, move |_| {
+                            AppConfig::__priv_test_new(
+                                true,
+                                format!("localhost:{port}"),
+                                std::net::SocketAddr::from(([0, 0, 0, 0], port)),
+                            )
+                        }))
+                        .map_err(|_| ());
+
+                    native_tls_acceptor
+                        .clone()
+                        .map_err(|_| ())
+                        .and_then(fn_service(|stream| async move {
+                            Ok::<_, ()>((stream, Protocol::Http1, None))
+                        }))
+                        .and_then(http_service)
+                })?
+                .run()
+                .await
         } else {
+            let server = HttpServer::new(move || {
+                App::new()
+                    .wrap(actix_web::middleware::Compress::default())
+                    .wrap(security_headers())
+                    .app_data(state.clone())
+                    .configure(configure_app)
+            })
+            .keep_alive(std::time::Duration::from_secs(75))
+            .shutdown_timeout(5);
+
             eprintln!("  HTTP (plain) listening on http://0.0.0.0:{port}");
             server.bind(("0.0.0.0", port))?.run().await
         }
@@ -117,88 +159,53 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Build a rustls [`ServerConfig`] for HTTP/2.
-///
-/// When `cert_path` and `key_path` are provided, loads PEM files from
-/// disk.  Otherwise, generates a self-signed certificate for `localhost`
-/// using `rcgen` — suitable for local development.
-fn build_tls_config(cert_path: Option<&str>, key_path: Option<&str>) -> Result<ServerConfig> {
-    let (certs, key) = match (cert_path, key_path) {
+/// Build a platform-native TLS identity from caller-provided PEM files.
+fn build_tls_config(cert_path: Option<&str>, key_path: Option<&str>) -> Result<Identity> {
+    let (certificate, key) = match (cert_path, key_path) {
         (Some(cert), Some(key)) => load_pem_files(cert, key)?,
-        _ => generate_self_signed()?,
+        (None, None) => anyhow::bail!(
+            "TLS certificate and key are required unless --no-tls is set; \
+             provide --tls-cert <path> and --tls-key <path>"
+        ),
+        _ => anyhow::bail!("--tls-cert and --tls-key must be provided together, or use --no-tls"),
     };
 
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .context("Failed to build TLS config")?;
-
-    Ok(config)
+    Identity::from_pkcs8(&certificate, &key)
+        .context("Failed to build platform-native TLS identity; the private key must be PKCS#8 PEM")
 }
 
-fn load_pem_files(
-    cert_path: &str,
-    key_path: &str,
-) -> Result<(
-    Vec<rustls::pki_types::CertificateDer<'static>>,
-    rustls::pki_types::PrivateKeyDer<'static>,
-)> {
+fn load_pem_files(cert_path: &str, key_path: &str) -> Result<(Vec<u8>, Vec<u8>)> {
     let cert_data = std::fs::read(cert_path)
         .with_context(|| format!("Failed to read TLS certificate from {cert_path}"))?;
     let key_data = std::fs::read(key_path)
         .with_context(|| format!("Failed to read TLS key from {key_path}"))?;
 
-    use rustls::pki_types::pem::PemObject;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-
-    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_data)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("Failed to parse TLS certificate PEM")?;
-
-    let key = PrivateKeyDer::from_pem_slice(&key_data).context("Failed to parse TLS key PEM")?;
-
-    Ok((certs, key))
+    Ok((cert_data, key_data))
 }
-
-fn generate_self_signed() -> Result<(
-    Vec<rustls::pki_types::CertificateDer<'static>>,
-    rustls::pki_types::PrivateKeyDer<'static>,
-)> {
-    let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
-        .context("Failed to create certificate params")?;
-    params
-        .subject_alt_names
-        .push(rcgen::SanType::IpAddress(std::net::IpAddr::V4(
-            std::net::Ipv4Addr::LOCALHOST,
-        )));
-    params
-        .subject_alt_names
-        .push(rcgen::SanType::IpAddress(std::net::IpAddr::V6(
-            std::net::Ipv6Addr::LOCALHOST,
-        )));
-
-    let key_pair = rcgen::KeyPair::generate().context("Failed to generate key pair")?;
-    let cert = params
-        .self_signed(&key_pair)
-        .context("Failed to generate self-signed certificate")?;
-
-    let cert_der = cert.der().clone();
-    let key_der = rustls::pki_types::PrivateKeyDer::try_from(key_pair.serialize_der())
-        .map_err(|e| anyhow::anyhow!("Failed to serialize private key: {e}"))?;
-
-    eprintln!("  Generated self-signed TLS certificate for localhost");
-
-    Ok((vec![cert_der], key_der))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ApiArgs;
+    use super::{build_tls_config, ApiArgs};
     use clap::Parser;
 
     #[test]
     fn parses_custom_port() {
         let args = ApiArgs::parse_from(["marketplace-api", "--port", "4001"]);
         assert_eq!(args.port, 4001);
+    }
+
+    #[test]
+    fn requires_certificate_and_key_for_tls() {
+        let error = build_tls_config(None, None)
+            .err()
+            .expect("TLS configuration without certificate inputs must fail");
+        assert!(error.to_string().contains("--no-tls"));
+    }
+
+    #[test]
+    fn rejects_partial_certificate_inputs() {
+        let error = build_tls_config(Some("certificate.pem"), None)
+            .err()
+            .expect("TLS configuration with only one PEM path must fail");
+        assert!(error.to_string().contains("provided together"));
     }
 }
