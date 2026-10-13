@@ -154,6 +154,9 @@ where
 
     let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
     let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
+    for file in &explicit_files {
+        content_changed(&mut content_hashes, file, &mut hash_buffer);
+    }
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let explicit_filter = explicit_files.clone();
     let notify_config = notify::Config::default().with_follow_symlinks(false);
@@ -169,12 +172,7 @@ where
                 let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
                 let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
                 for e in events {
-                    if should_ignore_event(&e.path, &ignore, &explicit_filter) {
-                        continue;
-                    }
-                    if seen.insert(e.path.clone()) {
-                        paths.push(e.path);
-                    }
+                    collect_event_paths(&e.path, &ignore, &explicit_filter, &mut seen, &mut paths);
                 }
                 // Recursive backends emit directory metadata events alongside
                 // file writes. Existing directories are not source changes and
@@ -274,6 +272,33 @@ fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
 
 fn should_ignore_event(event_path: &Path, ignore: &[PathBuf], explicit_files: &[PathBuf]) -> bool {
     is_ignored(event_path, ignore) && !is_explicit_file(event_path, explicit_files)
+}
+
+fn collect_event_paths(
+    event_path: &Path,
+    ignore: &[PathBuf],
+    explicit_files: &[PathBuf],
+    seen: &mut HashSet<PathBuf>,
+    paths: &mut Vec<PathBuf>,
+) {
+    let is_directory = event_path.is_dir();
+    if is_directory || !event_path.exists() {
+        if let Some(directory) = normalize_explicit_file(event_path) {
+            // Recursive backends can attach after a new directory is populated,
+            // leaving its creation event as the only signal for included files.
+            for file in explicit_files {
+                if file != &directory && file.starts_with(&directory) && seen.insert(file.clone()) {
+                    paths.push(file.clone());
+                }
+            }
+        }
+    }
+    if !is_directory
+        && !should_ignore_event(event_path, ignore, explicit_files)
+        && seen.insert(event_path.to_path_buf())
+    {
+        paths.push(event_path.to_path_buf());
+    }
 }
 
 /// Returns true when `event_path` lives under any ignored root.
@@ -425,6 +450,85 @@ mod tests {
             &[normalized]
         ));
         Ok(())
+    }
+
+    #[test]
+    fn directory_event_rechecks_explicit_files_created_before_recursive_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        let file = directory.join("state.json");
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        collect_event_paths(
+            &directory,
+            &[PathBuf::from("target")],
+            &explicit,
+            &mut seen,
+            &mut paths,
+        );
+        assert_eq!(paths, explicit);
+    }
+
+    #[test]
+    fn directory_rechecks_dedupe_and_skip_unchanged_explicit_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("state.json");
+        std::fs::write(&file, "{}").unwrap();
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        let mut hashes = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        assert!(content_changed(&mut hashes, &explicit[0], &mut buffer));
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        for _ in 0..2 {
+            collect_event_paths(
+                &directory,
+                &[PathBuf::from("target")],
+                &explicit,
+                &mut seen,
+                &mut paths,
+            );
+        }
+        assert_eq!(paths, explicit);
+        assert!(!should_forward_path(
+            &mut hashes,
+            &paths[0],
+            false,
+            &mut buffer
+        ));
+        std::fs::write(&file, "{\"count\":7}").unwrap();
+        assert!(should_forward_path(
+            &mut hashes,
+            &paths[0],
+            false,
+            &mut buffer
+        ));
+    }
+
+    #[test]
+    fn directory_events_ignore_unrelated_files_and_recheck_removed_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        let unrelated = dir.path().join("target/other");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let file = directory.join("state.json");
+        std::fs::write(&file, "{}").unwrap();
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        let ignore = vec![PathBuf::from("target")];
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        collect_event_paths(&unrelated, &ignore, &explicit, &mut seen, &mut paths);
+        assert!(paths.is_empty());
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        collect_event_paths(&directory, &ignore, &explicit, &mut seen, &mut paths);
+        assert_eq!(paths, explicit);
     }
 
     #[test]
