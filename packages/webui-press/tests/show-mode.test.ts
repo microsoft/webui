@@ -108,6 +108,11 @@ test('native content builds preserve all page layouts and npm/local authored con
     const implicit = fs.readFileSync(path.join(f.site, 'dist/doc/index.html'), 'utf8');
     assert.match(implicit, /<docs-site-navigation/);
     assert.match(implicit, /class="site-footer"/);
+    assert.ok(!implicit.includes('blocking="render"'));
+    assert.ok(!implicit.includes('webui-press-ready'));
+    const shellCss = fs.readFileSync(path.join(f.site, 'dist/docs.css'), 'utf8');
+    assert.match(shellCss, /\.main-content\s*\{[^}]*view-transition-name:\s*docs-content/);
+    assert.match(shellCss, /\.main-content \.doc-content\s*\{[^}]*view-transition-name:\s*none/);
     const home = fs.readFileSync(path.join(f.site, 'dist/home/index.html'), 'utf8');
     assert.ok(!home.includes('<test-catalog-button'));
     write(f.configFile, JSON.stringify({ ...f.config, regions: {}, show: 'content' }));
