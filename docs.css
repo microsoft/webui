@@ -2,14 +2,27 @@
 /* Licensed under the MIT license. */
 
 /* ── Cross-document view transitions ──────────────────
-   Soft cross-fade between pages on same-origin navigations.
+   Cross-fade main content while navigation stays interactive.
    Chromium-only; gracefully ignored elsewhere. */
 @view-transition {
   navigation: auto;
 }
 
-::view-transition-old(root),
-::view-transition-new(root) {
+:root {
+  view-transition-name: none;
+}
+
+.doc-content {
+  view-transition-name: docs-content;
+}
+
+::view-transition {
+  pointer-events: none;
+}
+
+::view-transition-group(docs-content),
+::view-transition-old(docs-content),
+::view-transition-new(docs-content) {
   animation-duration: 180ms;
   animation-timing-function: ease;
 }
@@ -552,6 +565,7 @@ body {
 }
 
 .main-content {
+  view-transition-name: docs-content;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -566,6 +580,10 @@ body {
   width: 100%;
   max-width: var(--docs-content-max-width);
   margin-inline: auto;
+}
+
+.main-content .doc-content {
+  view-transition-name: none;
 }
 
 .mobile-page-context {
