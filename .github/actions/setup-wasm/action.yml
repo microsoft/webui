@@ -16,7 +16,7 @@ runs:
     - name: Install wasm-pack and protoc
       shell: bash
       run: |
-        cargo install wasm-pack
+        cargo install --locked wasm-pack
         sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
     - name: Build WASM
