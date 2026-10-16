@@ -19,7 +19,7 @@
 //! scales — not just the trivial 35 µs render we have in the contact-
 //! book bench.
 //!
-//! Measurements (using `awc` as the HTTP client):
+//! Measurements (using `reqwest` as the HTTP client):
 //!
 //! * **TTFB** — milliseconds from request send to first response byte
 //! * **TTLB** — milliseconds from request send to last response byte
@@ -52,9 +52,9 @@
 #![allow(unsafe_code)]
 
 use actix_web::{web, App, HttpResponse, HttpServer};
-use awc::Client;
 use bytes::Bytes;
 use futures_util::StreamExt;
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -302,11 +302,12 @@ struct Measurement {
 
 async fn measure_one(client: &Client, url: &str) -> Measurement {
     let start = Instant::now();
-    let mut resp = client.get(url).send().await.expect("send");
+    let resp = client.get(url).send().await.expect("send");
     let ttfb = start.elapsed();
     let mut body_bytes = 0usize;
+    let mut body = resp.bytes_stream();
     // Drain the body, but only the first byte's arrival is "TTFB".
-    while let Some(chunk) = resp.next().await {
+    while let Some(chunk) = body.next().await {
         let chunk = chunk.expect("chunk");
         body_bytes += chunk.len();
     }

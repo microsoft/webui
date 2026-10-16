@@ -8,7 +8,7 @@ set -euo pipefail
 target="${1:?pass a Linux Rust target triple}"
 if [[ "$target" == x86_64-unknown-linux-gnu ]]; then
   sudo apt-get update -q
-  sudo apt-get install -y -q protobuf-compiler pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
+  sudo apt-get install -y -q protobuf-compiler pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev
 elif [[ "$target" == aarch64-unknown-linux-gnu ]]; then
   source /etc/os-release
   if [[ "$ID" != ubuntu || -z "${VERSION_CODENAME:-}" ]]; then
@@ -49,7 +49,7 @@ EOF
   sudo apt-get "${apt_options[@]}" update -q
   sudo apt-get "${apt_options[@]}" install -y -q \
     protobuf-compiler pkg-config gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-    libgtk-4-dev:arm64 libwebkitgtk-6.0-dev:arm64
+    libgtk-4-dev:arm64 libwebkitgtk-6.0-dev:arm64 libssl-dev:arm64
   rm "$sources"
   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
   export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
@@ -57,7 +57,7 @@ EOF
   export PKG_CONFIG_ALLOW_CROSS=1
   unset PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
   export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-  for pc in gtk4 webkitgtk-6.0; do
+  for pc in gtk4 webkitgtk-6.0 openssl; do
     pcdir="$(pkg-config --variable=pcfiledir "$pc")"
     if [[ "$pcdir" != /usr/lib/aarch64-linux-gnu/pkgconfig ]]; then
       echo "$pc resolved from unexpected directory: $pcdir" >&2

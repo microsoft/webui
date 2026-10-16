@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use actix_web::http::header::{HeaderMap, CONTENT_TYPE};
 use actix_web::HttpResponse;
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Deserializer};
@@ -449,10 +448,8 @@ fn unsupported_version(record: usize, version: u8) -> ApiStreamError {
     ApiStreamError::UnsupportedVersion { record, version }
 }
 
-pub(super) fn is_stream(headers: &HeaderMap) -> bool {
-    headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
+pub(super) fn is_stream_content_type(content_type: Option<&str>) -> bool {
+    content_type
         .and_then(|value| value.split(';').next())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE))
 }
@@ -945,7 +942,6 @@ where
 mod tests {
     use super::*;
     use actix_web::body::to_bytes;
-    use actix_web::http::header::HeaderValue;
     use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
 
     fn defaults() -> StateDefaults {
@@ -1582,12 +1578,9 @@ mod tests {
 
     #[test]
     fn stream_content_type_accepts_parameters_case_insensitively() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("Application/X-WebUI-Stream; charset=utf-8"),
-        );
-        assert!(is_stream(&headers));
+        assert!(is_stream_content_type(Some(
+            "Application/X-WebUI-Stream; charset=utf-8"
+        )));
     }
 
     #[test]
