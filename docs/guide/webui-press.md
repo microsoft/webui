@@ -28,6 +28,12 @@ deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
 See [bounded dev-server shutdown](/guide/cli/#bounded-dev-server-shutdown) for
 second-stop behavior, stdin restrictions, and platform limits.
 
+## Live reload
+
+`webui press serve` rebuilds the site and reloads connected browsers when its
+watched inputs change. Reading source files, including test discovery and
+component imports, does not trigger a rebuild or browser reload.
+
 ## Content-only sites
 
 The native `webui-press` binary supports the same display modes for static
