@@ -94,7 +94,9 @@ a Node wrapper; Node is used by npm during installation.</p><p>Use matching pack
 period. Without the flag, stopping waits for the active rebuild without a
 deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
 See <a href="/webui/guide/cli/#bounded-dev-server-shutdown">bounded dev-server shutdown</a> for
-second-stop behavior, stdin restrictions, and platform limits.</p><h2 id="content-only-sites">Content-only sites <a class="header-anchor" href="/webui/guide/webui-press/#content-only-sites" aria-label="Link to Content-only sites">#</a></h2><p>The native <code>webui-press</code> binary supports the same display modes for static
+second-stop behavior, stdin restrictions, and platform limits.</p><h2 id="live-reload">Live reload <a class="header-anchor" href="/webui/guide/webui-press/#live-reload" aria-label="Link to Live reload">#</a></h2><p><code>webui press serve</code> rebuilds the site and reloads connected browsers when its
+watched inputs change. Reading source files, including test discovery and
+component imports, does not trigger a rebuild or browser reload.</p><h2 id="content-only-sites">Content-only sites <a class="header-anchor" href="/webui/guide/webui-press/#content-only-sites" aria-label="Link to Content-only sites">#</a></h2><p>The native <code>webui-press</code> binary supports the same display modes for static
 builds and live development:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>webui press build --show<span class="hl-keyword">=</span>content
 webui press serve --show<span class="hl-keyword">=</span>content
 </code></pre></code-block><p>The default is <code>all</code>. Set <code>"show": "content"</code> in <code>.webui-press/config.json</code>
