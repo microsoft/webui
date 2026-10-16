@@ -718,13 +718,13 @@ impl ConditionFunctionEmitter {
         }
     }
 
-    fn push(&mut self, condition: &ConditionExpr) -> usize {
+    fn push(&mut self, condition: &ConditionExpr, needs_truthiness: bool) -> usize {
         if self.count == 0 {
             self.functions.push('[');
         } else {
             self.functions.push(',');
         }
-        emit_js_condition_function(condition, &mut self.functions);
+        emit_js_condition_function(condition, &mut self.functions, needs_truthiness);
         let index = self.count;
         self.count += 1;
         index
@@ -1269,10 +1269,12 @@ fn add_condition_roots(
     }
 }
 
-/// Emit a compiled condition function as `function(v,s){return EXPR}`.
-/// The function evaluates the condition using `v(path,s)` for value resolution.
-fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String) {
-    out.push_str("function(v,s){return ");
+fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String, needs_truthiness: bool) {
+    out.push_str("function(v,s");
+    if needs_truthiness {
+        out.push_str(",t");
+    }
+    out.push_str("){return ");
     emit_js_condition_expr(condition, out);
     out.push('}');
 }
@@ -1284,12 +1286,12 @@ fn emit_json_condition_ref(
     out: &mut String,
     functions: &mut ConditionFunctionEmitter,
 ) {
-    let function_index = functions.push(condition);
+    let mut paths = Vec::new();
+    let needs_truthiness = collect_condition_paths(condition, &mut paths);
+    let function_index = functions.push(condition, needs_truthiness);
     out.push('[');
     let _ = write!(out, "{}", function_index);
     out.push_str(",[");
-    let mut paths = Vec::new();
-    collect_condition_paths(condition, &mut paths);
     for (i, path) in paths.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -1299,17 +1301,15 @@ fn emit_json_condition_ref(
     out.push_str("]]");
 }
 
-/// Emit the JS expression body for a condition (no wrapping).
 fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
     match &condition.expr {
         Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
             out.push_str(&id.value);
         }
         Some(condition_expr::Expr::Identifier(id)) => {
-            // Truthiness check: !!v("path",s)
-            out.push_str("!!v(");
+            out.push_str("t(v(");
             emit_js_string(&id.value, out);
-            out.push_str(",s)");
+            out.push_str(",s))");
         }
         Some(condition_expr::Expr::Predicate(pred)) => {
             // Comparison: resolve left, compare with right
@@ -1392,13 +1392,15 @@ fn emit_js_predicate_right(value: &str, out: &mut String) {
     out.push_str(",s)");
 }
 
-/// Collect all identifier paths referenced by a condition.
-fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
+// Collect reactive paths and detect coercion in the same build-time traversal.
+fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) -> bool {
+    let mut needs_truthiness = false;
     match &condition.expr {
         Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
         }
         Some(condition_expr::Expr::Identifier(id)) => {
             paths.push(id.value.clone());
+            needs_truthiness = true;
         }
         Some(condition_expr::Expr::Predicate(pred)) => {
             paths.push(pred.left.clone());
@@ -1416,19 +1418,20 @@ fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
         }
         Some(condition_expr::Expr::Not(not_cond)) => {
             if let Some(inner) = not_cond.condition.as_ref() {
-                collect_condition_paths(inner, paths);
+                needs_truthiness = collect_condition_paths(inner, paths);
             }
         }
         Some(condition_expr::Expr::Compound(compound)) => {
             if let Some(left) = compound.left.as_ref() {
-                collect_condition_paths(left, paths);
+                needs_truthiness |= collect_condition_paths(left, paths);
             }
             if let Some(right) = compound.right.as_ref() {
-                collect_condition_paths(right, paths);
+                needs_truthiness |= collect_condition_paths(right, paths);
             }
         }
         None => {}
     }
+    needs_truthiness
 }
 
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
@@ -3516,6 +3519,47 @@ mod tests {
             collect_condition_paths(&condition, &mut paths);
             assert!(paths.is_empty());
         }
+    }
+
+    #[test]
+    fn condition_functions_receive_runtime_truthiness_across_bindings() {
+        let payload = generate_compiled_template_payload(
+            "collection-check",
+            concat!(
+                "<if condition=\"items\"><span>items</span></if>",
+                "<if condition=\"!actions.trailing\"><span>empty</span></if>",
+                "<if condition=\"ready && record\"><span>record</span></if>",
+                "<input ?disabled=\"{{items.length}}\">",
+            ),
+        );
+        let functions = payload.template_functions;
+        assert!(functions.starts_with('['));
+        assert!(functions.ends_with(']'));
+        assert_eq!(functions.matches("function(v,s,t)").count(), 4);
+        assert!(!functions.contains("function t("));
+        assert!(!functions.contains("Array.isArray"));
+        assert!(!functions.contains("Object.keys"));
+        assert!(functions.contains(r#"return t(v("items",s))"#));
+        assert!(functions.contains(r#"return !(t(v("actions.trailing",s)))"#));
+        assert!(functions.contains(r#"return (t(v("ready",s))&&t(v("record",s)))"#));
+        assert!(functions.contains(r#"return t(v("items.length",s))"#));
+    }
+
+    #[test]
+    fn condition_truthiness_helper_is_omitted_when_unused() {
+        let no_conditions = generate_compiled_template_payload("plain-check", "<p>static</p>");
+        assert!(no_conditions.template_functions.is_empty());
+        let payload = generate_compiled_template_payload(
+            "predicate-check",
+            concat!(
+                "<if condition=\"true\"><span>true</span></if>",
+                "<if condition=\"count > 0\"><span>positive</span></if>",
+            ),
+        );
+        assert_eq!(
+            payload.template_functions,
+            r#"[function(v,s){return true},function(v,s){return v("count",s)>0}]"#
+        );
     }
 
     #[test]

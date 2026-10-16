@@ -108,6 +108,7 @@ import {
   hasNativeLiveProperty,
 } from './element/types.js';
 import { templateHasRoot, templateRootForAttribute } from './template-roots.js';
+import { isConditionTruthy } from './template-conditions.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -2787,7 +2788,7 @@ export class TemplateElement extends HTMLElement {
         break;
       }
       case ATTR_KIND_BOOLEAN: {
-        const show = b.condition![0](this.$conditionResolver(), b.scope);
+        const show = b.condition![0](this.$conditionResolver(), b.scope, isConditionTruthy);
         if (show) el.setAttribute(b.name, '');
         else el.removeAttribute(b.name);
         // Form control properties must be set via DOM property, not attribute
@@ -2852,7 +2853,7 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $toggleCond(c: CondBinding): void {
-    const show = c.condition[0](this.$conditionResolver(), c.scope);
+    const show = c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy);
     if (show) {
       if (c.instance) {
         this.$updateInstance(c.instance);

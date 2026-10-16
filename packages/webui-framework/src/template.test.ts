@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import { isConditionTruthy } from './template-conditions.js';
 
 import {
   getTemplate,
@@ -11,6 +12,24 @@ import {
   releaseSSRBootstrapState,
   type TemplateMeta,
 } from './template.js';
+
+describe('compiled condition truthiness', () => {
+  test('matches server scalar and collection semantics', () => {
+    for (const value of [undefined, null, false, 0, '', [], {}]) {
+      assert.equal(isConditionTruthy(value), false);
+    }
+    for (const value of [true, -1, 'false', [0], [''], { enabled: false }]) {
+      assert.equal(isConditionTruthy(value), true);
+    }
+  });
+
+  test('object presence counts only own enumerable fields', () => {
+    assert.equal(isConditionTruthy(Object.create({ inherited: true })), false);
+    assert.equal(isConditionTruthy(Object.create(null)), false);
+    assert.equal(isConditionTruthy(Object.defineProperty({}, 'hidden', { value: true })), false);
+    assert.equal(isConditionTruthy({ hasOwnProperty: false }), true);
+  });
+});
 
 describe('template registry helpers', () => {
   test('getTemplate returns registered metadata from window', () => {
