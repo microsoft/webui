@@ -177,7 +177,7 @@ pub fn which_exists(cmd: &str) -> bool {
 }
 
 /// Ensure a tool installed via `cargo install` is available, installing it
-/// automatically if missing.
+/// automatically with its published lockfile if missing.
 ///
 /// `crate_name` is the crate to install (e.g. `"cargo-deny"`, `"wasm-pack"`).
 /// `binary` is the executable name to probe on PATH (e.g. `"cargo-deny"`,
@@ -191,8 +191,12 @@ pub fn ensure_cargo_install(crate_name: &str, binary: &str) -> Result<(), String
         "    {} not found — installing…",
         console::style(crate_name).yellow()
     );
-    run_command("cargo", &["install", crate_name], None)
+    run_command("cargo", &cargo_install_args(crate_name), None)
         .map_err(|e| format!("failed to install {crate_name}: {e}"))
+}
+
+fn cargo_install_args(crate_name: &str) -> [&str; 3] {
+    ["install", "--locked", crate_name]
 }
 
 /// Ensure a rustup component (e.g. `clippy`, `rustfmt`) is available,
@@ -244,6 +248,26 @@ pub fn ensure_rustup_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_tools_install_with_published_lockfiles() {
+        for crate_name in ["wasm-pack", "cargo-deny"] {
+            assert_eq!(
+                cargo_install_args(crate_name).as_slice(),
+                ["install", "--locked", crate_name]
+            );
+        }
+    }
+
+    #[test]
+    fn wasm_setup_installs_with_published_lockfile() {
+        let action = include_str!("../../.github/actions/setup-wasm/action.yml");
+        let install = action
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("cargo install "));
+        assert_eq!(install, Some("cargo install --locked wasm-pack"));
+    }
 
     #[test]
     fn workspace_root_has_workspace_cargo_toml() {

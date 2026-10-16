@@ -50,11 +50,9 @@
   </style>
   {{{headTags}}}
   <script>
-    /* Preserve sidebar scroll across cross-document navigations.
-       The page itself is not scrollable; sidebar and main-content own their
-       own scrollbars. Runs BEFORE pagereveal fires (and before first paint)
-       so restored positions are what view transitions animate to,
-       eliminating the end-of-transition jump. */
+    /* Restore independent scroll containers before native snapshots when
+       the shell is parsed. Otherwise skip the animation and restore on
+       DOMContentLoaded without blocking first paint. */
     (function () {
       var SIDEBAR_KEY = 'webui-press:sidebar-scroll';
       var MAIN_KEY_PREFIX = 'webui-press:main-scroll:';
@@ -67,11 +65,19 @@
         var m = main();
         if (m) sessionStorage.setItem(mainKey(), m.scrollTop);
       }
-      function restore() {
+      function restore(event) {
+        var m = main();
+        var transition = event && event.viewTransition;
+        if (transition && !m) {
+          // Only consume the rejection caused by our cancellation.
+          transition.ready.catch(function (error) {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) throw error;
+          });
+          transition.skipTransition();
+        }
         var s = sidebar();
         var v = sessionStorage.getItem(SIDEBAR_KEY);
         if (s && v !== null) s.scrollTop = +v;
-        var m = main();
         if (!m) return;
         if (!location.hash) {
           var mv = sessionStorage.getItem(mainKey());

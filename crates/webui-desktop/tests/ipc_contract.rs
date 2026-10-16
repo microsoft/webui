@@ -8,7 +8,7 @@ use futures_executor::block_on;
 use futures_util::FutureExt;
 use std::{
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -472,6 +472,29 @@ impl Peer {
         )
     }
     fn with_host(registry: IpcRegistry, options: IpcOptions, host: IpcHost) -> Self {
+        Self::with_admission(registry, options, host, |bridge, admission| {
+            block_on(bridge.admit(admission))
+        })
+    }
+    fn new_with_test_clock<N>(registry: IpcRegistry, options: IpcOptions, now: N) -> Self
+    where
+        N: Fn() -> Instant + Clone + Send + 'static,
+    {
+        Self::with_admission(
+            registry,
+            options,
+            IpcHost::Source {
+                origin: "webui://app".into(),
+            },
+            move |bridge, admission| block_on(bridge.admit_with_test_clock(admission, now)),
+        )
+    }
+    fn with_admission(
+        registry: IpcRegistry,
+        options: IpcOptions,
+        host: IpcHost,
+        admit: impl FnOnce(&IpcBridge, Admission) -> Result<SessionInfo, IpcError>,
+    ) -> Self {
         let owner = IpcWindowOwner::new(Arc::new(registry), options, host).unwrap();
         let bridge = owner.bridge();
         assert!(bridge.is_enabled());
@@ -481,10 +504,13 @@ impl Peer {
         let proof = bridge.begin_document(identity(1), [1; 16]).unwrap();
         assert!(!owner.window().stats().workers_started);
         assert!(!owner.window().stats().timer_started);
-        let info = block_on(bridge.admit(Admission {
-            hello: hello(),
-            proof,
-        }))
+        let info = admit(
+            &bridge,
+            Admission {
+                hello: hello(),
+                proof,
+            },
+        )
         .unwrap();
         Self {
             owner,
@@ -801,6 +827,12 @@ fn eventually(mut condition: impl FnMut() -> bool) {
     while !condition() {
         assert!(Instant::now() < deadline, "condition did not become true");
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn wait_past(deadline: Instant) {
+    while Instant::now() <= deadline {
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
     }
 }
 
@@ -2226,12 +2258,16 @@ fn delayed_first_hello_keeps_document_proof_valid_until_retirement() {
     let bridge = owner.bridge();
     bridge.navigate(1);
     let proof = bridge.begin_document(identity(1), [7; 16]).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
+    wait_past(Instant::now() + Duration::from_millis(50));
     assert!(!owner.window().stats().workers_started);
-    let session = block_on(bridge.admit(Admission {
-        hello: hello(),
-        proof: proof.clone(),
-    }))
+    let now = Instant::now();
+    let session = block_on(bridge.admit_with_test_clock(
+        Admission {
+            hello: hello(),
+            proof: proof.clone(),
+        },
+        move || now,
+    ))
     .unwrap();
     assert_eq!(session.generation, 1);
     bridge.navigate(2);
@@ -2258,7 +2294,8 @@ fn handshake_deadline_includes_time_queued_behind_retired_work() {
     let mut options = IpcOptions::for_schema(&SCHEMA);
     options.worker_threads = 1;
     options.limits.handshake_timeout_ms = 100;
-    let peer = Peer::new(registry, options);
+    let now = Instant::now();
+    let peer = Peer::new_with_test_clock(registry, options, move || now);
     assert_eq!(
         peer.post(peer.invocation(1, 1101, Kind::Request, Item::default())),
         204
@@ -2270,7 +2307,8 @@ fn handshake_deadline_includes_time_queued_behind_retired_work() {
         hello: hello(),
         proof,
     });
-    std::thread::sleep(Duration::from_millis(150));
+    let deadline = Instant::now() + Duration::from_millis(100);
+    wait_past(deadline);
     release.send(()).unwrap();
     assert_eq!(
         block_on(pending).err().unwrap().code,
@@ -2294,12 +2332,25 @@ fn admitted_session_delivered_after_handshake_deadline_is_revoked() {
     let bridge = owner.bridge();
     bridge.navigate(1);
     let proof = bridge.begin_document(identity(1), [7; 16]).unwrap();
-    let pending = bridge.admit(Admission {
-        hello: hello(),
-        proof,
-    });
+    let before_deadline = Instant::now();
+    let after_deadline = before_deadline + Duration::from_millis(100);
+    let expired = Arc::new(AtomicBool::new(false));
+    let clock_expired = Arc::clone(&expired);
+    let pending = bridge.admit_with_test_clock(
+        Admission {
+            hello: hello(),
+            proof,
+        },
+        move || {
+            if clock_expired.load(Ordering::Acquire) {
+                after_deadline
+            } else {
+                before_deadline
+            }
+        },
+    );
     eventually(|| owner.window().current_session().is_ok());
-    std::thread::sleep(Duration::from_millis(150));
+    expired.store(true, Ordering::Release);
     assert_eq!(
         block_on(pending).err().unwrap().code,
         IpcErrorCode::DeadlineExceeded

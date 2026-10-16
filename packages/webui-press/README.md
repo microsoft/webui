@@ -209,6 +209,34 @@ layout: doc
 | `title`       | string | First H1, falls back to sidebar text, then site name |
 | `description` | string | Falls back to `site.description`                     |
 | `layout`      | string | `doc` (see below)                                    |
+| `state`       | object | No local overrides; inherits shared config state |
+| `stateFile`   | string | No JSON include |
+
+Markdown may include JSON objects beside inline state:
+
+```markdown
+---
+stateFile: ./button.json
+state:
+  example:
+    label: Save
+---
+
+<example-preview :example="{{example}}"></example-preview>
+```
+
+Precedence is global config `state`/`stateFile`, then Markdown `stateFile`,
+then Markdown inline `state`. Matching top-level keys are shallowly replaced,
+not deep-merged. `stateFile: ./button.json` loads a JSON object whose top-level
+keys become page state. Only a path string is supported.
+Paths resolve from the Markdown source; `../` is supported. JSON objects are
+cached per build (16 MiB each) and automatically watched by `serve`, including
+generated files under `target`. The merged state feeds SSR and hydration.
+Keep Markdown complex-property bindings aligned with their top-level state key
+and receiving observable, as in the example above.
+Invalid data and reserved top-level Press keys fail the build. `customPages`
+replaces Markdown entirely. See the
+[Markdown-local state reference](https://microsoft.github.io/webui/guide/webui-press#markdown-local-state).
 
 ### Layouts
 

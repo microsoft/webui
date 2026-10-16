@@ -122,8 +122,26 @@ impl IpcBridge {
     /// proof never consumes a newer activation. The completion runs off-thread.
     /// The handshake deadline starts here and includes worker queue time.
     pub fn admit(&self, admission: Admission) -> IpcFuture<SessionInfo> {
-        let started = Instant::now();
+        self.admit_with_now(admission, Instant::now)
+    }
+    #[cfg(test)]
+    pub(crate) fn admit_with_test_clock<N>(
+        &self,
+        admission: Admission,
+        now: N,
+    ) -> IpcFuture<SessionInfo>
+    where
+        N: Fn() -> Instant + Clone + Send + 'static,
+    {
+        self.admit_with_now(admission, now)
+    }
+    fn admit_with_now<N>(&self, admission: Admission, now: N) -> IpcFuture<SessionInfo>
+    where
+        N: Fn() -> Instant + Clone + Send + 'static,
+    {
+        let started = now();
         let weak = self.core.clone();
+        let worker_now = now.clone();
         let setup = (|| {
             let core = self
                 .core
@@ -142,11 +160,12 @@ impl IpcBridge {
                 if sender.is_canceled() {
                     return;
                 }
-                let result =
-                    admit(&worker_core, admission, deadline).map(|info| AdmissionDelivery {
+                let result = admit(&worker_core, admission, deadline, &worker_now).map(|info| {
+                    AdmissionDelivery {
                         core: Arc::downgrade(&worker_core),
                         info: Some(info),
-                    });
+                    }
+                });
                 let _ = sender.send(result);
             })?;
             Ok((receiver, deadline))
@@ -160,7 +179,7 @@ impl IpcBridge {
                 .ok_or_else(|| fail(IpcErrorCode::Closed))?;
             let core = weak.upgrade().ok_or_else(|| fail(IpcErrorCode::Closed))?;
             Core::document(&mut lock(&core.state), info.generation)?;
-            if Instant::now() >= deadline {
+            if now() >= deadline {
                 return Err(fail(IpcErrorCode::DeadlineExceeded));
             }
             delivery.into_info()
@@ -244,13 +263,14 @@ fn admit(
     core: &Arc<Core>,
     admission: Admission,
     deadline: Instant,
+    now: &impl Fn() -> Instant,
 ) -> Result<SessionInfo, IpcError> {
     check_admission(core, &admission)?;
     let token = hex(&random()?);
     let (generation, waiters) = {
         let mut state = lock(&core.state);
         check_activation(core, &state, &admission.proof)?;
-        if Instant::now() >= deadline {
+        if now() >= deadline {
             return Err(fail(IpcErrorCode::DeadlineExceeded));
         }
         let generation = state

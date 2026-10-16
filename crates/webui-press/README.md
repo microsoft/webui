@@ -208,12 +208,14 @@ layout: doc
 | `description` | string | Falls back to `site.description`                     |
 | `layout`      | string | `doc` (see below)                                    |
 | `state`       | object | No local overrides; inherits shared config state    |
+| `stateFile`   | string | No JSON include |
 
 Put page-specific initial state directly in frontmatter:
 
 ```markdown
 ---
 title: Button examples
+stateFile: ./button.json
 state:
   example:
     label: Save
@@ -234,10 +236,14 @@ Omit `state` or use `{}` for no overrides. Top-level null/scalar/array state,
 custom YAML tags, non-string object keys, non-finite numbers, and reserved top-level
 Press keys fail with a filename and actionable help.
 
-Local keys shallowly replace global config `state`/`stateFile` keys only on
-that Markdown page; nested objects are replaced, not deep-merged. The merged
-state feeds SSR and hydration in both display modes. Markdown frontmatter has
-no `stateFile` support and does not populate `pageData`. `customPages` still
+Precedence is global config `state`/`stateFile`, then Markdown `stateFile`,
+then Markdown inline `state`. Matching top-level keys are shallowly replaced,
+not deep-merged. `stateFile: ./button.json` loads a JSON object whose
+top-level keys become page state. Only a path string is supported. Paths are
+relative to the Markdown source; `../` is supported. JSON includes are cached
+per build (16 MiB each) and automatically watched by `serve`, even under `target`.
+The merged state feeds SSR and hydration in both display modes and does not
+populate `pageData`. `customPages` still
 replaces Markdown entirely, including its frontmatter.
 See the [Markdown-local state reference](https://microsoft.github.io/webui/guide/webui-press#markdown-local-state)
 for the complete reserved-key list and syntax.

@@ -74,11 +74,13 @@ impl Watcher for ContentChangeWatcher {
 }
 
 fn is_read_only_access_event(event: &Event) -> bool {
+    // inotify reports read-only IN_OPEN as Any; actual writes still emit
+    // modification and close-write events.
     matches!(
         event.kind,
         EventKind::Access(
             AccessKind::Read
-                | AccessKind::Open(AccessMode::Read)
+                | AccessKind::Open(AccessMode::Any | AccessMode::Read)
                 | AccessKind::Close(AccessMode::Read)
         )
     )
@@ -94,6 +96,8 @@ pub struct WatchConfig {
     /// These files bypass `ignore` filtering, which lets a manifest under an
     /// ignored output directory act as an explicit synchronization point
     /// without forwarding unrelated bundle writes.
+    /// Missing parents are watched non-recursively. Directory changes are
+    /// forwarded as dependent file paths so hosts can refresh their watches.
     pub explicit_files: Vec<PathBuf>,
     /// Subtrees to ignore. An event is suppressed when its path lives
     /// underneath any entry here. Typical values: the build's `out_dir`,
@@ -154,6 +158,9 @@ where
 
     let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
     let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
+    for file in &explicit_files {
+        content_changed(&mut content_hashes, file, &mut hash_buffer);
+    }
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let explicit_filter = explicit_files.clone();
     let notify_config = notify::Config::default().with_follow_symlinks(false);
@@ -169,12 +176,7 @@ where
                 let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
                 let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
                 for e in events {
-                    if should_ignore_event(&e.path, &ignore, &explicit_filter) {
-                        continue;
-                    }
-                    if seen.insert(e.path.clone()) {
-                        paths.push(e.path);
-                    }
+                    collect_event_paths(&e.path, &ignore, &explicit_filter, &mut seen, &mut paths);
                 }
                 // Recursive backends emit directory metadata events alongside
                 // file writes. Existing directories are not source changes and
@@ -220,37 +222,49 @@ where
                 .with_context(|| format!("Cannot watch {}", p.display()))?;
         }
     }
-    let mut explicit_parents = HashSet::new();
-    for file in &explicit_files {
-        if watched_roots.iter().any(|root| file.starts_with(root)) {
-            continue;
-        }
-        let Some(parent) = file.parent() else {
-            continue;
-        };
-        if parent.exists() && explicit_parents.insert(parent.to_path_buf()) {
-            debouncer
-                .watcher()
-                .watch(parent, RecursiveMode::NonRecursive)
-                .with_context(|| format!("Cannot watch {}", parent.display()))?;
-        }
-    }
+    watch_explicit_parents(debouncer.watcher(), &explicit_files, &watched_roots)?;
 
     Ok(WatcherHandle {
         _debouncer: debouncer,
     })
 }
 
+fn watch_explicit_parents(
+    watcher: &mut dyn Watcher,
+    explicit_files: &[PathBuf],
+    watched_roots: &[PathBuf],
+) -> Result<()> {
+    let mut explicit_parents = HashSet::new();
+    for file in explicit_files {
+        if watched_roots.iter().any(|root| file.starts_with(root)) {
+            continue;
+        }
+        while let Some(parent) = file.ancestors().skip(1).find(|parent| parent.is_dir()) {
+            if !explicit_parents.insert(parent.to_path_buf()) {
+                break;
+            }
+            watcher
+                .watch(parent, RecursiveMode::NonRecursive)
+                .with_context(|| format!("Cannot watch {}", parent.display()))?;
+            // A generator can create more parents during registration. Advance
+            // before returning without subscribing to unrelated descendants.
+        }
+    }
+
+    Ok(())
+}
+
 fn normalize_explicit_file(path: &Path) -> Option<PathBuf> {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return Some(canonical);
     }
-    let parent = path
-        .parent()
-        .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent = std::fs::canonicalize(parent).ok()?;
-    Some(parent.join(path.file_name()?))
+    let path = std::path::absolute(path).ok()?;
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            return Some(canonical.join(path.strip_prefix(ancestor).ok()?));
+        }
+    }
+    None
 }
 
 fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
@@ -260,6 +274,33 @@ fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
 
 fn should_ignore_event(event_path: &Path, ignore: &[PathBuf], explicit_files: &[PathBuf]) -> bool {
     is_ignored(event_path, ignore) && !is_explicit_file(event_path, explicit_files)
+}
+
+fn collect_event_paths(
+    event_path: &Path,
+    ignore: &[PathBuf],
+    explicit_files: &[PathBuf],
+    seen: &mut HashSet<PathBuf>,
+    paths: &mut Vec<PathBuf>,
+) {
+    let is_directory = event_path.is_dir();
+    if is_directory || !event_path.exists() {
+        if let Some(directory) = normalize_explicit_file(event_path) {
+            // Recursive backends can attach after a new directory is populated,
+            // leaving its creation event as the only signal for included files.
+            for file in explicit_files {
+                if file != &directory && file.starts_with(&directory) && seen.insert(file.clone()) {
+                    paths.push(file.clone());
+                }
+            }
+        }
+    }
+    if !is_directory
+        && !should_ignore_event(event_path, ignore, explicit_files)
+        && seen.insert(event_path.to_path_buf())
+    {
+        paths.push(event_path.to_path_buf());
+    }
 }
 
 /// Returns true when `event_path` lives under any ignored root.
@@ -361,6 +402,47 @@ fn should_forward_path(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingWatcher {
+        paths: Vec<(PathBuf, RecursiveMode)>,
+    }
+
+    impl Watcher for RecordingWatcher {
+        fn new<F: EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            self.paths.push((path.to_path_buf(), mode));
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> WatcherKind {
+            RecommendedWatcher::kind()
+        }
+    }
+
+    #[test]
+    fn missing_include_does_not_recursively_watch_ignored_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir_all(target.join("debug/build/unrelated")).unwrap();
+        let file = normalize_explicit_file(&target.join("generated/new/state.json")).unwrap();
+        let mut watcher = RecordingWatcher::default();
+        watch_explicit_parents(&mut watcher, &[file], &[]).unwrap();
+        assert_eq!(
+            watcher.paths,
+            vec![(
+                std::fs::canonicalize(target).unwrap(),
+                RecursiveMode::NonRecursive
+            )]
+        );
+    }
+
     #[test]
     fn is_ignored_matches_descendant() {
         let dir = tempfile::tempdir().unwrap();
@@ -388,6 +470,108 @@ mod tests {
         let explicit = vec![std::fs::canonicalize(&manifest).unwrap()];
         assert!(!should_ignore_event(&manifest, &ignore, &explicit));
         assert!(should_ignore_event(&bundle, &ignore, &explicit));
+    }
+
+    #[test]
+    fn explicit_file_tracks_missing_parent_directories() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("target/new/state.json");
+        let normalized = normalize_explicit_file(&file)
+            .ok_or_else(|| std::io::Error::other("missing include was discarded"))?;
+        assert_eq!(
+            normalized,
+            std::fs::canonicalize(dir.path())?.join("target/new/state.json")
+        );
+        std::fs::create_dir_all(
+            file.parent()
+                .ok_or_else(|| std::io::Error::other("missing state parent"))?,
+        )?;
+        std::fs::write(&file, "{}")?;
+        assert!(!should_ignore_event(
+            &file,
+            &[PathBuf::from("target")],
+            &[normalized]
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn directory_event_rechecks_explicit_files_created_before_recursive_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        let file = directory.join("state.json");
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&file, "{}").unwrap();
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        collect_event_paths(
+            &directory,
+            &[PathBuf::from("target")],
+            &explicit,
+            &mut seen,
+            &mut paths,
+        );
+        assert_eq!(paths, explicit);
+    }
+
+    #[test]
+    fn directory_rechecks_dedupe_and_skip_unchanged_explicit_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("state.json");
+        std::fs::write(&file, "{}").unwrap();
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        let mut hashes = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        assert!(content_changed(&mut hashes, &explicit[0], &mut buffer));
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        for _ in 0..2 {
+            collect_event_paths(
+                &directory,
+                &[PathBuf::from("target")],
+                &explicit,
+                &mut seen,
+                &mut paths,
+            );
+        }
+        assert_eq!(paths, explicit);
+        assert!(!should_forward_path(
+            &mut hashes,
+            &paths[0],
+            false,
+            &mut buffer
+        ));
+        std::fs::write(&file, "{\"count\":7}").unwrap();
+        assert!(should_forward_path(
+            &mut hashes,
+            &paths[0],
+            false,
+            &mut buffer
+        ));
+    }
+
+    #[test]
+    fn directory_events_ignore_unrelated_files_and_recheck_removed_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().join("target/new");
+        let unrelated = dir.path().join("target/other");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let file = directory.join("state.json");
+        std::fs::write(&file, "{}").unwrap();
+        let explicit = vec![normalize_explicit_file(&file).unwrap()];
+        let ignore = vec![PathBuf::from("target")];
+        let mut seen = HashSet::new();
+        let mut paths = Vec::new();
+        collect_event_paths(&unrelated, &ignore, &explicit, &mut seen, &mut paths);
+        assert!(paths.is_empty());
+        std::fs::remove_file(&file).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        collect_event_paths(&directory, &ignore, &explicit, &mut seen, &mut paths);
+        assert_eq!(paths, explicit);
     }
 
     #[test]
@@ -440,6 +624,7 @@ mod tests {
 
         for kind in [
             AccessKind::Read,
+            AccessKind::Open(AccessMode::Any),
             AccessKind::Open(AccessMode::Read),
             AccessKind::Close(AccessMode::Read),
         ] {

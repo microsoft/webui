@@ -1634,6 +1634,7 @@ Keep initial example data local to its Markdown file using YAML frontmatter:
 ```markdown
 ---
 title: Button examples
+stateFile: ./button.json
 state:
   example:
     label: Save
@@ -1649,12 +1650,18 @@ with that top-level state key; entry-level nested-to-renamed-observable mappings
 do not currently preserve the initial hydration value.
 
 Frontmatter `state` is an inline JSON-compatible object, not a file path.
-Global config `state`/`stateFile` supplies defaults; local keys shallowly
-replace matching global keys for this page only, without deep-merging objects.
+Markdown `stateFile` accepts one relative JSON file path string. The file must
+contain an object; its top-level keys merge into the page state.
+Paths resolve from the Markdown source; `../` is supported. Files are cached
+per build (16 MiB each) and automatically watched by `serve`, even under `target`.
+Missing includes recover when the file or its parent directories are created.
+Precedence is **global config `state`/`stateFile` → Markdown `stateFile` →
+Markdown inline `state`**. Matching top-level keys are replaced shallowly for
+this page only, without deep-merging objects.
 The same merged state drives SSR and hydration in both display modes.
 Omit `state` or use `{}` for no local data. Non-object state, non-string object
 keys, custom YAML tags, non-finite numbers, and reserved top-level Press keys are build
-errors. Namespace examples to avoid reserved keys such as `page`, `site`,
+errors, as are invalid or missing includes. Namespace examples to avoid reserved keys such as `page`, `site`,
 `label`, and `icon`; `example.label` is fine. Never store secrets in render state.
 `customPages` replaces Markdown rather than supplementing it, and Markdown
 state does not populate `pageData`. See the

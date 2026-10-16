@@ -7,10 +7,9 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
-import { binary, build, fixture, removeFixtureRoot, write } from './native-fixture.js';
+import { binary, build, fixture, removeFixtureRoot, unusedPort, write } from './native-fixture.js';
 
 const shell = '.nav-bar, docs-site-navigation, docs-sidebar-navigation, docs-search, ' +
   'docs-theme-toggle, .sidebar, .mobile-page-context, .page-nav, .site-footer, .home-hero';
@@ -109,6 +108,11 @@ test('native content builds preserve all page layouts and npm/local authored con
     const implicit = fs.readFileSync(path.join(f.site, 'dist/doc/index.html'), 'utf8');
     assert.match(implicit, /<docs-site-navigation/);
     assert.match(implicit, /class="site-footer"/);
+    assert.ok(!implicit.includes('blocking="render"'));
+    assert.ok(!implicit.includes('webui-press-ready'));
+    const shellCss = fs.readFileSync(path.join(f.site, 'dist/docs.css'), 'utf8');
+    assert.match(shellCss, /\.main-content\s*\{[^}]*view-transition-name:\s*docs-content/);
+    assert.match(shellCss, /\.main-content \.doc-content\s*\{[^}]*view-transition-name:\s*none/);
     const home = fs.readFileSync(path.join(f.site, 'dist/home/index.html'), 'utf8');
     assert.ok(!home.includes('<test-catalog-button'));
     write(f.configFile, JSON.stringify({ ...f.config, regions: {}, show: 'content' }));
@@ -234,13 +238,3 @@ test('native content serve hydrates SSR nodes and keeps the override after confi
   await expect(page.getByRole('button', { name: 'Preview 2' })).toBeVisible();
   assert.deepEqual(errors, []);
 });
-
-async function unusedPort(): Promise<number> {
-  const server = net.createServer();
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  return address.port;
-}

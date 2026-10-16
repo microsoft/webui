@@ -28,6 +28,12 @@ deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
 See [bounded dev-server shutdown](/guide/cli/#bounded-dev-server-shutdown) for
 second-stop behavior, stdin restrictions, and platform limits.
 
+## Live reload
+
+`webui press serve` rebuilds the site and reloads connected browsers when its
+watched inputs change. Reading source files, including test discovery and
+component imports, does not trigger a rebuild or browser reload.
+
 ## Content-only sites
 
 The native `webui-press` binary supports the same display modes for static
@@ -100,22 +106,59 @@ bindings aligned with their top-level state key and receiving observable.
 Mapping a nested value to a differently named observable at the Markdown entry
 level does not currently preserve that value during initial hydration.
 
+### JSON state files
+
+Load page state from a JSON file:
+
+```markdown
+---
+title: Button
+stateFile: ./button.json
+---
+```
+
+The file must contain a JSON object. Its top-level keys become page state:
+
+```json
+{
+  "example": {
+    "label": "Save",
+    "count": 2
+  }
+}
+```
+
+This supplies the same `example` state as an inline frontmatter object.
+`stateFile` accepts one path string, not a mapping or a list.
+
+Paths resolve relative to the Markdown source, not `config.json`. Relative
+`../` paths are supported; absolute and drive-relative paths are not.
+Each file is read once per build, with a 16 MiB limit. `serve` watches included
+files automatically, including generated files under `target`, and discovers
+new dependencies when Markdown changes. Changes, atomic replacements, and
+recreating a missing include or its parent directories trigger rebuilds.
+No browser JSON fetch is needed.
+
 `state` must be an inline JSON-compatible object. Nested objects, arrays,
 strings, finite numbers, booleans, and `null` values are supported. Object
 keys must be strings; quote numeric or boolean keys. Omit `state` or use `{}`
 when no page-local data is needed. A top-level `null`, scalar, array, custom YAML tag,
 non-finite number, or malformed YAML fails the build with the Markdown filename
-and a corrective hint. Markdown frontmatter does not support `stateFile`.
+and a corrective hint. Invalid, missing, or non-object JSON includes also fail
+with the Markdown filename and a corrective hint.
 
-Global config `state` or `stateFile` supplies shared defaults. Markdown state
-then **shallowly replaces matching top-level keys** for that page only. In the
-example above, local `example` replaces the entire global `example` object;
+Precedence, from lowest to highest: **global config `state` or `stateFile` →
+Markdown `stateFile` → Markdown inline `state`**. Matching top-level keys are
+replaced shallowly, for that page only. A local `example` value replaces the
+entire global `example` object;
 its nested fields are not deep-merged. Other global keys remain available,
 and local data never flows into other Markdown pages or the generated 404.
 
 Press owns these top-level keys: `site`, `navigation`, `sidebar`, `page`,
 `hero`, `footer`, `prev`, `next`, `pageData`, `regions`, `headTags`, `tokens`,
-`label`, and `icon`. Using any of them directly under Markdown `state` fails
+`label`, and `icon`. Prototype-related keys `__proto__`, `prototype`, and
+`constructor` are also reserved. Using any of them directly under Markdown `state`,
+or at the top level of the included JSON object fails
 the build. Put application fields beneath your own key, such as
 `example.label`. Global and custom-page state retain their existing behavior:
 reserved keys cannot replace canonical Press values.
