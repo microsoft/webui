@@ -178,7 +178,11 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
 }
 ```
 
-The matching executable payload is stored under `window.__webui.templateFns['todo-app']`, for example `[function(v,s){return !!v("items.length",s)}]`. The framework normalizes `[functionIndex, paths]` condition references into direct `[fn, paths]` tuples once before hydration.
+The matching executable payload is stored under
+`window.__webui.templateFns['todo-app']`, for example
+`[function(v,s,t){return t(v("items.length",s))}]`. The framework normalizes
+`[functionIndex, paths]` condition references into direct `[fn, paths]`
+tuples once before hydration.
 
 | Field | Purpose |
 |---|---|
@@ -204,13 +208,25 @@ points into `window.__webui.templateFns[tagName]`, and `paths` drives the
 reactive path index. The framework normalizes this once to `[fn, paths]`
 before hydration or client-created wiring.
 
+Identifier operands use the server's truthiness rules before negation and
+logical operators are applied: empty arrays and objects are false, nonempty
+collections are true, and scalar coercion is unchanged. Comparisons still
+resolve raw values. The framework passes the resolver, scope, and one shared
+truthiness function to each closure. The compiler emits calls to that helper,
+not copies of its implementation. Closures containing only literals or
+comparisons omit the unused third parameter.
+
 ```javascript
 // Metadata
 [0, ['visible']]
 
-// Function table
-[function(v, s) { return !!v('visible', s); }]
+// Function table; t is supplied by the client runtime.
+[function(v, s, t) { return t(v('visible', s)); }]
 ```
+
+Existing two-argument closures remain callable by the updated runtime. Newly
+compiled identifier conditions require a client runtime that supplies the
+third argument; deploy compatible compiler and framework builds together.
 
 ---
 

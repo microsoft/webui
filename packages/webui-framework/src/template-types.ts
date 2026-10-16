@@ -51,7 +51,11 @@ export type CompiledAttrGroupMeta = [
  * - `[0]` — evaluator function or component-local function index
  * - `[1]` — referenced paths for the reactive path index
  */
-export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?: unknown) => boolean;
+export type CompiledConditionFn = (
+  v: (path: string, s?: unknown) => unknown,
+  s: unknown,
+  t: (value: unknown) => boolean,
+) => boolean;
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;

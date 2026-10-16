@@ -255,7 +255,7 @@ mod tests {
         let metadata = collect_template_build_metadata(&meta);
         assert_eq!(metadata.roots, ["items"]);
         let mut condition = String::new();
-        emit_js_condition_function(&meta.blocks[0].conditionals[0].0, &mut condition);
+        emit_js_condition_function(&meta.blocks[0].conditionals[0].0, &mut condition, true);
         assert!(condition.contains(r#"v("child.children",s)"#));
         assert!(!condition.contains(r#"{{child.children}}"#));
     }

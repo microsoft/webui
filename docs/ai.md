@@ -1186,17 +1186,17 @@ values are not escaped and can create an XSS vulnerability. See
 | Non-zero number | Yes |
 | `""` (empty string) | No |
 | `"false"` (string!) | **Yes** (non-empty string) |
-| `[]` (empty array) | No (server) / **Yes** (client) - always use `.length` |
-| `{}` (empty object) | No (server) / **Yes** (client) - test a real field |
+| `[]` (empty array) | No |
+| `{}` (empty object) | No |
+| Nonempty array or object | Yes |
 | `null` / missing key | No |
 
 **Never use the string `"false"` for boolean state. Use real booleans.**
 
-**Never test a bare array or object for truthiness.** The server evaluator treats
-empty collections as falsy; the compiled client condition is plain JS `!!value`,
-where `[]` and `{}` are truthy. Writing `<if condition="items">` means SSR and
-hydration can disagree. Write `<if condition="items.length">` instead - that
-agrees on both sides.
+These rules apply on both server and client. `<if condition="items">` and
+`<if condition="items.length">` both test whether an array is nonempty.
+Nested paths such as `<if condition="actions.trailing">` also work.
+Use `.length` for count comparisons such as `<if condition="items.length > 1">`.
 
 ## Anti-patterns
 

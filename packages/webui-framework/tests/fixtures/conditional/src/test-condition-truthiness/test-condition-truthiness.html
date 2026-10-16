@@ -1,0 +1,21 @@
+<template shadowrootmode="open">
+  <button class="populate" @click="{populate()}">Populate</button>
+  <button class="clear" @click="{clear()}">Clear</button>
+  <output class="phase">{{phase}}</output>
+  <input class="collection-flag" type="checkbox" ?checked="{{items}}" aria-label="Array has items">
+  <if condition="items"><p data-case="items">Bare array</p></if>
+  <if condition="actions.trailing"><p data-case="trailing">Nested bare array</p></if>
+  <if condition="record"><p data-case="record">Bare object</p></if>
+  <if condition="!items"><p data-case="empty-items">Negated array</p></if>
+  <if condition="actions.trailing && trueValue"><p data-case="trailing-and">Nested array AND</p></if>
+  <if condition="record || falseValue"><p data-case="record-or">Object OR</p></if>
+  <if condition="items.length"><p data-case="items-length">Array length control</p></if>
+  <if condition="actions.trailing.length"><p data-case="trailing-length">Nested array length control</p></if>
+  <if condition="record.label"><p data-case="record-field">Object field control</p></if>
+  <if condition="falseValue"><p data-case="false">False control</p></if>
+  <if condition="zero"><p data-case="zero">Zero control</p></if>
+  <if condition="emptyText"><p data-case="empty-text">Empty string control</p></if>
+  <if condition="nullValue"><p data-case="null">Null control</p></if>
+  <if condition="missing"><p data-case="missing">Missing control</p></if>
+  <if condition="trueValue"><p data-case="true">True control</p></if>
+</template>

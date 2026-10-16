@@ -27,6 +27,7 @@
  */
 
 import type { CompiledAttrPart } from './template.js';
+import { isConditionTruthy } from './template-conditions.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -127,7 +128,7 @@ export function attrDiffersFromDom(b: AttrBinding, ctx: MismatchContext): boolea
     case ATTR_KIND_COMPLEX:
       return false;
     case ATTR_KIND_BOOLEAN:
-      return el.hasAttribute(b.name) !== !!b.condition![0](ctx.resolver, b.scope);
+      return el.hasAttribute(b.name) !== !!b.condition![0](ctx.resolver, b.scope, isConditionTruthy);
     case ATTR_KIND_TEMPLATE:
       return (el.getAttribute(b.name) ?? '') !== ctx.resolveParts(b.parts!, b.scope);
     default: {
@@ -149,7 +150,7 @@ export function attrDiffersFromDom(b: AttrBinding, ctx: MismatchContext): boolea
  * under `count > 0`) leaves the DOM correct and must not warn.
  */
 export function condDiffersFromDom(c: CondBinding, ctx: MismatchContext): boolean {
-  return (c.instance != null) !== !!c.condition[0](ctx.resolver, c.scope);
+  return (c.instance != null) !== !!c.condition[0](ctx.resolver, c.scope, isConditionTruthy);
 }
 
 /**
