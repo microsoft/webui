@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "actix-web",
  "awc",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-cli"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-desktop"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-desktop-build"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "prost",
  "prost-reflect",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-dev-server"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-discovery"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "anyhow",
  "expand-tilde",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-expressions"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "criterion",
  "microsoft-webui-protocol",
@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-ffi"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "cbindgen",
  "criterion",
@@ -2313,7 +2313,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-handler"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "criterion",
  "memchr",
@@ -2329,7 +2329,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-node"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "microsoft-webui",
  "microsoft-webui-handler",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-parser"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "clap",
  "criterion",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-press"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-protocol"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "criterion",
  "prost",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-python"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "microsoft-webui-handler",
  "pyo3",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-state"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "criterion",
  "microsoft-webui-test-utils",
@@ -2416,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-test-utils"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "microsoft-webui-protocol",
  "serde_json",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-tokens"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-wasm"
-version = "3.0.2"
+version = "3.0.3"
 dependencies = [
  "js-sys",
  "microsoft-webui-handler",
