@@ -27,3 +27,5 @@
 *.exe binary
 *.so binary
 *.dylib binary
+
+.github/workflows/*.lock.yml linguist-generated=true
