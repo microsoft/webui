@@ -1,0 +1,6 @@
+<for each="item in cases">
+  <input data-case="{{item.name}}" pattern="{{item.value}}" value="abc" title="prefix-{{item.value}}-suffix">
+</for>
+<input id="live" pattern="{{constraint}}" value="{{inputValue}}" data-label="{{label}}">
+<input id="missing" pattern="{{missing}}">
+<button @click="{rename()}">{{label}}</button>

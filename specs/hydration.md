@@ -97,6 +97,13 @@ HTML binding. The client counterparts are defined in
 Ordinary escaped text bindings, attribute bindings, and event handlers are
 **not** marked. They are located via compiled element indices.
 
+Whole-value dynamic attributes omit missing and null values during SSR and
+client binding updates. Empty strings, zero, and false remain values; mixed
+attributes retain their static text. Omitting an attribute does not remove an
+element or change its compiled index. FAST attribute markers count compiled
+bindings, not the attributes emitted for a particular state. Component property
+collection remains independent of whether its host attribute is emitted.
+
 ### Why markers exist for blocks but not bindings
 
 Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An
