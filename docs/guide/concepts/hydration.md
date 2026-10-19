@@ -10,6 +10,11 @@ JavaScript is optional:
 
 This keeps first-page work small without requiring empty TypeScript classes.
 
+Build and deploy `protocol.bin` and the browser bundle with matching WebUI
+compiler and framework versions. SSR hydration requires the compiler's current
+metadata; stale artifacts fail with an error asking you to rebuild rather than
+being reinterpreted in the browser.
+
 ## HTML-Only Components
 
 HTML-only components can use bindings, attributes, `<if>`, and `<for>`. Their

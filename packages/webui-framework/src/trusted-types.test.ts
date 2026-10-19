@@ -5,6 +5,8 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { registerTrustedTemplateBlock, setImportMapContent, setTemplateContent } from './trusted-types-policy.js';
 import { getTemplateFragment } from './template-content.js';
+import { getTemplateSSRLayout } from './template-layout.js';
+import type { TemplateBlockMeta } from './template-types.js';
 
 interface Rules {
   createHTML(input: string, capability: object): string;
@@ -82,6 +84,65 @@ test('registration is lazy and policy denial propagates without a string fallbac
     error.cause instanceof TypeError);
   assert.equal(f.creations, 1);
   assert.equal(f.conversions, 0);
+  assert.deepEqual(f.parsed, []);
+});
+
+test('SSR layout checks compiler trust without parsing HTML or creating a trusted HTML value', () => {
+  const f = fixture();
+  const meta: TemplateBlockMeta = { h: '<p>Compiler output</p>', s: [1, 3, 1] };
+  registerTrustedTemplateBlock(meta);
+  assert.equal(getTemplateSSRLayout(meta), meta.s);
+  assert.equal(getTemplateSSRLayout(meta), meta.s);
+  assert.equal(f.creations, 1);
+  assert.equal(f.conversions, 0);
+  assert.deepEqual(f.parsed, []);
+});
+
+test('SSR topology cannot bypass policy denial or modified compiler HTML checks', () => {
+  const denied = fixture({ denied: true });
+  const meta: TemplateBlockMeta = { h: '<p>Compiler output</p>', s: [1, 3, 1] };
+  registerTrustedTemplateBlock(meta);
+  assert.throws(() => getTemplateSSRLayout(meta), /Allow "webui" in CSP/);
+  assert.equal(denied.conversions, 0);
+  fixture();
+  registerTrustedTemplateBlock(meta);
+  meta.h = '<p>Modified</p>';
+  assert.throws(() => getTemplateSSRLayout(meta), /Unregistered or modified/);
+});
+
+test('malformed SSR layout fails explicitly before DOM adoption', () => {
+  const f = fixture();
+  assert.throws(() => getTemplateSSRLayout({ h: '<p>Old metadata</p>' }), /Invalid compiled SSR layout/);
+  for (const serialized of ['{"h":"","s":[]}', '{"h":"","s":[0]}', '{"h":"<p></p>","s":[[3,1],[],1]}']) {
+    const meta: TemplateBlockMeta = JSON.parse(serialized);
+    registerTrustedTemplateBlock(meta);
+    assert.throws(() => getTemplateSSRLayout(meta), /Invalid compiled SSR layout/);
+  }
+  for (const s of [
+    [0, 3], [1, 1, 1], [0, -1], [-1, 1], [0, 3, 1],
+  ] satisfies NonNullable<TemplateBlockMeta['s']>[]) {
+    const meta: TemplateBlockMeta = { h: '', s };
+    registerTrustedTemplateBlock(meta);
+    assert.throws(() => getTemplateSSRLayout(meta), /Invalid compiled SSR layout/);
+  }
+  for (const ref of [0, -1, 4, 1.5, 0x80000001]) {
+    const meta: TemplateBlockMeta = {
+      h: '<p></p>', s: [1, 3, 1], tx: [[[1, 0], [['label']], 0, ref]],
+    };
+    registerTrustedTemplateBlock(meta);
+    assert.throws(() => getTemplateSSRLayout(meta), /Invalid compiled SSR layout/);
+  }
+  assert.deepEqual(f.parsed, []);
+});
+
+test('compact SSR layout accepts nonzero static successors without materializing HTML', () => {
+  const f = fixture();
+  const meta: TemplateBlockMeta = {
+    h: '<div><span></span></div>', s: [1, 3, 3, 1],
+    tx: [[[1, 0], [['label']], 0, 1]],
+  };
+  registerTrustedTemplateBlock(meta);
+  assert.equal(getTemplateSSRLayout(meta), meta.s);
   assert.deepEqual(f.parsed, []);
 });
 

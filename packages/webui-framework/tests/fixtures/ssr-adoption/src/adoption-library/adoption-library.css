@@ -1,0 +1,6 @@
+:host { display: block; color: #202b38; font: 16px system-ui; }
+main { max-width: 1040px; margin: 32px auto; padding: 0 24px; }
+nav { display: flex; gap: 12px; margin: 20px 0; }
+button { font: inherit; padding: 8px 16px; }
+section { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+aside { background: #eef4ff; padding: 16px; margin-bottom: 20px; }

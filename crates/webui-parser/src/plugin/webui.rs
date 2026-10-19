@@ -79,7 +79,9 @@ use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
 mod named_repeats;
+mod ssr_layout;
 use named_repeats::CompileBlocks;
+use ssr_layout::{SsrChildren, SsrLayout};
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
@@ -514,6 +516,7 @@ struct TemplateSectionMeta {
     events: Vec<EventBinding>,
     /// Client event target element indices aligned to `events`.
     event_targets: Vec<usize>,
+    ssr_layout: SsrLayout,
 }
 
 #[derive(Clone)]
@@ -1471,6 +1474,7 @@ fn emit_json_template_section(
 ) {
     out.push_str("\"h\":");
     emit_js_string(&meta.html, out);
+    meta.ssr_layout.emit(out);
 
     if !meta.text_runs.is_empty() {
         out.push_str(",\"tx\":[");
@@ -1482,8 +1486,14 @@ fn emit_json_template_section(
             emit_js_slot(slot, out);
             out.push(',');
             emit_js_text_parts(parts, out);
+            let successor = meta.ssr_layout.text_successor(i);
             if *raw {
                 out.push_str(",1");
+            } else if successor != 0 {
+                out.push_str(",0");
+            }
+            if successor != 0 {
+                let _ = write!(out, ",{successor}");
             }
             out.push(']');
         }
@@ -1631,6 +1641,7 @@ fn compile_section(
         repeat_slots: Vec::new(),
         events: Vec::new(),
         event_targets: Vec::new(),
+        ssr_layout: SsrLayout::default(),
     };
 
     let bytes = input.as_bytes();
@@ -1900,6 +1911,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let mut event_cursor = 0usize;
 
     let mut element_cursor = 0usize;
+    let mut ssr_layout = SsrLayout::new();
     process_fragment_children(
         &nodes,
         0,
@@ -1912,6 +1924,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
         &mut event_targets,
         &mut event_cursor,
         &mut element_cursor,
+        &mut ssr_layout,
     );
     debug_assert_eq!(event_cursor, meta.events.len());
 
@@ -1921,6 +1934,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     meta.condition_slots = condition_slots.into_iter().flatten().collect();
     meta.repeat_slots = repeat_slots.into_iter().flatten().collect();
     meta.event_targets = event_targets.into_iter().flatten().collect();
+    meta.ssr_layout = ssr_layout;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1936,6 +1950,7 @@ fn process_fragment_children(
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    ssr_layout: &mut SsrLayout,
 ) {
     let mut child_index = 0usize;
     let mut index = 0usize;
@@ -1943,6 +1958,7 @@ fn process_fragment_children(
     // Track that here so marker-free locator paths match the real client DOM.
     let mut previous_emitted_text = false;
     let mut slot_orders = std::collections::BTreeMap::<usize, usize>::new();
+    let mut ssr_children = SsrChildren::default();
 
     while index < nodes.len() {
         if let Some((parts, consumed, has_dynamic, is_raw)) =
@@ -1979,12 +1995,14 @@ fn process_fragment_children(
                     decoded_parts,
                     is_raw,
                 ));
+                ssr_children.text(ssr_layout, text_runs.len() - 1);
             } else {
                 let static_text = collect_static_text(&parts);
                 if !static_text.is_empty() {
                     out.push_str(&static_text);
                     if !previous_emitted_text {
                         child_index += 1;
+                        ssr_children.node(ssr_layout, 3);
                     }
                     previous_emitted_text = true;
                 }
@@ -2021,6 +2039,7 @@ fn process_fragment_children(
                     out.push_str(data);
                     out.push_str("-->");
                     child_index += 1;
+                    ssr_children.node(ssr_layout, 8);
                     previous_emitted_text = false;
                 }
             }
@@ -2029,6 +2048,7 @@ fn process_fragment_children(
                 if !text.is_empty() {
                     if !previous_emitted_text {
                         child_index += 1;
+                        ssr_children.node(ssr_layout, 3);
                     }
                     previous_emitted_text = true;
                 }
@@ -2036,6 +2056,8 @@ fn process_fragment_children(
             FragmentNode::Element(element) => {
                 *element_cursor += 1;
                 let element_index = *element_cursor;
+                ssr_children.node(ssr_layout, 1);
+                ssr_layout.push_element(parent_index, &element.tag_name);
                 serialize_fragment_element(
                     element,
                     element_index,
@@ -2048,6 +2070,7 @@ fn process_fragment_children(
                     event_targets,
                     event_cursor,
                     element_cursor,
+                    ssr_layout,
                 );
                 child_index += 1;
                 previous_emitted_text = false;
@@ -2056,6 +2079,7 @@ fn process_fragment_children(
 
         index += 1;
     }
+    ssr_layout.finish_children(parent_index, &ssr_children, text_runs.len());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2071,6 +2095,7 @@ fn serialize_fragment_element(
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    ssr_layout: &mut SsrLayout,
 ) {
     out.push('<');
     out.push_str(&element.tag_name);
@@ -2117,6 +2142,12 @@ fn serialize_fragment_element(
     } else {
         &mut *element_cursor
     };
+    let mut inert_layout = SsrLayout::default();
+    let layout = if element.tag_name.eq_ignore_ascii_case("template") {
+        &mut inert_layout
+    } else {
+        ssr_layout
+    };
     process_fragment_children(
         &element.children,
         element_index,
@@ -2129,6 +2160,7 @@ fn serialize_fragment_element(
         event_targets,
         event_cursor,
         counter,
+        layout,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);

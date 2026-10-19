@@ -23,7 +23,7 @@ WebUI is built on a hard rule: the server emits HTML, the browser parses HTML, a
 
 - compiled template metadata (element indices, not selectors),
 - lightweight HTML comment markers around structural blocks and raw HTML ranges,
-- a single pre-order walk pairing the SSR DOM with the parsed template DOM,
+- a single pre-order walk pairing the SSR DOM with compiler-owned static topology,
 - a per-component path index so reactive updates touch only the bindings that actually depend on a changed property.
 
 The rest of this document explains each of those pieces, in the order the runtime executes them.
@@ -194,7 +194,8 @@ tuples once before hydration.
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
-| `tx` | Text-binding runs, ordered slot + parts. |
+| `s` | Root child-node count followed by the pre-order static element shapes. |
+| `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
@@ -207,6 +208,32 @@ The same metadata serves both paths:
 
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
 - **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM.
+
+`s` is `[rootNodes, rootShape, ...elementShapes]`. Each pre-order shape encodes
+twice its direct static element-child count, plus an ownership bit. The bit
+allows marker collection inside ordinary elements and explicitly authored
+projected children, but not inside an otherwise empty child component.
+The root is index zero. Inert `<template>` contents are not numbered.
+`rootNodes` counts all static root child nodes, including text and comments,
+so single-root conditional and repeat adoption preserve their existing rules.
+
+Each `tx` tuple may carry a static successor as its fourth entry. Omission
+means no static successor; otherwise the low two bits encode element (1),
+text (2), or comment (3), and the
+remaining bits encode the successor's ordinal among siblings of that kind.
+The third entry remains the raw flag (0 or 1) when a successor is present.
+Structural and raw marker boundaries still take precedence. No separate
+per-section text-successor array is serialized or retained by the browser.
+
+Compiled SSR adoption does not parse `h`, including for absent conditionals or
+empty repeats. The first client creation of a block materializes its template
+through the existing Trusted Types sink, then reuses its weakly cached DOM.
+Registration, immutable compiler HTML, and CSP policy-name checks remain in
+force during SSR adoption. Missing or malformed topology fails explicitly;
+there is no template-parsing compatibility path. Rebuild the protocol and
+browser bundle together with matching compiler and framework versions.
+Stylesheet preparation can still materialize a template containing authored
+links to preserve its existing browser-based stylesheet discovery semantics.
 
 ### Condition references
 
@@ -257,7 +284,7 @@ and nothing is skipped.
 
 The SSR DOM contains extra content the static template does not: the rendered
 bodies of `<if>` and `<for>` blocks, delimited by markers. The walk pairs the
-template with the server output in lockstep and **skips entire
+compiled child counts with the server output in lockstep and **skips entire
 `<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->` ranges** (with depth
 tracking for nested blocks), because that content belongs to the block's own
 metadata. This is why closing markers must survive the whole hydration pass:
@@ -270,7 +297,7 @@ unambiguous.
 
 Two details shape the walk:
 
-- The counter follows the **template**, never the server output. A run of
+- The counter follows the **compiled topology**, never the server output. A run of
   missing SSR elements leaves holes rather than shifting every later index onto
   the wrong node.
 - It descends where the template has children, and also into a template-empty
@@ -333,6 +360,12 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 ```
 
 The wildcard (`'*'`) bucket holds bindings whose expressions reference a path the framework cannot pre-classify (typically computed getters). They run on every flush.
+
+Each binding appears once within each dependency-root bucket, even when several
+paths in its expression share that root. Distinct bindings and repeat scopes
+retain source order. A binding depending on multiple roots remains in each
+root's bucket; deduplication does not merge dirty paths or suppress descendant
+conditional updates.
 
 ### Update flow
 

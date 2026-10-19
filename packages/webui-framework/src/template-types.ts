@@ -36,7 +36,12 @@ export type TemplateSlot = [
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
+export type CompiledTextRunMeta = [
+  slot: TemplateSlot,
+  parts: CompiledAttrPart[],
+  raw?: 0 | 1,
+  staticSuccessor?: number,
+];
 export type CompiledAttrGroupMeta = [
   target: TemplateNodeIndex,
   start: number,
@@ -90,8 +95,17 @@ export type CompiledEventBindingMeta = [
 ];
 export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
+/** Root child-node count followed by the pre-order static element topology. */
+export type CompiledSSRLayout = [
+  rootNodes: number,
+  rootShape: number,
+  ...elements: number[],
+];
+
 export interface TemplateBlockMeta {
   h: string;
+  /** Required for SSR adoption; client-only mounting does not use this layout. */
+  s?: CompiledSSRLayout;
   tx?: CompiledTextRunMeta[];
   a?: CompiledAttrMeta[];
   ag?: CompiledAttrGroupMeta[];
