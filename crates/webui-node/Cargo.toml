@@ -18,16 +18,16 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { workspace = true }
 napi-derive = { workspace = true }
-microsoft-webui = { path = "../webui", version = "3.0.3" }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.3" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.3", features = ["projection-manifest"] }
+microsoft-webui = { path = "../webui", version = "3.0.4" }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4", features = ["projection-manifest"] }
 serde_json = { workspace = true }
 
 [build-dependencies]
 napi-build = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "3.0.3", default-features = false }
+microsoft-webui-parser = { path = "../webui-parser", version = "3.0.4", default-features = false }
 tempfile = { workspace = true }
 
 [lints]
