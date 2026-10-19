@@ -822,12 +822,9 @@ test.describe('component lazy hydration', () => {
 
     await expect(list).toHaveAttribute('data-hydrated', '');
     await expect(list.locator('.explicit-undefined-item')).toHaveText('');
-    await expect(list.locator('.explicit-undefined-item')).toHaveAttribute(
-      'data-value',
-      '',
-    );
+    await expect(list.locator('.explicit-undefined-item')).not.toHaveAttribute('data-value');
     await expect(list.locator('.sparse-item')).toHaveText('');
-    await expect(list.locator('.sparse-item')).toHaveAttribute('data-value', '');
+    await expect(list.locator('.sparse-item')).not.toHaveAttribute('data-value');
   });
 
   test('retains streamed state and lets newer patches win before visibility', async ({ page }) => {
