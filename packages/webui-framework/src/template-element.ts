@@ -2808,6 +2808,7 @@ export class TemplateElement extends HTMLElement {
       default: {
         const v = this.$resolveValue(b.path!, b.scope);
         const s = v == null ? '' : String(v);
+        if (v == null) el.removeAttribute(b.name);
         // Form control properties diverge from attributes after user interaction
         if (
           (b.name === 'checked' || b.name === 'selected')
@@ -2817,7 +2818,7 @@ export class TemplateElement extends HTMLElement {
         } else if (b.name === 'value' && hasNativeLiveProperty(el, b.name)) {
           const target = el as Element & { value: unknown };
           if (target.value !== s) target.value = s;
-        } else {
+        } else if (v != null) {
           if (el.getAttribute(b.name) !== s) el.setAttribute(b.name, s);
         }
         break;

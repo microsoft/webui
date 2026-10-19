@@ -123,8 +123,10 @@ client, interactive components hydrate as islands.
 
 1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
-   Missing text and attribute paths render empty. A missing condition identifier
-   is falsy, so `path` is false and `!path` is true. No error is raised.
+   Missing text paths render empty. Whole-binding attributes are omitted for
+   missing or `null` values; `""`, `0`, and `false` remain attribute values.
+   Mixed attributes retain their static text. A missing condition identifier is
+   falsy, so `path` is false and `!path` is true. No error is raised.
 2. **Derived state belongs in the template or the server.** Use expressions like
    `items.length` or `status == 'active'`. Compute complex values server-side.
 3. **The server is the source of truth for the initial render.** The client

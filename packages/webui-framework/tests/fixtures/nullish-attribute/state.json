@@ -1,0 +1,13 @@
+{
+  "cases": [
+    { "name": "missing" },
+    { "name": "null", "value": null },
+    { "name": "empty", "value": "" },
+    { "name": "zero", "value": 0 },
+    { "name": "false", "value": false },
+    { "name": "string", "value": "[a-z]+" }
+  ],
+  "constraint": null,
+  "inputValue": "abc",
+  "label": "Before"
+}

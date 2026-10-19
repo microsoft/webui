@@ -103,7 +103,7 @@ fn markdown_json_includes_merge_global_then_file_then_inline() -> TestResult {
         let included = fs::read_to_string(root.path().join("dist/include/index.html"))?;
         assert!(included.contains("data-value=\"inline\""), "{included}");
         assert!(
-            included.contains("data-global-only=\"\""),
+            !included.contains("data-global-only="),
             "inline replacement must be shallow"
         );
         assert!(included.contains("data-item=\"included-item\""));
@@ -198,10 +198,7 @@ fn cli_build_isolates_markdown_state_in_full_and_content_modes() -> TestResult {
             assert!(html.contains(&format!("data-title=\"{title}\"")));
             assert!(html.contains("data-site=\"Canonical docs\""));
             if page == "a" || page == "b" {
-                assert!(
-                    html.contains("data-global-only=\"\""),
-                    "shallow replacement"
-                );
+                assert!(!html.contains("data-global-only="), "shallow replacement");
             }
             if page == "a" {
                 assert!(html.contains("data-only-a=\"exclusive-a\""));
@@ -287,12 +284,10 @@ fn cli_build_preserves_yaml_frontmatter_values_and_aliases() -> TestResult {
             "data-item=\"007\"",
             "data-enabled=\"true\"",
             "data-disabled=\"false\"",
-            "data-optional=\"\"",
             "data-count=\"42\"",
             "data-ratio=\"1.25\"",
             "data-large=\"18446744073709551615\"",
             "data-negative=\"-9223372036854775808\"",
-            "data-merge=\"\"",
             "data-title=\"YAML compatibility\"",
             "data-description=\"Folded description\"",
             "First line\nSecond line",
@@ -302,6 +297,8 @@ fn cli_build_preserves_yaml_frontmatter_values_and_aliases() -> TestResult {
                 "{mode}: missing {expected}: {html}"
             );
         }
+        assert!(!html.contains("data-optional="), "{mode}: {html}");
+        assert!(!html.contains("data-merge="), "{mode}: {html}");
     }
     Ok(())
 }

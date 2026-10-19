@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Nullish attributes</title></head>
+<body>
+  <section id="entry">
+    <for each="item in cases">
+      <input data-case="{{item.name}}" pattern="{{item.value}}" value="abc" title="prefix-{{item.value}}-suffix">
+    </for>
+  </section>
+  <test-nullish-attribute></test-nullish-attribute>
+</body>
+</html>
