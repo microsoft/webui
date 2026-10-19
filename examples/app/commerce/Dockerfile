@@ -35,7 +35,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --package marketplace-api
 
 COPY . .
 RUN pnpm install --frozen-lockfile --filter=commerce... && \

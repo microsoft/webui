@@ -171,7 +171,7 @@ path = "tests/public_api/local_server.rs"
 required-features = ["local-server"]
 
 [[test]]
-name = "ipc_contract"
+name = "ipc_public_api"
 path = "tests/public_api/ipc.rs"
 required-features = ["application-ipc"]
 
