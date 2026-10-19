@@ -12,7 +12,7 @@ WORKDIR /build
 
 FROM chef AS planner
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --bin marketplace-api --recipe-path recipe.json
 
 # ── Stage 2: Builder ────────────────────────────────────────────────
 FROM chef AS builder
@@ -35,7 +35,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --bin marketplace-api --recipe-path recipe.json
 
 COPY . .
 RUN pnpm install --frozen-lockfile --filter=commerce... && \
