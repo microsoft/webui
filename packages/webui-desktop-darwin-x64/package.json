@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-desktop-darwin-x64",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "WebUI desktop sidecar for macOS x64",
   "license": "MIT",
   "os": ["darwin"],
