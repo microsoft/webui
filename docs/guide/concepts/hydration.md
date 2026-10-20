@@ -15,6 +15,12 @@ compiler and framework versions. SSR hydration requires the compiler's current
 metadata; stale artifacts fail with an error asking you to rebuild rather than
 being reinterpreted in the browser.
 
+Text bindings retain their surrounding authored whitespace on the server and
+during browser updates. Values are not trimmed; ordinary HTML whitespace
+collapsing and CSS such as `white-space: pre-wrap` determine their appearance.
+Native HTML rules still apply, including ignoring the first newline immediately
+after an opening `<pre>` or `<textarea>` tag.
+
 ## HTML-Only Components
 
 HTML-only components can use bindings, attributes, `<if>`, and `<for>`. Their

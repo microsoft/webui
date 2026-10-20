@@ -12,7 +12,7 @@
  * blank. The components differ only in WHEN they assign the observables.
  */
 
-import { WebUIElement, observable } from '../../../src/index.js';
+import { WebUIElement, attr, observable } from '../../../src/index.js';
 
 /**
  * `@observable` field default differs from SSR state. The initializer runs
@@ -97,3 +97,14 @@ export class MismatchSeeded extends WebUIElement {
   @observable seededValue = '3';
 }
 MismatchSeeded.define('mismatch-seeded');
+
+export class MismatchWhitespace extends WebUIElement {
+  @attr headerTitle!: string;
+  @attr details!: string;
+  @attr padded!: string;
+  @observable items!: string[];
+}
+MismatchWhitespace.define('mismatch-whitespace');
+
+export class WhitespaceSlot extends WebUIElement {}
+WhitespaceSlot.define('whitespace-slot');

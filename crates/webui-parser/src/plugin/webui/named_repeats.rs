@@ -79,6 +79,7 @@ impl CompileBlocks {
                     source: repeat.body.source,
                     range: repeat.offset..repeat.offset,
                     repeat_key: None,
+                    trim_boundary_formatting: false,
                 };
                 source.locate_error(error)
             })?;
