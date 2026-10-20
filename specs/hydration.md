@@ -97,6 +97,14 @@ HTML binding. The client counterparts are defined in
 Ordinary escaped text bindings, attribute bindings, and event handlers are
 **not** marked. They are located via compiled element indices.
 
+An emitted text run preserves all of its static pieces, including indentation
+around bindings. SSR fragments and client text parts must agree on those
+pieces; formatting-only text between elements is not a reason to discard
+whitespace within a binding's text node. State values are never trimmed.
+Static text parts follow browser HTML parsing: source CR/CRLF becomes LF,
+character references are decoded, and the initial LF after
+`pre`/`textarea`/`listing` is ignored before client text assignment.
+
 Whole-value dynamic attributes omit missing and null values during SSR and
 client binding updates. Empty strings, zero, and false remain values; mixed
 attributes retain their static text. Omitting an attribute does not remove an

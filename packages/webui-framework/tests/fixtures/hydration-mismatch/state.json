@@ -1,4 +1,8 @@
 {
   "seededShow": true,
-  "seededValue": "3"
+  "seededValue": "3",
+  "headerTitle": "Downloads",
+  "details": "Open file",
+  "padded": "  data \n ",
+  "items": ["First", "Second"]
 }

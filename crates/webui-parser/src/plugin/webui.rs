@@ -541,6 +541,7 @@ struct TemplateSource<'a> {
     source: &'a str,
     range: Range<usize>,
     repeat_key: Option<usize>,
+    trim_boundary_formatting: bool,
 }
 
 impl<'a> From<&'a str> for TemplateSource<'a> {
@@ -549,6 +550,7 @@ impl<'a> From<&'a str> for TemplateSource<'a> {
             source,
             range: 0..source.len(),
             repeat_key: None,
+            trim_boundary_formatting: false,
         }
     }
 }
@@ -563,15 +565,17 @@ impl<'a> TemplateSource<'a> {
             source: self.source,
             range: self.range.start + range.start..self.range.start + range.end,
             repeat_key: self.repeat_key,
+            trim_boundary_formatting: false,
         }
     }
 
-    fn trimmed(mut self) -> Self {
+    fn trim_boundary_formatting(mut self) -> Self {
         let html = self.html();
         let trimmed = html.trim_start();
-        let leading = html.len() - trimmed.len();
-        self.range.start += leading;
-        self.range.end = self.range.start + trimmed.trim_end().len();
+        if trimmed.is_empty() || trimmed.starts_with('<') {
+            self.range.start += html.len() - trimmed.len();
+        }
+        self.trim_boundary_formatting = true;
         self
     }
 
@@ -794,8 +798,8 @@ fn generate_compiled_template_with_root_source(
     shadow_dom: bool,
     scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
-    let source = TemplateSource::from(html_content).trimmed();
-    let trimmed = source.html();
+    let source = TemplateSource::from(html_content);
+    let trimmed = html_content.trim();
     let shadow_body = shadow_template_body_range(trimmed);
     let authored_shadow_root = shadow_body.is_some();
     let mut root_events = if authored_shadow_root {
@@ -810,7 +814,13 @@ fn generate_compiled_template_with_root_source(
     {
         root_events = extract_root_events(tag_name, raw_root)?;
     }
-    let body = shadow_body.map_or_else(|| source.clone(), |range| source.slice(range));
+    let body = shadow_body.map_or_else(
+        || source.clone().trim_boundary_formatting(),
+        |range| {
+            let leading = html_content.len() - html_content.trim_start().len();
+            source.slice(leading + range.start..leading + range.end)
+        },
+    );
     let meta = compile_to_metadata(tag_name, body, root_events)?;
     let build_meta = collect_template_build_metadata(&meta);
     if scriptless && build_meta.has_events {
@@ -1647,6 +1657,7 @@ fn compile_section(
     let bytes = input.as_bytes();
     let len = bytes.len();
     let mut i = 0;
+    let mut last_markup_end = 0;
 
     while i < len {
         if !input.is_char_boundary(i) {
@@ -1666,6 +1677,7 @@ fn compile_section(
             if remaining.starts_with("<!--") {
                 if let Some(close) = remaining.find("-->") {
                     i += close + 3;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1682,6 +1694,7 @@ fn compile_section(
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
                     i += consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1706,6 +1719,7 @@ fn compile_section(
                     });
                     meta.html.push_str(&format!("<!--r:{idx}-->"));
                     i += repeat.consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1715,6 +1729,7 @@ fn compile_section(
                 compile_style_content(&input[open_end..close_start], &mut meta);
                 meta.html.push_str(&input[close_start..close_end]);
                 i = close_end;
+                last_markup_end = i;
                 continue;
             }
 
@@ -1724,6 +1739,7 @@ fn compile_section(
                 if let Some(consumed) = find_element_end(remaining, "outlet") {
                     meta.html.push_str("<outlet></outlet>");
                     i += consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1736,6 +1752,7 @@ fn compile_section(
             {
                 meta.html.push_str(&tag_html);
                 i += consumed;
+                last_markup_end = i;
                 continue;
             }
         }
@@ -1765,6 +1782,10 @@ fn compile_section(
         }
     }
 
+    if source.trim_boundary_formatting && input[last_markup_end..].trim().is_empty() {
+        let trailing = len - last_markup_end;
+        meta.html.truncate(meta.html.len() - trailing);
+    }
     Ok(meta)
 }
 
@@ -1915,6 +1936,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     process_fragment_children(
         &nodes,
         0,
+        false,
         &text_bindings,
         &mut finalized_html,
         &mut text_runs,
@@ -1941,6 +1963,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
 fn process_fragment_children(
     nodes: &[FragmentNode],
     parent_index: usize,
+    ignore_initial_lf: bool,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
@@ -1974,16 +1997,7 @@ fn process_fragment_children(
                 // (e.g. `&gt;` → `>`).  Static-only text runs are
                 // baked into `meta.h` and parsed via innerHTML which
                 // handles entity decoding natively.
-                let decoded_parts = parts
-                    .into_iter()
-                    .map(|part| match part {
-                        CompiledAttrPart::Static(s) => {
-                            let decoded = html_escape::decode_html_entities(&s);
-                            CompiledAttrPart::Static(decoded.into_owned())
-                        }
-                        other => other,
-                    })
-                    .collect();
+                let decoded_parts = decode_text_parts(parts, ignore_initial_lf && index == 0);
                 let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                 slot_orders.insert(child_index, order + 1);
                 text_runs.push((
@@ -2082,6 +2096,53 @@ fn process_fragment_children(
     ssr_layout.finish_children(parent_index, &ssr_children, text_runs.len());
 }
 
+fn decode_text_parts(
+    mut parts: Vec<CompiledAttrPart>,
+    ignore_initial_lf: bool,
+) -> Vec<CompiledAttrPart> {
+    for part in &mut parts {
+        if let CompiledAttrPart::Static(text) = part {
+            normalize_text_newlines(text);
+            if let Cow::Owned(decoded) = html_escape::decode_html_entities(text.as_str()) {
+                *text = decoded;
+            }
+        }
+    }
+    // HTML parsing ignores the first LF after pre/textarea/listing. Client
+    // binding assignment bypasses HTML parsing, so mirror it in static parts.
+    if ignore_initial_lf {
+        if let Some(CompiledAttrPart::Static(text)) = parts.first_mut() {
+            if text.starts_with('\n') {
+                text.remove(0);
+            }
+        }
+    }
+    parts
+}
+
+fn normalize_text_newlines(text: &mut String) {
+    let Some(mut carriage_return) = text.find('\r') else {
+        return;
+    };
+    let first_is_crlf = text[carriage_return..].starts_with("\r\n");
+    let mut normalized = String::with_capacity(text.len() - usize::from(first_is_crlf));
+    let mut remaining = text.as_str();
+    loop {
+        normalized.push_str(&remaining[..carriage_return]);
+        normalized.push('\n');
+        remaining = &remaining[carriage_return + 1..];
+        if let Some(after_lf) = remaining.strip_prefix('\n') {
+            remaining = after_lf;
+        }
+        let Some(next) = remaining.find('\r') else {
+            break;
+        };
+        carriage_return = next;
+    }
+    normalized.push_str(remaining);
+    *text = normalized;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serialize_fragment_element(
     element: &FragmentElement,
@@ -2151,6 +2212,9 @@ fn serialize_fragment_element(
     process_fragment_children(
         &element.children,
         element_index,
+        element.tag_name.eq_ignore_ascii_case("pre")
+            || element.tag_name.eq_ignore_ascii_case("textarea")
+            || element.tag_name.eq_ignore_ascii_case("listing"),
         text_bindings,
         out,
         text_runs,
@@ -2719,7 +2783,9 @@ fn parse_if_block(
     let (body_end, close_end) = find_matching_end(input, tag.name, body_start)?;
     Some((
         condition,
-        source.slice(body_start..body_end).trimmed(),
+        source
+            .slice(body_start..body_end)
+            .trim_boundary_formatting(),
         close_end,
     ))
 }
@@ -2778,7 +2844,9 @@ fn parse_for_block<'a>(
     };
 
     let (item_var, collection) = crate::parse_for_each(component, each_val)?;
-    let mut body = source.slice(tag.close + 1..body_end).trimmed();
+    let mut body = source
+        .slice(tag.close + 1..body_end)
+        .trim_boundary_formatting();
     let repeat_key = first_child_repeat_key(component, item_var, body.html())?;
     body.repeat_key = repeat_key
         .as_ref()
@@ -3539,6 +3607,86 @@ mod whitespace_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoding_plain_text_reuses_owned_buffers() {
+        let text = String::from("\n  plain text \n");
+        let text_pointer = text.as_ptr();
+        let parts = vec![
+            CompiledAttrPart::Static(text),
+            CompiledAttrPart::Dynamic("label".to_string()),
+        ];
+        let parts_pointer = parts.as_ptr();
+        let decoded = decode_text_parts(parts, false);
+        assert_eq!(decoded.as_ptr(), parts_pointer);
+        let CompiledAttrPart::Static(text) = &decoded[0] else {
+            panic!("expected static text");
+        };
+        assert_eq!(text, "\n  plain text \n");
+        assert_eq!(text.as_ptr(), text_pointer);
+    }
+
+    #[test]
+    fn source_newline_normalization_handles_mixed_runs() {
+        for (input, expected) in [
+            ("", ""),
+            ("plain\ntext", "plain\ntext"),
+            ("\r", "\n"),
+            ("\r\n", "\n"),
+            ("\r\r\n\r", "\n\n\n"),
+            ("a\r\nb\rc\n", "a\nb\nc\n"),
+            ("é\r\n中\r🙂", "é\n中\n🙂"),
+        ] {
+            let mut text = input.to_string();
+            normalize_text_newlines(&mut text);
+            assert_eq!(text, expected);
+        }
+    }
+
+    #[test]
+    fn boundary_formatting_stays_separate_from_stripped_comments() {
+        for text in [
+            "plain text",
+            "{{label}}",
+            "{{{label}}}",
+            "<span>{{label}}</span>",
+        ] {
+            let source = format!("\n<!-- leading -->{text}<!-- trailing -->\n");
+            assert_eq!(
+                generate_compiled_template("text-comments", &source),
+                generate_compiled_template("text-comments", text),
+            );
+        }
+    }
+
+    #[test]
+    fn text_run_edges_survive_component_and_block_boundaries() {
+        let text = "\n  {{label}}\n ";
+        let metadata = generate_compiled_template("text-root", text);
+        assert!(metadata.contains(r#"["\n  ",["label"],"\n "]"#));
+        for source in [
+            format!("<if condition=\"ready\">{text}</if>"),
+            format!("<for each=\"item in items\">{text}</for>"),
+        ] {
+            let metadata = generate_compiled_template("text-block", &source);
+            assert!(metadata.contains(r#"["\n  ",["label"],"\n "]"#));
+        }
+    }
+
+    #[test]
+    fn text_parts_follow_html_source_newline_rules() {
+        let button =
+            generate_compiled_template("text-newlines", "<button>\r\n  {{label}}\r</button>");
+        assert!(button.contains(r#"["\n  ",["label"],"\n"]"#));
+        for tag in ["pre", "textarea", "listing"] {
+            let source = format!("<{tag}>\r\n  {{{{label}}}}\r\n</{tag}>");
+            let metadata = generate_compiled_template("text-newlines", &source);
+            assert!(metadata.contains(r#"["  ",["label"],"\n"]"#));
+        }
+        let entity =
+            generate_compiled_template("text-newlines", "<span>&#13;{{label}}&#10;</span>");
+        assert!(entity.contains(r#"["\r",["label"],"\n"]"#));
+    }
 
     #[test]
     fn boolean_literal_conditions_have_no_state_dependencies() {
