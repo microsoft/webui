@@ -48,10 +48,8 @@
  */
 
 import { deferTemplateDefinition, getTemplate } from './template.js';
-import {
-  cloneTemplateContent,
-  getTemplateFragment,
-} from './template-content.js';
+import { cloneTemplateContent } from './template-content.js';
+import { getTemplateSSRLayout } from './template-layout.js';
 import type {
   TemplateMeta,
   TemplateBlockMeta,
@@ -150,23 +148,10 @@ const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 // ── Caches ──────────────────────────────────────────────────────
 
-/** Cached root tag name extracted from meta.h before it's released. */
-const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
-
-/** Per-child node-type ordinals used when a text slot has no dynamic boundary. */
-const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
 /** Encoded next marker boundary per text slot, built once per template. */
 const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, Int32Array>();
 const NO_TEXT_MARKER_BOUNDARIES = new Int32Array(0);
 const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
-
-/**
- * Pre-order element table for a parsed template, keyed by its root.
- *
- * The parsed template DOM is cached per metadata object, so this is built once
- * per component type and shared by every instance.
- */
-const tplElementCache = new WeakMap<Node, Array<Node | undefined>>();
 
 /**
  * A dynamic node and the static DOM reference captured before wiring mutates
@@ -208,35 +193,13 @@ function insertPendingSlots(
   }
 }
 
-function getTemplateElements(tplRoot: Node): Array<Node | undefined> {
-  let cached = tplElementCache.get(tplRoot);
-  if (!cached) {
-    cached = collectTemplateElements(tplRoot);
-    tplElementCache.set(tplRoot, cached);
-  }
-  return cached;
-}
-
-function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
-  let map = tplOrdinalCache.get(tplNode);
-  if (map) return map;
-  map = new Map();
-  let elemOrd = 0;
-  let textOrd = 0;
-  let commentOrd = 0;
-  const children = tplNode.childNodes;
-  for (let k = 0; k < children.length; k++) {
-    const type = children[k].nodeType;
-    if (type === 1) { map.set(k, [1, elemOrd]); elemOrd++; }
-    else if (type === 3) { map.set(k, [3, textOrd]); textOrd++; }
-    else if (type === 8) { map.set(k, [8, commentOrd]); commentOrd++; }
-  }
-  tplOrdinalCache.set(tplNode, map);
-  return map;
-}
-
 function slotKey(slot: TemplateSlot, orderOffset = 0): string {
   return `${slot[0]},${slot[1]},${(slot[2] ?? 0) + orderOffset}`;
+}
+
+function appendPathBinding<T>(bindings: T[], binding: T): void {
+  // One binding's paths are processed together, so only the tail can duplicate it.
+  if (bindings[bindings.length - 1] !== binding) bindings.push(binding);
 }
 
 /**
@@ -844,7 +807,7 @@ export class TemplateElement extends HTMLElement {
       }
 
       if (isSSR) {
-        this.$root = this.$hydrate(root, meta, getTemplateFragment(meta));
+        this.$root = this.$hydrate(root, meta);
 
       } else {
         clientRoot = this.$createStagingRoot(meta);
@@ -1960,7 +1923,6 @@ export class TemplateElement extends HTMLElement {
   private $hydrate(
     ssrRoot: Node,
     meta: TemplateBlockMeta,
-    tplDom: DocumentFragment,
     scope?: ScopeFrame,
     pathStart = 0,
   ): TemplateInstance {
@@ -2001,14 +1963,14 @@ export class TemplateElement extends HTMLElement {
         if (meta.tx[i][2] === 1) rawTextCount++;
       }
     }
+    const layout = getTemplateSSRLayout(meta);
     const ssrIndex = buildSSRIndex(
-      tplDom,
+      layout,
       ssrRoot,
       meta.c !== undefined || meta.r !== undefined || rawTextCount !== 0,
       pathStart > 0,
     );
     const ssrElements = ssrIndex.elements;
-    const tplElements = getTemplateElements(tplDom);
     const textMarkerBoundaries = getTextMarkerBoundaries(meta);
 
     // Text bindings — find existing text nodes rendered by the server
@@ -2022,8 +1984,6 @@ export class TemplateElement extends HTMLElement {
         const [parentIndex] = slot;
         const ssrParent = ssrElements[parentIndex];
         if (!ssrParent) continue;
-        const tplParent = tplElements[parentIndex];
-        if (!tplParent) continue;
         if (raw) {
           const rawRange = rawRanges?.[rawIndex++];
           if (!rawRange) continue;
@@ -2045,11 +2005,10 @@ export class TemplateElement extends HTMLElement {
         } else {
           const insertRef = this.$findSSRSlotRef(
             ssrParent,
-            tplParent,
             meta,
             ssrIndex,
-            slot,
             textMarkerBoundaries[i] ?? 0,
+            entry[3] ?? 0,
           );
           let previous = insertRef ? insertRef.previousSibling : ssrParent.lastChild;
           if (
@@ -2149,13 +2108,11 @@ export class TemplateElement extends HTMLElement {
         const marker = repMarkers ? repMarkers[i] : null;
         const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const blockTplDom = blockMeta ? getTemplateFragment(blockMeta) : null;
-        const rootTag = blockMeta
-          && blockTplDom?.childNodes.length === 1
-          && blockTplDom.children.length === 1
-          && !this.$hasRootStructuralSlot(blockMeta)
-          ? this.$rootTag(blockMeta)
-          : null;
+        const blockLayout = blockMeta ? getTemplateSSRLayout(blockMeta) : null;
+        const singleRoot = blockMeta
+          && blockLayout?.[0] === 1
+          && (blockLayout[1] >> 1) === 1
+          && !this.$hasRootStructuralSlot(blockMeta);
 
         let anchor: Comment;
         if (marker) {
@@ -2164,9 +2121,7 @@ export class TemplateElement extends HTMLElement {
           // No marker — insert anchor at the slot position for client-created content
           anchor = ownerDocument.createComment('');
           const [, beforeIndex] = slotMeta;
-          const tplParent = tplElements[parentIndex];
-          const staticCount = tplParent ? tplParent.childNodes.length : 0;
-          const insertRef = ssrParent.childNodes[Math.min(beforeIndex ?? staticCount, ssrParent.childNodes.length)] ?? null;
+          const insertRef = ssrParent.childNodes[Math.min(beforeIndex, ssrParent.childNodes.length)] ?? null;
           ssrParent.insertBefore(anchor, insertRef);
         }
         const repeatInsts: TemplateInstance[] = [];
@@ -2179,7 +2134,7 @@ export class TemplateElement extends HTMLElement {
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
 
-        if (blockMeta && blockTplDom && anchor.parentNode && itemMarkers.length > 0) {
+        if (blockMeta && anchor.parentNode && itemMarkers.length > 0) {
           if (
             !this.$activatingDeferredSSR
             && hasCollectionState
@@ -2200,10 +2155,10 @@ export class TemplateElement extends HTMLElement {
               known,
             };
 
-            if (rootTag) {
+            if (singleRoot) {
               const itemEl = nextElement(itemMarkers[j]);
               if (itemEl) {
-                const childInstance = this.$hydrate(itemEl, blockMeta, blockTplDom, itemScope, 1);
+                const childInstance = this.$hydrate(itemEl, blockMeta, itemScope, 1);
                 this.$setInstanceParent(childInstance, instance);
                 repeatInsts.push(childInstance);
               }
@@ -2217,7 +2172,7 @@ export class TemplateElement extends HTMLElement {
                 wrapper.appendChild(cursor);
                 cursor = next;
               }
-              const inst = this.$hydrate(wrapper, blockMeta, blockTplDom, itemScope);
+              const inst = this.$hydrate(wrapper, blockMeta, itemScope);
               inst.nodes = childNodesArray(wrapper);
               let afterNode: Node = itemMarkers[j];
               for (let nodeIndex = 0; nodeIndex < inst.nodes.length; nodeIndex++) {
@@ -2332,9 +2287,8 @@ export class TemplateElement extends HTMLElement {
     blockMeta: TemplateBlockMeta,
     scope: ScopeFrame | undefined,
   ): TemplateInstance | null {
-    const rootTag = this.$rootTag(blockMeta);
-    const tplDom = getTemplateFragment(blockMeta);
-    if (rootTag && tplDom.children.length === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
+    const layout = getTemplateSSRLayout(blockMeta);
+    if (blockMeta.h.charCodeAt(0) === 60 && (layout[1] >> 1) === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
@@ -2343,7 +2297,7 @@ export class TemplateElement extends HTMLElement {
         // would overwrite them with stale data (e.g. a complex property
         // from a parent that hasn't hydrated yet).  This is consistent
         // with $mount which also skips $updateInstance for SSR roots.
-        return this.$hydrate(el, blockMeta, tplDom, scope, 1);
+        return this.$hydrate(el, blockMeta, scope, 1);
       }
       return null;
     }
@@ -2352,7 +2306,7 @@ export class TemplateElement extends HTMLElement {
     if (condNodes.length === 0) return null;
     const wrapper = this.ownerDocument.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-    const inst = this.$hydrate(wrapper, blockMeta, tplDom, scope);
+    const inst = this.$hydrate(wrapper, blockMeta, scope);
     inst.nodes = childNodesArray(wrapper);
     let afterNode: Node = condAnchor;
     for (let cn = 0; cn < inst.nodes.length; cn++) {
@@ -2368,13 +2322,11 @@ export class TemplateElement extends HTMLElement {
   /** Find the SSR right-hand boundary for an escaped text slot. */
   private $findSSRSlotRef(
     ssrParent: Node,
-    tplParent: Node,
     meta: TemplateBlockMeta,
     ssrIndex: SSRIndex,
-    slot: TemplateSlot,
     markerBoundary: number,
+    staticBoundary: number,
   ): Node | null {
-    const [, beforeIndex] = slot;
     let marker: Comment | null = null;
     if (markerBoundary >= RAW_MARKER_BOUNDARY_BASE) {
       marker =
@@ -2394,34 +2346,9 @@ export class TemplateElement extends HTMLElement {
     }
     if (marker?.parentNode === ssrParent) return marker;
 
-    const ordinals = getTplOrdinals(tplParent);
-    const children = tplParent.childNodes;
-    for (let i = beforeIndex; i < children.length; i++) {
-      const entry = ordinals.get(i);
-      if (!entry) continue;
-      return findByOrdinal(ssrParent, entry[0], entry[1]);
-    }
-    return null;
-  }
-
-  /** Extract root tag name from block metadata. */
-  private $rootTag(meta: TemplateBlockMeta): string | null {
-    let cached = rootTagCache.get(meta);
-    if (cached !== undefined) return cached;
-    const h = meta.h;
-    if (!h || h.charCodeAt(0) !== 60) {
-      rootTagCache.set(meta, null);
-      return null;
-    }
-    let end = 1;
-    while (end < h.length) {
-      const c = h.charCodeAt(end);
-      if (c === 32 || c === 62 || c === 47) break;
-      end++;
-    }
-    const tag = h.slice(1, end).toLowerCase();
-    rootTagCache.set(meta, tag);
-    return tag;
+    if (!staticBoundary) return null;
+    const kind = staticBoundary & 3;
+    return findByOrdinal(ssrParent, kind === 1 ? 1 : kind === 2 ? 3 : 8, staticBoundary >> 2);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2567,33 +2494,33 @@ export class TemplateElement extends HTMLElement {
         if (t.parts) {
           for (const p of t.parts) {
             if (typeof p !== 'string' && !isLocalPath(p[0], t.scope)) {
-              ensure(keyFor(p[0])).texts.push(t);
+              appendPathBinding(ensure(keyFor(p[0])).texts, t);
             }
           }
         } else if (t.path && !isLocalPath(t.path, t.scope)) {
-          ensure(keyFor(t.path)).texts.push(t);
+          appendPathBinding(ensure(keyFor(t.path)).texts, t);
         }
       }
       for (const a of instance.attrs) {
         if (a.path && !isLocalPath(a.path, a.scope)) {
-          ensure(keyFor(a.path)).attrs.push(a);
+          appendPathBinding(ensure(keyFor(a.path)).attrs, a);
         }
         if (a.parts) {
           for (const p of a.parts) {
             if (typeof p !== 'string' && !isLocalPath(p[0], a.scope)) {
-              ensure(keyFor(p[0])).attrs.push(a);
+              appendPathBinding(ensure(keyFor(p[0])).attrs, a);
             }
           }
         }
         if (a.condition) {
           for (const p of a.condition[1]) {
-            if (!isLocalPath(p, a.scope)) ensure(keyFor(p)).attrs.push(a);
+            if (!isLocalPath(p, a.scope)) appendPathBinding(ensure(keyFor(p)).attrs, a);
           }
         }
       }
       for (const c of instance.conds) {
         for (const p of c.condition[1]) {
-          if (!isLocalPath(p, c.scope)) ensure(keyFor(p)).conds.push(c);
+          if (!isLocalPath(p, c.scope)) appendPathBinding(ensure(keyFor(p)).conds, c);
         }
         if (c.instance) visit(c.instance);
       }

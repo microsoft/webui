@@ -1,0 +1,10 @@
+<article>
+  <header><h2>{{project.name}}</h2><span>{{project.status}}</span></header>
+  <p>{{project.description}}</p>
+  <dl><dt>Owner</dt><dd>{{project.owner}}</dd><dt>Updated</dt><dd>{{project.updated}}</dd></dl>
+  <if condition="project.active"><p class="active">Active project</p></if>
+  <ul><for each="label in project.labels"><li>{{label}}</li></for></ul>
+  <adoption-status label="{{project.status}}"><span>Project status</span></adoption-status>
+  <button @click="{toggle()}">Toggle notes</button>
+  <if condition="notes"><div class="notes"><strong>{{project.name}}</strong><p>Notes are available for this project.</p></div></if>
+</article>

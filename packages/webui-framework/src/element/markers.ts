@@ -171,9 +171,10 @@ export interface SSRIndex {
 }
 
 /**
- * Pair a template subtree with its server-rendered counterpart in one walk.
+ * Pair compiled static topology with its server-rendered subtree in one walk.
  *
- * The compiler numbers every element of a section in pre-order and addresses
+ * The compiler records each element's direct child count and ownership bit,
+ * numbers every element of a section in pre-order, and addresses
  * bindings by that number.  Walking the server output in the same order rebuilds
  * the mapping in one pass, so each binding resolves by array index.  Block
  * markers come out in document order for the same reason, which is what lets
@@ -200,7 +201,7 @@ export interface SSRIndex {
  * rather than paying for a cross-section marker-pairing cache.
  */
 export function buildSSRIndex(
-  tplRoot: Node,
+  shape: readonly number[],
   ssrRoot: Node,
   needMarkers: boolean,
   ssrIsSectionChild = false,
@@ -217,9 +218,9 @@ export function buildSSRIndex(
   // block hydration starts inside the block's own `<!--wc-->` range, so an
   // unbounded frame would run past the closing marker once the template ran
   // out and adopt a following sibling block's marker as its own.
-  const stack: Array<{ t: ChildNode | null; s: ChildNode | null; solo: boolean }> = [
+  const stack: Array<{ remaining: number; s: ChildNode | null; solo: boolean }> = [
     {
-      t: tplRoot.firstChild,
+      remaining: shape[1] >> 1,
       s: ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild,
       solo: ssrIsSectionChild,
     },
@@ -277,11 +278,7 @@ export function buildSSRIndex(
       s = s.nextSibling;
     }
 
-    // Advance the template cursor to the next element.
-    let t = frame.t;
-    while (t && t.nodeType !== 1 /* ELEMENT_NODE */) t = t.nextSibling;
-
-    if (!t) {
+    if (frame.remaining === 0) {
       stack.pop();
       continue;
     }
@@ -294,19 +291,19 @@ export function buildSSRIndex(
       elements[index] = s;
       frame.s = frame.solo ? null : s.nextSibling;
     }
-    frame.t = t.nextSibling;
+    frame.remaining--;
 
-    // Descend when there is anything of ours down there.  Template children
-    // always qualify.  An element with none can still hold block markers -
+    // Descend where the static topology owns children. An empty element can
+    // still hold block markers -
     // `<ul><for ...></ul>` compiles to an empty `<ul>` - so it is worth walking
     // too, but only when this section actually has blocks to place.  A custom
     // element is the exception either way: with no template children it
-    // contributes no slotted content, and whatever the server rendered inside
+    // contributes no projected content, and whatever the server rendered inside
     // belongs to that component, not to this one.
-    if (t.firstChild) {
-      stack.push({ t: t.firstChild, s: s ? s.firstChild : null, solo: false });
-    } else if (needMarkers && s && s.firstChild && (t as Element).tagName.indexOf('-') < 0) {
-      stack.push({ t: null, s: s.firstChild, solo: false });
+    const childShape = shape[index + 1];
+    const childCount = childShape >> 1;
+    if (childCount > 0 || (needMarkers && (childShape & 1) && s?.firstChild)) {
+      stack.push({ remaining: childCount, s: s ? s.firstChild : null, solo: false });
     }
   }
 

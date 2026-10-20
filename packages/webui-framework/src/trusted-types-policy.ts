@@ -69,16 +69,27 @@ export function registerTrustedTemplateBlock(meta: TemplateBlockMeta): void {
 
 /** @internal Parse registered compiler HTML without exposing a trusted value. */
 export function setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void {
-  const trust = getDocumentPolicy(window);
+  const trust = getTemplatePolicy(meta);
   if (!trust) {
     target.innerHTML = meta.h;
     return;
   }
+  target.innerHTML = trust.policy.createHTML(meta.h, trust.capability) as string & TrustedValue;
+}
+
+/** Preserve compiler registration and CSP policy checks without an HTML sink. */
+export function validateTrustedTemplateBlock(meta: TemplateBlockMeta): void {
+  getTemplatePolicy(meta);
+}
+
+function getTemplatePolicy(meta: TemplateBlockMeta): CompilerPolicy | undefined {
+  const trust = getDocumentPolicy(window);
+  if (!trust) return undefined;
   const html = templateHTML?.get(meta);
   if (html === undefined || html !== meta.h) {
     throw new Error('[WebUI] Unregistered or modified compiled template. Register only immutable compiler output.');
   }
-  target.innerHTML = trust.policy.createHTML(html, trust.capability) as string & TrustedValue;
+  return trust;
 }
 
 /** @internal Serialize CSS data into an inert import map, never executable source. */

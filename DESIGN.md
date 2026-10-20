@@ -292,7 +292,12 @@ from an untrusted manifest opt back into the full check set.
 
 The WebUI parser also compiles component templates into static, marker-free
 client HTML plus compact binding, block, event, and state-path metadata.
-Server HTML and client metadata come from the same source. SSR adds
+Server HTML and client metadata come from the same source. The compiler also
+records static topology and text boundaries so hydration can adopt the live
+DOM without materializing a second template tree. Client-template HTML remains
+available and is parsed lazily when new content must be created. SSR adoption
+requires matching compiler metadata; it never reconstructs missing topology
+from template HTML. SSR adds
 compiler-owned markers where needed to align bindings and delimit dynamic
 ranges. Hydration wires those bindings to the existing DOM; it does not
 reinterpret authoring syntax,

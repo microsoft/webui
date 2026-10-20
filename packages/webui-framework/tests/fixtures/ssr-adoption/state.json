@@ -1,0 +1,9 @@
+{
+  "summary": "Browse your local project library.",
+  "details": true,
+  "notes": false,
+  "projects": [
+    { "id": "1", "name": "Accessibility", "status": "Ready", "description": "Improve keyboard navigation.", "owner": "Design team", "updated": "Today", "active": true, "labels": ["Web", "Design"] },
+    { "id": "2", "name": "Performance", "status": "In progress", "description": "Measure startup and interaction costs.", "owner": "Platform team", "updated": "Yesterday", "active": false, "labels": ["Web", "Runtime"] }
+  ]
+}

@@ -1,0 +1,10 @@
+<main>
+  <header><h1>Project library</h1><p>{{summary}}</p></header>
+  <nav><button @click="{add()}">Add project</button><button @click="{reverse()}">Reverse projects</button><button @click="{toggle()}">Toggle details</button></nav>
+  <if condition="details"><aside><h2>Library details</h2><p>{{summary}}</p><if condition="details"><strong>Projects are stored locally.</strong></if></aside></if>
+  <section aria-label="Projects">
+    <for each="project in projects">
+      <adoption-project key="{{project.id}}" :project="{{project}}"></adoption-project>
+    </for>
+  </section>
+</main>

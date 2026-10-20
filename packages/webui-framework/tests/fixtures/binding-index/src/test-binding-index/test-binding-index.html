@@ -1,0 +1,14 @@
+<p class="double">{{record.first}} {{record.last}}</p>
+<p class="quad">{{record.first}} {{record.last}} {{record.first}} {{record.last}}</p>
+<p class="eight">{{record.first}} {{record.last}} {{record.first}} {{record.last}} {{record.first}} {{record.last}} {{record.first}} {{record.last}}</p>
+<p class="mixed">{{record.first}} {{suffix}} {{record.last}}</p>
+<p class="wildcard">{{external.first}} {{extra}} {{external.last}}</p>
+<a class="named" title="{{record.first}} {{record.last}}" href="#details">Details</a>
+<div class="ready" ?data-ready="{{record.active && record.allowed}}"></div>
+<if condition="record.active && record.allowed"><strong class="conditional">{{marker}}</strong></if>
+<for each="item in items"><p class="row">{{record.first}} {{item.label}} {{record.first}}</p></for>
+<for each="record in locals"><p class="local">{{record.first}} {{record.last}}</p></for>
+<button @click="{rename()}">Rename</button>
+<button @click="{changeSuffix()}">Change suffix</button>
+<button @click="{renameReentrant()}">Rename with callback</button>
+<button @click="{changeLocals()}">Change local records</button>

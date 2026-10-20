@@ -12,6 +12,7 @@ import {
 const templates: Record<string, TemplateMeta> = {
   'test-runtime-life': {
     h: '<span></span>',
+    s: [1, 3, 1],
     tx: [
       [[1, 0], [['label']]],
     ],
@@ -21,14 +22,17 @@ const templates: Record<string, TemplateMeta> = {
   },
   'test-runtime-effects': {
     h: '<span></span>',
+    s: [1, 3, 1],
     th: 1,
   },
   'test-runtime-throw': {
     h: '<span></span>',
+    s: [1, 3, 1],
     th: 1,
   },
   'test-runtime-immediate': {
     h: '<span></span>',
+    s: [1, 3, 1],
   },
 };
 
