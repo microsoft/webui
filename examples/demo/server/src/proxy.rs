@@ -157,29 +157,13 @@ pub(crate) async fn proxy_handler(
     };
     let mut forwarded = client.request(method, &target_url);
 
-    // Copy relevant headers (skip Host — we set our own)
-    for (name, value) in req.headers() {
-        if name != "host" {
-            let forwarded_name =
-                match reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
-                    Ok(name) => name,
-                    Err(error) => {
-                        return HttpResponse::BadGateway()
-                            .body(format!("Invalid proxy request header name: {error}"));
-                    }
-                };
-            let forwarded_value = match reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
-                Ok(value) => value,
-                Err(error) => {
-                    return HttpResponse::BadGateway()
-                        .body(format!("Invalid proxy request header value: {error}"));
-                }
-            };
-            forwarded = forwarded.header(forwarded_name, forwarded_value);
-        }
-    }
+    forwarded = match copy_request_headers(forwarded, req.headers()) {
+        Ok(forwarded) => forwarded,
+        Err(error) => return HttpResponse::BadGateway().body(error),
+    };
 
-    // Add forwarding headers
+    // Add forwarding headers derived from this connection. No trusted-proxy
+    // configuration exists here, so inbound forwarding metadata is untrusted.
     if let Some(peer) = req.peer_addr() {
         forwarded = forwarded.header("X-Forwarded-For", peer.ip().to_string());
     }
@@ -233,6 +217,36 @@ pub(crate) async fn proxy_handler(
         ),
         MAX_BODY_SIZE,
     ))
+}
+
+fn copy_request_headers(
+    mut forwarded: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+) -> Result<reqwest::RequestBuilder, String> {
+    for (name, value) in headers {
+        if name != "host" && !is_forwarding_header(name) {
+            let forwarded_name =
+                match reqwest::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        return Err(format!("Invalid proxy request header name: {error}"));
+                    }
+                };
+            let forwarded_value = match reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(format!("Invalid proxy request header value: {error}"));
+                }
+            };
+            forwarded = forwarded.header(forwarded_name, forwarded_value);
+        }
+    }
+
+    Ok(forwarded)
+}
+
+fn is_forwarding_header(name: &HeaderName) -> bool {
+    name == "forwarded" || name.as_str().starts_with("x-forwarded-")
 }
 
 fn convert_response_headers(headers: &reqwest::header::HeaderMap) -> Result<HeaderMap, String> {
@@ -592,6 +606,57 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn replaces_untrusted_forwarding_headers_with_proxy_values() {
+        let mut incoming = HeaderMap::new();
+        incoming.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.7, 203.0.113.9"),
+        );
+        incoming.insert(
+            HeaderName::from_static("x-forwarded-host"),
+            HeaderValue::from_static("attacker.example"),
+        );
+        incoming.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+        incoming.insert(
+            HeaderName::from_static("x-forwarded-prefix"),
+            HeaderValue::from_static("/spoofed"),
+        );
+        incoming.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=198.51.100.7;proto=https;host=attacker.example"),
+        );
+        incoming.insert(
+            HeaderName::from_static("x-demo-header"),
+            HeaderValue::from_static("preserved"),
+        );
+
+        let client = Client::new();
+        let forwarded = copy_request_headers(client.get("http://127.0.0.1/"), &incoming)
+            .unwrap()
+            .header("X-Forwarded-For", "192.0.2.42")
+            .header("X-Forwarded-Host", "demo.example")
+            .header("X-Forwarded-Proto", "http")
+            .build()
+            .unwrap();
+        let headers = forwarded.headers();
+
+        assert_eq!(
+            headers.get("x-forwarded-for").unwrap(),
+            "192.0.2.42",
+            "client-supplied identity must not precede the proxy identity"
+        );
+        assert_eq!(headers.get_all("x-forwarded-for").iter().count(), 1);
+        assert_eq!(headers.get("x-forwarded-host").unwrap(), "demo.example");
+        assert_eq!(headers.get("x-forwarded-proto").unwrap(), "http");
+        assert!(!headers.contains_key("x-forwarded-prefix"));
+        assert!(!headers.contains_key("forwarded"));
+        assert_eq!(headers.get("x-demo-header").unwrap(), "preserved");
     }
 
     #[test]
