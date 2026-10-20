@@ -33,18 +33,24 @@ pnpm start
 
 Then open http://127.0.0.1:3004
 
-The commerce server does not generate certificates. For direct HTTPS
-development, provide a certificate and PKCS#8 private key PEM with `--tls-cert`
-and `--tls-key` on Windows or Linux. Otherwise, including on macOS, use
-`--no-tls` behind an HTTP/2 TLS-terminating proxy or ingress. TLS uses the
-platform-native implementation through `native-tls` (SChannel on Windows or
-OpenSSL on Linux).
+### Direct HTTPS
 
-Direct HTTPS advertises HTTP/2 and HTTP/1.1 through ALPN on Windows and Linux.
-Apple's native TLS backend does not support server-side ALPN, so macOS
-rejects direct HTTPS before reading certificate inputs. macOS development must
-use `--no-tls` behind an HTTP/2 TLS-terminating proxy rather than silently
-reducing direct HTTPS to HTTP/1.1.
+The commerce server does not generate certificates. To serve HTTPS directly,
+pass a certificate and PKCS#8 private key PEM with `--tls-cert` and
+`--tls-key`. TLS uses the platform-native implementation through `native-tls`
+and advertises HTTP/2 with an HTTP/1.1 fallback through ALPN.
+
+| Platform | Direct HTTPS | TLS backend |
+|----------|--------------|-------------|
+| Windows  | HTTP/2 + HTTP/1.1 | SChannel (serves the leaf certificate only) |
+| Linux    | HTTP/2 + HTTP/1.1 | OpenSSL |
+| macOS    | Not supported | n/a |
+
+Apple's native TLS backend (Secure Transport) cannot select ALPN protocols on
+the server side, so it cannot negotiate HTTP/2. Rather than silently
+downgrading to HTTP/1.1, the server rejects `--tls-cert`/`--tls-key` on macOS.
+On macOS, run with `--no-tls` behind an HTTP/2 TLS-terminating proxy or
+ingress.
 
 ## Running Tests
 
