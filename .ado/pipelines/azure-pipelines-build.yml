@@ -312,13 +312,58 @@ stages:
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
 
-          sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler binutils
           if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
-            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            source /etc/os-release
+            if [[ "$ID" != ubuntu || -z "${VERSION_CODENAME:-}" ]]; then
+              echo "Linux ARM64 release cross-build requires an Ubuntu agent with a release codename" >&2
+              exit 1
+            fi
+            sudo dpkg --add-architecture arm64
+            sources="$BUILD_SOURCESDIRECTORY/.ubuntu-arm64.sources"
+            trap 'rm -f "$sources"' EXIT
+            cat > "$sources" <<EOF
+          Types: deb
+          URIs: http://archive.ubuntu.com/ubuntu
+          Suites: $VERSION_CODENAME $VERSION_CODENAME-updates
+          Components: main restricted universe multiverse
+          Architectures: amd64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+          Types: deb
+          URIs: http://security.ubuntu.com/ubuntu
+          Suites: $VERSION_CODENAME-security
+          Components: main restricted universe multiverse
+          Architectures: amd64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-security
+          Components: main restricted universe multiverse
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+            apt_options=(-o "Dir::Etc::sourcelist=$sources" -o "Dir::Etc::sourceparts=-")
+            sudo apt-get "${apt_options[@]}" update -q
+            sudo apt-get "${apt_options[@]}" install -y -q \
+              protobuf-compiler binutils pkg-config \
+              gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
             export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+            export PKG_CONFIG_ALLOW_CROSS=1
+            unset PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR
+            export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+            openssl_pcdir="$(pkg-config --variable=pcfiledir openssl)"
+            if [[ "$openssl_pcdir" != /usr/lib/aarch64-linux-gnu/pkgconfig ]]; then
+              echo "OpenSSL pkg-config resolved from unexpected directory: $openssl_pcdir" >&2
+              exit 1
+            fi
+            rm "$sources"
+            trap - EXIT
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y -q protobuf-compiler binutils pkg-config
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
