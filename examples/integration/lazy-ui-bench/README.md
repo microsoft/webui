@@ -91,3 +91,88 @@ asserted equal for both open and closed states:
 Closed SSR is about 50% faster here, but initially open SSR is about 6.4% slower.
 Renaming `defer` to `lazy` itself provides no speedup. No server allocation-count
 or whole-renderer/RSS reduction is claimed; the memory figures above are JS heap.
+
+## UI responsiveness
+
+Run the separate interactive fixture with the same release addon:
+
+```powershell
+node --test examples\integration\lazy-ui-bench\responsiveness.test.mjs
+node examples\integration\lazy-ui-bench\responsiveness.mjs
+```
+
+Output: `target/lazy-responsiveness.json`, including individual trusted events,
+all trials, median/p95, input delay, long tasks, and frame gaps. The defaults are
+20 measured contexts per case after two warmups, 250/1,000 controls, native and
+4x CPU throttling, and the same 40 ms state-provider delay.
+
+This fixture is a fixed-column grid of native inputs in a scrollable section,
+without virtualization or `content-visibility`. All controls exist after opening.
+Its toolbar, CSS, and interactivity are opt-in; the original startup benchmark's
+HTML/JS/gzip sizes remain unchanged for all nine cases.
+
+The driver sends real browser mouse clicks and keyboard input, and checks
+`Event.isTrusted`. It measures cold opening, another shell click while data is
+pending, five single-field edits with a reactive preview, five edits broadcasting
+to every value binding, closing, and warm reopening. Output checks prove that
+single-field edits leave the other controls untouched and broadcast edits update
+every control. There is no forced GC during interaction measurements.
+
+**Measurement boundaries matter:**
+
+- Browser **Event Timing** measures click/keydown to the next paint, with 8 ms
+  quantization and a 16 ms reporting threshold. Unreported fast events are
+  retained as `<16 ms`, not omitted or replaced with zero. This is a laboratory
+  interaction measurement, **not field INP**.
+- Opening can paint a loading state before the form exists. Its asynchronous
+  **form-readiness** measurement therefore runs separately, from the click
+  timestamp through DOM readiness and two animation frames. It is a render-
+  opportunity proxy, not an assertion of the exact pixel-presentation time.
+- Long Tasks and rAF gaps expose blocking during later mounting. A responsive
+  loading indicator does not prove a jank-free form mount.
+- 4x CPU is a reproducible simulation on this desktop, not evidence from a
+  physical low-end device. Typing uses 100 keystrokes per case across 20 contexts;
+  the five keystrokes within each context are not independent page loads.
+
+### Recorded interaction result: 2026-10-21
+
+Same software/hardware as above. Values are **median / p95 milliseconds**.
+Eager-fresh and lazy both fetch fresh state on each opening.
+
+| CPU | Controls | Interaction | Eager-fresh next paint | Lazy next paint |
+| --- | ---: | --- | ---: | ---: |
+| Native | 250 | Single-field typing | <16 / 16 | <16 / 16 |
+| Native | 1,000 | Single-field typing | <16 / 16 | <16 / 16 |
+| 4x | 250 | Single-field typing | 24 / 24 | 24 / 24 |
+| 4x | 1,000 | Single-field typing | 32 / 40 | 32 / 40 |
+| Native | 250 | Whole-form typing | 16 / 16 | 16 / 16 |
+| Native | 1,000 | Whole-form typing | 16 / 16 | 16 / 24 |
+| 4x | 250 | Whole-form typing | 32 / 48 | 32 / 56 |
+| 4x | 1,000 | Whole-form typing | 96 / 152 | 104 / 168 |
+
+Both fresh-state modes painted the open-button feedback at p95 16 ms natively
+and 24 ms at 4x CPU for both counts. The shell click actually occurred while
+loading in 20/20 cases for each fresh-state mode/count/CPU combination; it had
+no observed long task. This measures input while awaiting data, not input
+deliberately injected into the later mount task.
+
+Cold **form-ready two-rAF proxy**, including the 40 ms provider delay:
+
+| CPU | Controls | Eager-fresh | Lazy |
+| --- | ---: | ---: | ---: |
+| Native | 250 | 76.4 / 86.5 ms | 71.8 / 84.6 ms |
+| Native | 1,000 | 77.4 / 88.5 ms | 80.4 / 91.9 ms |
+| 4x | 250 | 115.3 / 136.7 ms | 127.4 / 152.3 ms |
+| 4x | 1,000 | 225.8 / 370.1 ms | 250.7 / 346.9 ms |
+
+At 4x CPU, both modes encountered long tasks in **all 20 cold opens** of 1,000
+controls: maximum 262 ms eager-fresh and 233 ms lazy, with maximum rAF gaps
+300.1/283.3 ms. Whole-form typing encountered long tasks in **97/100 keystrokes**
+in both modes. At native speed neither fresh-state mode observed a long task in
+these measured actions. The JSON also records warm opening and closing.
+
+**Conclusion:** lazy delivery postpones work and reduces startup/retention costs;
+it does not make the mounted control tree intrinsically faster. A 1,000-control
+mount or global update can still visibly stall a CPU-constrained browser.
+Single-field edits are much cheaper than broadcast updates. These measurements
+do not establish a steady-state responsiveness improvement from `<if lazy>`.

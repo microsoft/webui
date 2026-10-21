@@ -64,6 +64,16 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
                 args: &["--check", "bench.mjs"],
                 cwd: Some("examples/integration/lazy-ui-bench"),
             },
+            BuildCommand {
+                cmd: "node",
+                args: &["--check", "responsiveness.mjs"],
+                cwd: Some("examples/integration/lazy-ui-bench"),
+            },
+            BuildCommand {
+                cmd: "node",
+                args: &["--test", "responsiveness.test.mjs"],
+                cwd: Some("examples/integration/lazy-ui-bench"),
+            },
         ],
         run_commands: &[],
     },
