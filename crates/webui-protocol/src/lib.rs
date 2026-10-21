@@ -23,8 +23,8 @@ pub mod projection_manifest;
 
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
-mod deferred;
-pub use deferred::{deferred_block_id, deferred_fragment_id};
+mod lazy;
+pub use lazy::{lazy_block_id, lazy_fragment_id};
 
 #[cfg(any(feature = "content-identity", feature = "projection-manifest"))]
 mod build_hash;
@@ -77,7 +77,7 @@ pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
 impl ClientFragmentData {
     /// Combine this body's template-read keys with its owner's authored state contract.
     ///
-    /// A deferred body keeps the existing owner; it does not introduce an
+    /// A lazy body keeps the existing owner; it does not introduce an
     /// independent component state boundary. Unproven authored state stays full.
     pub fn inherit_owner_state(&mut self, owner: &ComponentData) {
         match StateProjectionMode::try_from(owner.hydration_mode) {
@@ -253,19 +253,19 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::IfCond(WebUiFragmentIf {
                 condition: Some(condition),
                 fragment_id: fragment_id.into(),
-                deferred: false,
+                lazy: false,
             })),
         }
     }
 
     /// Create a conditional boundary whose client resources are delivered on demand.
     #[must_use]
-    pub fn deferred_if(condition: ConditionExpr, fragment_id: impl Into<String>) -> Self {
+    pub fn lazy_if(condition: ConditionExpr, fragment_id: impl Into<String>) -> Self {
         Self {
             fragment: Some(web_ui_fragment::Fragment::IfCond(WebUiFragmentIf {
                 condition: Some(condition),
                 fragment_id: fragment_id.into(),
-                deferred: true,
+                lazy: true,
             })),
         }
     }
@@ -1074,28 +1074,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deferred_is_an_extended_if_and_legacy_json_defaults_to_eager() {
-        let deferred = WebUIFragment::deferred_if(ConditionExpr::identifier("shown"), "body");
+    fn lazy_is_an_extended_if_without_legacy_json_aliases() {
+        let lazy = WebUIFragment::lazy_if(ConditionExpr::identifier("shown"), "body");
         assert!(
-            matches!(deferred.fragment, Some(web_ui_fragment::Fragment::IfCond(ref condition)) if condition.deferred)
+            matches!(lazy.fragment, Some(web_ui_fragment::Fragment::IfCond(ref condition)) if condition.lazy)
         );
-        let legacy: WebUIFragmentIf =
-            serde_json::from_str(r#"{"condition":null,"fragment_id":"body"}"#).unwrap();
-        assert!(!legacy.deferred);
+        for legacy in [
+            r#"{"condition":null,"fragment_id":"body"}"#,
+            r#"{"condition":null,"fragment_id":"body","deferred":true}"#,
+            r#"{"condition":null,"fragment_id":"body","lazy":true,"deferred":true}"#,
+        ] {
+            assert!(serde_json::from_str::<WebUIFragmentIf>(legacy).is_err());
+        }
+        let current: WebUIFragmentIf =
+            serde_json::from_str(r#"{"condition":null,"fragment_id":"body","lazy":true}"#).unwrap();
+        assert!(current.lazy);
     }
 
     #[test]
     fn client_fragments_are_payloads_without_component_ownership() {
         let mut protocol = WebUIProtocol::new(HashMap::new());
         protocol.client_fragments.insert(
-            "owner::defer:body".into(),
+            "owner::lazy:body".into(),
             ClientFragmentData {
                 owner: "owner".into(),
                 template_json: r#"{"h":"<p>Body</p>"}"#.into(),
                 ..Default::default()
             },
         );
-        let payload = protocol.client_template("owner::defer:body").unwrap();
+        let payload = protocol.client_template("owner::lazy:body").unwrap();
         assert_eq!(payload.metadata, r#"{"h":"<p>Body</p>"}"#);
         assert!(payload.legacy_html.is_empty());
         assert!(protocol.components.is_empty());

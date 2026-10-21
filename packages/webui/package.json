@@ -24,7 +24,7 @@
     "wasm/"
   ],
   "scripts": {
-    "test:wasm-deferred": "node test/wasm-deferred.mjs",
+    "test:wasm-lazy": "node test/wasm-lazy.mjs",
     "build": "tsc",
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",

@@ -14,7 +14,7 @@ pub(super) fn attach(
 ) -> Result<()> {
     let mut known = HashSet::with_capacity(templates.len());
     let mut payloads = Vec::with_capacity(templates.len());
-    let mut deferred_payloads = Vec::new();
+    let mut lazy_payloads = Vec::new();
     for template in templates {
         if template.template_json.is_empty() {
             continue;
@@ -24,11 +24,11 @@ pub(super) fn attach(
         payloads.push((
             tag,
             &mut template.template_json,
-            !template.deferred_templates.is_empty(),
+            !template.lazy_templates.is_empty(),
         ));
-        for fragment in &mut template.deferred_templates {
+        for fragment in &mut template.lazy_templates {
             known.insert(fragment.id.as_str());
-            deferred_payloads.push(&mut fragment.data);
+            lazy_payloads.push(&mut fragment.data);
         }
     }
     if payloads.is_empty() {
@@ -42,10 +42,10 @@ pub(super) fn attach(
             tag,
             json,
             &scratch.dependencies,
-            extracted || scratch.has_deferred,
+            extracted || scratch.has_lazy,
         )?;
     }
-    for data in deferred_payloads {
+    for data in lazy_payloads {
         data.dependencies.retain(|id| known.contains(id.as_str()));
         if !data.dependencies.is_empty() {
             data.template_json.truncate(data.template_json.len() - 1);
@@ -68,7 +68,7 @@ struct DependencyScratch<'a> {
     seen_components: HashSet<&'a str>,
     pending: Vec<&'a str>,
     dependencies: Vec<&'a str>,
-    has_deferred: bool,
+    has_lazy: bool,
 }
 
 impl<'a> DependencyScratch<'a> {
@@ -82,7 +82,7 @@ impl<'a> DependencyScratch<'a> {
         self.seen_components.clear();
         self.pending.clear();
         self.dependencies.clear();
-        self.has_deferred = false;
+        self.has_lazy = false;
         self.pending.push(root);
 
         while let Some(id) = self.pending.pop() {
@@ -107,10 +107,10 @@ impl<'a> DependencyScratch<'a> {
                     Some(Fragment::ForLoop(repeat)) => {
                         self.pending.push(repeat.fragment_id.as_str());
                     }
-                    Some(Fragment::IfCond(condition)) if !condition.deferred => {
+                    Some(Fragment::IfCond(condition)) if !condition.lazy => {
                         self.pending.push(condition.fragment_id.as_str());
                     }
-                    Some(Fragment::IfCond(_)) => self.has_deferred = true,
+                    Some(Fragment::IfCond(_)) => self.has_lazy = true,
                     Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
                         self.pending.push(attribute.template.as_str());
                     }
@@ -125,17 +125,12 @@ impl<'a> DependencyScratch<'a> {
     }
 }
 
-fn append_metadata(
-    tag: &str,
-    json: &mut String,
-    dependencies: &[&str],
-    deferred: bool,
-) -> Result<()> {
+fn append_metadata(tag: &str, json: &mut String, dependencies: &[&str], lazy: bool) -> Result<()> {
     if !json.starts_with('{') || !json.ends_with('}') {
         return Err(invalid_payload(tag));
     }
     json.truncate(json.len() - 1);
-    json.push_str(if deferred { ",\"v\":3" } else { ",\"v\":1" });
+    json.push_str(if lazy { ",\"v\":3" } else { ",\"v\":1" });
     if !dependencies.is_empty() {
         json.push_str(",\"d\":[");
         for (index, dependency) in dependencies.iter().enumerate() {

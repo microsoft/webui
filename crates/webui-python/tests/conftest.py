@@ -44,17 +44,17 @@ def streaming_renderer() -> Renderer:
 
 
 @pytest.fixture(scope="session")
-def deferred_renderer() -> Renderer:
+def lazy_renderer() -> Renderer:
     root = Path(__file__).resolve().parents[3]
     protocol = Path(os.environ.get(
-        "WEBUI_TEST_DEFERRED_PROTOCOL",
-        root / "target" / "python-deferred-test" / "protocol.bin",
+        "WEBUI_TEST_LAZY_PROTOCOL",
+        root / "target" / "python-lazy-test" / "protocol.bin",
     ))
     if not protocol.exists():
         subprocess.run(
             [
                 "cargo", "run", "--quiet", "-p", "microsoft-webui-cli", "--",
-                "build", str(FIXTURES / "deferred-app"), "--plugin", "webui",
+                "build", str(FIXTURES / "lazy-app"), "--plugin", "webui",
                 "--out", str(protocol),
             ],
             cwd=root,

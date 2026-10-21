@@ -215,10 +215,10 @@ Each side of a comparison is either a literal (number, quoted string, `true`,
 server send a precomputed `lastIndex` (or `isLast`) instead. Bare `.length` on an
 array or string does work: `<if condition="items.length > 3">`.
 
-### Deferred conditional bodies
+### Lazy conditional bodies
 
 ```html
-<if condition="settingsReady" defer id="settings">
+<if condition="settingsReady" lazy id="settings">
   <h2>Settings</h2>
   <p>{{displayName}}</p>
 </if>
@@ -226,22 +226,22 @@ array or string does work: `<if condition="items.length > 3">`.
 
 - The body is an ordinary template fragment, not a component. It keeps owner
   state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
-- Initially false omits deferred-only markup/metadata; initially true renders
+- Initially false omits lazy-only markup/metadata; initially true renders
   normally and hydrates existing DOM.
-- Import `@microsoft/webui-framework/deferred.js` for WebUI rendering.
-  Use `createDeferredLoader` from `@microsoft/webui-router/deferred.js` for
+- Import `@microsoft/webui-framework/lazy.js` for WebUI rendering.
+  Use `createLazyLoader` from `@microsoft/webui-router/lazy.js` for
   hydration-agnostic resource/state delivery. Routing is not started.
 - `ensureLoaded(owner, id)` preloads resources only. `fetchPartial(owner, id,
   { url, signal })` returns fresh state without mounting or changing global
   state. Apply state to the existing owner/scope, then change the condition.
-- JSON is the default transport. Import `deferredNdjson` from
-  `@microsoft/webui-router/deferred-ndjson.js` explicitly for metadata-first,
+- JSON is the default transport. Import `lazyNdjson` from
+  `@microsoft/webui-router/lazy-ndjson.js` explicitly for metadata-first,
   state-last delivery.
 - Give regions an owner-local `id` for application loading. Behavior modules
   remain explicit dynamic imports; deferral does not split owner JavaScript.
 - Do not combine this protocol-backed feature with `--emit-component-assets`.
 
-See [deferred UI](guide/concepts/deferred.md) for cancellation, dialog ownership,
+See [lazy UI](guide/concepts/lazy.md) for cancellation, dialog ownership,
 server APIs, and complete examples.
 
 ### Loops

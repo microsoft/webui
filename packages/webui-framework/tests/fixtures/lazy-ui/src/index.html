@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Lazy template bodies</title></head>
+<body>
+  <if condition="!dialogPage">
+    <test-lazy-shadow ?opened="{{initialOpen}}" label="Shadow"></test-lazy-shadow>
+    <test-lazy-light ?opened="{{initialOpen}}" label="Light"></test-lazy-light>
+  </if>
+  <if condition="dialogPage">
+    <test-lazy-dialog ?opened="{{initialOpen}}" label="Dialog"></test-lazy-dialog>
+  </if>
+</body>
+</html>

@@ -185,7 +185,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
 | `tx` | Text-binding runs, ordered slot + parts. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockRef, slot, deferred?]`; deferred is `1` when present. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, lazy?]`; lazy is `1` when present. |
 | `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |

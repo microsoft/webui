@@ -7,11 +7,9 @@
 //! into final HTML output based on provided data.
 
 pub mod css_module;
-mod deferred;
-mod deferred_response;
-pub use deferred_response::{
-    DeferredOptions, DeferredRequest, DeferredRequestError, PreparedDeferredResources,
-};
+mod lazy;
+mod lazy_response;
+pub use lazy_response::{LazyOptions, LazyRequest, LazyRequestError, PreparedLazyResources};
 pub(crate) mod html_encode;
 pub mod plugin;
 mod render_capacity;
@@ -77,9 +75,9 @@ use webui_state::find_value_by_dotted_path_ref;
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
-    /// Invalid target, identity, or availability information for deferred delivery.
-    #[error("deferred request [{}]: {}", .0.code, .0.message)]
-    DeferredRequest(Box<DeferredRequestError>),
+    /// Invalid target, identity, or availability information for lazy delivery.
+    #[error("lazy request [{}]: {}", .0.code, .0.message)]
+    LazyRequest(Box<LazyRequestError>),
     #[error("Rendering error: {0}")]
     Rendering(String),
 
@@ -927,7 +925,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Fragment lists resolve through numeric slots instead of per-fragment
     /// string hashing.
     pub(crate) render_fragments: ResolvedRenderFragmentIndex<'protocol>,
-    pub(crate) deferred_index: Option<&'protocol deferred::DeferredIndex>,
+    pub(crate) lazy_index: Option<&'protocol lazy::LazyIndex>,
     /// Build-constant component asset style metadata serialized once when the
     /// runtime [`Protocol`] is created.
     pub(crate) component_asset_style_manifest: &'protocol str,
@@ -2935,7 +2933,7 @@ impl WebUIHandler {
     }
 
     fn request_reachable_components(context: &WebUIProcessContext) -> Result<Vec<String>> {
-        let Some(index) = context.deferred_index else {
+        let Some(index) = context.lazy_index else {
             return Ok(
                 route_handler::collect_reachable_component_order_for_request(
                     context.protocol,
@@ -2945,7 +2943,7 @@ impl WebUIHandler {
                 ),
             );
         };
-        let active = deferred::select(deferred::SelectionInput {
+        let active = lazy::select(lazy::SelectionInput {
             protocol: context.protocol,
             render: &context.render_fragments,
             index,
@@ -2954,7 +2952,7 @@ impl WebUIHandler {
             request_path: context.request_path,
             routes: context.route_index,
         })?;
-        Ok(route_handler::collect_reachable_with_deferred(
+        Ok(route_handler::collect_reachable_with_lazy(
             context.protocol,
             context.entry_id,
             context.request_path,
@@ -3877,7 +3875,7 @@ impl WebUIHandler {
         }
 
         if condition_met {
-            if if_cond.deferred && context.streaming.is_some() {
+            if if_cond.lazy && context.streaming.is_some() {
                 record_checkpoint_tag(context, &if_cond.fragment_id);
             }
             if let Some(p) = &mut context.plugin {
@@ -4175,7 +4173,7 @@ impl WebUIHandler {
         let mut context = WebUIProcessContext {
             protocol: document,
             render_fragments,
-            deferred_index: protocol.deferred_index(),
+            lazy_index: protocol.lazy_index(),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,

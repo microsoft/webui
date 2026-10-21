@@ -7,10 +7,10 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 > 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/guide/concepts/routing) for setup and usage.
 
 The package also exposes hydration-agnostic delivery without starting routing:
-`resources.js` provides resource helpers, `deferred.js` provides named template
-preload/state requests, and `deferred-ndjson.js` opts into bounded two-phase
+`resources.js` provides resource helpers, `lazy.js` provides named template
+preload/state requests, and `lazy-ndjson.js` opts into bounded two-phase
 delivery. These entrypoints do not import the WebUI renderer or the router
-singleton. See [Deferred UI](https://microsoft.github.io/webui/guide/concepts/deferred).
+singleton. See [Lazy UI](https://microsoft.github.io/webui/guide/concepts/lazy).
 
 ## How It Works
 

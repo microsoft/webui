@@ -1,0 +1,61 @@
+<template shadowrootmode="open"
+  @overlay-notice="{onOverlayNotice(e)}"
+  @preferences-applied="{applyPreferences(e)}">
+  <main class="workspace" ?data-compact="{{compactMode}}" ?data-highlight="{{highlightPinned}}">
+    <header class="workspace-header">
+      <div class="heading">
+        <h1>{{workspaceName}}</h1>
+        <p>{{workspaceDescription}}</p>
+      </div>
+      <div class="toolbar" aria-label="Workspace tools">
+        <lazy-popover ?slow-data="{{slowData}}"></lazy-popover>
+        <lazy-dialog ?slow-data="{{slowData}}" ?compact-mode="{{compactMode}}"
+          ?highlight-pinned="{{highlightPinned}}"></lazy-dialog>
+      </div>
+    </header>
+
+    <section class="reading-list" aria-labelledby="list-title">
+      <div class="list-header">
+        <h2 id="list-title">Saved for later</h2>
+        <span>{{documents.length}} items</span>
+      </div>
+      <ul class="documents">
+        <for each="document in documents">
+          <li class="document-row" ?data-pinned="{{document.pinned}}">
+            <svg class="document-icon" viewBox="0 0 32 36" aria-hidden="true"><path d="M7 2h12l7 7v25H7zM19 2v8h7M12 17h9M12 22h9M12 27h6" /></svg>
+            <div class="document-content">
+              <h3>{{document.title}}</h3>
+              <p>{{document.description}}</p>
+              <div class="document-meta"><span>{{document.kind}}</span><span>{{document.updated}}</span></div>
+            </div>
+            <if condition="document.pinned"><span class="pinned">Pinned</span></if>
+          </li>
+        </for>
+      </ul>
+    </section>
+
+    <section class="demo-controls" aria-label="Example controls">
+      <label class="check-control">
+        <input type="checkbox" ?checked="{{slowData}}" @change="{changeDelay(e)}" />
+        <span>Simulate slow data <small>600 ms</small></span>
+      </label>
+      <button class="text-button" @click="{clearTemplateCache()}">Clear template cache</button>
+    </section>
+    <p class="announcement" role="status" aria-live="polite">{{announcement}}</p>
+
+    <details class="explanation">
+      <summary>How this example works</summary>
+      <p>The workspace is sample data. All content inside each native overlay is an inline
+        <code>&lt;if lazy&gt;</code> body, including its heading and close button.
+        Hover or focus warms resources; clicking requests fresh state before opening.
+        Cancel loading at the trigger or press Escape. Closing removes the lazy view.</p>
+      <p>The popover and dialog are separate components. Their lazy bodies stay
+        inline; no route or extra component is created for either body.</p>
+      <div class="ssr-links">
+        <span>Try initial SSR:</span>
+        <a href="./?open=popover">Open popover</a>
+        <a href="./?open=dialog">Open dialog</a>
+      </div>
+    </details>
+  </main>
+</template>

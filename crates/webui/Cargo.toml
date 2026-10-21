@@ -68,7 +68,7 @@ name = "server_request_bench"
 harness = false
 
 [[bench]]
-name = "deferred_bench"
+name = "lazy_bench"
 harness = false
 
 [[example]]

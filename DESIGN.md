@@ -70,7 +70,7 @@ selects transport and optional navigation policies. Convenience entry points may
 compose those capabilities, but lean entry points must not reach unselected
 implementations through either static or dynamic imports.
 
-Shared browser delivery remains hydration-agnostic. Navigation and deferred
+Shared browser delivery remains hydration-agnostic. Navigation and lazy
 template loading consume the same resource availability, build identity,
 preload, and transport mechanisms. A renderer adapter registers opaque compiled
 payloads, reports readiness and release, and owns its live views. Delivery does
@@ -109,7 +109,7 @@ become typed instructions or references. `<if>`, `<for>`, `<route>`,
 parser rejects invalid structure and unsupported syntax with source-located
 diagnostics, rather than trying to repair arbitrary browser HTML.
 
-A deferred `<if>` is an ordinary conditional with a delivery annotation. Its
+A lazy `<if>` is an ordinary conditional with a delivery annotation. Its
 body retains the enclosing template's state, lexical scope, refs, and event
 ownership. Compilation separates that body's client payload from eager owner
 metadata without introducing a custom-element host. The protocol retains both
@@ -256,7 +256,7 @@ the handler does not finish rendering into an abandoned channel. Host entry
 points may render a whole document, a component fragment, a route partial,
 or a host-paced streaming session from the same loaded protocol.
 
-Deferred-body requests name an existing owner and region, not a route. A preload
+Lazy-body requests name an existing owner and region, not a route. A preload
 delivers the body's ordinary resource closure without application state or DOM
 creation. A stateful response can send resources first and fresh scoped state
 later; the final record adds any nested deferred resources selected by that

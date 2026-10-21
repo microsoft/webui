@@ -123,8 +123,8 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
-        name: "deferred-ui",
-        dir: "examples/app/deferred-ui",
+        name: "lazy-ui",
+        dir: "examples/app/lazy-ui",
         ports: &[3021, 3011],
         scripts: &["start:api", "start:server"],
         build_client: false,

@@ -66,7 +66,7 @@ pub struct Protocol {
     /// Render plan prepared once at load: numeric fragment slots, per-fragment
     /// render targets, canonical component prop names, and route presence bits.
     render_fragments: crate::RenderFragmentIndex,
-    deferred_index: Option<crate::deferred::DeferredIndex>,
+    lazy_index: Option<crate::lazy::LazyIndex>,
     component_asset_style_manifest: std::result::Result<String, String>,
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
@@ -175,14 +175,13 @@ impl Protocol {
         // resolves targets through the slot map instead of re-searching by name.
         let render_fragments =
             crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
-        let deferred_index =
-            crate::deferred::DeferredIndex::new(&protocol, &fragment_ids, &fragment_slots);
+        let lazy_index = crate::lazy::LazyIndex::new(&protocol, &fragment_ids, &fragment_slots);
         Self {
             protocol,
             style_metadata_error,
             css_strategy,
             render_fragments,
-            deferred_index,
+            lazy_index,
             component_asset_style_manifest,
             component_asset_style_links,
             component_index,
@@ -217,8 +216,8 @@ impl Protocol {
         &self.render_fragments
     }
 
-    pub(crate) fn deferred_index(&self) -> Option<&crate::deferred::DeferredIndex> {
-        self.deferred_index.as_ref()
+    pub(crate) fn lazy_index(&self) -> Option<&crate::lazy::LazyIndex> {
+        self.lazy_index.as_ref()
     }
 
     pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
@@ -347,7 +346,7 @@ impl Protocol {
         inventory_hex: &str,
     ) -> Result<String, HandlerError> {
         self.ensure_style_metadata()?;
-        if self.deferred_index.as_ref().is_some_and(|index| {
+        if self.lazy_index.as_ref().is_some_and(|index| {
             self.fragment_slot(entry_id)
                 .is_some_and(|slot| index.relevant(slot as usize, false))
         }) {
@@ -405,10 +404,10 @@ impl Protocol {
         self.ensure_style_metadata()?;
         let render = self.render_fragments.resolve(self.protocol());
         let active = self
-            .deferred_index
+            .lazy_index
             .as_ref()
             .map(|index| {
-                crate::deferred::select(crate::deferred::SelectionInput {
+                crate::lazy::select(crate::lazy::SelectionInput {
                     protocol: self.protocol(),
                     render: &render,
                     index,
@@ -420,7 +419,7 @@ impl Protocol {
             })
             .transpose()?;
         let mut index = self.request_index();
-        index.active_deferred = active.as_ref();
+        index.active_lazy = active.as_ref();
         let (response, state_selection, matched) = render_partial_indexed_with_state(
             self.protocol(),
             entry_id,
@@ -572,7 +571,7 @@ impl Protocol {
             style_resource_index: self.style_resource_index(),
             route_index: &self.route_index,
             template_metadata_cache: TemplateMetadataCache::Shared(&self.template_metadata_cache),
-            active_deferred: None,
+            active_lazy: None,
         }
     }
 }
@@ -1112,7 +1111,7 @@ impl ProtocolIndex {
             template_metadata_cache: TemplateMetadataCache::Exclusive(
                 &mut self.template_metadata_cache,
             ),
-            active_deferred: None,
+            active_lazy: None,
         }
     }
 }
@@ -1128,7 +1127,7 @@ struct RequestProtocolIndex<'a> {
     style_resource_index: &'a HashMap<String, u32>,
     route_index: &'a CompiledRouteIndex,
     template_metadata_cache: TemplateMetadataCache<'a>,
-    active_deferred: Option<&'a crate::deferred::DeferredSelection<'a>>,
+    active_lazy: Option<&'a crate::lazy::LazySelection<'a>>,
 }
 
 // ── Component Inventory ─────────────────────────────────────────────────
@@ -1452,7 +1451,7 @@ fn collect_direct_component_dependencies(
                         Some(Fragment::ForLoop(for_loop)) => work.push(
                             ComponentDependencyWork::Fragment(for_loop.fragment_id.as_str()),
                         ),
-                        Some(Fragment::IfCond(if_cond)) if !if_cond.deferred => work.push(
+                        Some(Fragment::IfCond(if_cond)) if !if_cond.lazy => work.push(
                             ComponentDependencyWork::Fragment(if_cond.fragment_id.as_str()),
                         ),
                         Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
@@ -2169,19 +2168,19 @@ pub(crate) fn collect_reachable_component_order_for_request(
     collect_inventoryable_components(protocol, entry_id, Some(request_path), false, route_index)
 }
 
-pub(crate) fn collect_reachable_with_deferred<'protocol>(
+pub(crate) fn collect_reachable_with_lazy<'protocol>(
     protocol: &'protocol WebUIProtocol,
     entry_id: &'protocol str,
     request_path: &str,
     route_index: &CompiledRouteIndex,
-    active: Option<&crate::deferred::DeferredSelection<'protocol>>,
+    active: Option<&crate::lazy::LazySelection<'protocol>>,
 ) -> Vec<String> {
     let mut arena = RouteBaseArena::new();
     collect_inventoryable_components_from_stack(
         protocol,
         ComponentWalk {
             request_path: Some(request_path),
-            active_deferred: active,
+            active_lazy: active,
         },
         route_index,
         vec![QueuedFragment {
@@ -2385,7 +2384,7 @@ fn collect_inventoryable_components<'protocol>(
         protocol,
         ComponentWalk {
             request_path,
-            active_deferred: None,
+            active_lazy: None,
         },
         route_index,
         stack,
@@ -2427,7 +2426,7 @@ pub(crate) fn collect_reachable_components_from_roots<'protocol>(
         protocol,
         ComponentWalk {
             request_path: Some(request_path),
-            active_deferred: None,
+            active_lazy: None,
         },
         route_index,
         stack,
@@ -2437,7 +2436,7 @@ pub(crate) fn collect_reachable_components_from_roots<'protocol>(
 
 struct ComponentWalk<'request, 'protocol> {
     request_path: Option<&'request str>,
-    active_deferred: Option<&'request crate::deferred::DeferredSelection<'protocol>>,
+    active_lazy: Option<&'request crate::lazy::LazySelection<'protocol>>,
 }
 
 fn collect_inventoryable_components_from_stack<'protocol>(
@@ -2514,8 +2513,8 @@ fn collect_inventoryable_components_from_stack<'protocol>(
                     });
                 }
                 Some(Fragment::IfCond(if_cond))
-                    if !if_cond.deferred
-                        || walk.active_deferred.is_some_and(|active| {
+                    if !if_cond.lazy
+                        || walk.active_lazy.is_some_and(|active| {
                             active.contains(if_cond.fragment_id.as_str())
                         }) =>
                 {
@@ -2987,8 +2986,8 @@ fn collect_inventory_and_chain<'protocol>(
                     });
                 }
                 Some(Fragment::IfCond(if_cond))
-                    if !if_cond.deferred
-                        || index.active_deferred.is_some_and(|active| {
+                    if !if_cond.lazy
+                        || index.active_lazy.is_some_and(|active| {
                             active.contains(if_cond.fragment_id.as_str())
                         }) =>
                 {

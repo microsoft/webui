@@ -92,12 +92,12 @@ pub struct ComponentTemplateArtifact {
     /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,
     /// Hostless compiled sections extracted from deferred bodies of this template.
-    pub deferred_templates: Vec<DeferredTemplateArtifact>,
+    pub lazy_templates: Vec<LazyTemplateArtifact>,
 }
 
 /// An independently delivered template section without a component host.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeferredTemplateArtifact {
+pub struct LazyTemplateArtifact {
     /// Resource key, also the server body record id for public deferred roots.
     pub id: String,
     /// Owning template, optional authored id, metadata, and dependency surface.
@@ -118,7 +118,7 @@ impl ComponentTemplateArtifact {
             template_roots: Vec::new(),
             is_scripted: false,
             uses_shadow_dom,
-            deferred_templates: Vec::new(),
+            lazy_templates: Vec::new(),
         }
     }
 
@@ -143,7 +143,7 @@ impl ComponentTemplateArtifact {
             template_roots: Vec::new(),
             is_scripted: false,
             uses_shadow_dom,
-            deferred_templates: Vec::new(),
+            lazy_templates: Vec::new(),
         }
     }
 
@@ -293,7 +293,7 @@ pub struct ComponentProcessing {
 /// WebUI calls these hooks during parsing; plugins decide what (if anything) to do.
 pub trait ParserPlugin {
     /// Whether the plugin can represent deferred bodies without a component boundary.
-    fn supports_deferred_fragments(&self) -> bool {
+    fn supports_lazy_fragments(&self) -> bool {
         false
     }
 

@@ -195,14 +195,14 @@ internal static class NativeBindings
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_protocol_render_deferred_resources(
+    internal static extern IntPtr webui_protocol_render_lazy_resources(
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string optionsJson);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_protocol_prepare_deferred_resources(
+    internal static extern IntPtr webui_protocol_prepare_lazy_resources(
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
@@ -210,7 +210,7 @@ internal static class NativeBindings
         out IntPtr updatedOptionsJson);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_protocol_render_deferred_partial(
+    internal static extern IntPtr webui_protocol_render_lazy_partial(
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
@@ -395,7 +395,7 @@ internal static class NativeBindings
         }
     }
 
-    internal static (string Json, string Options) ReadAndFreeDeferred(IntPtr json, IntPtr options)
+    internal static (string Json, string Options) ReadAndFreeLazy(IntPtr json, IntPtr options)
     {
         try
         {

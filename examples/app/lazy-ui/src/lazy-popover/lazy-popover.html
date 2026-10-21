@@ -1,0 +1,45 @@
+<template shadowrootmode="open" @keydown="{onKeydown(e)}">
+  <button class="button activity-trigger" popovertarget="activity-popover"
+    w-ref="{triggerElement}" aria-busy="{{activityLoading}}"
+    @pointerenter="{preload()}" @focus="{preload()}">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l3 2M4.2 8A8 8 0 1 1 4 16M4 3v5h5" /></svg>
+    <if condition="activityLoading">Cancel activity load</if>
+    <if condition="!activityLoading">Recent activity</if>
+  </button>
+
+  <if condition="activityLoading">
+    <p class="loading-state" role="status"><span class="loading-dot" aria-hidden="true"></span>Loading activity...</p>
+  </if>
+  <if condition="activityError">
+    <div class="error-state" role="alert">
+      <p>{{activityError}}</p>
+      <button class="button" @click="{load()}">Try again</button>
+    </div>
+  </if>
+
+  <div id="activity-popover" class="activity-popover" popover="auto" role="region"
+    aria-labelledby="activity-title" w-ref="{popoverElement}"
+    @beforetoggle="{onToggle(e)}" @toggle="{onToggled(e)}">
+    <if condition="activityReady" lazy id="activity">
+      <header class="overlay-header">
+        <h2 id="activity-title">Recent activity</h2>
+        <button class="icon-button" popovertarget="activity-popover" popovertargetaction="hide" aria-label="Close activity">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="activity-body">
+        <p class="overlay-intro">{{activitySummary}}</p>
+        <h3 class="section-label">Review queue</h3>
+        <ul class="activity-list">
+          <for each="item in activityItems">
+            <li>
+              <div class="activity-line"><strong>{{item.title}}</strong><span>{{item.action}}</span></div>
+              <p>{{item.description}}</p>
+            </li>
+          </for>
+        </ul>
+        <p class="response-stamp">{{activityStamp}}</p>
+      </div>
+    </if>
+  </div>
+</template>

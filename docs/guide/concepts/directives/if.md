@@ -12,13 +12,13 @@ The `<if>` directive allows you to conditionally render content based on a boole
 
 In this example, the welcome message will only be rendered if `isLoggedIn` evaluates to `true` in the current state.
 
-## Deferred bodies
+## Lazy bodies
 
-Add boolean `defer` to retain an ordinary template body in the protocol without
+Add boolean `lazy` to retain an ordinary template body in the protocol without
 eagerly delivering it while its condition is false:
 
 ```html
-<if condition="settingsReady" defer id="settings">
+<if condition="settingsReady" lazy id="settings">
   <h2>Settings</h2>
   <p>{{displayName}}</p>
 </if>
@@ -28,7 +28,7 @@ An initially true condition still renders on the server. The body keeps its
 owning template's state, events, refs, and loop scope; it does not become a
 component, and DOM-mode rules are unchanged. Await its resources/state before
 turning an initially inactive condition on. See
-[deferred template bodies](../deferred) for the renderer adapter, preload,
+[lazy template bodies](../lazy) for the renderer adapter, preload,
 state requests, and host endpoints.
 
 ## Condition Expressions

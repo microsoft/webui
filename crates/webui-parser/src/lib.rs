@@ -13,11 +13,11 @@ mod css_light;
 mod css_link;
 mod css_parser;
 mod css_scan;
-mod deferred;
 mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod lazy;
 mod outlet_warnings;
 pub mod plugin;
 mod route_parser;
@@ -753,7 +753,7 @@ enum ParseOp<'a> {
         parent: ParseContext,
         condition: ConditionExpr,
         fragment_id: String,
-        deferred: bool,
+        lazy: bool,
     },
 }
 
@@ -831,8 +831,8 @@ pub struct HtmlParser {
 
     /// Next protocol-wide compile-time boundary declaration identity.
     next_boundary_declaration_id: u32,
-    deferred_ordinal: usize,
-    deferred_names: HashSet<String>,
+    lazy_ordinal: usize,
+    lazy_names: HashSet<String>,
 
     /// Authored boundary names keyed by their owning entry/component template.
     boundary_names_by_owner: HashMap<String, HashSet<String>>,
@@ -1550,8 +1550,8 @@ impl HtmlParser {
             named_for_loops: NamedForLoops::default(),
             named_for_fragment_ids: HashSet::new(),
             next_boundary_declaration_id: 0,
-            deferred_ordinal: 0,
-            deferred_names: HashSet::new(),
+            lazy_ordinal: 0,
+            lazy_names: HashSet::new(),
             boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
             boundary_ancestor_depth: 0,
@@ -2479,11 +2479,11 @@ impl HtmlParser {
             .entry(fragment_key.clone())
             .or_insert(owner_index);
 
-        let previous_deferred_ordinal = std::mem::replace(&mut self.deferred_ordinal, 0);
-        let previous_deferred_names = std::mem::take(&mut self.deferred_names);
+        let previous_lazy_ordinal = std::mem::replace(&mut self.lazy_ordinal, 0);
+        let previous_lazy_names = std::mem::take(&mut self.lazy_names);
         let mut result = self.parse_inner(fragment_id, html_content);
-        self.deferred_ordinal = previous_deferred_ordinal;
-        self.deferred_names = previous_deferred_names;
+        self.lazy_ordinal = previous_lazy_ordinal;
+        self.lazy_names = previous_lazy_names;
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
             if result.is_ok() {
@@ -2560,11 +2560,11 @@ impl HtmlParser {
         condition: ConditionExpr,
         fragment_id: String,
         fragments: &mut Vec<WebUIFragment>,
-        deferred: bool,
+        lazy: bool,
     ) {
         self.flush_raw_buffer(fragments);
-        fragments.push(if deferred {
-            WebUIFragment::deferred_if(condition, fragment_id)
+        fragments.push(if lazy {
+            WebUIFragment::lazy_if(condition, fragment_id)
         } else {
             WebUIFragment::if_cond(condition, fragment_id)
         });
@@ -2867,7 +2867,7 @@ impl HtmlParser {
                     parent,
                     condition,
                     fragment_id,
-                    deferred,
+                    lazy,
                 } => {
                     self.flush_raw_buffer(fragments);
                     let if_fragment = std::mem::take(fragments);
@@ -2881,7 +2881,7 @@ impl HtmlParser {
                             contains_boundary: false,
                         },
                     );
-                    self.add_if_fragment(condition, fragment_id, fragments, deferred);
+                    self.add_if_fragment(condition, fragment_id, fragments, lazy);
                 }
             }
         }
@@ -3365,6 +3365,12 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
+        if element.has_attr("defer") {
+            return Err(lazy::removed_defer_attribute()
+                .component(&self.current_fragment_id)
+                .at_offset(element.source(), element.start)
+                .into());
+        }
         let condition_str = element
             .attr("condition")
             .ok_or_else(|| self.if_condition_missing_error(element))?;
@@ -3374,22 +3380,22 @@ impl HtmlParser {
             .parse(strip_condition_braces(condition_str))
             .map_err(|_| self.if_condition_invalid_error(element, condition_str))?;
 
-        let deferred = element.has_attr("defer");
-        if deferred {
-            self.validate_deferred_condition(element)?;
+        let lazy = element.has_attr("lazy");
+        if lazy {
+            self.validate_lazy_condition(element)?;
         }
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
             fragments: std::mem::take(fragments),
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
-        let fragment_id = if deferred {
-            let id = deferred::fragment_id(
+        let fragment_id = if lazy {
+            let id = lazy::fragment_id(
                 &self.current_fragment_id,
                 element.attr("id"),
-                self.deferred_ordinal,
+                self.lazy_ordinal,
             );
-            self.deferred_ordinal += 1;
+            self.lazy_ordinal += 1;
             id
         } else {
             self.next_fragment_id("if")
@@ -3399,7 +3405,7 @@ impl HtmlParser {
             parent,
             condition,
             fragment_id,
-            deferred,
+            lazy,
         });
         ops.push(ParseOp::Parse {
             range: element.inner(),
@@ -3410,44 +3416,44 @@ impl HtmlParser {
 
     #[cold]
     #[inline(never)]
-    fn validate_deferred_condition(&mut self, element: &Element<'_>) -> Result<()> {
-        if element.attr("defer").is_some_and(|value| !value.is_empty()) {
+    fn validate_lazy_condition(&mut self, element: &Element<'_>) -> Result<()> {
+        if element.attr("lazy").is_some_and(|value| !value.is_empty()) {
             return Err(self
                 .authoring_error_at(
-                    codes::INVALID_DEFERRED_ATTRIBUTE,
-                    "defer must be a boolean attribute",
+                    codes::INVALID_LAZY_ATTRIBUTE,
+                    "lazy must be a boolean attribute",
                     element,
                 )
                 .element("if")
-                .help("write <if condition=\"ready\" defer>; use condition to control activation")
+                .help("write <if condition=\"ready\" lazy>; use condition to control activation")
                 .into());
         }
         if self
             .plugin
             .as_ref()
-            .is_some_and(|plugin| !plugin.supports_deferred_fragments())
+            .is_some_and(|plugin| !plugin.supports_lazy_fragments())
         {
             return Err(self
                 .authoring_error_at(
-                    codes::UNSUPPORTED_DEFERRED_PLUGIN,
-                    "the selected client plugin does not support deferred template bodies",
+                    codes::UNSUPPORTED_LAZY_PLUGIN,
+                    "the selected client plugin does not support lazy template bodies",
                     element,
                 )
                 .element("if")
-                .help("select a client plugin with deferred fragment support, or remove defer")
+                .help("select a client plugin with lazy fragment support, or remove lazy")
                 .into());
         }
         if let Some(name) = element.attr("id") {
-            if !deferred::valid_name(name) {
-                return Err(self.authoring_error_at(codes::INVALID_DEFERRED_ID,
-                    "invalid deferred region id", element).element("if")
+            if !lazy::valid_name(name) {
+                return Err(self.authoring_error_at(codes::INVALID_LAZY_ID,
+                    "invalid lazy region id", element).element("if")
                     .help("use 1-128 ASCII letters, digits, periods, underscores, or hyphens, e.g. id=\"settings\"").into());
             }
-            if !self.deferred_names.insert(name.to_owned()) {
+            if !self.lazy_names.insert(name.to_owned()) {
                 return Err(self
                     .authoring_error_at(
-                        codes::DUPLICATE_DEFERRED_ID,
-                        "duplicate deferred region id",
+                        codes::DUPLICATE_LAZY_ID,
+                        "duplicate lazy region id",
                         element,
                     )
                     .element("if")
@@ -9510,7 +9516,7 @@ mod tests {
             r#"<script type="module" src="/{{bundle}}.js"></script>"#,
             "</head>",
             "<body>",
-            // Skipped: an island loader is deferred on purpose.
+            // Skipped: an island loader is lazy on purpose.
             r#"<boundary name="weather">"#,
             r#"<script type="module" async src="/weather-panel.js"></script>"#,
             "<weather-island></weather-island>",

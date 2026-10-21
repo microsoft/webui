@@ -12,29 +12,29 @@ serde_json = "1"
 
 The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
 
-## Deferred template responses
+## Lazy template responses
 
-Use `DeferredRequest` to address an existing template's named
-[deferred body](../concepts/deferred):
+Use `LazyRequest` to address an existing template's named
+[lazy body](../concepts/lazy):
 
 ```rust
-use webui::{DeferredOptions, DeferredRequest};
+use webui::{LazyOptions, LazyRequest};
 
-let request = DeferredRequest::new("app-shell", "settings")
+let request = LazyRequest::new("app-shell", "settings")
     .with_options(&client_options);
-let prepared = protocol.prepare_deferred_resources(request)?;
+let prepared = protocol.prepare_lazy_resources(request)?;
 // Flush prepared.json as the first NDJSON record.
 
-let state_record = protocol.render_deferred_partial(
+let state_record = protocol.render_lazy_partial(
     &scoped_state,
-    DeferredRequest::new("app-shell", "settings").with_options(&prepared.options),
+    LazyRequest::new("app-shell", "settings").with_options(&prepared.options),
 )?;
 // Flush state_record as the terminal record.
 ```
 
 The application owns authentication, scheduling its state provider, cancellation,
-and transport backpressure. `render_deferred_resources` returns resource-only
-JSON; `render_deferred_partial_json` accepts serialized state. Parsed-state
+and transport backpressure. `render_lazy_resources` returns resource-only
+JSON; `render_lazy_partial_json` accepts serialized state. Parsed-state
 rendering borrows the tree rather than cloning it. Options carry `inventory`,
 `style_inventory`, and `build_id`; resource availability never replaces fresh
 application state.

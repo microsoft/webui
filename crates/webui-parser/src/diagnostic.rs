@@ -82,13 +82,15 @@ pub mod codes {
     /// `<if condition>` value is not a parseable expression.
     pub const INVALID_IF_CONDITION: &str = "invalid-if-condition";
     /// A deferred region id is not a static, bounded identifier.
-    pub const INVALID_DEFERRED_ID: &str = "invalid-deferred-id";
+    pub const INVALID_LAZY_ID: &str = "invalid-lazy-id";
     /// Deferred region ids must be unique within their owning template.
-    pub const DUPLICATE_DEFERRED_ID: &str = "duplicate-deferred-id";
-    /// `defer` is a boolean directive attribute, not a state binding.
-    pub const INVALID_DEFERRED_ATTRIBUTE: &str = "invalid-deferred-attribute";
+    pub const DUPLICATE_LAZY_ID: &str = "duplicate-lazy-id";
+    /// The removed if attribute must not silently become an eager conditional.
+    pub const REMOVED_IF_DEFER: &str = "removed-if-defer";
+    /// `lazy` is a boolean directive attribute, not a state binding.
+    pub const INVALID_LAZY_ATTRIBUTE: &str = "invalid-lazy-attribute";
     /// The selected client plugin does not support deferred component metadata.
-    pub const UNSUPPORTED_DEFERRED_PLUGIN: &str = "unsupported-deferred-plugin";
+    pub const UNSUPPORTED_LAZY_PLUGIN: &str = "unsupported-lazy-plugin";
     /// A component tag has no matching registered component.
     pub const UNKNOWN_COMPONENT: &str = "unknown-component";
     /// An `@event` handler value is not a valid `{handler()}` expression.
@@ -200,7 +202,7 @@ pub mod codes {
     /// Static component assets were requested for a graph containing `<route>`.
     pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
     /// Deferred protocol-backed bodies cannot be pruned into static-only assets.
-    pub const COMPONENT_ASSETS_WITH_DEFERRED: &str = "component-assets-with-deferred";
+    pub const COMPONENT_ASSETS_WITH_LAZY: &str = "component-assets-with-lazy";
     /// A component's root rendering or hydration policy is malformed.
     pub const INVALID_COMPONENT_RENDER_POLICY: &str = "invalid-component-render-policy";
     /// Lazy rendering omitted the intrinsic block-size estimate needed to

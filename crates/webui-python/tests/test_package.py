@@ -39,8 +39,8 @@ def test_public_surface_and_version() -> None:
     assert set(microsoft_webui.__all__) == {
         "BoundaryDescriptor",
         "BoundaryMode",
-        "DeferredOptions",
-        "PreparedDeferredResources",
+        "LazyOptions",
+        "PreparedLazyResources",
         "Plugin",
         "ProtocolError",
         "RenderError",

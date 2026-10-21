@@ -606,8 +606,8 @@ successful rebuild clears the error and reloads connected browsers.
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
-| `/_webui/deferred?owner=...&id=...` | Resource-only JSON for a named deferred template body |
-| `/_webui/deferred/state?owner=...&id=...` | Fresh configured/API state with missing resources; JSON or explicit NDJSON |
+| `/_webui/lazy?owner=...&id=...` | Resource-only JSON for a named deferred template body |
+| `/_webui/lazy/state?owner=...&id=...` | Fresh configured/API state with missing resources; JSON or explicit NDJSON |
 | `/*.webui.js` | In-memory generated root and component modules emitted by `--emit-component-assets` |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
@@ -618,7 +618,7 @@ Deferred endpoints use `X-WebUI-Inventory`, `X-WebUI-Style-Inventory`, and
 `X-WebUI-Build`. Unknown regions return 404, incompatible builds return 409, and
 invalid availability input returns 400. A state-provider failure is not replaced
 with stale file state after a resource record has been sent.
-See [deferred UI](../concepts/deferred) for authoring and production host APIs.
+See [deferred UI](../concepts/lazy) for authoring and production host APIs.
 
 ### `webui desktop`
 

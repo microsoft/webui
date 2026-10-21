@@ -49,16 +49,16 @@ public class ProtocolTests
     }
 
     [Fact]
-    public void Protocol_DeferredResourcesAndState_PreserveAcknowledgementAndProjection()
+    public void Protocol_LazyResourcesAndState_PreserveAcknowledgementAndProjection()
     {
         using var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
-            AppContext.BaseDirectory, "fixtures", "deferred-app", "protocol.bin")));
-        var prepared = protocol.PrepareDeferredResources("test-panel", "details");
+            AppContext.BaseDirectory, "fixtures", "lazy-app", "protocol.bin")));
+        var prepared = protocol.PrepareLazyResources("test-panel", "details");
         using var metadata = JsonDocument.Parse(prepared.Json);
-        Assert.Equal("webui-deferred", metadata.RootElement.GetProperty("type").GetString());
+        Assert.Equal("webui-lazy", metadata.RootElement.GetProperty("type").GetString());
         Assert.False(metadata.RootElement.TryGetProperty("state", out _));
-        Assert.Equal(prepared.Json, protocol.RenderDeferredResources("test-panel", "details"));
-        string body = protocol.RenderDeferredPartial(
+        Assert.Equal(prepared.Json, protocol.RenderLazyResources("test-panel", "details"));
+        string body = protocol.RenderLazyPartial(
             """{"message":"Fresh","items":["one"],"unused":"not sent"}""",
             "test-panel", "details", prepared.Options);
         using var response = JsonDocument.Parse(body);
@@ -68,15 +68,15 @@ public class ProtocolTests
     }
 
     [Fact]
-    public void Protocol_DeferredRequests_RejectMissingTargetsStaleBuildsAndDisposedHandles()
+    public void Protocol_LazyRequests_RejectMissingTargetsStaleBuildsAndDisposedHandles()
     {
         var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
-            AppContext.BaseDirectory, "fixtures", "deferred-app", "protocol.bin")));
-        Assert.Throws<WebUIException>(() => protocol.RenderDeferredResources("test-panel", "missing"));
-        Assert.Throws<WebUIException>(() => protocol.RenderDeferredResources("test-panel", "details",
-            new DeferredOptions { BuildId = "different" }));
+            AppContext.BaseDirectory, "fixtures", "lazy-app", "protocol.bin")));
+        Assert.Throws<WebUIException>(() => protocol.RenderLazyResources("test-panel", "missing"));
+        Assert.Throws<WebUIException>(() => protocol.RenderLazyResources("test-panel", "details",
+            new LazyOptions { BuildId = "different" }));
         protocol.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => protocol.RenderDeferredPartial("{}", "test-panel", "details"));
+        Assert.Throws<ObjectDisposedException>(() => protocol.RenderLazyPartial("{}", "test-panel", "details"));
     }
 
     [Fact]

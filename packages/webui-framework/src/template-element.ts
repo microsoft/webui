@@ -48,7 +48,7 @@
  */
 
 import { deferTemplateDefinition, getTemplate } from './template-registry.js';
-import { deferredBlockOwner, findDeferredFragment, requireDeferredFragment } from './deferred-contract.js';
+import { lazyBlockOwner, findLazyFragment, requireLazyFragment } from './lazy-contract.js';
 import { templateCacheHooks } from './template-cache-contract.js';
 import {
   cloneTemplateContent,
@@ -1821,7 +1821,7 @@ export class TemplateElement extends HTMLElement {
     };
     if (meta.f) instance.fragment = meta;
     else if (this.$meta?.v === 3) {
-      const fragment = deferredBlockOwner(meta);
+      const fragment = lazyBlockOwner(meta);
       if (fragment) instance.fragment = fragment;
     }
 
@@ -1986,7 +1986,7 @@ export class TemplateElement extends HTMLElement {
     };
     if (meta.f) instance.fragment = meta;
     else if (this.$meta?.v === 3) {
-      const fragment = deferredBlockOwner(meta);
+      const fragment = lazyBlockOwner(meta);
       if (fragment) instance.fragment = fragment;
     }
 
@@ -2121,7 +2121,7 @@ export class TemplateElement extends HTMLElement {
         }
         if (!blockMeta && typeof blockIndex === 'string' && marker?.nextSibling &&
             !(marker.nextSibling.nodeType === 8 && (marker.nextSibling as Comment).data === MARKER_COND_END)) {
-          blockMeta = requireDeferredFragment(blockIndex, this.localName);
+          blockMeta = requireLazyFragment(blockIndex, this.localName);
         }
         // Trust the SSR marker range regardless of the current condition.
         // Parent bindings may not have arrived yet, so the client value can
@@ -2994,7 +2994,7 @@ export class TemplateElement extends HTMLElement {
   }
 
   $block(blockIndex: TemplateBlockReference, fragment?: TemplateMeta): TemplateBlockMeta | undefined {
-    if (typeof blockIndex === 'string') return findDeferredFragment(blockIndex, this.localName);
+    if (typeof blockIndex === 'string') return findLazyFragment(blockIndex, this.localName);
     return blockIndex < 0 ? fragment?.b?.[-blockIndex - 1] : this.$meta?.b?.[blockIndex];
   }
 
@@ -3006,9 +3006,9 @@ export class TemplateElement extends HTMLElement {
   ): TemplateInstance | null {
     const bm = typeof blockIndex === 'number'
       ? this.$block(blockIndex, parent?.fragment)
-      : requireDeferredFragment(blockIndex, this.localName);
+      : requireLazyFragment(blockIndex, this.localName);
     if (!bm && typeof blockIndex === 'number' && blockIndex < 0) {
-      throw new Error('[WebUI] Missing deferred block. Reload matching resources.');
+      throw new Error('[WebUI] Missing lazy block. Reload matching resources.');
     }
     if (!bm) return null;
     const wrapper = this.$createStagingRoot(bm);

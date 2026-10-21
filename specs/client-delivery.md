@@ -14,9 +14,9 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
 - The lean router owns URL/history and authoritative-chain reconciliation.
   Its constructor accepts coarse capabilities for optional policies; it has no
   static or dynamic import of their implementations.
-- Deferred delivery is another consumer of the neutral resource layer, not part
+- Lazy delivery is another consumer of the neutral resource layer, not part
   of navigation or the element renderer. JSON and NDJSON are separately selected.
-  The WebUI deferred entry only resolves hostless sections and their owner context.
+  The WebUI lazy entry only resolves hostless sections and their owner context.
 - JSON partial consumers import resource registration but not the NDJSON reader.
   Selecting NDJSON changes content negotiation and makes the decoder available
   before the first response.
@@ -40,7 +40,7 @@ captures the epoch before starting; after collection its resource data may still
 be accepted, but its old inventory acknowledgement cannot resurrect evicted bits.
 
 This local epoch is distinct from the compiler's deterministic artifact identity.
-Deferred requests send `buildId` with nonempty inventory. The server rejects a
+Lazy requests send `buildId` with nonempty inventory. The server rejects a
 different build, and clients validate response identity before resource mutation.
 Initial and partial payloads carry the identity. An old bitset is never
 reinterpreted against a new artifact.
@@ -82,9 +82,9 @@ Resource work can be shared; navigation generations and request cancellation
 are consumer-owned. Cancelling one reader does not cancel a shared stylesheet
 preparation promise.
 
-## Deferred template bodies
+## Lazy template bodies
 
-`WebUIFragmentIf.deferred` extends the existing if instruction. `fragment_id`
+`WebUIFragmentIf.lazy` extends the existing if instruction. `fragment_id`
 still references its ordinary server body. Client payloads live in the
 `client_fragments` table; they are not `ComponentData` entries or custom elements.
 Owner-scoped authored ids are stable application addresses. Anonymous identities
@@ -105,7 +105,7 @@ owners retain only fragments needed for a later reconnect. Closing a body
 releases its view ownership. Unhydrated SSR owners are pinned conservatively
 until the renderer can take over that ownership.
 
-A deferred response has `type: "webui-deferred"`, `version: 1`, `owner`,
+A deferred response has `type: "webui-lazy"`, `version: 1`, `owner`,
 `fragment`, `buildId`, both inventories, and `required` resource identities.
 Template/function/style maps are omitted when unnecessary. `state` distinguishes
 a complete or terminal response from resource-only metadata. Resource preload

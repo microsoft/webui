@@ -36,8 +36,8 @@ const entries = {
   fullRouter: `import { Router } from ${router('index.ts')}; Router.start();`,
   resources: `export { fetchComponentTemplates, readJsonPartial } from ${router('resources-entry.ts')};`,
   records: `export { NdjsonReader } from ${router('ndjson-reader.ts')};`,
-  deferredJson: `export { createDeferredLoader } from ${router('deferred-entry.ts')};`,
-  deferredStream: `import { createDeferredLoader } from ${router('deferred-entry.ts')}; import { deferredNdjson } from ${router('deferred-ndjson.ts')}; window.loader = createDeferredLoader({ transport: deferredNdjson });`,
+  deferredJson: `export { createLazyLoader } from ${router('lazy-entry.ts')};`,
+  deferredStream: `import { createLazyLoader } from ${router('lazy-entry.ts')}; import { lazyNdjson } from ${router('lazy-ndjson.ts')}; window.loader = createLazyLoader({ transport: lazyNdjson });`,
 };
 type Profile = keyof typeof entries;
 const bundles = new Map<Profile, Promise<Bundle>>();
@@ -171,7 +171,7 @@ test('deferred delivery stays hydration-agnostic and JSON consumers exclude NDJS
       'streaming-coordinator.ts', 'pending.ts', 'view-transitions.ts',
     ]);
   }
-  excludes(json.inputs, ['ndjson-reader.ts', 'deferred-ndjson.ts']);
+  excludes(json.inputs, ['ndjson-reader.ts', 'lazy-ndjson.ts']);
   assert.ok([...streamed.inputs].some(input => input.endsWith('/ndjson-reader.ts')));
 });
 test('early progressive HTML remains separate from network partial decoding and authored rendering', async () => {

@@ -244,7 +244,7 @@ pub(crate) fn parse_to_protocol_with_dom(
         let (navigation_mode, navigation_keys) = encode_state_surface(navigation);
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
-        for fragment in artifact.deferred_templates {
+        for fragment in artifact.lazy_templates {
             let mut data = fragment.data;
             data.inherit_owner_state(component);
             protocol.client_fragments.insert(fragment.id, data);

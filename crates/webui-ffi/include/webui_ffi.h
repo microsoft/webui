@@ -539,7 +539,7 @@ bool webui_streaming_step_boundary_key_number(const webui_streaming_step_t *step
  * must be non-null terminated UTF-8 strings. `options_json` may be null for
  * defaults; otherwise it must be readable, terminated UTF-8 JSON.
  */
-char *webui_protocol_render_deferred_resources(const webui_protocol_t *protocol,
+char *webui_protocol_render_lazy_resources(const webui_protocol_t *protocol,
                                                const char *owner,
                                                const char *id,
                                                const char *options_json);
@@ -553,7 +553,7 @@ char *webui_protocol_render_deferred_resources(const webui_protocol_t *protocol,
  * must be non-null, readable, terminated UTF-8. `options_json` may be null.
  * Release a successful returned string with `webui_free`.
  */
-char *webui_protocol_render_deferred_partial(const webui_protocol_t *protocol,
+char *webui_protocol_render_lazy_partial(const webui_protocol_t *protocol,
                                              const char *state_json,
                                              const char *owner,
                                              const char *id,
@@ -564,12 +564,12 @@ char *webui_protocol_render_deferred_partial(const webui_protocol_t *protocol,
  *
  * # Safety
  *
- * The protocol/string arguments follow `webui_protocol_render_deferred_resources`.
+ * The protocol/string arguments follow `webui_protocol_render_lazy_resources`.
  * `updated_options_json` must point to a writable pointer slot and must not be
  * null. On success free both returned strings with `webui_free`; on failure the
  * output slot is null.
  */
-char *webui_protocol_prepare_deferred_resources(const webui_protocol_t *protocol,
+char *webui_protocol_prepare_lazy_resources(const webui_protocol_t *protocol,
                                                 const char *owner,
                                                 const char *id,
                                                 const char *options_json,

@@ -43,7 +43,7 @@ it is not a different template language.
 | `styles.js` | Component stylesheet installation and readiness |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
-| `deferred.js` | Hostless deferred-body rendering in the existing owner and scope; no network loader |
+| `lazy.js` | Hostless lazy-body rendering in the existing owner and scope; no network loader |
 | `streaming.js` | Progressive HTML streaming hydration |
 | `lazy-hydration.js` | Visibility-based hydration coordination |
 | `interaction-hydration.js` | Interaction-based activation |
@@ -75,9 +75,9 @@ still needed by the document. Do not call collection on every state update.
 Older protocols without dependency metadata and late cache installation fail
 explicitly.
 
-[Deferred template bodies](./deferred) let an ordinary `<if>` keep complex UI out
+[Lazy template bodies](./lazy) let an ordinary `<if>` keep complex UI out
 of initial delivery until it is needed. Resource/state loading is a separate
-`@microsoft/webui-router/deferred.js` capability, not part of the renderer.
+`@microsoft/webui-router/lazy.js` capability, not part of the renderer.
 
 ## Component Files
 

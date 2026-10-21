@@ -16,7 +16,7 @@ import {
 import type {
   BoundaryDescriptor,
   ComponentTemplatesResponse,
-  DeferredResponse,
+  LazyResponse,
   PreparedState,
   StreamStep,
 } from '@microsoft/webui';
@@ -633,12 +633,12 @@ describe('streamResponse over node:http', () => {
 
 describe('deferred template delivery', () => {
   test('compiles inline bodies and streams fresh state against the prepared inventory', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'webui-deferred-'));
+    const directory = mkdtempSync(join(tmpdir(), 'webui-lazy-'));
     try {
       writeFileSync(join(directory, 'index.html'), '<html><head></head><body><test-owner></test-owner></body></html>');
       writeFileSync(join(directory, 'test-owner.html'), `
         <h1>Owner</h1>
-        <if condition="show" defer id="details">
+        <if condition="show" lazy id="details">
           <h2>Inline deferred body</h2><p>{{message}}</p>
           <for each="item in items"><span>{{item}}</span></for>
         </if>
@@ -647,22 +647,22 @@ describe('deferred template delivery', () => {
       const protocol = new Protocol(result.protocol, { plugin: 'webui' });
       const initial = protocol.render({ show: false }).toString('utf8');
       assert.ok(!initial.includes('Inline deferred body'));
-      const metadata = protocol.prepareDeferredResources('test-owner', 'details');
-      assert.equal(protocol.renderDeferredResources('test-owner', 'details'), metadata.json);
-      const resource = JSON.parse(metadata.json) as DeferredResponse;
-      assert.equal(resource.fragment, 'test-owner::defer:details');
+      const metadata = protocol.prepareLazyResources('test-owner', 'details');
+      assert.equal(protocol.renderLazyResources('test-owner', 'details'), metadata.json);
+      const resource = JSON.parse(metadata.json) as LazyResponse;
+      assert.equal(resource.fragment, 'test-owner::lazy:details');
       assert.equal(resource.state, undefined);
       assert.equal(resource.inventory, metadata.options.inventory);
-      const body = protocol.renderDeferredPartial(
+      const body = protocol.renderLazyPartial(
         { message: 'Fresh', items: [1, 2], unused: 'not selected' },
         'test-owner', 'details', metadata.options,
       );
-      const state = JSON.parse(body) as DeferredResponse;
+      const state = JSON.parse(body) as LazyResponse;
       assert.equal(state.templates, undefined);
       assert.equal(state.componentStyles, undefined);
       assert.deepEqual(state.state, { items: [1, 2], message: 'Fresh' });
-      assert.throws(() => protocol.renderDeferredResources('test-owner', 'missing'), /deferred-not-found/);
-      assert.throws(() => protocol.renderDeferredPartial('{}', 'test-owner', 'details', { buildId: 'stale' }), /deferred-build-mismatch/);
+      assert.throws(() => protocol.renderLazyResources('test-owner', 'missing'), /lazy-not-found/);
+      assert.throws(() => protocol.renderLazyPartial('{}', 'test-owner', 'details', { buildId: 'stale' }), /lazy-build-mismatch/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

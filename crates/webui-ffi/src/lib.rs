@@ -31,11 +31,11 @@ use webui_handler::{
     SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
-mod deferred;
+mod lazy;
 mod render_capacity;
-pub use deferred::{
-    webui_protocol_prepare_deferred_resources, webui_protocol_render_deferred_partial,
-    webui_protocol_render_deferred_resources,
+pub use lazy::{
+    webui_protocol_prepare_lazy_resources, webui_protocol_render_lazy_partial,
+    webui_protocol_render_lazy_resources,
 };
 use render_capacity::RenderCapacityHint;
 

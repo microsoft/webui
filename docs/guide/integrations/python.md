@@ -26,17 +26,17 @@ Linux (manylinux), each for x86_64 and ARM64, plus one source distribution.
 See [Wheel matrix and scope](#wheel-matrix-and-scope) for what isn't covered
 and why.
 
-## Deferred template responses
+## Lazy template responses
 
 `Renderer` provides resource-only and stateful operations for
-[deferred bodies](../concepts/deferred):
+[lazy bodies](../concepts/lazy):
 
 ```python
-from microsoft_webui import DeferredOptions
+from microsoft_webui import LazyOptions
 
-prepared = renderer.prepare_deferred_resources(
+prepared = renderer.prepare_lazy_resources(
     "app-shell", "settings",
-    options=DeferredOptions(
+    options=LazyOptions(
         inventory=client_inventory,
         style_inventory=client_style_inventory,
         build_id=client_build_id,
@@ -44,7 +44,7 @@ prepared = renderer.prepare_deferred_resources(
 )
 send_and_flush(prepared.json + b"\n")
 state = load_settings()
-send_and_flush(renderer.render_deferred_partial(
+send_and_flush(renderer.render_lazy_partial(
     state, "app-shell", "settings", options=prepared.options,
 ) + b"\n")
 ```
@@ -52,7 +52,7 @@ send_and_flush(renderer.render_deferred_partial(
 The send/data functions belong to the application. Schedule data work alongside
 resource delivery, authenticate before headers, and cancel it on disconnect.
 All rendering operations return UTF-8 `bytes`; state also accepts pre-serialized
-inputs. `render_deferred_resources` is the resource-only convenience call.
+inputs. `render_lazy_resources` is the resource-only convenience call.
 Catch post-header errors and send an explicit terminal error record.
 
 ## Buffered rendering

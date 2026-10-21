@@ -7,7 +7,7 @@ import { startFixtureServer } from '@microsoft/webui-test-support/fixture-server
 import { prepareStreamingFixture } from '@microsoft/webui-test-support/fixture-streaming';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deferredFixtureHandler } from './deferred-server.ts';
+import { lazyFixtureHandler } from './lazy-server.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesRoot = resolve(here, 'fixtures');
@@ -39,7 +39,7 @@ const rendered = renderFixtures({
   fixturesRoot,
   projectionManifest,
 });
-const handleDeferred = deferredFixtureHandler(rendered.get('deferred-ui'));
+const handleDeferred = lazyFixtureHandler(rendered.get('lazy-ui'));
 const handleStreaming = await prepareStreamingFixture({
   fixturePath: resolve(fixturesRoot, 'streaming-bootstrap'),
   outDir: resolve(outDir, 'streaming-bootstrap'),

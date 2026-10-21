@@ -47,9 +47,9 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
-/// Client resource availability for a deferred template request.
+/// Client resource availability for a lazy template request.
 #[napi(object)]
-pub struct JsDeferredOptions {
+pub struct JsLazyOptions {
     /// Loaded template-resource inventory.
     pub inventory: Option<String>,
     /// Loaded stylesheet-definition inventory.
@@ -60,20 +60,20 @@ pub struct JsDeferredOptions {
 
 /// A resource record and acknowledgement for two-phase host-owned delivery.
 #[napi(object)]
-pub struct JsPreparedDeferredResources {
+pub struct JsPreparedLazyResources {
     /// Resource JSON to flush immediately.
     pub json: String,
     /// Availability for the terminal state record.
-    pub options: JsDeferredOptions,
+    pub options: JsLazyOptions,
 }
 
-fn deferred_request<'a>(
+fn lazy_request<'a>(
     owner: &'a str,
     id: &'a str,
-    options: &'a Option<JsDeferredOptions>,
-) -> webui_handler::DeferredRequest<'a> {
+    options: &'a Option<JsLazyOptions>,
+) -> webui_handler::LazyRequest<'a> {
     let options = options.as_ref();
-    webui_handler::DeferredRequest {
+    webui_handler::LazyRequest {
         owner,
         id,
         inventory: options
@@ -403,34 +403,34 @@ impl Protocol {
             .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
     }
 
-    /// Prepare a named deferred body's resources without fetching application state.
+    /// Prepare a named lazy body's resources without fetching application state.
     #[napi]
-    pub fn render_deferred_resources(
+    pub fn render_lazy_resources(
         &self,
         owner: String,
         id: String,
-        options: Option<JsDeferredOptions>,
+        options: Option<JsLazyOptions>,
     ) -> napi::Result<String> {
         self.inner
-            .render_deferred_resources(deferred_request(&owner, &id, &options))
+            .render_lazy_resources(lazy_request(&owner, &id, &options))
             .map_err(|error| NapiError::from_reason(error.to_string()))
     }
 
     /// Prepare streaming resource JSON together with its acknowledgement.
     #[napi]
-    pub fn prepare_deferred_resources(
+    pub fn prepare_lazy_resources(
         &self,
         owner: String,
         id: String,
-        options: Option<JsDeferredOptions>,
-    ) -> napi::Result<JsPreparedDeferredResources> {
+        options: Option<JsLazyOptions>,
+    ) -> napi::Result<JsPreparedLazyResources> {
         let prepared = self
             .inner
-            .prepare_deferred_resources(deferred_request(&owner, &id, &options))
+            .prepare_lazy_resources(lazy_request(&owner, &id, &options))
             .map_err(|error| NapiError::from_reason(error.to_string()))?;
-        Ok(JsPreparedDeferredResources {
+        Ok(JsPreparedLazyResources {
             json: prepared.json,
-            options: JsDeferredOptions {
+            options: JsLazyOptions {
                 inventory: Some(prepared.options.inventory),
                 style_inventory: Some(prepared.options.style_inventory),
                 build_id: Some(prepared.options.build_id),
@@ -438,17 +438,17 @@ impl Protocol {
         })
     }
 
-    /// Render fresh scoped state and any still-missing deferred resources.
+    /// Render fresh scoped state and any still-missing lazy resources.
     #[napi]
-    pub fn render_deferred_partial(
+    pub fn render_lazy_partial(
         &self,
         state_json: String,
         owner: String,
         id: String,
-        options: Option<JsDeferredOptions>,
+        options: Option<JsLazyOptions>,
     ) -> napi::Result<String> {
         self.inner
-            .render_deferred_partial_json(&state_json, deferred_request(&owner, &id, &options))
+            .render_lazy_partial_json(&state_json, lazy_request(&owner, &id, &options))
             .map_err(|error| NapiError::from_reason(error.to_string()))
     }
 

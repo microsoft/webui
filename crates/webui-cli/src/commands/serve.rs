@@ -2,8 +2,8 @@
 // Licensed under the MIT license.
 
 mod component_assets;
-mod deferred;
 mod host;
+mod lazy;
 mod streaming_api;
 
 use actix_web::body::BoxBody;
@@ -543,8 +543,8 @@ fn serve_app(
         "/_webui/templates",
         web::get().to(handle_component_templates),
     )
-    .route("/_webui/deferred", web::get().to(deferred::resources))
-    .route("/_webui/deferred/state", web::get().to(deferred::state))
+    .route("/_webui/lazy", web::get().to(lazy::resources))
+    .route("/_webui/lazy/state", web::get().to(lazy::state))
     .route("/{tail:.*}", web::get().to(handle_asset))
     .default_service(web::route().to(handle_not_found))
 }

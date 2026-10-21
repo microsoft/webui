@@ -12,16 +12,16 @@
     "urlpattern-polyfill": "catalog:"
   },
   "exports": {
-    "./deferred.js": {
+    "./lazy.js": {
       "import": {
-        "types": "./dist/deferred-entry.d.ts",
-        "default": "./dist/deferred-entry.js"
+        "types": "./dist/lazy-entry.d.ts",
+        "default": "./dist/lazy-entry.js"
       }
     },
-    "./deferred-ndjson.js": {
+    "./lazy-ndjson.js": {
       "import": {
-        "types": "./dist/deferred-ndjson.d.ts",
-        "default": "./dist/deferred-ndjson.js"
+        "types": "./dist/lazy-ndjson.d.ts",
+        "default": "./dist/lazy-ndjson.js"
       }
     },
     "./core.js": {

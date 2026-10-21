@@ -5,7 +5,7 @@ from os import PathLike
 from typing import Self, TypeAlias, TypedDict, final
 
 _JsonInput: TypeAlias = str | bytes | bytearray
-_DeferredOptions: TypeAlias = tuple[str, str, str, str, str]
+_LazyOptions: TypeAlias = tuple[str, str, str, str, str]
 _RenderOptions: TypeAlias = tuple[
     str,
     str,
@@ -57,12 +57,12 @@ class _Renderer:
         self,
         options: tuple[list[str], str],
     ) -> bytes: ...
-    def render_deferred_resources(self, options: _DeferredOptions) -> bytes: ...
-    def prepare_deferred_resources(
-        self, options: _DeferredOptions
+    def render_lazy_resources(self, options: _LazyOptions) -> bytes: ...
+    def prepare_lazy_resources(
+        self, options: _LazyOptions
     ) -> tuple[bytes, tuple[str, str, str]]: ...
-    def render_deferred_partial(
-        self, state_json: _JsonInput, options: _DeferredOptions
+    def render_lazy_partial(
+        self, state_json: _JsonInput, options: _LazyOptions
     ) -> bytes: ...
     def tokens(self) -> list[str]: ...
     def stream_response(self, options: _RenderOptions) -> _StreamingSession: ...

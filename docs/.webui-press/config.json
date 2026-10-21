@@ -129,8 +129,8 @@
             "link": "/guide/concepts/interactivity"
           },
           {
-            "text": "Deferred UI",
-            "link": "/guide/concepts/deferred"
+            "text": "Lazy UI",
+            "link": "/guide/concepts/lazy"
           }
         ]
       },

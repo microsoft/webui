@@ -61,7 +61,7 @@ export type CompiledConditionalMeta = [
   condition: TemplateCondition,
   blockIndex: TemplateBlockReference,
   slot: TemplateSlot,
-  deferred?: 1,
+  lazy?: 1,
 ];
 
 export type CompiledAttrMeta =

@@ -38,10 +38,9 @@ pub use webui_handler::route_handler::{encode_inventory, get_needed_components, 
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
     plugin::HandlerPlugin, BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode,
-    DeferredOptions, DeferredRequest, DeferredRequestError, FlushWriter, HandlerError,
-    PreparedDeferredResources, Protocol, RenderOptions, ResponseWriter, SessionOptions,
-    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
-    WebUIHandler,
+    FlushWriter, HandlerError, LazyOptions, LazyRequest, LazyRequestError, PreparedLazyResources,
+    Protocol, RenderOptions, ResponseWriter, SessionOptions, SpanInstanceId, StreamStatus,
+    StreamStep, StreamingResponse, StreamingSession, StreamingState, WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
@@ -874,7 +873,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         };
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
-        for fragment in &artifact.deferred_templates {
+        for fragment in &artifact.lazy_templates {
             let mut data = fragment.data.clone();
             data.inherit_owner_state(component);
             protocol.client_fragments.insert(fragment.id.clone(), data);
@@ -1091,7 +1090,7 @@ mod tests {
     mod fast;
 
     #[test]
-    fn deferred_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
+    fn lazy_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -1099,18 +1098,18 @@ mod tests {
             ),
             (
                 "app-shell.html",
-                r#"<dialog><if condition="showSettings" defer><settings-panel></settings-panel></if></dialog>"#,
+                r#"<dialog><if condition="showSettings" lazy><settings-panel></settings-panel></if></dialog>"#,
             ),
             (
                 "settings-panel.html",
-                "<h2>Deferred settings content</h2><settings-child></settings-child>",
+                "<h2>Lazy settings content</h2><settings-child></settings-child>",
             ),
             ("settings-panel.css", "h2 { color: red; }"),
             ("settings-child.html", "<p>Nested settings content</p>"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
-        let built = build(options).expect("compiled deferred UI");
+        let built = build(options).expect("compiled lazy UI");
         assert!(built.protocol.fragments.contains_key("settings-panel"));
         assert!(built.protocol.components.contains_key("settings-child"));
         let protocol = Protocol::new(built.protocol);
@@ -1124,11 +1123,11 @@ mod tests {
                     &RenderOptions::new("index.html", "/"),
                     &mut writer,
                 )
-                .expect("render deferred condition");
+                .expect("render lazy condition");
             assert_eq!(
-                writer.buf.contains("Deferred settings content"),
+                writer.buf.contains("Lazy settings content"),
                 shown,
-                "inactive metadata must not embed the deferred body: {}",
+                "inactive metadata must not embed the lazy body: {}",
                 writer.buf
             );
             assert_eq!(writer.buf.contains("Nested settings content"), shown);
@@ -1141,7 +1140,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_if_keeps_inline_bodies_hostless_and_preserves_dom_mode() {
+    fn lazy_if_keeps_inline_bodies_hostless_and_preserves_dom_mode() {
         for dom in [DomStrategy::Shadow, DomStrategy::Light] {
             let app = create_app_dir(&[
                 (
@@ -1152,11 +1151,11 @@ mod tests {
                     "app-shell.html",
                     concat!(
                         "<h1>Shell</h1><dialog>",
-                        r#"<if condition="show" defer id="settings">"#,
-                        "<h2>Inline deferred settings</h2><p>{{subtitle}}</p>",
+                        r#"<if condition="show" lazy id="settings">"#,
+                        "<h2>Inline lazy settings</h2><p>{{subtitle}}</p>",
                         r#"<if condition="loaded"><strong>{{detail}}</strong></if>"#,
                         r#"<for each="item in items"><button @click="{pick(item.id)}">{{item.label}}</button></for>"#,
-                        r#"<if condition="advanced" defer id="advanced"><em>Advanced deferred settings</em></if>"#,
+                        r#"<if condition="advanced" lazy id="advanced"><em>Advanced lazy settings</em></if>"#,
                         "</if></dialog>",
                     ),
                 ),
@@ -1165,14 +1164,14 @@ mod tests {
             let mut options = default_options(app.path());
             options.plugin = Some(Plugin::WebUI);
             options.dom = dom;
-            let built = build(options).expect("arbitrary deferred body");
+            let built = build(options).expect("arbitrary lazy body");
             assert_eq!(
                 built.protocol.components.len(),
                 1,
-                "a deferred body must not become a component"
+                "a lazy body must not become a component"
             );
-            let root = "app-shell::defer:settings";
-            let nested = "app-shell::defer:advanced";
+            let root = "app-shell::lazy:settings";
+            let nested = "app-shell::lazy:advanced";
             assert!(built.protocol.fragments.contains_key(root));
             assert!(built.protocol.client_fragments[root].entry);
             assert_eq!(built.protocol.client_fragments[root].owner, "app-shell");
@@ -1182,12 +1181,12 @@ mod tests {
                 .any(|id| id == nested));
             assert!(!built.protocol.components["app-shell"]
                 .template_json
-                .contains("Inline deferred settings"));
+                .contains("Inline lazy settings"));
             assert!(!built.protocol.components["app-shell"]
                 .template_json
                 .contains("pick"));
             assert!(built.protocol.fragments["app-shell"].fragments.iter().any(|fragment| {
-                matches!(fragment.fragment.as_ref(), Some(Fragment::IfCond(condition)) if condition.deferred && condition.fragment_id == root)
+                matches!(fragment.fragment.as_ref(), Some(Fragment::IfCond(condition)) if condition.lazy && condition.fragment_id == root)
             }));
             let protocol = Protocol::new(built.protocol);
             let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -1205,8 +1204,8 @@ mod tests {
                         &mut writer,
                     )
                     .unwrap();
-                assert_eq!(writer.buf.contains("Inline deferred settings"), shown);
-                assert_eq!(writer.buf.contains("Advanced deferred settings"), advanced);
+                assert_eq!(writer.buf.contains("Inline lazy settings"), shown);
+                assert_eq!(writer.buf.contains("Advanced lazy settings"), advanced);
                 assert!(
                     !writer.buf.contains("<app-shell::"),
                     "fragment resources have no element host"
@@ -1216,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_named_repeat_reuses_the_owners_eager_block_table() {
+    fn lazy_named_repeat_reuses_the_owners_eager_block_table() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -1226,7 +1225,7 @@ mod tests {
                 "app-shell.html",
                 concat!(
                     r#"<for id="shared" each="item in outsideItems" />"#,
-                    r#"<if condition="show" defer id="panel">"#,
+                    r#"<if condition="show" lazy id="panel">"#,
                     r#"<for id="shared" each="item in items"><span>{{item.label}}</span></for>"#,
                     "</if>",
                 ),
@@ -1238,7 +1237,7 @@ mod tests {
         let owner: serde_json::Value =
             serde_json::from_str(&built.protocol.components["app-shell"].template_json).unwrap();
         let region: serde_json::Value = serde_json::from_str(
-            &built.protocol.client_fragments["app-shell::defer:panel"].template_json,
+            &built.protocol.client_fragments["app-shell::lazy:panel"].template_json,
         )
         .unwrap();
         assert_eq!(owner["b"].as_array().unwrap().len(), 1);
@@ -1247,12 +1246,12 @@ mod tests {
     }
 
     #[test]
-    fn deferred_resource_selection_preserves_props_and_loop_shadowing() {
+    fn lazy_resource_selection_preserves_props_and_loop_shadowing() {
         let app = create_app_dir(&[
             ("index.html", "<html><head></head><body><scope-owner :item=\"{{fallback}}\"></scope-owner></body></html>"),
             ("scope-owner.html", concat!(
-                r#"<for each="item in items"><if condition="item.expanded" defer id="row"><p>Visible row payload</p></if></for>"#,
-                r#"<if condition="item.expanded" defer id="outside"><p>Outside payload</p></if>"#,
+                r#"<for each="item in items"><if condition="item.expanded" lazy id="row"><p>Visible row payload</p></if></for>"#,
+                r#"<if condition="item.expanded" lazy id="outside"><p>Outside payload</p></if>"#,
             )),
         ]);
         let mut options = default_options(app.path());
@@ -1282,19 +1281,19 @@ mod tests {
     }
 
     #[test]
-    fn deferred_authoring_errors_have_stable_codes() {
+    fn lazy_authoring_errors_have_stable_codes() {
         for (template, code) in [
             (
-                r#"<if condition="show" defer="yes"><p>Body</p></if>"#,
-                webui_parser::codes::INVALID_DEFERRED_ATTRIBUTE,
+                r#"<if condition="show" lazy="yes"><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_LAZY_ATTRIBUTE,
             ),
             (
-                r#"<if condition="show" defer id=""><p>Body</p></if>"#,
-                webui_parser::codes::INVALID_DEFERRED_ID,
+                r#"<if condition="show" lazy id=""><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_LAZY_ID,
             ),
             (
-                r#"<if condition="show" defer id="same"></if><if condition="other" defer id="same"></if>"#,
-                webui_parser::codes::DUPLICATE_DEFERRED_ID,
+                r#"<if condition="show" lazy id="same"></if><if condition="other" lazy id="same"></if>"#,
+                webui_parser::codes::DUPLICATE_LAZY_ID,
             ),
         ] {
             let app = create_app_dir(&[
@@ -1303,18 +1302,43 @@ mod tests {
             ]);
             let mut options = default_options(app.path());
             options.plugin = Some(Plugin::WebUI);
-            let error = build(options).err().expect("invalid deferred authoring");
+            let error = build(options).err().expect("invalid lazy authoring");
             assert!(error.chain_message().contains(code), "{error}");
         }
     }
 
     #[test]
-    fn static_only_assets_reject_protocol_backed_deferred_bodies() {
+    fn removed_if_defer_is_rejected_instead_of_silently_rendering_eagerly() {
+        for plugin in [None, Some(Plugin::WebUI)] {
+            for attributes in ["defer", "defer=\"true\"", "defer lazy"] {
+                let template = format!(
+                    "<h1>Owner</h1>\n<if condition=\"show\" {attributes} id=\"body\"><p>Body</p></if>"
+                );
+                let app = create_app_dir(&[
+                    ("index.html", "<app-owner></app-owner>"),
+                    ("app-owner.html", &template),
+                ]);
+                let mut options = default_options(app.path());
+                options.plugin = plugin;
+                let error = build(options).err().expect("old spelling must fail");
+                let message = error.chain_message();
+                assert!(
+                    message.contains(webui_parser::codes::REMOVED_IF_DEFER),
+                    "{message}"
+                );
+                assert!(message.contains("replace defer with lazy"), "{message}");
+                assert!(message.contains("app-owner"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn static_only_assets_reject_protocol_backed_lazy_bodies() {
         let app = create_app_dir(&[
             ("index.html", "<app-owner></app-owner>"),
             (
                 "app-owner.html",
-                r#"<if condition="show" defer id="body"><p>Body</p></if>"#,
+                r#"<if condition="show" lazy id="body"><p>Body</p></if>"#,
             ),
         ]);
         let mut options = default_options(app.path());
@@ -1325,14 +1349,14 @@ mod tests {
             .expect("incompatible asset delivery mode");
         assert!(error
             .chain_message()
-            .contains(webui_parser::codes::COMPONENT_ASSETS_WITH_DEFERRED));
+            .contains(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY));
     }
 
     #[test]
     fn progressive_checkpoints_deliver_active_hostless_body_resources() {
         let app = create_app_dir(&[
             ("index.html", "<html><head><script type=\"module\" async src=\"./index.js\"></script></head><body><stream-owner></stream-owner></body></html>"),
-            ("stream-owner.html", r#"<boundary name="region"><if condition="shown" defer id="body"><p>Streamed inline body</p><for each="item in items"><span>{{item}}</span></for></if></boundary>"#),
+            ("stream-owner.html", r#"<boundary name="region"><if condition="shown" lazy id="body"><p>Streamed inline body</p><for each="item in items"><span>{{item}}</span></for></if></boundary>"#),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -1350,7 +1374,7 @@ mod tests {
                 .unwrap();
             assert_eq!(writer.buf.contains("Streamed inline body"), shown);
             assert_eq!(
-                writer.buf.contains(r#""stream-owner::defer:body":{"h":"#),
+                writer.buf.contains(r#""stream-owner::lazy:body":{"h":"#),
                 shown
             );
         }

@@ -52,6 +52,22 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         run_commands: &[],
     },
     IntegrationBuild {
+        name: "lazy-ui-bench",
+        commands: &[
+            BuildCommand {
+                cmd: "node",
+                args: &["--check", "fixture.mjs"],
+                cwd: Some("examples/integration/lazy-ui-bench"),
+            },
+            BuildCommand {
+                cmd: "node",
+                args: &["--check", "bench.mjs"],
+                cwd: Some("examples/integration/lazy-ui-bench"),
+            },
+        ],
+        run_commands: &[],
+    },
+    IntegrationBuild {
         name: "electron",
         commands: &[BuildCommand {
             cmd: "pnpm",

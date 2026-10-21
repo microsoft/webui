@@ -22,12 +22,12 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
-fn deferred_options(options: JsValue) -> Result<webui_handler::DeferredOptions, JsValue> {
+fn lazy_options(options: JsValue) -> Result<webui_handler::LazyOptions, JsValue> {
     if options.is_null() || options.is_undefined() {
-        return Ok(webui_handler::DeferredOptions::default());
+        return Ok(webui_handler::LazyOptions::default());
     }
     serde_wasm_bindgen::from_value(options)
-        .map_err(|error| JsValue::from_str(&format!("invalid deferred options: {error}")))
+        .map_err(|error| JsValue::from_str(&format!("invalid lazy options: {error}")))
 }
 
 webui_handler::define_string_response_writer!(StringWriter, content);
@@ -206,54 +206,54 @@ impl Protocol {
             .map_err(|error| JsValue::from_str(&format!("JSON serialize error: {error}")))
     }
 
-    /// Prepare resources for a named deferred template body without application state.
-    #[wasm_bindgen(js_name = renderDeferredResources)]
-    pub fn render_deferred_resources(
+    /// Prepare resources for a named lazy template body without application state.
+    #[wasm_bindgen(js_name = renderLazyResources)]
+    pub fn render_lazy_resources(
         &self,
         owner: &str,
         id: &str,
         options: JsValue,
     ) -> Result<String, JsValue> {
-        let options = deferred_options(options)?;
+        let options = lazy_options(options)?;
         self.inner
-            .render_deferred_resources(
-                webui_handler::DeferredRequest::new(owner, id).with_options(&options),
+            .render_lazy_resources(
+                webui_handler::LazyRequest::new(owner, id).with_options(&options),
             )
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     /// Prepare metadata and acknowledgement without parsing the metadata JSON again.
-    #[wasm_bindgen(js_name = prepareDeferredResources)]
-    pub fn prepare_deferred_resources(
+    #[wasm_bindgen(js_name = prepareLazyResources)]
+    pub fn prepare_lazy_resources(
         &self,
         owner: &str,
         id: &str,
         options: JsValue,
     ) -> Result<JsValue, JsValue> {
-        let options = deferred_options(options)?;
+        let options = lazy_options(options)?;
         let result = self
             .inner
-            .prepare_deferred_resources(
-                webui_handler::DeferredRequest::new(owner, id).with_options(&options),
+            .prepare_lazy_resources(
+                webui_handler::LazyRequest::new(owner, id).with_options(&options),
             )
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         serde_wasm_bindgen::to_value(&result).map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
-    /// Render a complete or terminal deferred record with fresh scoped state.
-    #[wasm_bindgen(js_name = renderDeferredPartial)]
-    pub fn render_deferred_partial(
+    /// Render a complete or terminal lazy record with fresh scoped state.
+    #[wasm_bindgen(js_name = renderLazyPartial)]
+    pub fn render_lazy_partial(
         &self,
         state_json: &str,
         owner: &str,
         id: &str,
         options: JsValue,
     ) -> Result<String, JsValue> {
-        let options = deferred_options(options)?;
+        let options = lazy_options(options)?;
         self.inner
-            .render_deferred_partial_json(
+            .render_lazy_partial_json(
                 state_json,
-                webui_handler::DeferredRequest::new(owner, id).with_options(&options),
+                webui_handler::LazyRequest::new(owner, id).with_options(&options),
             )
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }

@@ -57,10 +57,10 @@ before component definitions. See
 for requirements and examples. The default entry continues to include core and
 stylesheet support.
 
-`deferred.js` is the opt-in renderer adapter for ordinary `<if defer>` bodies.
+`lazy.js` is the opt-in renderer adapter for ordinary `<if lazy>` bodies.
 It preserves the existing owner and scope without creating a component or
 fetching resources. Loading and inventory remain separate client capabilities.
-See [Deferred UI](https://microsoft.github.io/webui/guide/concepts/deferred).
+See [Lazy UI](https://microsoft.github.io/webui/guide/concepts/lazy).
 
 1. Author a component class in TypeScript
 2. Author a WebUI template in HTML

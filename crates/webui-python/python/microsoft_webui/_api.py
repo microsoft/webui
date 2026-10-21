@@ -55,7 +55,7 @@ class StreamStep:
 
 
 @dataclass(frozen=True, slots=True)
-class DeferredOptions:
+class LazyOptions:
     """Availability of resources from one compiled document."""
 
     inventory: str = ""
@@ -64,15 +64,15 @@ class DeferredOptions:
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedDeferredResources:
+class PreparedLazyResources:
     """Resource JSON and acknowledgement for host-owned two-phase delivery."""
 
     json: bytes
-    options: DeferredOptions
+    options: LazyOptions
 
 
-def _deferred_options(
-    owner: str, region_id: str, options: DeferredOptions | None
+def _lazy_options(
+    owner: str, region_id: str, options: LazyOptions | None
 ) -> tuple[str, str, str, str, str]:
     if options is None:
         return owner, region_id, "", "", ""
@@ -202,32 +202,32 @@ class Renderer:
             (tags, inventory),
         )
 
-    def render_deferred_resources(
-        self, owner: str, region_id: str, *, options: DeferredOptions | None = None
+    def render_lazy_resources(
+        self, owner: str, region_id: str, *, options: LazyOptions | None = None
     ) -> bytes:
         """Prepare a named template body's resources without application state."""
-        return self._inner.render_deferred_resources(_deferred_options(owner, region_id, options))
+        return self._inner.render_lazy_resources(_lazy_options(owner, region_id, options))
 
-    def prepare_deferred_resources(
-        self, owner: str, region_id: str, *, options: DeferredOptions | None = None
-    ) -> PreparedDeferredResources:
+    def prepare_lazy_resources(
+        self, owner: str, region_id: str, *, options: LazyOptions | None = None
+    ) -> PreparedLazyResources:
         """Prepare metadata and acknowledgement without reparsing metadata JSON."""
-        body, acknowledgement = self._inner.prepare_deferred_resources(
-            _deferred_options(owner, region_id, options)
+        body, acknowledgement = self._inner.prepare_lazy_resources(
+            _lazy_options(owner, region_id, options)
         )
-        return PreparedDeferredResources(body, DeferredOptions(*acknowledgement))
+        return PreparedLazyResources(body, LazyOptions(*acknowledgement))
 
-    def render_deferred_partial(
+    def render_lazy_partial(
         self,
         state: StateInput,
         owner: str,
         region_id: str,
         *,
-        options: DeferredOptions | None = None,
+        options: LazyOptions | None = None,
     ) -> bytes:
         """Render fresh owner/scoped state and any still-missing resources."""
-        return self._inner.render_deferred_partial(
-            _state_json(state), _deferred_options(owner, region_id, options)
+        return self._inner.render_lazy_partial(
+            _state_json(state), _lazy_options(owner, region_id, options)
         )
 
     @property

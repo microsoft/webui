@@ -23,25 +23,25 @@ string html = handler.Render(
     "/");
 ```
 
-## Deferred template responses
+## Lazy template responses
 
-The same `Protocol` serves [deferred bodies](../concepts/deferred) without
+The same `Protocol` serves [lazy bodies](../concepts/lazy) without
 creating a route or another component:
 
 ```csharp
-PreparedDeferredResources prepared =
-    protocol.PrepareDeferredResources("app-shell", "settings", clientOptions);
+PreparedLazyResources prepared =
+    protocol.PrepareLazyResources("app-shell", "settings", clientOptions);
 Task<string> pendingState = LoadSettingsAsync(cancellationToken);
 await Response.WriteAsync(prepared.Json + "\n", cancellationToken);
 await Response.Body.FlushAsync(cancellationToken);
 string stateJson = await pendingState;
-await Response.WriteAsync(protocol.RenderDeferredPartial(
+await Response.WriteAsync(protocol.RenderLazyPartial(
     stateJson, "app-shell", "settings", prepared.Options) + "\n",
     cancellationToken);
 ```
 
-`DeferredOptions` contains `Inventory`, `StyleInventory`, and `BuildId`.
-Use `RenderDeferredResources` for preload-only JSON or `RenderDeferredPartial`
+`LazyOptions` contains `Inventory`, `StyleInventory`, and `BuildId`.
+Use `RenderLazyResources` for preload-only JSON or `RenderLazyPartial`
 directly for a complete JSON response. The host authenticates before headers,
 sets `application/x-ndjson` for two-phase delivery, and turns post-header data
 failures into explicit terminal error records.
