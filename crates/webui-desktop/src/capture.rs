@@ -478,7 +478,7 @@ impl CaptureState {
 
     fn reserve_timer(self: &Arc<Self>) -> Result<TimerReservation, CaptureError> {
         self.active_timer_threads
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_CAPTURE_DEADLINE_THREADS_PER_WINDOW).then_some(count + 1)
             })
             .map_err(|_| CaptureError::Overloaded)?;

@@ -55,7 +55,7 @@ pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 
 Prerequisites:
 
-- Rust 1.93+ with `clippy` and `rustfmt`
+- Rust toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml), with `clippy` and `rustfmt`
 - Node.js 22+ with pnpm
 
 Common commands:

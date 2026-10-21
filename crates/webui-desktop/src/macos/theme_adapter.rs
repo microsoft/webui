@@ -206,7 +206,7 @@ impl Controller {
         };
         if self
             .active_deadlines
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_DEADLINE_THREADS).then_some(count + 1)
             })
             .is_err()
