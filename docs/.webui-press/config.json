@@ -127,6 +127,10 @@
           {
             "text": "Interactivity",
             "link": "/guide/concepts/interactivity"
+          },
+          {
+            "text": "Deferred UI",
+            "link": "/guide/concepts/deferred"
           }
         ]
       },

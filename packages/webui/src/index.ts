@@ -163,6 +163,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Versioned component style definitions and ordered closures. */
   componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -173,8 +175,39 @@ export interface ComponentTemplatesResponse {
   inventory: string;
 }
 
+/** Client availability for a named deferred body. */
+export interface DeferredOptions {
+  inventory?: string;
+  styleInventory?: string;
+  buildId?: string;
+}
+
+/** Resource JSON and its small acknowledgement for two-phase delivery. */
+export interface PreparedDeferredResources {
+  json: string;
+  options: Required<DeferredOptions>;
+}
+
+/** Resource-only record, or a complete/terminal deferred state response. */
+export interface DeferredResponse<State = Record<string, unknown>> {
+  type: "webui-deferred";
+  version: 1;
+  owner: string;
+  fragment: string;
+  buildId: string;
+  inventory: string;
+  styleInventory: string;
+  required: string[];
+  templates?: Record<string, unknown>;
+  templateFunctions?: Record<string, string>;
+  componentStyles?: ComponentStyles;
+  state?: State;
+}
+
 /** Complete JSON partial response from the server for client-side navigation. */
 export interface PartialResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Application state for the matched route. */
   state: Record<string, unknown>;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -242,6 +275,9 @@ interface NativeProtocol {
   ): NativeStreamingSession;
   renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
   renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
+  renderDeferredResources(owner: string, id: string, options?: DeferredOptions): string;
+  prepareDeferredResources(owner: string, id: string, options?: DeferredOptions): PreparedDeferredResources;
+  renderDeferredPartial(stateJson: string, owner: string, id: string, options?: DeferredOptions): string;
   tokens(): string[];
 }
 
@@ -424,6 +460,27 @@ export class Protocol {
     inventoryHex: string,
   ): string {
     return this.#native.renderComponentTemplates(componentTags, inventoryHex);
+  }
+
+  /** Prepare resources for an owning template's <if defer id="..."> region. */
+  renderDeferredResources(owner: string, id: string, options?: DeferredOptions): string {
+    return this.#native.renderDeferredResources(owner, id, options);
+  }
+
+  /** Prepare metadata plus the inventory to use after that metadata is flushed. */
+  prepareDeferredResources(owner: string, id: string, options?: DeferredOptions): PreparedDeferredResources {
+    return this.#native.prepareDeferredResources(owner, id, options);
+  }
+
+  /** Produce complete JSON, or the final NDJSON record, with fresh scoped state. */
+  renderDeferredPartial(
+    state: object | string,
+    owner: string,
+    id: string,
+    options?: DeferredOptions,
+  ): string {
+    const json = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.renderDeferredPartial(json, owner, id, options);
   }
 
   /** Return CSS token names in build order. */

@@ -13,6 +13,7 @@ mod css_light;
 mod css_link;
 mod css_parser;
 mod css_scan;
+mod deferred;
 mod diagnostic;
 mod error;
 mod handlebars_parser;
@@ -752,6 +753,7 @@ enum ParseOp<'a> {
         parent: ParseContext,
         condition: ConditionExpr,
         fragment_id: String,
+        deferred: bool,
     },
 }
 
@@ -829,6 +831,8 @@ pub struct HtmlParser {
 
     /// Next protocol-wide compile-time boundary declaration identity.
     next_boundary_declaration_id: u32,
+    deferred_ordinal: usize,
+    deferred_names: HashSet<String>,
 
     /// Authored boundary names keyed by their owning entry/component template.
     boundary_names_by_owner: HashMap<String, HashSet<String>>,
@@ -1546,6 +1550,8 @@ impl HtmlParser {
             named_for_loops: NamedForLoops::default(),
             named_for_fragment_ids: HashSet::new(),
             next_boundary_declaration_id: 0,
+            deferred_ordinal: 0,
+            deferred_names: HashSet::new(),
             boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
             boundary_ancestor_depth: 0,
@@ -2211,7 +2217,9 @@ impl HtmlParser {
     pub fn take_plugin_artifacts(&mut self) -> Result<ParserPluginArtifacts> {
         self.plugin
             .take()
-            .map_or(Ok(ParserPluginArtifacts::None), |plugin| plugin.finish())
+            .map_or(Ok(ParserPluginArtifacts::None), |plugin| {
+                plugin.finish_with_fragments(&self.fragment_records)
+            })
     }
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
@@ -2471,7 +2479,11 @@ impl HtmlParser {
             .entry(fragment_key.clone())
             .or_insert(owner_index);
 
+        let previous_deferred_ordinal = std::mem::replace(&mut self.deferred_ordinal, 0);
+        let previous_deferred_names = std::mem::take(&mut self.deferred_names);
         let mut result = self.parse_inner(fragment_id, html_content);
+        self.deferred_ordinal = previous_deferred_ordinal;
+        self.deferred_names = previous_deferred_names;
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
             if result.is_ok() {
@@ -2548,9 +2560,14 @@ impl HtmlParser {
         condition: ConditionExpr,
         fragment_id: String,
         fragments: &mut Vec<WebUIFragment>,
+        deferred: bool,
     ) {
         self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::if_cond(condition, fragment_id));
+        fragments.push(if deferred {
+            WebUIFragment::deferred_if(condition, fragment_id)
+        } else {
+            WebUIFragment::if_cond(condition, fragment_id)
+        });
     }
 
     /// Add a non-raw fragment, flushing the raw buffer first if needed
@@ -2850,6 +2867,7 @@ impl HtmlParser {
                     parent,
                     condition,
                     fragment_id,
+                    deferred,
                 } => {
                     self.flush_raw_buffer(fragments);
                     let if_fragment = std::mem::take(fragments);
@@ -2863,7 +2881,7 @@ impl HtmlParser {
                             contains_boundary: false,
                         },
                     );
-                    self.add_if_fragment(condition, fragment_id, fragments);
+                    self.add_if_fragment(condition, fragment_id, fragments, deferred);
                 }
             }
         }
@@ -3356,22 +3374,87 @@ impl HtmlParser {
             .parse(strip_condition_braces(condition_str))
             .map_err(|_| self.if_condition_invalid_error(element, condition_str))?;
 
+        let deferred = element.has_attr("defer");
+        if deferred {
+            self.validate_deferred_condition(element)?;
+        }
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
             fragments: std::mem::take(fragments),
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
-        let fragment_id = self.next_fragment_id("if");
+        let fragment_id = if deferred {
+            let id = deferred::fragment_id(
+                &self.current_fragment_id,
+                element.attr("id"),
+                self.deferred_ordinal,
+            );
+            self.deferred_ordinal += 1;
+            id
+        } else {
+            self.next_fragment_id("if")
+        };
 
         ops.push(ParseOp::CompleteIf {
             parent,
             condition,
             fragment_id,
+            deferred,
         });
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
         });
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn validate_deferred_condition(&mut self, element: &Element<'_>) -> Result<()> {
+        if element.attr("defer").is_some_and(|value| !value.is_empty()) {
+            return Err(self
+                .authoring_error_at(
+                    codes::INVALID_DEFERRED_ATTRIBUTE,
+                    "defer must be a boolean attribute",
+                    element,
+                )
+                .element("if")
+                .help("write <if condition=\"ready\" defer>; use condition to control activation")
+                .into());
+        }
+        if self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| !plugin.supports_deferred_fragments())
+        {
+            return Err(self
+                .authoring_error_at(
+                    codes::UNSUPPORTED_DEFERRED_PLUGIN,
+                    "the selected client plugin does not support deferred template bodies",
+                    element,
+                )
+                .element("if")
+                .help("select a client plugin with deferred fragment support, or remove defer")
+                .into());
+        }
+        if let Some(name) = element.attr("id") {
+            if !deferred::valid_name(name) {
+                return Err(self.authoring_error_at(codes::INVALID_DEFERRED_ID,
+                    "invalid deferred region id", element).element("if")
+                    .help("use 1-128 ASCII letters, digits, periods, underscores, or hyphens, e.g. id=\"settings\"").into());
+            }
+            if !self.deferred_names.insert(name.to_owned()) {
+                return Err(self
+                    .authoring_error_at(
+                        codes::DUPLICATE_DEFERRED_ID,
+                        "duplicate deferred region id",
+                        element,
+                    )
+                    .element("if")
+                    .help("choose a unique id within this owning template")
+                    .into());
+            }
+        }
         Ok(())
     }
 

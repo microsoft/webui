@@ -14,6 +14,7 @@ pub mod webui;
 
 use crate::component_registry::Component;
 use crate::{ParserOptions, Result};
+use webui_protocol::WebUIFragmentRecords;
 
 /// Parser-owned decision about how an attribute should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,17 @@ pub struct ComponentTemplateArtifact {
     pub is_scripted: bool,
     /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,
+    /// Hostless compiled sections extracted from deferred bodies of this template.
+    pub deferred_templates: Vec<DeferredTemplateArtifact>,
+}
+
+/// An independently delivered template section without a component host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredTemplateArtifact {
+    /// Resource key, also the server body record id for public deferred roots.
+    pub id: String,
+    /// Owning template, optional authored id, metadata, and dependency surface.
+    pub data: webui_protocol::ClientFragmentData,
 }
 
 impl ComponentTemplateArtifact {
@@ -106,6 +118,7 @@ impl ComponentTemplateArtifact {
             template_roots: Vec::new(),
             is_scripted: false,
             uses_shadow_dom,
+            deferred_templates: Vec::new(),
         }
     }
 
@@ -130,6 +143,7 @@ impl ComponentTemplateArtifact {
             template_roots: Vec::new(),
             is_scripted: false,
             uses_shadow_dom,
+            deferred_templates: Vec::new(),
         }
     }
 
@@ -278,6 +292,11 @@ pub struct ComponentProcessing {
 ///
 /// WebUI calls these hooks during parsing; plugins decide what (if anything) to do.
 pub trait ParserPlugin {
+    /// Whether the plugin can represent deferred bodies without a component boundary.
+    fn supports_deferred_fragments(&self) -> bool {
+        false
+    }
+
     /// Configure the plugin before parsing or component registration begins.
     fn configure_parser(&mut self, _options: &ParserOptions) {}
 
@@ -321,11 +340,52 @@ pub trait ParserPlugin {
     fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
         Ok(ParserPluginArtifacts::None)
     }
+
+    /// Complete artifacts using the read-only compiled fragment graph.
+    ///
+    /// Plugins may derive client dependency metadata from typed references
+    /// instead of scanning HTML again. The default preserves [`Self::finish`]
+    /// for plugins that do not need the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns the plugin's artifact error, including invalid graph references.
+    fn finish_with_fragments(
+        self: Box<Self>,
+        _fragments: &WebUIFragmentRecords,
+    ) -> Result<ParserPluginArtifacts> {
+        self.finish()
+    }
 }
 
 #[cfg(test)]
 mod artifact_tests {
-    use super::{ComponentTemplateArtifact, StateSurface};
+    use super::{ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts, StateSurface};
+
+    #[test]
+    fn graph_finalization_preserves_existing_plugin_finish() {
+        struct ExistingPlugin;
+        impl ParserPlugin for ExistingPlugin {
+            fn finish(self: Box<Self>) -> crate::Result<ParserPluginArtifacts> {
+                Ok(ParserPluginArtifacts::ComponentTemplates(vec![
+                    ComponentTemplateArtifact::template(
+                        "x-existing".into(),
+                        "template".into(),
+                        false,
+                    ),
+                ]))
+            }
+        }
+
+        let output = Box::new(ExistingPlugin)
+            .finish_with_fragments(&webui_protocol::WebUIFragmentRecords::new())
+            .expect("existing finish");
+        assert!(matches!(
+            output,
+            ParserPluginArtifacts::ComponentTemplates(templates)
+                if templates[0].tag_name == "x-existing"
+        ));
+    }
 
     #[test]
     fn template_constructor_starts_with_no_hydration_surface() {

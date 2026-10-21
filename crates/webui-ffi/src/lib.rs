@@ -31,7 +31,12 @@ use webui_handler::{
     SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
+mod deferred;
 mod render_capacity;
+pub use deferred::{
+    webui_protocol_prepare_deferred_resources, webui_protocol_render_deferred_partial,
+    webui_protocol_render_deferred_resources,
+};
 use render_capacity::RenderCapacityHint;
 
 /// Opaque C handle for a loaded WebUI protocol.

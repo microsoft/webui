@@ -7,6 +7,9 @@ declare global {
   interface WebUIRuntimeGlobal {
     chain?: unknown[];
     inventory?: string;
+    buildId?: string;
+    styleInventory?: string;
+    inventoryEpoch?: number;
     nonce?: string;
     css?: string[];
     styles?: string[];
@@ -18,6 +21,11 @@ declare global {
   interface Window {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
+    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
+    __webuiResolveResources?: (id: string) => readonly string[] | undefined;
+    __webuiPrepareResources?: (ids: readonly string[]) => Promise<void> | undefined;
+    __webuiCollectTemplates?: (keep?: readonly string[]) => number;
+    __webuiRetainTemplate?: (tag: string) => unknown;
   }
 }
 

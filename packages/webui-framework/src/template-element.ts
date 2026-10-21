@@ -47,7 +47,9 @@
  * minimum DOM structure needed for the framework to operate.
  */
 
-import { deferTemplateDefinition, getTemplate } from './template.js';
+import { deferTemplateDefinition, getTemplate } from './template-registry.js';
+import { deferredBlockOwner, findDeferredFragment, requireDeferredFragment } from './deferred-contract.js';
+import { templateCacheHooks } from './template-cache-contract.js';
 import {
   cloneTemplateContent,
   getTemplateFragment,
@@ -55,6 +57,7 @@ import {
 import type {
   TemplateMeta,
   TemplateBlockMeta,
+  TemplateBlockReference,
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
@@ -90,17 +93,11 @@ import {
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
+import { isComponentStyleMarker } from './element/style-markers.js';
 import {
-  claimSsrComponentStyles,
-  installComponentStyles,
-  isComponentStyleMarker,
-} from './element/styles.js';
-import {
-  cancelTemplateLinkStyleMount,
-  installTemplateLinkStyles,
-  prepareTemplateLinkStyles,
-  templateMayContainLinkStyles,
-} from './element/link-styles.js';
+  componentStyleRuntime,
+  requireComponentStyleRuntime,
+} from './element/style-runtime.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -292,7 +289,7 @@ const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 /** Branded fatal-stream cleanup hook, invoked before `data-ws` is removed. */
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
 
-const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
+const templateTagByCtor = new WeakMap<Function, string>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
 interface PendingParentState {
@@ -370,7 +367,7 @@ function installTemplateObservedAttributes(
 ): void {
   if (!meta) return;
 
-  templateMetaByCtor.set(ctor, meta);
+  templateTagByCtor.set(ctor, tagName);
   const attrs = meta.ta ?? EMPTY_ARR;
   if (attrs.length === 0) return;
 
@@ -412,7 +409,7 @@ function defineTemplateConstructor(
 ): void {
   installTemplateObservedAttributes(ctor, tagName, meta);
   if (meta) {
-    const ready = prepareTemplateLinkStyles(meta);
+    const ready = requireComponentStyleRuntime(tagName, meta)?.prepareTemplate(meta);
     if (ready) void ready;
   }
   customElements.define(tagName, ctor);
@@ -459,6 +456,7 @@ export class TemplateElement extends HTMLElement {
 
   private $root: TemplateInstance | null = null;
   private $meta?: TemplateMeta;
+  declare private $retainedFragments: Set<TemplateBlockMeta> | undefined;
   private $ready = false;
   private $hydrated = false;
   private $deferredClientMount = false;
@@ -888,10 +886,10 @@ export class TemplateElement extends HTMLElement {
           this.$root.nodes = childNodesArray(clientRoot);
         }
         let deferredStyles = false;
-        if (templateMayContainLinkStyles(meta)) {
+        if (componentStyleRuntime?.hasTemplateLinks(meta)) {
           const stagingRoot = clientRoot;
           const mountedInstance = this.$root;
-          deferredStyles = installTemplateLinkStyles(
+          deferredStyles = componentStyleRuntime.installTemplateLinks(
             this,
             meta,
             this.shadowRoot,
@@ -945,6 +943,8 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $installStyles(meta: TemplateMeta): void {
+    const styles = requireComponentStyleRuntime(this.localName, meta, this.ownerDocument);
+    if (!styles) return;
     const wantShadow = !!this.shadowRoot || !!meta.sd;
     const containingRoot = this.getRootNode();
     const styleTarget = wantShadow
@@ -952,8 +952,8 @@ export class TemplateElement extends HTMLElement {
       : containingRoot.nodeType === 11 && 'host' in containingRoot
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
-    claimSsrComponentStyles(this, styleTarget);
-    const installation = installComponentStyles(this.localName, styleTarget, this);
+    styles.claimSsr(this, styleTarget);
+    const installation = styles.install(this.localName, styleTarget, this);
     if (installation) {
       void installation.catch((error) => {
         console.error(error);
@@ -979,7 +979,7 @@ export class TemplateElement extends HTMLElement {
    */
   $destroy(): void {
     const shadowRoot = this.shadowRoot;
-    if (shadowRoot && cancelTemplateLinkStyleMount(shadowRoot)) {
+    if (shadowRoot && componentStyleRuntime?.cancelTemplateMount(shadowRoot)) {
       this.$resetClientShadow = true;
     }
     if (!this.$root) {
@@ -991,7 +991,7 @@ export class TemplateElement extends HTMLElement {
       if (this.$deferredWrites) this.$deferredWrites = undefined;
       return;
     }
-    this.$disposeInstance(this.$root, false);
+    this.$disposeInstance(this.$root, false, true);
     this.$root = null;
     this.$pathIndex = undefined;
     this.$wildcardBindings = undefined;
@@ -1022,6 +1022,7 @@ export class TemplateElement extends HTMLElement {
     instance.parent = undefined;
     instance.container = null;
     instance.nodes.length = 0;
+    if (instance.fragment) instance.fragment = undefined;
     if (instance.texts.length > 0) instance.texts.length = 0;
     if (instance.attrs.length > 0) instance.attrs.length = 0;
     if (instance.conds.length > 0) instance.conds.length = 0;
@@ -1400,6 +1401,8 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $finishHydration(): void {
+    this.$retainedFragments = undefined;
+    templateCacheHooks?.hydrated(this);
     let callbackFailed = false;
     let callbackError: unknown;
     try {
@@ -1451,8 +1454,8 @@ export class TemplateElement extends HTMLElement {
 
   private $templateMeta(): TemplateMeta | undefined {
     if (this.$meta) return this.$meta;
-    const fromCtor = templateMetaByCtor.get(this.constructor as Function);
-    if (fromCtor) return fromCtor;
+    const tag = templateTagByCtor.get(this.constructor as Function);
+    if (tag) return getTemplate(tag);
     const tagName = this.tagName;
     return tagName ? getTemplate(tagName.toLowerCase()) : undefined;
   }
@@ -1573,7 +1576,9 @@ export class TemplateElement extends HTMLElement {
 
     if (path && this.$pathIndex) {
       const entry = this.$pathIndex.get(path);
-      if (entry) {
+      if (entry || this.$observableNames().has(path) || this.$usesTemplateState(path)) {
+        // An owned root may only be used by a currently unmounted body.
+        if (!entry && !this.$wildcardBindings) return;
         // Batch path-specific updates via microtask coalescing.
         if (!this.$dirtyPaths) this.$dirtyPaths = new Set();
         this.$dirtyPaths.add(path);
@@ -1814,6 +1819,11 @@ export class TemplateElement extends HTMLElement {
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
       repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
+    if (meta.f) instance.fragment = meta;
+    else if (this.$meta?.v === 3) {
+      const fragment = deferredBlockOwner(meta);
+      if (fragment) instance.fragment = fragment;
+    }
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1878,14 +1888,15 @@ export class TemplateElement extends HTMLElement {
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         const anchor = ownerDocument.createComment('');
-        instance.conds.push({
+        const binding: CondBinding = {
           condition: condition as CompiledCondition,
           blockIndex,
           anchor,
           scope,
           owner: instance,
           instance: null,
-        });
+        };
+        instance.conds.push(binding);
         pendingSlots[pendingSlotCount++] = {
           parent,
           before: parent.childNodes[beforeIndex] || null,
@@ -1973,6 +1984,11 @@ export class TemplateElement extends HTMLElement {
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
       repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
+    if (meta.f) instance.fragment = meta;
+    else if (this.$meta?.v === 3) {
+      const fragment = deferredBlockOwner(meta);
+      if (fragment) instance.fragment = fragment;
+    }
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
@@ -2088,7 +2104,7 @@ export class TemplateElement extends HTMLElement {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentIndex] = slotMeta;
-        const blockMeta = this.$block(blockIndex);
+        let blockMeta = this.$block(blockIndex, instance.fragment);
         let condInstance: TemplateInstance | null = null;
 
         const marker = condMarkers ? condMarkers[i] : null;
@@ -2102,6 +2118,10 @@ export class TemplateElement extends HTMLElement {
           const [, beforeIndex] = slotMeta;
           const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
           ssrParent.insertBefore(condAnchor, insertRef);
+        }
+        if (!blockMeta && typeof blockIndex === 'string' && marker?.nextSibling &&
+            !(marker.nextSibling.nodeType === 8 && (marker.nextSibling as Comment).data === MARKER_COND_END)) {
+          blockMeta = requireDeferredFragment(blockIndex, this.localName);
         }
         // Trust the SSR marker range regardless of the current condition.
         // Parent bindings may not have arrived yet, so the client value can
@@ -2128,11 +2148,12 @@ export class TemplateElement extends HTMLElement {
           staleMarkers.push(condAnchor);
           liveAnchor = null;
         }
-        instance.conds.push({
+        const binding: CondBinding = {
           condition: condition as CompiledCondition, blockIndex,
           anchor: liveAnchor,
           scope, owner: instance, instance: condInstance,
-        });
+        };
+        instance.conds.push(binding);
       }
     }
 
@@ -2147,7 +2168,7 @@ export class TemplateElement extends HTMLElement {
         const [parentIndex] = slotMeta;
         const marker = repMarkers ? repMarkers[i] : null;
         const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
-        const blockMeta = this.$block(blockIndex);
+        const blockMeta = this.$block(blockIndex, instance.fragment);
         const blockTplDom = blockMeta ? getTemplateFragment(blockMeta) : null;
         const rootTag = blockMeta
           && blockTplDom?.childNodes.length === 1
@@ -2880,7 +2901,7 @@ export class TemplateElement extends HTMLElement {
       this.$changeStructure();
     } else if (c.instance) {
       const instance = c.instance;
-      const block = this.$block(c.blockIndex);
+      const block = this.$block(c.blockIndex, c.owner.fragment);
       const compactOwners = !!block && this.$hasRootStructuralSlot(block);
       const first = instance.nodes[0] ?? null;
       const container = first?.parentNode as (ParentNode & Node) | null;
@@ -2972,17 +2993,23 @@ export class TemplateElement extends HTMLElement {
     instance.parent = parent;
   }
 
-  $block(blockIndex: number): TemplateBlockMeta | undefined {
-    return this.$meta?.b?.[blockIndex];
+  $block(blockIndex: TemplateBlockReference, fragment?: TemplateMeta): TemplateBlockMeta | undefined {
+    if (typeof blockIndex === 'string') return findDeferredFragment(blockIndex, this.localName);
+    return blockIndex < 0 ? fragment?.b?.[-blockIndex - 1] : this.$meta?.b?.[blockIndex];
   }
 
   $createBlockInstance(
-    blockIndex: number,
+    blockIndex: TemplateBlockReference,
     scope?: ScopeFrame,
     parent?: TemplateInstance,
     container?: ParentNode & Node,
   ): TemplateInstance | null {
-    const bm = this.$block(blockIndex);
+    const bm = typeof blockIndex === 'number'
+      ? this.$block(blockIndex, parent?.fragment)
+      : requireDeferredFragment(blockIndex, this.localName);
+    if (!bm && typeof blockIndex === 'number' && blockIndex < 0) {
+      throw new Error('[WebUI] Missing deferred block. Reload matching resources.');
+    }
     if (!bm) return null;
     const wrapper = this.$createStagingRoot(bm);
     const inst = this.$wire(wrapper, bm, scope);
@@ -3002,14 +3029,17 @@ export class TemplateElement extends HTMLElement {
     this.$disposeInstance(instance, true);
   }
 
-  private $disposeInstance(root: TemplateInstance, removeNodes: boolean): void {
+  private $disposeInstance(root: TemplateInstance, removeNodes: boolean, retainFragments = false): void {
     const stack: TemplateInstance[] = [root];
     while (stack.length > 0) {
       const instance = stack.pop();
       if (!instance) continue;
+      if (retainFragments && instance.fragment) {
+        (this.$retainedFragments ??= new Set()).add(instance.fragment);
+      }
       const cleanups = instance.cleanups;
       if (cleanups) {
-        for (const cleanup of cleanups) cleanup();
+        for (const cleanup of cleanups) cleanup(removeNodes);
         cleanups.length = 0;
       }
       if (removeNodes) {

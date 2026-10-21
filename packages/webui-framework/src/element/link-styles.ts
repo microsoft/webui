@@ -8,6 +8,7 @@ import {
 } from '../template-content.js';
 import type { TemplateBlockMeta, TemplateMeta } from '../template-types.js';
 import type { ComponentStyles } from './styles.js';
+import { catalogFor } from './style-catalog.js';
 
 interface LinkStyleFailure {
   readonly href: string;
@@ -49,6 +50,26 @@ interface DeferredContentCallbacks {
 
 const READY = Promise.resolve();
 const NO_DESCRIPTORS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
+
+/** Prepare known resources without importing or mounting a component/template body. */
+export function prepareComponentStyleRoots(roots: readonly string[]): Promise<void> | undefined {
+  const catalog = catalogFor(document);
+  let hrefs: string[] | undefined;
+  let seen: Set<string> | undefined;
+  for (let i = 0; i < roots.length; i++) {
+    const closure = catalog.closures.get(roots[i]);
+    if (!closure) continue;
+    for (let j = 0; j < closure.length; j++) {
+      const resource = catalog.resources.get(closure[j]);
+      if (resource?.kind !== 'link') continue;
+      if (!seen) seen = new Set();
+      if (seen.has(resource.href)) continue;
+      seen.add(resource.href);
+      (hrefs ??= []).push(resource.href);
+    }
+  }
+  return hrefs ? preloadComponentAssetStyles(hrefs) : undefined;
+}
 const NO_LINK_STYLE_STATE: TemplateLinkStyleState = {
   descriptors: NO_DESCRIPTORS,
   ready: READY,

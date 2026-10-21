@@ -49,6 +49,37 @@ public class ProtocolTests
     }
 
     [Fact]
+    public void Protocol_DeferredResourcesAndState_PreserveAcknowledgementAndProjection()
+    {
+        using var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
+            AppContext.BaseDirectory, "fixtures", "deferred-app", "protocol.bin")));
+        var prepared = protocol.PrepareDeferredResources("test-panel", "details");
+        using var metadata = JsonDocument.Parse(prepared.Json);
+        Assert.Equal("webui-deferred", metadata.RootElement.GetProperty("type").GetString());
+        Assert.False(metadata.RootElement.TryGetProperty("state", out _));
+        Assert.Equal(prepared.Json, protocol.RenderDeferredResources("test-panel", "details"));
+        string body = protocol.RenderDeferredPartial(
+            """{"message":"Fresh","items":["one"],"unused":"not sent"}""",
+            "test-panel", "details", prepared.Options);
+        using var response = JsonDocument.Parse(body);
+        Assert.False(response.RootElement.TryGetProperty("templates", out _));
+        Assert.Equal("Fresh", response.RootElement.GetProperty("state").GetProperty("message").GetString());
+        Assert.False(response.RootElement.GetProperty("state").TryGetProperty("unused", out _));
+    }
+
+    [Fact]
+    public void Protocol_DeferredRequests_RejectMissingTargetsStaleBuildsAndDisposedHandles()
+    {
+        var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
+            AppContext.BaseDirectory, "fixtures", "deferred-app", "protocol.bin")));
+        Assert.Throws<WebUIException>(() => protocol.RenderDeferredResources("test-panel", "missing"));
+        Assert.Throws<WebUIException>(() => protocol.RenderDeferredResources("test-panel", "details",
+            new DeferredOptions { BuildId = "different" }));
+        protocol.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => protocol.RenderDeferredPartial("{}", "test-panel", "details"));
+    }
+
+    [Fact]
     public void Protocol_OperationAfterDispose_ThrowsObjectDisposedException()
     {
         var protocol = LoadProtocol();

@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,3 +41,23 @@ def renderer(protocol_bytes: bytes) -> Renderer:
 @pytest.fixture
 def streaming_renderer() -> Renderer:
     return Renderer(STREAMING_PROTOCOL_PATH.read_bytes(), plugin=Plugin.WEBUI)
+
+
+@pytest.fixture(scope="session")
+def deferred_renderer() -> Renderer:
+    root = Path(__file__).resolve().parents[3]
+    protocol = Path(os.environ.get(
+        "WEBUI_TEST_DEFERRED_PROTOCOL",
+        root / "target" / "python-deferred-test" / "protocol.bin",
+    ))
+    if not protocol.exists():
+        subprocess.run(
+            [
+                "cargo", "run", "--quiet", "-p", "microsoft-webui-cli", "--",
+                "build", str(FIXTURES / "deferred-app"), "--plugin", "webui",
+                "--out", str(protocol),
+            ],
+            cwd=root,
+            check=True,
+        )
+    return Renderer.from_file(protocol, plugin=Plugin.WEBUI)

@@ -55,7 +55,14 @@ export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
-export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlot];
+/** Local block index or an independently delivered template-fragment identity. */
+export type TemplateBlockReference = number | string;
+export type CompiledConditionalMeta = [
+  condition: TemplateCondition,
+  blockIndex: TemplateBlockReference,
+  slot: TemplateSlot,
+  deferred?: 1,
+];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -66,7 +73,7 @@ export type CompiledAttrMeta =
 export type CompiledRepeatMeta = [
   collection: string,
   itemVar: string,
-  blockIndex: number,
+  blockIndex: TemplateBlockReference,
   slot: TemplateSlot,
   keyPath?: string,
 ];
@@ -87,6 +94,13 @@ export type CompiledEventBindingMeta = [
 export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
 export interface TemplateBlockMeta {
+  /** Compiled owner refs for v3 templates, using the same element ordinal space. */
+  rf?: [name: string, target: TemplateNodeIndex][];
+  /** Hostless external section identity and its owning template. */
+  f?: string;
+  o?: string;
+  /** Marks a publicly addressable deferred body rather than an internal block. */
+  e?: 1;
   h: string;
   tx?: CompiledTextRunMeta[];
   a?: CompiledAttrMeta[];
@@ -97,6 +111,10 @@ export interface TemplateBlockMeta {
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
+  /** Version 1 declares the complete ordinary component-dependency surface. */
+  v?: 1 | 3;
+  /** Direct compiled component dependencies; absent is empty when v is 1. */
+  d?: readonly string[];
   b?: TemplateBlockMeta[];
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */

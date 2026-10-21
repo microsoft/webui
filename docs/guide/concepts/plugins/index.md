@@ -270,6 +270,10 @@ pub trait ParserPlugin {
     fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction { AttributeAction::Keep }
     fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> { None }
     fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> { Ok(ParserPluginArtifacts::None) }
+    fn finish_with_fragments(
+        self: Box<Self>,
+        fragments: &WebUIFragmentRecords,
+    ) -> Result<ParserPluginArtifacts> { self.finish() }
 }
 ```
 
@@ -278,6 +282,11 @@ virtual call per component. A missing source transform avoids the indirect call
 entirely, and a transform returns `Ok(None)` to preserve source without
 allocation. The remaining callbacks follow parser lifecycle order and have
 no-op defaults, so a plugin implements only the phases it owns.
+
+Artifact extraction calls `finish_with_fragments` with the read-only compiled
+graph. Its default delegates to `finish`, so existing plugins need no change.
+Override it when client artifacts need dependency information from typed
+fragment references rather than another source-HTML scan.
 
 When producing a `ComponentTemplateArtifact`, pass
 `context.uses_shadow_dom` to its constructor. This parser-derived boolean is

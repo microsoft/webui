@@ -78,7 +78,9 @@ use std::fmt::Write;
 use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
+mod deferred_templates;
 mod named_repeats;
+mod template_dependencies;
 use named_repeats::CompileBlocks;
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
@@ -199,18 +201,18 @@ impl WebUIParserPlugin {
                 StateSurface::None
             };
             let navigation = navigation_surface(&payload.hydration_roots, &hydration);
-            out.push(
-                ComponentTemplateArtifact::webui(
-                    c.tag_name.clone(),
-                    payload.template_json,
-                    payload.template_functions,
-                    c.uses_shadow_dom,
-                )
-                .with_hydration(hydration)
-                .with_navigation(navigation)
-                .with_template_roots(payload.hydration_roots.clone())
-                .scripted(is_authored),
-            );
+            let mut artifact = ComponentTemplateArtifact::webui(
+                c.tag_name.clone(),
+                payload.template_json,
+                payload.template_functions,
+                c.uses_shadow_dom,
+            )
+            .with_hydration(hydration)
+            .with_navigation(navigation)
+            .with_template_roots(payload.hydration_roots.clone())
+            .scripted(is_authored);
+            artifact.deferred_templates = payload.deferred_templates;
+            out.push(artifact);
         }
         Ok(out)
     }
@@ -390,6 +392,10 @@ impl Default for WebUIParserPlugin {
 }
 
 impl ParserPlugin for WebUIParserPlugin {
+    fn supports_deferred_fragments(&self) -> bool {
+        true
+    }
+
     fn begin_fragment(&mut self, _context: FragmentContext<'_>) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
@@ -453,6 +459,15 @@ impl ParserPlugin for WebUIParserPlugin {
             self.take_component_templates()?,
         ))
     }
+
+    fn finish_with_fragments(
+        self: Box<Self>,
+        fragments: &webui_protocol::WebUIFragmentRecords,
+    ) -> Result<ParserPluginArtifacts> {
+        let mut templates = self.take_component_templates()?;
+        template_dependencies::attach(&mut templates, fragments)?;
+        Ok(ParserPluginArtifacts::ComponentTemplates(templates))
+    }
 }
 
 fn append_render_policy(template_json: &mut String, policy: &ComponentRenderPolicy) {
@@ -506,6 +521,8 @@ struct TemplateSectionMeta {
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
     condition_slots: Vec<SlotLocator>,
+    /// Present only in sections with explicitly deferred component callsites.
+    deferred_conditions: Vec<usize>,
     /// For-loop blocks and their optional first-child key paths.
     repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
@@ -514,6 +531,7 @@ struct TemplateSectionMeta {
     events: Vec<EventBinding>,
     /// Client event target element indices aligned to `events`.
     event_targets: Vec<usize>,
+    refs: Vec<(String, usize)>,
 }
 
 #[derive(Clone)]
@@ -611,6 +629,13 @@ struct TemplateMeta {
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
     root_events: Vec<EventBinding>,
+    deferred: Vec<DeferredDefinition>,
+}
+
+struct DeferredDefinition {
+    block_index: usize,
+    id: String,
+    name: String,
 }
 
 type EventBinding = (String, String, Vec<EventArg>);
@@ -659,6 +684,7 @@ struct CompiledTemplatePayload {
     /// Template reactive roots used when client navigation creates or updates
     /// a component whose initial DOM was not server rendered.
     hydration_roots: Vec<String>,
+    deferred_templates: Vec<super::DeferredTemplateArtifact>,
 }
 
 fn navigation_surface(roots: &[String], hydration: &StateSurface) -> StateSurface {
@@ -689,9 +715,10 @@ struct TemplateBuildMetadata {
     scope_count: usize,
 }
 
-struct TemplatePayloadOptions {
+struct TemplatePayloadOptions<'a> {
     shadow_dom: bool,
     emit_static_host: bool,
+    owner: &'a str,
 }
 
 struct RootScope<'a> {
@@ -820,6 +847,7 @@ fn generate_compiled_template_with_root_source(
         TemplatePayloadOptions {
             shadow_dom,
             emit_static_host: scriptless,
+            owner: tag_name,
         },
     ))
 }
@@ -830,11 +858,17 @@ fn emit_compiled_template_payload(
     build_meta: &TemplateBuildMetadata,
     options: TemplatePayloadOptions,
 ) -> CompiledTemplatePayload {
+    let deferred_plan = deferred_templates::Plan::new(options.owner, meta);
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
     out.push('{');
 
-    emit_json_template_section(&meta.root, &mut out, &mut conditions);
+    emit_json_template_section(
+        &meta.root,
+        &mut out,
+        &mut conditions,
+        deferred_plan.as_ref(),
+    );
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if options.shadow_dom {
@@ -885,12 +919,17 @@ fn emit_compiled_template_payload(
     // b: nested block table
     if !meta.blocks.is_empty() {
         out.push_str(",\"b\":[");
+        let mut wrote = false;
         for (i, block) in meta.blocks.iter().enumerate() {
-            if i > 0 {
+            if deferred_plan.as_ref().is_some_and(|plan| !plan.is_eager(i)) {
+                continue;
+            }
+            if wrote {
                 out.push(',');
             }
+            wrote = true;
             out.push('{');
-            emit_json_template_section(block, &mut out, &mut conditions);
+            emit_json_template_section(block, &mut out, &mut conditions, deferred_plan.as_ref());
             out.push('}');
         }
         out.push(']');
@@ -901,6 +940,8 @@ fn emit_compiled_template_payload(
         template_json: out,
         template_functions: conditions.finish(),
         hydration_roots: build_meta.roots.clone(),
+        deferred_templates: deferred_plan
+            .map_or_else(Vec::new, |plan| plan.emit(options.owner, meta)),
     }
 }
 
@@ -1087,21 +1128,33 @@ fn emit_json_attr_binding(
 #[inline]
 fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
     if meta.has_named_repeats {
-        collect_template_roots::<true>(meta)
+        collect_template_roots::<true, false>(
+            &meta.root,
+            &meta.blocks,
+            !meta.root_events.is_empty(),
+        )
     } else {
-        collect_template_roots::<false>(meta)
+        collect_template_roots::<false, false>(
+            &meta.root,
+            &meta.blocks,
+            !meta.root_events.is_empty(),
+        )
     }
 }
 
 #[inline(never)]
-fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBuildMetadata {
+fn collect_template_roots<const SHARED: bool, const STOP_DEFERRED: bool>(
+    root: &TemplateSectionMeta,
+    blocks: &[TemplateSectionMeta],
+    root_events: bool,
+) -> TemplateBuildMetadata {
     let mut roots = Vec::new();
     let mut scopes = Vec::<RootScope<'_>>::new();
-    let mut stack = Vec::with_capacity(1 + meta.blocks.len());
-    let mut has_events = !meta.root_events.is_empty();
+    let mut stack = Vec::with_capacity(1 + blocks.len());
+    let mut has_events = root_events;
     let mut visits = SHARED.then(crate::scoped_visits::ScopedVisits::default);
     stack.push(RootVisit {
-        block: &meta.root,
+        block: root,
         scope: None,
     });
 
@@ -1136,9 +1189,12 @@ fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBu
             }
         }
 
-        for (condition, block_index) in &block.conditionals {
+        for (position, (condition, block_index)) in block.conditionals.iter().enumerate() {
             add_condition_roots(&mut roots, condition, &scopes, visit.scope);
-            if let Some(child) = meta.blocks.get(*block_index) {
+            if STOP_DEFERRED && block.deferred_conditions.contains(&position) {
+                continue;
+            }
+            if let Some(child) = blocks.get(*block_index) {
                 stack.push(RootVisit {
                     block: child,
                     scope: visit.scope,
@@ -1152,7 +1208,7 @@ fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBu
             {
                 continue;
             }
-            if let Some(child) = meta.blocks.get(repeat.block_index) {
+            if let Some(child) = blocks.get(repeat.block_index) {
                 let scope = scopes.len();
                 scopes.push(RootScope {
                     name: &repeat.item_var,
@@ -1461,13 +1517,91 @@ fn emit_js_text_parts(parts: &[CompiledAttrPart], out: &mut String) {
     out.push(']');
 }
 
+fn emit_block_reference(
+    index: usize,
+    references: Option<&deferred_templates::Plan>,
+    out: &mut String,
+) {
+    match references.map(|plan| &plan.references[index]) {
+        Some(deferred_templates::Reference::External(id)) => emit_js_string(id, out),
+        Some(deferred_templates::Reference::Inline(index)) => {
+            let _ = write!(out, "{index}");
+        }
+        Some(deferred_templates::Reference::Local(index)) => {
+            let _ = write!(out, "-{}", index + 1);
+        }
+        None => {
+            let _ = write!(out, "{index}");
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn validate_deferred_metadata(
+    component: &str,
+    tag: &crate::html_parser::Tag<'_>,
+    source: &TemplateSource<'_>,
+    names: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    let failure = if tag.attr("defer").is_some_and(|value| !value.is_empty()) {
+        Some((
+            crate::codes::INVALID_DEFERRED_ATTRIBUTE,
+            "defer must be a boolean attribute",
+            "write defer without a value; use an optional id to name the region",
+        ))
+    } else if let Some(name) = tag.attr("id") {
+        if !crate::deferred::valid_name(name) {
+            Some((
+                crate::codes::INVALID_DEFERRED_ID,
+                "invalid deferred region id",
+                "use 1-128 ASCII letters, digits, periods, underscores, or hyphens",
+            ))
+        } else if !names.insert(name.to_owned()) {
+            Some((
+                crate::codes::DUPLICATE_DEFERRED_ID,
+                "duplicate deferred region id",
+                "choose a unique id within this owning template",
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some((code, title, help)) = failure {
+        return Err(source.locate_error(
+            crate::Diagnostic::error(title)
+                .code(code)
+                .component(component)
+                .element("if")
+                .help(help)
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn emit_json_template_section(
     meta: &TemplateSectionMeta,
     out: &mut String,
     functions: &mut ConditionFunctionEmitter,
+    references: Option<&deferred_templates::Plan>,
 ) {
     out.push_str("\"h\":");
     emit_js_string(&meta.html, out);
+    if !meta.refs.is_empty() {
+        out.push_str(",\"rf\":[");
+        for (index, (name, target)) in meta.refs.iter().enumerate() {
+            if index != 0 {
+                out.push(',');
+            }
+            out.push('[');
+            emit_js_string(name, out);
+            let _ = write!(out, ",{target}]");
+        }
+        out.push(']');
+    }
 
     if !meta.text_runs.is_empty() {
         out.push_str(",\"tx\":[");
@@ -1529,9 +1663,12 @@ fn emit_json_template_section(
             out.push('[');
             emit_json_condition_ref(cond, out, functions);
             out.push(',');
-            let _ = write!(out, "{}", block_index);
+            emit_block_reference(*block_index, references, out);
             out.push(',');
             emit_js_slot(slot, out);
+            if meta.deferred_conditions.contains(&i) {
+                out.push_str(",1");
+            }
             out.push(']');
         }
         out.push(']');
@@ -1553,7 +1690,7 @@ fn emit_json_template_section(
             out.push(',');
             emit_js_string(&repeat.item_var, out);
             out.push(',');
-            let _ = write!(out, "{}", repeat.block_index);
+            emit_block_reference(repeat.block_index, references, out);
             out.push(',');
             emit_js_slot(slot, out);
             if let Some(key_path) = &repeat.key_path {
@@ -1597,15 +1734,17 @@ fn compile_to_metadata(
     let source = input.source;
     let mut root = compile_section(component, input, &mut blocks)?;
     blocks.resolve(component, source, &mut root)?;
-    finalize_template_section(&mut root);
+    let compiled_refs = !blocks.deferred.is_empty();
+    finalize_template_section(&mut root, compiled_refs);
     for block in &mut blocks.blocks {
-        finalize_template_section(block);
+        finalize_template_section(block, compiled_refs);
     }
     Ok(TemplateMeta {
         root,
         has_named_repeats: blocks.has_named_repeats(),
         blocks: blocks.blocks,
         root_events,
+        deferred: blocks.deferred,
     })
 }
 
@@ -1624,10 +1763,12 @@ fn compile_section(
         attr_groups: Vec::new(),
         conditionals: Vec::new(),
         condition_slots: Vec::new(),
+        deferred_conditions: Vec::new(),
         repeats: Vec::new(),
         repeat_slots: Vec::new(),
         events: Vec::new(),
         event_targets: Vec::new(),
+        refs: Vec::new(),
     };
 
     let bytes = input.as_bytes();
@@ -1656,15 +1797,37 @@ fn compile_section(
                 }
             }
 
-            let opening_name = parse_tag(remaining)
-                .filter(|tag| !tag.closing)
-                .map(|tag| tag.name);
+            let opening_tag = parse_tag(remaining).filter(|tag| !tag.closing);
+            let opening_name = opening_tag.as_ref().map(|tag| tag.name);
             if opening_name == Some("if") {
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
+                    let deferred_tag = opening_tag.as_ref().filter(|tag| tag.has_attr("defer"));
+                    let deferred = deferred_tag.is_some();
                     let block_index = blocks.reserve();
+                    if let Some(tag) = deferred_tag {
+                        let name = tag.attr("id");
+                        validate_deferred_metadata(
+                            component,
+                            tag,
+                            &source.slice(i..len),
+                            &mut blocks.deferred_names,
+                        )?;
+                        blocks.deferred.push(DeferredDefinition {
+                            block_index,
+                            id: crate::deferred::fragment_id(
+                                component,
+                                name,
+                                blocks.deferred.len(),
+                            ),
+                            name: name.unwrap_or_default().to_owned(),
+                        });
+                    }
                     let block = compile_section(component, body, blocks)?;
                     blocks.blocks[block_index] = block;
                     let idx = meta.conditionals.len();
+                    if deferred {
+                        meta.deferred_conditions.push(idx);
+                    }
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
                     i += consumed;
@@ -1882,11 +2045,37 @@ struct FragmentAttr {
     value: Option<String>,
 }
 
-fn finalize_template_section(meta: &mut TemplateSectionMeta) {
+fn finalize_template_section(meta: &mut TemplateSectionMeta, compiled_refs: bool) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
     let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
     insert_implied_table_containers(&mut nodes);
+    if compiled_refs {
+        let mut pending: Vec<&FragmentNode> = nodes.iter().rev().collect();
+        let mut index = 0usize;
+        while let Some(node) = pending.pop() {
+            let FragmentNode::Element(element) = node else {
+                continue;
+            };
+            index += 1;
+            for attr in &element.attrs {
+                if attr.name == "w-ref" {
+                    if let Some(name) = attr
+                        .value
+                        .as_deref()
+                        .and_then(|value| value.strip_prefix('{'))
+                        .and_then(|value| value.strip_suffix('}'))
+                        .filter(|name| !name.is_empty())
+                    {
+                        meta.refs.push((name.to_owned(), index));
+                    }
+                }
+            }
+            if !element.tag_name.eq_ignore_ascii_case("template") {
+                pending.extend(element.children.iter().rev());
+            }
+        }
+    }
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -3662,6 +3851,53 @@ mod tests {
             css_fallback_chains: Vec::new(),
             is_client_owned,
         }
+    }
+
+    #[test]
+    fn client_cache_dependencies_follow_compiled_edges_not_source_text() {
+        let mut parser = crate::HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
+        for (tag, html) in [
+            (
+                "x-parent",
+                concat!(
+                    r#"<if condition="show"><x-child></x-child></if>"#,
+                    r#"<for each="item in items"><x-leaf></x-leaf></for>"#,
+                    r#"<x-leaf></x-leaf>"#,
+                    r#"<div data-example="<x-grandchild>"></div>"#,
+                    r#"<route path="/other" component="x-route" exact />"#,
+                ),
+            ),
+            ("x-child", "<x-grandchild></x-grandchild>"),
+            ("x-grandchild", "<p>Grandchild</p>"),
+            ("x-leaf", "<span>Leaf</span>"),
+            ("x-route", "<p>Route</p>"),
+        ] {
+            parser
+                .component_registry_mut()
+                .register_component(crate::ComponentRegistration::new(tag, html, None, false))
+                .expect("component registration");
+        }
+        parser
+            .parse("index.html", "<x-parent></x-parent>")
+            .expect("entry parsing");
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("client artifacts")
+        else {
+            panic!("expected WebUI templates");
+        };
+        let metadata = |tag: &str| {
+            templates
+                .iter()
+                .find(|template| template.tag_name == tag)
+                .expect("compiled component")
+                .template_json
+                .as_str()
+        };
+        assert!(metadata("x-parent").contains(r#""v":1"#));
+        assert!(metadata("x-parent").contains(r#""d":["x-child","x-leaf"]"#));
+        assert!(metadata("x-child").contains(r#""d":["x-grandchild"]"#));
+        assert!(metadata("x-leaf").contains(r#""v":1"#));
+        assert!(!metadata("x-leaf").contains(r#""d":"#));
     }
 
     #[test]

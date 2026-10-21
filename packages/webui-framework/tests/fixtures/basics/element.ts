@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr, observable } from '../../../src/index.js';
+import { WebUIElement, attr, observable } from '../../../src/core.js';
 
 export class TestBasics extends WebUIElement {
   @attr greeting = 'Hello';

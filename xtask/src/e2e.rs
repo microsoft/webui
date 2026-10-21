@@ -123,6 +123,16 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
+        name: "deferred-ui",
+        dir: "examples/app/deferred-ui",
+        ports: &[3021, 3011],
+        scripts: &["start:api", "start:server"],
+        build_client: false,
+        pre_script: Some("build"),
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
+    PlaywrightSuite {
         name: "native-services",
         dir: "examples/app/native-services",
         ports: &[3022],

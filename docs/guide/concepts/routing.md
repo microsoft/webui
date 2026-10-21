@@ -86,6 +86,75 @@ registered classes. When the application also loads
 navigation without empty TypeScript modules. The router falls back to a full
 document request only when no runtime registers the destination tag.
 
+## Selecting router capabilities
+
+The default package entry keeps the convenience `Router` singleton and existing
+JSON/NDJSON, boundary, and transition behavior. Use `core.js` to exclude optional
+implementations from the application graph:
+
+```typescript
+import { WebUIRouter } from '@microsoft/webui-router/core.js';
+
+const router = new WebUIRouter();
+router.start();
+```
+
+This router requests JSON and has no automatic preload, mutation interception,
+navigation cache, pending/error presentation, or view transitions. URL/history,
+server-authoritative route chains, outlets, and component loaders work normally.
+
+Import only the capabilities you select:
+
+```typescript
+import { WebUIRouter } from '@microsoft/webui-router/core.js';
+import { ndjson } from '@microsoft/webui-router/ndjson.js';
+import { routeBoundaries } from '@microsoft/webui-router/boundaries.js';
+import { viewTransitions } from '@microsoft/webui-router/transitions.js';
+import { createNavigationCache } from '@microsoft/webui-router/cache.js';
+import { setupFormInterception } from '@microsoft/webui-router/actions.js';
+
+const router = new WebUIRouter({
+  streaming: ndjson,
+  boundaries: routeBoundaries,
+  transitions: viewTransitions,
+  cache: createNavigationCache,
+  actions: setupFormInterception,
+});
+
+router.start({
+  cache: { maxEntries: 20, staleTime: 10_000 },
+  actions: true,
+});
+```
+
+| Capability | Import and constructor property |
+| --- | --- |
+| NDJSON partials | `ndjson.js`: `streaming: ndjson` |
+| Pending/error UI | `boundaries.js`: `boundaries: routeBoundaries` |
+| View transitions | `transitions.js`: `transitions: viewTransitions` |
+| Navigation cache | `cache.js`: `cache: createNavigationCache` |
+| Mutation actions | `actions.js`: `actions: setupFormInterception` |
+| Automatic route preload | `route-preload.js`: `preload: setupPreloadListeners`, plus the cache capability |
+| Development warnings | `diagnostics.js`: `diagnostics: validateRoutes` |
+
+The `cache`, `actions`, `preload`, and `dev` options still activate/configure their
+selected implementations. Enabling an option without its capability throws an
+actionable error. The existing `preload.js` entry for `prepareRoutePreload()` is
+separate from the automatic route-preload capability.
+
+The NDJSON adapter is ready when imported; it does not wait until the first
+response to import its decoder. JSON-only applications do not import it at all.
+It bounds each UTF-8 record to 256 KiB and releases cancelled readers. A partial
+request's deadline includes the deferred state tail. Malformed or truncated
+tails are reported and never marked complete in the navigation cache.
+
+For custom delivery code, `resources.js` exports `fetchComponentTemplates()`,
+`registerTemplatesAndStyles()`, `readJsonPartial()`, and
+`waitForTemplateReadiness()` without importing a router or renderer.
+`ndjson-reader.js` exports the independent `NdjsonReader` for bounded record
+decoding. These are resource/transport primitives, not a new component-state
+endpoint or a replacement for declaring compiled components.
+
 When the View Transitions API is available, client-side route commits
 use `document.startViewTransition()`. While active, the router installs a
 nonce-bearing `@view-transition { navigation: none; }` override. This disables
@@ -612,13 +681,28 @@ Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
-Release cached component templates to free memory. The router clears matching
-inventory bits so the server will re-send templates on the next navigation that
-needs them.
+With the WebUI framework, import its optional cache adapter before component
+definitions and use a freshly rebuilt protocol:
 
 ```typescript
+import '@microsoft/webui-framework/template-cache.js';
+import './app-shell.js';
+
 Router.gc();
 ```
+
+Collection releases cache ownership while live components retain the ordinary
+templates their conditions/repeats can still instantiate. Active pending/error
+resources remain available. Inventory is reset conservatively; old in-flight
+responses cannot restore the cleared inventory.
+The optional navigation response cache is cleared as well, so its responses do
+not continue retaining the same resources.
+
+The operation does not destroy mounted components or unload JavaScript modules,
+native custom-element definitions, or shared document styles. Garbage collection
+is asynchronous. Calling `Router.gc()` for WebUI templates without the adapter
+now fails explicitly rather than reporting a release that can leave metadata
+retained by component definitions.
 
 <webui-blockquote appearance="tip" title="When to use this" icon="💡">
 

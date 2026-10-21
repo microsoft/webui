@@ -1,12 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-/**
- * NDJSON streaming — reads chunked partial responses from the server.
- * Chunk 1 contains the route chain + templates for immediate commit.
- * Chunk 2 contains deferred per-component state applied after mount.
- */
-
+import { NdjsonReader } from './ndjson-reader.js';
 import { hasState, mountedRouteComponent } from './route-element.js';
 import { isStateful } from './types.js';
 import {
@@ -14,12 +9,25 @@ import {
   registerTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
-import type { PartialResponse, RouteChainEntry } from './cache.js';
+import {
+  attachDeferredStream,
+  releaseDeferredStream,
+  type StreamingPartialResponse,
+} from './partial-response.js';
+import type { RouteChainEntry } from './cache.js';
+import type { RouteStreaming } from './capabilities.js';
 
-/** Maximum buffered NDJSON line size before aborting the stream (256 KiB). */
-const MAX_NDJSON_BUFFER = 256 * 1024;
+/** Explicit NDJSON route capability; importing it readies the decoder before navigation. */
+export const ndjson: RouteStreaming = { read: readStreamingPartial };
 
-/** Context needed by the streaming reader to interact with router state. */
+export {
+  cancelDeferredStream,
+  hasDeferredStream,
+  startDeferredStream,
+} from './partial-response.js';
+export type { StreamingPartialResponse } from './partial-response.js';
+
+/** Route-specific ownership and commit policy for a two-phase partial. */
 export interface StreamingContext {
   readonly navGeneration: number;
   readonly currentRequestPath: string;
@@ -28,269 +36,135 @@ export interface StreamingContext {
   readonly injectedCss: Set<string>;
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
-  updateInventory(inv: string): void;
+  updateInventory(inv: string, styleInventory?: string): void;
   markCacheComplete(requestPath: string): void;
 }
 
-/** Internal partial-response marker for an unread deferred stream tail. */
-export interface StreamingPartialResponse extends PartialResponse {
-  readonly _deferredStream?: true;
-  inventory?: string;
-}
-
-interface DeferredStreamControl {
-  cancel(): Promise<void>;
-  start(): void;
-}
-
-const deferredStreams = new WeakMap<object, DeferredStreamControl>();
-
 /**
- * Read a streaming NDJSON partial response.
- * Returns after Chunk 1 (chain + templates) for immediate navigation commit.
- * Spawns a background reader for Chunk 2 (deferred per-component state).
+ * Prepare the resource/chain record and leave deferred state paused until commit.
+ * The record reader owns framing; this adapter owns route state and generations.
  */
 export async function readStreamingPartial(
-  resp: Response,
+  response: Response,
   requestPath: string,
-  ctx: StreamingContext,
+  context: StreamingContext,
   signal?: AbortSignal,
 ): Promise<StreamingPartialResponse | null> {
-  const reader = resp.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let chunk1: (PartialResponse & { inventory?: string }) | null = null;
-
-  // Read until we get Chunk 1 (has 'chain' field)
-  while (!chunk1) {
-    const { done, value } = await reader.read();
-    if (signal?.aborted) break;
-    if (done) {
-      // Flush remaining buffer on stream end
-      buffer += decoder.decode();
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-
-    if (buffer.length > MAX_NDJSON_BUFFER) {
-      console.warn('[Router] NDJSON buffer exceeded limit, aborting stream');
-      await cancelReader(reader);
-      return null;
-    }
-
-    const lines = buffer.split('\n');
-    buffer = lines.pop()!; // keep incomplete last line
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.chain) {
-          chunk1 = parsed;
-        } else if (parsed.states && chunk1) {
-          // Chunk 2 arrived in the same read batch — fold it into the commit data.
-          const data = chunk1 as StreamingPartialResponse;
-          persistDeferredStates(data, parsed.states);
-        }
-      } catch {
-        // Malformed line — skip
-      }
-    }
-  }
-
-  // Process any final incomplete line left in buffer
-  if (!chunk1 && buffer.trim()) {
-    try {
-      const parsed = JSON.parse(buffer);
-      if (parsed.chain) chunk1 = parsed;
-    } catch { /* ignore */ }
-    buffer = '';
-  }
-
-  if (!chunk1 || signal?.aborted) {
-    await cancelReader(reader);
-    return null;
-  }
-
-  // Register templates/styles from Chunk 1
-  const gen = ctx.navGeneration;
-  const stylesReady = registerTemplatesAndStyles(
-    chunk1,
-    ctx.nonce,
-    ctx.injectedCss,
-    ctx.updateInventory,
-  );
-  injectCssLinks(chunk1, ctx.injectedCss);
+  if (!response.body) throw new Error('[Router] NDJSON response has no body.');
+  const records = new NdjsonReader(response.body, { signal });
+  const generation = context.navGeneration;
   try {
+    const data = readMetadata(await records.read());
+    let receivedState = data.state !== undefined;
+    let buffered = records.readBuffered();
+    while (buffered !== undefined) {
+      persistDeferredStates(data, readStates(buffered));
+      receivedState = true;
+      buffered = records.readBuffered();
+    }
+
+    const ready = registerTemplatesAndStyles(
+      data, context.nonce, context.injectedCss, (inventory, styles) => context.updateInventory(inventory, styles),
+    );
+    injectCssLinks(data, context.injectedCss);
     if (
-      stylesReady &&
-      !await waitForTemplateReadiness(stylesReady, signal)
+      (ready && !await waitForTemplateReadiness(ready, signal)) ||
+      signal?.aborted ||
+      generation !== context.navGeneration
     ) {
-      await cancelReader(reader);
+      await records.cancel();
       return null;
     }
+
+    let started = false;
+    attachDeferredStream(data, {
+      async cancel() {
+        started = true;
+        await records.cancel();
+        context.setDeferredReader(null);
+      },
+      start() {
+        if (started) return;
+        started = true;
+        Reflect.deleteProperty(data, '_deferredStream');
+        context.setDeferredGeneration(generation);
+        const pending = continueDeferredRead(
+          records, data, requestPath, { context, generation, signal, receivedState },
+        ).catch((error: unknown) => {
+          if (!signal?.aborted && generation === context.navGeneration) {
+            console.warn('[Router] Deferred state reader failed:', error);
+          }
+        }).finally(() => {
+          releaseDeferredStream(data);
+          context.setDeferredReader(null);
+        });
+        context.setDeferredReader(pending);
+      },
+    });
+    return data;
   } catch (error) {
-    await cancelReader(reader);
+    await records.cancel(error);
+    if (signal?.aborted) return null;
     throw error;
   }
-  if (signal?.aborted || gen !== ctx.navGeneration) {
-    await cancelReader(reader);
-    return null;
+}
+
+function readMetadata(value: unknown): StreamingPartialResponse {
+  if (!value || typeof value !== 'object' || !('chain' in value) || !Array.isArray(value.chain)) {
+    throw new Error('[Router] NDJSON must start with a route-chain/resource record.');
   }
-
-  const data = chunk1 as StreamingPartialResponse;
-  let consumed = false;
-  const control: DeferredStreamControl = {
-    async cancel() {
-      if (consumed) return;
-      consumed = true;
-      deferredStreams.delete(data);
-      Reflect.deleteProperty(data, '_deferredStream');
-      await cancelReader(reader);
-      ctx.setDeferredReader(null);
-    },
-    start() {
-      if (consumed) return;
-      consumed = true;
-      Reflect.deleteProperty(data, '_deferredStream');
-      ctx.setDeferredGeneration(gen);
-      const pending = continueDeferredRead(
-        reader,
-        decoder,
-        buffer,
-        data,
-        requestPath,
-        gen,
-        ctx,
-        signal,
-      ).catch((err) => {
-        if (!signal?.aborted) {
-          console.warn('[Router] Deferred state reader failed:', err);
-        }
-      }).finally(() => {
-        deferredStreams.delete(data);
-      });
-      ctx.setDeferredReader(pending);
-    },
-  };
-  deferredStreams.set(data, control);
-  Object.defineProperty(data, '_deferredStream', {
-    configurable: true,
-    value: true,
-  });
-
-  return data;
+  return value as StreamingPartialResponse;
 }
 
-/** Return whether a streaming partial still owns an unread deferred tail. */
-export function hasDeferredStream(
-  data: PartialResponse,
-): data is StreamingPartialResponse {
-  return deferredStreams.has(data);
-}
-
-/** Begin consuming deferred state after the route has committed. */
-export function startDeferredStream(data: PartialResponse): void {
-  deferredStreams.get(data)?.start();
-}
-
-/** Cancel an unread deferred tail when its route cannot commit. */
-export async function cancelDeferredStream(
-  data: PartialResponse,
-): Promise<void> {
-  await deferredStreams.get(data)?.cancel();
-}
-
-async function cancelReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-): Promise<void> {
-  try {
-    await reader.cancel();
-  } catch {
-    // Preserve the readiness result; cancellation is best-effort cleanup.
-  } finally {
-    reader.releaseLock();
+function readStates(value: unknown): (Record<string, unknown> | null)[] {
+  if (!value || typeof value !== 'object') {
+    throw new Error('[Router] Expected a deferred-state object in the NDJSON response.');
   }
+  if ('error' in value) {
+    throw new Error('[Router] The server could not complete deferred state.', { cause: value.error });
+  }
+  if (!('states' in value) || !Array.isArray(value.states)) {
+    throw new Error('[Router] NDJSON deferred-state records must contain a states array.');
+  }
+  for (const state of value.states) {
+    if (state !== null && (typeof state !== 'object' || Array.isArray(state))) {
+      throw new Error('[Router] Each deferred state must be an object or null.');
+    }
+  }
+  return value.states;
 }
 
-/**
- * Continue reading the NDJSON stream for Chunk 2 (deferred state).
- * Runs in the background after Chunk 1 has been committed.
- */
+interface DeferredReadOptions {
+  context: StreamingContext;
+  generation: number;
+  signal: AbortSignal | undefined;
+  receivedState: boolean;
+}
+
 async function continueDeferredRead(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  decoder: TextDecoder,
-  initialBuffer: string,
+  records: NdjsonReader,
   data: StreamingPartialResponse,
   requestPath: string,
-  generation: number,
-  ctx: StreamingContext,
-  signal?: AbortSignal,
+  options: DeferredReadOptions,
 ): Promise<void> {
-  let buffer = initialBuffer;
-  let completed = false;
+  const { context, generation, signal } = options;
+  let receivedState = options.receivedState;
   try {
-    while (true) {
-      if (signal?.aborted || generation !== ctx.navGeneration) {
-        reader.cancel().catch(() => {});
+    while (!signal?.aborted && generation === context.navGeneration) {
+      const value = await records.read();
+      if (signal?.aborted || generation !== context.navGeneration) return;
+      if (value === undefined) {
+        if (!receivedState) throw new Error('[Router] NDJSON response ended before deferred state arrived.');
+        context.markCacheComplete(requestPath);
         return;
       }
-      const { done, value } = await reader.read();
-      if (signal?.aborted || generation !== ctx.navGeneration) {
-        reader.cancel().catch(() => {});
-        return;
-      }
-      if (done) {
-        // Flush remaining bytes from the decoder
-        buffer += decoder.decode();
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-
-      if (buffer.length > MAX_NDJSON_BUFFER) {
-        console.warn('[Router] NDJSON deferred buffer exceeded limit, aborting');
-        reader.cancel().catch(() => {});
-        return;
-      }
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (generation !== ctx.navGeneration) return; // Stale — stop
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.states) {
-            persistDeferredStates(data, parsed.states);
-            applyDeferredStates(parsed.states, requestPath, ctx);
-          } else if (parsed.error) {
-            console.warn('[Router] Streaming state error:', parsed.error);
-          }
-        } catch {
-          // Malformed line — skip
-        }
-      }
+      const states = readStates(value);
+      persistDeferredStates(data, states);
+      applyDeferredStates(states, requestPath, context);
+      receivedState = true;
     }
-
-    // Process final incomplete line
-    if (buffer.trim() && generation === ctx.navGeneration) {
-      try {
-        const parsed = JSON.parse(buffer);
-        if (parsed.states) {
-          persistDeferredStates(data, parsed.states);
-          applyDeferredStates(parsed.states, requestPath, ctx);
-        } else if (parsed.error) {
-          console.warn('[Router] Streaming state error:', parsed.error);
-        }
-      } catch { /* ignore */ }
-    }
-    completed = true;
   } finally {
-    // Release the stream lock and clear the deferred reference
-    reader.releaseLock();
-    ctx.setDeferredReader(null);
-    if (completed) ctx.markCacheComplete(requestPath);
+    await records.cancel();
   }
 }
 
@@ -305,35 +179,26 @@ function persistDeferredStates(
   }
 }
 
-/**
- * Apply deferred per-component states from streaming Chunk 2.
- * States array is matched 1:1 to activeChain entries by position.
- * null entries are skipped (component keeps current state).
- */
+/** Apply positional route states after commit, without overriding authored loaders. */
 export function applyDeferredStates(
   states: (Record<string, unknown> | null)[],
   requestPath: string,
-  ctx: StreamingContext,
+  context: StreamingContext,
 ): void {
-  if (requestPath !== ctx.currentRequestPath) return; // Stale
-  for (let i = 0; i < states.length && i < ctx.activeChain.length; i++) {
+  if (requestPath !== context.currentRequestPath) return;
+  for (let i = 0; i < states.length && i < context.activeChain.length; i++) {
     const state = states[i];
     if (!hasState(state)) continue;
-    const entry = ctx.activeChain[i];
+    const entry = context.activeChain[i];
     if (!entry.el || !entry.component) continue;
-
-    // Don't override loader results
     const ctor = customElements.get(entry.component) as
-      ((new () => HTMLElement) & { loader?: Function }) | undefined;
-    if (ctor && typeof ctor.loader === 'function') continue;
+      (CustomElementConstructor & { loader?: unknown }) | undefined;
+    if (typeof ctor?.loader === 'function') continue;
 
-    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
-    if (!compEl) continue;
-    entry.compEl = compEl;
-    if (isStateful(compEl)) {
-      compEl.setState(state);
-    }
-    // Update the chain entry's state for cache consistency
+    const component = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
+    if (!component) continue;
+    entry.compEl = component;
+    if (isStateful(component)) component.setState(state);
     entry.state = state;
   }
 }

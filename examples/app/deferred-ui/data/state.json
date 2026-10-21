@@ -1,0 +1,42 @@
+{
+  "title": "Deferred UI | WebUI",
+  "language": "en",
+  "textdirection": "ltr",
+  "workspaceName": "Workspace",
+  "workspaceDescription": "A reading list with two native overlays. Their UI arrives only when you need it.",
+  "documents": [
+    {
+      "title": "Design notes",
+      "description": "Decisions, open questions, and the next small improvement.",
+      "kind": "Notes",
+      "updated": "Updated today",
+      "pinned": true
+    },
+    {
+      "title": "Release checklist",
+      "description": "A short list of the things worth checking before shipping.",
+      "kind": "Checklist",
+      "updated": "Updated yesterday",
+      "pinned": false
+    },
+    {
+      "title": "Reading queue",
+      "description": "References to come back to when there is a little more time.",
+      "kind": "Collection",
+      "updated": "Updated this week",
+      "pinned": false
+    }
+  ],
+  "compactMode": false,
+  "highlightPinned": true,
+  "densityDraft": "comfortable",
+  "highlightDraft": true,
+  "slowData": false,
+  "activityReady": false,
+  "activityLoading": false,
+  "activityError": "",
+  "settingsReady": false,
+  "settingsLoading": false,
+  "settingsError": "",
+  "announcement": ""
+}

@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Deferred template bodies</title></head>
+<body>
+  <if condition="!dialogPage">
+    <test-deferred-shadow ?opened="{{initialOpen}}" label="Shadow"></test-deferred-shadow>
+    <test-deferred-light ?opened="{{initialOpen}}" label="Light"></test-deferred-light>
+  </if>
+  <if condition="dialogPage">
+    <test-deferred-dialog ?opened="{{initialOpen}}" label="Dialog"></test-deferred-dialog>
+  </if>
+</body>
+</html>

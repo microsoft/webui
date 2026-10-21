@@ -27,6 +27,12 @@ a Python string.
 `render_component_templates()` accepts either one component tag as a string or
 an iterable of tags.
 
+For named deferred template bodies, use `render_deferred_resources()` or
+`prepare_deferred_resources()`, then `render_deferred_partial()` with fresh
+scoped state. The prepared result carries the small inventory acknowledgement
+without reparsing the resource JSON. See the
+[deferred response API](https://microsoft.github.io/webui/guide/integrations/python#deferred-template-responses).
+
 Host-driven streaming discovers runtime occurrences instead of resolving
 compile-time names:
 

@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { observable, WebUIElement } from '../../../src/index.js';
+import '../../../src/styles-entry.js';
+import { observable, WebUIElement } from '../../../src/core.js';
 
 export class TestLinkHost extends WebUIElement {
   spawnChild(): void {

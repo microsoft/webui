@@ -185,17 +185,52 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
 | `tx` | Text-binding runs, ordered slot + parts. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
-| `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, deferred?]`; deferred is `1` when present. |
+| `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
 | `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
+| `v` | Ownership metadata version. `1` proves ordinary component dependencies; `3` also supports hostless sections and external/local block references. Absence is legacy metadata. |
+| `d` | Sorted direct ordinary resource dependencies. Absent is empty for versions `1` and `3`. Route activation and nested deferred edges are excluded. |
+| `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
+| `e` | `1` for a publicly addressable deferred body; absent on internal shared sections. |
+| `rf` | Version 3 owner refs `[name, elementIndex]`. Absence is proven empty; parent scans must not claim nested-body refs. |
 
 The same metadata serves both paths:
 
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
 - **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM.
+
+### Template ownership
+
+The WebUI parser finalizes ownership metadata against typed fragment records,
+not HTML text. It follows if/for and attribute-template records and stops at
+known component roots, retaining sparse direct edges rather than materializing
+every root's transitive closure. Named fragment cycles are traversed iteratively.
+Plugins that do not need the graph retain their existing finalization behavior.
+
+Native constructors keep tag/observed-attribute identity, not a complete template
+object. Instances look up current metadata at mount time. The optional template
+cache adapter must be installed before metadata is consumed; otherwise it cannot
+reconstruct the ownership of existing consumers and fails explicitly.
+
+While the adapter is active, each live metadata object owns its direct
+dependency records. The tag index holds weak references to those records.
+Registry collection drops cache ownership; mounted metadata and DOM-keyed SSR
+pins retain only what their consumers may still need. Collection scans the
+current Document and open Shadow roots on explicit request, not on updates.
+Retained parents keep conditional/repeat descendants available even when those
+descendants have no live DOM or native definition yet.
+
+Equivalent responses reuse canonical metadata; conflicting live templates fail
+rather than replacing an artifact still in use. Compiled condition closures are
+resolver/scope-only code, allowing equivalent closure source to participate in
+that comparison. Browser-native ESM/custom-element lifetimes and CSS ownership
+remain independent and are not reclaimed by this adapter.
+
+See [Client delivery](client-delivery.md) for inventory acknowledgement,
+capability boundaries, and partial-stream ownership.
 
 ### Condition references
 

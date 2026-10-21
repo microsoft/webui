@@ -47,4 +47,14 @@
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
           Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/streaming-app --out &quot;$(OutDir)fixtures/streaming-app/protocol.bin&quot; --plugin webui" />
   </Target>
+
+  <Target Name="BuildDeferredFixtureProtocol"
+          Condition="'$(TargetFramework)' != ''"
+          BeforeTargets="Build"
+          Inputs="fixtures/deferred-app/index.html;fixtures/deferred-app/test-panel.html"
+          Outputs="$(OutDir)fixtures/deferred-app/protocol.bin">
+    <MakeDir Directories="$(OutDir)fixtures/deferred-app" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/deferred-app --out &quot;$(OutDir)fixtures/deferred-app/protocol.bin&quot; --plugin webui" />
+  </Target>
 </Project>

@@ -66,6 +66,7 @@ pub struct Protocol {
     /// Render plan prepared once at load: numeric fragment slots, per-fragment
     /// render targets, canonical component prop names, and route presence bits.
     render_fragments: crate::RenderFragmentIndex,
+    deferred_index: Option<crate::deferred::DeferredIndex>,
     component_asset_style_manifest: std::result::Result<String, String>,
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
@@ -112,8 +113,30 @@ impl Protocol {
 
     fn new_with_style_metadata(
         mut protocol: WebUIProtocol,
-        style_metadata_error: Option<String>,
+        mut style_metadata_error: Option<String>,
     ) -> Self {
+        if style_metadata_error.is_none() {
+            for (tag, component) in &protocol.components {
+                if !component.template_json.is_empty() {
+                    if let Err(error) = validate_json_inner(&component.template_json) {
+                        style_metadata_error = Some(format!(
+                            "failed to parse template metadata for {tag}: {error}"
+                        ));
+                        break;
+                    }
+                    if style_metadata_error.is_none() {
+                        for (id, fragment) in &protocol.client_fragments {
+                            if let Err(error) = validate_json_inner(&fragment.template_json) {
+                                style_metadata_error = Some(format!(
+                                    "failed to parse template metadata for {id}: {error}"
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let css_strategy = protocol.css_strategy();
         let component_asset_style_preloads =
             std::mem::take(&mut protocol.component_asset_style_preloads);
@@ -152,11 +175,14 @@ impl Protocol {
         // resolves targets through the slot map instead of re-searching by name.
         let render_fragments =
             crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
+        let deferred_index =
+            crate::deferred::DeferredIndex::new(&protocol, &fragment_ids, &fragment_slots);
         Self {
             protocol,
             style_metadata_error,
             css_strategy,
             render_fragments,
+            deferred_index,
             component_asset_style_manifest,
             component_asset_style_links,
             component_index,
@@ -189,6 +215,10 @@ impl Protocol {
     /// Render plan built once when this protocol was loaded.
     pub(crate) fn render_fragments(&self) -> &crate::RenderFragmentIndex {
         &self.render_fragments
+    }
+
+    pub(crate) fn deferred_index(&self) -> Option<&crate::deferred::DeferredIndex> {
+        self.deferred_index.as_ref()
     }
 
     pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
@@ -317,6 +347,14 @@ impl Protocol {
         inventory_hex: &str,
     ) -> Result<String, HandlerError> {
         self.ensure_style_metadata()?;
+        if self.deferred_index.as_ref().is_some_and(|index| {
+            self.fragment_slot(entry_id)
+                .is_some_and(|slot| index.relevant(slot as usize, false))
+        }) {
+            let state = serde_json::from_str(state_json)
+                .map_err(|error| invalid_state_json(&error.to_string()))?;
+            return self.render_partial(state, entry_id, request_path, inventory_hex);
+        }
         let mut index = self.request_index();
         let (response, state_selection, _) = render_partial_indexed_with_state(
             self.protocol(),
@@ -365,7 +403,24 @@ impl Protocol {
         inventory_hex: &str,
     ) -> Result<PartialNavigation, HandlerError> {
         self.ensure_style_metadata()?;
+        let render = self.render_fragments.resolve(self.protocol());
+        let active = self
+            .deferred_index
+            .as_ref()
+            .map(|index| {
+                crate::deferred::select(crate::deferred::SelectionInput {
+                    protocol: self.protocol(),
+                    render: &render,
+                    index,
+                    state: &state,
+                    entry: entry_id,
+                    request_path,
+                    routes: self.route_index(),
+                })
+            })
+            .transpose()?;
         let mut index = self.request_index();
+        index.active_deferred = active.as_ref();
         let (response, state_selection, matched) = render_partial_indexed_with_state(
             self.protocol(),
             entry_id,
@@ -514,8 +569,10 @@ impl Protocol {
     fn request_index(&self) -> RequestProtocolIndex<'_> {
         RequestProtocolIndex {
             component_index: &self.component_index,
+            style_resource_index: self.style_resource_index(),
             route_index: &self.route_index,
             template_metadata_cache: TemplateMetadataCache::Shared(&self.template_metadata_cache),
+            active_deferred: None,
         }
     }
 }
@@ -531,6 +588,7 @@ struct ProtocolIndex {
     pub component_index: HashMap<String, u32>,
     /// Authored route template patterns compiled once.
     pub route_index: CompiledRouteIndex,
+    style_resource_index: HashMap<String, u32>,
     /// Parsed WebUI template metadata keyed by component tag.
     template_metadata_cache: HashMap<String, Value>,
 }
@@ -752,6 +810,7 @@ pub(crate) fn collect_borrowed_component_style_delta<'a>(
     let mut seen_roots = HashSet::new();
     let roots: Vec<&str> = roots
         .into_iter()
+        .filter(|root| !protocol.client_fragments.contains_key(*root))
         .filter(|root| seen_roots.insert(*root))
         .collect();
     let client_inventory = StyleInventoryView {
@@ -1035,6 +1094,7 @@ impl ProtocolIndex {
     pub(crate) fn new(protocol: &WebUIProtocol) -> Self {
         Self {
             component_index: build_component_index(protocol),
+            style_resource_index: build_style_resource_index(protocol),
             route_index: CompiledRouteIndex::new(protocol),
             template_metadata_cache: HashMap::new(),
         }
@@ -1043,10 +1103,16 @@ impl ProtocolIndex {
     fn request_index(&mut self) -> RequestProtocolIndex<'_> {
         RequestProtocolIndex {
             component_index: &self.component_index,
+            style_resource_index: if self.style_resource_index.is_empty() {
+                &self.component_index
+            } else {
+                &self.style_resource_index
+            },
             route_index: &self.route_index,
             template_metadata_cache: TemplateMetadataCache::Exclusive(
                 &mut self.template_metadata_cache,
             ),
+            active_deferred: None,
         }
     }
 }
@@ -1059,8 +1125,10 @@ enum TemplateMetadataCache<'a> {
 
 struct RequestProtocolIndex<'a> {
     component_index: &'a HashMap<String, u32>,
+    style_resource_index: &'a HashMap<String, u32>,
     route_index: &'a CompiledRouteIndex,
     template_metadata_cache: TemplateMetadataCache<'a>,
+    active_deferred: Option<&'a crate::deferred::DeferredSelection<'a>>,
 }
 
 // ── Component Inventory ─────────────────────────────────────────────────
@@ -1101,8 +1169,10 @@ pub(crate) fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String,
         .fragments
         .keys()
         .filter(|key| key.contains('-'))
+        .chain(protocol.client_fragments.keys())
         .collect();
     sorted.sort_unstable();
+    sorted.dedup();
     let mut index = HashMap::with_capacity(sorted.len());
     for (i, name) in sorted.into_iter().enumerate() {
         // Index count bounded by component registry size, well within u32 range
@@ -1278,10 +1348,8 @@ fn intern_hydration_projections(
     names: &[String],
 ) -> (Vec<Box<str>>, Vec<u32>, Vec<HydrationRun>) {
     let mut distinct: Vec<&str> = Vec::new();
-    for name in names {
-        if let Some(component) = protocol.components.get(name) {
-            distinct.extend(component.hydration_keys.iter().map(String::as_str));
-        }
+    for component in protocol.components.values() {
+        distinct.extend(component.hydration_keys.iter().map(String::as_str));
     }
     distinct.sort_unstable();
     distinct.dedup();
@@ -1289,8 +1357,17 @@ fn intern_hydration_projections(
 
     let mut key_ids = Vec::new();
     let mut runs = Vec::with_capacity(names.len());
+    let mut owner_runs: HashMap<&str, HydrationRun> = HashMap::new();
     for name in names {
-        let Some(component) = protocol.components.get(name) else {
+        let owner = protocol
+            .client_fragments
+            .get(name)
+            .map_or(name.as_str(), |data| data.owner.as_str());
+        if let Some(run) = owner_runs.get(owner) {
+            runs.push(*run);
+            continue;
+        }
+        let Some(component) = protocol.components.get(owner) else {
             // A component with no compiled surface cannot be projected, exactly
             // as the name-based collector treated a missing entry.
             runs.push(HydrationRun::FULL_STATE);
@@ -1316,10 +1393,12 @@ fn intern_hydration_projections(
                 }
             }
         }
-        match (u32::try_from(start), u32::try_from(key_ids.len() - start)) {
-            (Ok(start), Ok(len)) if len != u32::MAX => runs.push(HydrationRun { start, len }),
-            _ => runs.push(HydrationRun::FULL_STATE),
-        }
+        let run = match (u32::try_from(start), u32::try_from(key_ids.len() - start)) {
+            (Ok(start), Ok(len)) if len != u32::MAX => HydrationRun { start, len },
+            _ => HydrationRun::FULL_STATE,
+        };
+        owner_runs.insert(owner, run);
+        runs.push(run);
     }
     (keys, key_ids, runs)
 }
@@ -1339,6 +1418,15 @@ fn collect_direct_component_dependencies(
     let mut seen_components = HashSet::new();
     let mut dependencies = Vec::new();
     let mut has_route = false;
+    if let Some(fragment) = protocol.client_fragments.get(root) {
+        for dependency in &fragment.dependencies {
+            if let Some(&index) = component_index.get(dependency) {
+                if seen_components.insert(index) {
+                    dependencies.push(index);
+                }
+            }
+        }
+    }
 
     while let Some(item) = work.pop() {
         match item {
@@ -1364,7 +1452,7 @@ fn collect_direct_component_dependencies(
                         Some(Fragment::ForLoop(for_loop)) => work.push(
                             ComponentDependencyWork::Fragment(for_loop.fragment_id.as_str()),
                         ),
-                        Some(Fragment::IfCond(if_cond)) => work.push(
+                        Some(Fragment::IfCond(if_cond)) if !if_cond.deferred => work.push(
                             ComponentDependencyWork::Fragment(if_cond.fragment_id.as_str()),
                         ),
                         Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
@@ -1418,14 +1506,14 @@ fn propagate_route_dependencies(dependencies: &[Box<[u32]>], route_dependent: &m
 }
 
 /// Check if a component's bit is set in the inventory bitfield.
-fn has_component(inventory: &[u8], index: u32) -> bool {
+pub(crate) fn has_component(inventory: &[u8], index: u32) -> bool {
     let byte_idx = (index / 8) as usize;
     let bit_idx = index % 8;
     byte_idx < inventory.len() && inventory[byte_idx] & (1 << bit_idx) != 0
 }
 
 /// Set a component's bit in the inventory bitfield.
-fn set_component(inventory: &mut Vec<u8>, index: u32) {
+pub(crate) fn set_component(inventory: &mut Vec<u8>, index: u32) {
     let byte_idx = (index / 8) as usize;
     let bit_idx = index % 8;
     if byte_idx >= inventory.len() {
@@ -1478,6 +1566,36 @@ pub fn encode_inventory(inv: &[u8]) -> String {
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+pub(crate) fn style_inventory(
+    styles: &Value,
+    index: &HashMap<String, u32>,
+) -> Result<String, HandlerError> {
+    let mut bits = Vec::new();
+    if let Some(resources) = styles.get("resources").and_then(Value::as_object) {
+        for name in resources.keys() {
+            let slot = index.get(name).ok_or_else(|| {
+                HandlerError::Invariant(format!("style resource '{name}' has no inventory index"))
+            })?;
+            set_component(&mut bits, *slot);
+        }
+    }
+    Ok(encode_inventory(&bits))
+}
+
+pub(crate) fn borrowed_style_inventory(
+    styles: &BorrowedComponentStyleDelta<'_>,
+    index: &HashMap<String, u32>,
+) -> Result<String, HandlerError> {
+    let mut bits = Vec::new();
+    for name in styles.resource_names() {
+        let slot = index.get(name).ok_or_else(|| {
+            HandlerError::Invariant(format!("style resource '{name}' has no inventory index"))
+        })?;
+        set_component(&mut bits, *slot);
+    }
+    Ok(encode_inventory(&bits))
 }
 
 /// Encode the inventory bitfield for a known set of rendered components.
@@ -1673,11 +1791,11 @@ impl<State: Serialize> Serialize for PartialResponseWithState<State> {
     }
 }
 
-struct ProjectedRawState<'de> {
+pub(crate) struct ProjectedRawState<'de> {
     entries: Vec<(Cow<'de, str>, &'de RawValue)>,
 }
 
-enum SelectedRawState<'de> {
+pub(crate) enum SelectedRawState<'de> {
     Full(&'de RawValue),
     Keys(ProjectedRawState<'de>),
 }
@@ -1736,7 +1854,7 @@ fn project_raw_state<'de>(
     Ok(state)
 }
 
-fn select_raw_state<'de>(
+pub(crate) fn select_raw_state<'de>(
     state_json: &'de str,
     selection: &StateSelection<'_>,
 ) -> Result<SelectedRawState<'de>, HandlerError> {
@@ -2051,6 +2169,30 @@ pub(crate) fn collect_reachable_component_order_for_request(
     collect_inventoryable_components(protocol, entry_id, Some(request_path), false, route_index)
 }
 
+pub(crate) fn collect_reachable_with_deferred<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    entry_id: &'protocol str,
+    request_path: &str,
+    route_index: &CompiledRouteIndex,
+    active: Option<&crate::deferred::DeferredSelection<'protocol>>,
+) -> Vec<String> {
+    let mut arena = RouteBaseArena::new();
+    collect_inventoryable_components_from_stack(
+        protocol,
+        ComponentWalk {
+            request_path: Some(request_path),
+            active_deferred: active,
+        },
+        route_index,
+        vec![QueuedFragment {
+            id: entry_id,
+            inventoryable: false,
+            route_base: RouteBaseArena::ROOT,
+        }],
+        &mut arena,
+    )
+}
+
 /// Filter components against the client's inventory bitfield using sequential indices.
 /// Zero collisions — each component has a unique bit.
 ///
@@ -2241,7 +2383,10 @@ fn collect_inventoryable_components<'protocol>(
     }];
     collect_inventoryable_components_from_stack(
         protocol,
-        request_path,
+        ComponentWalk {
+            request_path,
+            active_deferred: None,
+        },
         route_index,
         stack,
         &mut arena,
@@ -2280,20 +2425,29 @@ pub(crate) fn collect_reachable_components_from_roots<'protocol>(
     }
     collect_inventoryable_components_from_stack(
         protocol,
-        Some(request_path),
+        ComponentWalk {
+            request_path: Some(request_path),
+            active_deferred: None,
+        },
         route_index,
         stack,
         &mut arena,
     )
 }
 
+struct ComponentWalk<'request, 'protocol> {
+    request_path: Option<&'request str>,
+    active_deferred: Option<&'request crate::deferred::DeferredSelection<'protocol>>,
+}
+
 fn collect_inventoryable_components_from_stack<'protocol>(
     protocol: &'protocol WebUIProtocol,
-    request_path: Option<&str>,
+    walk: ComponentWalk<'_, 'protocol>,
     route_index: &CompiledRouteIndex,
     mut stack: Vec<QueuedFragment<'protocol>>,
     arena: &mut RouteBaseArena,
 ) -> Vec<String> {
+    let request_path = walk.request_path;
     let mut visited_fragments = HashSet::new();
     let route_sensitive = request_path.is_some();
     // Preserve first-discovery (document/traversal) order so Link-strategy
@@ -2301,18 +2455,31 @@ fn collect_inventoryable_components_from_stack<'protocol>(
     // `seen_components` dedups; `component_ids` keeps order (a plain
     // `HashSet` would lose it).
     let mut seen_components = HashSet::new();
+    let has_client_fragments = !protocol.client_fragments.is_empty();
     let mut component_ids: Vec<String> = Vec::new();
     while let Some(queued) = stack.pop() {
         if queued.id.is_empty() {
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id) {
+        if (queued.inventoryable
+            || (has_client_fragments && protocol.client_fragments.contains_key(queued.id)))
+            && seen_components.insert(queued.id)
+        {
             component_ids.push(queued.id.to_string());
         }
 
         if !mark_fragment_visited(&mut visited_fragments, &queued, route_sensitive) {
             continue;
+        }
+        if let Some(fragment) = protocol.client_fragments.get(queued.id) {
+            for dependency in fragment.dependencies.iter().rev() {
+                stack.push(QueuedFragment {
+                    id: dependency,
+                    inventoryable: true,
+                    route_base: queued.route_base,
+                });
+            }
         }
 
         let Some(frag_list) = protocol.fragments.get(queued.id) else {
@@ -2346,7 +2513,12 @@ fn collect_inventoryable_components_from_stack<'protocol>(
                         route_base: queued.route_base,
                     });
                 }
-                Some(Fragment::IfCond(if_cond)) => {
+                Some(Fragment::IfCond(if_cond))
+                    if !if_cond.deferred
+                        || walk.active_deferred.is_some_and(|active| {
+                            active.contains(if_cond.fragment_id.as_str())
+                        }) =>
+                {
                     stack.push(QueuedFragment {
                         id: &if_cond.fragment_id,
                         inventoryable: false,
@@ -2750,6 +2922,7 @@ fn collect_inventory_and_chain<'protocol>(
     // (`render_partial` re-sorts in `collect_component_assets`), but the
     // list must stay duplicate-free.
     let mut seen_components = HashSet::new();
+    let has_client_fragments = !protocol.client_fragments.is_empty();
     let mut component_ids: Vec<String> = Vec::new();
     let mut chain = Vec::new();
     let mut arena = RouteBaseArena::new();
@@ -2764,12 +2937,24 @@ fn collect_inventory_and_chain<'protocol>(
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id) {
+        if (queued.inventoryable
+            || (has_client_fragments && protocol.client_fragments.contains_key(queued.id)))
+            && seen_components.insert(queued.id)
+        {
             component_ids.push(queued.id.to_string());
         }
 
         if !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
+        }
+        if let Some(fragment) = protocol.client_fragments.get(queued.id) {
+            for dependency in &fragment.dependencies {
+                stack.push(QueuedFragment {
+                    id: dependency,
+                    inventoryable: true,
+                    route_base: queued.route_base,
+                });
+            }
         }
 
         let Some(frag_list) = protocol.fragments.get(queued.id) else {
@@ -2801,7 +2986,12 @@ fn collect_inventory_and_chain<'protocol>(
                         route_base: queued.route_base,
                     });
                 }
-                Some(Fragment::IfCond(if_cond)) => {
+                Some(Fragment::IfCond(if_cond))
+                    if !if_cond.deferred
+                        || index.active_deferred.is_some_and(|active| {
+                            active.contains(if_cond.fragment_id.as_str())
+                        }) =>
+                {
                     stack.push(QueuedFragment {
                         id: &if_cond.fragment_id,
                         inventoryable: false,
@@ -3080,6 +3270,16 @@ fn render_partial_indexed_with_state<'a>(
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
     let mut result = serde_json::Map::with_capacity(7);
+    if !protocol.build_id.is_empty() {
+        result.insert("buildId".into(), Value::String(protocol.build_id.clone()));
+        result.insert(
+            "styleInventory".into(),
+            Value::String(style_inventory(
+                &assets.component_styles,
+                index.style_resource_index,
+            )?),
+        );
+    }
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
@@ -3137,7 +3337,7 @@ fn route_chain_matches(chain: &[RouteChainEntry], request_path: &str) -> bool {
     }
 }
 
-fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
+pub(crate) fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
     let state_keys = match selection {
         StateSelection::Full => {
             let mut state = state;
@@ -3265,6 +3465,16 @@ fn render_component_templates_indexed(
     let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let mut result = serde_json::Map::with_capacity(4);
+    if !protocol.build_id.is_empty() {
+        result.insert("buildId".into(), Value::String(protocol.build_id.clone()));
+        result.insert(
+            "styleInventory".into(),
+            Value::String(style_inventory(
+                &assets.component_styles,
+                index.style_resource_index,
+            )?),
+        );
+    }
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
@@ -3284,7 +3494,9 @@ fn collect_component_assets(
 ) -> Result<ComponentAssets, HandlerError> {
     let component_styles = collect_component_styles_for_inventory(
         protocol,
-        tags.iter().copied(),
+        tags.iter()
+            .copied()
+            .filter(|tag| !protocol.client_fragments.contains_key(*tag)),
         client_inventory,
         index.component_index,
     )?;
@@ -3296,27 +3508,27 @@ fn collect_component_assets(
     sorted_tags.sort_unstable();
 
     for tag in sorted_tags {
-        let Some(component) = protocol.components.get(tag) else {
+        let Some(payload) = protocol.client_template(tag) else {
             continue;
         };
-        if !has_template_payload(component) {
+        if payload.metadata.is_empty() && payload.legacy_html.is_empty() {
             continue;
         }
-        if !component.template_json.is_empty() {
+        if !payload.metadata.is_empty() {
             let template_value = cached_template_metadata(
                 &mut index.template_metadata_cache,
                 tag,
-                &component.template_json,
+                payload.metadata,
             )?;
             tmpl_map.insert(tag.to_string(), template_value);
-            if !component.template_functions.is_empty() {
-                function_map.insert(
-                    tag.to_string(),
-                    Value::String(component.template_functions.clone()),
-                );
+            if !payload.functions.is_empty() {
+                function_map.insert(tag.to_string(), Value::String(payload.functions.to_owned()));
             }
         } else {
-            tmpl_map.insert(tag.to_string(), Value::String(component.template.clone()));
+            tmpl_map.insert(
+                tag.to_string(),
+                Value::String(payload.legacy_html.to_owned()),
+            );
         }
     }
 

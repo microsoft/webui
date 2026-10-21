@@ -49,6 +49,19 @@ TypeScript must enable decorator emit:
 
 ## Quick Example
 
+For smaller compositions, `core.js` excludes component stylesheet installation;
+`styles.js` adds it explicitly. `templates.js` exposes registration without a
+renderer, and `template-cache.js` adds lifetime-aware collection when imported
+before component definitions. See
+[Runtime entrypoints](https://microsoft.github.io/webui/guide/concepts/interactivity#runtime-entrypoints)
+for requirements and examples. The default entry continues to include core and
+stylesheet support.
+
+`deferred.js` is the opt-in renderer adapter for ordinary `<if defer>` bodies.
+It preserves the existing owner and scope without creating a component or
+fetching resources. Loading and inventory remain separate client capabilities.
+See [Deferred UI](https://microsoft.github.io/webui/guide/concepts/deferred).
+
 1. Author a component class in TypeScript
 2. Author a WebUI template in HTML
 3. Run `webui build --plugin=webui`

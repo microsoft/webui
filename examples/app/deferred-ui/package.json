@@ -1,0 +1,32 @@
+{
+  "name": "deferred-ui-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "webuiProjectionManifest": "./dist/webui-projection.json",
+  "scripts": {
+    "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:protocol && pnpm run typecheck",
+    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "build:client": "node ../../build-client.mjs",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --out ./dist",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "start:client": "pnpm run build:deps && node ../../build-client.mjs --watch",
+    "start:api": "node server/index.mjs --port 3021",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --servedir ./dist --port 3011 --api-port 3021 --watch",
+    "start": "cargo xtask dev deferred-ui",
+    "test": "pnpm run test:server && playwright test",
+    "test:server": "node --test server/api.test.mjs",
+    "test:update-snapshots": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@microsoft/webui": "workspace:*",
+    "@microsoft/webui-examples-theme": "workspace:*",
+    "@microsoft/webui-framework": "workspace:*",
+    "@microsoft/webui-router": "workspace:*",
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "tslib": "catalog:",
+    "typescript": "catalog:"
+  }
+}

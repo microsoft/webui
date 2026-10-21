@@ -63,6 +63,19 @@ browser runtime, and a host can load `protocol.bin` without shipping the
 compiler. Only the selected optional browser entry points should reach an
 application's JavaScript bundle.
 
+Browser resource data, rendering, and delivery are separate layers. Template
+registration and style catalogs do not require a renderer or navigation
+orchestrator. Buffered rendering selects its style adapter explicitly; routing
+selects transport and optional navigation policies. Convenience entry points may
+compose those capabilities, but lean entry points must not reach unselected
+implementations through either static or dynamic imports.
+
+Shared browser delivery remains hydration-agnostic. Navigation and deferred
+template loading consume the same resource availability, build identity,
+preload, and transport mechanisms. A renderer adapter registers opaque compiled
+payloads, reports readiness and release, and owns its live views. Delivery does
+not import the WebUI element renderer or turn a template section into a component.
+
 ## Compilation and artifact ownership
 
 ### Source discovery and parsing
@@ -95,6 +108,13 @@ become typed instructions or references. `<if>`, `<for>`, `<route>`,
 `{{value}}` is escaped on output; `{{{value}}}` is trusted raw output. The
 parser rejects invalid structure and unsupported syntax with source-located
 diagnostics, rather than trying to repair arbitrary browser HTML.
+
+A deferred `<if>` is an ordinary conditional with a delivery annotation. Its
+body retains the enclosing template's state, lexical scope, refs, and event
+ownership. Compilation separates that body's client payload from eager owner
+metadata without introducing a custom-element host. The protocol retains both
+server instructions and independently deliverable client sections; private
+sub-blocks travel together, while genuinely shared blocks remain reusable.
 
 Component templates may share named loop bodies without expanding them at each
 callsite. Structural recursion through component templates is invalid; finite
@@ -136,6 +156,11 @@ not belong on the serialized message. A host loads it once, shares it across
 requests, and creates separate render contexts for state, route, nonce,
 inventory, writer, and plugin instance. No render should decode or re-index
 the protocol per request.
+
+The compiler assigns an artifact identity over the complete protocol content.
+Availability bits are meaningful only for that identity. A response from another
+build is rejected rather than applied to a document with different resource
+positions or template definitions.
 
 ### CSS and themes
 
@@ -191,7 +216,9 @@ Initial hydration and partial navigation have separate state surfaces.
 state is required. Initial state includes proven authored observable/attribute
 properties; navigation additionally includes compiled template roots.
 Reachability follows the active route but conservatively includes conditional
-and loop branches it might render. Projection is a payload/performance
+and loop branches it might render. Explicitly deferred edges are separate
+delivery roots: initial delivery follows the ones active in the request's actual
+scope. They do not create independent component state. Projection is a payload/performance
 optimization, **not a secrecy boundary**: any browser render state may be
 sent to the client. Never put secrets in it.
 
@@ -229,6 +256,14 @@ the handler does not finish rendering into an abandoned channel. Host entry
 points may render a whole document, a component fragment, a route partial,
 or a host-paced streaming session from the same loaded protocol.
 
+Deferred-body requests name an existing owner and region, not a route. A preload
+delivers the body's ordinary resource closure without application state or DOM
+creation. A stateful response can send resources first and fresh scoped state
+later; the final record adds any nested deferred resources selected by that
+state. Hosts own authorization, data providers, cancellation, and backpressure.
+The browser applies state to its existing owner/scope and uses normal conditional
+mounting. Initially active regions instead use ordinary SSR and hydrate that DOM.
+
 ### Server-authoritative routing
 
 Nested `<route>` declarations and a component's `<outlet>` define the route
@@ -243,12 +278,18 @@ location.
 For soft navigation, the server returns the authoritative route chain and
 projected state, filters templates against the client's component inventory,
 and supplies separately tracked style resources required by the destination.
-The router registers those resources, waits for their readiness, and reconciles
+The resource delivery layer registers those resources and acknowledges inventory
+only after registration/readiness succeeds. Concurrent responses merge availability;
+local cache collection invalidates older inventory acknowledgements without
+turning template retention into a cache of application state.
+The router waits for resource readiness and reconciles
 changed route levels while preserving
 unchanged parents. It may fall back to document navigation when client-side
 mounting cannot complete. Partial responses can be complete JSON or an NDJSON
 pair that sends chain/templates first and state later; neither is the
-progressive HTML streaming protocol. Cache tags, mutation invalidation,
+progressive HTML streaming protocol. A bounded record reader owns framing and
+body cancellation; the route adapter owns positional state and commit ordering.
+JSON-only navigation does not import that record reader. Cache tags, mutation invalidation,
 pending/error components, and speculative preloading are optional router
 features, not dependencies of the SSR handler.
 
@@ -299,6 +340,15 @@ reinterpret authoring syntax,
 re-render the first paint, or do a document-wide search per binding.
 Client-created components clone compiled static HTML and fill the recorded
 slots. Raw HTML ranges retain explicit ownership for later replacement.
+
+Native custom-element definitions retain only the identity and observer surface
+needed for future instances, not complete template bodies. Optional template
+collection uses compiler-derived direct dependencies: a live component's
+metadata retains the ordinary descendants that its conditions and repeats can
+instantiate synchronously. Cache ownership may be released without breaking
+those consumers. Constructor registration, behavior modules, and CSS still
+required by a live tree have distinct lifetimes and are not promised to unload
+when a template cache is cleared.
 
 `WebUIElement` is the authored behavior layer. Compiler-owned scriptless hosts
 need no application module and can stay dormant until state or client creation
@@ -500,6 +550,7 @@ engineering another; they are not public application-authoring guides.
 | Progressive response wire and host-step invariants | [`specs/streaming.md`](specs/streaming.md); `crates/webui-handler/src/streaming/`, `packages/webui-framework/src/streaming-protocol.ts` |
 | Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
 | Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
+| Optional client delivery and inventory ownership | [`specs/client-delivery.md`](specs/client-delivery.md); `packages/webui-router/src/`, `packages/webui-framework/src/template-cache.ts` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
 | Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |

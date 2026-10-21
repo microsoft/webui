@@ -1,0 +1,12 @@
+{
+  "initialOpen": true,
+  "dialogPage": false,
+  "message": "Server state",
+  "count": 2,
+  "items": [{ "id": "first", "label": "First row" }],
+  "expanded": true,
+  "advanced": false,
+  "loading": false,
+  "error": "",
+  "chosen": ""
+}

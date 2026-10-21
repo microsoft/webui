@@ -7,6 +7,11 @@
 //! into final HTML output based on provided data.
 
 pub mod css_module;
+mod deferred;
+mod deferred_response;
+pub use deferred_response::{
+    DeferredOptions, DeferredRequest, DeferredRequestError, PreparedDeferredResources,
+};
 pub(crate) mod html_encode;
 pub mod plugin;
 mod render_capacity;
@@ -72,6 +77,9 @@ use webui_state::find_value_by_dotted_path_ref;
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
+    /// Invalid target, identity, or availability information for deferred delivery.
+    #[error("deferred request [{}]: {}", .0.code, .0.message)]
+    DeferredRequest(Box<DeferredRequestError>),
     #[error("Rendering error: {0}")]
     Rendering(String),
 
@@ -919,6 +927,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Fragment lists resolve through numeric slots instead of per-fragment
     /// string hashing.
     pub(crate) render_fragments: ResolvedRenderFragmentIndex<'protocol>,
+    pub(crate) deferred_index: Option<&'protocol deferred::DeferredIndex>,
     /// Build-constant component asset style metadata serialized once when the
     /// runtime [`Protocol`] is created.
     pub(crate) component_asset_style_manifest: &'protocol str,
@@ -1312,6 +1321,8 @@ pub(crate) enum WebUiBootstrapState<'a> {
 }
 
 pub(crate) struct WebUiBootstrap<'a, ComponentStyles: Serialize + ?Sized = Value> {
+    pub(crate) build_id: &'a str,
+    pub(crate) style_inventory: &'a str,
     pub(crate) declaration_id: Option<u32>,
     pub(crate) enclosing_span_instance_id: Option<u32>,
     pub(crate) state: WebUiBootstrapState<'a>,
@@ -1886,23 +1897,40 @@ fn collect_component_state_into<'a, 'b>(
 ) -> bool {
     keys.clear();
     for name in components {
-        let Some(component) = protocol.components.get(name) else {
-            return true;
-        };
-        let (mode, component_keys) = match surface {
-            ComponentStateSurface::Hydration => {
-                (component.hydration_mode, &component.hydration_keys)
+        let (mode, component_keys) = if let Some(fragment) = protocol.client_fragments.get(name) {
+            match surface {
+                ComponentStateSurface::Hydration => {
+                    let Some(owner) = protocol.components.get(&fragment.owner) else {
+                        return true;
+                    };
+                    (owner.hydration_mode, &owner.hydration_keys)
+                }
+                ComponentStateSurface::Navigation => (
+                    fragment
+                        .state_mode
+                        .unwrap_or(StateProjectionMode::All as i32),
+                    &fragment.state_keys,
+                ),
             }
-            ComponentStateSurface::Navigation => (
-                match component.navigation_mode {
-                    Some(mode) => mode,
-                    None if !component.navigation_keys.is_empty() => {
-                        StateProjectionMode::Keys as i32
-                    }
-                    None => return true,
-                },
-                &component.navigation_keys,
-            ),
+        } else {
+            let Some(component) = protocol.components.get(name) else {
+                return true;
+            };
+            match surface {
+                ComponentStateSurface::Hydration => {
+                    (component.hydration_mode, &component.hydration_keys)
+                }
+                ComponentStateSurface::Navigation => (
+                    match component.navigation_mode {
+                        Some(mode) => mode,
+                        None if !component.navigation_keys.is_empty() => {
+                            StateProjectionMode::Keys as i32
+                        }
+                        None => return true,
+                    },
+                    &component.navigation_keys,
+                ),
+            }
         };
         if mode == StateProjectionMode::All as i32 {
             return true;
@@ -1928,6 +1956,22 @@ pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
     let mut wrote_field = false;
 
     writer.write("{")?;
+    if !bootstrap.build_id.is_empty() {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "buildId",
+            bootstrap.build_id,
+        )?;
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "styleInventory",
+            bootstrap.style_inventory,
+        )?;
+    }
     if let Some(declaration_id) = bootstrap.declaration_id {
         write_json_field(
             writer,
@@ -2874,14 +2918,10 @@ impl WebUIHandler {
         if context.css_strategy != webui_protocol::CssStrategy::Link {
             return Ok(());
         }
-        let reachable = context.reachable_components.take().unwrap_or_else(|| {
-            crate::route_handler::collect_reachable_component_order_for_request(
-                context.protocol,
-                context.entry_id,
-                context.request_path,
-                context.route_index,
-            )
-        });
+        let reachable = match context.reachable_components.take() {
+            Some(components) => components,
+            None => Self::request_reachable_components(context)?,
+        };
         let result = (|| {
             for component in &reachable {
                 if context.protocol.component_uses_shadow_dom(component) {
@@ -2892,6 +2932,35 @@ impl WebUIHandler {
         })();
         context.reachable_components = Some(reachable);
         result
+    }
+
+    fn request_reachable_components(context: &WebUIProcessContext) -> Result<Vec<String>> {
+        let Some(index) = context.deferred_index else {
+            return Ok(
+                route_handler::collect_reachable_component_order_for_request(
+                    context.protocol,
+                    context.entry_id,
+                    context.request_path,
+                    context.route_index,
+                ),
+            );
+        };
+        let active = deferred::select(deferred::SelectionInput {
+            protocol: context.protocol,
+            render: &context.render_fragments,
+            index,
+            state: context.state,
+            entry: context.entry_id,
+            request_path: context.request_path,
+            routes: context.route_index,
+        })?;
+        Ok(route_handler::collect_reachable_with_deferred(
+            context.protocol,
+            context.entry_id,
+            context.request_path,
+            context.route_index,
+            Some(&active),
+        ))
     }
 
     fn process_shadow_style_signal(
@@ -3519,14 +3588,10 @@ impl WebUIHandler {
                 // `<head>` CSS `<link>`/style-module emission order must stay
                 // deterministic across renders, not vary with the process's
                 // randomized hash seed.
-                let reachable = context.reachable_components.take().unwrap_or_else(|| {
-                    crate::route_handler::collect_reachable_component_order_for_request(
-                        context.protocol,
-                        context.entry_id,
-                        context.request_path,
-                        context.route_index,
-                    )
-                });
+                let reachable = match context.reachable_components.take() {
+                    Some(components) => components,
+                    None => Self::request_reachable_components(context)?,
+                };
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
 
@@ -3570,10 +3635,21 @@ impl WebUIHandler {
                 }
 
                 // Compute the inventory hex from actually rendered components.
-                let inventory_hex = crate::route_handler::encode_component_inventory(
+                let mut inventory_hex = crate::route_handler::encode_component_inventory(
                     &context.rendered_components,
                     context.component_index,
                 );
+                if !context.protocol.client_fragments.is_empty() {
+                    let mut inventory = route_handler::parse_inventory(&inventory_hex)?;
+                    for name in &reachable {
+                        if context.protocol.client_fragments.contains_key(name) {
+                            if let Some(&index) = context.component_index.get(name) {
+                                route_handler::set_component(&mut inventory, index);
+                            }
+                        }
+                    }
+                    inventory_hex = route_handler::encode_inventory(&inventory);
+                }
 
                 // Chain
                 Self::ensure_request_route_chain(context);
@@ -3633,13 +3709,25 @@ impl WebUIHandler {
                         style_roots.push(entry.error_component.as_str());
                     }
                 }
-                style_roots.extend(reachable.iter().map(String::as_str));
+                style_roots.extend(
+                    reachable
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|id| !context.protocol.client_fragments.contains_key(*id)),
+                );
                 let component_styles =
                     crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
+                let style_inventory = if context.protocol.build_id.is_empty() {
+                    String::new()
+                } else {
+                    route_handler::style_inventory(&component_styles, context.style_resource_index)?
+                };
                 write_webui_data_block(
                     context.writer,
                     &mut context.json_scratch,
                     WebUiBootstrap {
+                        build_id: &context.protocol.build_id,
+                        style_inventory: &style_inventory,
                         declaration_id: None,
                         enclosing_span_instance_id: None,
                         state: WebUiBootstrapState::Complete {
@@ -3789,6 +3877,9 @@ impl WebUIHandler {
         }
 
         if condition_met {
+            if if_cond.deferred && context.streaming.is_some() {
+                record_checkpoint_tag(context, &if_cond.fragment_id);
+            }
             if let Some(p) = &mut context.plugin {
                 p.push_scope();
             }
@@ -4084,6 +4175,7 @@ impl WebUIHandler {
         let mut context = WebUIProcessContext {
             protocol: document,
             render_fragments,
+            deferred_index: protocol.deferred_index(),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,

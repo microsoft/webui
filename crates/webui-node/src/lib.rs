@@ -47,6 +47,47 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
+/// Client resource availability for a deferred template request.
+#[napi(object)]
+pub struct JsDeferredOptions {
+    /// Loaded template-resource inventory.
+    pub inventory: Option<String>,
+    /// Loaded stylesheet-definition inventory.
+    pub style_inventory: Option<String>,
+    /// Artifact identity associated with both inventories.
+    pub build_id: Option<String>,
+}
+
+/// A resource record and acknowledgement for two-phase host-owned delivery.
+#[napi(object)]
+pub struct JsPreparedDeferredResources {
+    /// Resource JSON to flush immediately.
+    pub json: String,
+    /// Availability for the terminal state record.
+    pub options: JsDeferredOptions,
+}
+
+fn deferred_request<'a>(
+    owner: &'a str,
+    id: &'a str,
+    options: &'a Option<JsDeferredOptions>,
+) -> webui_handler::DeferredRequest<'a> {
+    let options = options.as_ref();
+    webui_handler::DeferredRequest {
+        owner,
+        id,
+        inventory: options
+            .and_then(|options| options.inventory.as_deref())
+            .unwrap_or(""),
+        style_inventory: options
+            .and_then(|options| options.style_inventory.as_deref())
+            .unwrap_or(""),
+        build_id: options
+            .and_then(|options| options.build_id.as_deref())
+            .unwrap_or(""),
+    }
+}
+
 /// Build statistics returned from the build function.
 #[napi(object)]
 pub struct JsBuildStats {
@@ -360,6 +401,55 @@ impl Protocol {
             })?;
         serde_json::to_string(&result)
             .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+    }
+
+    /// Prepare a named deferred body's resources without fetching application state.
+    #[napi]
+    pub fn render_deferred_resources(
+        &self,
+        owner: String,
+        id: String,
+        options: Option<JsDeferredOptions>,
+    ) -> napi::Result<String> {
+        self.inner
+            .render_deferred_resources(deferred_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))
+    }
+
+    /// Prepare streaming resource JSON together with its acknowledgement.
+    #[napi]
+    pub fn prepare_deferred_resources(
+        &self,
+        owner: String,
+        id: String,
+        options: Option<JsDeferredOptions>,
+    ) -> napi::Result<JsPreparedDeferredResources> {
+        let prepared = self
+            .inner
+            .prepare_deferred_resources(deferred_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))?;
+        Ok(JsPreparedDeferredResources {
+            json: prepared.json,
+            options: JsDeferredOptions {
+                inventory: Some(prepared.options.inventory),
+                style_inventory: Some(prepared.options.style_inventory),
+                build_id: Some(prepared.options.build_id),
+            },
+        })
+    }
+
+    /// Render fresh scoped state and any still-missing deferred resources.
+    #[napi]
+    pub fn render_deferred_partial(
+        &self,
+        state_json: String,
+        owner: String,
+        id: String,
+        options: Option<JsDeferredOptions>,
+    ) -> napi::Result<String> {
+        self.inner
+            .render_deferred_partial_json(&state_json, deferred_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))
     }
 
     /// Return CSS token names in build order.

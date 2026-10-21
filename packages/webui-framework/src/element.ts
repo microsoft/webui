@@ -361,7 +361,7 @@ export class WebUIElement extends TemplateElement {
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
     if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
-    this.$wireRefs(root);
+    this.$wireRefs(instance, root, meta, resolver);
   }
 
   /**
@@ -490,7 +490,27 @@ export class WebUIElement extends TemplateElement {
   }
 
   /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
+  private $wireRefs(
+    instance: TemplateInstance,
+    root: Node,
+    meta: TemplateBlockMeta,
+    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
+  ): void {
+    if (this.$currentTemplateMetadata()?.v === 3 || meta.f) {
+      const refs = meta.rf;
+      if (!refs) return;
+      const owner = this as Record<string, unknown>;
+      for (let i = 0; i < refs.length; i++) {
+        const [name, target] = refs[i];
+        const node = resolver(root, target);
+        if (!node || node.nodeType !== 1) continue;
+        owner[name] = node;
+        (instance.cleanups ??= []).push(removeNodes => {
+          if (removeNodes && owner[name] === node) owner[name] = undefined;
+        });
+      }
+      return;
+    }
     if (root.nodeType !== 1 && root.nodeType !== 11) return;
     const refs = (root as Element).querySelectorAll('[w-ref]');
     for (let i = 0; i < refs.length; i++) {

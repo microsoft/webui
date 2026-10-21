@@ -15,11 +15,11 @@ import {
   consumePendingParentState,
   TemplateElement,
 } from './template-element.js';
-import { hasComponentStyleWork } from './element/styles.js';
+import { hasComponentStyleWork } from './element/style-catalog.js';
 import {
   getTemplateRegistry,
   installTemplateDefinitionPreparation,
-} from './template.js';
+} from './template-registry.js';
 import { templateNeedsStaticHost } from './template-roots.js';
 import {
   ACTIVATION_STATIC_HOST_OPT_OUT,
@@ -32,6 +32,7 @@ import {
   templateRegistrationDetail,
 } from './template-events.js';
 import type { TemplateMeta } from './template.js';
+import { templateCacheHooks } from './template-cache-contract.js';
 
 let runtimeInstalled = false;
 
@@ -53,7 +54,9 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
-  if (!w.__webui.templates[tag]) w.__webui.templates[tag] = meta;
+  if (!w.__webui.templates[tag] && templateCacheHooks?.lookup(tag) !== meta) {
+    w.__webui.templates[tag] = meta;
+  }
 
   if (templateIsNoopHost(meta) && !hasComponentStyleWork(tag)) {
     // Prototype-only behavior avoids TemplateElement's per-instance state.
@@ -129,14 +132,18 @@ function defineMissingTemplateHost(tag: string, meta: TemplateMeta): void {
 }
 
 /** Claim every eligible template in a registry snapshot. */
-function defineTemplateHosts(templates = getTemplateRegistry()): void {
-  if (!templates) return;
-  const tags = Object.keys(templates);
-  for (let i = 0; i < tags.length; i++) {
-    const tag = tags[i];
-    const meta = templates[tag];
-    if (meta) defineMissingTemplateHost(tag, meta);
+function defineTemplateHosts(templates?: Record<string, TemplateMeta>): void {
+  const includeRetained = templates === undefined;
+  templates ??= getTemplateRegistry();
+  if (templates) {
+    const tags = Object.keys(templates);
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      const meta = templates[tag];
+      if (meta) defineMissingTemplateHost(tag, meta);
+    }
   }
+  if (includeRetained) templateCacheHooks?.visitRetained(templates, defineMissingTemplateHost);
 }
 
 /**
@@ -157,7 +164,12 @@ export function installTemplateElementRuntime(): void {
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);
     if (!detail?.templates) return;
-    defineTemplateHosts(detail.templates);
+    try {
+      defineTemplateHosts(detail.templates);
+    } catch (error) {
+      if (!detail.waitUntil) throw error;
+      detail.waitUntil(Promise.reject(error));
+    }
   });
 
   // Claim whatever templates are already registered immediately — streamed

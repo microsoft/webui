@@ -6,6 +6,12 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 > 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/guide/concepts/routing) for setup and usage.
 
+The package also exposes hydration-agnostic delivery without starting routing:
+`resources.js` provides resource helpers, `deferred.js` provides named template
+preload/state requests, and `deferred-ndjson.js` opts into bounded two-phase
+delivery. These entrypoints do not import the WebUI renderer or the router
+singleton. See [Deferred UI](https://microsoft.github.io/webui/guide/concepts/deferred).
+
 ## How It Works
 
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
@@ -466,19 +472,31 @@ console.log(Router.activeParams); // { id: "42" }
 
 Tear down the router and remove event listeners.
 
-### `Router.gc(tags?)`
+### `Router.gc()`
 
-Release cached component templates to free memory. The router clears their
-inventory bits so the server will re-send them on the next navigation that needs
-them.
+With WebUI templates, import the ownership adapter before component definitions
+and rebuild the protocol with a matching compiler:
 
 ```typescript
-// Release all cached templates
+import '@microsoft/webui-framework/template-cache.js';
+import './app-shell.js';
+
 Router.gc();
 ```
 
-Framework template caches become GC-eligible after the router releases the
-matching templates.
+This releases cache ownership and resets inventory conservatively while live
+component dependencies remain available. It does not unload behavior modules or
+native custom-element definitions. Without the adapter, WebUI template
+collection fails explicitly.
+
+### Lean router compositions
+
+`@microsoft/webui-router/core.js` exports a JSON-only `WebUIRouter` without the
+default singleton or optional policy implementations. Import NDJSON, cache,
+actions, preload, boundary UI, or transitions only when selected. The default
+entry remains the convenience composition. See
+[Selecting router capabilities](https://microsoft.github.io/webui/guide/concepts/routing#selecting-router-capabilities)
+for the supported imports and configuration pairs.
 
 ### Navigation Events
 

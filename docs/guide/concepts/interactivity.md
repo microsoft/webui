@@ -11,6 +11,74 @@ WebUI uses [Trusted Types](./hydration#trusted-types) automatically for compiled
 templates. Applications control enforcement through CSP; raw state HTML is not
 promoted through the compiler policy.
 
+## Runtime entrypoints
+
+The default `@microsoft/webui-framework` entry includes compiled rendering,
+authored behavior, and stylesheet installation. Streaming and deferred-hydration
+coordinators remain separate imports.
+
+For components that do not need framework-managed component CSS or template
+stylesheet links, use the smaller core:
+
+```typescript
+import { WebUIElement, observable } from '@microsoft/webui-framework/core.js';
+```
+
+Add stylesheet support before defining styled components:
+
+```typescript
+import '@microsoft/webui-framework/styles.js';
+import './my-component.js';
+```
+
+This composition supports the same Link, Style, and Module strategies as the
+default entry. A core-only application that encounters managed component styles
+gets an actionable error rather than silently mounting unstyled content.
+The core still includes conditions, repeats, events, refs, and reactive state;
+it is not a different template language.
+
+| Entry | Use |
+| --- | --- |
+| `core.js` | Compiled hydration/client mounting and authored component behavior, without stylesheet installation |
+| `styles.js` | Component stylesheet installation and readiness |
+| `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
+| `template-cache.js` | Optional lifetime-aware template collection |
+| `deferred.js` | Hostless deferred-body rendering in the existing owner and scope; no network loader |
+| `streaming.js` | Progressive HTML streaming hydration |
+| `lazy-hydration.js` | Visibility-based hydration coordination |
+| `interaction-hydration.js` | Interaction-based activation |
+
+### Releasing unused templates
+
+Import the cache entry before any component definitions. Rebuild the protocol
+with the matching compiler when enabling this capability.
+For independently bundled application entries, keep that initialization ahead of
+definition side effects in the emitted graph as well as in the source imports.
+
+```typescript
+import { collectTemplates } from '@microsoft/webui-framework/template-cache.js';
+import './app-shell.js';
+
+// Later, release cached templates that no live component needs.
+const released = collectTemplates();
+```
+
+`collectTemplates(keep?)` returns the number of cache entries released, not the
+number of objects already garbage-collected. Pass component tags in `keep` to
+retain their ordinary dependencies for a later operation. Live components and
+existing SSR hosts keep the templates they can still use; unused bodies become
+eligible for collection. The client inventory is reset conservatively so missing
+resources can be requested again.
+
+This does not unload imported JavaScript, custom-element definitions, or styles
+still needed by the document. Do not call collection on every state update.
+Older protocols without dependency metadata and late cache installation fail
+explicitly.
+
+[Deferred template bodies](./deferred) let an ordinary `<if>` keep complex UI out
+of initial delivery until it is needed. Resource/state loading is a separate
+`@microsoft/webui-router/deferred.js` capability, not part of the renderer.
+
 ## Component Files
 
 Every interactive component consists of three separate files. Templates are declarative - no JavaScript mixing.

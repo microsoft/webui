@@ -369,6 +369,7 @@ const CRITERION_BENCHES: &[(&str, &str)] = &[
     ("microsoft-webui", "streaming_bench"),
     ("microsoft-webui", "component_assets_bench"),
     ("microsoft-webui", "server_request_bench"),
+    ("microsoft-webui", "deferred_bench"),
 ];
 
 fn bench_all_criterion(

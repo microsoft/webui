@@ -178,7 +178,7 @@ describe('WebUIRouter', () => {
   });
 
   describe('gc', () => {
-    test('clears all templates and resets inventory', () => {
+    test('delegates template and inventory collection to the configured runtime', () => {
       const router = new WebUIRouter();
       const registry = globals().__webui!.templates!;
       registry['shell'] = { h: '<div>Shell</div>' };
@@ -191,14 +191,56 @@ describe('WebUIRouter', () => {
 
       globals().__webui!.inventory = inventoryWith('shell', 'page-x', 'page-y');
 
-      router.gc();
+      const previous = window.__webuiCollectTemplates;
+      let collected = false;
+      window.__webuiCollectTemplates = keep => {
+        assert.deepEqual(keep, []);
+        collected = true;
+        for (const tag of Object.keys(registry)) delete registry[tag];
+        for (const tag of Object.keys(globals().__webui!.templateFns!)) {
+          delete globals().__webui!.templateFns![tag];
+        }
+        globals().__webui!.inventory = '';
+        return 3;
+      };
+      try {
+        router.gc();
+        assert.equal(collected, true);
+        assert.equal(registry['shell'], undefined, 'shell should be cleared');
+        assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
+        assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
+        assert.equal(globals().__webui!.templateFns!.shell, undefined, 'shell functions should be cleared');
+        assert.equal(globals().__webui!.templateFns!['page-x'], undefined, 'page-x functions should be cleared');
+        assert.equal(globals().__webui!.inventory, '', 'inventory should be reset to empty');
+      } finally {
+        window.__webuiCollectTemplates = previous;
+      }
+    });
 
-      assert.equal(registry['shell'], undefined, 'shell should be cleared');
-      assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
-      assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
-      assert.equal(globals().__webui!.templateFns!.shell, undefined, 'shell functions should be cleared');
-      assert.equal(globals().__webui!.templateFns!['page-x'], undefined, 'page-x functions should be cleared');
-      assert.equal(globals().__webui!.inventory, '', 'inventory should be reset to empty');
+    test('requires an ownership-aware collector before evicting WebUI metadata', () => {
+      const router = new WebUIRouter();
+      const registry = globals().__webui!.templates!;
+      registry['x-page'] = { h: '<p></p>' };
+      globals().__webui!.inventory = '01';
+      assert.throws(() => router.gc(), /ownership-aware cache adapter/);
+      assert.ok(registry['x-page']);
+      assert.equal(globals().__webui!.inventory, '01');
+    });
+
+    test('retains active pending and error resources for an offline boundary', () => {
+      const router = new WebUIRouter();
+      Object.defineProperty(router, 'activeChain', {
+        value: [{ pendingComponent: 'x-pending', errorComponent: 'x-error' }],
+      });
+      const previous = window.__webuiCollectTemplates;
+      let retained: readonly string[] | undefined;
+      window.__webuiCollectTemplates = keep => { retained = keep; return 0; };
+      try {
+        router.gc();
+        assert.deepEqual(retained, ['x-pending', 'x-error']);
+      } finally {
+        window.__webuiCollectTemplates = previous;
+      }
     });
 
     test('is a no-op when no templates are registered', () => {

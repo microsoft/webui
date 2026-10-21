@@ -54,6 +54,31 @@ class StreamStep:
     boundary: BoundaryDescriptor | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DeferredOptions:
+    """Availability of resources from one compiled document."""
+
+    inventory: str = ""
+    style_inventory: str = ""
+    build_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDeferredResources:
+    """Resource JSON and acknowledgement for host-owned two-phase delivery."""
+
+    json: bytes
+    options: DeferredOptions
+
+
+def _deferred_options(
+    owner: str, region_id: str, options: DeferredOptions | None
+) -> tuple[str, str, str, str, str]:
+    if options is None:
+        return owner, region_id, "", "", ""
+    return owner, region_id, options.inventory, options.style_inventory, options.build_id
+
+
 def _plugin_value(plugin: Plugin | str | None) -> str | None:
     if plugin is None:
         return None
@@ -175,6 +200,34 @@ class Renderer:
         tags = [component_tags] if isinstance(component_tags, str) else list(component_tags)
         return self._inner.render_component_templates(
             (tags, inventory),
+        )
+
+    def render_deferred_resources(
+        self, owner: str, region_id: str, *, options: DeferredOptions | None = None
+    ) -> bytes:
+        """Prepare a named template body's resources without application state."""
+        return self._inner.render_deferred_resources(_deferred_options(owner, region_id, options))
+
+    def prepare_deferred_resources(
+        self, owner: str, region_id: str, *, options: DeferredOptions | None = None
+    ) -> PreparedDeferredResources:
+        """Prepare metadata and acknowledgement without reparsing metadata JSON."""
+        body, acknowledgement = self._inner.prepare_deferred_resources(
+            _deferred_options(owner, region_id, options)
+        )
+        return PreparedDeferredResources(body, DeferredOptions(*acknowledgement))
+
+    def render_deferred_partial(
+        self,
+        state: StateInput,
+        owner: str,
+        region_id: str,
+        *,
+        options: DeferredOptions | None = None,
+    ) -> bytes:
+        """Render fresh owner/scoped state and any still-missing resources."""
+        return self._inner.render_deferred_partial(
+            _state_json(state), _deferred_options(owner, region_id, options)
         )
 
     @property

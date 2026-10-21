@@ -215,6 +215,35 @@ Each side of a comparison is either a literal (number, quoted string, `true`,
 server send a precomputed `lastIndex` (or `isLast`) instead. Bare `.length` on an
 array or string does work: `<if condition="items.length > 3">`.
 
+### Deferred conditional bodies
+
+```html
+<if condition="settingsReady" defer id="settings">
+  <h2>Settings</h2>
+  <p>{{displayName}}</p>
+</if>
+```
+
+- The body is an ordinary template fragment, not a component. It keeps owner
+  state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
+- Initially false omits deferred-only markup/metadata; initially true renders
+  normally and hydrates existing DOM.
+- Import `@microsoft/webui-framework/deferred.js` for WebUI rendering.
+  Use `createDeferredLoader` from `@microsoft/webui-router/deferred.js` for
+  hydration-agnostic resource/state delivery. Routing is not started.
+- `ensureLoaded(owner, id)` preloads resources only. `fetchPartial(owner, id,
+  { url, signal })` returns fresh state without mounting or changing global
+  state. Apply state to the existing owner/scope, then change the condition.
+- JSON is the default transport. Import `deferredNdjson` from
+  `@microsoft/webui-router/deferred-ndjson.js` explicitly for metadata-first,
+  state-last delivery.
+- Give regions an owner-local `id` for application loading. Behavior modules
+  remain explicit dynamic imports; deferral does not split owner JavaScript.
+- Do not combine this protocol-backed feature with `--emit-component-assets`.
+
+See [deferred UI](guide/concepts/deferred.md) for cancellation, dialog ownership,
+server APIs, and complete examples.
+
 ### Loops
 
 ```html
@@ -853,6 +882,19 @@ import './user-card/user-card.js';
 Importing a component module registers it as a custom element, which triggers
 hydration. Nothing else is required.
 
+For islands without framework-managed component CSS or template stylesheet
+links, import `WebUIElement` and decorators from
+`@microsoft/webui-framework/core.js`. Add
+`@microsoft/webui-framework/styles.js` before defining styled components, or use
+the default framework entry, which includes both. Streaming and lazy-hydration
+coordinators remain explicit imports.
+
+Optional template collection requires
+`@microsoft/webui-framework/template-cache.js` before component definitions and a
+matching rebuilt protocol. `collectTemplates(keep?)` releases cache ownership,
+not live component dependencies or browser module definitions. See
+[runtime entrypoints](/guide/concepts/interactivity#runtime-entrypoints).
+
 ### The hydration boundary
 
 Never write `@observable` values before hydration. During SSR hydration the
@@ -1113,6 +1155,13 @@ Router.start({
   },
 });
 ```
+
+For a smaller JSON-only router, construct `WebUIRouter` from
+`@microsoft/webui-router/core.js`. Add the `ndjson.js`, `boundaries.js`,
+`transitions.js`, cache, action, or preload capabilities explicitly when needed.
+The default package entry retains the convenience router's existing behavior.
+See [selecting router capabilities](/guide/concepts/routing#selecting-router-capabilities)
+for the import/configuration pairs.
 
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by

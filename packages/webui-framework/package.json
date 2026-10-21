@@ -8,6 +8,36 @@
   "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
   "license": "MIT",
   "exports": {
+    "./deferred.js": {
+      "import": {
+        "types": "./dist/deferred-entry.d.ts",
+        "default": "./dist/deferred-entry.js"
+      }
+    },
+    "./template-cache.js": {
+      "import": {
+        "types": "./dist/template-cache-entry.d.ts",
+        "default": "./dist/template-cache-entry.js"
+      }
+    },
+    "./core.js": {
+      "import": {
+        "types": "./dist/core.d.ts",
+        "default": "./dist/core.js"
+      }
+    },
+    "./templates.js": {
+      "import": {
+        "types": "./dist/templates-entry.d.ts",
+        "default": "./dist/templates-entry.js"
+      }
+    },
+    "./styles.js": {
+      "import": {
+        "types": "./dist/styles-entry.d.ts",
+        "default": "./dist/styles-entry.js"
+      }
+    },
     ".": {
       "import": {
         "types": "./dist/index.d.ts",

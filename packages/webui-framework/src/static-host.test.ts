@@ -114,6 +114,21 @@ function registerTemplate(tag: string, meta: TemplateMeta): TemplateMeta {
 }
 
 describe('dormant template host runtime', () => {
+  test('native definition failures reject the resource readiness barrier', async t => {
+    installTemplateElementRuntime();
+    const failure = new Error('native definition failed');
+    t.mock.method(customElements, 'define', () => { throw failure; });
+    const waits: PromiseLike<unknown>[] = [];
+    assert.doesNotThrow(() => window.dispatchEvent(new CustomEvent('webui:templates-registered', {
+      detail: {
+        templates: { 'failed-native-definition': { h: '', th: 1 } },
+        waitUntil: (promise: PromiseLike<unknown>) => { waits.push(promise); },
+      },
+    })));
+    assert.equal(waits.length, 1);
+    await assert.rejects(Promise.all(waits), failure);
+  });
+
   test('defines compiler-owned hosts without authored stubs', () => {
     const tag = `dormant-unit-${Date.now()}`;
     registerTemplate(tag, {

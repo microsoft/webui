@@ -603,7 +603,7 @@ jobs:
   python-test:
     name: Python test (${{ matrix.platform.label }} / CPython ${{ matrix.python }})
     runs-on: ${{ matrix.platform.os }}
-    needs: python-wheel
+    needs: [python-wheel, python-fixture]
     strategy:
       fail-fast: false
       matrix:
@@ -634,6 +634,11 @@ jobs:
         with:
           name: ${{ matrix.platform.artifact }}
           path: publish/python
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-deferred-fixture
+          path: target/python-deferred-test
 
       - name: Install the built wheel and test it
         shell: bash
@@ -704,6 +709,17 @@ jobs:
             "crates/webui-python/tests/fixtures/streaming_protocol.bin"
           cmp "crates/webui-python/tests/fixtures/greeting-card.css" \
             "$output/greeting-card.css"
+
+      - name: Build the deferred fixture without committing generated protocol bytes
+        run: |
+          cargo run --quiet -p microsoft-webui-cli -- build \
+            "crates/webui-python/tests/fixtures/deferred-app" \
+            --plugin webui --out "target/python-deferred-test"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-deferred-fixture
+          path: target/python-deferred-test/protocol.bin
 
   # ── Gate: one stable required check ────────────────────────────────
   # Branch protection can only require per-job contexts, so requiring the jobs

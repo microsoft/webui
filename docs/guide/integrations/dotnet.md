@@ -23,6 +23,29 @@ string html = handler.Render(
     "/");
 ```
 
+## Deferred template responses
+
+The same `Protocol` serves [deferred bodies](../concepts/deferred) without
+creating a route or another component:
+
+```csharp
+PreparedDeferredResources prepared =
+    protocol.PrepareDeferredResources("app-shell", "settings", clientOptions);
+Task<string> pendingState = LoadSettingsAsync(cancellationToken);
+await Response.WriteAsync(prepared.Json + "\n", cancellationToken);
+await Response.Body.FlushAsync(cancellationToken);
+string stateJson = await pendingState;
+await Response.WriteAsync(protocol.RenderDeferredPartial(
+    stateJson, "app-shell", "settings", prepared.Options) + "\n",
+    cancellationToken);
+```
+
+`DeferredOptions` contains `Inventory`, `StyleInventory`, and `BuildId`.
+Use `RenderDeferredResources` for preload-only JSON or `RenderDeferredPartial`
+directly for a complete JSON response. The host authenticates before headers,
+sets `application/x-ndjson` for two-phase delivery, and turns post-header data
+failures into explicit terminal error records.
+
 ## Progressive streaming
 
 `StreamResponse` creates a single-driver session. `Start`, `Resume`, and

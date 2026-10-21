@@ -16,6 +16,16 @@ import type { ComponentStyleResource, ComponentStyles } from './types.js';
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 const READINESS_COMPLETE = (): true => true;
 const IGNORE_READINESS_RESULTS = (): void => {};
+type InventoryReceiver = (inventory: string, styleInventory?: string) => void;
+
+export interface TemplateResourceResponse {
+  templates?: Record<string, unknown>;
+  templateFunctions?: Record<string, string>;
+  componentStyles?: ComponentStyles;
+  inventory?: string;
+  styleInventory?: string;
+  buildId?: string;
+}
 
 /**
  * Register templates + inject CSS from a server response.
@@ -25,40 +35,32 @@ const IGNORE_READINESS_RESULTS = (): void => {};
  * materialized as DOM.
  */
 export function registerTemplatesAndStyles(
-  data: {
-    templates?: Record<string, unknown>;
-    templateFunctions?: Record<string, string>;
-    componentStyles?: ComponentStyles;
-    inventory?: string;
-  },
+  data: TemplateResourceResponse,
   nonce: string,
-  updateInventory: (inv: string) => void,
+  updateInventory: InventoryReceiver,
 ): Promise<void> | undefined;
 export function registerTemplatesAndStyles(
-  data: {
-    templates?: Record<string, unknown>;
-    templateFunctions?: Record<string, string>;
-    componentStyles?: ComponentStyles;
-    inventory?: string;
-  },
+  data: TemplateResourceResponse,
   nonce: string,
   injectedStyles: Set<string>,
-  updateInventory: (inv: string) => void,
+  updateInventory: InventoryReceiver,
 ): Promise<void> | undefined;
 export function registerTemplatesAndStyles(
-  data: {
-    templates?: Record<string, unknown>;
-    templateFunctions?: Record<string, string>;
-    componentStyles?: ComponentStyles;
-    inventory?: string;
-  },
+  data: TemplateResourceResponse,
   nonce: string,
-  injectedStylesOrUpdate: Set<string> | ((inv: string) => void),
-  maybeUpdateInventory?: (inv: string) => void,
+  injectedStylesOrUpdate: Set<string> | InventoryReceiver,
+  maybeUpdateInventory?: InventoryReceiver,
 ): Promise<void> | undefined {
-  const injectedStyles = injectedStylesOrUpdate instanceof Set
-    ? injectedStylesOrUpdate
-    : new Set<string>();
+  if (data.buildId !== undefined) {
+    if (typeof data.buildId !== 'string' || data.buildId.length === 0) {
+      throw new Error('[WebUI] Invalid resource build identity.');
+    }
+    const expected = window.__webui?.buildId;
+    if (expected && expected !== data.buildId) {
+      throw new Error('[WebUI] Resources belong to a different document build. Reload the document.');
+    }
+    (window.__webui ??= {}).buildId = data.buildId;
+  }
   const updateInventory = typeof injectedStylesOrUpdate === 'function'
     ? injectedStylesOrUpdate
     : maybeUpdateInventory ?? (() => {});
@@ -69,9 +71,6 @@ export function registerTemplatesAndStyles(
   const styleRegistration = componentStyles
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
-  if (data.inventory) {
-    updateInventory(data.inventory);
-  }
 
   let executableTemplateBody = '';
   let registeredTemplates: Record<string, unknown> | undefined;
@@ -125,9 +124,16 @@ export function registerTemplatesAndStyles(
           throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
         }
       } else {
-        w.__webui.templates[tag] = template;
         if (!registeredTemplates) registeredTemplates = {};
         registeredTemplates[tag] = template;
+      }
+    }
+    if (registeredTemplates) {
+      window.__webuiPrepareTemplates?.(registeredTemplates);
+      for (const tag of Object.keys(registeredTemplates)) {
+        const template = registeredTemplates[tag];
+        w.__webui.templates[tag] = template;
+        data.templates[tag] = template;
       }
     }
   }
@@ -138,9 +144,14 @@ export function registerTemplatesAndStyles(
     registeredTemplates,
     styleRegistration?.bridged ? undefined : componentStyles,
   );
-  if (!styleRegistration?.ready) return readiness;
-  if (!readiness) return styleRegistration.ready;
-  return Promise.all([styleRegistration.ready, readiness]).then(IGNORE_READINESS_RESULTS);
+  const complete = styleRegistration?.ready && readiness
+    ? Promise.all([styleRegistration.ready, readiness]).then(IGNORE_READINESS_RESULTS)
+    : styleRegistration?.ready ?? readiness;
+  const inventory = data.inventory;
+  const styles = data.styleInventory;
+  if (!inventory && !styles) return complete;
+  if (complete) return complete.then(() => updateInventory(inventory ?? '', styles));
+  updateInventory(inventory ?? '', styles);
 }
 
 /** Register initial bootstrap styles before announcing already-published templates. */
@@ -266,7 +277,7 @@ export function injectCssLinks(
 
 /** Await optional runtime readiness while allowing a stale navigation to stop promptly. */
 export function waitForTemplateReadiness(
-  ready: Promise<void>,
+  ready: Promise<unknown>,
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (!signal) return ready.then(READINESS_COMPLETE);
@@ -300,8 +311,8 @@ export async function fetchComponentTemplates(
   inventoryHex: string,
   templateEndpoint: string,
   nonce: string,
-  injectedStylesOrUpdate: Set<string> | ((inv: string) => void),
-  maybeUpdateInventory?: (inv: string) => void,
+  injectedStylesOrUpdate: Set<string> | InventoryReceiver,
+  maybeUpdateInventory?: InventoryReceiver,
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
   const resp = await fetch(url);

@@ -146,6 +146,19 @@ pub struct WebUiProtocol {
     pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
         ComponentAssetStylePreload,
     >,
+    /// Opaque content identity supplied by the compiler. Inventory positions may
+    /// only be reused against this same compiled artifact.
+    #[prost(string, tag = "13")]
+    #[serde(default)]
+    pub build_id: ::prost::alloc::string::String,
+    /// Client-only template sections extracted from deferred if bodies. Keys are
+    /// resource identities, not custom-element names.
+    #[prost(map = "string, message", tag = "14")]
+    #[serde(default)]
+    pub client_fragments: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ClientFragmentData,
+    >,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -368,6 +381,35 @@ pub struct WebUiFragmentIf {
     pub condition: ::core::option::Option<ConditionExpr>,
     #[prost(string, tag = "2")]
     pub fragment_id: ::prost::alloc::string::String,
+    /// Keep this ordinary template body out of eager client delivery when inactive.
+    /// Scope, events, refs, DOM ownership, and SSR condition semantics are unchanged.
+    #[prost(bool, tag = "3")]
+    #[serde(default)]
+    pub deferred: bool,
+}
+/// Compiled client metadata for a template section, without a component host.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClientFragmentData {
+    #[prost(string, tag = "1")]
+    pub owner: ::prost::alloc::string::String,
+    /// Optional owner-scoped authored id for a publicly loadable deferred region.
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub template_json: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub template_functions: ::prost::alloc::string::String,
+    /// Ordinary template resources required by this section; nested deferred edges
+    /// are separate roots and are not implicit preload dependencies.
+    #[prost(string, repeated, tag = "5")]
+    pub dependencies: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "6")]
+    pub state_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(enumeration = "StateProjectionMode", optional, tag = "7")]
+    pub state_mode: ::core::option::Option<i32>,
+    #[prost(bool, tag = "8")]
+    pub entry: bool,
 }
 /// Dynamic attribute binding.
 #[derive(serde::Serialize, serde::Deserialize)]

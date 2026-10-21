@@ -6,7 +6,9 @@
 from ._api import (
     BoundaryDescriptor,
     BoundaryMode,
+    DeferredOptions,
     Plugin,
+    PreparedDeferredResources,
     Renderer,
     StateInput,
     StreamingSession,
@@ -24,7 +26,9 @@ from ._native import (
 __all__ = [
     "BoundaryDescriptor",
     "BoundaryMode",
+    "DeferredOptions",
     "Plugin",
+    "PreparedDeferredResources",
     "ProtocolError",
     "RenderError",
     "Renderer",

@@ -19,7 +19,7 @@ cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
 microsoft-webui-parser = { path = "../webui-parser", version = "3.0.2" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.2", features = ["projection-manifest"] }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.2", features = ["projection-manifest", "content-identity"] }
 microsoft-webui-handler = { path = "../webui-handler", version = "3.0.2" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.2" }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.2" }
@@ -65,6 +65,10 @@ harness = false
 
 [[bench]]
 name = "server_request_bench"
+harness = false
+
+[[bench]]
+name = "deferred_bench"
 harness = false
 
 [[example]]

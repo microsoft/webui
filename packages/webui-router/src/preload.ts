@@ -9,6 +9,7 @@
 import { pointerPreloadPath } from './preload-path.js';
 import type { PartialResponse } from './cache.js';
 import type { StreamingPartialResponse } from './streaming.js';
+import { cancelDeferredStream, startDeferredStream } from './partial-response.js';
 
 /** Context needed by preload listeners to interact with router state. */
 export interface PreloadContext {
@@ -65,11 +66,10 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
         }
         if (!data?._deferredStream) return;
 
-        const streaming = await import('./streaming.js');
         if (gen === preloadGeneration && !controller.signal.aborted) {
-          streaming.startDeferredStream(data);
+          startDeferredStream(data);
         } else {
-          await streaming.cancelDeferredStream(data);
+          await cancelDeferredStream(data);
         }
       })
       .catch(() => {}) // Speculative — silently discard errors

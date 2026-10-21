@@ -54,6 +54,17 @@ pub enum ParserError {
     #[error("TypeScript parse error: {0}")]
     TsParseError(String),
 
+    /// Invalid compiler-owned client metadata or one of its graph references.
+    #[error(
+        "Invalid client template metadata for <{component}>: {reason}. Rebuild the complete protocol with a matching compiler."
+    )]
+    ClientTemplateMetadata {
+        /// Component whose metadata could not be finalized.
+        component: Box<str>,
+        /// Specific metadata or compiled-graph invariant that failed.
+        reason: Box<str>,
+    },
+
     /// A build-time template-authoring mistake (e.g. an invalid `@event`
     /// handler or a non-braced `w-ref`). Carries a structured [`Diagnostic`]
     /// whose [`std::fmt::Display`] is an actionable, color-free report. The CLI

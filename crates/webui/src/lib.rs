@@ -38,7 +38,8 @@ pub use webui_handler::route_handler::{encode_inventory, get_needed_components, 
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
     plugin::HandlerPlugin, BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode,
-    FlushWriter, HandlerError, Protocol, RenderOptions, ResponseWriter, SessionOptions,
+    DeferredOptions, DeferredRequest, DeferredRequestError, FlushWriter, HandlerError,
+    PreparedDeferredResources, Protocol, RenderOptions, ResponseWriter, SessionOptions,
     SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
     WebUIHandler,
 };
@@ -417,7 +418,8 @@ fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> D
 pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
     let started = Instant::now();
 
-    let raw = build_protocol_inner(&options)?;
+    let mut raw = build_protocol_inner(&options)?;
+    raw.protocol.assign_build_id()?;
 
     let protocol_bytes = raw.protocol.to_protobuf()?;
 
@@ -872,6 +874,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         };
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
+        for fragment in &artifact.deferred_templates {
+            let mut data = fragment.data.clone();
+            data.inherit_owner_state(component);
+            protocol.client_fragments.insert(fragment.id.clone(), data);
+        }
     }
 
     let mut component_asset_graph = component_assets::render_component_assets(
@@ -1038,6 +1045,12 @@ mod tests {
         }
     }
 
+    impl webui_handler::FlushWriter for StringWriter {
+        fn flush(&mut self) -> webui_handler::Result<()> {
+            Ok(())
+        }
+    }
+
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
         for (name, content) in files {
@@ -1076,6 +1089,272 @@ mod tests {
     }
 
     mod fast;
+
+    #[test]
+    fn deferred_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                r#"<dialog><if condition="showSettings" defer><settings-panel></settings-panel></if></dialog>"#,
+            ),
+            (
+                "settings-panel.html",
+                "<h2>Deferred settings content</h2><settings-child></settings-child>",
+            ),
+            ("settings-panel.css", "h2 { color: red; }"),
+            ("settings-child.html", "<p>Nested settings content</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let built = build(options).expect("compiled deferred UI");
+        assert!(built.protocol.fragments.contains_key("settings-panel"));
+        assert!(built.protocol.components.contains_key("settings-child"));
+        let protocol = Protocol::new(built.protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for shown in [false, true] {
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &serde_json::json!({ "showSettings": shown }),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .expect("render deferred condition");
+            assert_eq!(
+                writer.buf.contains("Deferred settings content"),
+                shown,
+                "inactive metadata must not embed the deferred body: {}",
+                writer.buf
+            );
+            assert_eq!(writer.buf.contains("Nested settings content"), shown);
+            assert_eq!(writer.buf.contains("settings-panel.css"), shown);
+            assert_eq!(writer.buf.contains(r#""settings-panel":{"h":"#), shown);
+            assert_eq!(writer.buf.contains(r#""settings-child":{"h":"#), shown);
+            let head = writer.buf.split("</head>").next().expect("document head");
+            assert_eq!(head.contains("settings-panel.css"), shown);
+        }
+    }
+
+    #[test]
+    fn deferred_if_keeps_inline_bodies_hostless_and_preserves_dom_mode() {
+        for dom in [DomStrategy::Shadow, DomStrategy::Light] {
+            let app = create_app_dir(&[
+                (
+                    "index.html",
+                    "<html><head></head><body><app-shell></app-shell></body></html>",
+                ),
+                (
+                    "app-shell.html",
+                    concat!(
+                        "<h1>Shell</h1><dialog>",
+                        r#"<if condition="show" defer id="settings">"#,
+                        "<h2>Inline deferred settings</h2><p>{{subtitle}}</p>",
+                        r#"<if condition="loaded"><strong>{{detail}}</strong></if>"#,
+                        r#"<for each="item in items"><button @click="{pick(item.id)}">{{item.label}}</button></for>"#,
+                        r#"<if condition="advanced" defer id="advanced"><em>Advanced deferred settings</em></if>"#,
+                        "</if></dialog>",
+                    ),
+                ),
+                ("app-shell.ts", "export {};"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.dom = dom;
+            let built = build(options).expect("arbitrary deferred body");
+            assert_eq!(
+                built.protocol.components.len(),
+                1,
+                "a deferred body must not become a component"
+            );
+            let root = "app-shell::defer:settings";
+            let nested = "app-shell::defer:advanced";
+            assert!(built.protocol.fragments.contains_key(root));
+            assert!(built.protocol.client_fragments[root].entry);
+            assert_eq!(built.protocol.client_fragments[root].owner, "app-shell");
+            assert!(!built.protocol.client_fragments[root]
+                .dependencies
+                .iter()
+                .any(|id| id == nested));
+            assert!(!built.protocol.components["app-shell"]
+                .template_json
+                .contains("Inline deferred settings"));
+            assert!(!built.protocol.components["app-shell"]
+                .template_json
+                .contains("pick"));
+            assert!(built.protocol.fragments["app-shell"].fragments.iter().any(|fragment| {
+                matches!(fragment.fragment.as_ref(), Some(Fragment::IfCond(condition)) if condition.deferred && condition.fragment_id == root)
+            }));
+            let protocol = Protocol::new(built.protocol);
+            let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+            for (shown, advanced) in [(false, false), (true, false), (true, true)] {
+                let state = serde_json::json!({
+                    "show": shown, "advanced": advanced, "loaded": true,
+                    "subtitle": "Current", "detail": "Detail", "items": [{"id":1,"label":"First"}],
+                });
+                let mut writer = StringWriter { buf: String::new() };
+                handler
+                    .render(
+                        &protocol,
+                        &state,
+                        &RenderOptions::new("index.html", "/"),
+                        &mut writer,
+                    )
+                    .unwrap();
+                assert_eq!(writer.buf.contains("Inline deferred settings"), shown);
+                assert_eq!(writer.buf.contains("Advanced deferred settings"), advanced);
+                assert!(
+                    !writer.buf.contains("<app-shell::"),
+                    "fragment resources have no element host"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_named_repeat_reuses_the_owners_eager_block_table() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                concat!(
+                    r#"<for id="shared" each="item in outsideItems" />"#,
+                    r#"<if condition="show" defer id="panel">"#,
+                    r#"<for id="shared" each="item in items"><span>{{item.label}}</span></for>"#,
+                    "</if>",
+                ),
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let built = build(options).unwrap();
+        let owner: serde_json::Value =
+            serde_json::from_str(&built.protocol.components["app-shell"].template_json).unwrap();
+        let region: serde_json::Value = serde_json::from_str(
+            &built.protocol.client_fragments["app-shell::defer:panel"].template_json,
+        )
+        .unwrap();
+        assert_eq!(owner["b"].as_array().unwrap().len(), 1);
+        assert_eq!(region["r"][0][2], 0);
+        assert_eq!(region["o"], "app-shell");
+    }
+
+    #[test]
+    fn deferred_resource_selection_preserves_props_and_loop_shadowing() {
+        let app = create_app_dir(&[
+            ("index.html", "<html><head></head><body><scope-owner :item=\"{{fallback}}\"></scope-owner></body></html>"),
+            ("scope-owner.html", concat!(
+                r#"<for each="item in items"><if condition="item.expanded" defer id="row"><p>Visible row payload</p></if></for>"#,
+                r#"<if condition="item.expanded" defer id="outside"><p>Outside payload</p></if>"#,
+            )),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let protocol = Protocol::new(build(options).unwrap().protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for (rows, fallback, expected_row, expected_outside) in [
+            (vec![false, false], true, false, true),
+            (vec![false, true], false, true, false),
+        ] {
+            let state = serde_json::json!({
+                "items": rows.into_iter().map(|expanded| serde_json::json!({ "expanded": expanded })).collect::<Vec<_>>(),
+                "fallback": { "expanded": fallback },
+            });
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &state,
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(writer.buf.contains("Visible row payload"), expected_row);
+            assert_eq!(writer.buf.contains("Outside payload"), expected_outside);
+        }
+    }
+
+    #[test]
+    fn deferred_authoring_errors_have_stable_codes() {
+        for (template, code) in [
+            (
+                r#"<if condition="show" defer="yes"><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_DEFERRED_ATTRIBUTE,
+            ),
+            (
+                r#"<if condition="show" defer id=""><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_DEFERRED_ID,
+            ),
+            (
+                r#"<if condition="show" defer id="same"></if><if condition="other" defer id="same"></if>"#,
+                webui_parser::codes::DUPLICATE_DEFERRED_ID,
+            ),
+        ] {
+            let app = create_app_dir(&[
+                ("index.html", "<app-owner></app-owner>"),
+                ("app-owner.html", template),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            let error = build(options).err().expect("invalid deferred authoring");
+            assert!(error.chain_message().contains(code), "{error}");
+        }
+    }
+
+    #[test]
+    fn static_only_assets_reject_protocol_backed_deferred_bodies() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-owner></app-owner>"),
+            (
+                "app-owner.html",
+                r#"<if condition="show" defer id="body"><p>Body</p></if>"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["app-owner".into()];
+        let error = build(options)
+            .err()
+            .expect("incompatible asset delivery mode");
+        assert!(error
+            .chain_message()
+            .contains(webui_parser::codes::COMPONENT_ASSETS_WITH_DEFERRED));
+    }
+
+    #[test]
+    fn progressive_checkpoints_deliver_active_hostless_body_resources() {
+        let app = create_app_dir(&[
+            ("index.html", "<html><head><script type=\"module\" async src=\"./index.js\"></script></head><body><stream-owner></stream-owner></body></html>"),
+            ("stream-owner.html", r#"<boundary name="region"><if condition="shown" defer id="body"><p>Streamed inline body</p><for each="item in items"><span>{{item}}</span></for></if></boundary>"#),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let protocol = Protocol::new(build(options).unwrap().protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for shown in [false, true] {
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render_streaming(
+                    &protocol,
+                    &serde_json::json!({"shown": shown, "items": ["one"]}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(writer.buf.contains("Streamed inline body"), shown);
+            assert_eq!(
+                writer.buf.contains(r#""stream-owner::defer:body":{"h":"#),
+                shown
+            );
+        }
+    }
 
     #[test]
     fn test_build_simple_html() {

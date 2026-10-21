@@ -61,6 +61,121 @@ test('template registration waits for synchronous runtime readiness', async () =
   }
 });
 
+test('inventory is acknowledged only after resource readiness succeeds', async () => {
+  const preparation = Promise.withResolvers<void>();
+  const listener = (event: Event): void => {
+    (event as CustomEvent<RegistrationDetail>).detail.waitUntil(preparation.promise);
+  };
+  window.addEventListener('webui:templates-registered', listener);
+  const inventories: string[] = [];
+  try {
+    const ready = registerTemplatesAndStyles(
+      { templates: { 'inventory-card': { h: '<p></p>' } }, inventory: '04' },
+      '',
+      inventory => inventories.push(inventory),
+    );
+    assert.ok(ready);
+    assert.deepEqual(inventories, []);
+    preparation.resolve();
+    await ready;
+    assert.deepEqual(inventories, ['04']);
+  } finally {
+    window.removeEventListener('webui:templates-registered', listener);
+  }
+});
+
+test('failed readiness cannot acknowledge templates that did not become usable', async () => {
+  const failure = new Error('definition failed');
+  const listener = (event: Event): void => {
+    (event as CustomEvent<RegistrationDetail>).detail.waitUntil(Promise.reject(failure));
+  };
+  window.addEventListener('webui:templates-registered', listener);
+  let acknowledged = false;
+  try {
+    const ready = registerTemplatesAndStyles(
+      { templates: { 'rejected-inventory-card': { h: '<p></p>' } }, inventory: '08' },
+      '',
+      () => { acknowledged = true; },
+    );
+    assert.ok(ready);
+    await assert.rejects(ready, failure);
+    assert.equal(acknowledged, false);
+  } finally {
+    window.removeEventListener('webui:templates-registered', listener);
+  }
+});
+
+test('resource publication and cached responses reuse renderer-canonical templates', () => {
+  const original = window.__webuiPrepareTemplates;
+  const canonical = { h: '<p>Canonical</p>' };
+  window.__webuiPrepareTemplates = templates => { templates['canonical-card'] = canonical; };
+  const data = { templates: { 'canonical-card': { h: '<p>Canonical</p>' } } };
+  try {
+    registerTemplatesAndStyles(data, '', () => {});
+    assert.equal(data.templates['canonical-card'], canonical);
+  } finally {
+    window.__webuiPrepareTemplates = original;
+  }
+});
+
+test('renderer preparation failures do not publish invalid templates or inventory', () => {
+  const original = window.__webuiPrepareTemplates;
+  const failure = new Error('conflicting resource');
+  window.__webuiPrepareTemplates = () => { throw failure; };
+  let acknowledged = false;
+  try {
+    assert.throws(() => registerTemplatesAndStyles(
+      { templates: { 'unpublished-card': { h: '<p></p>' } }, inventory: '20' },
+      '',
+      () => { acknowledged = true; },
+    ), failure);
+    assert.equal(acknowledged, false);
+    assert.equal(Reflect.get(window.__webui ?? {}, 'templates')?.['unpublished-card'], undefined);
+  } finally {
+    window.__webuiPrepareTemplates = original;
+  }
+});
+
+for (const tail of ['', '{"states":', '{"error":"data unavailable"}\n']) {
+  test(`an incomplete or failed state tail cannot make a route cache entry complete: ${JSON.stringify(tail)}`, async () => {
+    const warnings: unknown[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    let completed = false;
+    let pending: Promise<void> | null = null;
+    const response = new Response(
+      `{"chain":[],"templates":{}}\n${tail}`,
+    );
+    const context: StreamingContext = {
+      navGeneration: 1,
+      currentRequestPath: '/failed-tail',
+      activeChain: [],
+      nonce: '',
+      injectedCss: new Set(),
+      setDeferredReader(value) { if (value) pending = value; },
+      setDeferredGeneration() {},
+      updateInventory() {},
+      markCacheComplete() { completed = true; },
+    };
+    try {
+      if (tail.endsWith('\n')) {
+        await assert.rejects(readStreamingPartial(response, '/failed-tail', context), /could not complete/);
+      } else {
+        const data = await readStreamingPartial(response, '/failed-tail', context);
+        assert.ok(data);
+        startDeferredStream(data);
+        assert.ok(pending);
+        await pending;
+        assert.equal(warnings.length, 1);
+      }
+      assert.equal(completed, false);
+      assert.equal(response.body?.locked, false);
+    } finally {
+      console.warn = original;
+    }
+  });
+}
+
 test('streaming registration rejects a stale navigation after readiness wait', async () => {
   let release!: () => void;
   let registrationSeen!: () => void;

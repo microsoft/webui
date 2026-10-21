@@ -64,6 +64,42 @@ Loaded protocol handles are thread-safe. Handler instances are safe for
 concurrent renders as long as configuration such as the nonce is not mutated
 concurrently.
 
+## Deferred template responses
+
+Use the loaded protocol for [deferred bodies](../concepts/deferred):
+
+```c
+char *updated_options = NULL;
+char *metadata = webui_protocol_prepare_deferred_resources(
+    protocol, "app-shell", "settings", client_options_json, &updated_options
+);
+if (metadata == NULL) {
+    fprintf(stderr, "%s\n", webui_last_error());
+    return;
+}
+send_record(metadata); /* application writer: append LF, flush, honor backpressure */
+webui_free(metadata);
+
+char *state_record = webui_protocol_render_deferred_partial(
+    protocol, scoped_state_json, "app-shell", "settings", updated_options
+);
+webui_free(updated_options);
+if (state_record != NULL) {
+    send_record(state_record);
+    webui_free(state_record);
+} else {
+    /* Send an explicit terminal error record; headers have already committed. */
+    report_state_error(webui_last_error());
+}
+```
+
+`webui_protocol_render_deferred_resources` is the resource-only convenience
+operation. Options JSON uses `inventory`, `styleInventory`, and `buildId`; a null
+options pointer selects defaults. The prepared form returns resource JSON and
+writes a second owned JSON string through `updated_options_json`. Free both
+strings with `webui_free`. All failures return null and set `webui_last_error`.
+Keep the protocol handle alive while the host resolves state.
+
 ## C API Reference
 
 The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.

@@ -38,6 +38,7 @@ export type {
   TemplateCondition,
   CompiledTextRunMeta,
   TemplateBlockMeta,
+  TemplateBlockReference,
   TemplateMeta,
   TemplateNodeIndex,
   TemplateSlot,
@@ -64,6 +65,7 @@ import type {
 } from './template-types.js';
 
 import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
+import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
@@ -120,6 +122,7 @@ function acceptTemplateData(
 ): string[] {
   validateComponentStylesRegistration(componentStyles);
   prepareTemplateData(templates, templateFns);
+  templateCacheHooks?.accept(templates);
   if (componentStyles) {
     registerPreparedComponentStyles(componentStyles);
   }
@@ -147,21 +150,37 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);
     if (!detail?.templates) return;
-    const styles = detail.componentStyles === undefined
-      ? undefined
-      : prepareComponentStyles(detail.componentStyles);
-    const templates = detail.templates;
-    const names = acceptTemplateData(templates, undefined, styles);
-    const definitions = detail.waitUntil
-      ? prepareDefinitions?.(templates, names)
-      : undefined;
-    if (definitions) {
-      detail.waitUntil?.(definitions.then(() => prepareResources?.(templates)));
-    } else {
-      const ready = prepareResources?.(templates);
-      if (ready) detail.waitUntil?.(ready);
+    try {
+      const styles = detail.componentStyles === undefined
+        ? undefined
+        : prepareComponentStyles(detail.componentStyles);
+      const templates = detail.templates;
+      const names = acceptTemplateData(templates, undefined, styles);
+      const definitions = detail.waitUntil
+        ? prepareDefinitions?.(templates, names)
+        : undefined;
+      if (definitions) {
+        detail.waitUntil?.(definitions.then(() => prepareResources?.(templates)));
+      } else {
+        const ready = prepareResources?.(templates);
+        if (ready) detail.waitUntil?.(ready);
+      }
+    } catch (error) {
+      if (!detail.waitUntil) throw error;
+      detail.waitUntil(Promise.reject(error));
     }
   });
+  window.__webuiPrepareTemplates = (values: Record<string, unknown>): void => {
+    for (const tag of Object.keys(values)) {
+      const value = values[tag];
+      if (!value || typeof value !== 'object' || !('h' in value) || typeof value.h !== 'string') {
+        throw new Error(`[WebUI] Invalid compiled template <${tag}>. Rebuild matching artifacts.`);
+      }
+    }
+    const templates = values as Record<string, TemplateMeta>;
+    prepareTemplateData(templates);
+    templateCacheHooks?.accept(templates);
+  };
   window.addEventListener(
     HYDRATION_COMPLETE_EVENT,
     releaseNonRoutedSSRBootstrapState,
@@ -171,6 +190,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 
 declare global {
   interface WebUIRuntimeGlobal {
+    buildId?: string;
+    styleInventory?: string;
+    inventoryEpoch?: number;
     state?: Record<string, unknown>;
     templates?: Record<string, TemplateMeta>;
     templateFns?: Record<string, CompiledConditionFn[]>;
@@ -184,6 +206,11 @@ declare global {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
+    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
+    __webuiResolveResources?: (id: string) => readonly string[] | undefined;
+    __webuiPrepareResources?: (ids: readonly string[]) => Promise<void> | undefined;
+    __webuiCollectTemplates?: (keep?: readonly string[]) => number;
+    __webuiRetainTemplate?: (tag: string) => unknown;
   }
 }
 
@@ -199,7 +226,12 @@ export function getTemplate(name: string): TemplateMeta | undefined {
     loadWebUIDataBlock();
     meta = window.__webui?.templates?.[name];
   }
-  if (meta) normalizeTemplate(name, meta);
+  if (!meta) meta = templateCacheHooks?.lookup(name);
+  if (meta) {
+    normalizeTemplate(name, meta);
+    noteTemplateRead();
+    return templateCacheHooks?.retain(name, meta) ?? meta;
+  }
   return meta;
 }
 
@@ -295,6 +327,9 @@ function loadWebUIDataBlock(): void {
     const templateFns = window.__webui?.templateFns;
     const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    if (window.__webui?.buildId && parsed.buildId && window.__webui.buildId !== parsed.buildId) {
+      throw new Error('[WebUI] Resources use different builds. Reload the document.');
+    }
     if (templateFns) parsed.templateFns = templateFns;
     if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
     // Publish before registering styles. A malformed present `componentStyles` throws,
@@ -343,7 +378,13 @@ function normalizeTemplate(
   meta: TemplateMeta,
   suppliedFns?: CompiledConditionFn[],
 ): void {
+  if (meta.f && (meta.v !== 3 || meta.f !== name || typeof meta.o !== 'string' || meta.sd || meta.th)) {
+    throw new Error(`[WebUI] Invalid fragment "${name}". Rebuild matching artifacts.`);
+  }
   if (normalizedTemplates.has(meta)) return;
+  if (meta.v !== undefined && meta.v !== 1 && meta.v !== 3) {
+    throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
+  }
   const runtimeFns = window.__webui?.templateFns as
     | RuntimeTemplateFns
     | undefined;

@@ -80,6 +80,11 @@ export interface CacheEntry {
 /** Maximum age (ms) for a preloaded partial before it's considered stale. */
 const PRELOAD_TTL = 5_000;
 
+/** Create the optional navigation cache used by the lean router. */
+export function createNavigationCache(config: Required<CacheConfig>): NavigationCache {
+  return new NavigationCache(config);
+}
+
 export class NavigationCache {
   private cache = new Map<string, CacheEntry>();
   private tagIndex = new Map<string, Set<string>>();

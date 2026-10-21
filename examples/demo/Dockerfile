@@ -61,6 +61,7 @@ RUN cd examples/app/calculator && \
 RUN cd examples/app/todo-webui && pnpm build
 RUN cd examples/app/contact-book-manager && pnpm build
 RUN cd examples/app/component-assets && pnpm build
+RUN cd examples/app/deferred-ui && pnpm build
 RUN cd examples/app/routes && pnpm build
 RUN cd examples/app/commerce && pnpm build
 RUN cd examples/app/streaming && pnpm build
@@ -153,6 +154,13 @@ COPY --from=builder --chown=app:app /build/examples/app/component-assets/src/ ./
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/dist/ ./apps/component-assets/dist/
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/data/ ./apps/component-assets/data/
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/demo.toml ./apps/component-assets/demo.toml
+
+# deferred-ui (Node state only; WebUI owns deferred resource/state delivery)
+COPY --from=builder --chown=app:app /build/examples/app/deferred-ui/src/ ./apps/deferred-ui/src/
+COPY --from=builder --chown=app:app /build/examples/app/deferred-ui/dist/ ./apps/deferred-ui/dist/
+COPY --from=builder --chown=app:app /build/examples/app/deferred-ui/data/ ./apps/deferred-ui/data/
+COPY --from=builder --chown=app:app /build/examples/app/deferred-ui/server/api.mjs /build/examples/app/deferred-ui/server/index.mjs ./apps/deferred-ui/server/
+COPY --from=builder --chown=app:app /build/examples/app/deferred-ui/demo.toml ./apps/deferred-ui/demo.toml
 
 # routes (has Node API)
 COPY --from=builder --chown=app:app /build/examples/app/routes/src/ ./apps/routes/src/
