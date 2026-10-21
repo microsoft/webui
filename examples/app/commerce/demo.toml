@@ -8,4 +8,4 @@ backend = "rust"
 [server]
 type = "custom-binary"
 binary = "marketplace-api"
-args = ["--css", "style", "--no-tls"]
+args = ["--css", "style"]

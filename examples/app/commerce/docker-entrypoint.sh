@@ -25,4 +25,4 @@ case "${CSS_STRATEGY}" in
     *) echo "Invalid CSS strategy: ${CSS_STRATEGY} (expected link, module, or style)" >&2; exit 1 ;;
 esac
 
-exec marketplace-api --port "${PORT}" --css "${CSS_STRATEGY}" --no-tls
+exec marketplace-api --port "${PORT}" --css "${CSS_STRATEGY}"

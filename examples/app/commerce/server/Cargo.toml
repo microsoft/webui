@@ -9,10 +9,6 @@ name = "marketplace-api"
 path = "src/main.rs"
 
 [dependencies]
-actix-http = { workspace = true }
-actix-server = { workspace = true }
-actix-service = { workspace = true }
-actix-tls = { workspace = true }
 actix-web = { workspace = true, features = ["compress-gzip"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,7 +17,6 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
-native-tls = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }
 microsoft-webui-handler = { path = "../../../../crates/webui-handler" }
 bytes = { workspace = true }
@@ -31,7 +26,6 @@ tokio-stream = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
-actix-tls = { workspace = true, features = ["connect"] }
 h2 = { workspace = true }
 http = { workspace = true }
 

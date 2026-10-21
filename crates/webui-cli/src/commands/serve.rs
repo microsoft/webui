@@ -895,7 +895,7 @@ fn build_http_client() -> Result<reqwest::Client> {
         .build()
         .context(
             "Failed to initialize the HTTP client for API state and proxy requests; \
-             verify the system TLS and network resolver configuration",
+             verify the system network resolver configuration",
         )
 }
 

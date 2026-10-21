@@ -33,24 +33,18 @@ pnpm start
 
 Then open http://127.0.0.1:3004
 
-### Direct HTTPS
+### HTTP versions and TLS
 
-The commerce server does not generate certificates. To serve HTTPS directly,
-pass a certificate and PKCS#8 private key PEM with `--tls-cert` and
-`--tls-key`. TLS uses the platform-native implementation through `native-tls`
-and advertises HTTP/2 with an HTTP/1.1 fallback through ALPN.
+The server speaks cleartext HTTP/1.1 and HTTP/2 with prior knowledge (h2c).
+Provide TLS, HTTP/2 to browsers, and HTTP/3 with a TLS-terminating ingress or
+reverse proxy. For example, Caddy serves HTTPS with HTTP/1.1, HTTP/2, and
+HTTP/3 by default:
 
-| Platform | Direct HTTPS | TLS backend |
-|----------|--------------|-------------|
-| Windows  | HTTP/2 + HTTP/1.1 | SChannel (serves the leaf certificate only) |
-| Linux    | HTTP/2 + HTTP/1.1 | OpenSSL |
-| macOS    | Not supported | n/a |
-
-Apple's native TLS backend (Secure Transport) cannot select ALPN protocols on
-the server side, so it cannot negotiate HTTP/2. Rather than silently
-downgrading to HTTP/1.1, the server rejects `--tls-cert`/`--tls-key` on macOS.
-On macOS, run with `--no-tls` behind an HTTP/2 TLS-terminating proxy or
-ingress.
+```caddyfile
+commerce.example.com {
+	reverse_proxy h2c://127.0.0.1:3004
+}
+```
 
 ## Running Tests
 
@@ -135,7 +129,7 @@ Or pass flags directly:
 docker run -d -p 3004:3000 webui-commerce --css link --port 3000
 ```
 
-These ports are plain HTTP because the container starts `marketplace-api` with `--no-tls`.
+These ports serve cleartext HTTP/1.1 and h2c.
 Use a TLS-terminating proxy or ingress for external HTTPS.
 
 To tag with the project version:
