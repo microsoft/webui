@@ -3,6 +3,7 @@ name = "microsoft-webui-desktop"
 description = "Configurable native desktop SDK for WebUI applications"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

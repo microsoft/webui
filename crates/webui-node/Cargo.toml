@@ -3,6 +3,7 @@ name = "microsoft-webui-node"
 description = "Node.js native addon for WebUI framework via napi-rs"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

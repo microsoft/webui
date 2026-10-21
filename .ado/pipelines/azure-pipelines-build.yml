@@ -185,8 +185,8 @@ stages:
           set -euo pipefail
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler libgtk-4-dev libwebkitgtk-6.0-dev
-          rustup toolchain install 1.93 --profile minimal
-          rustup default 1.93
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
           export PNPM_HOME="$HOME/.local/share/pnpm"
           export PATH="$PNPM_HOME/bin:$PATH"
           curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=12.3.4 PNPM_HOME="$PNPM_HOME" sh -
@@ -248,8 +248,8 @@ stages:
           set -euo pipefail
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
-          rustup toolchain install 1.93 --profile minimal
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask build-wasm
+          rustup toolchain install 1.99.1 --profile minimal
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask build-wasm
       env:
         CARGO_CACHE_HOME: $(CARGO_CACHE_HOME)
     - task: PublishPipelineArtifact@1
@@ -320,10 +320,10 @@ stages:
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
             export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
           fi
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET_TRIPLE"
 
           # Desktop's GTK/WebKit dependencies require a newer Ubuntu runner.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --portable-only \
@@ -390,8 +390,8 @@ stages:
         script: |
           set -euo pipefail
           source scripts/setup-linux-desktop-target.sh "$TARGET_TRIPLE"
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 build --locked --release \
+          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET_TRIPLE"
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 build --locked --release \
             --target "$TARGET_TRIPLE" -p microsoft-webui-desktop \
             --features microsoft-webui-desktop/cli
       env:
@@ -457,10 +457,10 @@ stages:
           if ! command -v protoc >/dev/null 2>&1; then
             brew install protobuf
           fi
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET_TRIPLE"
           python3.11 -m pip install --upgrade "maturin==1.14.1"
 
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -550,11 +550,11 @@ stages:
               $env:PATH = "$dest\bin;$env:PATH"
           }
 
-          rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
+          rustup toolchain install 1.99.1 --profile minimal --target $env:TARGET_TRIPLE
           python -m pip install --upgrade "maturin==1.14.1"
 
           $env:CARGO_HOME = $env:CARGO_CACHE_HOME
-          cargo +1.93 xtask publish-build `
+          cargo +1.99.1 xtask publish-build `
               --target $env:TARGET_TRIPLE `
               --profile release `
               --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
@@ -694,7 +694,7 @@ stages:
           : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
-          rustup toolchain install 1.93 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
           export PNPM_HOME="$HOME/.local/share/pnpm"
           export PATH="$PNPM_HOME/bin:$PATH"
           curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=12.3.4 PNPM_HOME="$PNPM_HOME" sh -
@@ -705,7 +705,7 @@ stages:
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
           trap 'rm -rf target/package' EXIT
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask publish-stage \
             --pack-only \
             --prebuilt-wasm \
             --profile release
