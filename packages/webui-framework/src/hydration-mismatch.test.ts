@@ -183,6 +183,23 @@ describe('attrDiffersFromDom', () => {
 describe('condDiffersFromDom', () => {
   const instance = {} as unknown as TemplateInstance;
 
+  test('compiled conditions receive the shared collection coercion helper', () => {
+    const condition: CompiledCondition = [
+      (resolve, scope, truthy) => truthy(resolve('items', scope)),
+      ['items'],
+    ];
+    const binding: CondBinding = {
+      condition, blockIndex: 0, anchor: null, owner: instance, instance: null,
+    };
+    assert.equal(condDiffersFromDom(binding, makeCtx({ items: [] })), false);
+    assert.equal(condDiffersFromDom(binding, makeCtx({ items: [0] })), true);
+    const attr: AttrBinding = {
+      element: fakeEl(), name: 'disabled', kind: ATTR_KIND_BOOLEAN, condition,
+    };
+    assert.equal(attrDiffersFromDom(attr, makeCtx({ items: [] })), false);
+    assert.equal(attrDiffersFromDom(attr, makeCtx({ items: [0] })), true);
+  });
+
   test('rendered block with a true condition does not differ', () => {
     const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx()), false);

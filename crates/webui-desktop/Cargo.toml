@@ -3,6 +3,7 @@ name = "microsoft-webui-desktop"
 description = "Configurable native desktop SDK for WebUI applications"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -108,11 +109,11 @@ cli = ["native", "source", "dep:clap", "dep:console", "dep:expand-tilde", "dep:m
 
 [dependencies]
 base64 = { workspace = true, optional = true }
-microsoft-webui = { path = "../webui", version = "3.0.2", features = ["cli"], optional = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.2" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.2" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.2" }
-microsoft-webui-desktop-build = { path = "../webui-desktop-build", version = "3.0.2", optional = true }
+microsoft-webui = { path = "../webui", version = "3.0.4", features = ["cli"], optional = true }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.4" }
+microsoft-webui-desktop-build = { path = "../webui-desktop-build", version = "3.0.4", optional = true }
 mime_guess = { workspace = true }
 percent-encoding = { workspace = true }
 serde = { workspace = true }

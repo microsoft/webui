@@ -99,7 +99,7 @@ pub(super) fn install(
     hwnd: HWND,
 ) -> std::result::Result<Registration, CaptureError> {
     let id = NEXT_DISPATCH
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| CaptureError::Scheduler)?;
     let dispatch = Arc::new(Dispatch {
         hwnd: hwnd.0 as usize,

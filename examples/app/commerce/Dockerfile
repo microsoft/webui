@@ -5,14 +5,14 @@
 ARG CARGO_CHEF_VERSION=0.1.75
 
 # ── Stage 1: Dependency planner ─────────────────────────────────────
-FROM rust:1.93-bookworm AS chef
+FROM rust:1.99.1-bookworm AS chef
 ARG CARGO_CHEF_VERSION
 RUN cargo install cargo-chef@${CARGO_CHEF_VERSION} --locked
 WORKDIR /build
 
 FROM chef AS planner
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN cargo chef prepare --bin marketplace-api --recipe-path recipe.json
 
 # ── Stage 2: Builder ────────────────────────────────────────────────
 FROM chef AS builder
@@ -35,7 +35,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --bin marketplace-api --recipe-path recipe.json
 
 COPY . .
 RUN pnpm install --frozen-lockfile --filter=commerce... && \

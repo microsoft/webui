@@ -81,7 +81,8 @@ for building and packaging apps.
 
 ## Rust
 
-Rust users can install the CLI directly from crates.io:
+Building from source requires Rust 1.99.1 or newer. Rust users can install the CLI
+directly from crates.io:
 
 ```bash
 cargo install microsoft-webui-cli

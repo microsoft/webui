@@ -214,7 +214,7 @@ impl DialogState {
         };
         if self
             .timers
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 (value < MAX_TIMERS).then_some(value + 1)
             })
             .is_err()

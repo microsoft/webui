@@ -1,0 +1,9 @@
+{
+  "record": { "first": "Ada", "last": "Lovelace", "active": true, "allowed": true },
+  "suffix": "initial",
+  "marker": "Visible",
+  "external": { "first": "External", "last": "initial" },
+  "extra": "outside",
+  "items": [{ "label": "one" }, { "label": "two" }],
+  "locals": [{ "first": "Local", "last": "record" }]
+}

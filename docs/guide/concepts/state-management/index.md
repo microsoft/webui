@@ -40,7 +40,13 @@ The handler resolves paths using `find_value_by_dotted_path`. Supported patterns
 | Array length | `items.length` | `2` |
 
 Paths are resolved at render time. If a path doesn't exist in the state, text
-and attribute bindings render as empty. In conditions, a missing identifier is
+bindings render as empty. An attribute whose entire value is a binding is
+omitted when the value is missing or `null`. An explicit empty string still
+renders an empty attribute, such as `pattern=""`; zero and `false` are also
+preserved as attribute values. Mixed static and dynamic attribute values retain
+their static text.
+
+In conditions, a missing identifier is
 a falsy operand: `<if condition="path">` does not render, while
 `<if condition="!path">` does render. No error is reported for a missing
 identifier path.

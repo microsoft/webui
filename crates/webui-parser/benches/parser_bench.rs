@@ -625,6 +625,34 @@ fn client_template_directives_bench(c: &mut Criterion) {
     });
 }
 
+fn client_template_whitespace_bench(c: &mut Criterion) {
+    let lf = format!(
+        "<section>{}</section>",
+        "\n  <button>\n    {{label}}\n  </button>".repeat(100)
+    );
+    let mut group = c.benchmark_group("client_template_whitespace");
+    for (name, input) in [
+        ("lf_100", lf.clone()),
+        ("crlf_100", lf.replace('\n', "\r\n")),
+        (
+            "entities_100",
+            lf.replace("{{label}}", "&lt; {{label}} &amp;"),
+        ),
+    ] {
+        group.throughput(Throughput::Bytes(input.len() as u64));
+        group.bench_with_input(name, &input, |b, html| {
+            b.iter(|| {
+                webui_parser::plugin::webui::generate_compiled_template(
+                    "bench-whitespace",
+                    black_box(html),
+                )
+                .unwrap_or_else(|error| panic!("client text compilation failed: {error}"))
+            });
+        });
+    }
+    group.finish();
+}
+
 fn parser_isolated_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("parser_isolated");
     for (name, input) in [
@@ -682,6 +710,7 @@ criterion_group!(
     parser_text_vs_directive_bench,
     parser_adversarial_bench,
     client_template_directives_bench,
+    client_template_whitespace_bench,
     parser_isolated_bench,
     css_token_analysis_bench
 );

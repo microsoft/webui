@@ -123,8 +123,10 @@ client, interactive components hydrate as islands.
 
 1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
-   Missing text and attribute paths render empty. A missing condition identifier
-   is falsy, so `path` is false and `!path` is true. No error is raised.
+   Missing text paths render empty. Whole-binding attributes are omitted for
+   missing or `null` values; `""`, `0`, and `false` remain attribute values.
+   Mixed attributes retain their static text. A missing condition identifier is
+   falsy, so `path` is false and `!path` is true. No error is raised.
 2. **Derived state belongs in the template or the server.** Use expressions like
    `items.length` or `status == 'active'`. Compute complex values server-side.
 3. **The server is the source of truth for the initial render.** The client
@@ -1186,17 +1188,17 @@ values are not escaped and can create an XSS vulnerability. See
 | Non-zero number | Yes |
 | `""` (empty string) | No |
 | `"false"` (string!) | **Yes** (non-empty string) |
-| `[]` (empty array) | No (server) / **Yes** (client) - always use `.length` |
-| `{}` (empty object) | No (server) / **Yes** (client) - test a real field |
+| `[]` (empty array) | No |
+| `{}` (empty object) | No |
+| Nonempty array or object | Yes |
 | `null` / missing key | No |
 
 **Never use the string `"false"` for boolean state. Use real booleans.**
 
-**Never test a bare array or object for truthiness.** The server evaluator treats
-empty collections as falsy; the compiled client condition is plain JS `!!value`,
-where `[]` and `{}` are truthy. Writing `<if condition="items">` means SSR and
-hydration can disagree. Write `<if condition="items.length">` instead - that
-agrees on both sides.
+These rules apply on both server and client. `<if condition="items">` and
+`<if condition="items.length">` both test whether an array is nonempty.
+Nested paths such as `<if condition="actions.trailing">` also work.
+Use `.length` for count comparisons such as `<if condition="items.length > 1">`.
 
 ## Anti-patterns
 
@@ -1355,6 +1357,9 @@ Before emitting WebUI code, confirm:
       unwrapped even when the build fallback is Shadow.
 
 ## Build and run
+
+Building WebUI or a Rust host from source requires Rust 1.99.1 or newer.
+Prebuilt npm binaries do not require Rust.
 
 For a desktop app, start with zero Rust:
 

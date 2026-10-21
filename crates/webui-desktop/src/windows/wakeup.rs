@@ -53,7 +53,7 @@ impl IpcWindowWake {
     // backends can run its regression without constructing a window.
     fn for_handle(handle: usize) -> Result<Self, IpcError> {
         let cookie = NEXT_COOKIE
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| wake_error(IpcErrorCode::Closed))?;
         Ok(Self {
             target: Mutex::new(WakeTarget {

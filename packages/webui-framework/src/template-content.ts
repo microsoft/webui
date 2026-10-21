@@ -36,7 +36,7 @@ export function cloneTemplateContent(
   return ownerDocument.importNode(getTemplateFragment(meta), true);
 }
 
-/** Return cached, context-preserving template DOM for SSR path mapping. */
+/** Materialize cached compiler HTML for client creation or stylesheet discovery. */
 export function getTemplateFragment(meta: TemplateBlockMeta): DocumentFragment {
   return getTemplateContent(meta).fragment;
 }

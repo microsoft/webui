@@ -3,6 +3,7 @@ name = "microsoft-webui-desktop-build"
 description = "Build-time typed IPC bindings for the WebUI desktop SDK"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

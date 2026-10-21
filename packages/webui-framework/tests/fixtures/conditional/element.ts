@@ -74,3 +74,43 @@ export class TestConditionalBlockEscape extends WebUIElement {
 }
 
 TestConditionalBlockEscape.define('test-conditional-block-escape');
+
+export class TestTruthinessHost extends WebUIElement {
+  @observable emptyItems: string[] = [];
+  @observable emptyActions: { trailing: string[] } = { trailing: [] };
+  @observable emptyRecord: { label?: string } = {};
+  @observable populatedItems = ['Item'];
+  @observable populatedActions = { trailing: ['Action'] };
+  @observable populatedRecord = { label: 'Record' };
+}
+
+TestTruthinessHost.define('test-truthiness-host');
+
+export class TestConditionTruthiness extends WebUIElement {
+  @observable items: string[] = [];
+  @observable actions: { trailing: string[] } = { trailing: [] };
+  @observable record: { label?: string } = {};
+  @observable phase = 'initial';
+  @observable falseValue = false;
+  @observable zero = 0;
+  @observable emptyText = '';
+  @observable nullValue: null = null;
+  @observable missing: boolean | undefined = undefined;
+  @observable trueValue = true;
+
+  populate(): void {
+    this.items = ['Item'];
+    this.actions = { trailing: ['Action'] };
+    this.record = { label: 'Record' };
+    this.phase = 'populated';
+  }
+
+  clear(): void {
+    this.items = [];
+    this.actions = { trailing: [] };
+    this.record = {};
+    this.phase = 'empty';
+  }
+}
+
+TestConditionTruthiness.define('test-condition-truthiness');

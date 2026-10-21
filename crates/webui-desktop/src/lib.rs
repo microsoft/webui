@@ -19,7 +19,7 @@ extern crate self as webui_desktop;
 mod ipc_test_support;
 
 #[cfg(all(test, feature = "application-ipc"))]
-#[path = "../tests/ipc_contract.rs"]
+#[path = "../tests/support/ipc_contract.rs"]
 mod ipc_contract_tests;
 
 mod app;

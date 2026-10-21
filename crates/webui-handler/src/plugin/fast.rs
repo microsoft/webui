@@ -156,4 +156,69 @@ mod tests {
             assert_eq!(render_route_state(plugin, &state), "");
         }
     }
+
+    #[test]
+    fn nullish_attributes_preserve_fast_binding_markers() -> Result<()> {
+        use crate::{RenderOptions, WebUIHandler};
+        use std::collections::HashMap;
+        use webui_protocol::{FastElementData, FragmentList, WebUIFragment, WebUIProtocol};
+
+        let data = FastElementData { binding_count: 3 };
+        let cases = [
+            (
+                WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new())),
+                data.encode_v2(false).to_vec(),
+                "<test-input><input data-label=\"After\" data-fe-c-0-3><span>\
+                 <!--fe-b$$start$$3$$label$$fe-b-->After<!--fe-b$$end$$3$$label$$fe-b-->\
+                 </span></test-input>",
+            ),
+            (
+                WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new())),
+                data.encode_v3().to_vec(),
+                "<test-input><input data-label=\"After\" data-fe=\"3\"><span>\
+                 <!--fe:b-->After<!--fe:/b--></span></test-input>",
+            ),
+        ];
+        for (handler, data, expected) in cases {
+            let protocol = WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".into(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<test-input>"),
+                            WebUIFragment::component("test-input"),
+                            WebUIFragment::raw("</test-input>"),
+                        ],
+                        contains_boundary: false,
+                    },
+                ),
+                (
+                    "test-input".into(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<input"),
+                            WebUIFragment::attribute("pattern", "missing"),
+                            WebUIFragment::attribute("title", "nullValue"),
+                            WebUIFragment::attribute("data-label", "label"),
+                            WebUIFragment::plugin(data),
+                            WebUIFragment::raw("><span>"),
+                            WebUIFragment::signal("label", false),
+                            WebUIFragment::raw("</span>"),
+                        ],
+                        contains_boundary: false,
+                    },
+                ),
+            ]));
+            let state = serde_json::json!({"nullValue": null, "label": "After"});
+            let mut writer = TestWriter::new();
+            handler.handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )?;
+            assert_eq!(writer.output, expected);
+        }
+        Ok(())
+    }
 }

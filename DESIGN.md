@@ -203,9 +203,9 @@ introduce lexical item scopes, and component bodies receive the closest loop
 item plus global state. Dotted paths and `.length` are supported; missing
 simple identifiers are falsy and ordinary missing text bindings render empty.
 Conditions are parsed at build time and evaluated without a JavaScript runtime.
-Server and browser conditions share an intended model, but empty arrays and
-objects are currently falsy on the server and truthy in compiled JavaScript;
-templates must test a length or field instead of the collection itself.
+Server and browser conditions share the same truthiness model: empty arrays
+and objects are falsy, and nonempty collections are truthy. Explicit length
+and field checks remain supported.
 Text and attributes are escaped by default. Raw bindings and per-render
 injections are **trusted HTML**; their host owns input validation/escaping.
 
@@ -292,7 +292,12 @@ from an untrusted manifest opt back into the full check set.
 
 The WebUI parser also compiles component templates into static, marker-free
 client HTML plus compact binding, block, event, and state-path metadata.
-Server HTML and client metadata come from the same source. SSR adds
+Server HTML and client metadata come from the same source. The compiler also
+records static topology and text boundaries so hydration can adopt the live
+DOM without materializing a second template tree. Client-template HTML remains
+available and is parsed lazily when new content must be created. SSR adoption
+requires matching compiler metadata; it never reconstructs missing topology
+from template HTML. SSR adds
 compiler-owned markers where needed to align bindings and delimit dynamic
 ranges. Hydration wires those bindings to the existing DOM; it does not
 reinterpret authoring syntax,

@@ -1,0 +1,26 @@
+<template shadowrootmode="open">
+  <button class="native">
+      {{headerTitle}}
+    </button>
+  <whitespace-slot>
+              {{details}}
+            </whitespace-slot>
+  <p class="data">{{padded}}</p>
+  <p class="inline"><span>left</span> <span>{{details}}</span> <span>right</span></p>
+  <pre>  {{details}}
+    tail  </pre>
+  <textarea>  {{details}}
+    tail  </textarea>
+  <pre class="leading-newline">
+    {{details}}
+  </pre>
+  <textarea class="leading-newline">
+    {{details}}
+  </textarea>
+  <div class="conditional"><if condition="details">
+    {{details}}
+  </if></div>
+  <div class="repeat"><for each="item in items">
+    {{item}}
+  </for></div>
+</template>

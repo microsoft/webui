@@ -2,6 +2,7 @@
 name = "microsoft-webui-press"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -19,10 +20,10 @@ name = "webui-press"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "3.0.2", features = ["cli"] }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.2" }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.2" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.2" }
+microsoft-webui = { path = "../webui", version = "3.0.4", features = ["cli"] }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.4" }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.4" }
 
 # Markdown + syntax highlighting
 comrak = { workspace = true }
@@ -46,7 +47,7 @@ thiserror = { workspace = true }
 html-escape = { workspace = true }
 
 # Dev server (`webui-press serve`)
-microsoft-webui-dev-server = { path = "../webui-dev-server", version = "3.0.2" }
+microsoft-webui-dev-server = { path = "../webui-dev-server", version = "3.0.4" }
 actix-web = { workspace = true }
 tokio = { workspace = true }
 include_dir = { workspace = true }

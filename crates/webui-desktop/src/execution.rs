@@ -89,7 +89,7 @@ impl ApplicationExecutor {
             return Err(WorkError::Closed);
         }
         self.count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < MAX_WORK).then_some(n + 1)
             })
             .map_err(|_| WorkError::Overloaded)?;
