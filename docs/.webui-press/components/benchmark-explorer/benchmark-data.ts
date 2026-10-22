@@ -12,6 +12,12 @@ export const METRIC_IDS = [
 
 export type MetricId = (typeof METRIC_IDS)[number];
 
+const CASE_IDS = [
+  "astro", "lit", "next", "nuxt", "preact", "react", "react-tanstack",
+  "solid", "sveltekit", "vue", "webui-bun-serve", "webui-fast-rust-actix",
+  "webui-node-http", "webui-rust-actix", "webui-shadowdom-rust-actix",
+];
+
 export interface MetricDefinition {
   id: MetricId;
   label: string;
@@ -33,8 +39,6 @@ export interface Measurement {
 export interface BenchmarkCase {
   caseId: string;
   label: string;
-  refreshed: boolean;
-  refreshLabel: string;
   values: Record<MetricId, Measurement>;
 }
 
@@ -71,7 +75,19 @@ export interface BenchmarkEvidence extends BenchmarkSnapshot {
     sourceAccess: string;
     serverMeasuredRounds: number;
     browserIsolatedRuns: number;
-    selectiveRefresh: { refreshedAt: string; caseIds: string[] };
+    campaign: {
+      canonicalWebuiVersion: string;
+      responseModes: ["complete", "progressive"];
+      uniformOfficialMatrix: true;
+      sourceCommit: string;
+      sourceDigest: string;
+      fixtureDigest: string;
+      matrixId: string;
+      status: "official-uniform";
+      progressiveMeasuredAt: string;
+      completeMeasuredAt: string;
+      browserMeasuredAt: string;
+    };
     missing: string[];
     limitations: string[];
   };
@@ -192,7 +208,7 @@ export class BenchmarkInputError extends Error {
   readonly field: string;
 
   constructor(code: string, field: string, message: string) {
-    super(`[${code}] ${field}: ${message}\nhelp: Restore the reviewed historical benchmark input, or explicitly review the evidence contract before publishing changed data.`);
+    super(`[${code}] ${field}: ${message}\nhelp: Restore the reviewed official campaign input, or explicitly review the evidence contract before publishing changed data.`);
     this.name = "BenchmarkInputError";
     this.code = code;
     this.field = field;
@@ -246,7 +262,7 @@ function readMetrics(value: unknown): MetricDefinition[] {
       ? "1 × 20 s measured round"
       : "10 randomized cold-cache navigations";
     if (!methodology.includes(sampling)) {
-      invalid("benchmark-sampling", id, `The historical contract requires "${sampling}".`);
+      invalid("benchmark-sampling", id, `The official campaign contract requires "${sampling}".`);
     }
     return { id, ...definition, methodology };
   });
@@ -266,43 +282,70 @@ function readMeasurement(value: unknown, metric: MetricDefinition, field: string
     invalid("benchmark-unavailable", field, "Unavailable measurements must have an explicit null value, never zero.");
   }
   const detail = text(source.detail, `${field}.detail`);
-  if (source.available && metric.samples === 10 && !detail.startsWith("10 isolated runs · ")) {
-    invalid("benchmark-sampling", field, "Browser measurement notes must identify the 10 isolated runs.");
+  if (source.available && metric.samples === 10) {
+    const sampleCount = /^([1-9]|10) isolated runs · /u.exec(detail);
+    const available = sampleCount ? Number(sampleCount[1]) : 0;
+    const unavailable = / · ([1-9]) unavailable$/u.exec(detail);
+    const missing = unavailable ? Number(unavailable[1]) : 0;
+    if (!available || available + missing !== metric.samples) {
+      invalid("benchmark-sampling", field, "Browser notes must account for all 10 runs, including unavailable samples.");
+    }
   }
   const measuredValue = measured as number | null;
   return { value: measuredValue, display: formatMeasurement(measuredValue, metric), detail };
 }
 
-function readRefresh(value: unknown): BenchmarkEvidence["provenance"]["selectiveRefresh"] {
-  const source = object(value, "benchmarks.selectiveRefresh");
-  const refreshedAt = text(source.refreshedAt, "benchmarks.selectiveRefresh.refreshedAt");
-  if (refreshedAt !== "2026-09-04T03:28:11.463Z") {
-    invalid("benchmark-refresh", "refreshedAt", "This page documents the selective 2026-09-04 refresh, not a new campaign.");
-  }
-  const expected = ["webui-bun-serve", "webui-deno-serve", "webui-node-http"];
-  const caseIds = array(source.caseIds, "benchmarks.selectiveRefresh.caseIds", 3)
-    .map(item => text(item, "benchmarks.selectiveRefresh.caseIds[]"))
-    .sort(compareText);
-  if (caseIds.some((id, index) => id !== expected[index])) {
-    invalid("benchmark-refresh", "caseIds", "The selective refresh must identify the Bun, Deno, and Node WebUI hosts.");
-  }
-  return { refreshedAt, caseIds };
-}
-
 export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
   const source = object(object(input, "root").benchmarks, "benchmarks");
   const capability = object(source.asyncDataBoundary, "benchmarks.asyncDataBoundary");
-  if (capability.canonicalWebuiVersion !== "0.0.28"
+  const campaign = object(source.campaign, "benchmarks.campaign");
+  const canonicalWebuiVersion = text(
+    campaign.canonicalWebuiVersion,
+    "benchmarks.campaign.canonicalWebuiVersion",
+  );
+  if (!/^\d+\.\d+\.\d+$/u.test(canonicalWebuiVersion)
+    || capability.canonicalWebuiVersion !== canonicalWebuiVersion
     || capability.status !== "available-pending-benchmark-implementation") {
-    invalid("benchmark-capability", "benchmarks.asyncDataBoundary", "Expected the historical capability metadata, not a measured-version record.");
+    invalid("benchmark-capability", "benchmarks.asyncDataBoundary", "Expected campaign capability metadata for a canonical WebUI release.");
+  }
+  const responseModes = array(campaign.responseModes, "benchmarks.campaign.responseModes", 2);
+  if (responseModes[0] !== "complete" || responseModes[1] !== "progressive") {
+    invalid("benchmark-campaign", "benchmarks.campaign.responseModes", "Expected the complete and progressive official suites in order.");
+  }
+  if (campaign.status !== "official-uniform"
+    || campaign.uniformOfficialMatrix !== true
+    || campaign.rowCount !== 15
+    || campaign.matrixId !== "official-ssr-matrix"
+    || campaign.workingTreeDirty !== false
+    || campaign.serverMeasuredRounds !== 1
+    || campaign.browserRoundsPerApp !== 10
+    || source.responseMode !== "comparison"
+    || !Array.isArray(source.responseModes)
+    || source.responseModes.join(",") !== responseModes.join(",")) {
+    invalid("benchmark-campaign", "benchmarks.campaign", "Expected a uniform 15-row official campaign.");
+  }
+  const sourceCommit = text(campaign.sourceCommit, "benchmarks.campaign.sourceCommit");
+  const sourceDigest = text(campaign.sourceDigest, "benchmarks.campaign.sourceDigest");
+  const fixtureDigest = text(campaign.fixtureDigest, "benchmarks.campaign.fixtureDigest");
+  if (!/^[0-9a-f]{40}$/u.test(sourceCommit)
+    || !/^[0-9a-f]{64}$/u.test(sourceDigest)
+    || sourceDigest !== fixtureDigest) {
+    invalid("benchmark-campaign", "benchmarks.campaign", "Expected a source commit and matching SHA-256 source/fixture digests.");
+  }
+  const progressiveMeasuredAt = text(campaign.progressiveMeasuredAt, "benchmarks.campaign.progressiveMeasuredAt");
+  const completeMeasuredAt = text(campaign.completeMeasuredAt, "benchmarks.campaign.completeMeasuredAt");
+  const browserMeasuredAt = text(campaign.browserMeasuredAt, "benchmarks.campaign.browserMeasuredAt");
+  if (![progressiveMeasuredAt, completeMeasuredAt, browserMeasuredAt]
+    .every(value => Number.isFinite(Date.parse(value)))) {
+    invalid("benchmark-campaign", "benchmarks.campaign", "Expected report timestamps for both SSR suites and the browser suite.");
   }
   const metrics = readMetrics(source.metrics);
-  const refresh = readRefresh(source.selectiveRefresh);
   const ids = new Set<string>();
-  const rows = array(source.rows, "benchmarks.rows", 14).map((item, index) => {
+  const rows = array(source.rows, "benchmarks.rows", 15).map((item, index) => {
     const field = `benchmarks.rows[${index}]`;
     const row = object(item, field);
     const caseId = text(row.caseId, `${field}.caseId`);
+    if (!CASE_IDS.includes(caseId)) invalid("benchmark-case", field, "Unknown official case identifier.");
     if (ids.has(caseId)) invalid("benchmark-case", field, "Case identifiers must be unique.");
     ids.add(caseId);
     const label = text(row.label, `${field}.label`);
@@ -311,38 +354,41 @@ export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
     for (const metric of metrics) {
       values[metric.id] = readMeasurement(sourceValues[metric.id], metric, `${field}.metrics.${metric.id}`);
     }
-    const refreshed = refresh.caseIds.includes(caseId);
     return {
-      caseId, label, refreshed,
-      refreshLabel: refreshed ? "Refreshed 2026-09-04" : "Earlier result; date not recorded",
+      caseId,
+      label,
       values,
     };
   });
-  if (refresh.caseIds.some(id => !ids.has(id))) {
-    invalid("benchmark-refresh", "caseIds", "A selectively refreshed case is missing from the results.");
-  }
   rows.sort((left, right) => compareText(left.caseId, right.caseId));
   return {
     schemaVersion: 1,
-    status: "Historical, limited, mixed-refresh results",
+    status: "Official uniform campaign",
     provenance: {
       publicSource: "https://github.com/microsoft/webui-benchmarks",
-      sourceAccess: "The advertised source returned HTTP 404 without authentication during the website audit. Its availability and full contents could not be verified.",
+      sourceAccess: "Exported from the official reports in webui-benchmarks. This download is a sanitized extract, not a raw-run archive.",
       serverMeasuredRounds: 1,
       browserIsolatedRuns: 10,
-      selectiveRefresh: refresh,
+      campaign: {
+        canonicalWebuiVersion,
+        responseModes: ["complete", "progressive"],
+        uniformOfficialMatrix: true,
+        sourceCommit,
+        sourceDigest,
+        fixtureDigest,
+        matrixId: "official-ssr-matrix",
+        status: "official-uniform",
+        progressiveMeasuredAt,
+        completeMeasuredAt,
+        browserMeasuredAt,
+      },
       missing: [
-        "An anonymously inspectable source revision and raw run artifacts",
-        "A complete per-case framework and runtime version trail",
-        "Original measurement dates for the other 11 cases",
-        "A complete hardware and operating-system record",
-        "An unambiguous browser response-mode record",
+        "A public cross-framework raw-run archive is not embedded in this sanitized docs extract.",
       ],
       limitations: [
         "One measured server round does not estimate run-to-run variability. Zero MAD is not evidence of confidence or a statistically established winner.",
         "Browser metrics describe 10 isolated runs. Reported MAD and p95 are descriptive, not confidence bounds; the raw samples are not available here.",
-        "Only the three listed WebUI host cases were refreshed on 2026-09-04. Other cases retain earlier official results, not a uniform rerun.",
-        "WebUI 0.0.28 appears in capability metadata only. It does not establish the version used for every measurement.",
+        "Some renderer-private measurements are unavailable. Each row's notes disclose the available and unavailable sample counts; these medians do not all use 10 samples.",
         "Lower memory use is not an overall performance score. JavaScript heap, renderer private bytes, LCP, and server throughput measure different things.",
         "Server throughput uses 64 connections. Saturation warnings in individual notes identify still-rising 128-connection probes; these are not demonstrated maximum throughputs.",
         "The progressive category retains each case's existing behavior, including buffered routes. The dedicated WebUI resumable async data-boundary workload was not measured.",

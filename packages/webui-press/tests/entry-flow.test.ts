@@ -45,20 +45,20 @@ test('the entry page serves the install command and qualified fixed-case preview
   assert.deepEqual(await preview.locator('tbody th').allTextContents(), [
     'WebUI', 'React', 'Next.js',
   ]);
-  assert.deepEqual(await preview.locator('.value').allTextContents(), ['1,593.4 req/s', '319.35 req/s', '138.4 req/s']);
+  assert.deepEqual(await preview.locator('.value').allTextContents(), ['1,741.15 req/s', '490.55 req/s', '151.2 req/s']);
   await expect(preview.locator('tbody tr[data-webui]')).toHaveAttribute('data-case', 'webui-rust-actix');
-  await expect(preview.locator('.qualification')).toContainText('Historical, limited snapshot');
+  await expect(preview.locator('.qualification')).toContainText('Official uniform snapshot');
   await expect(preview.locator('.qualification')).toContainText('1 measured round (20 s)');
   await expect(preview.locator('.qualification')).toContainText('variability is not established');
-  await expect(preview.locator('.qualification')).toContainText('provenance are incomplete');
-  await expect(preview.locator('.scale')).toContainText('1,593.4');
+  await expect(preview.locator('.qualification')).toContainText('sample-availability limits');
+  await expect(preview.locator('.scale')).toContainText('1,741.15');
   const widths = await preview.locator('.bar').evaluateAll(elements =>
     elements.map(element => Number(element.getAttribute('width'))));
-  for (const [index, expected] of [100, 20.042048449855653, 8.685829044809841].entries()) {
+  for (const [index, expected] of [100, 28.173908049277774, 8.683915802774028].entries()) {
     assert.ok(Math.abs(widths[index] - expected) < 1e-10, 'SSR must preserve the full-view bar ratios.');
   }
   await expect(preview.getByRole('link')).toHaveAttribute('href', '/webui/benchmarks/');
-  await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
+  await expect(preview.getByRole('link')).toContainText('3 of 15 configurations');
   const bootstrap = JSON.parse(await page.locator('#webui-data').textContent() ?? 'null') as {
     state: Record<string, unknown> & { previewMetrics: BenchmarkPreview[] };
   };

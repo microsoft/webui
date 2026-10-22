@@ -12,7 +12,7 @@ const compiledPreview = new URL("../generated/benchmark-preview-data.mjs", impor
 const source = new URL("../state/benchmark-summary.json", import.meta.url);
 const state = new URL("../generated/benchmark-state.json", import.meta.url);
 const homeState = new URL("../generated/home-benchmark-state.json", import.meta.url);
-const download = new URL("../public/benchmarks/historical-results.json", import.meta.url);
+const download = new URL("../public/benchmarks/official-results.json", import.meta.url);
 
 try {
   try {
@@ -37,7 +37,7 @@ try {
   try {
     input = JSON.parse(await readFile(source, "utf8"));
   } catch (error) {
-    throw new Error(`[benchmark-read] Cannot read valid JSON from ${fileURLToPath(source)}.\nhelp: Restore the historical source file before building the docs.`, { cause: error });
+    throw new Error(`[benchmark-read] Cannot read valid JSON from ${fileURLToPath(source)}.\nhelp: Restore the synchronized official campaign source file before building the docs.`, { cause: error });
   }
   const evidence = prepareBenchmarkEvidence(input);
   const fullView = buildBenchmarkView(evidence);
@@ -56,7 +56,7 @@ try {
       throw new Error(`[benchmark-write] Cannot write ${fileURLToPath(file)}.\nhelp: Make the generated docs directories writable, then rerun the build.`, { cause: error });
     }
   }
-  console.log(`Prepared historical benchmark state and sanitized JSON (${evidence.rows.length} cases, ${evidence.metrics.length} metrics).`);
+  console.log(`Prepared official benchmark state and sanitized JSON (${evidence.rows.length} cases, ${evidence.metrics.length} metrics).`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : "[benchmark-prepare] Unknown evidence preparation failure.");
   process.exitCode = 1;
