@@ -82,6 +82,7 @@ export interface BenchmarkEvidence extends BenchmarkSnapshot {
       sourceCommit: string;
       sourceDigest: string;
       fixtureDigest: string;
+      evidenceDigest: string;
       matrixId: string;
       status: "official-uniform";
       progressiveMeasuredAt: string;
@@ -90,6 +91,53 @@ export interface BenchmarkEvidence extends BenchmarkSnapshot {
     };
     missing: string[];
     limitations: string[];
+  };
+}
+
+// Prepared evidence has canonical case/metric order. Exclude the evidence digest itself.
+export function prepareBenchmarkCampaignDigestPayload(evidence: BenchmarkEvidence) {
+  const campaign = evidence.provenance.campaign;
+  return {
+    campaign: {
+      canonicalWebuiVersion: campaign.canonicalWebuiVersion,
+      responseModes: campaign.responseModes,
+      uniformOfficialMatrix: campaign.uniformOfficialMatrix,
+      matrixId: campaign.matrixId,
+      status: campaign.status,
+      sourceCommit: campaign.sourceCommit,
+      sourceDigest: campaign.sourceDigest,
+      fixtureDigest: campaign.fixtureDigest,
+      serverMeasuredRounds: evidence.provenance.serverMeasuredRounds,
+      browserIsolatedRuns: evidence.provenance.browserIsolatedRuns,
+      rowCount: evidence.rows.length,
+      workingTreeDirty: false,
+      progressiveMeasuredAt: campaign.progressiveMeasuredAt,
+      completeMeasuredAt: campaign.completeMeasuredAt,
+      browserMeasuredAt: campaign.browserMeasuredAt,
+    },
+    metrics: evidence.metrics.map(metric => ({
+      id: metric.id,
+      label: metric.label,
+      unit: metric.unit,
+      rawUnit: metric.rawUnit,
+      direction: metric.direction,
+      directionLabel: metric.directionLabel,
+      description: metric.description,
+      methodology: metric.methodology,
+      samples: metric.samples,
+    })),
+    rows: evidence.rows.map(row => ({
+      caseId: row.caseId,
+      label: row.label,
+      metrics: Object.fromEntries(METRIC_IDS.map(id => {
+        const measurement = row.values[id];
+        return [id, {
+          available: measurement.value !== null,
+          value: measurement.value,
+          detail: measurement.detail,
+        }];
+      })),
+    })),
   };
 }
 
@@ -327,10 +375,12 @@ export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
   const sourceCommit = text(campaign.sourceCommit, "benchmarks.campaign.sourceCommit");
   const sourceDigest = text(campaign.sourceDigest, "benchmarks.campaign.sourceDigest");
   const fixtureDigest = text(campaign.fixtureDigest, "benchmarks.campaign.fixtureDigest");
+  const evidenceDigest = text(campaign.evidenceDigest, "benchmarks.campaign.evidenceDigest");
   if (!/^[0-9a-f]{40}$/u.test(sourceCommit)
     || !/^[0-9a-f]{64}$/u.test(sourceDigest)
+    || !/^[0-9a-f]{64}$/u.test(evidenceDigest)
     || sourceDigest !== fixtureDigest) {
-    invalid("benchmark-campaign", "benchmarks.campaign", "Expected a source commit and matching SHA-256 source/fixture digests.");
+    invalid("benchmark-campaign", "benchmarks.campaign", "Expected a source commit, matching source/fixture SHA-256 digests, and a separate evidence SHA-256 digest.");
   }
   const progressiveMeasuredAt = text(campaign.progressiveMeasuredAt, "benchmarks.campaign.progressiveMeasuredAt");
   const completeMeasuredAt = text(campaign.completeMeasuredAt, "benchmarks.campaign.completeMeasuredAt");
@@ -376,6 +426,7 @@ export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
         sourceCommit,
         sourceDigest,
         fixtureDigest,
+        evidenceDigest,
         matrixId: "official-ssr-matrix",
         status: "official-uniform",
         progressiveMeasuredAt,
