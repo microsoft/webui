@@ -30,7 +30,7 @@ console = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
-awc = { workspace = true }
+reqwest = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
 bytes = { workspace = true }

@@ -33,6 +33,19 @@ pnpm start
 
 Then open http://127.0.0.1:3004
 
+### HTTP versions and TLS
+
+The server speaks cleartext HTTP/1.1 and HTTP/2 with prior knowledge (h2c).
+Provide TLS, HTTP/2 to browsers, and HTTP/3 with a TLS-terminating ingress or
+reverse proxy. For example, Caddy serves HTTPS with HTTP/1.1, HTTP/2, and
+HTTP/3 by default:
+
+```caddyfile
+commerce.example.com {
+	reverse_proxy h2c://127.0.0.1:3004
+}
+```
+
 ## Running Tests
 
 ```bash
@@ -116,7 +129,7 @@ Or pass flags directly:
 docker run -d -p 3004:3000 webui-commerce --css link --port 3000
 ```
 
-These ports are plain HTTP because the container starts `marketplace-api` with `--no-tls`.
+These ports serve cleartext HTTP/1.1 and h2c.
 Use a TLS-terminating proxy or ingress for external HTTPS.
 
 To tag with the project version:

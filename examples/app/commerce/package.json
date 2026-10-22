@@ -11,7 +11,7 @@
     "build:client": "node ../../build-client.mjs",
     "build:server": "cargo check -p marketplace-api",
     "start:client": "pnpm run build:deps && node ../../build-client.mjs --watch",
-    "start:server": "cargo run -p marketplace-api -- --port 3004 --no-tls --css=module",
+    "start:server": "cargo run -p marketplace-api -- --port 3004 --css=module",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"
