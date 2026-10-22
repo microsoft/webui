@@ -1,4 +1,4 @@
-# WebUI
+# <img src="docs/.webui-press/public/logo.svg" alt="" width="32" height="32"> WebUI
 
 **WebUI** is a high-performance, language-agnostic server-side rendering framework built in Rust. It compiles HTML templates into compact Protocol Buffer binaries at build time so runtime rendering applies state without reparsing templates. Interactive Web Components hydrate as islands on the client.
 
@@ -7,7 +7,7 @@
 ## Highlights
 
 - **Compiled templates:** HTML is parsed once at build time into a compact binary protocol.
-- **Language agnostic:** Rust, Node/Bun/Deno, C#, Python, Go, and any language that can call C FFI.
+- **Language agnostic:** Rust, Node/Bun, C#, Python, Go, and any language that can call C FFI.
 - **Web Components:** Native custom elements with Shadow DOM support.
 - **Server-side logic:** Conditions, loops, and expressions are evaluated on the server.
 - **Plugin-ready:** Parser and handler plugins support framework-specific hydration and directives.
@@ -133,7 +133,7 @@ For contribution policy, issue guidelines, and the current pull request policy, 
 crates/      Rust crates for the CLI, parser, handler, protocol, FFI, Python bindings, and integrations
 packages/    npm packages for the CLI, WebUI Framework, router, and platform binaries
 dotnet/      .NET bindings, runtime packages, and global tool packaging
-docs/        VitePress documentation site
+docs/        WebUI Press documentation site
 examples/    Example applications and integration samples
 ```
 

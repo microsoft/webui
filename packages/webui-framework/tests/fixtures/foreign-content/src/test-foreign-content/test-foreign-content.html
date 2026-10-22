@@ -1,0 +1,44 @@
+<template shadowrootmode="open">
+  <button class="toggle" ?disabled="{{!ready}}" @click="{toggle()}">Toggle content</button>
+  <button class="reverse" ?disabled="{{!ready}}" @click="{reverseItems()}">Reverse items</button>
+  <svg class="plot" width="200" height="90" viewBox="0 0 200 90">
+    <if condition="show">
+      <rect class="conditional-shape" x="4" y="4" width="30" height="18"></rect>
+    </if>
+    <g>
+      <if condition="show"><if condition="show">
+        <rect class="nested-shape" x="44" y="4" width="30" height="18"></rect>
+      </if></if>
+    </g>
+    <for each="point in points">
+      <circle key="{{point.id}}" class="point" data-id="{{point.id}}" cx="{{point.x}}" cy="38" r="6"></circle>
+    </for>
+    <for id="shared-link" each="link in links" />
+    <foreignObject x="4" y="52" width="190" height="35">
+      <if condition="show"><if condition="show">
+        <div class="foreign-html">{{label}}</div>
+        <test-foreign-child label="{{label}}"></test-foreign-child>
+      </if></if>
+    </foreignObject>
+  </svg>
+  <div class="html-links">
+    <for id="shared-link" each="link in links">
+      <a key="{{link.id}}" href="{{link.href}}">{{link.label}}</a>
+    </for>
+  </div>
+  <math>
+    <mrow>
+      <if condition="show"><mi class="math-symbol">x</mi></if>
+      <for each="point in points"><mn key="{{point.id}}" class="math-number">{{point.id}}</mn></for>
+    </mrow>
+    <mtext>
+      <if condition="show">
+        <span class="math-html">{{label}}</span>
+        <mglyph class="math-glyph"></mglyph>
+      </if>
+    </mtext>
+    <annotation-xml encoding="{{encoding}}">
+      <if condition="show"><a class="annotation-link" href="#context">{{label}}</a></if>
+    </annotation-xml>
+  </math>
+</template>

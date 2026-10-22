@@ -11,6 +11,7 @@ import path from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { build, fixture, removeFixtureRoot, write } from './native-fixture.js';
+import { contrastRatio } from './website-fixture.js';
 
 async function themedSite(t: TestContext, mode: 'all' | 'content') {
   const f = fixture();
@@ -80,16 +81,6 @@ async function themedSite(t: TestContext, mode: 'all' | 'content') {
   return { url: `http://127.0.0.1:${address.port}/fixture/theme/`, root };
 }
 
-function luminance(color: string): number {
-  const channels = color.match(/\d+/g)?.slice(0, 3).map(Number);
-  assert.ok(channels && channels.length === 3);
-  const [red, green, blue] = channels.map(value => {
-    const channel = value / 255;
-    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-}
-
 async function expectTheme(page: Page, mode: 'light' | 'dark'): Promise<void> {
   const probe = page.locator('theme-probe .probe');
   await expect(probe).toHaveCSS('color', mode === 'light' ? 'rgb(17, 17, 17)' : 'rgb(238, 238, 238)');
@@ -100,9 +91,7 @@ async function expectTheme(page: Page, mode: 'light' | 'dark'): Promise<void> {
     color: getComputedStyle(element).color,
     background: getComputedStyle(element).backgroundColor,
   }));
-  const foreground = luminance(colors.color);
-  const background = luminance(colors.background);
-  const contrast = (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+  const contrast = contrastRatio(colors.color, colors.background);
   assert.ok(contrast >= 4.5, `native token label contrast ${contrast}`);
 }
 
@@ -136,9 +125,13 @@ test('full manual themes override OS token colors without overriding forced colo
     image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0,
   )).toBe(true);
   await expectTheme(page, 'dark');
+  await expect(page.locator('docs-theme-toggle .sun-icon')).toBeVisible();
+  await expect(page.locator('docs-theme-toggle button')).not.toContainText('☀️');
   await page.locator('docs-theme-toggle button').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expectTheme(page, 'light');
+  await expect(page.locator('docs-theme-toggle .moon-icon')).toBeVisible();
+  await expect(page.locator('docs-theme-toggle button')).not.toContainText('🌙');
   await expect(page.locator('theme-probe input')).toHaveCSS('color-scheme', 'light');
   await page.reload();
   await expectTheme(page, 'light');

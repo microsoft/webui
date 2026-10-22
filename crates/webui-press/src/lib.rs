@@ -11,6 +11,8 @@ mod bundler;
 pub mod content;
 pub mod error;
 pub mod markdown;
+mod metadata;
+mod outline;
 mod regions;
 mod scratch;
 pub mod serve;

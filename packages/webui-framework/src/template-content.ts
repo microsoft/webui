@@ -24,16 +24,44 @@ interface TemplateContent {
   readonly stylesheets: readonly TemplateStylesheetDescriptor[];
 }
 
+interface ForeignTemplateContent {
+  readonly namespace: string;
+  readonly localName: string;
+  readonly htmlEncoding: boolean;
+  readonly fragment: DocumentFragment;
+}
+
+const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+const MATH_NAMESPACE = 'http://www.w3.org/1998/Math/MathML';
+const HTML_ENCODING = 'text/html';
+const XHTML_ENCODING = 'application/xhtml+xml';
 const EMPTY_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
 const NO_LINK_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
 const templateContentCache = new WeakMap<TemplateBlockMeta, TemplateContent>();
+let foreignTemplateContentCache: WeakMap<TemplateBlockMeta, ForeignTemplateContent[]> | undefined;
 
 /** Import cached template DOM into the document that will own the live instance. */
 export function cloneTemplateContent(
   meta: TemplateBlockMeta,
   ownerDocument: Document,
+  context?: Element,
 ): DocumentFragment {
-  return ownerDocument.importNode(getTemplateFragment(meta), true);
+  const namespace = foreignNamespace(context);
+  const fragment = context && namespace
+    ? getForeignTemplateFragment(meta, context, namespace)
+    : getTemplateFragment(meta);
+  return ownerDocument.importNode(fragment, true);
+}
+
+/** Preserve the insertion context while nested blocks are wired off-document. */
+export function createTemplateContainer(ownerDocument: Document, context?: Element): Element {
+  const namespace = foreignNamespace(context);
+  if (!context || !namespace) {
+    return ownerDocument.createElement('div');
+  }
+  const container = ownerDocument.createElementNS(namespace, context.localName);
+  if (hasHtmlEncoding(context)) container.setAttribute('encoding', HTML_ENCODING);
+  return container;
 }
 
 /** Materialize cached compiler HTML for client creation or stylesheet discovery. */
@@ -94,6 +122,49 @@ function getTemplateContent(
   cached = { fragment, stylesheets };
   templateContentCache.set(meta, cached);
   return cached;
+}
+
+function foreignNamespace(context?: Element): string | undefined {
+  // Avoid a DOM namespace lookup on the common HTML path; cross-realm nodes use their URI.
+  if (!context || context instanceof HTMLElement) return undefined;
+  const namespace = context.namespaceURI;
+  return namespace && namespace !== HTML_NAMESPACE ? namespace : undefined;
+}
+
+function hasHtmlEncoding(context: Element): boolean {
+  if (context.namespaceURI !== MATH_NAMESPACE || context.localName !== 'annotation-xml') return false;
+  const encoding = context.getAttribute('encoding');
+  if (!encoding || (encoding.length !== HTML_ENCODING.length && encoding.length !== XHTML_ENCODING.length)) return false;
+  const normalized = encoding.toLowerCase();
+  return normalized === HTML_ENCODING || normalized === XHTML_ENCODING;
+}
+
+function getForeignTemplateFragment(
+  meta: TemplateBlockMeta,
+  context: Element,
+  namespace: string,
+): DocumentFragment {
+  const localName = context.localName;
+  const htmlEncoding = hasHtmlEncoding(context);
+  const entries = foreignTemplateContentCache?.get(meta);
+  if (entries) {
+    for (const entry of entries) {
+      if (entry.namespace === namespace && entry.localName === localName && entry.htmlEncoding === htmlEncoding) {
+        return entry.fragment;
+      }
+    }
+  }
+
+  // Cached HTML-integration children must remain inert until imported into a live document.
+  const template = document.createElement('template');
+  const fragment = template.content;
+  const container = createTemplateContainer(fragment.ownerDocument, context);
+  setTemplateContent(container, meta);
+  while (container.firstChild) fragment.appendChild(container.firstChild);
+  const entry = { namespace, localName, htmlEncoding, fragment };
+  if (entries) entries.push(entry);
+  else (foreignTemplateContentCache ??= new WeakMap()).set(meta, [entry]);
+  return fragment;
 }
 
 function collectStylesheetDescriptors(

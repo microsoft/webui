@@ -26,6 +26,7 @@ use crate::bundler::{
 use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
+use crate::metadata::document_title;
 use crate::regions::RegionSet;
 use crate::state::{load_render_states, merge_page_state, StateDependencies};
 use crate::types::{BuildStats, DocsConfig, PageDescriptor, ShowMode};
@@ -153,6 +154,12 @@ fn build_not_found_state(input: NotFoundStateInput<'_>) -> Value {
             json_obj([
                 ("title", Value::String(input.config.site.title.clone())),
                 ("base", Value::String(input.base_path.to_string())),
+                (
+                    "url",
+                    input.config.site.url.as_deref().map_or(Value::Null, |url| {
+                        Value::String(url.trim_end_matches('/').to_string())
+                    }),
+                ),
             ]),
         ),
         ("navigation", input.nav),
@@ -162,10 +169,21 @@ fn build_not_found_state(input: NotFoundStateInput<'_>) -> Value {
             json_obj([
                 ("title", Value::String("Page Not Found".to_string())),
                 (
+                    "documentTitle",
+                    Value::String(document_title("Page Not Found", &input.config.site.title)),
+                ),
+                (
                     "description",
                     Value::String("The page you're looking for doesn't exist.".to_string()),
                 ),
                 ("content", Value::String(input.content.to_string())),
+                (
+                    "path",
+                    Value::String(format!("{}404.html", input.base_path)),
+                ),
+                ("canonicalUrl", Value::Null),
+                ("headings", Value::Array(Vec::new())),
+                ("outline", Value::Bool(false)),
                 ("isHome", Value::Bool(false)),
                 ("layout", Value::String("doc".to_string())),
             ]),
@@ -382,6 +400,7 @@ pub fn build_docs_with_cache(
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
     let mut pages = content?;
+    let search_entries = prepare_page_search(&mut pages);
 
     // Step 2: Resolve component sources for the per-page builds
     let mut component_sources: Vec<String> = Vec::new();
@@ -419,6 +438,7 @@ pub fn build_docs_with_cache(
     } else {
         regions
     };
+    crate::outline::prepare(&mut pages, config, regions.contains(crate::outline::REGION))?;
     let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
@@ -478,7 +498,8 @@ pub fn build_docs_with_cache(
                     .extend(scripts);
             }
         }
-        for script_file in regions.script_files(region_layout(page)) {
+        let omitted = crate::outline::omitted(config, crate::outline::enabled(&page.state));
+        for script_file in regions.script_files(region_layout(page), omitted) {
             explicit_page_scripts
                 .entry(page.path.clone())
                 .or_default()
@@ -543,7 +564,8 @@ pub fn build_docs_with_cache(
             .get(&page.path)
             .map(String::as_str)
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
-        let region_fragments = regions.html_fragments(region_layout(page));
+        let omitted = crate::outline::omitted(config, crate::outline::enabled(&page.state));
+        let region_fragments = regions.html_fragments(region_layout(page), omitted);
         let mut html_sources = Vec::with_capacity(region_fragments.len() + 1);
         html_sources.push(content);
         html_sources.extend(region_fragments);
@@ -573,7 +595,8 @@ pub fn build_docs_with_cache(
         });
     }
 
-    let not_found_region_fragments = regions.html_fragments("doc");
+    let not_found_omitted = crate::outline::omitted(config, false);
+    let not_found_region_fragments = regions.html_fragments("doc", not_found_omitted);
     let mut not_found_sources = Vec::with_capacity(not_found_region_fragments.len() + 1);
     not_found_sources.push(not_found_content.as_str());
     not_found_sources.extend(not_found_region_fragments);
@@ -583,7 +606,7 @@ pub fn build_docs_with_cache(
         not_found_component_scripts.retain(|path| !root.component_scripts.contains(path));
     }
     let not_found_scripts: Vec<ScriptSource> = regions
-        .script_files("doc")
+        .script_files("doc", not_found_omitted)
         .map(|path| ScriptSource::File(path.to_string()))
         .collect();
     let not_found_bundle_id =
@@ -686,8 +709,9 @@ pub fn build_docs_with_cache(
         // Protect markdown code blocks before injecting content into the
         // region-resolved template.
         let (protected, pre_blocks) = protect_pre_blocks(content);
+        let omitted = crate::outline::omitted(config, crate::outline::enabled(&page.state));
         let page_html = regions
-            .render(region_layout(page))
+            .render(region_layout(page), omitted)
             .replace("{{{page.content}}}", &protected);
 
         // Per-page temp dir holding only this page's index.html — components
@@ -751,7 +775,7 @@ pub fn build_docs_with_cache(
         }
 
         let layout = region_layout(page).to_string();
-        regions.apply_state(&layout, &mut page.state)?;
+        regions.apply_state(&layout, &mut page.state, omitted)?;
         if let Some(token_file) = token_file.as_ref() {
             inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
         }
@@ -789,18 +813,8 @@ pub fn build_docs_with_cache(
     let bundle_result = bundle_thread.join()?;
     print_bundle_summary(cache, &bundle_result);
 
-    // Step 4: Search index. Strip rendered HTML to plain text and emit
-    // an entry per non-home page. Done from-scratch every build.
+    // Step 4: Write the index prepared with page heading metadata before render.
     let search_path = site_dir.join("search-index.json");
-    let search_entries: Vec<Value> = pages
-        .iter()
-        .filter(|p| !p.is_home)
-        .map(|p| {
-            let html = p.state["page"]["content"].as_str().unwrap_or("");
-            let title = p.state["page"]["title"].as_str().unwrap_or("");
-            build_search_entry(title, &p.path, html)
-        })
-        .collect();
     fs::write(
         &search_path,
         serde_json::to_string(&search_entries)
@@ -839,11 +853,11 @@ pub fn build_docs_with_cache(
         head_injection: &head_injection,
         global_state: render_states.global(),
     });
-    regions.apply_state("doc", &mut not_found_state)?;
+    regions.apply_state("doc", &mut not_found_state, not_found_omitted)?;
 
     let (protected_not_found, not_found_pre_blocks) = protect_pre_blocks(&not_found_content);
     let not_found_html = regions
-        .render("doc")
+        .render("doc", not_found_omitted)
         .replace("{{{page.content}}}", &protected_not_found);
     let nf_tmp = scratch_root.join(format!(
         "webui-press-404-{}-{:x}",
@@ -1126,6 +1140,34 @@ struct HtmlTag<'a> {
     is_end: bool,
 }
 
+fn prepare_page_search(pages: &mut [PageDescriptor]) -> Vec<Value> {
+    let mut entries = Vec::with_capacity(pages.len());
+    for page in pages {
+        let html = page.state["page"]["content"].as_str().unwrap_or("");
+        let title = page.state["page"]["title"].as_str().unwrap_or("");
+        let entry = build_search_entry(title, &page.path, html);
+        // Reuse the search scan and the Markdown renderer's actual IDs. Raw
+        // custom-page headings without IDs are searchable but not TOC targets.
+        let headings = entry["headings"]
+            .as_array()
+            .map(|headings| {
+                let mut anchored = Vec::with_capacity(headings.len());
+                for heading in headings {
+                    if heading["anchor"].as_str().is_some_and(|id| !id.is_empty()) {
+                        anchored.push(heading.clone());
+                    }
+                }
+                anchored
+            })
+            .unwrap_or_default();
+        page.state["page"]["headings"] = Value::Array(headings);
+        if !page.is_home {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
 /// Build a single search-index entry for a page. Strips HTML tags,
 /// decodes escaped text, captures headings for weighted ranking,
 /// collapses whitespace, and truncates body content to 500 bytes.
@@ -1230,7 +1272,8 @@ fn handle_start_tag(
     if let Some(level) = heading_level(name) {
         *current_heading = Some(CurrentHeading {
             text: String::with_capacity(64),
-            anchor: attr_value(raw_tag, "id").unwrap_or("").to_string(),
+            anchor: html_escape::decode_html_entities(attr_value(raw_tag, "id").unwrap_or(""))
+                .into_owned(),
             level,
         });
     } else if name.eq_ignore_ascii_case("a") && raw_tag.contains("header-anchor") {
@@ -1582,6 +1625,10 @@ mod tests {
 
         assert_eq!(state["release"]["version"], "v1.2.3");
         assert_eq!(state["page"]["title"], "Page Not Found");
+        assert_eq!(state["page"]["documentTitle"], "Page Not Found | Docs");
+        assert_eq!(state["page"]["path"], "/404.html");
+        assert_eq!(state["page"]["canonicalUrl"], Value::Null);
+        assert_eq!(state["page"]["headings"], Value::Array(Vec::new()));
         assert_eq!(state["pageData"], Value::Null);
         assert_eq!(state["headTags"], "<meta name=\"docs\">");
         Ok(())
@@ -1757,6 +1804,45 @@ mod tests {
         assert_eq!(headings[2]["text"].as_str(), Some("Nested Search"));
         assert_eq!(headings[2]["anchor"].as_str(), Some("nested"));
         assert_eq!(headings[2]["level"].as_u64(), Some(3));
+    }
+
+    #[test]
+    fn page_headings_reuse_search_text_and_existing_anchors() {
+        let mut pages = vec![PageDescriptor {
+            path: "/nested/docs/guide".to_string(),
+            is_home: false,
+            state: test_obj([(
+                "page",
+                test_obj([
+                    ("title", string_value("Guide")),
+                    (
+                        "content",
+                        string_value(concat!(
+                            "<h1 id=\"guide\">Guide</h1>",
+                            "<h2 id=\"syntax\"><code>&lt;for&gt;</code> &amp; Syntax",
+                            "<a class=\"header-anchor\" href=\"#syntax\">#</a></h2>",
+                            "<h3>Unanchored custom heading</h3>",
+                            "<h6 id=\"details&amp;more\">Details</h6>"
+                        )),
+                    ),
+                ]),
+            )]),
+        }];
+        let entries = prepare_page_search(&mut pages);
+        let headings = pages[0].state["page"]["headings"].clone();
+        assert_eq!(headings[0], entries[0]["headings"][0]);
+        assert_eq!(headings[1], entries[0]["headings"][1]);
+        assert_eq!(headings[1]["text"], "<for> & Syntax");
+        assert_eq!(headings[1]["anchor"], "syntax");
+        assert_eq!(headings[1]["level"], 2);
+        assert_eq!(headings[2]["level"], 6);
+        assert_eq!(headings[2]["anchor"], "details&more");
+        assert_eq!(headings.as_array().map(Vec::len), Some(3));
+        assert_eq!(entries[0]["headings"].as_array().map(Vec::len), Some(4));
+
+        pages[0].is_home = true;
+        assert!(prepare_page_search(&mut pages).is_empty());
+        assert_eq!(pages[0].state["page"]["headings"], headings);
     }
 
     // --- fxhash ----------------------------------------------------------

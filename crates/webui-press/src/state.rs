@@ -456,9 +456,11 @@ mod tests {
     fn empty_config() -> DocsConfig {
         DocsConfig {
             show: Default::default(),
+            outline: false,
             site: SiteConfig {
                 title: "Docs".to_string(),
                 description: String::new(),
+                url: None,
             },
             base_path: "/".to_string(),
             content_dir: ".".to_string(),
@@ -579,6 +581,9 @@ mod tests {
             CustomPage::Full {
                 html: "<docs-playground></docs-playground>".to_string(),
                 layout: Some("full".to_string()),
+                title: None,
+                description: None,
+                outline: None,
                 state: None,
                 state_file: Some("./state/playground.json".to_string()),
                 script_file: None,

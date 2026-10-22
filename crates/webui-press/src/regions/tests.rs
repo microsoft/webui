@@ -46,14 +46,55 @@ fn renders_layout_scoped_and_global_regions() -> TestResult {
     let regions = RegionSet::load(&configs, Path::new("."), template.to_string())?;
 
     assert_eq!(
-        regions.render("home"),
+        regions.render("home", None),
         "<main><home-card></home-card><h1>After Hero</h1><site-note></site-note></main>"
     );
     assert_eq!(
-        regions.render("doc"),
+        regions.render("doc", None),
         "<main><site-note></site-note></main>"
     );
     assert_eq!(regions.template_shell(), "<main></main>");
+    Ok(())
+}
+
+#[test]
+fn multiple_layouts_scope_markup_state_and_scripts_together() -> TestResult {
+    let config = RegionConfig {
+        state: Some(serde_json::from_str(r#"{"label":"Contents"}"#)?),
+        script_file: Some("outline.ts".to_string()),
+        ..region("<nav>Contents</nav>")
+    };
+    let configs = BTreeMap::from([("page.outline".to_string(), config)]);
+    let regions = RegionSet::load(
+        &configs,
+        Path::new("."),
+        "<webui-press-region name=\"page.outline\" layout=\"doc page\" />".to_string(),
+    )?;
+    for layout in ["doc", "page", "doc page"] {
+        assert_eq!(regions.render(layout, None), "<nav>Contents</nav>");
+        assert_eq!(
+            regions.script_files(layout, None).collect::<Vec<_>>(),
+            ["outline.ts"]
+        );
+        let mut state = Value::Object(Map::new());
+        regions.apply_state(layout, &mut state, None)?;
+        assert_eq!(state["regions"]["page"]["outline"]["label"], "Contents");
+    }
+    for layout in ["home", "full"] {
+        assert!(regions.render(layout, None).is_empty());
+        assert!(regions.html_fragments(layout, None).is_empty());
+        assert_eq!(regions.script_files(layout, None).count(), 0);
+        let mut state = Value::Object(Map::new());
+        regions.apply_state(layout, &mut state, None)?;
+        assert!(state.get("regions").is_none());
+    }
+    let omitted = Some("page.outline");
+    assert!(regions.render("doc", omitted).is_empty());
+    assert!(regions.html_fragments("doc", omitted).is_empty());
+    assert_eq!(regions.script_files("doc", omitted).count(), 0);
+    let mut state = Value::Object(Map::new());
+    regions.apply_state("doc", &mut state, omitted)?;
+    assert!(state.get("regions").is_none());
     Ok(())
 }
 
@@ -78,6 +119,7 @@ fn bundled_template_exposes_stable_regions() -> TestResult {
             "home.footer",
             "doc.sidebar",
             "doc.context",
+            "page.outline",
             "doc.beforeContent",
             "page.beforeContent",
             "full.beforeContent",
@@ -89,6 +131,8 @@ fn bundled_template_exposes_stable_regions() -> TestResult {
             "page.footer",
         ]
     );
+    assert!(regions.contains("page.outline"));
+    assert!(!regions.contains("missing.outline"));
     assert!(regions
         .regions
         .iter()
@@ -116,15 +160,18 @@ fn loads_files_and_namespaces_state() -> TestResult {
     let template = "<webui-press-region name=\"home.panel\" layout=\"home\"></webui-press-region>";
     let regions = RegionSet::load(&configs, &dir, template.to_string())?;
     let mut state = Value::Object(Map::new());
-    regions.apply_state("home", &mut state)?;
+    regions.apply_state("home", &mut state, None)?;
 
-    assert_eq!(regions.render("home"), "<summary-card></summary-card>");
+    assert_eq!(
+        regions.render("home", None),
+        "<summary-card></summary-card>"
+    );
     assert_eq!(state["regions"]["home"]["panel"]["title"], "Status");
     assert_eq!(
-        regions.script_files("home").collect::<Vec<_>>(),
+        regions.script_files("home", None).collect::<Vec<_>>(),
         ["region.ts"]
     );
-    assert_eq!(regions.script_files("doc").count(), 0);
+    assert_eq!(regions.script_files("doc", None).count(), 0);
 
     fs::remove_dir_all(dir).ok();
     Ok(())
@@ -146,7 +193,7 @@ fn state_only_config_keeps_default_html() -> TestResult {
         template.to_string(),
     )?;
 
-    assert_eq!(regions.render("doc"), "<summary-card></summary-card>");
+    assert_eq!(regions.render("doc", None), "<summary-card></summary-card>");
     Ok(())
 }
 
@@ -207,7 +254,7 @@ fn ignores_commented_markers() -> TestResult {
     let regions = RegionSet::load(&BTreeMap::new(), Path::new("."), template.to_string())?;
 
     assert_eq!(
-        regions.render("doc"),
+        regions.render("doc", None),
         "<!-- <webui-press-region name=\"ignored\" /> -->Active"
     );
     Ok(())

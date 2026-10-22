@@ -1,70 +1,81 @@
+---
+description: Install the native WebUI CLI from npm, then add browser behavior or a production host only when needed.
+---
+
 # Installation
 
-WebUI Framework can be installed and used with various environments and languages. This guide covers the most common installation methods.
+For a new app, use the **npm CLI** and follow
+[Hello World](/tutorials/hello-world). It renders a first page without Rust,
+a source checkout, or a browser runtime.
 
-There are two ways to install the WebUI build toolchain: as an **npm package** for JavaScript and TypeScript projects, or as a **Rust crate** for Rust projects. Both ship the same compiler and produce the same protocol output. Pick whichever fits your stack.
+Use a current Node.js LTS release and keep npm's optional dependencies enabled.
+Node installs the tools and runs your bundler; it does not have to be your
+production rendering host.
 
 ## npm
 
-The `@microsoft/webui` npm package gives you:
-
-- **`npx webui build`** - the CLI for building templates into protocols
-- **`import { build, Protocol } from '@microsoft/webui'`** - a programmatic API for Node.js
-- **Native performance** via platform-specific binaries (no compilation required)
-
-<webui-press-tabs>
-<webui-press-tab slot="tab" active>npm</webui-press-tab>
-<webui-press-tab slot="tab">yarn</webui-press-tab>
-<webui-press-tab slot="tab">pnpm</webui-press-tab>
-<webui-press-tab-panel active>
+From your application's directory:
 
 ```bash
-npm install @microsoft/webui
+npm init -y
+npm install --save-dev @microsoft/webui
+npx webui --help
 ```
 
-</webui-press-tab-panel>
-<webui-press-tab-panel>
+`@microsoft/webui` installs the native `webui` command for supported platforms.
+It also exports a Node build/render API (`build`, `Protocol`) if you later
+choose Node as your host. For an application that imports that API at runtime,
+install it as a regular dependency rather than only a development dependency.
 
-```bash
-yarn add @microsoft/webui
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-pnpm add @microsoft/webui
-```
-
-</webui-press-tab-panel>
-</webui-press-tabs>
+Prefer pnpm or Yarn? Use `pnpm add -D @microsoft/webui` or
+`yarn add -D @microsoft/webui`, then run the local CLI through your package
+manager. There is no `create-webui` scaffolder required by this guide.
 
 ### Configure package.json
 
-A typical project setup:
+These scripts assume the files created in
+[Hello World](/tutorials/hello-world#project-setup):
 
 ```json
 {
   "scripts": {
-    "build": "webui build ./src --out ./dist --plugin=webui",
-    "dev": "webui serve ./src --state ./data/state.json --plugin=webui --watch"
-  },
-  "dependencies": {
-    "@microsoft/webui": "latest",
-    "@microsoft/webui-framework": "latest"
+    "dev": "webui serve ./src --state ./data/state.json",
+    "build": "webui build ./src --out ./dist"
   }
 }
 ```
 
-Run the development server with `npm run dev` and build for production with `npm run build`.
+Merge the `scripts` object into your existing `package.json`; do not remove
+the dependencies npm added. Run from the app root:
+
+```bash
+npm run dev
+npm run build
+```
+
+`dev` previews at **http://127.0.0.1:3000/** until you stop it with Ctrl+C.
+`build` emits `dist/protocol.bin`. That artifact needs a renderer; it is not a
+standalone HTML site.
+
+For interactive components you will also bundle browser TypeScript and serve
+the resulting assets. `webui build` does **not** perform that bundling step.
+Use the [complete counter setup](/tutorials/hello-world#adding-interactivity)
+rather than adding only a script tag.
 
 ### Cross-Platform Support
 
-The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically - no Rust toolchain required.
+Platform packages provide native binaries for Windows, macOS, and Linux on
+x64 and ARM64. A supported prebuilt install does not need a Rust toolchain.
+If the CLI is missing after installation, check whether optional dependencies
+were omitted or your OS/architecture lacks a matching package.
+
+Commit the package lockfile and keep compiler and browser-runtime versions
+aligned. Do not substitute an unrelated globally installed CLI when diagnosing
+a project-specific build problem.
 
 ### Desktop support (opt-in)
 
-Install desktop support separately with the same version of both packages:
+Desktop support is a separate install, not a requirement for a website:
 
 ```bash
 npm install @microsoft/webui @microsoft/webui-desktop
@@ -72,254 +83,125 @@ npx webui desktop init ./my-app
 npx webui desktop run ./my-app/src
 ```
 
-`@microsoft/webui-desktop` includes the browser IPC runtime and installs the
-matching native desktop sidecar for your OS and architecture through an optional
-platform package. Keep optional dependencies enabled. The base `@microsoft/webui`
-install does not include desktop binaries; desktop commands report the install
-step when support is missing. See [Desktop Apps](/guide/concepts/desktop.md)
-for building and packaging apps.
+Use matching versions. The desktop package installs a native sidecar through
+its optional platform dependencies; the base CLI does not include it.
+See [Desktop Apps](/guide/concepts/desktop) for platform requirements, host
+capabilities, and packaging.
 
 ## Rust
 
-Building from source requires Rust 1.99.1 or newer. Rust users can install the CLI
-directly from crates.io:
+Building from source requires Rust 1.99.1 or newer.
+Rust users can install the same compiler through Cargo:
 
 ```bash
 cargo install microsoft-webui-cli
+webui build ./src --out ./dist
 ```
 
-Then build your app:
-
-```bash
-webui build ./my-app --out ./dist
-```
-
-See the [CLI Reference](/guide/cli/) for full usage details.
+This is an alternative to the npm compiler install, not another first-app step.
+The [Rust integration guide](/guide/integrations/rust) covers rendering in a
+production Rust service. See the [CLI reference](/guide/cli/) for command options.
 
 ## .NET
 
-The managed .NET binding is packaged as `Microsoft.WebUI`:
+The managed binding is `Microsoft.WebUI`. It loads compiled protocols and
+uses platform-specific `Microsoft.WebUI.Runtime.*` native assets.
 
-```bash
-dotnet add package Microsoft.WebUI
-```
+**Check package availability before choosing an install command.** The release
+pipeline stages NuGet artifacts, but automatic NuGet.org publishing is not
+enabled pending an approved signing path. Obtain the packages from an available
+release or approved feed; do not assume a public restore will succeed.
 
-It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages.
-
-See the [.NET integration guide](/guide/integrations/dotnet) for buffered and
-progressive ASP.NET response examples.
-
-Prepare `protocol.bin` once for repeated rendering:
-
-```csharp
-using Microsoft.WebUI;
-
-using var protocol = new Protocol(
-    File.ReadAllBytes("dist/protocol.bin"));
-using var handler = new WebUIHandler("webui");
-
-string html = handler.Render(
-    protocol,
-    """{"title":"Home"}""",
-    "index.html",
-    "/");
-```
-
-`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
-Keep it alive for the server lifetime and dispose it during shutdown.
+The [.NET integration guide](/guide/integrations/dotnet) covers supported
+targets, protocol lifetime, and ASP.NET response handling.
 
 ## Python
 
-The `microsoft-webui` PyPI package is a native PyO3 binding, not a `ctypes`
-wrapper:
-
-> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
-> source distribution are built and attached to each GitHub Release; install one
-> directly, or build from a checkout with `maturin`.
+The native `microsoft-webui` binding is **not published to PyPI yet**. Install
+a matching wheel from a GitHub Release, or build from source with `maturin`:
 
 ```bash
 pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
-It ships prebuilt wheels for CPython 3.11+ (Windows, macOS, and manylinux, on
-x86_64 and ARM64) plus one sdist, and is **runtime-only** — it renders
-compiled protocols but does not build them. Produce `protocol.bin` with
-`webui build` (the npm or Rust CLI above), then render it from Python:
-
-```python
-from microsoft_webui import Renderer
-
-renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
-
-html = renderer.render({"title": "Home"}, request_path="/")  # -> bytes
-```
-
-`Renderer` decodes and indexes the protocol once, is thread-safe, and releases
-the GIL for the duration of each render. See [Python](/guide/integrations/python)
-for WSGI, ASGI, and progressive-streaming examples.
-
----
-
-The packages below are client-side runtime libraries. They are installed from npm regardless of whether your build toolchain is npm or Rust, since they ship as JavaScript that runs in the browser.
+Replace the placeholder with the wheel you downloaded for your platform.
+The binding supports CPython 3.11+ and renders protocols; it does not compile
+templates. Build `protocol.bin` with the npm or Cargo CLI first.
+See [Python integration](/guide/integrations/python) for installation details
+and WSGI/ASGI examples.
 
 ## WebUI Framework (Client-Side Interactivity)
 
-For interactive Web Components with Islands Architecture, install the framework runtime:
-
-<webui-press-tabs>
-<webui-press-tab slot="tab" active>npm</webui-press-tab>
-<webui-press-tab slot="tab">yarn</webui-press-tab>
-<webui-press-tab slot="tab">pnpm</webui-press-tab>
-<webui-press-tab-panel active>
+Install the browser runtime only when the app needs browser behavior or
+browser-applied state:
 
 ```bash
 npm install @microsoft/webui-framework
 ```
 
-</webui-press-tab-panel>
-<webui-press-tab-panel>
+It supplies `WebUIElement`, `@attr`, and `@observable`, and connects interactive
+components to server-rendered HTML. It is separate from the compiler and server
+binding.
 
-```bash
-yarn add @microsoft/webui-framework
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-pnpm add @microsoft/webui-framework
-```
-
-</webui-press-tab-panel>
-</webui-press-tabs>
-
-This gives you:
-- **`WebUIElement`** base class for interactive Web Components
-- **`@attr`** and **`@observable`** decorators for reactive state
-- Automatic SSR hydration with zero manual DOM reading
-- Path-indexed targeted updates for minimal DOM mutations
-
-<webui-blockquote appearance="tip" title="Not every app needs this" icon="💡">
-
-If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Load the framework when components need browser-applied state or soft navigation. Add a same-named component module only for events, lifecycle code, decorators, or imperative APIs.
-
-</webui-blockquote>
+A component that only renders data can remain HTML and CSS. Do not add an
+empty TypeScript class just to display bindings. When you do add one, configure
+the decorators and browser bundler as shown in
+[Hello World](/tutorials/hello-world#bundle-the-browser-entry).
 
 ## Client-Side Router (Optional)
 
-For single-page navigation with client-side route transitions, install the router package:
-
-<webui-press-tabs>
-<webui-press-tab slot="tab" active>npm</webui-press-tab>
-<webui-press-tab slot="tab">yarn</webui-press-tab>
-<webui-press-tab slot="tab">pnpm</webui-press-tab>
-<webui-press-tab-panel active>
+Ordinary document navigation needs no client router. For soft navigation:
 
 ```bash
 npm install @microsoft/webui-router
 ```
 
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-yarn add @microsoft/webui-router
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-pnpm add @microsoft/webui-router
-```
-
-</webui-press-tab-panel>
-</webui-press-tabs>
-
-The router works with both WebUI Framework (`@microsoft/webui-framework`) and `@microsoft/fast-element` 3.x components. It's a separate package because it's only needed for apps with client-side navigation.
-
-See the [Routing guide](/guide/concepts/routing) for setup and usage.
+The router is a separate browser package, with server-side route and partial
+response requirements. It works with WebUI Framework and FAST 3.x components.
+Follow [Routing](/guide/concepts/routing) when the application needs it, not as
+a prerequisite to the counter tutorial.
 
 ## AI Coding Agents
 
-WebUI ships its framework reference inside `@microsoft/webui` as `ai.md`.
-The small `webui-reference` [agent skill](https://agentskills.io) tells GitHub
-Copilot, Claude Code, Cursor, Codex, and other supported agents to read that
-installed reference before working on WebUI code.
+`@microsoft/webui` includes the version-matched `ai.md` authoring reference.
+The `webui-reference` [agent skill](https://agentskills.io) tells supported
+coding agents to read that file from the application's installed dependencies.
 
-**Install the loader once**, after adding `@microsoft/webui` to your project:
-
-<webui-press-tabs>
-<webui-press-tab slot="tab" active>npm</webui-press-tab>
-<webui-press-tab slot="tab">yarn</webui-press-tab>
-<webui-press-tab slot="tab">pnpm</webui-press-tab>
-<webui-press-tab-panel active>
+After installing `@microsoft/webui`, install the loader:
 
 ```bash
 npx skills add microsoft/webui --skill webui-reference
 ```
 
-</webui-press-tab-panel>
-<webui-press-tab-panel>
+For pnpm, use `pnpm dlx skills add microsoft/webui --skill webui-reference`;
+for Yarn, use `yarn dlx skills add microsoft/webui --skill webui-reference`.
 
-```bash
-yarn dlx skills add microsoft/webui --skill webui-reference
-```
+The loader lives in `.agents/skills/webui-reference/`, with agent-specific
+installation locations where needed. Commit a project-local installation if
+you want to share it with your team.
 
-</webui-press-tab-panel>
-<webui-press-tab-panel>
+| Option | Purpose |
+| --- | --- |
+| `-g` | Install in the agent's user scope rather than this project |
+| `-a <agent>` | Target an agent, for example `-a github-copilot` |
+| `-l` | List available skills without installing them |
 
-```bash
-pnpm dlx skills add microsoft/webui --skill webui-reference
-```
+Upgrading `@microsoft/webui` updates its reference; ask an active agent to reread
+it. Rerun the install command only when you want to update the loader itself.
+If you previously installed the full reference as a skill, reinstall in the
+same scope to replace it with the loader.
 
-</webui-press-tab-panel>
-</webui-press-tabs>
+The loader resolves the package from the target app, including hoisted
+dependencies, even when the skill is global. In the WebUI source checkout it
+reads `docs/ai.md` instead. If a matching installed reference is missing, it
+reports that rather than silently using a newer release's rules.
 
-The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads
-directly. The installer also sets it up in agent-specific skill directories
-where needed.
-
-The loader asks the agent to resolve `@microsoft/webui/ai.md` from the target
-application's installed dependencies, including app-local and hoisted packages.
-A global skill installation still uses the application's reference, not the
-skill's installation directory. When working on WebUI itself or its workspace
-examples, the loader reads `docs/ai.md` from the framework checkout instead.
-
-Upgrading `@microsoft/webui` updates the guidance with it. You do not need to
-rerun `skills add` for reference updates. If you upgrade during an agent session,
-ask the agent to reread the installed reference.
-
-To pick up changes to the loader's own instructions, rerun the install command
-in the same scope (project or `-g`).
-
-If you previously installed the full reference as a skill, run the install
-command above once more in the same scope (project or `-g`) to replace it with
-the loader. Commit a project-local installation to share it with your team.
-
-Useful flags:
-
-| Flag | Effect |
-| ---- | ------ |
-| `-g` | Install once for every project on your machine, into the agent's user directory (`~/.copilot/skills/` for Copilot) |
-| `-a <agent>` | Target specific agents, for example `-a github-copilot`. Defaults to prompting |
-| `-l` | List what the repository publishes without installing anything |
-
-To try the reference in a single session without installing it:
+To try the loader for one Copilot session:
 
 ```bash
 npx skills use microsoft/webui@webui-reference | copilot
 ```
 
-This uses the same project-aware reference selection. Consuming applications on
-releases predating bundled `ai.md`, and Rust-only toolchains without
-`@microsoft/webui`, need a reference from their matching release instead.
-The loader reports missing guidance rather than silently using a newer version.
-
-<webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
-
-Read the installed `ai.md` directly, or use [AI Reference](/ai) for the current
-release's rules and anti-patterns without wiring up an agent. The website may
-describe a newer version than your project uses.
-
-</webui-blockquote>
+You can also read the installed file yourself. The website's
+[AI Reference](/ai) follows the current release and may be newer than your
+application.

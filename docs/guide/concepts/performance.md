@@ -1,9 +1,16 @@
+---
+description: Budget WebUI server rendering, browser code, state payloads, and DOM work, then measure the complete application.
+---
+
 # Performance
 
 WebUI moves template parsing and expression compilation to build time, then
-renders the compiled protocol with request state. The biggest wins come from
-shipping less state, loading less JavaScript, and asking the browser to manage
-less DOM.
+renders the compiled protocol with request state. This page is a practical
+optimization guide, not a cross-framework ranking. For the historical dataset
+and its limitations, see [Benchmarks](/benchmarks/).
+
+Start by measuring your application. Then reduce the state, JavaScript, or DOM
+work responsible for its bottleneck.
 
 ## Keep components scriptless by default
 
@@ -39,8 +46,9 @@ increment(): void {
 }
 ```
 
-Removing unnecessary decorators reduces projected state, reactive path indexes,
-and client bookkeeping.
+Removing unnecessary decorators can reduce projected state and client
+bookkeeping. Scriptless HTML still has transfer, parsing, layout, paint, and
+memory costs.
 
 ## Project only the state hydration needs
 
@@ -98,12 +106,14 @@ state, prepare a render-focused view model on the server:
 
 ```json
 {
-  "title": "Ship release",
-  "statusLabel": "Blocked",
-  "badges": [
-    { "id": "blocked", "label": "Blocked" },
-    { "id": "priority", "label": "High priority" }
-  ]
+  "todo": {
+    "title": "Ship release",
+    "statusLabel": "Blocked",
+    "badges": [
+      { "id": "blocked", "label": "Blocked" },
+      { "id": "priority", "label": "High priority" }
+    ]
+  }
 }
 ```
 
@@ -111,13 +121,16 @@ state, prepare a render-focused view model on the server:
 <strong>{{todo.title}}</strong>
 <span>{{todo.statusLabel}}</span>
 <for each="badge in todo.badges">
-  <todo-badge label="{{badge.label}}"></todo-badge>
+  <todo-badge key="{{badge.id}}" label="{{badge.label}}"></todo-badge>
 </for>
 ```
 
-This is usually cheaper than many sibling `<if>` branches and keeps business
-logic out of the client runtime. Preserve real booleans and stable IDs in the
-view model so interactions remain straightforward.
+This keeps business logic out of the client runtime. Compare the resulting
+payload and rendered work rather than assuming a larger view model is always
+cheaper. Preserve real booleans and stable IDs so interactions remain
+straightforward.
+
+<span id="light-dom-vs-shadow-dom"></span>
 
 ## Choose Light and Shadow DOM deliberately
 
@@ -144,20 +157,20 @@ widgets where encapsulation provides concrete value.
 
 ## Prefer Rust on the hottest SSR path
 
-All hosts execute the native WebUI renderer, but host-side state preparation,
+Supported hosts use the WebUI renderer, but host-side state preparation,
 serialization, native-boundary calls, and HTTP dispatch still cost time.
 
-For maximum single-core throughput:
+When rendering is the measured bottleneck:
 
 - load and index `protocol.bin` once
-- reuse immutable protocol and handler instances
+- reuse the loaded immutable protocol and host resources where supported
 - reuse request-state shapes and buffers where safe
-- render directly from Rust
-- avoid a JavaScript-to-native state serialization round trip
+- consider direct Rust rendering to avoid a host-to-native serialization step
 
-Node, Bun, Deno, Python, and other bindings remain useful when integration
-cost matters more than the last increment of throughput. Measure with the
-deployment host you intend to run.
+Node, Bun, Python, and other bindings remain useful when integration
+cost matters more than removing a host boundary. Measure cold and warm
+requests, including data access and serialization, with the deployment host
+you intend to run. A native renderer does not eliminate your host's own costs.
 
 ## Stream slow data, not already-fast pages
 
@@ -177,11 +190,15 @@ state when caller ownership is required. See [Rust streaming SSR](/guide/integra
 
 Server and browser measurements answer different questions:
 
-- **Single-core RPS** measures dynamic server rendering and HTML delivery.
+- **RPS and latency** describe the tested server, concurrency, response, and
+  load profile. Record the CPU allocation and response mode.
+- **CPU per request and server RSS** describe server work and process memory,
+  not browser cost.
 - **FCP** and **LCP** measure browser paint milestones.
-- **JS heap** measures managed JavaScript memory after readiness and garbage
-  collection.
-- **Renderer private memory** measures Chromium renderer-process private bytes.
+- **JS heap** measures managed JavaScript memory. Report the sampling point
+  and whether the harness forced garbage collection.
+- **Renderer private memory** measures Chromium renderer-process private bytes;
+  it is not interchangeable with JS heap.
 - **Request to hydrated** includes the dynamic server response, HTML transfer,
   external assets, JavaScript execution, and startup hydration.
 
@@ -197,19 +214,22 @@ window.addEventListener("webui:hydration-complete", () => {
 });
 ```
 
-Paint milestones are frame-scheduled and can overlap run noise. Read their
-median, p95, and methodology rather than treating a small ordering difference
-as a server-speed claim.
+Use the same browser, viewport, CPU/network settings, cache state, and assets
+for before/after comparisons. Record multiple runs and variability. A single
+server round cannot estimate run-to-run uncertainty, and browser navigations
+are not extra server-throughput rounds.
+
+Paint milestones are frame-scheduled and can overlap run noise. Do not treat a
+small ordering difference as a server-speed claim. Lab observations also do
+not establish real-user Core Web Vitals compliance.
 
 ## Evidence and benchmarks
 
-The homepage compares production paths rendering the same dynamic 100-item
-application. Server throughput, browser paint, hydration, heap, and renderer
-memory remain separate metrics because they answer different questions.
+The dedicated [benchmark page](/benchmarks/) preserves the available dataset as
+historical, limited evidence. It discloses the single measured server round,
+ten browser navigations, selectively refreshed WebUI rows, and missing public
+provenance. Do not use it as proof of a current framework winner.
 
-Use the interactive homepage explorer for the current published summary. The
-complete cross-framework methodology, source, commands, and raw artifacts live
-in
-[microsoft/webui-benchmarks](https://github.com/microsoft/webui-benchmarks).
-WebUI's internal microbenchmark and regression workflow remains documented in
-[`BENCHMARKS.md`](https://github.com/microsoft/webui/blob/main/BENCHMARKS.md).
+A publishable comparison needs inspectable source and revisions, versions,
+environment, workload, response mode, sample counts, uncertainty, exclusions,
+and raw artifacts. Keep server and browser metrics separate.

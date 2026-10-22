@@ -24,6 +24,12 @@
   color: var(--docs-color-text-2);
 }
 
+.trigger svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
 .label {
   font-size: var(--docs-font-size-m);
   font-weight: var(--docs-font-weight-medium);

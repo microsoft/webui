@@ -1,6 +1,14 @@
+---
+title: "Route declarations"
+description: "Map paths to components, nest layouts with outlets, and choose exact matches and allowed query parameters."
+---
+
 # `<route>` Directive
 
-The `<route>` directive defines a URL route that maps a path to a component. Routes are declared in the entry HTML (`index.html`) as a nested tree. At build time, they're compiled into `<webui-route>` custom elements. The server renders the matched route chain via SSR, and the client router handles subsequent navigations.
+Declare a path and the component it renders with `<route>`. Nest routes in
+the entry template and place `<outlet />` in parent components.
+The server matches the initial request; the optional
+[browser router](/guide/concepts/routing) handles later client-side navigation.
 
 ## Declaring Routes
 
@@ -32,7 +40,8 @@ Components that have child routes use `<outlet />` to mark where the matched chi
 <footer></footer>
 ```
 
-The shell (header, footer) persists across all routes. Only the content at `<outlet />` changes.
+During client-side navigation, unchanged parent components remain mounted.
+The matched child appears at `<outlet />`.
 Use one outlet at each route level, including outlets inside nested layout
 components and directives. Child routes have their own outlet level. Extra
 outlets produce a `multiple-outlets` build warning; put duplicated regions in
@@ -45,7 +54,7 @@ Routes can be nested to any depth. Each level's component uses `<outlet />` for 
 ```html
 <!-- index.html -->
 <route path="/" component="app-shell">
-  <route path="" component="dashboard" exact />
+  <route path="" component="dashboard-page" exact />
   <route path="contacts" component="contacts-page">
     <route path="add" component="contact-form" exact />
     <route path=":id" component="contact-detail" exact />
@@ -121,8 +130,8 @@ Without `exact`, a route matches any URL that starts with its path. Parent route
 
 ```html
 <route path="/" component="app-shell">          <!-- prefix: matches everything -->
-  <route path="settings" component="settings">   <!-- prefix: /settings/* -->
-    <route path="profile" component="profile" exact />  <!-- exact: only /settings/profile -->
+  <route path="settings" component="settings-page">   <!-- prefix: /settings/* -->
+    <route path="profile" component="profile-page" exact />  <!-- exact: only /settings/profile -->
   </route>
 </route>
 ```
@@ -132,4 +141,7 @@ Without `exact`, a route matches any URL that starts with its path. Parent route
 On the server:
 1. **Matched routes** - rendered visible with full component content
 2. **Non-matched siblings** - rendered hidden (`style="display:none"`) with no content
-3. The browser displays the correct page instantly, before JavaScript loads
+3. The browser can display the matched page before component JavaScript loads
+
+For loaders, actions, cache tags, pending/error components, and the host
+response contract, continue with [Routing](/guide/concepts/routing).

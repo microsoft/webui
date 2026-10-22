@@ -18,12 +18,16 @@
   </script>
   <base href="{{site.base}}" />
   <meta name="base" content="{{site.base}}" />
-  <title>{{page.title}} | {{site.title}}</title>
+  <title>{{page.documentTitle}}</title>
   <meta name="description" content="{{page.description}}" />
-  <meta property="og:title" content="{{page.title}} | {{site.title}}" />
+  <meta property="og:title" content="{{page.documentTitle}}" />
   <meta property="og:description" content="{{page.description}}" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary" />
+  <if condition="page.canonicalUrl">
+    <link rel="canonical" href="{{page.canonicalUrl}}" />
+    <meta property="og:url" content="{{page.canonicalUrl}}" />
+  </if>
   <link rel="icon" href="{{site.base}}logo.svg" />
   <style>
     :root {
@@ -66,6 +70,8 @@
         if (m) sessionStorage.setItem(mainKey(), m.scrollTop);
       }
       function restore(event) {
+        var skip = document.querySelector('.skip-link');
+        if (skip) skip.href = location.pathname + location.search + '#main-content';
         var m = main();
         var transition = event && event.viewTransition;
         if (transition && !m) {
@@ -102,7 +108,7 @@
 </head>
 
 <body data-layout="{{page.layout}}">
-  <a class="skip-link" href="#main-content">Skip to content</a>
+  <a class="skip-link" href="{{page.path}}#main-content">Skip to content</a>
   <webui-press-region name="site.navigation">
     <header class="nav-bar">
       <a href="{{site.base}}" class="logo">
@@ -194,6 +200,9 @@
             <strong>{{page.title}}</strong>
           </div>
         </if>
+      </webui-press-region>
+      <webui-press-region name="page.outline" layout="doc page">
+        <docs-outline :headings="{{page.headings}}" path="{{page.path}}"></docs-outline>
       </webui-press-region>
       <webui-press-region name="doc.beforeContent" layout="doc" />
       <webui-press-region name="page.beforeContent" layout="page" />

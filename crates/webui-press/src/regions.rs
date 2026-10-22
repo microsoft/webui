@@ -39,6 +39,10 @@ pub(crate) struct RegionSet {
 }
 
 impl RegionSet {
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.regions.iter().any(|region| region.name == name)
+    }
+
     pub(crate) fn load(
         configs: &BTreeMap<String, RegionConfig>,
         config_dir: &Path,
@@ -72,13 +76,13 @@ impl RegionSet {
         Ok(Self { template, regions })
     }
 
-    pub(crate) fn render(&self, layout: &str) -> String {
+    pub(crate) fn render(&self, layout: &str, omitted: Option<&str>) -> String {
         if self.regions.is_empty() {
             return self.template.clone();
         }
 
         let extra = self
-            .active_regions(layout)
+            .active_regions(layout, omitted)
             .filter_map(|region| region.html.as_ref())
             .map(String::len)
             .sum();
@@ -86,7 +90,7 @@ impl RegionSet {
         let mut cursor = 0;
         for region in &self.regions {
             output.push_str(&self.template[cursor..region.start]);
-            if region_applies(region, layout) {
+            if region_applies(region, layout, omitted) {
                 if let Some(html) = &region.html {
                     output.push_str(html);
                 }
@@ -108,8 +112,12 @@ impl RegionSet {
         output
     }
 
-    pub(crate) fn html_fragments<'a>(&'a self, layout: &'a str) -> Vec<&'a str> {
-        self.active_regions(layout)
+    pub(crate) fn html_fragments<'a>(
+        &'a self,
+        layout: &'a str,
+        omitted: Option<&'a str>,
+    ) -> Vec<&'a str> {
+        self.active_regions(layout, omitted)
             .filter_map(|region| region.html.as_deref())
             .collect()
     }
@@ -117,14 +125,20 @@ impl RegionSet {
     pub(crate) fn script_files<'a>(
         &'a self,
         layout: &'a str,
+        omitted: Option<&'a str>,
     ) -> impl Iterator<Item = &'a str> + 'a {
-        self.active_regions(layout)
+        self.active_regions(layout, omitted)
             .filter_map(|region| region.script_file.as_deref())
     }
 
-    pub(crate) fn apply_state(&self, layout: &str, state: &mut Value) -> Result<()> {
+    pub(crate) fn apply_state(
+        &self,
+        layout: &str,
+        state: &mut Value,
+        omitted: Option<&str>,
+    ) -> Result<()> {
         for region in &self.regions {
-            if !region_applies(region, layout) {
+            if !region_applies(region, layout, omitted) {
                 continue;
             }
             if let Some(region_state) = &region.state {
@@ -134,15 +148,22 @@ impl RegionSet {
         Ok(())
     }
 
-    fn active_regions<'a>(&'a self, layout: &'a str) -> impl Iterator<Item = &'a Region> + 'a {
+    fn active_regions<'a>(
+        &'a self,
+        layout: &'a str,
+        omitted: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a Region> + 'a {
         self.regions
             .iter()
-            .filter(move |region| region_applies(region, layout))
+            .filter(move |region| region_applies(region, layout, omitted))
     }
 }
 
-fn region_applies(region: &Region, layout: &str) -> bool {
-    region.layout.as_deref().is_none_or(|value| value == layout)
+fn region_applies(region: &Region, layout: &str, omitted: Option<&str>) -> bool {
+    omitted != Some(region.name.as_str())
+        && region.layout.as_deref().is_none_or(|value| {
+            value == layout || value.split_ascii_whitespace().any(|name| name == layout)
+        })
 }
 
 fn load_html(name: &str, config: &RegionConfig, config_dir: &Path) -> Result<Option<String>> {

@@ -397,7 +397,7 @@ pub(crate) struct BundleResult {
     pub(crate) script_map: HashMap<usize, Vec<String>>,
     /// Projection metadata validated once against the completed bundle.
     pub(crate) projection: webui::PreparedProjectionManifests,
-    /// Exact generated-entry identities and cache-busted served output URLs.
+    /// Exact generated-entry identities and served output URLs.
     pub(crate) preloads: BundlePreloadMap,
     /// Wall time spent producing and validating the client bundle.
     pub(crate) duration: std::time::Duration,
@@ -770,21 +770,6 @@ fn validate_inline_script_imports(
     Ok(())
 }
 
-fn versioned_script_paths(site_dir: &Path, rel_paths: &[String]) -> Result<Vec<String>> {
-    let mut versioned = Vec::with_capacity(rel_paths.len());
-    for rel_path in rel_paths {
-        let full_path = site_dir.join(rel_path);
-        if !full_path.exists() {
-            return Err(Error::Build(format!(
-                "Bundled chunk output missing: {}",
-                full_path.display()
-            )));
-        }
-        versioned.push(versioned_asset_path(rel_path, &full_path)?);
-    }
-    Ok(versioned)
-}
-
 fn skip_js_whitespace(input: &str, mut cursor: usize) -> usize {
     let bytes = input.as_bytes();
     while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
@@ -1110,7 +1095,9 @@ fn page_script_paths(
                 full_path.display()
             ))
         })?;
-        versioned_script_paths(site_dir, &rel_paths)
+        // These imports are already content-addressed by esbuild. Keep their
+        // exact URLs rather than creating query-versioned module duplicates.
+        Ok(rel_paths)
     } else {
         Ok(vec![versioned_asset_path(output_file, full_path)?])
     }
@@ -1152,6 +1139,7 @@ fn collect_versioned_output_urls(
     site_dir: &Path,
     base_path: &str,
     outputs: &[PathBuf],
+    entry_outputs: &[&Path],
 ) -> Result<BTreeMap<PathBuf, String>> {
     let canonical_site = site_dir
         .canonicalize()
@@ -1165,8 +1153,12 @@ fn collect_versioned_output_urls(
             ))
         })?;
         let relative = path_for_js(relative);
-        let versioned = versioned_asset_path(&relative, output)?;
-        output_urls.insert(output.clone(), served_asset_path(base_path, &versioned));
+        let served = if entry_outputs.contains(&output.as_path()) {
+            served_asset_path(base_path, &versioned_asset_path(&relative, output)?)
+        } else {
+            served_asset_path(base_path, &relative)
+        };
+        output_urls.insert(output.clone(), served);
     }
     Ok(output_urls)
 }
@@ -1639,6 +1631,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         opts.site_dir,
         opts.base_path,
         &preload_outputs,
+        &generated_entries,
     )?);
     let preloads = BundlePreloadMap {
         projection: projection.clone(),
@@ -2345,7 +2338,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_output_map_uses_exact_cache_busted_served_urls() -> TestResult {
+    fn versioned_output_map_keeps_stable_entries_cache_busted() -> TestResult {
         let root = std::env::temp_dir().join(format!(
             "webui-press-output-url-test-{}-{:x}",
             std::process::id(),
@@ -2353,15 +2346,53 @@ mod tests {
         ));
         fs::remove_dir_all(&root).ok();
         fs::create_dir_all(root.join("assets"))?;
-        let chunk = root.join("assets/chunk.js");
-        fs::write(&chunk, "export const value = 1;")?;
+        let entry = root.join("assets/page-0.js");
+        fs::write(&entry, "export const value = 1;")?;
 
-        let identity = chunk.canonicalize()?;
-        let urls = collect_versioned_output_urls(&root, "/docs/", std::slice::from_ref(&identity))?;
+        let identity = entry.canonicalize()?;
+        let urls = collect_versioned_output_urls(
+            &root,
+            "/docs/",
+            std::slice::from_ref(&identity),
+            &[&identity],
+        )?;
         let href = urls.get(&identity).ok_or("generated output URL missing")?;
 
-        assert!(href.starts_with("/docs/assets/chunk.js?v="));
+        assert!(href.starts_with("/docs/assets/page-0.js?v="));
+        fs::write(&entry, "export const value = 2;")?;
+        let rebuilt = collect_versioned_output_urls(
+            &root,
+            "/docs/",
+            std::slice::from_ref(&identity),
+            &[&identity],
+        )?;
+        assert_ne!(rebuilt.get(&identity), Some(href));
         fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn content_hashed_preloads_keep_the_emitted_import_url() -> TestResult {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        fs::create_dir_all(&fixtures)?;
+        let root = tempfile::tempdir_in(fixtures)?;
+        fs::create_dir_all(root.path().join("assets"))?;
+        let chunk = root.path().join("assets/chunk-ABC12345.js");
+        fs::write(&chunk, "export const value = 1;")?;
+        let identity = chunk.canonicalize()?;
+
+        for base in ["/", "/nested/docs/"] {
+            let urls = collect_versioned_output_urls(
+                root.path(),
+                base,
+                std::slice::from_ref(&identity),
+                &[],
+            )?;
+            assert_eq!(
+                urls.get(&identity).map(String::as_str),
+                Some(format!("{base}assets/chunk-ABC12345.js").as_str())
+            );
+        }
         Ok(())
     }
 
@@ -2504,8 +2535,8 @@ mod tests {
 
         assert!(!assets.join("page-0.js").exists());
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].starts_with("assets/chunk-a.js?v="));
-        assert!(paths[1].starts_with("assets/chunk-b.js?v="));
+        assert_eq!(paths[0], "assets/chunk-a.js");
+        assert_eq!(paths[1], "assets/chunk-b.js");
         assert!(!paths
             .iter()
             .any(|path| path.starts_with("assets/chunk-shared.js")));

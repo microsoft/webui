@@ -1,57 +1,79 @@
+---
+description: Build and bundle a WebUI todo app with server state, keyed lists, native events, and observable updates.
+---
+
 # Building a Todo App
 
-This tutorial walks through the
-[`todo-webui`](https://github.com/microsoft/webui/tree/main/examples/app/todo-webui)
-example application. It uses the WebUI Framework to create two Web
-Components - `<todo-app>` and `<todo-item>` - with reactive state, event
-handling, and hydration from server-rendered HTML.
+Build two components: `<todo-app>` owns a list, and `<todo-item>` reports
+actions through custom events. The initial list is server-rendered; adding,
+toggling, and deleting items happen in the browser.
 
-By the end you will know how to:
-
-- Structure a WebUI project with components and static state
-- Author templates that use WebUI directives (`<for>`, `<if>`, `{{}}`, `@click`, `w-ref`)
-- Write TypeScript component classes with `@attr` and `@observable`
-- Hydrate the page so the server-rendered markup becomes interactive
-
----
+Complete [Hello World](/tutorials/hello-world) first. This tutorial uses the
+same two-component structure as the repository's
+[`todo-webui` example](https://github.com/microsoft/webui/tree/main/examples/app/todo-webui),
+with a labeled native form and a standalone npm setup. It does not save changes
+to a database: reloading restores `data/state.json`.
 
 ## 1. Project Setup
 
-The example has the following layout:
+Create a separate project. Run all commands from its root:
 
-```
-todo-webui/
-├── src/
-│   ├── index.html
-│   ├── index.ts
-│   ├── todo-app/
-│   │   ├── todo-app.html
-│   │   ├── todo-app.css
-│   │   └── todo-app.ts
-│   └── todo-item/
-│       ├── todo-item.html
-│       ├── todo-item.css
-│       └── todo-item.ts
-└── data/
-    └── state.json
+```bash
+mkdir todo-webui
+cd todo-webui
 ```
 
-- **src/** contains all source templates, styles, and client-side code.
-- **data/** holds the JSON state that the WebUI server injects into the page at
-  render time.
-
----
-
-## 2. State
-
-`data/state.json` provides the data for server-side rendering. The WebUI server
-reads this file and uses it to populate every `{{expression}}` in your templates.
+**`package.json`**
 
 ```json
 {
-  "textdirection": "ltr",
-  "language": "en",
+  "name": "todo-webui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:client": "node build-client.mjs",
+    "build:protocol": "webui build ./src --out ./dist --plugin webui",
+    "build": "npm run build:client && npm run build:protocol",
+    "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist"
+  }
+}
+```
+
+```bash
+npm install @microsoft/webui-framework
+npm install --save-dev @microsoft/webui esbuild
+```
+
+Keep WebUI packages on matching releases and keep optional dependencies enabled.
+Create the files below in your editor:
+
+```text
+todo-webui/
+  package.json
+  tsconfig.json
+  build-client.mjs
+  data/state.json
+  src/
+    index.html
+    index.ts
+    todo-app/
+      todo-app.html
+      todo-app.css
+      todo-app.ts
+    todo-item/
+      todo-item.html
+      todo-item.css
+      todo-item.ts
+```
+
+## 2. State
+
+**`data/state.json`**
+
+```json
+{
   "title": "Todo List",
+  "draft": "",
   "remainingCount": 2,
   "items": [
     { "id": "1", "title": "Buy groceries", "state": "done" },
@@ -61,37 +83,33 @@ reads this file and uses it to populate every `{{expression}}` in your templates
 }
 ```
 
-The `items` array drives the `<for>` loop inside the app component.
-`remainingCount` is provided by the server so the initial render shows the
-correct count. After hydration, the client keeps this value in sync by
-updating the `@observable` in event handlers.
-
----
+`remainingCount` is computed data: the server supplies its initial value, and
+each client mutation updates it. The renderer does not execute a TypeScript
+getter or constructor to calculate it.
 
 ## 3. Entry Template
 
-`src/index.html` is the outer HTML shell that the WebUI server renders first.
+**`src/index.html`**
 
 ```html
 <!DOCTYPE html>
-<html lang="en" dir="{{textdirection}}">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{title}}</title>
 </head>
 <body>
-  <todo-app title="{{title}}"></todo-app>
+  <main>
+    <todo-app title="{{title}}"></todo-app>
+  </main>
   <script type="module" src="/index.js"></script>
 </body>
 </html>
 ```
 
-The `{{title}}` expressions are replaced with values from `state.json` at
-render time. The module script at the bottom bootstraps hydration (see
-[Section 7](#7-hydration-entry-point)).
-
----
+The script URL points to the bundle created in
+[Build and Run](#8-build-and-run), not directly to a TypeScript file.
 
 ## 4. Todo App Component
 
@@ -103,104 +121,91 @@ render time. The module script at the bottom bootstraps hydration (see
   @delete-item="{onDeleteItem(e)}"
 >
   <h1>{{title}}</h1>
-  <div class="add-form">
-    <input
-      class="add-input"
-      placeholder="What needs to be done?"
-      w-ref="addInput"
-      @keydown="{onAddKeydown(e)}"
-    />
-    <button class="add-button" @click="{onAddClick()}">Add</button>
-  </div>
+  <form @submit="{onAdd(e)}">
+    <label for="new-task">New task</label>
+    <div class="add-form">
+      <input
+        id="new-task"
+        type="text"
+        required
+        value="{{draft}}"
+        @input="{onInput(e)}"
+        w-ref="{addInput}"
+      >
+      <button type="submit">Add</button>
+    </div>
+  </form>
   <div class="todo-list">
     <for each="item in items">
       <todo-item
+        key="{{item.id}}"
         id="{{item.id}}"
         title="{{item.title}}"
         state="{{item.state}}"
       ></todo-item>
     </for>
   </div>
-  <div class="footer">
-    <span>{{remainingCount}} items remaining</span>
-  </div>
+  <p role="status">Remaining tasks: {{remainingCount}}</p>
 </template>
 ```
 
-Key points:
-
-- **`shadowrootmode="open"`** – the server emits a declarative shadow root so
-  the component is visible before JavaScript loads.
-- **`@toggle-item` / `@delete-item`** on the root `<template>` – these are
-  delegated event listeners. Child `<todo-item>` elements emit these custom
-  events, and the parent catches them here.
-- **`w-ref="addInput"`** – stores a reference to the `<input>` element on the
-  component class, accessible as `this.addInput`.
-- **`@keydown` / `@click`** – WebUI event-binding syntax. The framework wires
-  these to the corresponding methods on the component class.
-- **`<for each="item in items">`** – iterates over the `items` array and stamps
-  out a `<todo-item>` for each entry.
+- The sole open `<template>` selects Shadow DOM. Its root event bindings
+  listen on the host for child custom events.
+- `@submit` belongs on the form: native submit events do not cross a shadow
+  boundary. Enter and the Add button use the same handler.
+- `w-ref="{addInput}"` needs braces. The ref is used only to restore focus;
+  `@input` updates `draft`, and the `value` binding keeps the input in sync.
+- <code v-pre>key="{{item.id}}"</code> preserves each repeated component's identity. `id` alone
+  is not a repeat key.
+- Child components receive item values through attributes; their templates
+  do not inherit the parent's `item` variable.
 
 ### Styles – `src/todo-app/todo-app.css`
 
 ```css
 :host {
   display: block;
-  max-width: 500px;
-  margin: 0 auto;
-  padding: 20px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  max-inline-size: 32rem;
+  margin-inline: auto;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
 }
+
 .add-form {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 0.5rem;
+  margin-block: 0.5rem 1rem;
 }
-.add-input {
+
+input {
   flex: 1;
-  padding: 8px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
+  min-inline-size: 0;
 }
-.add-button {
-  padding: 8px 16px;
-  background: #0078d4;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.footer {
-  margin-top: 16px;
-  color: #666;
-  font-size: 0.9em;
+
+input, button {
+  font: inherit;
+  padding: 0.5rem;
 }
 ```
-
----
 
 ## 5. Todo Item Component
 
 ### Template – `src/todo-item/todo-item.html`
 
 ```html
-<div class="todo-item" @click="{onClick(e)}">
-  <button class="toggle" data-action="toggle" title="Toggle complete">
-    <if condition="state == 'done'">
-      <span class="check">&#10003;</span>
-    </if>
-  </button>
+<div class="todo-item">
+  <button type="button" @click="{toggle()}">Toggle complete</button>
   <span class="title">{{title}}</span>
-  <button class="delete" data-action="delete" title="Delete">&times;</button>
+  <if condition="state == 'done'">
+    <span>Done</span>
+  </if>
+  <button type="button" @click="{deleteItem()}">Delete</button>
 </div>
 ```
 
-- **`<if condition="state == 'done'">`** – conditionally renders the checkmark
-  only when the item is complete. This is evaluated during both server rendering
-  and client-side reactive updates.
-- **`data-action`** attributes – the component uses a single `@click` handler
-  on the container and routes actions based on the `data-action` attribute of
-  the clicked element.
+The unwrapped template also uses Shadow DOM by default. Each button binds its
+own native click handler. The visible "Done" label makes completion
+understandable without relying only on color or strikethrough.
 
 ### Styles – `src/todo-item/todo-item.css`
 
@@ -208,238 +213,215 @@ Key points:
 :host {
   display: block;
 }
+
 .todo-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-bottom: 1px solid #eee;
+  gap: 0.5rem;
+  padding-block: 0.5rem;
+  border-block-end: 1px solid currentColor;
 }
-.todo-item .title {
+
+.title {
   flex: 1;
+  overflow-wrap: anywhere;
 }
+
 :host([state="done"]) .title {
   text-decoration: line-through;
-  color: #999;
 }
-.delete {
-  background: none;
-  border: none;
-  color: #cc0000;
-  font-size: 1.2em;
-  cursor: pointer;
+
+button {
+  font: inherit;
+  padding: 0.5rem;
 }
 ```
 
-The `:host([state="done"])` selector applies strikethrough styling whenever the
-host element's `state` attribute equals `"done"`.
-
----
-
 ## 6. Client-Side Component Classes
-
-The TypeScript classes give each component its interactive behaviour. The WebUI
-framework re-attaches these classes to the server-rendered shadow roots during
-hydration.
 
 ### `src/todo-app/todo-app.ts`
 
 ```typescript
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
+interface Todo {
+  id: string;
+  title: string;
+  state: string;
+}
+
 export class TodoApp extends WebUIElement {
-  // Reflected attribute – kept in sync with the DOM attribute
   @attr title = '';
-
-  // Observable array – changes trigger a re-render of the <for> loop
-  @observable items: Array<{ id: string; title: string; state: string }> = [];
-
-  // Remaining count – kept in sync by event handlers
+  @observable items: Todo[] = [];
+  @observable draft = '';
   @observable remainingCount = 0;
 
-  private updateRemaining(): void {
-    this.remainingCount = (this.items ?? []).filter(i => i.state !== 'done').length;
-  }
-
-  // DOM reference populated by w-ref="addInput" in the template
   addInput!: HTMLInputElement;
 
-  private nextId = 100;
-
-  onAddKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter') {
-      this.addTodo();
-    }
+  onInput(e: Event): void {
+    this.draft = (e.currentTarget as HTMLInputElement).value;
   }
 
-  onAddClick(): void {
-    this.addTodo();
-  }
-
-  private addTodo(): void {
-    const input = this.addInput;
-    if (!input) return;
-
-    const text = input.value.trim();
-    if (!text) return;
+  onAdd(e: SubmitEvent): void {
+    e.preventDefault();
+    const title = this.draft.trim();
+    if (!title) return;
 
     this.items = [
       ...this.items,
-      { id: String(this.nextId++), title: text, state: 'pending' },
+      { id: crypto.randomUUID(), title, state: 'pending' },
     ];
-    input.value = '';
-    input.focus();
+    this.updateRemaining();
+    this.draft = '';
+    this.addInput.focus();
   }
 
   onToggleItem(e: CustomEvent<{ id: string }>): void {
-    const item = (this.items ?? []).find(i => i.id === e.detail.id);
-    if (item) {
-      item.state = item.state === 'done' ? 'pending' : 'done';
-      this.items = [...this.items]; // Reassign to trigger reactive update
-    }
+    const item = this.items.find(item => item.id === e.detail.id);
+    if (!item) return;
+    item.state = item.state === 'done' ? 'pending' : 'done';
+    this.items = [...this.items];
+    this.updateRemaining();
   }
 
   onDeleteItem(e: CustomEvent<{ id: string }>): void {
-    this.items = (this.items ?? []).filter(item => item.id !== e.detail.id);
+    this.items = this.items.filter(item => item.id !== e.detail.id);
+    this.updateRemaining();
+  }
+
+  private updateRemaining(): void {
+    this.remainingCount = this.items.filter(item => item.state !== 'done').length;
   }
 }
 
 TodoApp.define('todo-app');
 ```
 
+Reassigning `items` notifies its observable setter; changing a nested field
+alone does not. The count is updated after **every** add, toggle, and delete.
+`crypto.randomUUID()` avoids collisions with initial IDs and is available on
+localhost or HTTPS.
+
 ### `src/todo-item/todo-item.ts`
 
 ```typescript
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { WebUIElement, attr } from '@microsoft/webui-framework';
 
 export class TodoItem extends WebUIElement {
   @attr id = '';
   @attr title = '';
-  @attr state = 'pending';
+  @attr state = '';
 
-  onClick(e: MouseEvent): void {
-    const target = e.composedPath()[0] as HTMLElement;
-    const action = target.closest('[data-action]')?.getAttribute('data-action');
-    if (!action) return;
+  toggle(): void {
+    this.$emit('toggle-item', { id: this.id });
+  }
 
-    if (action === 'toggle') {
-      this.$emit('toggle-item', { id: this.id });
-    } else if (action === 'delete') {
-      this.$emit('delete-item', { id: this.id });
-    }
+  deleteItem(): void {
+    this.$emit('delete-item', { id: this.id });
   }
 }
 
 TodoItem.define('todo-item');
 ```
 
-Note how `todo-item` uses `this.$emit()` to dispatch custom events that bubble
-up to the parent `<todo-app>`, where they are caught by the `@toggle-item` and
-`@delete-item` template bindings.
-
-**Decorator summary:**
-
-| Decorator | Purpose |
-|-----------|---------|
-| `@attr` | Reflects a class property to/from the element's HTML attribute. |
-| `@observable` | Tracks changes and triggers template updates when the value is reassigned. |
-
-
----
+The child reports intent rather than mutating the parent's list. `$emit()`
+creates a bubbling, composed custom event, so it can reach the parent host
+across Shadow DOM boundaries.
 
 ## 7. Hydration Entry Point
 
-`src/index.ts` imports the component modules so their custom element classes
-are registered, which triggers the framework to walk the DOM and hydrate.
+**`src/index.ts`**
 
 ```typescript
-window.addEventListener('webui:hydration-complete', logHydrationTiming);
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
 
-function logHydrationTiming(): void {
-  const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
-  console.log(`Hydration complete in ${total?.duration.toFixed(1)}ms`);
-
-}
-
-// Side-effect imports - register custom elements and trigger hydration
 import './todo-app/todo-app.js';
 import './todo-item/todo-item.js';
-
-// Fallback: if hydration already completed before the listener, log now
-if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
-  logHydrationTiming();
-}
 ```
 
-When the page loads:
-
-1. The browser has already painted the server-rendered declarative shadow roots.
-2. The module script runs, registering `todo-app` and `todo-item` as custom
-   elements.
-3. The framework matches each element to its class, re-attaches event listeners,
-   and activates reactive bindings.
-4. The `webui:hydration-complete` event fires once initial hydration settles.
-
----
+These imports register the elements. The runtime adopts the rendered DOM and
+connects behavior; no explicit "hydrate the page" call is needed. The initial
+content remains visible without JavaScript, but the todo actions need this
+bundle.
 
 ## 8. Build and Run
 
-Install the WebUI toolchain:
+**`tsconfig.json`**
 
-```bash
-npm install @microsoft/webui @microsoft/webui-framework
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false
+  }
+}
 ```
 
-Start the development server with live reload:
+**`build-client.mjs`**
 
-```bash
-npx webui serve ./src --state ./data/state.json --plugin=webui --watch
+```javascript
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { build } from 'esbuild';
+
+await build({
+  entryPoints: ['src/index.ts'],
+  outfile: 'dist/index.js',
+  bundle: true,
+  format: 'esm',
+  target: 'es2022',
+  tsconfig: 'tsconfig.json',
+  define: { __WEBUI_DEV__: 'true' },
+});
 ```
 
-The `--state` flag tells the server which JSON file to use when rendering
-templates. The `--watch` flag enables live reload on file changes.
-
-Create a production build:
-
 ```bash
-npx webui build ./src --out ./dist --plugin=webui
+npm run build
+npm run dev
 ```
 
-The output in `./dist` contains the compiled protocol binary and CSS files.
-Bundle your browser source entry directly. Import
-`@microsoft/webui-framework` from authored component modules. Scriptless
-components contribute no startup state; when the framework is loaded, their
-compiled templates can activate for browser-applied state or soft navigation.
-The protocol and CSS are ready for deployment with any handler (Rust, Node.js,
-C#, Python, Go).
+Open **http://127.0.0.1:3000/**. You should see three tasks and **Remaining
+tasks: 2**. Toggle "Write documentation" to see **Remaining tasks: 1**. Add a
+task to return to **2**, then delete that task to return to **1**.
 
----
+The two build steps have different outputs:
+
+| Step | Output |
+| --- | --- |
+| `build:client` | `dist/index.js`, including the runtime and your component classes |
+| `build:protocol` | `dist/protocol.bin` and generated component CSS |
+
+The preview server renders the templates and serves the bundle through
+`--servedir ./dist`. `webui build` alone does not produce `index.js`.
+If the page is visible but buttons do nothing, check that the bundle was built
+and that `/index.js` returns JavaScript.
+
+Add `--watch` to the dev command for template/state reloads. Rebuild browser code
+with `npm run build:client` after TypeScript edits, then refresh. This setup
+transforms TypeScript but does not type-check it. For release bundles, set
+`__WEBUI_DEV__` to `'false'` and enable esbuild's `minify` option after testing.
 
 ## 9. What You've Learned
 
-In this tutorial you:
-
-- **Structured a WebUI project** with separate component directories for
-  templates, styles, and TypeScript.
-- **Created Web Components** using declarative shadow roots
-  (`shadowrootmode="open"`) and WebUI template directives (`<for>`, `<if>`,
-  `{{}}`).
-- **Used `@attr` and `@observable`** decorators to manage reactive state in
-  component classes.
-- **Bound events** with `@click` and `@keydown` directives that map directly to
-  class methods, and used `$emit()` for child-to-parent communication.
-- **Referenced DOM elements** with `w-ref` to read input values without manual
-  query selectors.
-- **Hydrated the app** by importing component modules and listening for the
-  `webui:hydration-complete` event with per-component timing.
-- **Built and served** the app using the WebUI CLI.
-
----
+- Server state produces the first list and count.
+- Component attributes carry data down; custom events report actions up.
+- Observable assignments update bindings, and repeat keys preserve identity.
+- The form uses normal submit/input events; the ref is only for focus.
+- Templates and browser TypeScript have separate build steps.
 
 ## 10. Next Steps
 
-- [Hydration](/guide/concepts/hydration) - learn how the framework re-attaches
-  to server-rendered markup.
-- [Routing](/guide/concepts/routing) – add multi-page navigation to your app.
-- [Commerce Example](https://github.com/microsoft/webui/tree/main/examples/app/commerce) –
-  a more complex app with product listings, search, cart, and nested routing.
+Use your [backend integration](/guide/integrations) to persist changes, handle
+failed writes, and return fresh initial state. Then explore
+[hydration](/guide/concepts/hydration) or [routing](/guide/concepts/routing)
+when the application needs them.

@@ -1,57 +1,94 @@
-# React vs Web Components
+---
+description: "Translate React skills into a new WebUI app: components, initial state, props, events, keys, CSS, and composition."
+---
 
-This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI equivalents (declarative, HTML-centric). Each section shows React and WebUI side by side so you can see how familiar patterns translate to a Web Components model.
+<span id="react-vs-web-components"></span>
+
+# Coming from React
+
+You already know the useful ideas: describe UI from state, compose components,
+pass data down, and handle user intent. WebUI keeps those ideas, but puts
+structure in HTML templates, styling in CSS, and browser behavior in
+TypeScript.
+
+Both systems are declarative. React supports client rendering, SSR, and
+[Server Components](https://react.dev/reference/rsc/server-components).
+Server Component source does not ship to the browser, and React SSR can show
+content before hydration. The relevant difference is how a particular
+application runs, not whether one framework is "declarative" or "fast."
+
+This guide is for **starting a new WebUI app**. It is not a JSX drop-in:
+React components, hooks, context providers, and React-specific UI libraries
+need a different implementation. Framework-independent JavaScript and ordinary
+web APIs may still be useful.
 
 ## Key Differences at a Glance
 
-| | React | WebUI |
-|---|---|---|
-| **Component model** | JSX functions / classes with virtual DOM | Web Components with Shadow DOM or Light DOM |
-| **Rendering** | Client-side or Node.js SSR | Build-time compiled protocol, server-rendered HTML |
-| **Template language** | JSX (JavaScript + HTML mixed) | Separate HTML, CSS, and TypeScript files |
-| **State management** | `useState`, `useReducer`, context | `@observable` properties with targeted DOM updates |
-| **Styling** | CSS-in-JS, CSS Modules, or external | Paired CSS scoped for unwrapped Light DOM or native Shadow DOM |
-| **Runtime** | React runtime + ReactDOM in browser | No framework runtime for static content; thin hydration for interactive islands |
-| **Interactivity** | Every component ships JavaScript | Only interactive islands ship JavaScript |
+| Familiar concept | In WebUI |
+| --- | --- |
+| Component | A hyphenated HTML template with paired CSS and optional TypeScript |
+| JSX expressions | Path bindings, `<if>`, and `<for>`; no arbitrary JavaScript in templates |
+| Initial render | Your backend provides JSON; the native renderer does not run component TypeScript |
+| Client state | `@observable` properties and assignments after hydration |
+| Props | HTML attributes and `@attr`; complex values use property bindings such as `:items` |
+| Callback props | Native events and bubbling, composed custom events |
+| List identity | A stable `key` on the first concrete repeated child |
+| CSS | Global in Light DOM; natively isolated in Shadow DOM |
+| `children` | Explicit nesting and, in Shadow components, native slots |
+
+Follow [Hello World](/tutorials/hello-world) for the complete npm install,
+decorator settings, bundling, and CLI commands. Below, the counter uses those
+same files; other examples are focused snippets, not complete applications.
 
 ## Simple Counter
 
-<code-comparison left-label="React" right-label="WebUI Framework">
+Both examples display an initial count and increment it on click.
+
+<code-comparison left-label="React" right-label="WebUI">
 <div slot="left">
 
-**my-counter.jsx**
-
 ```jsx
+'use client';
+
 import { useState } from 'react';
 
-function Counter() {
-  const [count, setCount] = useState(0);
+export function Counter({ label = 'Clicks', initialCount = 0 }) {
+  const [count, setCount] = useState(initialCount);
 
   return (
     <div>
-      <p>Count: {count}</p>
-      <button onClick={() => setCount(count + 1)}>Increment</button>
+      <p>{label}: {count}</p>
+      <button type="button" onClick={() => setCount(value => value + 1)}>
+        Increment
+      </button>
     </div>
   );
 }
 ```
 
+`'use client'` marks the client boundary when using a React Server Components
+framework. It is not needed in every React setup.
+
 </div>
 <div slot="right">
 
-**my-counter.html**
+**`src/my-counter/my-counter.html`**
 
 ```html
-<p>Count: {{count}}</p>
-<button @click="{increment()}">Increment</button>
+<p>{{label}}: {{count}}</p>
+<button type="button" @click="{increment()}">Increment</button>
 ```
 
-**my-counter.ts**
+**`src/my-counter/my-counter.ts`**
 
 ```typescript
-import { WebUIElement, observable } from '@microsoft/webui-framework';
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
 export class MyCounter extends WebUIElement {
+  @attr label = '';
   @observable count = 0;
 
   increment(): void {
@@ -65,67 +102,67 @@ MyCounter.define('my-counter');
 </div>
 </code-comparison>
 
-**What changed:** Template and logic are separated into HTML and TypeScript files. No JSX, no `useState` hook, no `setState` call. The `@observable` decorator makes `count` reactive - when it changes, only the bound DOM nodes update.
+In the page template, place `<my-counter label="Clicks"></my-counter>`.
+Supply `{ "count": 0 }` in server state, import the component from the browser
+entry, and load the bundled entry with a module script.
+
+**The initial-state difference matters:** a WebUI field initializer is not
+executed by the renderer. The server must provide `count` for the first HTML;
+the component handles changes after hydration. No server-side execution of
+hooks, constructors, or computed getters fills that gap.
 
 ## Conditional Rendering
 
-<code-comparison left-label="React" right-label="WebUI Framework">
+<code-comparison left-label="React" right-label="WebUI">
 <div slot="left">
-
-**user-greeting.jsx**
 
 ```jsx
 function Greeting({ isLoggedIn, username }) {
-  return (
-    <div>
-      {isLoggedIn ? (
-        <p>Welcome back, {username}!</p>
-      ) : (
-        <p>Please sign in.</p>
-      )}
-    </div>
-  );
+  return isLoggedIn
+    ? <p>Welcome back, {username}!</p>
+    : <p>Please sign in.</p>;
 }
 ```
 
 </div>
 <div slot="right">
 
-**user-greeting.html**
-
 ```html
-<div>
-  <if condition="isLoggedIn">
-    <p>Welcome back, {{username}}!</p>
-  </if>
-  <if condition="!isLoggedIn">
-    <p>Please sign in.</p>
-  </if>
-</div>
+<if condition="isLoggedIn">
+  <p>Welcome back, {{username}}!</p>
+</if>
+<if condition="!isLoggedIn">
+  <p>Please sign in.</p>
+</if>
 ```
 
 </div>
 </code-comparison>
 
-**What changed:** Conditional logic moves from JavaScript ternary expressions into declarative `<if>` directives. These are evaluated on the server during rendering - no JavaScript is shipped to the browser for static conditionals.
+WebUI can render this template from `{ "isLoggedIn": true, "username": "Ada" }`
+without a component class. If browser behavior later changes those values,
+add the appropriate observable state and runtime.
+
+Text bindings are **path lookups**, not JavaScript expressions.
+<code v-pre>{{items.length}}</code> works;
+<code v-pre>{{items.map(...)}}</code>, <code v-pre>{{count + 1}}</code>, and
+<code v-pre>{{formatDate(date)}}</code> do not. Precompute formatted initial values on the
+server. Conditions allow comparisons and limited logical operators, not
+ternaries, function calls, arithmetic, grouping parentheses, or mixed `&&`
+and `||`. See the [directive reference](/guide/concepts/directives/).
 
 ## List Rendering
 
-<code-comparison left-label="React" right-label="WebUI Framework">
-<div slot="left">
+Both versions render an array of `{ id, title }` records:
 
-**todo-list.jsx**
+<code-comparison left-label="React" right-label="WebUI">
+<div slot="left">
 
 ```jsx
 function TodoList({ items }) {
   return (
     <ul>
-      {items.map((item) => (
-        <li key={item.id}>
-          <span>{item.title}</span>
-          <span className={`status ${item.state}`}>{item.state}</span>
-        </li>
-      ))}
+      {items.map(item => <li key={item.id}>{item.title}</li>)}
     </ul>
   );
 }
@@ -134,15 +171,10 @@ function TodoList({ items }) {
 </div>
 <div slot="right">
 
-**todo-list.html**
-
 ```html
 <ul>
   <for each="item in items">
-    <li key="{{item.id}}">
-      <span>{{item.title}}</span>
-      <span class="status {{item.state}}">{{item.state}}</span>
-    </li>
+    <li key="{{item.id}}">{{item.title}}</li>
   </for>
 </ul>
 ```
@@ -150,45 +182,40 @@ function TodoList({ items }) {
 </div>
 </code-comparison>
 
-**What changed:** `Array.map()` with JSX becomes a declarative `<for>`
-directive. Like React, reorderable lists can declare stable identity by placing
-the compiler-only `key` attribute on the first concrete repeated child. Leading
-`<if>` wrappers are transparent, but directives cannot carry the key. Simple
-loops may omit it and reconcile by position. `data-key` and other attributes
-never act as implicit keys. This runs on the server and produces static HTML -
-no JavaScript array iteration in the browser.
+WebUI renders the initial array on the server. With browser state updates,
+stable keys preserve repeated content across reorder or removal. Omit keys
+only when positional identity is appropriate. Put the key on the first
+concrete child, not on `<for>`; `id` and `data-key` are not implicit keys.
+
+A component inside the loop receives explicit attributes or properties:
+
+```html
+<for each="item in items">
+  <todo-item key="{{item.id}}" id="{{item.id}}" title="{{item.title}}"></todo-item>
+</for>
+```
+
+Its own template uses `title`, not the parent's `item.title`.
 
 ## Event Handling
 
-<code-comparison left-label="React" right-label="WebUI Framework">
+React uses event props; WebUI binds native DOM events. Both examples keep an
+input and its displayed value in sync:
+
+<code-comparison left-label="React" right-label="WebUI">
 <div slot="left">
 
-**search-box.jsx**
-
 ```jsx
+import { useState } from 'react';
+
 function SearchBox() {
   const [query, setQuery] = useState('');
-
-  const performSearch = (searchQuery) => {
-    // search logic
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      performSearch(query);
-    }
-  };
-
   return (
-    <div>
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Search..."
-      />
-      <button onClick={() => performSearch(query)}>Search</button>
-    </div>
+    <label>
+      Filter
+      <input value={query} onChange={e => setQuery(e.target.value)} />
+      <span>{query}</span>
+    </label>
   );
 }
 ```
@@ -196,223 +223,124 @@ function SearchBox() {
 </div>
 <div slot="right">
 
-**search-box.html**
-
 ```html
-<div>
-  <input
-    @input="{onInput(e)}"
-    @keydown="{onKeyDown(e)}"
-    placeholder="Search..."
-  />
-  <button @click="{performSearch()}">Search</button>
-</div>
+<label>
+  Filter
+  <input value="{{query}}" @input="{onInput(e)}">
+  <span>{{query}}</span>
+</label>
 ```
 
-**search-box.ts**
+Inside the component class:
 
 ```typescript
-import { WebUIElement, observable } from '@microsoft/webui-framework';
+@observable query = '';
 
-export class SearchBox extends WebUIElement {
-  @observable query = '';
-
-  onInput(e: InputEvent): void {
-    this.query = (e.currentTarget as HTMLInputElement).value;
-  }
-
-  onKeyDown(e: KeyboardEvent): void {
-    if (e.key === 'Enter') {
-      this.performSearch();
-    }
-  }
-
-  performSearch(): void {
-    // search logic using this.query
-  }
+onInput(e: Event): void {
+  this.query = (e.currentTarget as HTMLInputElement).value;
 }
-
-SearchBox.define('search-box');
 ```
 
 </div>
 </code-comparison>
 
-**What changed:** Event handlers use `@event` syntax instead of `onEvent` props. Input value is read from `e.currentTarget` in the `@input` handler — no DOM reference needed. No synthetic event system - the browser's native events are used directly.
+Supply `query` in WebUI's server state too. Event arguments can be `e`, paths,
+or supported literals; do calculations in the handler, not in `@input`.
+`w-ref="{inputEl}"` is for imperative APIs such as focus, not reading rendered
+text back as application state.
 
 ## Parent-Child Communication
 
-<code-comparison left-label="React" right-label="WebUI Framework">
-<div slot="left">
-
-**color-picker.jsx**
-
-```jsx
-function ColorPicker({ onColorChange }) {
-  return (
-    <div className="colors">
-      <button onClick={() => onColorChange('red')}>Red</button>
-      <button onClick={() => onColorChange('blue')}>Blue</button>
-    </div>
-  );
-}
-
-function App() {
-  const [color, setColor] = useState('');
-
-  return (
-    <div>
-      <ColorPicker onColorChange={setColor} />
-      <p>Selected: {color}</p>
-    </div>
-  );
-}
-```
-
-</div>
-<div slot="right">
-
-**color-picker.html**
-
-```html
-<div class="colors">
-  <button @click="{selectColor('red')}">Red</button>
-  <button @click="{selectColor('blue')}">Blue</button>
-</div>
-```
-
-**color-picker.ts**
+**Data down:** use attributes for scalar inputs and property bindings for
+complex values. An authored component can expose them as:
 
 ```typescript
-import { WebUIElement } from '@microsoft/webui-framework';
-
-export class ColorPicker extends WebUIElement {
-  selectColor(color: string): void {
-    this.$emit('color-change', { color });
-  }
-}
-
-ColorPicker.define('color-picker');
+@attr label = '';
+@attr({ mode: 'boolean' }) disabled = false;
+@observable items: Array<{ id: string; title: string }> = [];
 ```
-
-**theme-app.html**
 
 ```html
-<template shadowrootmode="open"
-  @color-change="{onColorChange(e)}"
->
-  <color-picker></color-picker>
-  <p>Selected: {{currentColor}}</p>
-</div>
+<task-list label="Today" ?disabled="{{isSaving}}" :items="{{items}}"></task-list>
 ```
 
-**theme-app.ts**
+Boolean attributes use presence/absence; `disabled="false"` is still present.
+Property bindings use the `:` prefix on custom elements, not native inputs.
+
+**Intent up:** a React child might call `onDelete(id)`. A WebUI child can emit:
 
 ```typescript
-import { WebUIElement, observable } from '@microsoft/webui-framework';
-
-export class ThemeApp extends WebUIElement {
-  @observable currentColor = '';
-
-  onColorChange(e: CustomEvent): void {
-    this.currentColor = e.detail.color;
-  }
-}
-
-ThemeApp.define('theme-app');
+this.$emit('delete-item', { id: this.id });
 ```
 
-</div>
-</code-comparison>
+The parent template listens on the child:
 
-**What changed:** React passes callback props down; WebUI uses native Custom Events that bubble up through the DOM. The child emits an event with `this.$emit()`, and the parent catches it with `@event` syntax on the component tag. Components are fully decoupled - the child doesn't reference the parent.
+```html
+<todo-item id="1" @delete-item="{onDeleteItem(e)}"></todo-item>
+```
+
+The parent class owns the resulting state change:
+
+```typescript
+onDeleteItem(e: CustomEvent<{ id: string }>): void {
+  this.items = this.items.filter(item => item.id !== e.detail.id);
+}
+```
+
+`$emit()` sets `bubbles` and `composed`, so events can cross Shadow DOM
+boundaries. Native `submit` and `change` events do not do that; bind them on
+the form or input itself. The [Todo tutorial](/tutorials/todo-app) combines
+these patterns in a runnable app.
 
 ## Styling
 
-<code-comparison left-label="React" right-label="WebUI Framework">
-<div slot="left">
+React can use ordinary CSS; CSS-in-JS is optional. WebUI uses ordinary paired
+CSS files rather than JavaScript-driven styling.
 
-**product-card.jsx**
+- **Shadow is the default** for an unwrapped WebUI component. Use `:host` for
+  the host, and ordinary selectors for its internal elements.
+- **Light DOM is global** in its containing Document or ShadowRoot. Selectors
+  are not rewritten or scoped. A rule such as `.title` may affect other Light
+  components in that tree.
+- A sole bare `<template>` explicitly selects Light DOM. A sole
+  `<template shadowrootmode="open">` selects Shadow even in a `--dom light`
+  build. `<slot>` and `:host` require Shadow.
 
-```jsx
-import styled from 'styled-components';
-
-const Card = styled.div`
-  padding: 1rem;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-`;
-
-const Title = styled.h3`
-  color: #333;
-  margin: 0 0 0.5rem 0;
-`;
-
-function ProductCard({ name, price }) {
-  return (
-    <Card>
-      <Title>{name}</Title>
-      <p>${price}</p>
-    </Card>
-  );
-}
-```
-
-</div>
-<div slot="right">
-
-**product-card.html**
+Let state control an attribute, then let CSS control appearance:
 
 ```html
-<div class="card">
-  <h3>{{name}}</h3>
-  <p>${{price}}</p>
-</div>
+<button aria-pressed="{{isActive}}" ?data-active="{{isActive}}" @click="{toggle()}">
+  Favorite
+</button>
 ```
-
-**product-card.css**
 
 ```css
-.card {
-  padding: 1rem;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-}
-
-h3 {
-  color: #333;
-  margin: 0 0 0.5rem 0;
+button[data-active] {
+  font-weight: 700;
 }
 ```
 
-</div>
-</code-comparison>
-
-**What changed:** CSS-in-JS becomes a plain CSS file. WebUI scopes it at build
-time for unwrapped Light components, while opted-in Shadow components use native
-Shadow scoping. There is no JavaScript runtime cost for styling.
+`aria-pressed` takes a value including `"false"`; it is not an HTML boolean
+attribute. The `?` prefix is appropriate for the presence-based styling hook.
 
 ## Component Composition
 
-<code-comparison left-label="React" right-label="WebUI Framework">
+React's `children` prop and native slots solve similar composition tasks, but
+they are not interchangeable APIs.
+
+<code-comparison left-label="React" right-label="WebUI">
 <div slot="left">
 
-**user-profile.jsx**
-
 ```jsx
-function UserProfile({ user }) {
+function NoticePanel({ heading, children }) {
+  return <section><h2>{heading}</h2>{children}</section>;
+}
+
+function App() {
   return (
-    <div className="profile">
-      <img src={user.avatar} alt={user.name} />
-      <h2>{user.name}</h2>
-      <p>{user.bio}</p>
-      {user.isAdmin && <AdminBadge />}
-      <ul>
-        {user.skills.map((skill) => (
-          <li key={skill}>{skill}</li>
-        ))}
-      </ul>
-    </div>
+    <NoticePanel heading="Next">
+      <a href="/tasks">Open tasks</a>
+    </NoticePanel>
   );
 }
 ```
@@ -420,25 +348,31 @@ function UserProfile({ user }) {
 </div>
 <div slot="right">
 
-**user-profile.html**
+Component template:
 
 ```html
-<div class="profile">
-  <img src="{{user.avatar}}" alt="{{user.name}}" />
-  <h2>{{user.name}}</h2>
-  <p>{{user.bio}}</p>
-  <if condition="user.isAdmin">
-    <admin-badge></admin-badge>
-  </if>
-  <ul>
-    <for each="skill in user.skills">
-      <li>{{skill}}</li>
-    </for>
-  </ul>
-</div>
+<template shadowrootmode="open">
+  <section>
+    <h2>{{heading}}</h2>
+    <slot></slot>
+  </section>
+</template>
+```
+
+Parent template:
+
+```html
+<notice-panel heading="Next">
+  <a href="/tasks">Open tasks</a>
+</notice-panel>
 ```
 
 </div>
 </code-comparison>
 
-**What changed:** JSX expressions (`&&`, `.map()`, template literals) become HTML directives (`<if>`, `<for>`, `{{}}`). The template reads like HTML with declarative annotations, not JavaScript with embedded markup.
+Use slots for caller-provided content in Shadow components and `<outlet>` for
+child routes. Light components do not support native slots. Keep structure in
+templates instead of building it with DOM APIs.
+
+**Next:** [run the first app](/tutorials/hello-world), or use the
+[best-practices checklist](/guide/concepts/best-practices) while authoring.

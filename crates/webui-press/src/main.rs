@@ -18,6 +18,8 @@ mod error;
 #[cfg(test)]
 mod extraction_tests;
 mod markdown;
+mod metadata;
+mod outline;
 mod regions;
 mod scratch;
 mod serve;

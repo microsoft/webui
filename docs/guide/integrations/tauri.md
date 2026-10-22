@@ -1,8 +1,16 @@
+---
+title: "Tauri snapshot example"
+description: "Open a prebuilt WebUI app in the repository's Rust-only Tauri viewer, with explicit limits on routing and backend behavior."
+---
+
 # Tauri
 
-The Tauri example opens a pre-built WebUI app in a native window using Rust,
+The repository's Tauri example opens a prebuilt WebUI app using Rust,
 without Node or an HTTP server. It loads `protocol.bin` and JSON state,
 renders once, and serves the page and browser assets through a custom protocol.
+
+This is an example host, not a separate WebUI package or application SDK. For
+WebUI's own window, state, and IPC APIs, see [Desktop Apps](/guide/concepts/desktop).
 
 Install [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/)
 and the repository's pnpm dependencies, then run from the repository root:

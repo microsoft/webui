@@ -1,67 +1,74 @@
-# Serverless Architecture
+---
+title: "Rendering in a service worker"
+description: "Run the handler-only WASM example, understand its bootstrap load, and separate browser rendering from native server-side rendering."
+---
 
-The [`examples/app/service-worker`](https://github.com/microsoft/webui/tree/main/examples/app/service-worker)
-example demonstrates a high-value WebUI architecture: cache the UI on a CDN and
-pay dynamic compute cost only for state.
+<a id="serverless-architecture"></a>
 
-The expensive part of SSR is usually rebuilding the same page shell over and
-over. WebUI changes that split. The HTML structure and component styles compile
-once into `protocol.bin`, which can be cached next to the handler-only WASM
-bundle. On each navigation, the browser service worker fetches only public JSON
-state, renders fragments locally with the lightweight WASM handler, and streams
-HTML into the page as each API response arrives.
+# Rendering in a Service Worker
 
-That means the origin or serverless function does not render HTML. It only
-serves state. The UI, protocol, theme, and WASM handler can all live behind CDN
-cache.
+The [service-worker example](https://github.com/microsoft/webui/tree/main/examples/app/service-worker)
+renders HTML in the browser using WebUI's handler-only WASM bundle. A static
+host serves the compiled UI and bootstrap page; APIs provide public JSON state.
+
+This is an alternative deployment model, **not ordinary native SSR**.
+Normally a WebUI server loads `protocol.bin` and sends HTML to the browser.
+In this example the browser downloads the protocol and WASM and pays their
+transfer, initialization, rendering, and memory costs.
+
+## Run it
+
+From a source checkout with the workspace dependencies installed:
+
+```bash
+pnpm --filter service-worker-example build
+cd examples/app/service-worker
+pnpm start
+```
+
+Open `http://localhost:4175/`. The first, uncontrolled load serves a static
+bootstrap page. It registers the service worker and reloads after activation;
+only a controlled navigation receives worker-rendered HTML. Deployment requires
+a service-worker-capable browser and a secure context (HTTPS, or localhost for
+development).
+
+## Cache UI separately from data
+
+The compiled UI, WASM handler, and theme assets can be cached as a versioned
+set. A worker can reuse that UI while fetching fresh application state, then
+stream rendered HTML fragments as each boundary's data becomes ready.
+
+Your app chooses cache storage, invalidation, and offline fallback behavior.
+The example below reuses loaded resources during the worker's lifetime and
+revalidates network fetches; it does not install a persistent offline cache.
 
 ## Sequence
 
-```text
-Browser        Service Worker        CDN / Edge Cache        Public APIs        webui_wasm_handler
-   |                 |                       |                    |                    |
-   | GET /           |                       |                    |                    |
-   |---------------------------------------->|                    |                    |
-   | index.html + app.js                    |                    |                    |
-   |<----------------------------------------|                    |                    |
-   | register()      |                       |                    |                    |
-   |---------------->|                       |                    |                    |
-   | claim clients   |                       |                    |                    |
-   |<----------------|                       |                    |                    |
-   | navigate /      |                       |                    |                    |
-   |---------------->|                       |                    |                    |
-   |                 | GET /protocol.bin     |                    |                    |
-   |                 |---------------------->|                    |                    |
-   |                 | cached protocol       |                    |                    |
-   |                 |<----------------------|                    |                    |
-   |                 | GET /wasm/handler/... |                    |                    |
-   |                 |---------------------->|                    |                    |
-   |                 | cached handler WASM   |                    |                    |
-   |                 |<----------------------|                    |                    |
-   |                 | GET /theme.css        |                    |                    |
-   |                 |---------------------->|                    |                    |
-   |                 | cached theme CSS      |                    |                    |
-   |                 |<----------------------|                    |                    |
-   |                 | GET /api/*.json       |------------------->|                    |
-   |                 | JSON state            |<-------------------|                    |
-   |                 | render(state chunk)   |                    |------------------->|
-   |                 | onChunk(rendered HTML)|                    |<-------------------|
-   | stream fragment |                       |                    |                    |
-   |<----------------|                       |                    |                    |
-```
+| Step | What happens |
+| --- | --- |
+| First load | The static host serves `index.html` and its registration script. No worker render occurs yet. |
+| Activation | The worker claims clients; the bootstrap script reloads the page. |
+| Controlled navigation | The worker loads the handler WASM, `protocol.bin`, and theme CSS, reusing them during its lifetime. |
+| State loading | Public API requests start in parallel. |
+| Rendering | A host-driven `streamResponse()` session resumes each boundary when its data is ready, in document order. |
+| Delivery | The worker enqueues returned bytes into a `ReadableStream` response for the browser to parse. |
+
+Later boundaries do not overtake an earlier unresolved boundary. A restarted
+worker may need to reload its resources. The example is not an offline cache.
 
 ## Why this is different
 
-| Traditional SSR | WebUI service worker streaming |
+| Native WebUI SSR | Service-worker rendering |
 |-----------------|--------------------------------|
-| Server renders HTML per request | CDN serves cached protocol and WASM |
-| Dynamic compute repeats the UI shell | Dynamic compute returns only JSON state |
-| First byte waits for server render | Service worker can stream fragments as APIs resolve |
-| App server owns HTML rendering | Browser owns rendering through the handler-only WASM bundle |
+| The server loads the compiled protocol | The browser loads the compiled protocol and WASM |
+| The first document can contain rendered application HTML | The first uncontrolled load is a bootstrap page |
+| The host renders with server-provided state | Public APIs provide state for browser-side rendering |
+| Server capacity and transport affect delivery | Device capacity, worker startup, and API latency also affect delivery |
 
-This architecture is especially useful for public-data sites, dashboards, docs
-portals, marketing pages with personalized sections, and any serverless app
-where the UI changes far less often than the state.
+Consider this for a browser application backed by public data where a bootstrap
+load is acceptable. Prefer native SSR when the initial response needs complete
+HTML without JavaScript. Browser-side rendering does not move authorization
+into the worker or make API data private.
 
 ## Local code map
 
@@ -70,7 +77,7 @@ where the UI changes far less often than the state.
 | `examples/app/service-worker/src/*.html` | WebUI fragments compiled into `protocol.bin` |
 | `examples/app/service-worker/src/*.css` | Component CSS embedded into streamed light-DOM fragments |
 | `examples/app/service-worker/src/bootstrap.html` | Static first-load page stamped with build-time theme declarations |
-| `examples/app/service-worker/src/service-worker.ts` | Navigation interception, state fetches, WASM render callback, `ReadableStream` writes |
+| `examples/app/service-worker/src/service-worker.ts` | Navigation interception, state fetches, progressive WASM session, `ReadableStream` writes |
 | `examples/app/service-worker/src/payload.ts` | Public API payload validation and URL sanitization |
 | `examples/app/service-worker/scripts/inject-theme.ts` | Build-time equivalent of `webui serve --theme` token injection |
 | `examples/app/service-worker/public/api/*.json` | Demo public state APIs |
@@ -80,33 +87,22 @@ where the UI changes far less often than the state.
 
 1. **Handler-only WASM.** The browser uses `webui_wasm_handler`, not the parser
    bundle. Parsing happens at build time.
-2. **Cached UI protocol.** `protocol.bin` is a static artifact. It can be served
-   with long-lived CDN caching and invalidated only when UI changes.
+2. **Static UI assets.** A CDN can serve the protocol and WASM, but configure
+   versioning and cache headers together. The example revalidates protocol and
+   theme fetches; it does not install an offline asset cache.
 3. **Dynamic state only.** API endpoints return JSON state. They do not build
    HTML and do not need a JavaScript rendering runtime.
-4. **Callback streaming.** Construct `Protocol` once from the cached bytes,
-   then call `protocol.renderStream(stateJson, onChunk, options)`. Handler
-   writes are coalesced around a 16 KiB target before `onChunk(html)`, and the
-   service worker writes those chunks directly to a `ReadableStream`.
-5. **Light DOM fragments.** Components are unwrapped, so the service worker can
-   append independent fragments into a single document stream.
+4. **Host-paced streaming.** Reuse `Protocol`, then create a `streamResponse`
+   session per navigation. Call `start`, `resume`, and `advance`, writing each
+   step's bytes to the response. See the [WASM API](/guide/integrations/wasm).
+5. **CSS delivery.** The example builds with `--css style` and supplies the
+   shared theme through the session's `headInject` option.
 6. **Shared theme tokens.** `scripts/inject-theme.ts` mirrors
    `webui serve --theme=@microsoft/webui-examples-theme` at build time. It reads
    `protocol.bin`, gets the protocol token list, and writes trusted token
    declarations into `public/index.html` and `public/theme.css`.
 7. **State validation boundary.** Public API state is validated before render.
    URL-bearing fields allow only `https:` or same-origin links.
-
-## Run it
-
-```bash
-pnpm --filter service-worker-example build
-cd examples/app/service-worker
-pnpm start
-```
-
-Open `http://localhost:4175/`. The first load installs the service worker and
-reloads. The next navigation is streamed by the service worker.
 
 ## Test it
 

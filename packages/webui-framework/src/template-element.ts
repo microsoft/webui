@@ -48,7 +48,7 @@
  */
 
 import { deferTemplateDefinition, getTemplate } from './template.js';
-import { cloneTemplateContent } from './template-content.js';
+import { cloneTemplateContent, createTemplateContainer } from './template-content.js';
 import { getTemplateSSRLayout } from './template-layout.js';
 import type {
   TemplateMeta,
@@ -1715,15 +1715,14 @@ export class TemplateElement extends HTMLElement {
 
   // ── Template parsing ──────────────────────────────────────────
 
-  private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
-    return cloneTemplateContent(meta, this.ownerDocument);
+  private $stageTemplate(wrapper: Element, meta: TemplateBlockMeta): void {
+    wrapper.appendChild(cloneTemplateContent(meta, this.ownerDocument, wrapper));
+    customElements.upgrade(wrapper);
   }
 
   private $createStagingRoot(meta: TemplateBlockMeta): HTMLElement {
     const wrapper = this.ownerDocument.createElement('div');
-    const fragment = this.$parseTemplate(meta);
-    wrapper.appendChild(fragment);
-    customElements.upgrade(wrapper);
+    this.$stageTemplate(wrapper, meta);
     return wrapper;
   }
 
@@ -2913,7 +2912,9 @@ export class TemplateElement extends HTMLElement {
   ): TemplateInstance | null {
     const bm = this.$block(blockIndex);
     if (!bm) return null;
-    const wrapper = this.$createStagingRoot(bm);
+    const context = container?.nodeType === 1 ? container as Element : undefined;
+    const wrapper = createTemplateContainer(this.ownerDocument, context);
+    this.$stageTemplate(wrapper, bm);
     const inst = this.$wire(wrapper, bm, scope);
     inst.nodes = childNodesArray(wrapper);
     this.$updateInstance(inst);

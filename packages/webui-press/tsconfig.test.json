@@ -6,7 +6,10 @@
     "strict": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@microsoft/webui-framework": ["../webui-framework/dist/index.d.ts"]
+    }
   },
-  "include": ["tests"]
+  "include": ["tests", "../../crates/webui-press/template/docs-outline"]
 }

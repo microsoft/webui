@@ -1,14 +1,19 @@
+---
+title: "C API and FFI"
+description: "Build the native shared library, render through opaque handles, and manage ownership, errors, and streaming from C or other hosts."
+---
+
 # C API
 
-The WebUI FFI (Foreign Function Interface) handler exposes the loaded-protocol
-rendering pipeline as a C-compatible shared library. Any language with C
-interop, Go, Ruby, PHP, Lua, and more, can render compiled WebUI applications
-without a JavaScript runtime. .NET applications should prefer the managed
-`Microsoft.WebUI` NuGet package, which restores native runtime packages
-transitively, and Python applications should prefer the native
-`microsoft-webui` package (see [Python](./python)). .NET wraps this C ABI;
-Python binds the Rust handler directly through PyO3. Only languages without a
-first-class binding need to call the C ABI directly.
+Build WebUI as a native shared library to call the Rust renderer through C
+interop. Load a protocol handle once, reuse it for rendering, and release each
+result with its designated function. Your host must support the target's
+native library and ABI; this does not require a JavaScript SSR engine.
+
+Prefer the managed [Microsoft.WebUI package](./dotnet) for .NET or the native
+[Python package](./python) on its supported targets. The Go and `ctypes`
+examples below demonstrate direct FFI ownership rather than additional
+first-class packages.
 
 ## Building the Shared Library
 
@@ -151,10 +156,9 @@ at the matching structural boundary (before `</head>`, after `<body>`, before
 {"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
 ```
 
-Members that are missing, `null`, empty, or not strings are ignored rather than
-an error. The `$webui` key is stripped from the client hydration payload, so it
-never reaches the DOM. No extra API call is needed — it travels on the state
-JSON hosts already send.
+Members that are missing, `null`, empty, or not strings are ignored.
+The `$webui` object is excluded from client state, but its HTML is emitted
+into the document. No extra API call is needed.
 
 **Safety.** The values are written verbatim with no escaping, exactly like the
 Rust `head_inject` / `body_inject` options. Never let untrusted request input
@@ -243,11 +247,8 @@ The partial function validates `state_json`, skips unselected values without
 materializing them, and copies only raw values required by authored components on
 the active route.
 
-The explicit create/destroy pair is the C representation of the normal
-`Protocol` object lifecycle. C cannot safely infer ownership from a raw
-`(pointer, length)` input: callers may mutate or free the bytes, pointer
-identity is not content identity, and hashing or copying on every request would
-erase the startup-only performance model.
+Keep the loaded handle alive while renders use it. Do not substitute a raw
+protocol-byte pointer for a handle.
 
 ### Progressive streaming sessions
 
@@ -322,8 +323,8 @@ descriptor values needed after destroying the step. Free update bytes with
 If a step has a descriptor, call `resume`. If it has neither a descriptor nor
 `done`, call `advance`. If `done` is true, the response is complete. `resume`
 is boundary-only so the host can send that checkpoint immediately; `advance`
-renders the following parent or document-tail bytes. No sibling boundary is
-needed. An update may be emitted between `resume` and `advance`.
+renders the following parent or document-tail bytes. An update may be emitted
+between `resume` and `advance`.
 
 The session clones its own references to the handler and protocol, so you may
 destroy them in any order. Drive a session from one thread at a time. See
@@ -407,11 +408,10 @@ examples.
 
 ### Advanced fallback: `ctypes`
 
-Platforms the `microsoft-webui` wheel matrix doesn't cover (musllinux, 32-bit,
-PyPy, GraalPy, free-threaded builds) can still reach WebUI by loading the
-shared library directly with Python's built-in `ctypes` module. No pip
-packages are needed, but you own memory management, argument marshalling, and
-thread-safety yourself.
+If no Python wheel covers your environment, `ctypes` is an alternative when
+you can build or obtain a compatible native library. It does not establish
+support for every Python interpreter or target. No extra pip package is
+needed, but you own memory management, argument marshalling, and thread safety.
 
 ```python
 import ctypes
@@ -598,7 +598,7 @@ flush semantics. Failures throw `WebUIException` carrying the same diagnostic
 
 ## Other Languages
 
-Any language with C FFI support can use WebUI. The pattern is always the same:
+For a host with compatible C interop and a native WebUI build:
 
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
 2. Declare the functions you need. For a server, use

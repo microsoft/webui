@@ -68,7 +68,7 @@ export function registerTrustedTemplateBlock(meta: TemplateBlockMeta): void {
 }
 
 /** @internal Parse registered compiler HTML without exposing a trusted value. */
-export function setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void {
+export function setTemplateContent(target: Element, meta: TemplateBlockMeta): void {
   const trust = getTemplatePolicy(meta);
   if (!trust) {
     target.innerHTML = meta.h;

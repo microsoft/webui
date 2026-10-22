@@ -4,7 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { registerTrustedTemplateBlock, setImportMapContent, setTemplateContent } from './trusted-types-policy.js';
-import { getTemplateFragment } from './template-content.js';
+import { cloneTemplateContent, createTemplateContainer, getTemplateFragment } from './template-content.js';
 import { getTemplateSSRLayout } from './template-layout.js';
 import type { TemplateBlockMeta } from './template-types.js';
 
@@ -23,6 +23,24 @@ function fixture(options: { absent?: boolean; denied?: boolean } = {}) {
   let creations = 0;
   let conversions = 0;
   const parsed: (Trusted | string)[] = [];
+  const container = (localName: string, namespaceURI = 'http://www.w3.org/1999/xhtml') => {
+    const attributes = new Map<string, string>();
+    const element = {
+      localName, namespaceURI, firstChild: null,
+      getAttribute(name: string) { return attributes.get(name) ?? null; },
+      setAttribute(name: string, value: string) { attributes.set(name, value); },
+      set innerHTML(value: Trusted | string) {
+        if (options.absent) assert.equal(typeof value, 'string');
+        else {
+          assert.ok(value instanceof Trusted);
+          assert.equal(value.kind, 'html');
+        }
+        parsed.push(value);
+      },
+    };
+    if (localName === 'template') Object.defineProperty(element, 'content', { value: { ownerDocument: document } });
+    return element;
+  };
   const names = new Set<string>();
   const fakeWindow = {
     trustedTypes: options.absent ? undefined : {
@@ -45,23 +63,19 @@ function fixture(options: { absent?: boolean; denied?: boolean } = {}) {
     },
   };
   Object.defineProperty(globalThis, 'window', { value: fakeWindow, configurable: true });
+  Object.defineProperty(globalThis, 'HTMLElement', { value: class {}, configurable: true });
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
     value: {
       createElement(tag: string) {
         if (tag === 'script') return { textContent: '', remove() {} };
-        assert.equal(tag, 'template');
-        return {
-          content: {},
-          set innerHTML(value: Trusted | string) {
-            if (options.absent) assert.equal(typeof value, 'string');
-            else {
-              assert.ok(value instanceof Trusted);
-              assert.equal(value.kind, 'html');
-            }
-            parsed.push(value);
-          },
-        };
+        return container(tag);
+      },
+      createElementNS(namespace: string, name: string) { return container(name, namespace); },
+      createDocumentFragment() { return {}; },
+      importNode(node: object, deep: boolean) {
+        assert.equal(deep, true);
+        return { cloned: node };
       },
     },
   });
@@ -208,6 +222,64 @@ test('registered empty templates remain valid compiler output', () => {
   assert.equal(getTemplateFragment(meta), getTemplateFragment(meta));
   assert.deepEqual(f.parsed.map(String), ['']);
   assert.equal(f.conversions, 1);
+});
+
+test('foreign fragments retain the private HTML sink and cache compatible parsing contexts', () => {
+  const f = fixture();
+  const meta = { h: '<a>Compiled content</a>' };
+  registerTrustedTemplateBlock(meta);
+  const contexts = [
+    document.createElement('div'),
+    document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+    document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject'),
+  ];
+  for (const context of contexts) {
+    cloneTemplateContent(meta, document, context);
+    cloneTemplateContent(meta, document, context);
+  }
+  assert.equal(f.conversions, 3, 'parse once per compatible context, never on every clone');
+  assert.deepEqual(f.parsed.map(String), [meta.h, meta.h, meta.h]);
+  contexts[2].setAttribute('id', 'live-parent');
+  const staging = createTemplateContainer(document, contexts[2]);
+  assert.equal(staging.namespaceURI, contexts[2].namespaceURI);
+  assert.equal(staging.localName, 'foreignObject');
+  assert.equal(staging.getAttribute('id'), null, 'do not clone unrelated parent attributes');
+});
+
+test('MathML annotation encodings select two cache modes rather than retaining arbitrary values', () => {
+  const f = fixture();
+  const meta = { h: '<a>Compiled content</a>' };
+  registerTrustedTemplateBlock(meta);
+  const context = document.createElementNS('http://www.w3.org/1998/Math/MathML', 'annotation-xml');
+  for (const encoding of ['TEXT/HTML', 'application/xhtml+xml', 'text/html']) {
+    context.setAttribute('encoding', encoding);
+    cloneTemplateContent(meta, document, context);
+    assert.equal(createTemplateContainer(document, context).getAttribute('encoding'), 'text/html');
+  }
+  assert.equal(f.conversions, 1);
+  for (const encoding of ['text/plain', 'application/xml', '', 'x'.repeat(10_000)]) {
+    context.setAttribute('encoding', encoding);
+    cloneTemplateContent(meta, document, context);
+    assert.equal(createTemplateContainer(document, context).getAttribute('encoding'), null);
+  }
+  assert.equal(f.conversions, 2);
+});
+
+test('foreign parsing rejects unregistered or changed compiler HTML and never bypasses policy denial', () => {
+  const f = fixture();
+  const meta = { h: '<rect></rect>' };
+  const context = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  assert.throws(() => cloneTemplateContent(meta, document, context), /Unregistered or modified/);
+  registerTrustedTemplateBlock(meta);
+  meta.h = '<path></path>';
+  assert.throws(() => cloneTemplateContent(meta, document, context), /Unregistered or modified/);
+  assert.equal(f.conversions, 0);
+  assert.deepEqual(f.parsed, []);
+  const denied = fixture({ denied: true });
+  const registered = { h: '<rect></rect>' };
+  registerTrustedTemplateBlock(registered);
+  assert.throws(() => cloneTemplateContent(registered, document, context), /Allow "webui" in CSP/);
+  assert.deepEqual(denied.parsed, []);
 });
 
 test('each document receives its own private policy', () => {
