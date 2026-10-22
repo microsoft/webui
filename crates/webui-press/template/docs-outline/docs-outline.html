@@ -1,0 +1,22 @@
+<template>
+  <aside class="toc-rail">
+    <nav class="outline-desktop" aria-label="On this page">
+      <h2>On this page</h2>
+      <ol w-ref="{outline}">
+        <for id="outline-links" each="heading in headings">
+          <if condition="heading.level > 1">
+            <li data-level="{{heading.level}}">
+              <a href="{{path}}#{{heading.anchor}}">{{heading.text}}</a>
+            </li>
+          </if>
+        </for>
+      </ol>
+    </nav>
+    <details class="outline-mobile">
+      <summary>On this page</summary>
+      <nav aria-label="On this page">
+        <ol><for id="outline-links" each="heading in headings" /></ol>
+      </nav>
+    </details>
+  </aside>
+</template>

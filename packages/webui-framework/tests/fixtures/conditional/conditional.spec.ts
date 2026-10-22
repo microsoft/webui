@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 
 import { expect, test } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
+import type { TestConditionTruthiness } from './element.js';
 
 test.describe('conditional fixture', () => {
   test.beforeEach(async ({ page }) => {
@@ -387,4 +389,166 @@ test.describe('conditional fixture', () => {
     await expect(host.locator('.stats .cell .num.pending')).toHaveText('pending');
     await expect(host.locator('.box .full-title')).toHaveText('full title');
   });
+});
+
+test('keeps bare collection conditions in parity across SSR and client updates', async ({
+  page, browser,
+}, testInfo) => {
+  const tag = 'test-condition-truthiness';
+  const cases = [
+    'items', 'trailing', 'record', 'items-length', 'trailing-length', 'record-field',
+    'empty-items', 'trailing-and', 'record-or',
+    'false', 'zero', 'empty-text', 'null', 'missing', 'true',
+  ];
+  type ReadyElement = HTMLElement & { $ready?: boolean };
+  const read = () => page.evaluate(({ tag, cases }) =>
+    Array.from(document.querySelectorAll<TestConditionTruthiness>(tag), (host) => {
+      const root = host.shadowRoot;
+      if (!root) throw new Error(`Missing shadow root for ${host.id}`);
+      return {
+        id: host.id,
+        counts: Object.fromEntries(cases.map((name) => [
+          name, root.querySelectorAll(`[data-case="${name}"]`).length,
+        ])),
+        html: root.innerHTML,
+        checked: root.querySelector<HTMLInputElement>('.collection-flag')?.checked,
+        state: { items: host.items, actions: host.actions, record: host.record },
+      };
+    }), { tag, cases });
+  const snapshots: Record<string, Awaited<ReturnType<typeof read>>> = {};
+  const diagnostics: { kind: string; message: string }[] = [];
+  let hydrationBranchNodesPreserved: boolean | undefined;
+  const check = (
+    host: Awaited<ReturnType<typeof read>>[number],
+    populated: boolean,
+    phase: string,
+    hydrated = true,
+  ): void => {
+    // Keep the desired server semantics; empty collections must stay absent.
+    expect.soft(host.counts, `${host.id}: ${phase}`).toEqual({
+      items: Number(populated),
+      trailing: Number(populated),
+      record: Number(populated),
+      'items-length': Number(populated),
+      'trailing-length': Number(populated),
+      'record-field': Number(populated),
+      'empty-items': Number(!populated),
+      'trailing-and': Number(populated),
+      'record-or': Number(populated),
+      false: 0,
+      zero: 0,
+      'empty-text': 0,
+      null: 0,
+      missing: 0,
+      true: 1,
+    });
+    expect.soft(host.checked, `${host.id}: ${phase} boolean attribute`).toBe(populated);
+    if (hydrated) {
+      expect(host.state).toEqual({
+        items: populated ? ['Item'] : [],
+        actions: { trailing: populated ? ['Action'] : [] },
+        record: populated ? { label: 'Record' } : {},
+      });
+    }
+  };
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning') {
+      diagnostics.push({ kind: message.type(), message: message.text() });
+    }
+  });
+  page.on('pageerror', (error) => {
+    diagnostics.push({ kind: 'pageerror', message: error.message });
+  });
+
+  // Pause the fixture bundle to inspect the real SSR DOM before any upgrade.
+  const scriptGate = Promise.withResolvers<void>();
+  await page.route('**/dist/conditional/element.js', async (route) => {
+    await scriptGate.promise;
+    await route.continue();
+  });
+  try {
+    const response = await page.goto('/conditional/fixture.html', { waitUntil: 'commit' });
+    if (!response) throw new Error('Fixture navigation returned no response');
+    expect(response.ok()).toBe(true);
+    const htmlPath = testInfo.outputPath('server-rendered.html');
+    await writeFile(htmlPath, await response.body());
+    await testInfo.attach('server-rendered.html', { path: htmlPath, contentType: 'text/html' });
+    await page.waitForFunction((tag) => {
+      const hosts = document.querySelectorAll(tag);
+      return hosts.length === 2 && Array.from(hosts).every((host) => host.shadowRoot);
+    }, tag);
+    snapshots.ssr = await read();
+    for (const host of snapshots.ssr) check(host, host.id === 'populated', 'SSR', false);
+    const nodes = await page.evaluateHandle((tag) =>
+      Array.from(document.querySelectorAll(tag), (host) => ({
+        id: host.id,
+        nodes: Array.from(host.shadowRoot!.querySelectorAll('[data-case]')),
+      })), tag);
+
+    scriptGate.resolve();
+    await page.waitForLoadState('load');
+    await page.waitForFunction((tag) =>
+      Array.from(document.querySelectorAll<ReadyElement>(tag))
+        .every((host) => host.$ready), tag);
+    snapshots.hydrated = await read();
+    for (const host of snapshots.hydrated) check(host, host.id === 'populated', 'hydration');
+    hydrationBranchNodesPreserved = await nodes.evaluate((hosts) =>
+      hosts.every(({ id, nodes }) => {
+        const current = document.getElementById(id)?.shadowRoot?.querySelectorAll('[data-case]');
+        return current?.length === nodes.length
+          && nodes.every((node, i) => node === current[i]);
+      }));
+    expect(hydrationBranchNodesPreserved, 'hydration retains SSR branch nodes').toBe(true);
+    await nodes.dispose();
+
+    for (const [step, action] of ['clear', 'populate', 'clear'].entries()) {
+      for (const id of ['empty', 'populated']) {
+        await page.locator(`#${id} .${action}`).click();
+        await expect(page.locator(`#${id} .phase`)).toHaveText(
+          action === 'populate' ? 'populated' : 'empty',
+        );
+      }
+      const phase = `${step}-${action}`;
+      snapshots[phase] = await read();
+      for (const host of snapshots[phase]) check(host, action === 'populate', phase);
+    }
+
+    await page.evaluate((tag) => {
+      for (const populated of [false, true]) {
+        const host = document.createElement(tag) as TestConditionTruthiness;
+        host.id = populated ? 'client-populated' : 'client-empty';
+        if (populated) host.populate();
+        document.body.append(host);
+      }
+    }, tag);
+    await page.waitForFunction(() =>
+      ['client-empty', 'client-populated'].every((id) =>
+        (document.getElementById(id) as ReadyElement | null)?.$ready));
+    snapshots.created = await read();
+    for (const host of snapshots.created) {
+      if (host.id.startsWith('client-')) {
+        check(host, host.id === 'client-populated', 'client creation');
+      }
+    }
+    const screenshotPath = testInfo.outputPath('truthiness-final.png');
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await testInfo.attach('truthiness-final.png', { path: screenshotPath, contentType: 'image/png' });
+
+    // The existing range-ownership case deliberately disagrees with SSR.
+    expect.soft(diagnostics, 'only the deliberate clientOnlyOpen mismatch is expected').toEqual([
+      {
+        kind: 'warning',
+        message: expect.stringContaining(
+          'Hydration mismatch on <test-conditional-hydration-ranges>: "clientOnlyOpen" changed',
+        ),
+      },
+    ]);
+  } finally {
+    scriptGate.resolve();
+    const path = testInfo.outputPath('truthiness-evidence.json');
+    await writeFile(path, JSON.stringify({
+      browser: browser.version(), diagnostics, snapshots, hydrationBranchNodesPreserved,
+    }, null, 2));
+    await testInfo.attach('truthiness-evidence.json', { path, contentType: 'application/json' });
+  }
 });

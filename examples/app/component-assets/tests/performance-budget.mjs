@@ -38,6 +38,11 @@ const BUDGETS = {
 };
 
 const metafile = JSON.parse(readFileSync('dist/client-metafile.json', 'utf8'));
+if (Object.values(metafile.outputs).some(output => Object.entries(output.inputs).some(
+  ([input, contribution]) => input.endsWith('/hydration-mismatch.js') && contribution.bytesInOutput > 0,
+))) {
+  throw new Error('Production builds must set __WEBUI_DEV__=false to exclude hydration diagnostics.');
+}
 const outputs = metafile.outputs;
 const entry = findOutput('src/index.ts');
 const lazy = findOutput('.webui/lazy-panel.webui.js');

@@ -1,8 +1,16 @@
-# WebUI Native Node Module Handler
+---
+title: "Node.js and Bun"
+description: "Render with the native npm binding, reuse protocols and prepared state, and choose buffered or host-paced streaming responses."
+---
 
-The `@microsoft/webui` npm package provides high-performance server-side
-rendering for Node.js, Bun, and Deno. It uses a native addon with a canonical
-UTF-8 `Buffer` path plus batched callbacks for streaming responses.
+<a id="webui-native-node-module-handler"></a>
+<a id="nodejs-bun-and-deno"></a>
+
+# Node.js and Bun
+
+`@microsoft/webui` exposes the Rust renderer through a platform-specific native
+addon for Node.js and Bun. Load `protocol.bin` once, reuse the `Protocol`,
+and pass JSON state for each render. Buffered output is a UTF-8 `Buffer`.
 
 ## Installation
 
@@ -10,12 +18,15 @@ UTF-8 `Buffer` path plus batched callbacks for streaming responses.
 npm install @microsoft/webui
 ```
 
+Keep optional dependencies enabled so npm can install the matching native
+package. This API needs native-addon support; it is not a browser or
+JavaScript-only edge-runtime package.
+
 ## Examples
 
 <webui-press-tabs>
 <webui-press-tab slot="tab" active>Node.js</webui-press-tab>
 <webui-press-tab slot="tab">Bun</webui-press-tab>
-<webui-press-tab slot="tab">Deno</webui-press-tab>
 <webui-press-tab-panel active>
 
 ```js
@@ -63,28 +74,6 @@ Bun.serve({
       headers: { 'Content-Type': 'text/html' },
     });
   },
-});
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```ts
-import { Protocol } from '@microsoft/webui';
-
-const protocol = Deno.readFileSync('./dist/protocol.bin');
-const protocolData = Buffer.from(protocol);
-const runtimeProtocol = new Protocol(protocolData);
-
-Deno.serve({ port: 3000 }, (req) => {
-  const url = new URL(req.url);
-  const html = runtimeProtocol.render({ title: 'Home' }, {
-    entry: 'index.html',
-    requestPath: url.pathname,
-  });
-  return new Response(html, {
-    headers: { 'Content-Type': 'text/html' },
-  });
 });
 ```
 
@@ -174,10 +163,8 @@ const server = createServer((req, res) => {
 });
 ```
 
-`Protocol` owns the decoded native state, deterministic index, and template
-metadata cache. The source `Buffer` can be released or reused after
-construction. The package has no hidden `WeakMap`, protocol-sized mutation
-snapshot, or render path that accepts protocol bytes on every request.
+`Protocol` owns the loaded native artifact. The source `Buffer` can be released
+or reused after construction; subsequent renders use the loaded object.
 
 `protocol.render()` returns a UTF-8 `Buffer` so the native allocation can be
 passed directly to `response.end()`. Call `.toString('utf8')` only when
@@ -279,9 +266,9 @@ the `webui` CLI explicitly when a filesystem-oriented build is preferred.
 
 ## Progressive Streaming
 
-`renderStream()` is push-based: the native renderer decides when your callback
-runs, so a `false` result from `response.write()` cannot pause it. That is fine
-for whole-document rendering, but it cannot express a response your server paces.
+`renderStream()` calls a synchronous callback and ignores its return value.
+It cannot wait for `response.write()` backpressure. Use a progressive session
+when the host needs to pace delivery or wait for boundary data.
 
 `protocol.streamResponse()` inverts that. It opens a **session** whose methods
 return bytes, so your server owns the socket and backpressure:
@@ -363,11 +350,9 @@ optional string or numeric `key`. Use those fields to load state, then pass
 `instanceId` back to `resume`. A descriptor means call `resume`; no descriptor
 with `done: false` means call `advance`; `done: true` means complete.
 
-`resume` is boundary-only so its bytes can be written and flushed without
-waiting for following parent content. `advance` carries that parent content and
-the document tail. No sibling boundary workaround is needed. The final step
-already contains tail and terminal bytes. `mode` is `"final"` by default or
-`"updatable"`.
+Write and flush the boundary-only `resume` result before waiting for more data.
+`advance` carries the following parent content; the final step includes the
+document tail. `mode` is `"final"` by default or `"updatable"`.
 
 An update never inserts markup or reruns hydration:
 

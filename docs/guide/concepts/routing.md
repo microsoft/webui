@@ -1,13 +1,18 @@
+---
+title: "Routing"
+description: "Declare nested routes in HTML and add browser navigation, loaders, actions, cache invalidation, and pending or error states."
+---
+
 # Routing
 
-WebUI routes are **declared in HTML and compiled at build time**. The Rust compiler parses your `<route>` tree, validates every attribute, and bakes it all into the binary protocol. Cache tags, invalidation graphs, pending states, error boundaries - everything is known before a single request is served.
+Declare routes in HTML and place `<outlet />` where a child page belongs.
+The native renderer matches the request path and returns the selected
+components. Add `@microsoft/webui-router` for client-side navigation that keeps
+unchanged parent components mounted.
 
-This means:
-- **Zero runtime JavaScript for routing policy.** Cache semantics, invalidation rules, and loading states are HTML attributes - not framework configuration objects.
-- **Build-time validation.** A typo in `pending="loadnig-skeleton"` is a compile error, not a blank screen in production.
-- **Server and client both know the full graph.** The server resolves cache tags with real param values. The client invalidates by tag after mutations. Neither needs runtime discovery.
-
-At its simplest, routing is three lines of HTML and one line of TypeScript. At its most advanced, it's declarative tagged caching with compiler-enforced invalidation graphs - and everything in between uses the same `<route>` element.
+Cache tags, pending UI, and error components are optional route attributes
+validated at build time. Their browser behavior runs in the router, not in the
+server's JavaScript engine.
 
 ## Installation
 
@@ -19,8 +24,6 @@ Only needed when your app has client-side navigation. Server-only apps with full
 
 ## Quick Start
 
-**1. Declare routes in `index.html`:**
-
 **1. Add `<base href="/">` in your `<head>`:**
 
 ```html
@@ -30,7 +33,10 @@ Only needed when your app has client-side navigation. Server-only apps with full
 </head>
 ```
 
-All WebUI apps with routes **must** include `<base href="/">`. Without it, relative asset paths (CSS, JS) break on nested routes — the browser resolves `app.css` against `/users/123/` → `/users/app.css` instead of `/app.css`.
+For a root-hosted app, this keeps relative asset URLs anchored at `/` rather
+than at the current route. For a subpath deployment, use that prefix instead,
+such as `<base href="/my-app/">`. Keep the host's route and asset paths aligned
+with it.
 
 **2. Declare routes in `index.html`:**
 
@@ -45,7 +51,7 @@ All WebUI apps with routes **must** include `<base href="/">`. Without it, relat
 </body>
 ```
 
-**2. Use `<outlet />` in your shell component:**
+**3. Use `<outlet />` in your shell component:**
 
 ```html
 <!-- app-shell.html -->
@@ -60,7 +66,7 @@ Child routes have their own outlet level. Additional outlets produce a
 `multiple-outlets` build warning; move
 duplicated layout into the matched child component instead.
 
-**3. Start the router:**
+**4. Start the router:**
 
 ```typescript
 import { Router } from '@microsoft/webui-router';
@@ -68,17 +74,14 @@ import { Router } from '@microsoft/webui-router';
 Router.start();
 ```
 
-The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
+The server renders the matched route on first load. The router intercepts
+eligible internal links for partial navigation; unsupported destinations can
+fall back to a full document request.
 
 Route segments may contain literal dots, such as `/docs/v2.1` or
-`/users/john.doe`. In `webui serve`, a missed asset lookup falls back to route
-rendering only for requests that explicitly accept `text/html`,
-`application/xhtml+xml`, or `application/json`. `q=0` disables that media type,
-while a malformed or out-of-range `q` value falls back to `q=1.0`; when HTML and
-JSON are both acceptable, the higher `q` wins and exact ties prefer JSON. Missing
-or wildcard-only `Accept` headers return 404, as
-do JS, CSS, image, and other
-non-HTML/non-JSON asset requests.
+`/users/john.doe`. When writing a custom host, use the
+[server contract](#server-contract) below to distinguish page requests from
+client navigation.
 
 The router never imports framework code. Authored route components use their
 registered classes. When the application also loads
@@ -155,16 +158,10 @@ For custom delivery code, `resources.js` exports `fetchComponentTemplates()`,
 decoding. These are resource/transport primitives, not a new component-state
 endpoint or a replacement for declaring compiled components.
 
-When the View Transitions API is available, client-side route commits
-use `document.startViewTransition()`. While active, the router installs a
-nonce-bearing `@view-transition { navigation: none; }` override. This disables
-automatic cross-document transitions because they conflict with intercepted
-routes that may need the document fallback. `Router.destroy()` removes the
-override.
-Route readiness does not wait for the animation to finish. Resizing or starting
-a newer transition may skip the animation without failing the committed route;
-route commit errors still follow normal navigation error handling without
-duplicate unhandled transition rejections.
+With the transition capability selected, the router uses the View Transitions
+API when available. Define transition styles in CSS; do not wrap
+`Router.navigate()` in another view transition. Navigation does not wait for the
+animation to finish.
 
 ## Nested Routes
 
@@ -173,7 +170,7 @@ Routes nest to any depth. Each parent component uses `<outlet />` where its chil
 ```html
 <!-- index.html -->
 <route path="/" component="app-shell">
-  <route path="" component="dashboard" exact />
+  <route path="" component="dashboard-page" exact />
   <route path="sections/:id" component="section-page">
     <route path="topics/:topicId" component="topic-page">
       <route path="lessons/:lessonId" component="lesson-page" exact />
@@ -200,8 +197,8 @@ Use `exact` on **leaf routes** - routes with no children. Without `exact`, a rou
   <route path="" component="home-page" exact />        <!-- leaf: exact -->
   <route path="users" component="user-list" exact />   <!-- leaf: exact -->
   <route path="settings" component="settings-page">    <!-- parent: NO exact -->
-    <route path="profile" component="profile" exact />
-    <route path="billing" component="billing" exact />
+    <route path="profile" component="profile-page" exact />
+    <route path="billing" component="billing-page" exact />
   </route>
 </route>
 ```
@@ -273,22 +270,17 @@ If a keep-alive component needs fresh data when reactivated, define a static `lo
 
 ### Preload on Hover
 
-Opt-in speculative fetching — the router prefetches route data when the user hovers an internal link, so navigation on click is instant:
+Prefetch route data when a mouse hovers an internal link to reduce the wait
+after a click:
 
 ```ts
 Router.start({ preload: true });
 ```
 
-How it works:
-- On mouse hover over an internal `<a>`, the router speculatively calls `fetchPartial()` for that path
-- Results are stored in the [tagged cache](#tagged-cache) with a 5-second minimum freshness
-- On click, the cached result is used immediately - no network wait
-- If the user hovers a different link, the previous preload is cancelled and a new one starts
-
-Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
-
-Preload is an optional runtime tier. Apps that do not enable it do not load the
-preload listener or navigation cache implementation.
+Preloading applies to internal links hovered with a mouse. A ready, fresh
+result avoids another fetch on click; hovering another link cancels the previous
+preload. It is off by default, so enable it only when the navigation benefit
+justifies speculative requests.
 
 `@microsoft/webui-router/preload.js` exposes the framework-agnostic
 `prepareRoutePreload()` handle. Start framework-specific hydration from its
@@ -313,19 +305,17 @@ export class LiveDashboard extends WebUIElement {
 }
 ```
 
-How it works:
-- The router checks each route component's constructor for a static `loader()` method
-- Results belong to the concrete route-chain entry, so separate declarations
-  that reuse one component tag keep independent params and state
-- Loaders run **before** the view transition — results are ready for synchronous DOM commit
-- The loader receives route `params`, `query`, and an `AbortSignal` tied to the navigation
-- If a loader fails, the router falls back to server-provided `data.state` with a console warning
-- Loaders run on both SSR bootstrap and SPA navigations for consistency
-- Components without a `loader()` use server state
+Loaders receive `params`, `query`, and an `AbortSignal`, and resolve before the
+new view appears. Each route declaration keeps its own data, even when several
+routes use the same component. Components without a loader use server state.
+
+Loaders run on client navigation, not the initial SSR load unless the component
+sets `static ssrLoader = true`. A failed loader logs a warning and falls back to
+the server-provided state.
 
 ### Controlling State
 
-The router provides four mechanisms for controlling how state flows to your components:
+Choose how state reaches each route component:
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
@@ -364,13 +354,6 @@ Initial SSR delivers component CSS only for the matched route chain. Styles for
 inactive routes remain deferred until navigation activates those components,
 including when an `<outlet />` is inside a Shadow component.
 
-Matched route styles that target the Document are emitted with the entry styles
-before `</head>`. Link-mode stylesheets are therefore render-blocking for first
-paint, including bundled chunks. A route rendered inside a ShadowRoot cannot use
-a Document stylesheet, so Link mode preloads that resource from the head and
-installs the applying stylesheet inside the owning ShadowRoot before the route
-host.
-
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
@@ -402,14 +385,9 @@ Declare cache tags on routes as HTML attributes. Placeholders like `{threadId}` 
 </route>
 ```
 
-| Behavior | Description |
-|----------|-------------|
-| **Build time** | The Rust compiler validates `{param}` placeholders match actual route params |
-| **Render time** | The handler resolves `thread:{threadId}` to `thread:42` using matched params |
-| **Response** | Resolved tags are included in the `cacheTags` array of the JSON partial |
-| **Client** | The router stores the response keyed by path, tagged with resolved values |
-| **Revisit** | Within `staleTime`, the cached response is used instantly - no network fetch |
-| **Server override** | The server can include `cacheControl: { staleTime: 60000 }` to override per-response |
+Tag placeholders must name declared route parameters. For `/email/42`,
+`thread:{threadId}` becomes `thread:42`. Revisit a cached path within
+`staleTime` to reuse its response without another fetch.
 
 <webui-blockquote appearance="tip" title="Preload + cache interaction" icon="💡">
 
@@ -429,7 +407,8 @@ Declare which tags a route invalidates after mutations:
        invalidates="thread:{threadId},inbox" />
 ```
 
-The compiler builds the full invalidation graph at build time. Developers declare intent in HTML - the framework ensures correctness.
+The compiler validates the declaration. Choose tags that cover the data your
+mutation changes; the router cannot infer your application's data dependencies.
 
 Programmatic invalidation:
 
@@ -458,16 +437,11 @@ export class ComposePage extends WebUIElement {
 }
 ```
 
-The router intercepts `<form method="post">` submissions via a delegated listener:
-
-| Step | What happens |
-|------|-------------|
-| **1. Intercept** | Walks `composedPath()` to find the form and nearest `<webui-route>` (shadow DOM safe) |
-| **2. Guard** | Skips forms with external `action` URLs or `target` other than `_self` |
-| **3. Call** | Invokes `static action({ formData, params, signal })` on the component class |
-| **4. Invalidate** | Merges the action's returned tags with the route's build-time `invalidates` attribute |
-| **5. Update** | Applies optimistic `result.state` if provided |
-| **6. Event** | Dispatches `webui:route:action-complete` on `window` |
+With actions enabled, internal `<form method="post">` submissions call the
+route's action. External action URLs and targets other than `_self` are left
+alone. Returned `invalidateTags` combine with the route's `invalidates` tags;
+optional `state` updates the component. Listen for
+`webui:route:action-complete` to respond after completion.
 
 ### Pending UI
 
@@ -522,62 +496,14 @@ If no `error` attribute is declared on the route, the router falls back to its d
 
 ## How It Works
 
-### First Load (SSR)
+<a id="first-load-ssr"></a>
+<a id="ssr-output"></a>
+<a id="client-hydration"></a>
 
-1. Browser requests `/sections/1/topics/react`
-2. Server matches the full route chain: `app-shell - section-page - topic-page`
-3. Renders all matched components nested at their outlets
-4. Browser displays fully rendered HTML - no JavaScript needed yet
-5. JavaScript loads, hydration runs, and the router starts from the SSR bootstrap data
-
-#### SSR Output
-
-The server renders `<webui-route>` elements with these DOM attributes:
-
-| Attribute | Purpose |
-|-----------|---------|
-| `path` | The route's path pattern |
-| `component` | The component tag name |
-| `active` | Present on matched routes |
-| `exact` | Present on leaf routes |
-| `pending` | Pending component tag (if declared) |
-| `error` | Error component tag (if declared) |
-| `data-ri` | Route index for O(1) element binding during hydration |
-
-Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. The `<route>` source attributes remain valid and unchanged, while the rendered route elements expose only the runtime attributes needed for navigation.
-
-The server also emits inert route bootstrap data so the client router can start without walking the DOM.
-
-```html
-<script type="application/json" id="webui-data">
-{
-  "chain": [
-    { "component": "app-shell", "path": "/", "keepAlive": false },
-    { "component": "topic-page", "path": "topics/:topicId", "params": { "topicId": "react" }, "exact": true }
-  ],
-  "inventory": "04000400...",
-  "nonce": "abc123",
-  "css": ["/styles/main.css"],
-  "styles": ["app-shell", "topic-page"],
-  "state": { "title": "Topic" }
-}
-</script>
-```
-
-#### Client Hydration
-
-At startup, the router uses the SSR route chain, route indexes, template
-inventory, and style list emitted by the server. That keeps hydration direct and
-avoids DOM walking or route-pattern recomputation on first load.
-
-The `state` field is **projected** to the hydratable surface rather than
-carrying your entire application state. At build time WebUI records which
-properties each component actually hydrates — its template state roots plus any
-`@observable`/`@attr` fields — and at render time the server emits only those
-keys, dropping everything else (including server-only data). This keeps the
-bootstrap block small even when the underlying render state is large; the client
-hydrates exactly as before, since it only ever reads the properties a component
-observes.
+The server renders the matched components for the first request. Later browser
+navigations fetch the destination from the server and replace only changed route
+levels. Parent components remain mounted. Use the host rendering APIs below;
+do not construct route bootstrap data yourself.
 
 #### SSR Fresh / Loaders
 
@@ -598,15 +524,7 @@ export class LiveDashboard extends WebUIElement {
 
 Loaders always run on subsequent client-side navigations regardless of the `ssrFresh` setting.
 
-### Client Navigation
-
-1. User clicks a link to `/sections/1/topics/css`
-2. Router intercepts via the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API)
-3. Fetches JSON partial from server with `Accept: application/json`
-4. Server returns the matched route chain - the client does **not** perform route matching
-5. Compares old chain with new - finds first changed level
-6. Mounts only the changed component - parents stay mounted
-7. No full page reload
+<a id="client-navigation"></a>
 
 ## The `Router` API
 
@@ -681,6 +599,9 @@ Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
+Release cached component templates to free memory. Later navigation can fetch
+them again when needed.
+
 With the WebUI framework, import its optional cache adapter before component
 definitions and use a freshly rebuilt protocol:
 
@@ -706,7 +627,8 @@ retained by component definitions.
 
 <webui-blockquote appearance="tip" title="When to use this" icon="💡">
 
-Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10-30). The server's inventory system already prevents duplicate downloads. Use `gc()` in long-lived SPAs with many routes where memory pressure is a concern.
+The template inventory already avoids duplicate downloads. Use `gc()` for a
+long-lived app when measured template memory warrants the later refetch cost.
 
 </webui-blockquote>
 
@@ -723,9 +645,12 @@ Router.start({
 });
 ```
 
-- Components **not in `loaders`** are eagerly loaded
-- Each loader runs **at most once** - cached after first call
-- On SSR'd initial load, the lazy loader is skipped (content already rendered)
+- Import other authored component modules yourself; the router does not
+  discover JavaScript files.
+- Successful loader promises are reused. A rejected loader can be attempted
+  again, but a failed native module import may remain cached by the browser.
+- The router loads modules for the initial active SSR chain too. Rendered HTML
+  is not a substitute for the component's event handlers.
 
 ## On-Demand Component Loading
 
@@ -746,17 +671,13 @@ Then load dynamically before first use:
 await Router.ensureLoaded('settings-dialog');
 ```
 
-The template is **not** sent during initial SSR or partial navigation. It is
-loaded only when explicitly requested via `ensureLoaded`. If a user navigates
-directly to `/settings`, the component renders normally in the outlet.
+A component outside the active route stays deferred until it is requested.
+`ensureLoaded` fetches its template before use. A direct navigation to
+`/settings` instead renders it normally in the outlet.
 
-With `@microsoft/webui-framework` loaded, the promise also covers Link
-stylesheet cache warming or an explicit native-link fallback decision. Warmup
-bytes are never applied. On first mount, the browser validates the original
-native link before the framework can promote its native CSSOM into a shared
-constructable sheet. JSON and NDJSON navigation await the same bounded warmup
-before committing a newly registered route. Without the framework, template
-registration remains immediate.
+With `@microsoft/webui-framework` loaded, `ensureLoaded()` also prepares the
+component's styles. Stylesheet failures are reported; a component may render
+unstyled rather than remain permanently hidden.
 
 Configure a custom template endpoint:
 
@@ -794,63 +715,9 @@ The server handles two request types for each route:
 
 ### JSON Partial (client navigation)
 
-When `Accept: application/json` or `application/x-ndjson`:
-
-```json
-{
-  "state": { "name": "Alice", "email": "alice@example.com" },
-  "componentStyles": {
-    "version": 1,
-    "strategy": "module",
-    "resources": {
-      "user-detail": {
-        "kind": "module",
-        "specifier": "user-detail",
-        "css": ".detail { ... }"
-      }
-    },
-    "closures": {
-      "user-detail": ["user-detail"]
-    }
-  },
-  "templates": {
-    "user-detail": { "h": "<section></section>" }
-  },
-  "templateFunctions": {
-    "user-detail": "[function(v,s){return !!v(\"ready\",s)}]"
-  },
-  "inventory": "04000400...",
-  "path": "/users/42",
-  "chain": [
-    { "component": "app-shell", "client": true, "path": "/" },
-    {
-      "component": "user-detail", "client": true, "path": "users/:id",
-      "params": { "id": "42" }, "exact": true, "keepAlive": true,
-      "pendingComponent": "loading-skeleton",
-      "errorComponent": "error-page",
-      "invalidates": ["user:42", "users"]
-    }
-  ],
-  "cacheTags": ["user:42", "users"],
-  "cacheControl": { "staleTime": 60000 }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
-| `componentStyles` | Required versioned CSS resource and closure delta; bundled chunks carry their covered component IDs and are tracked independently from template inventory |
-| `templates` | Client template payloads filtered by inventory bitmask |
-| `inventory` | Updated hex bitmask of loaded component template and style metadata |
-| `path` | The matched request path |
-| `chain` | Matched route chain - one entry per nesting level |
-| `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
-| `cacheControl` | Optional per-response cache overrides |
-
-Each `chain` entry includes `component` and `path`. It can also include
-`params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`,
-`errorComponent`, and `invalidates`. Component capability is determined by
-custom-element registration, not by a server `client` flag.
+Return the partial response produced by your host binding. It includes the
+state, templates, styles, and route information the router needs; do not build
+that response by hand.
 
 **Request headers the router sends:**
 
@@ -867,30 +734,13 @@ bootstrap. The CSS list contains the matched route chain, not inactive siblings.
 
 ### Partial Navigation
 
-Rust `Protocol::render_partial()` and every host binding return the complete
-response, including the state needed by active-route components. The Rust API
-consumes a `serde_json::Value` and moves selected values into the response
-without serializing and reparsing the complete tree. Serialized host boundaries
-use `Protocol::render_partial_json()`; raw input is validated in full while
-unneeded values are skipped without constructing a duplicate JSON tree.
+Use `Protocol::render_partial()` in Rust, `renderPartial()` in Node.js, or the
+equivalent [host integration API](/guide/integrations/). Pass the current path,
+client inventory header, and the state needed by the matched page.
 
-Rust hosts that need response bytes or a writer can call
-`Protocol::prepare_partial()` instead. It returns a serializable response with
-`is_match()` for status handling, using the same projection policy as the string
-APIs. Desktop and web hosts retain declared and template-required fields, with
-full client-safe state as the correctness fallback when requirements are
-unknown. The reserved host-injection object is never navigation state.
-
-After storing new template metadata, the router dispatches
-`webui:templates-registered`. Optional runtimes may synchronously add resource
-promises with the event detail's `waitUntil()` function. The router awaits those
-promises before route commit and abandons the wait if a newer navigation
-supersedes it. This keeps the router framework-independent while preventing a
-new Link-mode shadow component from painting before its stylesheet is ready.
-For NDJSON responses, deferred state consumption starts only after this commit,
-so a Chunk 2 queued during readiness cannot update the previous route.
-Speculative preloads cache Chunk 1 first and merge Chunk 2 state before marking
-the entry complete; failed commits cancel the unread stream.
+For Rust hosts writing directly to a response writer,
+`Protocol::prepare_partial()` returns a serializable response and `is_match()`
+for status handling. Keep credentials and private data out of render state.
 
 For repeated Rust requests, load one `Protocol`:
 
@@ -972,7 +822,7 @@ its component template binds to - not the full application state.
 ### Anti-pattern: Full State for Every Route
 
 ```json
-// ❌ Returns everything for every route - 240 KB per navigation
+// Avoid returning unrelated state for every route
 {
   "folders": [...],
   "threads": [...],
@@ -985,18 +835,18 @@ its component template binds to - not the full application state.
 ### Correct: Route-Scoped State
 
 ```json
-// ✅ /inbox - only what the inbox component needs - 15 KB
+// /inbox - what the inbox component needs
 { "threads": [...], "selectedFolder": "inbox" }
 
-// ✅ /inbox/:id - only what the detail component needs - 5 KB  
+// /inbox/:id - what the detail component needs
 { "subject": "Q4 Review", "messages": [...] }
 
-// ✅ /settings - only settings data - 2 KB
+// /settings - settings data
 { "theme": "dark", "language": "en", "notifications": true }
 ```
 
-Route-scoped state keeps JSON payloads small during client-side navigation,
-where only the `state` field of the JSON partial is transferred.
+Route-scoped state reduces one part of the navigation payload. Partials also
+carry the route chain and any needed template or style data.
 
 ## Styling Route Outlets
 
@@ -1013,8 +863,8 @@ grid layout, you need to style the route element:
 }
 ```
 
-Hidden routes use `style="display:none"` inline. If your CSS sets
-`display: flex`, add specificity to avoid showing hidden routes:
+Hidden routes use inline `display: none`. Do not override that with
+`!important`. You can also restrict layout rules to visible routes:
 
 ```css
 .content-area > webui-route:not([style*="display:none"]) {

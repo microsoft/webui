@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128">
+  <title>WebUI GitHub avatar</title>
+  <rect width="128" height="128" fill="#f1f5fc"/>
+  <path fill="#2864dc" d="M109.255 48A48 48 0 1 0 109.255 80H88V88H40V40H88V48Z"/>
+  <path fill="#568ce5" d="M88 56H104V72H88Z"/>
+</svg>

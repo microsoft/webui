@@ -100,7 +100,7 @@ impl Budget {
 }
 fn add_bounded(value: &AtomicUsize, count: usize, max: usize) -> Result<(), IpcError> {
     value
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |old| {
             old.checked_add(count).filter(|new| *new <= max)
         })
         .map(|_| ())

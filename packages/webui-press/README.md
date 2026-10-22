@@ -95,6 +95,15 @@ webui press build
 
 Deploy `dist/` to GitHub Pages, Netlify, S3, or any static host.
 
+## Page outlines
+
+Set `"outline": true` in `.webui-press/config.json` to enable the built-in
+sticky desktop outline and mobile disclosure. It is off by default; Markdown
+frontmatter and object-form custom pages can override it with `outline: false`
+or `outline: true`. Only eligible `doc`/`page` layouts load its assets.
+See the [page outline reference](https://microsoft.github.io/webui/guide/webui-press/#page-outlines)
+for heading eligibility, browser support, and theming.
+
 ---
 
 ## Project layout
@@ -554,7 +563,7 @@ Reference it from any `.md`:
 # Install
 
 <my-callout type="warning">
-  Make sure you have **Rust 1.93+** before continuing.
+  Make sure you have **Rust 1.99.1+** before continuing.
 </my-callout>
 ```
 

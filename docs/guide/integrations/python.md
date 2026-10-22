@@ -1,10 +1,14 @@
+---
+title: "Python"
+description: "Install the native Python release package, reuse a Renderer, and integrate buffered or progressive output with WSGI and ASGI."
+---
+
 # Python
 
-The `microsoft-webui` package provides high-performance server-side
-rendering for Python. It is a direct **PyO3** native extension — not a
-`ctypes` wrapper around the [C API](./ffi) — imported as `microsoft_webui`.
-Rendering calls release the GIL, so a `Renderer` shared across threads keeps
-rendering while the rest of your application runs Python code.
+The `microsoft-webui` package is a native PyO3 binding, imported as
+`microsoft_webui`. Reuse a `Renderer` to render compiled protocols with
+request-specific state. Calls release the GIL but remain synchronous on the
+calling thread; ASGI hosts should offload them.
 
 ## Installation
 
@@ -126,8 +130,8 @@ async def index(request):
 app = Starlette(routes=[Route("/{path:path}", index)])
 ```
 
-`Renderer` is thread-safe, so many worker threads can render through the same
-instance concurrently — offloading to a thread pool doesn't introduce a race.
+`Renderer` is thread-safe: worker threads can render through the same instance
+concurrently.
 
 ## Partial navigation and component templates
 
@@ -151,11 +155,10 @@ Both return `bytes`; write them directly as the response body for
 ## Progressive (host-driven) streaming
 
 `renderer.stream_response()` opens a `StreamingSession` whose methods return
-the bytes they produced instead of writing anywhere themselves. **WebUI never
-touches your socket, so your server owns the write order and backpressure -
-the same contract as every other host binding** (see
+the bytes they produced instead of writing to a socket. Your server owns write
+order, backpressure, and cancellation. See
 [Streaming Boundaries](/guide/concepts/directives/boundary#drive-the-response)
-for the authoring side and full ordering rules).
+for the authoring and ordering rules.
 
 ### WSGI
 
@@ -238,8 +241,8 @@ async def index(request):
 
 `resume()` returns only the pending occurrence through its checkpoint.
 `advance()` returns the following parent or tail bytes through the next
-descriptor or terminal. This separation lets the host yield the checkpoint
-immediately, with no sibling boundary workaround. `update()` is valid between
+descriptor or terminal. Yield each step before waiting for more data.
+`update()` is valid between
 the occurrence's `resume()` and `advance()`. The completed step already includes
 the tail and terminal bytes.
 
@@ -318,24 +321,23 @@ already escaped yourself.
 ## Wheel matrix and scope
 
 `microsoft-webui` builds against PyO3's `abi3-py311` stable ABI, so one wheel
-per platform serves every CPython 3.11+ interpreter — no per-minor-version
-build matrix. v1 ships six wheels (Windows, macOS, and manylinux, each for
+per platform serves supported CPython 3.11+ versions without a per-minor-version
+build matrix. Releases provide six wheels (Windows, macOS, and manylinux, each for
 x86_64 and ARM64; macOS ships separate x86_64/ARM64 wheels, not a
 `universal2` fat binary) plus one `sdist`.
 
-v1 is **runtime-only**: it renders compiled protocols and does not expose a
+The package is **runtime-only**: it renders compiled protocols and does not expose a
 build/compile API. Produce `protocol.bin` with `webui build` (the npm or Rust
-CLI) — Python consumes the compiled artifact like every other host.
+CLI).
 
-Not covered in v1: PyPy, GraalPy, free-threaded CPython builds, musllinux, and
-32-bit architectures. The self-contained `sdist` bundles the matching WebUI
-Rust source closure and lets a Rust toolchain build any of those targets, but
-doing so is unsupported and untested. If you're on one of those platforms
-today, the [C API's `ctypes` fallback](./ffi#advanced-fallback-ctypes) can still
-reach WebUI directly.
+Not covered: PyPy, GraalPy, free-threaded CPython builds, musllinux, and
+32-bit architectures. The `sdist` includes matching Rust sources, but it does
+not establish support for those targets. A custom build or the
+[C API's `ctypes` fallback](./ffi#advanced-fallback-ctypes) requires a compatible
+native toolchain and library; unsupported platforms need their own validation.
 
 ## Next Steps
 
-- [C / FFI](./ffi), the underlying C ABI and its `ctypes` fallback
+- [C / FFI](./ffi), an alternative binding with explicit native ownership
 - [Streaming Boundaries](/guide/concepts/directives/boundary), authoring side and ordering rules
 - [Plugins](/guide/concepts/plugins/), plugin system and built-in plugin reference

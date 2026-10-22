@@ -1,0 +1,44 @@
+<template shadowrootmode="open">
+  <section aria-labelledby="install-title">
+    <h2 id="install-title">Install the compiler</h2>
+    <fieldset class="managers">
+      <legend class="visually-hidden">Package manager</legend>
+      <for each="option in installOptions">
+        <label class="manager" key="{{option.id}}">
+          <input
+            type="radio"
+            name="install-manager"
+            value="{{option.id}}"
+            ?checked="{{option.selected}}"
+            ?disabled="{{!installReady}}"
+            @change="{selectManager(option.id)}"
+          />
+          <span>{{option.label}}</span>
+        </label>
+      </for>
+    </fieldset>
+    <div class="command-line">
+      <div class="command-text">
+        <for each="option in installOptions">
+          <if condition="option.selected"><code>{{option.command}}</code></if>
+        </for>
+      </div>
+      <button
+        type="button"
+        aria-label="Copy install command"
+        ?disabled="{{!installReady || copyState == 'copying'}}"
+        @click="{copy()}"
+      >
+        <if condition="copyState == 'copied'">Copied</if>
+        <if condition="copyState == 'copying'">Copying</if>
+        <if condition="copyState != 'copied' && copyState != 'copying'">Copy</if>
+      </button>
+    </div>
+    <p class="feedback" role="status" aria-live="polite" aria-atomic="true" data-state="{{copyState}}">
+      <if condition="copyState == 'idle' || copyState == 'copying'">Project-local CLI. Node.js LTS. No Rust toolchain required.</if>
+      <if condition="copyState == 'copied'">Copied. Run it in your project folder.</if>
+      <if condition="copyState == 'failed'">Copy failed. Select the command and copy it manually.</if>
+      <if condition="copyState == 'unavailable'">Install commands are unavailable. <a href="{{site.base}}guide/installation/">Read the installation guide.</a></if>
+    </p>
+  </section>
+</template>

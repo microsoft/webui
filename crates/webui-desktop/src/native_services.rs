@@ -397,7 +397,7 @@ impl NativeServices {
         let window_generation = NEXT_WINDOW_GENERATION.fetch_add(1, Ordering::Relaxed);
         #[cfg(all(windows, feature = "native-capture"))]
         let window_generation = NEXT_WINDOW_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| NativeServiceError::Unavailable)?;
         #[cfg(all(any(target_os = "macos", windows), feature = "native-capture"))]
         let capture = crate::capture::CaptureState::new(lifetime.clone(), window_generation);
@@ -797,7 +797,7 @@ impl NativeServices {
         let id = self.finish_picker_claim(generation)?;
         inner
             .active_timers
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_DEADLINE_THREADS_PER_WINDOW).then_some(count + 1)
             })
             .map_err(|_| NativeServiceError::Overloaded)?;
@@ -882,7 +882,7 @@ impl NativeServices {
         }
         let id = inner
             .picker_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| NativeServiceError::Unavailable)?
@@ -938,7 +938,7 @@ impl NativeServices {
         let deadline = Instant::now() + PICKER_DEADLINE;
         inner
             .active_timers
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_DEADLINE_THREADS_PER_WINDOW).then_some(count + 1)
             })
             .map_err(|_| NativeServiceError::Overloaded)?;
@@ -1051,7 +1051,7 @@ impl NativeServices {
         let Ok(epoch) =
             self.0
                 .document_epoch
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
         else {
             self.0.capture.close();
             return;
@@ -1164,7 +1164,7 @@ impl NativeServices {
         let generation = inner.generation.load(Ordering::Acquire);
         inner
             .active_timers
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < MAX_DEADLINE_THREADS_PER_WINDOW).then_some(active + 1)
             })
             .map_err(|_| NativeServiceError::Overloaded)?;

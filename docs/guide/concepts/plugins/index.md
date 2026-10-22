@@ -1,19 +1,28 @@
+---
+title: "Plugins"
+description: "Select matching WebUI or FAST hydration plugins, discover supported component layouts, or implement the public Rust plugin traits."
+---
+
 # Plugins
 
-WebUI provides a framework-agnostic plugin system that extends both the parser (build time) and the handler (render time). Plugins let framework authors customize WebUI's behavior - component discovery, attribute filtering, hydration marker injection - without modifying WebUI internals.
+Use `--plugin=webui` when building a new app with WebUI's browser framework.
+Use a versioned FAST plugin for FAST components, or omit the plugin for plain
+SSR HTML. Build and render with the matching plugin:
+
+```bash
+webui serve ./src --state ./data/state.json --plugin=webui
+```
+
+Most applications only select a built-in plugin. The custom traits below are
+for framework integrations that need their own discovery or hydration behavior.
 
 ## How Plugins Work
 
-The plugin system operates at three stages:
-
-```
-Discovery Plugin        Parser Plugin          Handler Plugin
-┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
-│ Map package files│    │ Classify attrs   │    │ Inject hydration │
-│ Pair HTML + CSS  │ -> │ Compile templates│ -> │ Process metadata │
-│ Return components│    │ Emit metadata    │    │ Render bindings  │
-└──────────────────┘    └──────────────────┘    └──────────────────┘
-```
+| Stage | Responsibility |
+| --- | --- |
+| Discovery | Map supported package or directory layouts to components |
+| Parser | Compile the integration's authoring syntax and hydration metadata |
+| Handler | Emit HTML and hydration data understood by the matching browser runtime |
 
 Discovery plugins map supported local or npm package layouts to components.
 Parser plugins compile those components for their matching handler plugin.
@@ -277,11 +286,9 @@ pub trait ParserPlugin {
 }
 ```
 
-`component_processing` is read once, so static component behavior does not add a
-virtual call per component. A missing source transform avoids the indirect call
-entirely, and a transform returns `Ok(None)` to preserve source without
-allocation. The remaining callbacks follow parser lifecycle order and have
-no-op defaults, so a plugin implements only the phases it owns.
+Implement only the phases your integration owns; the parser callbacks have
+no-op defaults. A source transform returns `Ok(None)` to leave a component's
+source unchanged.
 
 Artifact extraction calls `finish_with_fragments` with the read-only compiled
 graph. Its default delegates to `finish`, so existing plugins need no change.
@@ -344,13 +351,10 @@ pub trait HandlerPlugin: Send {
 instance for every render and never calls one instance concurrently, so
 single-owner interior mutability such as `Cell` or `RefCell` is supported.
 
-The `Send` bound also applies when your application only uses buffered
-rendering. The same handler factory can open an owned `StreamingSession`, which
-parks the live plugin between calls and may move between host threads. Rust
-cannot safely recover `Send` after a factory result has been erased to a trait
-object, so the guarantee must be part of the plugin implementation. Do not keep
-thread-affine values such as `Rc` in a handler plugin; use owned values, `Arc`,
-or another sendable handle.
+The `Send` bound also applies to buffered rendering. Streaming sessions can move
+between host threads while retaining their plugin. Do not keep thread-affine
+values such as `Rc` in a handler plugin; use owned values, `Arc`, or another
+sendable handle.
 
 ## Next Steps
 

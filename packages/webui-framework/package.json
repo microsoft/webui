@@ -1,11 +1,11 @@
 {
   "name": "@microsoft/webui-framework",
-  "version": "3.0.2",
+  "version": "3.0.4",
   "publishConfig": {
     "tag": "latest"
   },
   "type": "module",
-  "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
+  "description": "WebUI Framework Next — lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
   "license": "MIT",
   "exports": {
     "./lazy.js": {

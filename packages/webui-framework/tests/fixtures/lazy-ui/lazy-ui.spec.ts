@@ -12,6 +12,18 @@ async function ready(page: Page): Promise<void> {
 }
 
 test('initial SSR hydrates inline bodies without a partial request or replacement host', async ({ page }) => {
+  await page.addInitScript(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML')!;
+    const captures: string[] = [];
+    Object.defineProperty(window, '__templateParses', { value: captures });
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      ...descriptor,
+      set(value: string) {
+        if (this instanceof HTMLTemplateElement) captures.push(String(value));
+        descriptor.set!.call(this, value);
+      },
+    });
+  });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   let requests = 0;
@@ -31,6 +43,7 @@ test('initial SSR hydrates inline bodies without a partial request or replacemen
   });
   release.resolve();
   await ready(page);
+  expect(await page.evaluate(() => Reflect.get(window, '__templateParses'))).toEqual([]);
   expect(await page.evaluate(() => {
     const runtime = window as typeof window & { initialLazyNode?: Element | null };
     return runtime.initialLazyNode === document.querySelector('test-lazy-shadow')?.shadowRoot?.querySelector('.lazy-body');

@@ -1,21 +1,14 @@
 {
   "site": {
     "title": "WebUI Framework",
-    "description": "SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."
+    "description": "Reactive web applications with HTML templates, native server rendering, and Web Components.",
+    "url": "https://microsoft.github.io"
   },
   "basePath": "/webui/",
   "contentDir": ".",
   "outDir": "./dist",
   "publicDir": "./.webui-press/public",
-  "stateFile": "./state/benchmark-summary.json",
   "head": [
-    {
-      "tag": "link",
-      "attrs": {
-        "rel": "icon",
-        "href": "/webui/favicon.ico"
-      }
-    },
     {
       "tag": "script",
       "attrs": {
@@ -27,28 +20,38 @@
   "components": [
     "./.webui-press/components"
   ],
+  "outline": true,
   "regions": {
+    "site.navigation": {
+      "htmlFile": "./regions/site-navigation.html"
+    },
+    "home.hero": {
+      "htmlFile": "./regions/home-hero.html"
+    },
     "home.features": {
       "htmlFile": "./regions/home-features.html"
+    },
+    "full.beforeContent": {
+      "htmlFile": "./regions/playground-guidance.html"
     }
   },
   "css": "./.webui-press/theme.css",
   "nav": [
     {
-      "text": "Guide",
+      "text": "Docs",
       "link": "/guide/"
     },
     {
-      "text": "Tutorials",
-      "link": "/tutorials/hello-world/"
+      "text": "Examples",
+      "link": "/examples/"
+    },
+    {
+      "text": "Benchmarks",
+      "link": "/benchmarks/"
     },
     {
       "text": "Playground",
       "link": "/playground/"
-    },
-    {
-      "text": "AI",
-      "link": "/ai"
     },
     {
       "text": "GitHub",
@@ -59,203 +62,82 @@
   "sidebarGroups": {
     "/guide/": [
       {
-        "title": "Getting Started",
+        "title": "Start",
         "items": [
-          {
-            "text": "What is WebUI?",
-            "link": "/guide/"
-          },
-          {
-            "text": "Why WebUI?",
-            "link": "/guide/why"
-          },
-          {
-            "text": "Installation",
-            "link": "/guide/installation"
-          },
-          {
-            "text": "Quick Start",
-            "link": "/tutorials/hello-world"
-          }
+          { "text": "What is WebUI?", "link": "/guide/" },
+          { "text": "Build your first app", "link": "/tutorials/hello-world" },
+          { "text": "Installation", "link": "/guide/installation" },
+          { "text": "Coming from React", "link": "/guide/concepts/react-comparison" },
+          { "text": "Why WebUI?", "link": "/guide/why" }
         ]
       },
       {
-        "title": "Core Foundations",
+        "title": "Learn",
         "items": [
+          { "text": "Components", "link": "/guide/concepts/components" },
           {
-            "text": "How It Works",
-            "link": "/guide/concepts/how-it-works"
-          },
-          {
-            "text": "Components",
-            "link": "/guide/concepts/components"
-          },
-          {
-            "text": "Template Syntax",
+            "text": "Template syntax",
             "link": "/guide/concepts/directives/",
             "items": [
-              {
-                "text": "Signals {{}}",
-                "link": "/guide/concepts/directives/signals"
-              },
-              {
-                "text": "Conditionals <if>",
-                "link": "/guide/concepts/directives/if"
-              },
-              {
-                "text": "Loops <for>",
-                "link": "/guide/concepts/directives/for"
-              },
-              {
-                "text": "Attributes",
-                "link": "/guide/concepts/directives/attributes"
-              },
-              {
-                "text": "Lazy policy",
-                "link": "/guide/concepts/directives/lazy"
-              },
-              {
-                "text": "Routes <route>",
-                "link": "/guide/concepts/directives/route"
-              },
-              {
-                "text": "Streaming <boundary>",
-                "link": "/guide/concepts/directives/boundary"
-              }
+              { "text": "Text bindings", "link": "/guide/concepts/directives/signals" },
+              { "text": "Conditions", "link": "/guide/concepts/directives/if" },
+              { "text": "Lists and keys", "link": "/guide/concepts/directives/for" },
+              { "text": "Attributes", "link": "/guide/concepts/directives/attributes" },
+              { "text": "Lazy policies", "link": "/guide/concepts/directives/lazy" },
+              { "text": "Routes", "link": "/guide/concepts/directives/route" },
+              { "text": "Streaming boundaries", "link": "/guide/concepts/directives/boundary" }
             ]
           },
-          {
-            "text": "Interactivity",
-            "link": "/guide/concepts/interactivity"
-          },
-          {
-            "text": "Lazy UI",
-            "link": "/guide/concepts/lazy"
-          }
+          { "text": "Interactivity", "link": "/guide/concepts/interactivity" },
+          { "text": "Lazy UI", "link": "/guide/concepts/lazy" },
+          { "text": "State and data", "link": "/guide/concepts/state-management" },
+          { "text": "CSS and themes", "link": "/guide/concepts/css-tokens" },
+          { "text": "How rendering works", "link": "/guide/concepts/how-it-works" }
         ]
       },
       {
-        "title": "Application Architecture",
+        "title": "Build",
         "items": [
+          { "text": "Routing", "link": "/guide/concepts/routing" },
+          { "text": "Hydration", "link": "/guide/concepts/hydration" },
+          { "text": "Performance guide", "link": "/guide/concepts/performance" },
           {
-            "text": "State Management",
-            "link": "/guide/concepts/state-management"
-          },
-          {
-            "text": "Routing",
-            "link": "/guide/concepts/routing"
-          },
-          {
-            "text": "Performance",
-            "link": "/guide/concepts/performance"
-          },
-          {
-            "text": "Desktop Apps",
-            "link": "/guide/concepts/desktop"
-          }
-        ]
-      },
-      {
-        "title": "Language Integrations",
-        "items": [
-          {
-            "text": "Overview",
-            "link": "/guide/integrations/"
-          },
-          {
-            "text": "Rust",
-            "link": "/guide/integrations/rust"
-          },
-          {
-            "text": "Node / Bun / Deno",
-            "link": "/guide/integrations/node"
-          },
-          {
-            "text": "Python",
-            "link": "/guide/integrations/python"
-          },
-          {
-            "text": "Electron",
-            "link": "/guide/integrations/electron"
-          },
-          {
-            "text": "Tauri",
-            "link": "/guide/integrations/tauri"
-          },
-          {
-            "text": ".NET",
-            "link": "/guide/integrations/dotnet"
-          },
-          {
-            "text": "C / FFI",
-            "link": "/guide/integrations/ffi"
-          },
-          {
-            "text": "WebAssembly",
-            "link": "/guide/integrations/wasm"
-          }
-        ]
-      },
-      {
-        "title": "Guides",
-        "items": [
-          {
-            "text": "WebUI Press",
-            "link": "/guide/webui-press"
-          },
-          {
-            "text": "CLI Reference",
-            "link": "/guide/cli/",
+            "text": "Backend integrations",
+            "link": "/guide/integrations/",
             "items": [
-              {
-                "text": "webui build",
-                "link": "/guide/cli/#webui-build"
-              },
-              {
-                "text": "webui serve",
-                "link": "/guide/cli/#webui-serve"
-              },
-              {
-                "text": "webui inspect",
-                "link": "/guide/cli/#webui-inspect"
-              }
+              { "text": "Rust", "link": "/guide/integrations/rust" },
+              { "text": "Node / Bun", "link": "/guide/integrations/node" },
+              { "text": "Python", "link": "/guide/integrations/python" },
+              { "text": ".NET", "link": "/guide/integrations/dotnet" },
+              { "text": "C / FFI", "link": "/guide/integrations/ffi" },
+              { "text": "WebAssembly", "link": "/guide/integrations/wasm" },
+              { "text": "Electron", "link": "/guide/integrations/electron" },
+              { "text": "Tauri", "link": "/guide/integrations/tauri" }
             ]
           },
-          {
-            "text": "React vs Web Components",
-            "link": "/guide/concepts/react-comparison"
-          },
-          {
-            "text": "Best Practices",
-            "link": "/guide/concepts/best-practices"
-          },
-          {
-            "text": "CSS Token Hoisting",
-            "link": "/guide/concepts/css-tokens"
-          },
-          {
-            "text": "Serverless Architecture",
-            "link": "/guide/serverless-architecture"
-          },
-          {
-            "text": "Plugins",
-            "link": "/guide/concepts/plugins/"
-          }
+          { "text": "Desktop apps", "link": "/guide/concepts/desktop" },
+          { "text": "Service-worker rendering", "link": "/guide/serverless-architecture" }
+        ]
+      },
+      {
+        "title": "Reference",
+        "items": [
+          { "text": "CLI", "link": "/guide/cli/" },
+          { "text": "Best practices", "link": "/guide/concepts/best-practices" },
+          { "text": "Plugins", "link": "/guide/concepts/plugins/" },
+          { "text": "WebUI Press", "link": "/guide/webui-press" },
+          { "text": "AI authoring reference", "link": "/ai" }
         ]
       }
     ],
     "/tutorials/": [
       {
-        "title": "Examples",
+        "title": "Start building",
         "items": [
-          {
-            "text": "Hello World",
-            "link": "/tutorials/hello-world"
-          },
-          {
-            "text": "Todo App",
-            "link": "/tutorials/todo-app"
-          }
+          { "text": "Your first app", "link": "/tutorials/hello-world" },
+          { "text": "A Todo app", "link": "/tutorials/todo-app" },
+          { "text": "Coming from React", "link": "/guide/concepts/react-comparison" },
+          { "text": "More examples", "link": "/examples/" }
         ]
       }
     ]
@@ -263,71 +145,14 @@
   "customPages": {
     "/playground/": {
       "layout": "full",
+      "title": "Template playground",
+      "description": "Edit WebUI HTML, CSS, and JSON state in your browser and inspect the rendered output.",
       "html": "<docs-playground></docs-playground>",
       "stateFile": "./state/playground.json",
       "scriptFile": "./components/docs-playground/docs-playground.ts"
     }
   },
-  "hero": {
-    "text": "SSR without JavaScript on the server.",
-    "tagline": "No virtual DOM. No JSX. Just HTML, streamed from any language.",
-    "manifesto": "HTML for structure. CSS for style. JavaScript only where behavior needs it.",
-    "actions": [
-      {
-        "text": "Get Started →",
-        "link": "/webui/guide/",
-        "brand": true
-      },
-      {
-        "text": "Why WebUI?",
-        "link": "/webui/guide/why/",
-        "brand": false
-      },
-      {
-        "text": "See benchmarks",
-        "link": "/webui/guide/concepts/performance/",
-        "brand": false
-      },
-      {
-        "text": "GitHub",
-        "link": "https://github.com/microsoft/webui",
-        "brand": false
-      }
-    ],
-    "features": [
-      {
-        "icon": "◇",
-        "title": "HTML-only by default",
-        "description": "Bindings, conditions, and loops render on the server without browser state or hydration. Add a sibling TypeScript or JavaScript class only when a component owns behavior."
-      },
-      {
-        "icon": "◎",
-        "title": "Hydrate only what matters",
-        "description": "Defer bindings and listeners until viewport relevance, or keep an optional application graph out of startup JavaScript until first interaction. One template policy declares the boundary."
-      },
-      {
-        "icon": "⇄",
-        "title": "Stream interactivity early",
-        "description": "Place boundaries where readiness changes. WebUI flushes and hydrates a complete child region while its parent and slower content keep rendering, without a virtual DOM."
-      },
-      {
-        "icon": "↗",
-        "title": "Low browser cost, measured",
-        "description": "HTML-only components hydrate nothing, exact state projection keeps payloads focused, and deferred policies postpone work. The benchmark below reports LCP, JavaScript heap, and renderer memory alongside throughput."
-      },
-      {
-        "icon": "▤",
-        "title": "Skip offscreen work",
-        "description": "Lazy rendering uses native content-visibility to defer offscreen style, layout, paint, raster, and hydration while preserving server-rendered content and scroll geometry."
-      },
-      {
-        "icon": "↯",
-        "title": "Compile once. Serve anywhere.",
-        "description": "Templates and Web Components compile into a binary protocol. Rust, Go, Python, C#, Bun, Deno, Node.js, WASM, service workers, and edge runtimes only fill holes and write bytes."
-      }
-    ]
-  },
   "footer": {
-    "html": "Released under the <a href=\"https://opensource.org/licenses/MIT\">MIT License</a>. Built with <a href=\"https://github.com/microsoft/webui/blob/main/crates/webui-press/README.md\">WebUI Framework Static Site Generator</a>."
+    "html": "WebUI is an open-source project from Microsoft Edge. <a href=\"https://opensource.org/licenses/MIT\">MIT licensed</a>. Built with <a href=\"/webui/guide/webui-press/\">WebUI Press</a>. <a href=\"https://github.com/microsoft/webui\">Source</a> &middot; <a href=\"/webui/ai/\">AI reference</a> &middot; <a href=\"https://github.com/microsoft/webui/issues/new/choose\">Feedback</a>"
   }
 }

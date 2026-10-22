@@ -88,7 +88,7 @@ static NEXT_OWNER_CLOSE_COOKIE: AtomicUsize = AtomicUsize::new(1);
 #[cfg(feature = "local-server")]
 fn next_owner_close_cookie() -> Result<usize> {
     NEXT_OWNER_CLOSE_COOKIE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
         .map_err(|_| anyhow::anyhow!("native window generation exhausted; restart the desktop host before opening another local-server frame"))
 }
 

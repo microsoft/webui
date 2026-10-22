@@ -1,0 +1,156 @@
+:host {
+  display: block;
+  min-width: 0;
+  margin-top: 28px;
+  color: var(--docs-color-text);
+  font-family: var(--docs-font-sans);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.managers {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+
+.manager {
+  position: relative;
+  cursor: pointer;
+}
+
+.manager input,
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.manager span {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--docs-color-text-2);
+  font-size: 14px;
+}
+
+.manager:has(input:checked) span {
+  border-color: var(--docs-color-border);
+  background: var(--docs-color-brand-bg);
+  color: var(--docs-color-brand);
+  font-weight: 600;
+}
+
+.manager:has(input:focus-visible) span {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 3px;
+}
+
+.manager:hover span {
+  color: var(--docs-color-brand);
+}
+
+.command-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 5px;
+  background: var(--site-paper);
+}
+
+.command-text {
+  min-width: 0;
+}
+
+code {
+  color: var(--docs-color-code-text);
+  font: 15px/1.65 var(--docs-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+button {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--docs-btn-brand-bg);
+  color: var(--docs-btn-brand-text);
+  font: 600 14px/1.4 var(--docs-font-sans);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--docs-btn-brand-hover-bg);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.feedback {
+  min-height: 3.2em;
+  margin: 12px 0 0;
+  color: var(--docs-color-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.feedback[data-state="failed"],
+.feedback[data-state="unavailable"] {
+  color: var(--docs-color-text);
+}
+
+a {
+  color: var(--docs-color-brand);
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .manager span {
+    min-height: 44px;
+  }
+
+  .command-line {
+    grid-template-columns: minmax(0, 1fr) 72px;
+    padding-inline: 12px;
+    gap: 8px;
+  }
+}
+
+@media (forced-colors: active) {
+  button {
+    border-color: ButtonText;
+  }
+
+  .manager:has(input:checked) span {
+    border-color: Highlight;
+  }
+}

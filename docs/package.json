@@ -5,8 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "webui press build",
-    "start": "webui press serve"
+    "prepare:benchmarks": "node .webui-press/scripts/prepare-benchmarks.mjs",
+    "build": "pnpm run prepare:benchmarks && webui press build",
+    "start": "pnpm run prepare:benchmarks && webui press serve"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",

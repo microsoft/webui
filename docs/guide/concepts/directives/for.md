@@ -1,6 +1,12 @@
+---
+title: "Lists and loops"
+description: "Repeat HTML over JSON arrays, preserve item identity with explicit keys, and render finite trees with named loop bodies."
+---
+
 # `<for>` Loop Directive
 
-The `<for>` directive allows you to iterate over arrays and generate repeated content for each item.
+Use `<for each="item in items">` to repeat HTML for each array item.
+The directive itself adds no DOM wrapper.
 
 ## Basic Usage
 
@@ -13,7 +19,9 @@ The `<for>` directive allows you to iterate over arrays and generate repeated co
 </for>
 ```
 
-This will generate a div for each item in the `items` array, with the current item available as `item` within the loop.
+Each iteration binds `item` to the current value. Missing or empty arrays
+render no items. For lists that reorder, use [explicit keys](#explicit-keys)
+to keep DOM and component state attached to the same item.
 
 ## Using the Loop Variable
 
@@ -76,8 +84,8 @@ renders that body for a different collection, including an item's children:
 </ul>
 ```
 
-Each level binds `child` to its own item. Returning from the nested loop restores
-the parent's `child`. Missing or empty child arrays stop the nested repeat.
+Each level binds `child` to its own item. Missing or empty child arrays stop
+the nested repeat.
 Use finite tree data and iterate over a smaller child collection at each level;
 repeating the original collection indefinitely does not terminate.
 

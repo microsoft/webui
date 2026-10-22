@@ -2,6 +2,7 @@
 name = "streaming-browser-bench-server"
 version = "0.0.0"
 edition = "2021"
+rust-version.workspace = true
 publish = false
 
 [[bin]]

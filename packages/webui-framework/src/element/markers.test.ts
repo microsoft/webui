@@ -9,6 +9,7 @@ import {
   findByOrdinal,
   skipBlockRange,
   buildSSRIndex,
+  collectTemplateElements,
 } from './markers.js';
 
 // ── Mock helpers ────────────────────────────────────────────────
@@ -525,8 +526,22 @@ describe('buildSSRIndex', () => {
   function cmt(data: string): TreeNode {
     return { nodeType: COMMENT, data, firstChild: null, nextSibling: null };
   }
-  const build = (t: TreeNode, s: TreeNode, markers = true) =>
-    buildSSRIndex(t as unknown as Node, s as unknown as Node, markers);
+  function build(t: TreeNode, s: TreeNode, markers = true) {
+    const elements = collectTemplateElements(t as unknown as Node);
+    const shape = elements.map(element => {
+      let count = 0;
+      let child = element?.firstChild;
+      while (child) {
+        if (child.nodeType === ELEMENT) count++;
+        child = child.nextSibling;
+      }
+      const ownsChildren = element?.firstChild != null
+        || element?.nodeType !== ELEMENT
+        || (element as Element).tagName.indexOf('-') < 0;
+      return count * 2 + (ownsChildren ? 1 : 0);
+    });
+    return buildSSRIndex([0, ...shape], s as unknown as Node, markers);
+  }
 
   test('pairs elements while ignoring whitespace the server dropped', () => {
     // The compiled template keeps authored whitespace; SSR does not.

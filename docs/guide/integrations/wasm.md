@@ -1,6 +1,19 @@
-# WebUI WebAssembly
+---
+title: "WebAssembly"
+description: "Build browser WASM bundles and use the parser, loaded Protocol, or progressive streaming session without native host bindings."
+---
 
-WebUI provides browser-ready WebAssembly bindings through `wasm-bindgen`. The bindings are built as three variants so you can choose only the parser, only the handler, or the combined playground bundle.
+<a id="webui-webassembly"></a>
+
+# WebAssembly
+
+Build WebUI's `wasm-bindgen` bundles for applications that compile or render in
+the browser. Choose the handler for precompiled protocols, the parser for
+virtual source files, or both for a playground. These are generated WASM assets,
+not the native `@microsoft/webui` npm API.
+
+Ordinary native SSR does not require browser WASM or a browser download of
+`protocol.bin`. This integration deliberately moves that work to the client.
 
 ## Variants
 
@@ -10,7 +23,8 @@ WebUI provides browser-ready WebAssembly bindings through `wasm-bindgen`. The bi
 | Parser | `wasm/parser/webui_wasm_parser.js` | `build_protocol` | You need to compile virtual browser files into protocol bytes |
 | All | `wasm/all/webui_wasm_all.js` | Parser and handler exports | You need both sides in one module, such as the docs playground |
 
-The handler-only bundle excludes `webui-parser`, and the parser-only bundle excludes `webui-handler`. The combined bundle keeps the previous playground behavior.
+Use the narrowest bundle your application needs. The handler excludes the
+parser, and the parser excludes the renderer.
 
 ## Lazy template responses
 
@@ -51,8 +65,8 @@ const html = protocol.render(
 );
 ```
 
-Keep the `Protocol` instance alive across renders. It decodes protobuf, builds
-deterministic indices, and binds the plugin once.
+Keep the `Protocol` instance alive across renders rather than decoding the
+same bytes repeatedly.
 
 ### `Protocol`
 
@@ -68,8 +82,8 @@ deterministic indices, and binds the plugin once.
 | `renderLazyPartial(stateJson, owner, id, options?)` | Complete/terminal JSON with fresh scoped state |
 | `tokens()` | Return CSS token names in build order |
 
-For a complete static/CDN service worker example using this callback to write a
-`ReadableStream` and mirror `--theme` token injection in the browser, see
+For a service-worker example that drives a progressive session and prepares
+theme CSS at build time, see
 [Serverless Architecture](/guide/serverless-architecture).
 
 ### `StreamingSession`
@@ -118,10 +132,14 @@ Descriptors contain `instanceId`, `declarationId`, `owner`, `name`, and an
 optional string or numeric `key`. A descriptor means `resume`; no descriptor
 with `done: false` means `advance`; `done: true` means complete. `resume`
 returns only the occurrence and checkpoint so it can be enqueued immediately.
-`advance` returns the following parent or tail bytes, with no sibling boundary
-workaround required. An update is valid between `resume` and `advance`. The
+`advance` returns the following parent or tail bytes. An update is valid
+between `resume` and `advance`. The
 final step's `Uint8Array` includes tail and terminal bytes. The contract is
 identical on Node, Python, C, and .NET.
+
+The example above shows step ordering, not a bounded transport adapter.
+For large responses, also handle stream cancellation and consumer backpressure;
+enqueuing bytes does not by itself wait for the consumer.
 
 ## Parser-only API
 

@@ -4032,9 +4032,9 @@ impl HtmlParser {
         let parsed_fragments = self.handlebars_parser.parse(content)?;
         for fragment in parsed_fragments {
             if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
-                if Self::should_emit_text_content(&raw.value) {
-                    self.add_raw_fragment(&raw.value);
-                }
+                // Whitespace inside an emitted text run is part of the binding,
+                // not inter-element formatting. Client text parts retain it too.
+                self.add_raw_fragment(&raw.value);
             } else if let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() {
                 if signal.raw && is_html_text_only_scope(self.boundary_parent_scope) {
                     self.add_fragment(
@@ -5851,6 +5851,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_preserves_whitespace_inside_bound_text_runs() -> Result<()> {
+        let mut parser = HtmlParser::new();
+        parser.parse(
+            "test.html",
+            "\n  <button>\n    {{title}}\n  </button>\n  <pre>  {{details}}\n  </pre>\n",
+        )?;
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "test.html",
+            [
+                raw("<button>\n    "),
+                signal("title"),
+                raw("\n  </button><pre>  "),
+                signal("details"),
+                raw("\n  </pre>"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_invalid_for_each_is_template_diagnostic() {
         let mut parser = HtmlParser::new();
         let err = parser
@@ -6786,7 +6808,15 @@ mod tests {
             [for_loop("item", "category.items", "for-2"),]
         );
 
-        assert_stream!(fragment_records, "for-2", [signal("item.title"),]);
+        assert_stream!(
+            fragment_records,
+            "for-2",
+            [
+                raw("\n                   "),
+                signal("item.title"),
+                raw("\n                "),
+            ]
+        );
     }
 
     #[test]

@@ -1,6 +1,12 @@
+---
+title: "Conditional rendering"
+description: "Render a region with if conditions, comparisons, and logical operators, using the same truthiness rules on server and client."
+---
+
 # `<if>` Conditional Directive
 
-The `<if>` directive allows you to conditionally render content based on a boolean expression.
+Use `<if condition="...">` to include a region when its condition is truthy.
+The directive does not create an extra DOM element.
 
 Its attributes are `condition`, optional boolean `lazy`, and `id` only when
 `lazy` is present. Unsupported attributes are build errors.
@@ -13,7 +19,7 @@ Its attributes are `condition`, optional boolean `lazy`, and `id` only when
 </if>
 ```
 
-In this example, the welcome message will only be rendered if `isLoggedIn` evaluates to `true` in the current state.
+The welcome message renders when `isLoggedIn` is truthy in the current state.
 
 ## Lazy bodies
 
@@ -36,7 +42,7 @@ state requests, and host endpoints.
 
 ## Condition Expressions
 
-The `condition` attribute supports various types of expressions:
+Write the expression directly in `condition`, without binding braces:
 
 ### Simple Identifier
 
@@ -84,16 +90,16 @@ Supported logical operators:
 
 ## Notes and Limitations
 
-- Nested conditions are supported but limited to a maximum of 5 logical operators
+- Conditions may nest; each expression supports at most 5 logical operators
 - You cannot mix different types of logical operators (`&&` and `||`) in the same condition
 - Parentheses for grouping are not supported
 - The condition is evaluated against the current state object
 
 ## Truthiness Rules
 
-The `<if>` condition evaluator follows JavaScript truthiness semantics for
-scalars on both server (Rust `serde_json::Value`) and client (`!!value`). Empty
-collections are the exception - see the note below the table:
+The `<if>` condition evaluator uses the same rules on the server and client.
+Scalars follow JavaScript truthiness. Unlike JavaScript, empty arrays and
+objects are falsy; nonempty collections are truthy.
 
 | Value | Truthy? | Example |
 |-------|---------|---------|
@@ -104,8 +110,9 @@ collections are the exception - see the note below the table:
 | `""` (empty string) | ❌ No | `@observable name = ''` |
 | `"hello"` (non-empty string) | ✅ Yes | `@observable name = 'Alice'` |
 | `"false"` (string) | ⚠️ **Yes** | Non-empty string is truthy! |
-| `[]` (empty array) | ⚠️ Differs | Use `items.length` instead |
-| `{}` (empty object) | ⚠️ Differs | Test a real field instead |
+| `[]` (empty array) | ❌ No | `@observable items = []` |
+| `{}` (empty object) | ❌ No | `@observable options = {}` |
+| Nonempty array or object | ✅ Yes | `[0]` or `{ enabled: false }` |
 | `null` / missing identifier | ❌ No | Missing state key |
 
 A missing identifier is a falsy operand, not a failure of the complete
@@ -121,15 +128,10 @@ The string `"false"` is truthy because it is a non-empty string. Never use
 
 </webui-blockquote>
 
-<webui-blockquote appearance="warning" title="Warning" icon="⚠️">
-
-Never test a bare array or object. The server evaluator treats `[]` and `{}` as
-falsy, while the compiled client condition is plain `!!value`, where both are
-truthy - so `<if condition="items">` can render differently after hydration than
-it did on the server. Write `<if condition="items.length">`, which is falsy on
-both sides when the array is empty.
-
-</webui-blockquote>
+Both `<if condition="items">` and `<if condition="items.length">` test whether
+an array is nonempty. Use `.length` in comparisons such as
+`<if condition="items.length > 1">` when the count matters. Nested collection
+paths such as `<if condition="actions.trailing">` use the same rules.
 
 ### Supported Expression Patterns
 

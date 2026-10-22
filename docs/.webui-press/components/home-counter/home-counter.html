@@ -1,0 +1,16 @@
+<template shadowrootmode="open">
+  <div class="counter">
+    <div class="counter-reading">
+      <span>Rendered output</span>
+      <output aria-live="polite" aria-atomic="true">{{count}}</output>
+    </div>
+    <div class="counter-actions">
+      <button class="increment" type="button" ?disabled="{{!ready}}" @click="{increment()}">Add one</button>
+      <button class="reset" type="button" ?disabled="{{!ready || count == 0}}" @click="{reset()}">Reset</button>
+    </div>
+  </div>
+  <p class="counter-status">
+    <if condition="ready">Click Add one to update the existing HTML.</if>
+    <if condition="!ready">Enable JavaScript to try this component.</if>
+  </p>
+</template>

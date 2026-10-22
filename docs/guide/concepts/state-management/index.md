@@ -1,6 +1,13 @@
+---
+title: "State management"
+description: "Shape JSON for the first render, resolve paths and loop scopes, and keep browser-facing state free of secrets."
+---
+
 # State Management
 
-WebUI uses JSON as its state format. At render time, you pass a JSON object to the handler, and template bindings resolve values from that object using dotted paths.
+Pass a JSON object to the renderer for the initial page. Templates read it
+through dotted paths. Add browser-owned state only for values that interactive
+code reads or changes; see [Interactivity](/guide/concepts/interactivity).
 
 ## State Structure
 
@@ -30,7 +37,7 @@ State is a flat or nested JSON object. Template bindings reference values using 
 
 ## Path Resolution
 
-The handler resolves paths using `find_value_by_dotted_path`. Supported patterns:
+Bindings support these paths:
 
 | Pattern | Example | Resolves to |
 |---------|---------|-------------|
@@ -40,14 +47,21 @@ The handler resolves paths using `find_value_by_dotted_path`. Supported patterns
 | Array length | `items.length` | `2` |
 
 Paths are resolved at render time. If a path doesn't exist in the state, text
-and attribute bindings render as empty. In conditions, a missing identifier is
+bindings render as empty. An attribute whose entire value is a binding is
+omitted when the value is missing or `null`. An explicit empty string still
+renders an empty attribute, such as `pattern=""`; zero and `false` are also
+preserved as attribute values. Mixed static and dynamic attribute values retain
+their static text.
+
+In conditions, a missing identifier is
 a falsy operand: `<if condition="path">` does not render, while
 `<if condition="!path">` does render. No error is reported for a missing
 identifier path.
 
 ## State in Loops
 
-Inside a `<for>` directive, each iteration creates a scoped state context. Loop items are accessed via their moniker (e.g. `item.label`, `item.done`):
+Inside `<for>`, use the loop variable to read the current item. Global state
+remains available:
 
 ```html
 <for each="item in items">
@@ -96,16 +110,17 @@ Here, `item.done` comes from the loop item and `showCompleted` comes from global
 
 ### Keep it flat where possible
 
-Deeply nested state works, but adds path traversal cost. Prefer flat structures for frequently accessed values:
+Use names that make bindings easy to read. Both flat and nested objects work;
+avoid adding nesting that serves no purpose:
 
 ```json
-// ✅ Preferred - flat access
+// Flat access: {{userName}}
 {
   "userName": "Alice",
   "userRole": "admin"
 }
 
-// ⚠️ Works but deeper path resolution
+// Nested access: {{user.profile.name}}
 {
   "user": { "profile": { "name": "Alice" } }
 }
@@ -113,7 +128,7 @@ Deeply nested state works, but adds path traversal cost. Prefer flat structures 
 
 ### Structure collections as arrays of objects
 
-The `<for>` directive iterates over arrays. Each item should be a self-contained object with all the data the template needs:
+Use arrays for collections. Objects keep each item's related fields together:
 
 ```json
 {
@@ -126,11 +141,11 @@ The `<for>` directive iterates over arrays. Each item should be a self-contained
 
 ### Provide all state upfront
 
-Unlike client-side frameworks that fetch data on mount, WebUI renders in a
-single pass. The state object should contain everything the template needs for
-first render. Missing values render as empty output for text and attribute
-bindings. A missing condition identifier is falsy before logical operators are
-applied, so its positive branch is hidden and its negated branch is shown.
+For a buffered response, supply everything needed for the first render.
+Missing text renders empty; missing whole-binding attributes are omitted.
+A missing condition identifier is falsy, so its positive branch is hidden and
+its negated branch is shown. If data becomes ready at different times, use
+[streaming boundaries](/guide/concepts/directives/boundary) instead.
 
 ```json
 // ✅ Complete - every binding has data
@@ -159,6 +174,9 @@ Without a projection manifest, WebUI sends full state. With one or more
 manifests, every scripted component compiled into the protocol must have exact
 coverage, and only its proven `@observable` plus `@attr` keys are eligible for
 initial bootstrap. See [Hydration](/guide/concepts/hydration#build-time-state-projection).
+
+Projection reduces the browser payload; it is not an access-control boundary.
+Never place credentials, private tokens, or other secrets in render state.
 
 ### SSR State Completeness for Route Pages
 
@@ -189,16 +207,12 @@ If `messages` is an empty array `[]`, the `<for>` loop correctly renders
 zero items - even if the client would populate it later. The server is
 the source of truth for the initial render.
 
-<webui-blockquote appearance="tip" title="Rule of thumb" icon="💡">
-
-Check every `<for>`, `<if>`, and `{{binding}}` in your route page template.
-Every key must be present in the server state JSON.
-
-</webui-blockquote>
-
 ### Use boolean flags for conditionals
 
-`<if>` conditions evaluate against state values. Use explicit boolean flags rather than relying on complex expressions:
+Use real booleans for decisions supplied by the server. For values already
+derivable from state, prefer a supported expression such as
+`<if condition="items.length">` rather than maintaining a separate `hasItems`
+flag:
 
 ```json
 {
@@ -230,7 +244,7 @@ By default, signal values are HTML-escaped to prevent XSS:
 
 ## Learn More
 
-- [Signals](/guide/concepts/directives/signals) - Template binding syntax
+- [Signals](/guide/concepts/directives/signals) - Escaping and raw HTML
 - [For loops](/guide/concepts/directives/for) - Iterating over collections
 - [If conditions](/guide/concepts/directives/if) - Conditional rendering
-- [Handlers](/guide/integrations/) - Passing state to the renderer
+- [Integrations](/guide/integrations/) - Passing state to a native renderer

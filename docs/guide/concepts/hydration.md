@@ -1,14 +1,30 @@
+---
+title: "Hydration"
+description: "Connect browser behavior to server HTML, choose deferred or streaming activation, and configure state projection and Trusted Types."
+---
+
 # Hydration
 
-WebUI renders components reached by the initial request on the server.
-JavaScript is optional:
+Hydration attaches browser bindings and listeners to existing server-rendered
+HTML. Import your authored component modules from a browser entry to register
+them; static SSR does not require the framework.
 
 | Component files | Browser behavior |
 |-----------------|------------------|
 | `user-card.html` + `user-card.ts` or `user-card.js` | The authored class owns events, lifecycle, reactive state, and imperative APIs |
 | `user-card.html` only | The server-rendered HTML stays inactive unless later navigation or state changes require browser rendering |
 
-This keeps first-page work small without requiring empty TypeScript classes.
+Use [Interactivity](/guide/concepts/interactivity) to write a component class.
+This page covers when its behavior becomes ready and which state reaches it.
+
+Build and deploy `protocol.bin` and the browser bundle with matching WebUI
+versions. Rebuild both after upgrading.
+
+Text bindings retain their surrounding authored whitespace on the server and
+during browser updates. Values are not trimmed; ordinary HTML whitespace
+collapsing and CSS such as `white-space: pre-wrap` determine their appearance.
+Native HTML rules still apply, including ignoring the first newline immediately
+after an opening `<pre>` or `<textarea>` tag.
 
 ## HTML-Only Components
 
@@ -55,13 +71,13 @@ bindings, events, and `w-ref` references are ready. Progressive streaming pages
 use the early async module contract described below instead.
 
 Until a containing WebUI component hydrates, descendants must not insert,
-remove, or reorder nodes in its SSR subtree. Hydration numbers the trusted
-server DOM to match the compiled template and cannot recover once that
-numbering shifts.
+remove, or reorder its server-rendered nodes.
 
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
+
+<a id="lazy-hydration"></a>
 
 ## Deferred Hydration Lifecycle
 
@@ -70,9 +86,8 @@ browser rendering work and component bindings/listeners activate; they do not
 defer HTML parsing, DOM construction, custom-element definition, or resource
 discovery.
 
-- Visibility policies activate within the viewport lead or immediately before
-  interaction. Chromium uses native content-relevance events when available;
-  other browsers use the shared `IntersectionObserver`.
+- Visibility policies activate shortly before the component enters the
+  viewport or immediately before interaction.
 - Interaction policy waits for pointer, focus, keyboard, or click intent and can
   keep the component module graph out of startup JavaScript and heap.
 - Client-created components, successfully hydrated reconnects, and eager
@@ -127,12 +142,8 @@ try {
 }
 ```
 
-The compiler emits the root marker. Before hydration, mouse hover prefetches one
-internal route partial into a bounded raw-byte buffer without parsing templates
-or loading the router. Pointer-down, focus, and keyboard start the component and
-router imports in parallel. An eligible click waits, then replays after the
-router adopts the prefetched response; no duplicate route request or parse is
-performed.
+Mouse hover can prefetch a route. Pointer-down, focus, and keyboard interaction
+start loading the application; an eligible click waits until it is ready.
 
 This policy trades first-interaction latency for lower startup JS and heap, so
 measure both. Prefer an eager root with `w-render="lazy"` descendants when
@@ -210,13 +221,10 @@ import './ntp-page.js';
 import './search-box.js';
 ```
 
-The entry uses one `<ntp-page>`. When traversal reaches its internal boundary,
-WebUI pauses and returns a runtime descriptor to the host. `resume` commits only
-`<search-box>` through its checkpoint, so it can become interactive
-immediately. `advance` then renders the remaining parent section, generated
-span completion, and later shell bytes. This boundary-only resume means a
-sibling boundary is not needed to separate the early child from the parent
-tail.
+The host receives a descriptor when rendering reaches `search-ready`.
+`resume` writes only that boundary, allowing `<search-box>` to hydrate once its
+code and metadata are ready. `advance` continues through the parent section and
+the next boundary or response end.
 
 Boundaries can also occur in true conditions and selected route content. A
 boundary-bearing subtree reached from a `<for>` body fails the build with
@@ -286,16 +294,9 @@ hosts can load framework support on demand without importing your application.
 
 ### Timing and lifecycle
 
-When a boundary pauses inside a component, WebUI generates a span around the
-unfinished parent. The early child is compiler-marked to bypass exactly that
-nearest parent barrier. Other descendants stay opaque until the parent span
-completes. The same bounded traversal works in light DOM and across open shadow
-roots and slots.
-
-When a component calls `.define()` before streamed template metadata arrives,
-WebUI delays native definition because browsers snapshot `observedAttributes`
-at definition time. When a checkpoint arrives first, undefined roots share one
-definition waiter per tag. Parents hydrate before ordinary descendants.
+An explicitly bounded child can hydrate before its unfinished parent.
+Other descendants wait for the parent. Registration alone does not prove
+readiness: streamed metadata and HTML must also have arrived.
 
 Use `hydratedCallback()` for setup that needs bindings, events, or `w-ref`
 references. It runs synchronously exactly once after the first successful
@@ -318,11 +319,9 @@ WebUI dispatches these events on `window`:
 
 ### Measuring commits in production
 
-Events require a listener installed before the first commit, which is often
-impossible: the coordinator is a separate async entry, so an analytics or RUM
-script can easily load after early boundaries have already hydrated. WebUI
-therefore also emits a `performance.mark()` for every commit, with no flag and
-no listener:
+An analytics script may load after early hydration events. Read the
+performance timeline instead: WebUI emits a `performance.mark()` for each
+commit without a flag or listener.
 
 | Mark | Emitted when |
 | --- | --- |
@@ -363,41 +362,10 @@ the last boundary's interactivity for responsiveness during hydration, so leave
 it unset unless you have measured a long task. Record order and every
 correctness guarantee are unchanged.
 
-After a checkpoint commits, WebUI removes its generated payload, sentinel,
-markers, and temporary attributes. Final occurrences release roots immediately.
-Updatable occurrences retain only live roots and a pending shallow patch until
-terminal.
-
-The browser protocol is the single unversioned
-`[sequence, kind, target, payload]` contract. Kinds are final
-checkpoint, updatable checkpoint, update, generated span completion, and
-terminal. A malformed, truncated, out-of-order, or over-limit stream fails
-closed, suppresses successful completion, and releases discoverable deferred
-state within fixed bounds.
-
-Range records normally carry their projected `state`. When the exact preceding
-range projection is a proven subset under the same server state revision, a
-record instead carries `stateRef` plus only its top-level `stateDelta`. The
-coordinator resolves the state before activation and keeps prior state immutable
-for delayed roots. Missing, stale, forward, mismatched, or malformed references
-fail closed. State-update records remain independent patches and never alter
-the range-state reference base.
-
-At `body_end`, the handler emits one markerless empty terminal envelope:
-`[nextSequence,4,0,{}]`. Its flush also commits any preceding native or static
-tail HTML, but terminal records never repeat template metadata or state. A
-truncated or malformed stream, or one exceeding a client work bound such as the
-queued-boundary or marker-scan limit, logs an error, suppresses
-`webui:hydration-complete`, and releases discoverable deferred state within
-fixed bounds. Valid commits perform no document-wide scan; a bounded sweep is a
-fatal-cleanup fallback only.
-
-The client trusts records past two checks, because the same WebUI release wrote
-them: `JSON.parse` (which alone detects any truncation, since a cut-off record
-is never valid JSON) and the four-element tuple shape. Everything else is
-enforced where it is actually knowable - a sequence or boundary-target mismatch
-halts the stream, and a defective payload fails the commit closed. There is no
-compatibility parser; obsolete tuple shapes are rejected.
+Use the host streaming API rather than constructing or modifying generated
+records. Malformed, truncated, out-of-order, or over-budget streams fail closed,
+log an error, and do not emit `webui:hydration-complete`. Keep compiler,
+handler, and browser assets from compatible versions.
 
 ### CSP and delivery
 
@@ -455,10 +423,9 @@ Trusted Types also does not sanitize HTML already delivered by the server.
 
 ## Build-Time State Projection
 
-Exact state projection is opt-in. Rust does not inspect JavaScript or
-TypeScript. The application bundles its browser code first, and a bundler
-adapter emits `webui-projection.json` from the same resolved graph and output
-membership that produced the browser chunks.
+State projection is opt-in. Build your browser code with the projection plugin,
+then pass the generated `webui-projection.json` to WebUI to reduce the state
+sent to the browser.
 
 Projection includes inherited `@observable` and `@attr` fields, including
 those from statically analyzable class factories such as
@@ -466,9 +433,7 @@ those from statically analyzable class factories such as
 factory is analyzable: if the compiler cannot prove the exact state keys, the
 projection build reports an error rather than dropping inherited state.
 
-The projection compiler contract is bundler-neutral. The
-`@microsoft/webui/projection.js` subpath currently includes the supported
-esbuild adapter:
+The supported esbuild plugin is exported from `@microsoft/webui/projection.js`:
 
 ```bash
 npm install -D esbuild typescript
@@ -499,50 +464,8 @@ webui build ./src \
   --out ./dist
 ```
 
-The generated file has this shape (hashes abbreviated):
-
-```json
-{
-  "schema": "webui.state-projection/v1",
-  "producer": {
-    "name": "@microsoft/webui/projection.js",
-    "version": "0.0.18"
-  },
-  "adapter": {
-    "name": "esbuild",
-    "bundler": "esbuild@0.28.1"
-  },
-  "root": "..",
-  "analysisHash": "sha256:...",
-  "buildId": "sha256:...",
-  "outputs": {
-    "dist/index.js": "sha256:..."
-  },
-  "inputs": {
-    "src/user-card.ts": "sha256:..."
-  },
-  "components": {
-    "user-card": {
-      "module": "src/user-card.ts",
-      "outputs": ["dist/index.js"],
-      "hydrationKeys": ["displayName", "selected"],
-      "navigationKeys": ["displayName", "selected"]
-    }
-  }
-}
-```
-
-Do not hand-author this file. It is a deterministic record of the completed
-bundle and becomes stale as soon as a declared input or output changes.
-
-The manifest records exact analyzable-source hashes, emitted output hashes,
-code-split membership, component ownership, and sorted `@observable` plus
-`@attr` property names. Non-source inputs remain in esbuild's native graph but
-stay outside the normalized projection graph; their emitted outputs provide the
-byte proof instead of a duplicate input hash. WebUI validates the declared
-hashes and embeds only the resulting key surfaces in
-`protocol.bin`. Runtime handlers do not load the manifest, TypeScript, or a
-bundler.
+Do not edit the generated manifest. Re-run the client build whenever its inputs
+or outputs change, then rebuild the protocol.
 
 Behavior is intentionally strict:
 
@@ -560,17 +483,8 @@ Behavior is intentionally strict:
   SSR host attribute wins; projected state seeds the property only when that
   attribute is absent.
 
-The adapter runs inside the application's existing esbuild invocation. It does
-not start a second bundler run, and it does not constrain chunking, dynamic
-imports, external modules, or output naming.
-
-Other bundlers are not coupled to esbuild. A Vite, Rollup, Rolldown, webpack,
-Rspack, or other adapter can construct the exported `AdapterContext`, call
-`compileProjection()`, and run the exported conformance suite. The official
-package currently ships and supports the esbuild adapter. Custom adapters must
-provide a normalized JavaScript/TypeScript source graph and exact
-emitted-output bytes. Non-source bundler inputs stay outside the semantic
-graph, so projection does not decode or hash their input bodies.
+Use your existing esbuild entry points, splitting, and output naming. The plugin
+runs as part of that build; it does not start a second bundle.
 
 ## State Sent to the Browser
 
@@ -588,8 +502,8 @@ initial page needs no client state, WebUI writes:
 {"state":{}}
 ```
 
-State sent to the browser is client-visible. Never place credentials, private
-tokens, or other secrets in it.
+Projection is a payload optimization, not a secrecy boundary. Never place
+credentials, private tokens, or other secrets in render state.
 
 ## Routing
 

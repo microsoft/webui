@@ -4028,8 +4028,6 @@ impl WebUIHandler {
                         context.state,
                     ),
                 };
-                // Always emit the attribute so FAST hydration markers
-                // (`data-fe`) match the DOM node structure.
                 match value.as_deref() {
                     Some(Value::String(s)) => {
                         write_attr(
@@ -4038,9 +4036,7 @@ impl WebUIHandler {
                             &crate::html_encode::encode_safe(s),
                         )?;
                     }
-                    Some(Value::Null) | None => {
-                        write_attr(context.writer, &attr.name, "")?;
-                    }
+                    Some(Value::Null) | None => {}
                     Some(other) => {
                         let mut scalar = ScalarBuffer::new();
                         match format_plain_json_scalar(&mut scalar, other) {
@@ -5599,6 +5595,115 @@ mod tests {
         )
         .unwrap();
         assert_eq!(writer.get_content(), "<input value=\"Hello\">");
+    }
+
+    #[test]
+    fn test_dynamic_attribute_preserves_nullish_and_falsy_values() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input"),
+                    WebUIFragment::attribute("pattern", "pattern"),
+                    WebUIFragment::raw(">"),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        for (state, expected) in [
+            (test_json!({}), "<input>"),
+            (test_json!({"pattern": null}), "<input>"),
+            (test_json!({"pattern": ""}), "<input pattern=\"\">"),
+            (test_json!({"pattern": 0}), "<input pattern=\"0\">"),
+            (test_json!({"pattern": false}), "<input pattern=\"false\">"),
+            (
+                test_json!({"pattern": "[a-z]+"}),
+                "<input pattern=\"[a-z]+\">",
+            ),
+        ] {
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )?;
+            assert_eq!(writer.get_content(), expected, "state: {state}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_dynamic_attribute_omission_preserves_component_props() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-input"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "pattern".into(),
+                                value: "constraint".into(),
+                                attr_start: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-input"),
+                    WebUIFragment::raw("</my-input>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+        fragments.insert(
+            "my-input".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input"),
+                    WebUIFragment::attribute("pattern", "pattern"),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::signal("pattern", false),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        for (state, expected) in [
+            (test_json!({}), "<my-input><input pattern=\"\"></my-input>"),
+            (
+                test_json!({"constraint": null}),
+                "<my-input><input>null</my-input>",
+            ),
+            (
+                test_json!({"pattern": "global"}),
+                "<my-input><input pattern=\"\"></my-input>",
+            ),
+            (
+                test_json!({"constraint": ""}),
+                "<my-input pattern=\"\"><input pattern=\"\"></my-input>",
+            ),
+            (
+                test_json!({"constraint": "[a-z]+"}),
+                "<my-input pattern=\"[a-z]+\"><input pattern=\"[a-z]+\">[a-z]+</my-input>",
+            ),
+        ] {
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )?;
+            assert_eq!(writer.get_content(), expected, "state: {state}");
+        }
+        Ok(())
     }
 
     #[test]

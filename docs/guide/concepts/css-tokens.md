@@ -1,79 +1,131 @@
-# CSS Token Hoisting
+---
+title: "CSS tokens and themes"
+description: "Use CSS custom properties, load a theme file or package, and validate required tokens without changing CSS ownership."
+---
 
-CSS Token Hoisting is a build-time optimization that discovers which CSS custom properties (design tokens) your application actually uses, and includes only those in the protocol output. This enables host runtimes to resolve design tokens efficiently without shipping unused variables.
+<a id="css-token-hoisting"></a>
 
-## How It Works
+# CSS Tokens and Themes
 
-During the build process, WebUI extracts CSS custom property **usages** - names referenced via `var(--name)` - from two sources:
-
-1. **Component CSS files** - tokens are extracted when components are registered and cached in the component registry.
-2. **Inline `<style>` tags** - tokens are extracted from `<style>` elements in the entry HTML file and component templates.
-
-The resulting set of tokens is sorted, deduplicated, and included in the protocol's `tokens` field.
-
-### What Gets Hoisted
-
-Only `var()` **usages** are hoisted - not custom property **definitions**:
+Style components with ordinary CSS custom properties. You can define them in
+your own stylesheets, or use `--theme` to validate and supply a shared token
+set. Theming does not scope selectors: Light DOM CSS is global in its owning
+CSS tree; Shadow DOM provides native isolation.
 
 ```css
-/* ✅ HOISTED - usage via var() */
-.button {
-  color: var(--colorPrimary);           /* → "colorPrimary" */
-  background: var(--bgColor);           /* → "bgColor" */
-}
-
-/* ❌ NOT hoisted - this is a definition */
-:root {
-  --colorPrimary: #0078d4;
+/* my-card.css, using the default Shadow DOM mode */
+:host {
+  color: var(--text-primary);
+  background: var(--surface-page);
 }
 ```
 
+## Configure a theme
+
+Theme files map token names **without** `--` to CSS value strings:
+
+```json
+{
+  "themes": {
+    "light": {
+      "text-primary": "#111827",
+      "surface-page": "#ffffff"
+    },
+    "dark": {
+      "text-primary": "#fafafa",
+      "surface-page": "#171717"
+    }
+  }
+}
+```
+
+A flat object such as `{ "text-primary": "#111827" }` defines one theme named
+`default`. Load a local JSON file or an installed npm package:
+
+```bash
+webui build ./src --out ./dist --theme ./themes/brand.json
+webui serve ./src --state ./data/state.json --theme ./themes/brand.json --watch
+```
+
+For a package, `--theme @my-org/brand-tokens` resolves its `tokens.json`;
+`@my-org/brand-tokens/custom.json` selects another file.
+
+## Apply theme values
+
+`webui build --theme` validates token coverage; it does not choose the active
+theme or add a theme switcher. `webui serve --theme` also puts resolved CSS
+declarations in state as `tokens.<theme-name>`. Apply them in the entry
+template's `<head>`:
+
+```html
+<style>
+  :root {
+    color-scheme: light dark;
+    /*{{{tokens.light}}}*/
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /*{{{tokens.dark}}}*/
+    }
+  }
+</style>
+```
+
+Use `tokens.default` for a flat theme file. The CSS-comment wrapper around each
+binding is required. These are raw CSS declarations: load trusted theme files,
+not user-supplied strings.
+
+In a custom host, resolve tokens and supply the resulting declarations in
+render state, or publish them as a stylesheet. The Rust
+`microsoft-webui-tokens` crate exposes `load_token_file`, `resolve_tokens`,
+and `inject_token_css`; other hosts can read the protocol's token inventory
+through their [integration API](/guide/integrations/).
+
+<a id="how-it-works"></a>
+<a id="what-gets-hoisted"></a>
+
+## Required tokens and defaults
+
+With `--theme`, WebUI checks the `var(--name)` references in your component
+CSS and inline `<style>` blocks. Provide those tokens in each theme, define
+local defaults, or give the usage a literal fallback.
+
 ### Nested Fallbacks
 
-Fallback variables in `var()` calls are also extracted:
+Without local defaults, all three names in this example need theme values:
 
 ```css
 .card {
-  /* All three tokens are extracted: "a", "b", "c" */
   color: var(--a, var(--b, var(--c)));
 }
 ```
 
-Literal fallback values (like `16px`) are ignored - only variable references are extracted.
-Malformed `var()` calls fail the build instead of hoisting partial token names.
+Use a literal fallback such as `var(--gap, 16px)` when the token is optional.
+Malformed `var()` calls fail the build.
 
 ### Local Definition Exclusion
 
-A custom property defined in the same declaration block is **excluded** from
-that block's token requirements. Unconditional `:host` or `:root` defaults also
-satisfy references in the current or descendant components:
+A definition in the same declaration block provides a local default.
+Unconditional `:host` or `:root` defaults also apply to descendant components:
 
 ```css
 :host {
-  --internal-spacing: 8px;             /* definition */
-  padding: var(--internal-spacing);     /* usage */
-  color: var(--designSystemColor);      /* usage only → HOISTED */
+  --card-spacing: 8px;
+  padding: var(--card-spacing);
+  color: var(--designSystemColor);
 }
-/* Result: only "designSystemColor" is hoisted */
 ```
+
+Here, the theme needs `designSystemColor`, but not `card-spacing`.
 
 Selector-scoped overrides do not replace theme defaults outside their matching
 elements. For example, `.green { --brand: var(--green-brand); }` still requires
 the theme's `brand` token when another rule or child component uses
 `var(--brand)`. Conditional defaults inside `@media`, `@supports`, or
 `@container` likewise do not replace unconditional defaults. Put shared
-component defaults in a bare `:host` rule and document defaults in `:root`;
-these can also live inside cascade layers.
-
-Definitions are excluded even when the variable appears in a nested fallback:
-
-```css
-:host {
-  --token-a: red;
-  --foo-bar: var(--token-a, var(--token-b, var(--token-c)));
-}
-/* Result: "token-b" and "token-c" are hoisted; "token-a" is local */
-```
+Shadow component defaults in a bare `:host` rule and document defaults in
+`:root`; these can also live inside cascade layers. `:host` is not valid in
+Light component CSS.
 
 ### Theme Validation
 
@@ -86,9 +138,7 @@ tokens fail with `missing-theme-token`; theme token values that reference an
 undefined or cyclic `var(--token)` are trusted and left to browser CSS
 semantics.
 
-Both the error and the typo advisory point at the offending CSS
-(`--> my-card.css:2:10`, with the source line) and suggest the closest theme
-token by edit distance, so a misspelled `var(--color-neutral-2000)` reports:
+Errors point at the CSS that needs attention and suggest a matching theme token:
 
 ```
 ✘ error: missing theme token [missing-theme-token]
@@ -98,7 +148,7 @@ token by edit distance, so a misspelled `var(--color-neutral-2000)` reports:
 ```
 
 
-A `var()` usage that supplies a **literal CSS fallback** is exempt — the literal
+A `var()` usage that supplies a **literal CSS fallback** is exempt: the literal
 already provides a value, so the token is not required:
 
 ```css
@@ -108,15 +158,12 @@ already provides a value, so the token is not required:
 }
 ```
 
-`--brand` is still hoisted into the protocol so the runtime resolves it when a
-theme *does* define it, but its absence does not fail the build. If the same
-token is also used without a fallback anywhere (e.g. a bare `var(--brand)`), it
-becomes required again.
+The theme can still supply `brand`; the literal is used when no value is
+available. If another usage has no fallback, `brand` becomes required.
 
-As a safety net for typos, a token used **only** with a literal fallback and
-defined in **no** theme (e.g. a misspelled `var(--colr-brand, #000)`) is
-reported as a non-fatal advisory — `webui build` prints it and it is available
-on `BuildResult::warnings` — rather than failing the build.
+A token used only with a literal fallback but missing from every theme produces
+a non-fatal typo advisory. `webui build` prints it; library callers can inspect
+`BuildResult::warnings`.
 
 ## Comment Handling
 
@@ -125,45 +172,11 @@ are ignored, so comments cannot be used as token placeholders. CSS legal
 comments are preserved only when `--legal-comments inline` is active.
 Unterminated HTML or CSS comments fail the build.
 
-Inside `<style>` tags, dynamic CSS fragments are valid only when wrapped in a
-CSS block comment. The comment must contain exactly one handlebars expression:
+Use the CSS-comment-wrapped theme bindings shown under
+[Apply theme values](#apply-theme-values). The comment must contain exactly
+one binding.
 
-```html
-<style>
-  :root {
-    /*{{{tokens.light}}}*/
-  }
-</style>
-```
+<a id="protocol-output"></a>
+<a id="cli-output"></a>
 
-## Protocol Output
-
-The hoisted tokens appear in the protocol's `tokens` field:
-
-```json
-{
-  "fragments": { ... },
-  "tokens": [
-    "bgColor",
-    "borderRadiusSmall",
-    "colorBrandBackground",
-    "colorPrimary",
-    "fontFamilyBase",
-    "lineHeightBase400",
-    "spacingHorizontalM"
-  ]
-}
-```
-
-The list is always **sorted alphabetically** and **deduplicated** across all components and inline styles.
-
-## CLI Output
-
-When tokens are discovered, the build command reports the count:
-
-```
-✔ Registered 5 components
-✔ Parsed index.html (23 fragments)
-✔ Discovered 12 CSS tokens
-✔ Build complete (3 files written) in 42ms
-```
+For inspecting a compiled build, see the [CLI reference](/guide/cli/).

@@ -3,6 +3,7 @@ name = "microsoft-webui"
 description = "Programmatic API for the WebUI build-time rendering framework"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -18,11 +19,11 @@ name = "webui"
 cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "3.0.2" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.2", features = ["projection-manifest", "content-identity"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.2" }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.2" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.2" }
+microsoft-webui-parser = { path = "../webui-parser", version = "3.0.4" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4", features = ["projection-manifest", "content-identity"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.4" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.4" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -42,11 +43,11 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 actix-web = { workspace = true }
-awc = { workspace = true }
+reqwest = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.2" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.2", features = ["projection-manifest"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4", features = ["projection-manifest"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }

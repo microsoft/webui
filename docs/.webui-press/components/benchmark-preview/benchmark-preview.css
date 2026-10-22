@@ -1,0 +1,260 @@
+:host {
+  display: block;
+  min-width: 0;
+  container-type: inline-size;
+  --preview-value-width: 6.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.preview {
+  padding: 24px;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 5px;
+  background: var(--site-paper);
+  color: var(--docs-color-text);
+  font-family: var(--docs-font-sans);
+}
+
+h2 {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+
+.context {
+  margin: 16px 0 0;
+  color: var(--docs-color-text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.metric-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 4px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--docs-color-border);
+}
+
+.metric-tabs button {
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--docs-color-text-2);
+  font: 600 13px/1.4 var(--docs-font-sans);
+  cursor: pointer;
+}
+
+.metric-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--docs-color-brand);
+  color: var(--docs-color-brand);
+}
+
+.metric-tabs button:hover:not(:disabled) {
+  background: var(--docs-color-brand-bg);
+  color: var(--docs-color-brand);
+}
+
+.metric-tabs button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.qualification {
+  margin: 16px 0 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--docs-color-border);
+  color: var(--docs-color-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.configuration-column {
+  width: 41%;
+}
+
+th {
+  padding: 12px 14px 12px 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+td {
+  padding: 12px 0;
+}
+
+tr[data-webui] th {
+  font-weight: 650;
+}
+
+.measurement {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--preview-value-width);
+  align-items: center;
+  gap: 12px;
+}
+
+.plot {
+  display: block;
+  width: 100%;
+  height: 24px;
+  overflow: visible;
+}
+
+.grid {
+  fill: none;
+  stroke: var(--docs-color-border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.bar {
+  fill: var(--docs-color-text-3);
+}
+
+[data-webui] .bar {
+  fill: var(--docs-color-brand);
+}
+
+.zero {
+  stroke: var(--docs-color-text);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.value,
+.scale {
+  font-family: var(--docs-font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.value {
+  text-align: right;
+}
+
+.scale {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 2px calc(var(--preview-value-width) + 12px) 0 41%;
+  color: var(--docs-color-text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.scale span:nth-child(2) {
+  justify-self: center;
+}
+
+.scale span:last-child {
+  justify-self: end;
+}
+
+.reading {
+  margin: 18px 0 0;
+  color: var(--docs-color-text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.details-link {
+  display: block;
+  margin-top: 12px;
+  color: var(--docs-color-brand);
+  font-size: 14px;
+  line-height: 1.6;
+  text-underline-offset: 3px;
+}
+
+a:focus-visible,
+.metric-tabs button:focus-visible,
+.metric-panel:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 4px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@container (max-width: 440px) {
+  .preview {
+    padding: 20px;
+  }
+
+  h2 {
+    font-size: 21px;
+  }
+
+  .metric-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-tabs button {
+    min-height: 44px;
+  }
+
+  colgroup {
+    display: none;
+  }
+
+  table,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+    width: 100%;
+  }
+
+  th {
+    padding: 12px 0 0;
+  }
+
+  td {
+    padding: 4px 0 12px;
+  }
+
+  .scale {
+    margin-left: 0;
+  }
+
+  .scale span:nth-child(2) {
+    visibility: hidden;
+  }
+}
+
+@media (forced-colors: active) {
+  .bar {
+    fill: CanvasText;
+  }
+
+  .grid {
+    stroke: GrayText;
+  }
+
+  .metric-tabs button[aria-selected="true"] {
+    border-bottom-color: Highlight;
+  }
+}

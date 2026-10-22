@@ -1,6 +1,15 @@
-# Signal Directives
+---
+title: "Text and raw HTML bindings"
+description: "Read state through dotted paths, escape text by default, and reserve raw bindings and document injection for trusted HTML."
+---
 
-WebUI provides two types of signals for inserting dynamic values into your templates: escaped signals and raw signals.
+<a id="signal-directives"></a>
+
+# Text Bindings
+
+Insert state with <code v-pre>{{path}}</code>. Use triple braces only for
+trusted HTML. These bindings read values; they do not evaluate arbitrary
+JavaScript, call functions, or perform arithmetic.
 
 ## Escaped Signals: `{{}}`
 
@@ -11,21 +20,22 @@ The double curly braces syntax (`{{}}`) inserts a value from the state object wi
 ```
 
 
-This ensures that any special HTML characters in the value are properly escaped, preventing XSS attacks.
+HTML characters in the value are escaped so they display as text rather than
+markup. This is not URL validation: validate URL-bearing values separately.
 
 ### Example
 State:
 ```json
 {
   "user": {
-    "name": "John &lt;script&gt;alert('XSS')&lt;/script&gt;"
+    "name": "John <script>alert('XSS')</script>"
   }
 }
 ```
 
 Output:
 ```html
-<p>Hello, John &lt;script&gt;alert('XSS')&lt;/script&gt;!</p>
+<p>Hello, John &lt;script&gt;alert(&#x27;XSS&#x27;)&lt;&#x2F;script&gt;!</p>
 ```
 
 ## Raw Signals: `{{{}}}`
@@ -62,7 +72,7 @@ You can access nested properties using dot notation:
 
 ## Special Values
 
-WebUI provides special values for arrays:
+Use `.length` to read a collection size:
 
 - `array.length` - Returns the number of items in the array
 
@@ -73,27 +83,31 @@ Example:
 
 ## Body Signals
 
-WebUI automatically injects two special signals around `<body>` content:
-
-- **`body_start`** - injected immediately after the `<body>` opening tag
-- **`body_end`** - injected immediately before the `</body>` closing tag
-
-These enable handlers to inject content at the start and end of the document body (e.g., hydration scripts, analytics tags).
+Hosts can add trusted HTML at document boundaries through the reserved
+`$webui` state object. Authors do not write `body_start` or `body_end` bindings
+in their templates.
 
 ### Example
 
-Template:
+State:
+```json
+{
+  "$webui": {
+    "bodyStart": "<!-- host-owned content -->",
+    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+  }
+}
+```
+
+Output:
 ```html
 <body>
+  <!-- host-owned content -->
   <app-shell></app-shell>
+  <script src="/livereload.js"></script>
 </body>
 ```
 
-Output (with handler-injected content):
-```html
-<body>
-  <!-- handler can insert content here via body_start -->
-  <app-shell></app-shell>
-  <!-- handler can insert content here via body_end -->
-</body>
-```
+`headEnd` is also supported. These strings are emitted without escaping, and
+the reserved object is excluded from browser state. Never populate it from
+untrusted request data. See the [host integration reference](/guide/integrations/).

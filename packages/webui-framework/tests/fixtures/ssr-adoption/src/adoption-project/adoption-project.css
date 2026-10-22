@@ -1,0 +1,9 @@
+:host { display: block; }
+article { border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px; height: 100%; box-sizing: border-box; }
+h2 { font-size: 18px; margin: 0 0 8px; }
+header span, dt { color: #4b5563; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+dd { margin: 0; }
+ul { display: flex; gap: 12px; padding: 0; list-style: none; font-size: 13px; }
+button { font: inherit; margin-top: 12px; }
+.notes { background: #f1f5f9; padding: 12px; }

@@ -1,0 +1,77 @@
+<template shadowrootmode="open">
+  <section class="preview" aria-labelledby="preview-title">
+    <h2 id="preview-title">Recorded performance</h2>
+    <div class="metric-tabs" role="tablist" aria-label="Benchmark metric" aria-describedby="preview-help" @keydown="{onMetricKeyDown(e)}">
+      <for each="metric in previewMetrics">
+        <button
+          key="{{metric.id}}"
+          type="button"
+          role="tab"
+          id="preview-tab-{{metric.id}}"
+          aria-controls="preview-panel-{{metric.id}}"
+          aria-selected="{{metric.selected}}"
+          tabindex="{{metric.tabIndex}}"
+          ?disabled="{{!previewReady}}"
+          @click="{selectMetric(metric.id)}"
+        >{{metric.label}}</button>
+      </for>
+    </div>
+    <p class="visually-hidden" id="preview-help">The initial RPS chart is available without JavaScript. Enable JavaScript to switch tabs, or follow the link to all measurements.</p>
+    <for each="metric in previewMetrics">
+      <section
+        key="{{metric.id}}"
+        class="metric-panel"
+        role="tabpanel"
+        id="preview-panel-{{metric.id}}"
+        aria-labelledby="preview-tab-{{metric.id}}"
+        tabindex="0"
+        ?hidden="{{!metric.selected}}"
+      >
+        <if condition="metric.selected">
+          <p class="context">{{metric.description}}</p>
+          <p class="qualification" id="preview-qualification-{{metric.id}}">
+            Historical, limited snapshot. {{metric.samplingLabel}}
+            Versions and full raw-run provenance are incomplete.
+          </p>
+          <table aria-describedby="preview-qualification-{{metric.id}}">
+            <caption class="visually-hidden">Recorded {{metric.label}} in {{metric.unit}}. {{metric.directionLabel}}. All bars start at zero.</caption>
+            <colgroup><col class="configuration-column" /><col /></colgroup>
+            <thead class="visually-hidden">
+              <tr><th scope="col">Configuration</th><th scope="col">{{metric.label}} ({{metric.unit}})</th></tr>
+            </thead>
+            <tbody>
+              <for each="row in metric.rows">
+                <tr key="{{row.caseId}}" data-case="{{row.caseId}}" ?data-webui="{{row.caseId == 'webui-rust-actix'}}">
+                  <th scope="row">{{row.label}}</th>
+                  <td>
+                    <div class="measurement">
+                      <svg class="plot" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true">
+                        <path class="grid" d="M0 2V22M50 2V22M100 2V22"></path>
+                        <if condition="row.available">
+                          <rect class="bar" x="0" y="6" width="{{row.barWidth}}" height="12"></rect>
+                        </if>
+                        <if condition="row.zero">
+                          <path class="zero" d="M0 5V19"></path>
+                        </if>
+                      </svg>
+                      <span class="value">{{row.valueLabel}}</span>
+                    </div>
+                  </td>
+                </tr>
+              </for>
+            </tbody>
+          </table>
+          <if condition="metric.scaleAvailable">
+            <div class="scale" aria-hidden="true">
+              <span>0</span><span>{{metric.midpointLabel}}</span><span>{{metric.maximumLabel}}</span>
+            </div>
+          </if>
+          <p class="reading">{{metric.directionLabel}}. The scale matches the full chart.</p>
+        </if>
+      </section>
+    </for>
+    <a class="details-link" href="{{site.base}}benchmarks/">
+      {{previewCaseCount}} of {{previewTotalCases}} configurations. View all data and methodology.
+    </a>
+  </section>
+</template>

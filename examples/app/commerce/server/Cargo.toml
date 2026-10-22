@@ -2,6 +2,7 @@
 name = "marketplace-api"
 version = "3.0.2"
 edition = "2021"
+rust-version.workspace = true
 publish = false
 
 [[bin]]
@@ -9,7 +10,7 @@ name = "marketplace-api"
 path = "src/main.rs"
 
 [dependencies]
-actix-web = { workspace = true, features = ["compress-gzip", "rustls-0_23"] }
+actix-web = { workspace = true, features = ["compress-gzip"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -17,8 +18,6 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
-rustls = { workspace = true }
-rcgen = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }
 microsoft-webui-handler = { path = "../../../../crates/webui-handler" }
 bytes = { workspace = true }
@@ -26,6 +25,10 @@ mime_guess = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+h2 = { workspace = true }
+http = { workspace = true }
 
 [lints]
 workspace = true

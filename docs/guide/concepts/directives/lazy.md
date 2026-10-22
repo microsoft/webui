@@ -1,9 +1,14 @@
+---
+title: "Deferred rendering and hydration"
+description: "Choose viewport or interaction triggers, reserve offscreen space, and override deferred component policies per instance."
+---
+
 # Lazy Component Policy
 
-Component rendering and hydration policies are build-time attributes on the
-root `<template>` in a component HTML file.
+Defer offscreen browser work with attributes on a component's root
+`<template>`. Rendering and hydration are separate: rendering is layout and
+paint; hydration attaches bindings and listeners.
 
-This page is the canonical reference for policy syntax and combinations.
 [Hydration](/guide/concepts/hydration) explains lifecycle behavior, while
 [Performance](/guide/concepts/performance) explains when deferral is worthwhile.
 
@@ -73,7 +78,8 @@ the rendered root. Compose
 framework-agnostic `@microsoft/webui-router/preload.js` handle to prefetch one
 hovered route partial, then activate components and router without refetching.
 
-Use this only once in the active document. See
+Use this only once in the active document, on a component with a matching
+authored `.ts` or `.js` module. See
 [Interaction-triggered hydration](/guide/concepts/hydration#interaction-triggered-application-hydration).
 
 ## Lazy Rendering Until Interaction
@@ -116,17 +122,14 @@ Only these exact, case-sensitive values are recognized.
 
 ## Build and Runtime Behavior
 
-The policy wrapper is build-only. WebUI strips the policy attributes. A
-component that authors `<template shadowrootmode="open">` keeps that wrapper as
-its declarative shadow root; every other component is Light, so the wrapper is
-unwrapped and its content renders directly in the host.
+The policy attributes are build-only and do not select a DOM mode. An authored
+`<template shadowrootmode="open">` remains Shadow; otherwise the component
+follows the build's `--dom` fallback (Shadow by default). In Light mode the
+policy wrapper is unwrapped and its content renders directly in the host.
 
-For the full policy, the build emits one deterministic, nonce-aware
-`<style data-webui-render-policy>` in the document head. This lets
-`content-visibility` apply before first layout rather than waiting for component
-JavaScript. It also emits tree-scope-safe `:host(...)` and component-tag
-selectors in the component stylesheet, so instances nested inside another
-component's shadow root receive the policy without applying it to the parent.
+Rendering deferral styles apply before component JavaScript loads, including
+for instances inside another component's Shadow root. Pass the response CSP
+nonce through your renderer when inline styles require one.
 
 The SSR subtree remains in the DOM, so text and accessibility semantics are
 preserved. This policy does not defer HTML parsing, DOM node construction,

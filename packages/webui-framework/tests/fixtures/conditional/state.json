@@ -17,5 +17,17 @@
   "tail": true,
   "escOuter": true,
   "escInner": true,
-  "escAfter": true
+  "escAfter": true,
+  "emptyItems": [],
+  "emptyActions": { "trailing": [] },
+  "emptyRecord": {},
+  "populatedItems": ["Item"],
+  "populatedActions": { "trailing": ["Action"] },
+  "populatedRecord": { "label": "Record" },
+  "phase": "initial",
+  "falseValue": false,
+  "zero": 0,
+  "emptyText": "",
+  "nullValue": null,
+  "trueValue": true
 }

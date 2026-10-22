@@ -36,7 +36,12 @@ export type TemplateSlot = [
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
+export type CompiledTextRunMeta = [
+  slot: TemplateSlot,
+  parts: CompiledAttrPart[],
+  raw?: 0 | 1,
+  staticSuccessor?: number,
+];
 export type CompiledAttrGroupMeta = [
   target: TemplateNodeIndex,
   start: number,
@@ -51,7 +56,11 @@ export type CompiledAttrGroupMeta = [
  * - `[0]` — evaluator function or component-local function index
  * - `[1]` — referenced paths for the reactive path index
  */
-export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?: unknown) => boolean;
+export type CompiledConditionFn = (
+  v: (path: string, s?: unknown) => unknown,
+  s: unknown,
+  t: (value: unknown) => boolean,
+) => boolean;
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
@@ -93,6 +102,13 @@ export type CompiledEventBindingMeta = [
 ];
 export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
+/** Root child-node count followed by the pre-order static element topology. */
+export type CompiledSSRLayout = [
+  rootNodes: number,
+  rootShape: number,
+  ...elements: number[],
+];
+
 export interface TemplateBlockMeta {
   /** Compiled owner refs for v3 templates, using the same element ordinal space. */
   rf?: [name: string, target: TemplateNodeIndex][];
@@ -102,6 +118,8 @@ export interface TemplateBlockMeta {
   /** Marks a publicly addressable deferred body rather than an internal block. */
   e?: 1;
   h: string;
+  /** Required for SSR adoption; client-only mounting does not use this layout. */
+  s?: CompiledSSRLayout;
   tx?: CompiledTextRunMeta[];
   a?: CompiledAttrMeta[];
   ag?: CompiledAttrGroupMeta[];

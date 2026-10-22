@@ -1,20 +1,139 @@
-<!-- Copyright (c) Microsoft Corporation. -->
-<!-- Licensed under the MIT license. -->
-
-<if condition="hero">
-  <div class="features-grid">
-    <for each="feature in hero.features">
-      <div class="feature-card">
-        <div class="feature-card-header">
-          <div class="feature-icon">{{feature.icon}}</div>
-          <h2>{{feature.title}}</h2>
-        </div>
-        <p>{{feature.description}}</p>
-      </div>
-    </for>
+<section class="home-section home-split" aria-labelledby="first-page-title">
+  <div>
+    <h2 id="first-page-title">Start with HTML and data</h2>
+    <p class="section-lead">
+      Render a page from a template and JSON state. Then add a component's
+      browser behavior. This counter shows that optional step.
+    </p>
+    <a class="site-link" href="{{site.base}}tutorials/hello-world/">Build the first page</a>
   </div>
-</if>
+  <figure class="specimen">
+    <home-counter></home-counter>
+    <div class="specimen-source">
+      <header><span>home-counter.html</span><span>HTML + optional behavior</span></header>
+      <pre><code><span class="source-tag">&lt;output&gt;</span><span class="source-value">&#123;&#123;count&#125;&#125;</span><span class="source-tag">&lt;/output&gt;</span>&#10;<span class="source-tag">&lt;button</span> @click="<span class="source-value">&#123;increment()&#125;</span>"<span class="source-tag">&gt;</span>&#10;  Add one&#10;<span class="source-tag">&lt;/button&gt;</span></code></pre>
+      <details class="specimen-behavior">
+        <summary>The TypeScript behind the button</summary>
+        <pre><code>@observable count = 0;
 
-<benchmark-explorer
-  :benchmarks="{{benchmarks}}"
-></benchmark-explorer>
+increment(): void {
+  this.count += 1;
+}</code></pre>
+      </details>
+    </div>
+    <figcaption>
+      HTML arrives rendered. Browser code connects the button to the count.
+      <a href="{{site.base}}guide/concepts/interactivity/">See the complete component model.</a>
+    </figcaption>
+  </figure>
+</section>
+
+<section class="home-section" aria-labelledby="fit-title">
+  <h2 id="fit-title">Choose where rendering happens</h2>
+  <dl class="delivery-list">
+    <div>
+      <dt><a class="site-link" href="{{site.base}}guide/concepts/directives/boundary/">Streaming SSR</a></dt>
+      <dd>Stream ready HTML while slower data loads. Hydrate completed regions without waiting for the full response.</dd>
+    </div>
+    <div>
+      <dt><a class="site-link" href="{{site.base}}guide/serverless-architecture/">Service-worker rendering</a></dt>
+      <dd>Cache the compiled UI, then stream rendered HTML fragments as data arrives. Your app owns the caching policy and first-load bootstrap.</dd>
+    </div>
+    <div>
+      <dt><a class="site-link" href="{{site.base}}guide/integrations/wasm/">WebAssembly (WASM)</a></dt>
+      <dd>Use the renderer or compiler in the browser. Choose handler-only, parser-only, or combined bundles.</dd>
+    </div>
+    <div>
+      <dt><a class="site-link" href="{{site.base}}guide/webui-press/">Static site generation</a></dt>
+      <dd>WebUI Press builds Markdown and Web Components into static HTML. Publish to a CDN or static host.</dd>
+    </div>
+  </dl>
+  <a class="site-link" href="{{site.base}}examples/">Explore runnable examples</a>
+</section>
+
+<section class="home-section" aria-labelledby="work-title">
+  <h2 id="work-title">Compile before requests arrive</h2>
+  <p class="section-lead">
+    Template structure is known before a request arrives. WebUI compiles it
+    ahead of time, leaving your server to supply data and render HTML.
+  </p>
+  <rendering-diagram></rendering-diagram>
+  <a class="site-link" href="{{site.base}}guide/concepts/how-it-works/">
+    Follow the rendering model
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5" /></svg>
+  </a>
+</section>
+
+<section class="home-section home-split" aria-labelledby="component-assets-title">
+  <div>
+    <h2 id="component-assets-title">Load component assets on demand</h2>
+    <p class="section-lead">
+      Export compiled templates and styles as component assets.
+      Load optional dialogs and panels when they are needed instead of
+      shipping every template up front.
+    </p>
+    <a class="site-link" href="{{site.base}}guide/concepts/interactivity/#loading-static-component-assets">
+      Build and load component assets
+    </a>
+  </div>
+  <figure class="specimen asset-example">
+    <div class="specimen-source">
+      <pre><code>webui build ./src --out ./dist --plugin=webui --emit-component-assets settings-dialog --component-assets-out ./.webui</code></pre>
+    </div>
+    <figcaption>
+      For non-routed UI. Use
+      <a href="{{site.base}}guide/concepts/routing/#lazy-loading">router loaders</a>
+      for routed components.
+    </figcaption>
+  </figure>
+</section>
+
+<section class="home-section home-split" aria-labelledby="react-title">
+  <div>
+    <h2 id="react-title">Coming from React</h2>
+    <p class="section-lead">
+      Components, state, events, and lists. Keep those ideas.
+      Learn where HTML templates and native rendering change the way you work.
+    </p>
+    <a class="site-link" href="{{site.base}}guide/concepts/react-comparison/">Coming from React</a>
+  </div>
+  <dl class="adoption-list">
+    <div>
+      <dt>Start with HTML and CSS</dt>
+      <dd>Bindings, conditions, and loops render on the server. A component does not need a JavaScript class just to display data.</dd>
+    </div>
+    <div>
+      <dt>Add behavior, not a second page</dt>
+      <dd>Interactive Web Components connect to the rendered DOM. Observable state updates the bindings that depend on it.</dd>
+    </div>
+    <div>
+      <dt>Know what changes</dt>
+      <dd>Existing JSX and React libraries are not drop-in WebUI components. Initial state comes from your backend; styling follows the web platform.</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="home-section" aria-labelledby="backend-title">
+  <h2 id="backend-title">Keep your backend</h2>
+  <p class="section-lead">
+    Load the compiled template once, then render with request data.
+    Choose a supported binding or use the C interface from another language.
+    A JavaScript SSR engine is not required.
+  </p>
+  <ul class="host-list" aria-label="Backend integration guides">
+    <li><a href="{{site.base}}guide/integrations/rust/">Rust</a></li>
+    <li><a href="{{site.base}}guide/integrations/node/">Node / Bun</a></li>
+    <li><a href="{{site.base}}guide/integrations/python/">Python</a></li>
+    <li><a href="{{site.base}}guide/integrations/dotnet/">.NET</a></li>
+    <li><a href="{{site.base}}guide/integrations/ffi/">C / FFI</a></li>
+  </ul>
+  <p class="evidence-note">Each guide covers the binding's installation and distribution status.</p>
+</section>
+
+<section class="home-close" aria-labelledby="start-title">
+  <div>
+    <h2 id="start-title">Make your first page</h2>
+    <p>Start with a template and data. Add an interactive component when you need one.</p>
+  </div>
+  <a class="site-button" href="{{site.base}}tutorials/hello-world/">Start building</a>
+</section>

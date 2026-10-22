@@ -1,6 +1,12 @@
+---
+title: "Attribute and property bindings"
+description: "Bind text attributes, conditional boolean attributes, and structured child properties from template state."
+---
+
 # Attribute Directives
 
-WebUI provides several ways to bind dynamic data to HTML attributes. When an attribute value contains handlebars expressions, the value is resolved from state at render time.
+Use an ordinary binding for an attribute value, `?` for conditional presence,
+or `:` to pass a value to a child DOM property.
 
 ## Simple Dynamic Attributes
 
@@ -26,6 +32,10 @@ Output:
 <a href="https://example.com">Visit Example</a>
 ```
 
+A whole-binding attribute is omitted when its value is missing or `null`.
+Empty strings, `0`, and `false` remain attribute values; use `?` when presence
+should depend on truthiness. Mixed attributes keep their static text.
+
 ## Boolean Attributes (`?` prefix)
 
 Prefix an attribute name with `?` to make it conditional. The attribute is only rendered if the bound expression evaluates to a truthy value:
@@ -35,11 +45,14 @@ Prefix an attribute name with `?` to make it conditional. The attribute is only 
 <input type="checkbox" ?checked={{isSelected}} />
 ```
 
-The value **must** be a pure handlebars expression — either a single signal (e.g., `{{signalName}}`) or any expression that `<if condition="...">` accepts (comparisons, logical operators, dotted paths). If the value contains plain text or mixed static/dynamic content, the attribute is silently dropped.
+The value **must** be a pure binding: either a single path or an expression
+accepted by `<if condition="...">`. Plain text and mixed static/dynamic values
+cause the attribute to be silently dropped.
 
 ### Prefer Expressions Over Mirror Observables
 
-Boolean attributes accept the same expression syntax as `<if>`, so **derive boolean state from your existing observables** rather than creating parallel `isFirst` / `isLast` / `isSelected` observables that you have to keep in sync:
+Derive presence from existing state rather than maintaining parallel
+`isFirst`, `isLast`, or `isSelected` observables:
 
 ```html
 <!-- ✅ Good: derive from existing state -->
@@ -53,7 +66,8 @@ Boolean attributes accept the same expression syntax as `<if>`, so **derive bool
 <button ?disabled="{{isPrevDisabled}}">Prev</button>
 ```
 
-Mirror observables are a common source of UI desync bugs: any code path that mutates `currentIndex` but forgets to update `isPrevDisabled` produces incorrect rendering. Expressions are evaluated automatically whenever any signal they reference changes.
+The expression updates when a referenced value changes; a separate flag would
+need to be kept in sync.
 
 Expressions compare a dotted path against a literal or another dotted path. There is **no arithmetic**: `{{currentIndex == items.length - 1}}` is read as a comparison against a state key literally named `items.length - 1`, which never resolves, so the attribute is silently never rendered. Supply a precomputed `lastIndex` instead. A bare `.length` is fine on its own (`{{items.length > 0}}`).
 
@@ -109,12 +123,17 @@ Output:
 
 ## Complex Attributes (`:` prefix)
 
-Prefix an attribute name with `:` to create a complex binding. This is used for passing structured data to web components:
+Prefix a name with `:` to write a child DOM property, including structured
+values that do not fit in a string attribute:
 
 ```html
 <my-component :config="{{settings}}"></my-component>
 <my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>
 ```
+
+For client-created trees, initial property bindings are applied before the
+child's `connectedCallback`. Later parent updates flow through the same binding.
+See [Property Bindings](/guide/concepts/interactivity#property-bindings).
 
 ## Mixed Attributes
 

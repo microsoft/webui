@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import { isConditionTruthy } from './template-conditions.js';
 
 import {
   getTemplate,
@@ -11,6 +12,24 @@ import {
   releaseSSRBootstrapState,
   type TemplateMeta,
 } from './template.js';
+
+describe('compiled condition truthiness', () => {
+  test('matches server scalar and collection semantics', () => {
+    for (const value of [undefined, null, false, 0, '', [], {}]) {
+      assert.equal(isConditionTruthy(value), false);
+    }
+    for (const value of [true, -1, 'false', [0], [''], { enabled: false }]) {
+      assert.equal(isConditionTruthy(value), true);
+    }
+  });
+
+  test('object presence counts only own enumerable fields', () => {
+    assert.equal(isConditionTruthy(Object.create({ inherited: true })), false);
+    assert.equal(isConditionTruthy(Object.create(null)), false);
+    assert.equal(isConditionTruthy(Object.defineProperty({}, 'hidden', { value: true })), false);
+    assert.equal(isConditionTruthy({ hasOwnProperty: false }), true);
+  });
+});
 
 describe('template registry helpers', () => {
   test('only the current compiled format is accepted before publication', () => {
@@ -91,6 +110,30 @@ describe('template registry helpers', () => {
       } else {
         Reflect.deleteProperty(globalThis, 'window');
       }
+    }
+  });
+
+  test('registerTemplateData enumerates the template names once', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
+    let enumerations = 0;
+    const templates = new Proxy({ greeting: template }, {
+      ownKeys(target) {
+        enumerations++;
+        return Reflect.ownKeys(target);
+      },
+    });
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { __webui: {} },
+        configurable: true,
+      });
+      registerTemplateData(templates);
+      assert.equal(enumerations, 1);
+      assert.equal(getTemplate('greeting'), template);
+    } finally {
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
     }
   });
 

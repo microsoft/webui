@@ -28,6 +28,12 @@ deadline. Forced shutdown returns nonzero and can leave incomplete outputs.
 See [bounded dev-server shutdown](/guide/cli/#bounded-dev-server-shutdown) for
 second-stop behavior, stdin restrictions, and platform limits.
 
+## Live reload
+
+`webui press serve` rebuilds the site and reloads connected browsers when its
+watched inputs change. Reading source files, including test discovery and
+component imports, does not trigger a rebuild or browser reload.
+
 ## Content-only sites
 
 The native `webui-press` binary supports the same display modes for static
@@ -71,6 +77,156 @@ selects alternate roots, for example `["./src/components"]`. Folder names,
 template exports, and CEM names do not determine native component names. Use
 package module exports for browser registrations. See
 [External components](/guide/concepts/components#external-component-sources).
+
+## Page titles and canonical URLs
+
+Markdown titles use frontmatter `title`, then the first H1, then the matching
+sidebar label, then `site.title`. Frontmatter `description` overrides
+`site.description`. Object-form custom pages can provide the same metadata:
+
+```json
+{
+  "site": {
+    "title": "My documentation",
+    "description": "Guides and reference for the project.",
+    "url": "https://example.com"
+  },
+  "basePath": "/docs/",
+  "customPages": {
+    "/playground": {
+      "title": "Template playground",
+      "description": "Try an HTML template with sample data.",
+      "layout": "full",
+      "html": "<my-playground></my-playground>"
+    }
+  }
+}
+```
+
+Custom pages without these optional fields, including string-form custom pages,
+retain the site title and description. Custom-page HTML replaces Markdown;
+frontmatter from a Markdown file at the same URL does not supply metadata.
+
+Both bundled display modes use `Page title | Site title` for the document and
+Open Graph title. When the titles match, the site title appears only once.
+An empty page title uses the site title; an empty site title leaves the page
+title alone.
+
+Optional `site.url` is an absolute HTTP(S) origin, such as
+`https://example.com` or `http://localhost:4000`, with an optional trailing slash.
+Do not include credentials, a deployment subdirectory, query, or fragment.
+Use `basePath` for the deployment path. Press combines the origin with each
+base-prefixed directory URL to emit a canonical link and `og:url`, including
+in content-only mode. The example above gives the playground canonical URL
+`https://example.com/docs/playground/`.
+Omitting `site.url` emits neither tag. The generated 404 never emits canonical
+metadata because it may serve many missing URLs.
+
+Use the existing `head` configuration for site-owned share images, with a
+public absolute image URL:
+
+```json
+{
+  "head": [
+    {
+      "tag": "meta",
+      "attrs": {
+        "property": "og:image",
+        "content": "https://example.com/docs/share.png"
+      }
+    }
+  ]
+}
+```
+
+## Page outlines
+
+Enable the built-in "On this page" outline in `.webui-press/config.json`:
+
+```json
+{
+  "outline": true
+}
+```
+
+It is off by default. When enabled, `doc` and `page` layouts with at least two
+anchored H2-H6 headings get a sticky desktop outline and a native mobile
+disclosure. H1 is excluded. Home pages, `full` layouts, the generated 404, and
+`--show=content` do not get the outline or its assets.
+
+Override the site setting in Markdown frontmatter:
+
+```yaml
+---
+title: Benchmark results
+outline: false
+---
+```
+
+`outline: true` can also enable an individual page when the site setting is off.
+Object-form `customPages` accepts the same boolean override. Custom HTML
+headings need explicit IDs. Use booleans, not quoted strings.
+
+Links work without JavaScript. Browsers supporting `scroll-target-group` and
+`:target-current` highlight the current section with an underline. A small
+client helper keeps the selected link visible in long desktop outlines without
+moving the article; reduced-motion preferences are respected. Outline CSS and
+the helper load only on pages using the built-in outline.
+
+The outline inherits the standard `--docs-*` theme tokens. Keep your colors and
+fonts in the site's theme or custom CSS. Replace or clear `regions.page.outline`
+to supply a different presentation; replacing its HTML omits the built-in
+outline assets. When using `--template`, retain the bundled `page.outline`
+region and the `docs-outline` component directory, containing its HTML, CSS,
+and TypeScript.
+
+## Page metadata for templates and regions
+
+Press supplies these values in page render state in both display modes:
+
+| Field | Value |
+| --- | --- |
+| `page.title` | Page title without the site suffix |
+| `page.documentTitle` | Complete, deduplicated document title |
+| `page.description` | Page-specific description or the site fallback |
+| `page.path` | Base-prefixed directory URL, with a trailing slash |
+| `page.canonicalUrl` | Absolute canonical URL when `site.url` is configured; otherwise `null` |
+| `page.headings` | Ordered `{ text, anchor, level }` objects for content headings with IDs |
+| `page.outline` | Whether the built-in outline is active for this page |
+| `site.url` | Configured origin without a trailing slash, or `null` |
+
+Headings are extracted at build time using the same text and anchors as search.
+`text` is plain text with entities decoded and inline formatting removed;
+`anchor` is the existing heading ID without `#`; `level` is a number from 1 to 6.
+Press does not change heading IDs or create IDs for raw custom-page HTML.
+Raw HTML headings need an explicit nonempty `id` to appear in this list.
+Headings inside component templates or site regions are not included.
+Full-mode home content is supplied by regions, so its heading list is empty;
+content mode includes the home Markdown's headings.
+The generated 404 has an empty heading list and `page.path` points to
+`<basePath>404.html`.
+
+A site can render an on-page contents list in `doc.beforeContent` without
+browser JavaScript or a template fork:
+
+```html
+<if condition="page.headings.length > 1">
+  <nav aria-label="On this page">
+    <for each="heading in page.headings">
+      <if condition="heading.level > 1">
+        <a href="{{page.path}}#{{heading.anchor}}">{{heading.text}}</a>
+      </if>
+    </for>
+  </nav>
+</if>
+```
+
+Include `page.path` in fragment links: the bundled `<base>` points at the site
+root, so a bare `#anchor` does not address the current page on a nested route.
+Leave `outline` disabled when adding a separate site-owned contents list, or
+replace `page.outline` rather than rendering a second outline. Content-only
+mode still exposes heading metadata to authored content, but does not generate
+shell regions.
 
 ## Markdown-local state
 
@@ -188,7 +344,9 @@ Use a self-closing marker for an empty insertion point:
 <webui-press-region name="site.announcement" />
 ```
 
-`layout` is optional. Without it, the region is active on every layout.
+`layout` is optional. Without it, the region is active on every layout. Use a
+space-separated list such as `layout="doc page"` to share a region across
+selected layouts; its markup, state, and scripts use the same scope.
 
 ## Configure a region
 
@@ -229,6 +387,7 @@ overlap as dotted prefixes, because one JSON value cannot own both `summary` and
 | `home.footer` | `home` | Site footer |
 | `doc.sidebar` | `doc` | Documentation sidebar |
 | `doc.context` | `doc` | Mobile current-location context |
+| `page.outline` | `doc`, `page` | Built-in outline when enabled |
 | `doc.beforeContent` | `doc` | Empty slot before the article |
 | `doc.afterContent` | `doc` | Empty slot after the article |
 | `doc.pageNavigation` | `doc` | Previous/next links |

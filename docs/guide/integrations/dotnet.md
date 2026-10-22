@@ -1,7 +1,14 @@
+---
+title: ".NET"
+description: "Use Microsoft.WebUI with matching native runtime packages, safe protocol ownership, and ASP.NET streaming responses."
+---
+
 # .NET
 
-`Microsoft.WebUI` wraps the native C ABI with safe handles and managed result
-types. It targets .NET 8 and .NET 9.
+The `Microsoft.WebUI` NuGet package wraps the Rust renderer's C ABI with safe
+handles and managed result types. It targets .NET 8 and .NET 9 and restores
+matching native runtime packages. Load one `Protocol` for repeated renders,
+then dispose native-backed objects when their work is complete.
 
 ## Installation
 
@@ -12,6 +19,8 @@ dotnet add package Microsoft.WebUI
 Load the protocol once and reuse it:
 
 ```csharp
+using Microsoft.WebUI;
+
 using var protocol = new Protocol(
     await File.ReadAllBytesAsync("dist/protocol.bin"));
 using var handler = new WebUIHandler("webui");
@@ -90,9 +99,9 @@ while (true)
 | `Update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
 
 A descriptor requires `Resume`; no descriptor with `Done == false` requires
-`Advance`; `Done == true` means complete. `Resume` is boundary-only so the host
-can flush that checkpoint before parent or tail bytes. `Advance` renders those
-following bytes, so no sibling boundary workaround is required.
+`Advance`; `Done == true` means complete. Flush the boundary-only `Resume`
+result before waiting for more data. `Advance` renders the following parent or
+tail bytes.
 
 The descriptor contains:
 

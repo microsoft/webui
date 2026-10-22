@@ -242,10 +242,10 @@ async fn resolve_state(
     path: String,
     snapshot: Snapshot,
 ) -> Result<State, String> {
-    let Some(port) = context.api_port else {
+    let Some(api) = &context.api else {
         return Ok(State::Shared(snapshot.state));
     };
-    let mut state = fetch_api_state(port, &path).await?;
+    let mut state = fetch_api_state(&api.client, api.port, &path).await?;
     if let Some(tokens) = &snapshot.tokens {
         webui_tokens::inject_token_css(&mut state, tokens);
     }

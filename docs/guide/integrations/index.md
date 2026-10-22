@@ -1,34 +1,47 @@
+---
+title: "Language integrations"
+description: "Choose a native binding or example host, load a compiled protocol once, and render HTML with request-specific JSON state."
+---
+
 # Language Integrations
 
-WebUI runs anywhere you can render text. The protocol is compiled once with `webui build` and rendered by a language-specific **handler**, the bridge between the WebUI protocol and the final HTML output.
+Compile templates with `webui build`, then render the resulting `protocol.bin`
+through the binding for your backend. The renderer is Rust; it does not require
+a JavaScript SSR engine. Your host supplies state, HTTP responses, and asset
+delivery.
 
-Pick the handler that matches your stack:
+Choose an integration with a compatible runtime and native target:
 
-- [**Rust**](./rust), High-performance native rendering with the Rust programming language
-- [**Node**](./node), Buffered and streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno
-- [**.NET**](./dotnet), Managed `Microsoft.WebUI` NuGet bindings with progressive ASP.NET streaming
-- [**Python**](./python), Native `microsoft-webui` package (PyO3) with buffered, partial, and host-driven streaming rendering
-- [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
-- [**Tauri**](./tauri), Rust-only snapshot viewer for pre-built apps
-- [**WebAssembly**](./wasm), Split parser, handler, and combined browser bundles
-- [**C / FFI**](./ffi), Shared library for Go and any language with C interop, plus an advanced `ctypes` fallback for Python on platforms outside its wheel matrix
+| Host | Distribution and scope |
+| --- | --- |
+| [Rust](./rust) | `microsoft-webui` on crates.io, imported as `webui`; build and render APIs |
+| [Node.js and Bun](./node) | `@microsoft/webui` on npm; requires its platform-specific native addon |
+| [.NET](./dotnet) | `Microsoft.WebUI` NuGet package with matching native runtime packages |
+| [Python](./python) | Native `microsoft-webui` wheels and source distribution on GitHub Releases; not yet on PyPI |
+| [C / FFI](./ffi) | Build the shared library and use its C ABI; includes Go and Python `ctypes` examples |
+| [WebAssembly](./wasm) | Generated handler-only, parser-only, or combined bundles for browser-hosted use |
+| [Electron](./electron) | Repository example: render a prebuilt app once and serve it through a custom protocol |
+| [Tauri](./tauri) | Repository example: a Rust snapshot viewer, not a full application backend |
+
+For the native WebUI desktop SDK rather than an Electron or Tauri example, see
+[Desktop Apps](/guide/concepts/desktop).
 
 ## How Handlers Work
 
-All WebUI handlers follow the same pattern:
+1. Load `protocol.bin` once at host startup.
+2. Reuse the loaded `Protocol` (or Python `Renderer`) with fresh JSON state and
+   render options for each request.
+3. Send the returned HTML, or drive a streaming session while honoring transport
+   backpressure.
+4. Release native handles according to the binding's ownership rules.
 
-1. They accept a loaded WebUI `Protocol`, decoded and indexed once at startup
-2. They process the protocol with the provided state data
-3. They render the final HTML output by evaluating directives and inserting dynamic content
-
-This consistent approach ensures that the same template produces identical results across different programming languages and platforms.
-
-Share the loaded `Protocol` across repeated requests. It avoids protobuf
-decoding and deterministic index construction on every render.
+Do not decode the protocol per request. Keep the compiler, renderer, and
+optional browser framework versions compatible. For normal native SSR, the
+browser receives HTML and assets, not `protocol.bin`.
 
 ## Common Handler Interface
 
-While the specific implementation details vary between languages, all handlers provide a similar API:
+The conceptual rendering operation is:
 
 ```
 render(protocol, state, options, writer)
@@ -42,7 +55,8 @@ Where:
 
 ## Plugin System
 
-Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points, binding start/end, loop iteration, scope changes, and can write additional content to the output.
+Select the same hydration plugin when building and rendering an interactive
+app. Custom Rust integrations can implement the public plugin traits.
 
 ```
 handler = Handler::with_plugin(plugin)
@@ -55,4 +69,7 @@ See [Plugins](/guide/concepts/plugins/) for the full plugin API and built-in plu
 
 ## Handler Customization
 
-Each handler implementation can be extended or customized to fit specific requirements. See the individual handler documentation for language-specific details.
+Choose buffered output for a complete response, partial responses for the
+[router](/guide/concepts/routing#server-contract), or host-driven streaming for
+[boundaries](/guide/concepts/directives/boundary). The binding guides document
+their concrete options, threading, errors, and memory ownership.

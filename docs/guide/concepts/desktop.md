@@ -1,10 +1,15 @@
+---
+title: "Desktop apps"
+description: "Run WebUI in a system webview, configure a Rust host, and choose explicit capabilities for native services, IPC, and packaging."
+---
+
 # Desktop Apps
 
-WebUI desktop apps render the same templates as browser apps in a native window.
-They use WebView2 on Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux.
-Bundled/source apps need no Electron, bundled browser, Node runtime, or
-localhost server. An opt-in Rust host can instead load its existing loopback
-HTTP server directly in the same native window.
+Run your WebUI templates in a native window using WebView2 on Windows,
+WKWebView on macOS, or GTK4/WebKitGTK 6 on Linux. Source and bundled apps
+render through Rust without shipping Node or a browser engine.
+An optional Rust host can instead show an existing loopback HTTP application.
+The target machine still needs the platform's webview and runtime prerequisites.
 
 ## Get started
 
@@ -44,6 +49,10 @@ set desktop package options with command flags or the app-root
 `webui-desktop.json`, not package.json. See the
 [desktop CLI reference](/guide/cli/#webui-desktop) for fields and precedence.
 
+### Choose SDK features
+
+Enable only the capabilities your Rust host uses:
+
 | SDK feature | What it adds |
 | --- | --- |
 | Default (none) | Bundles, rendering, route/API handlers, custom backends |
@@ -59,10 +68,11 @@ set desktop package options with command flags or the app-root
 | `startup-failure` | Explicit host-only, pre-frame native startup error alert on macOS and Windows; independent of `local-server`, `native`, and `source` |
 | `source` | Build from templates with `DesktopSourceConfig` |
 | `verified-update` | Host-only staged-file SHA-256 or SHA-512/size check; no native, source or packaging dependency |
+| `packaging` | Build-only layout for an already-compiled host and explicitly mapped resources |
 | `application-ipc` | Typed application messages |
 | `cli` | Desktop CLI sidecar; not needed in an app runner |
 
-For a native runner:
+For a native runner, use a matching SDK version:
 
 ```toml
 [dependencies]
@@ -87,6 +97,68 @@ overlay band; saved native window bounds are restored unchanged.
 On Windows, static styles, scripts, fonts, and images can be reused during a
 page's initial load and are revalidated on later loads. Documents, API responses,
 and IPC remain uncached.
+
+## Rust API
+
+`DesktopApp` builds a `DesktopFrame`. Register state and handlers before
+`build()`, then run the frame:
+
+```rust
+use webui_desktop::{DesktopApp, Result};
+
+fn main() -> Result<()> {
+    let frame = DesktopApp::from_bundle("./desktop-bundle")?
+        .route("/", |_| Ok(serde_json::json!({ "page": "dashboard" })))?
+        .build()?;
+    webui_desktop::run_frame(frame)
+}
+```
+
+For development, replace `from_bundle` with
+`DesktopApp::from_source(DesktopSourceConfig::new(build_options))` and enable the
+`source` feature. The same builder accepts `.state_value(...)`, `.route(...)`,
+`.window(...)`, `.shell(...)`, and IPC registrations. `build()` performs startup
+rendering; configure the window on the builder so the first render and native
+frame agree.
+
+Every initial window field, including width, height, titlebar style,
+background, size limits, and devtools, can be set in Rust without a JSON file:
+
+```rust
+use webui_desktop::{DesktopApp, Rgba, TitlebarStyle, WindowOptions};
+
+let frame = DesktopApp::from_bundle("./desktop-bundle")?
+    .window(WindowOptions {
+        title: "Contacts".into(),
+        width: 1280,
+        height: 900,
+        titlebar: TitlebarStyle::Overlay { height: 48 },
+        background: Some(Rgba { r: 16, g: 16, b: 20, a: 255 }),
+        ..WindowOptions::default()
+    })
+    .build()?;
+```
+
+| API | Use |
+| --- | --- |
+| `DesktopApp::from_bundle`, `from_source` | Open a packaged bundle or compile source |
+| `DesktopAppBuilder` | Register state, route/API/IPC handlers, window and shell options |
+| `DesktopFrame` | Own the runtime, events, window handle, and shell configuration |
+| `DesktopRuntime` | Render and handle requests without launching a window |
+| `DesktopFrameBackend`, `run_frame_with` | Supply a custom backend |
+| `find_packaged_resources_dir()` | Locate bundle resources next to a packaged runner |
+
+`.route("/contacts/:id", |ctx| ...)` receives route parameters through
+`ctx.param("id")`. Route providers run at startup and on subsequent HTML and
+partial navigations. `ApiRouteRegistry` handles custom-protocol endpoints such
+as `/api/contacts/:id` so client code can use ordinary `fetch`. Keep mutable
+application data in Rust storage and synchronize access across handlers.
+
+For source and bundle apps, set a stable `.app_id("com.example.contacts")` for
+app-owned browser storage. Without an app ID, the frame gets a fresh profile.
+IDs allow 1-255 ASCII letters, digits, `.`, `_`, and `-`, but cannot end in a
+dot. Packaged apps take the ID from their manifest. Local-server windows have
+separate [website-data rules](#website-data-and-persistence).
 
 ### Before-frame startup failures
 
@@ -168,7 +240,7 @@ verify OS signatures/notarization, or install/update anything. Do not wire a
 product update flow until provider provenance and archive, signature, and
 installer approval are separately established.
 
-### Existing HTTP application
+## Existing HTTP application
 
 `bind_owned_local_server(address)` is available with `local-server` alone.
 It returns an exclusively bound loopback `std::net::TcpListener` for your
@@ -198,6 +270,8 @@ fn show_existing_server(bound_address: SocketAddr) -> Result<()> {
 }
 ```
 
+### Listener ownership and window lifetime
+
 The trusted host retains `HostLifetimeOwner` alongside its listener or verified
 attached-daemon connection. Call `owner.revoke()` **before** releasing that
 listener/connection; dropping the owner also revokes it. An owned host must
@@ -217,10 +291,12 @@ identity check; the host must authenticate the daemon before constructing
 this lifetime.
 Use a separate lifetime per running native window.
 
+### Incoming custom-scheme URLs
+
 With the `native-url-activation` Cargo feature, a macOS local-server frame may
 register a **trusted-host** incoming URL callback before running. This feature
 includes `local-server`. Hosts using `on_url_activation` must add it explicitly;
-`local-server` alone no longer exposes the method or its activation types.
+`local-server` alone does not expose the method or its activation types.
 The SDK does not register the scheme with macOS or forward URLs from other
 processes:
 
@@ -250,6 +326,8 @@ forwards a URL to this process. An application must separately package and
 test its OS URL association, cold launch and warm delivery before advertising
 a scheme. No scheme registration or default-handler change is performed here.
 
+### Origins and preview frames
+
 Only an IP-literal loopback HTTP origin with an explicit nonzero port is
 accepted (for example, `127.0.0.1` or `[::1]`; all bound IPv4 `127/8`
 addresses are valid, but `localhost` and wildcard addresses are not).
@@ -275,6 +353,8 @@ browser-created `about:blank` child may still exist. Downloads and permissions
 are not granted by this API; the behavior of sandbox-allowed preview downloads
 still requires product qualification. Do not infer macOS 13 compatibility for
 `.localhost` subdomains from results on newer systems.
+### Local-server titlebars
+
 On macOS and Windows, a local-server frame can use
 `TitlebarStyle::HiddenInset` or `TitlebarStyle::Overlay { height }` to place
 native caption controls over full-bleed web content. On macOS, `Overlay`
@@ -287,10 +367,7 @@ in its own full-document HTML `<head>`. The SDK does not rewrite the HTTP
 response. With a nonce-restricted `style-src`, instead call
 `window_css_block_with_nonce(&window, DesktopPlatform::current(), nonce)?`
 using the current HTTP response's trusted CSP nonce; the native host does
-not infer or reuse that nonce. Windows evaluates its private drag helper
-through WebView2 rather than injecting an
-HTML `<script>` node, and denies controls if the current document does not
-acknowledge installation. Apply `--webui-titlebar-inset-start` and
+not infer or reuse that nonce. Apply `--webui-titlebar-inset-start` and
 `--webui-titlebar-inset-end` as padding inside the application header,
 not as a separate titlebar strip; `--webui-titlebar-height` is the requested
 header height. Mark draggable header space `webui-drag` and interactive
@@ -298,9 +375,11 @@ controls `webui-no-drag`. Preview subframes at their own sandboxed origin
 cannot issue these commands; do not put untrusted content in a same-origin
 child that can script its parent. In particular, an inherited-origin
 `about:blank` child shares its parent's browser authority; neither native
-sender checks nor an unexposed JavaScript control nonce can make it an
-untrusted isolation boundary. Use a distinct origin and opaque sandbox for
-untrusted previews. Linux requires the native titlebar.
+sender checks can make it an untrusted isolation boundary. Use a distinct
+origin and opaque sandbox for untrusted previews. Linux requires the native
+titlebar.
+### Local-server application IPC
+
 The browser fetches ordinary HTTP resources directly; this is not a network
 egress sandbox. With a custom titlebar, bounded native window controls are
 limited to the exact main document. They are not application IPC, which is
@@ -322,6 +401,8 @@ the HTTP server, and a missing carrier version does not fall back to HTTP.
 Keep the original listener and `HostLifetimeOwner` alive while the window runs.
 Let the native window close before waiting for server port quiescence;
 `run_local_server_frame` returns only after the SDK releases its listener pin.
+### Shutdown and host cleanup
+
 On macOS, ordinary window close, an explicit host close request, host-owner
 revocation, and AppKit Quit all return control to the Rust host rather than
 terminating the process. Quit (the default menu's Cmd+Q or `terminate:` action)
@@ -348,6 +429,8 @@ Rust event callbacks and `window_handle()` remain available. On Linux, an
 owned local-server frame can use the same generated IPC connection; child
 frames receive no native authority, and preview subframe grants remain
 unsupported. Existing bundled/source apps still run there.
+### Website data and persistence
+
 Local-server macOS frames use an ephemeral WebKit website data store by
 default, even with a stable app ID. A **packaged** Rust host can explicitly
 request native-owned persistence:
@@ -376,30 +459,6 @@ this request explicitly. An unopted-in macOS window remains ephemeral.
 
 ### Trusted-host OS openers
 
-The same opt-in `native-services` capability supports a host-owned macOS
-appearance override. From a non-UI thread, call
-`services.set_theme(ThemeMode::Dark)?.await?` (or `Light` / `System`).
-The returned `ThemeState { mode, dark }` reports the requested preference
-and this window's effective native appearance. `System` removes the
-window override and follows the OS; Light/Dark set the window/titlebar
-appearance and WKWebView's `prefers-color-scheme` follows that window. The
-existing `DesktopEvent::ThemeChanged { dark }` reflects effective appearance
-changes, but events can be missed by a new document or connection. Query
-`services.current_theme()?` when admitting one rather than relying on a
-prior event. Before native attachment it returns `ThemeUnavailable`; after
-closure it returns `Closed`. Only one theme change can be queued at once;
-navigation, host-owner revocation, and close cancel a queued change. A
-ten-second timeout requires checking the current snapshot before retrying.
-Dropping the returned future, cancellation, or timeout does not immediately
-make the window ready for another theme change: retries can return `ThemeBusy`
-until the native UI finishes processing the previous request. Do not block
-the UI thread waiting to retry.
-Windows and Linux
-currently return `ThemeUnsupported` for both operations instead of
-pretending to set a coherent native/webview theme. This does not persist
-preferences or inject styles: the Rust host stores its choice and renders
-the corresponding SSR/CSS; it does not confer renderer IPC access.
-
 An opt-in `native-services` Rust host can call `frame.native_services()?` to
 obtain a `NativeServices` handle for its own window. This installs only a
 Rust lifecycle subscription; it does **not** add a page global, a renderer
@@ -413,7 +472,7 @@ authenticate another local process that can connect to the loopback port:
 protect sensitive HTTP actions with a host-generated per-window capability, as
 the example does, or use the document-bound authenticated IPC transport.
 
-The runnable WebUI 3.0.2
+The runnable
 [`native-services` example](https://github.com/microsoft/webui/tree/main/examples/app/native-services)
 uses four narrow same-origin actions for the directory picker, dialogs,
 visible-content capture, and PNG clipboard write:
@@ -444,8 +503,29 @@ loading or recall an OS launch already in progress. At most one open can be
 in flight per window; even a navigation **request later prevented** by a host
 handler cancels a pending OS open. Window close and host retirement also
 cancel it. Do not synchronously wait for this future on the native UI
-thread. No workers or timers start unless an opener or theme change is
-requested.
+thread.
+
+#### Native appearance
+
+With `native-services`, a macOS host can call
+`services.set_theme(ThemeMode::Dark)?.await?` (or `Light` / `System`) from a
+non-UI thread. `ThemeState { mode, dark }` reports the preference and effective
+appearance. Light/Dark affect the native window and WKWebView's
+`prefers-color-scheme`; System follows the OS.
+
+Query `services.current_theme()?` for newly admitted documents rather than
+relying on a prior `DesktopEvent::ThemeChanged { dark }`. Before native
+attachment it returns `ThemeUnavailable`; after close it returns `Closed`.
+Only one change may be pending. Navigation, owner revocation, and close cancel
+queued changes. After a ten-second timeout, check the current snapshot before
+retrying. A dropped or cancelled future can still leave the service
+`ThemeBusy` until native processing finishes; never block the UI thread.
+
+Windows and Linux return `ThemeUnsupported`. The host persists preferences
+and renders matching SSR/CSS; this API neither injects styles nor grants
+renderer access.
+
+#### Directory picker
 
 With `native-picker`, a trusted macOS or Windows Rust host can request one OS-owned
 directory selection without exposing arbitrary filesystem access to the
@@ -471,25 +551,21 @@ async fn choose_logs(services: &NativeServices, known_folder: &Path)
 The builder checks the single-line title (at most 120 UTF-8 bytes) and
 absolute starting-path syntax (at most 4,096 bytes); filesystem validation
 runs on a bounded worker before any sheet appears. The selected directory is
-checked again off the UI thread and returned as a canonical absolute path
-without lossy text conversion. The host must still decide whether that path
-is authorized. At most one picker can be pending per window; the async sheet
+checked again and returned as a canonical absolute path. The host must still
+authorize its use. At most one picker can be pending per window; the async sheet
 reports **actual OS completion**, explicit user cancellation, failure, or a
 120-second deadline. Navigation requests and window close cancel pending
 selection where the OS permits; the host must not block the UI thread while
-awaiting it. Windows uses a dedicated COM STA for `IFileOpenDialog` with the
-exact owning window and the OS `FOS_PICKFOLDERS`, `FOS_FORCEFILESYSTEM`, and
-`FOS_PATHMUSTEXIST` checks; WebView2's UI thread keeps pumping. Its 120-second
-deadline is **logical**: a stalled OS dialog may remain visible and keep the
-window Busy until `Show` really returns. Cancellation posts a best-effort
-`IFileDialog::Close` request on the dialog's own STA; there is no thread kill,
-silent retry, or guaranteed hard OS UI teardown. Returned paths are checked
-as bounded, absolute, existing directories without lossy Unicode conversion
-on the worker. Windows Shell refusal is a typed `PickerOs` error with a
+awaiting it. On Windows, the 120-second deadline is **logical**: a stalled OS
+dialog may remain visible and keep the window Busy until the native call
+returns. Cancellation is best effort, not a guaranteed OS-dialog teardown.
+Windows Shell refusal is a typed `PickerOs` error with a
 static operation name and numeric HRESULT, never raw dialog text. When
 `native-dialogs` is also enabled, both operations share
 one modal reservation per window. Linux returns `PickerUnsupported`. Windows
 selection and OS cancellation have not been exercised with a user.
+
+#### Live native dialogs
 
 With the separate `native-dialogs` feature, the trusted Rust host can show
 one window-owned native sheet or Task Dialog during the live local-server
@@ -526,8 +602,10 @@ enabled on macOS, this reservation also excludes the native directory picker.
 Hosts must not wait synchronously on the window UI thread or assume queue
 admission means a user response.
 `DialogError` distinguishes invalid copy, Busy, Navigated, Closed, Timeout,
-Unavailable, and numeric OS failure. Linux returns `Unsupported`. The native
-modal interaction has not been executed in this environment.
+Unavailable, and numeric OS failure. Linux returns `Unsupported`. End-to-end
+native modal interaction remains unverified.
+
+#### Content geometry
 
 On macOS, `services.content_geometry()?.await` reads a live `ContentGeometry`
 snapshot on the AppKit main thread. Its `screen_rect` is the **WKWebView
@@ -556,11 +634,10 @@ An opt-in `native-capture` Rust host may call
 main document finishes and any preview iframe has **independently**
 reported that its content is ready. This API targets the **visible native
 webview bounds**, not the OS desktop, titlebar, other windows, or offscreen
-scroll content. macOS uses `WKWebView.takeSnapshot`; Windows x64/ARM64 uses
-the owning window STA's WebView2 `CapturePreview(PNG)` with a bounded
-writable `IStream`. In the controlled native **macOS 27** fixture, snapshots included
-the already-painted, explicitly granted preview iframe; this is observed
-behavior, **not** a guarantee for macOS 13 or other untested runtimes. A
+scroll content. macOS uses WKWebView snapshots; Windows x64/ARM64 uses WebView2
+PNG capture. Capture of an already-painted, explicitly granted preview iframe
+has been observed on **macOS 27**, not established for macOS 13 or other
+runtimes. A
 finished main page is **not** proof that a child iframe has loaded or
 painted. **Windows preview iframe pixels have not been verified at runtime**;
 do not infer them from successful main-document capture. The host must establish
@@ -568,13 +645,10 @@ readiness through its own application
 protocol; capture adds no page global or default IPC method and requires no
 screen-recording grant.
 
-`native-services` alone continues to provide geometry, appearance and OS
-openers without constructing capture or clipboard state. If an earlier local
-unpublished runner enabled only `native-services` while calling capture,
-enable `native-capture` explicitly; enable `native-clipboard` for clipboard
-write/readback (it includes capture). Without those feature flags, their
-methods and types are absent at compile time. Linux opting in exposes the
-host API but its operations return typed `Unsupported`.
+Enable `native-capture` explicitly; `native-services` alone does not expose it.
+`native-clipboard` includes capture and adds clipboard write/readback.
+Without those flags, their methods and types are absent. Linux exposes the
+opt-in host API but returns typed `Unsupported`.
 
 ```rust
 use webui_desktop::{CaptureError, CaptureOptions, NativeServices};
@@ -595,17 +669,11 @@ async fn read_visible_png(services: &NativeServices) -> Result<Vec<u8>, CaptureE
 The final PNG has no upscale, is at most 1600×1200 **physical pixels** and
 12 MiB, and can be further constrained by
 `CaptureOptions::max_dimensions(width, height)?` and
-`.max_png_bytes(bytes)?`. On macOS the compressor caps its destination buffer
-against that byte limit before encoding. Windows `CapturePreview` has no
-downsample setting: a viewport wider or taller than the selected bound returns
-`TooLarge` before calling WebView2, rather than cropping or first encoding an
-oversized raster. On high-DPI Windows displays, raw-pixel WebView2 bounds are
-checked directly - DPI and rasterization scale do not multiply this physical
-limit. Unknown WebView2 bounds mode or stale controller bounds fail closed.
-The reported image dimensions come from the checked PNG IHDR. The Windows
-stream bounds both cumulative source writes and resident PNG bytes and rejects
-overflow; a too-small byte bound returns
-`TooLarge` without retaining a partial PNG. At most one native callback is active and one
+`.max_png_bytes(bytes)?`. Windows cannot downsample during capture: a viewport
+outside the selected physical-pixel bounds returns `TooLarge` before capture,
+rather than cropping it. DPI scaling does not increase that limit; unknown or
+stale native bounds fail closed. Exceeding the byte bound also returns
+`TooLarge` without retaining a partial PNG. At most one capture is active and one
 PNG is retained per window. A retake releases old bytes at admission; explicit
 release, actual main-frame navigation and window close also discard them.
 Verified host-owner revocation releases retained PNG bytes before the
@@ -620,10 +688,9 @@ one JSON/base64 response. A pending capture may fail `Busy`, `Unavailable`,
 `Incomplete`, `TooLarge`, `Cancelled`, `Timeout`, or `Closed` rather than presenting an
 unverified crop. Up to eight short-lived capture deadline workers may be
 finishing per window; additional requests return `Overloaded` until they exit.
-Linux explicitly returns `Unsupported`. Windows is cross-compiled and
-strict-Clippy-checked for x64 and ARM64, but has not been exercised on a
-Windows runtime; no iframe paint or platform parity is claimed. No
-clipboard or issue-opening workflow is implied by this API.
+Linux explicitly returns `Unsupported`. Windows capture has not been verified
+at runtime; no iframe-paint or platform-parity guarantee is made. Capture does
+not write the clipboard or open an external application.
 
 ### Explicit macOS and Windows PNG clipboard write
 
@@ -649,95 +716,28 @@ async fn copy_review_image(
 ```
 
 Only then may the host separately decide whether to invoke its existing
-validated URL opener; the SDK does **not** open an issue or browser tab.
+validated URL opener; the SDK does **not** open a browser tab.
 The capture must still belong to this exact window/document and remain
 retained. One clipboard write may be pending per window. Navigation,
 retake, release, owner revocation and close cancel pending work before the
-native write. After the bounded NSData copy (macOS) or `GMEM_MOVEABLE` allocation
-(Windows), a synchronized final token and deadline check occurs immediately
-before clearing the native clipboard:
-queued cancellation wins that transition. An OS write already in progress
+native write. An OS write already in progress
 cannot be recalled, but its late result cannot report success to a new document.
 An OS refusal or ten-second deadline leaves the captured PNG available for
 an explicit retry **if the document and resource remain live**; navigation,
-release and retake invalidate it. On Windows the OS write runs off the WebView2
-STA, accepts at most 12 MiB of encoded PNG bytes, and frees its allocation on
-pre-transfer failure. `GlobalSize` can include allocator padding; readback
-compares only the resource's logical PNG length. A timed-out native call keeps
+release and retake invalidate it. Windows accepts at most 12 MiB of encoded
+PNG bytes. A timed-out native call keeps
 this window's Busy reservation until it returns; no thread is killed, no broad
 retries are made, and the SDK cannot restore earlier clipboard contents after
 clearing them. Linux returns `Unsupported`.
 
-The native write/readback helper has been exercised with a unique **private**
-macOS pasteboard, not a user's general clipboard. Windows x64/ARM64 has been
-cross-compiled, not run against a Windows clipboard. Actual OS contention,
-owner-window lifetime and PNG readback therefore remain runtime qualification
-gaps. A host must handle `Rejected`, `Contended`, `Readback`, `Os`, `Cancelled`,
+Native write/readback has been verified only with a **private** macOS
+pasteboard, not the general clipboard or a Windows clipboard. OS contention,
+owner-window lifetime, and general clipboard readback still need runtime
+qualification. Handle `Rejected`, `Contended`, `Readback`, `Os`, `Cancelled`,
 `Timeout` and `Overloaded` explicitly
 and never claim clipboard completion on those outcomes. An OS refusal after
 clearing the general pasteboard can leave it empty; tell the user and allow
-an explicit retry rather than opening an issue URL on failure.
-
-## Rust API
-
-`DesktopApp` builds a `DesktopFrame`. Register state and handlers before
-`build()`, then run the frame:
-
-```rust
-use webui_desktop::{DesktopApp, Result};
-
-fn main() -> Result<()> {
-    let frame = DesktopApp::from_bundle("./desktop-bundle")?
-        .route("/", |_| Ok(serde_json::json!({ "page": "dashboard" })))?
-        .build()?;
-    webui_desktop::run_frame(frame)
-}
-```
-
-For development, replace `from_bundle` with
-`DesktopApp::from_source(DesktopSourceConfig::new(build_options))` and enable the
-`source` feature. The same builder accepts `.state_value(...)`, `.route(...)`,
-`.window(...)`, `.shell(...)`, and IPC registrations. `build()` performs startup
-rendering; configure the window on the builder so the first render and native
-frame agree.
-
-Every initial window field, including width, height, titlebar style,
-background, size limits, and devtools, can be set in Rust without a JSON file:
-
-```rust
-use webui_desktop::{DesktopApp, Rgba, TitlebarStyle, WindowOptions};
-
-let frame = DesktopApp::from_bundle("./desktop-bundle")?
-    .window(WindowOptions {
-        title: "Contacts".into(),
-        width: 1280,
-        height: 900,
-        titlebar: TitlebarStyle::Overlay { height: 48 },
-        background: Some(Rgba { r: 16, g: 16, b: 20, a: 255 }),
-        ..WindowOptions::default()
-    })
-    .build()?;
-```
-
-| API | Use |
-| --- | --- |
-| `DesktopApp::from_bundle`, `from_source` | Open a packaged bundle or compile source |
-| `DesktopAppBuilder` | Register state, route/API/IPC handlers, window and shell options |
-| `DesktopFrame` | Own the runtime, events, window handle, and shell configuration |
-| `DesktopRuntime` | Render and handle requests without launching a window |
-| `DesktopFrameBackend`, `run_frame_with` | Supply a custom backend |
-| `find_packaged_resources_dir()` | Locate bundle resources next to a packaged runner |
-
-`.route("/contacts/:id", |ctx| ...)` receives route parameters through
-`ctx.param("id")`. Route providers run at startup and on subsequent HTML and
-partial navigations. `ApiRouteRegistry` handles custom-protocol endpoints such
-as `/api/contacts/:id` so client code can use ordinary `fetch`. Keep mutable
-application data in Rust storage and synchronize access across handlers.
-
-Set a stable `.app_id("com.example.contacts")` for persistent browser storage.
-Without an app ID, the frame gets a fresh profile. IDs allow 1-255 ASCII
-letters, digits, `.`, `_`, and `-`, but cannot end in a dot. Packaged apps take
-the ID from their manifest.
+an explicit retry rather than opening an external URL on failure.
 
 ## Events and window control
 
@@ -949,22 +949,18 @@ Visual C++ Redistributable, or WebView2. There is no installer, DMG, ZIP,
 NSIS, signing, or updater publication API in this layout slice. The existing
 `source`/CLI bundle package flow remains unchanged.
 
-The host, Windows deployment files, and icon retain their validated open
-handles through copying. Each mapped resource is validated and sealed
-individually with its length and SHA-256 digest, then closed before output
-creation. At copy time it is reopened with the same no-follow checks, copied
-with a length bound, and its **output bytes** are checked against the seal
-before native headers are checked. Changed inputs fail rather than silently
-packaging replacement bytes. This keeps open descriptors bounded independently
-of resource count.
-On Unix, new output files are
-created exclusively relative to a private directory handle. On Windows,
-directory creation remains path-based; **use an output parent not writable by
+Mapped files are checked for changes during packaging; changed inputs fail
+rather than silently packaging replacement bytes. Keep input artifacts stable
+until packaging completes.
+
+On Windows, **use an output parent not writable by
 untrusted concurrent processes**. A directory-swap attacker with write access
 to that parent can otherwise redirect a Windows destination despite exclusive
 file creation. This layout API is not a sandbox or an installer security
 boundary. Keep the output parent trusted on every platform so the returned
 path cannot be renamed or replaced after packaging completes.
+
+### Window appearance
 
 `WindowOptions` supports title and size limits, resize/maximize/fullscreen,
 always-on-top, centering, background, titlebar, effect, remembered geometry,
@@ -990,6 +986,8 @@ Use `--webui-titlebar-inset-start`, `--webui-titlebar-inset-end`, and
 `--webui-titlebar-height` CSS variables to keep content clear of native
 controls. Do not use Chromium-only `-webkit-app-region`; WKWebView and
 WebKitGTK do not implement it.
+
+### Bundle contents
 
 `webui desktop build` writes a bundle:
 

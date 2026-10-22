@@ -1,6 +1,16 @@
-# WebUI Rust Handler
+---
+title: "Rust"
+description: "Load a Protocol, render through a writer, and integrate route partials or backpressured streaming into a Rust server."
+---
 
-The `webui` crate provides high-performance build and rendering of WebUI protocols in Rust. It streams rendered HTML fragments via the `ResponseWriter` trait for progressive rendering with zero unnecessary allocations.
+<a id="webui-rust-handler"></a>
+
+# Rust
+
+The `microsoft-webui` crate, imported as `webui`, provides build and rendering
+APIs. Load one `Protocol` at startup and reuse it with request state.
+`WebUIHandler` writes HTML through `ResponseWriter`; the host chooses buffered
+output or a backpressured streaming writer.
 
 ## Installation
 
@@ -41,17 +51,8 @@ application state.
 
 ## Examples
 
-### Owned partial-navigation responses
-
-`Protocol::render_partial(state, entry, path, inventory)` returns JSON with
-state projected to the active components. For direct serialization to response
-bytes or a writer, call `Protocol::prepare_partial(state, entry, path, inventory)`.
-It consumes the owned `serde_json::Value` and returns a serializable
-`PartialNavigation` with the same projection policy. Check `is_match()` when
-choosing a response status, then serialize it once with `serde_json::to_vec` or
-`serde_json::to_writer`. Unknown component requirements retain full state for
-correctness, so render state must contain only client-safe data.
-Use `Protocol::matches_route(entry, path)` when only route existence is needed.
+These examples render an existing `dist/protocol.bin`. They buffer into a
+string; the [streaming example](#streaming-ssr) below uses a bounded transport.
 
 <webui-press-tabs>
 <webui-press-tab slot="tab" active>Actix Web</webui-press-tab>
@@ -192,6 +193,18 @@ async fn main() {
 </webui-press-tab-panel>
 </webui-press-tabs>
 
+### Owned partial-navigation responses
+
+`Protocol::render_partial(state, entry, path, inventory)` returns JSON with
+state projected to the active components. For direct serialization to response
+bytes or a writer, call `Protocol::prepare_partial(state, entry, path, inventory)`.
+It consumes the owned `serde_json::Value` and returns a serializable
+`PartialNavigation` with the same projection policy. Check `is_match()` when
+choosing a response status, then serialize it once with `serde_json::to_vec` or
+`serde_json::to_writer`. Unknown component requirements retain full state for
+correctness, so render state must contain only client-safe data.
+Use `Protocol::matches_route(entry, path)` when only route existence is needed.
+
 ## Router-aware request helper
 
 Use `webui::server::serve_request` when one endpoint serves both initial HTML
@@ -218,16 +231,10 @@ match serve_request(&protocol, &handler, state, &request)? {
 }
 ```
 
-For a full document, the helper passes the complete options directly to
-`WebUIHandler::render`. The nonce therefore reaches the generated
-`templateFns` bootstrap, every other inline script, and
-`<meta name="webui-nonce">` without scanning or rewriting the rendered HTML.
-Use a fresh nonce for each document response and send the same value in the
-Content Security Policy header. JSON partial responses use the options' entry
-and request path plus the client inventory; they do not emit document scripts.
-The helper transfers its owned `serde_json::Value` to
-`Protocol::render_partial()`, so projection drops unselected values without
-first serializing the complete request state.
+For full documents, the helper forwards all render options, including the nonce
+for generated inline scripts. Use a fresh nonce per document and send the same
+value in the Content Security Policy header. JSON partials use the entry,
+request path, and client inventory; they do not emit document scripts.
 
 ## Streaming SSR
 
@@ -327,20 +334,16 @@ immediately when the selected path has none. `resume` must use the currently
 pending `BoundaryInstanceId` and writes only that occurrence through its
 checkpoint. Its result normally has no descriptor and `done == false`.
 `advance` writes the following parent or shell bytes until the next descriptor
-or terminal. This boundary-only resume lets the host flush an early component
-child independently; no sibling boundary is needed to separate it from the
-parent tail.
+or terminal. Flush the resumed occurrence before waiting for more data.
 
 The status states are exact: a descriptor requires `resume`; no descriptor with
 `done == false` requires `advance`; `done == true` completes the response. The
 completed status has no descriptor, and the writer already contains the tail
 and terminal.
 
-`WebUIHandler::render_streaming` uses one prepared render context and borrows
-one state value for the complete response. It preserves every checkpoint flush
-without cloning the state or rebuilding the context between boundaries. The
-lower-level `stream_response` API keeps the public `resume` overlay because
-hosts may supply newly resolved state for each occurrence. Move freshly loaded
+`WebUIHandler::render_streaming` borrows one state value for the complete
+response. Use `stream_response` to supply newly resolved state at each
+occurrence. Move freshly loaded
 state into `start` and `resume` when the caller no longer needs it; pass `&Value`
 only when retaining caller ownership. When no state
 changed, `resume_current` skips that overlay while retaining the checkpoint
@@ -393,24 +396,14 @@ authoring and lifecycle contract. That application entry must import
 `@microsoft/webui-framework/streaming.js` before component registration
 modules. The default framework entry does not include the streaming coordinator.
 
-Each checkpoint carries state and templates for the component surface reachable
-from roots rendered since the previous checkpoint, including descendants behind
-initially false conditions or empty repeats. Unrelated later boundaries remain
-excluded. Template metadata is sent only when first reachable, inventory still
-tracks only rendered SSR roots, and repeated instances receive checkpoint-local
-state without duplicate metadata. The final terminal envelope is always
-`[nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
-
 At `start`, WebUI freezes only projected top-level keys required to continue,
 plus lexical locals and route/component scope. Resume state overlays that frozen
 parent surface. Resolution order is lexical locals, resume state, then frozen
 parent state.
 
-When a boundary occurs inside a reusable component, WebUI emits a generated
-span for the unfinished parent. The early child checkpoint can hydrate across
-light or open shadow DOM before the parent tail. A later span-completion record
-activates the parent exactly once. The terminal envelope is
-`[nextSequence,4,0,{}]`.
+The browser can hydrate a completed child boundary before its parent's tail
+arrives, in Light or open Shadow DOM. Use `hydratedCallback()` for setup that
+requires that component's bindings and refs.
 
 The bounded channel limits bytes retained by a running render, but it does not
 bound how many requests can queue in Tokio's blocking pool. Acquire a
@@ -597,9 +590,8 @@ component.
 | `StreamingResponse::update(instance_id, patch)` | Send projected object state to a committed updatable occurrence |
 | `StreamingResponse::is_done()` | Report whether terminal and writer end completed |
 
-`StreamingResponse` borrows a `ResponseWriter` for the life of the response,
-which is the cheapest shape when the transport lives in the same process and the
-same language.
+`StreamingResponse` borrows the writer for the response's lifetime and avoids
+returning a separate byte buffer for each call.
 
 When you would rather own the bytes - for example to feed a channel, a test
 harness, or a transport whose writer cannot be borrowed for that long —

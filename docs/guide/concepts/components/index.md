@@ -1,16 +1,32 @@
+---
+title: "Components"
+description: "Author reusable HTML components, choose Light or Shadow DOM, and discover local or packaged component libraries."
+---
+
 # Components
 
-Components are the building blocks of WebUI applications. They leverage the native [Web Components](https://developer.mozilla.org/en-US/docs/Web/API/Web_components) standard to provide encapsulated, reusable UI elements with efficient server-side rendering.
+Create a hyphenated HTML file to define a component, then use its name as a tag
+in another template. CSS and browser behavior are optional.
+
+```html
+<!-- user-card.html -->
+<h3>{{name}}</h3>
+<p>{{email}}</p>
+```
+
+```html
+<!-- index.html, inside <body> -->
+<user-card name="{{user.name}}" email="{{user.email}}"></user-card>
+```
+
+Supply `user.name` and `user.email` in the server state. Add a same-named
+`.ts` or `.js` file only when the component needs
+[interactive behavior](/guide/concepts/interactivity).
 
 ## Component Discovery
 
-WebUI automatically discovers components at build time:
-
-1. WebUI resolves local or npm package roots
-2. The selected plugin discovers component templates and styles
-3. WebUI validates and compiles the components
-
-The `webui` plugin identifies HTML files with hyphenated names and associates
+WebUI scans your app directory recursively at build time. The `webui` plugin
+identifies HTML files with hyphenated names and associates
 matching CSS and JavaScript or TypeScript files. Other built-in plugins may
 support different source layouts. See [Plugins](/guide/concepts/plugins/) for
 FAST component discovery.
@@ -69,8 +85,8 @@ native `<slot>`, native encapsulation, or root events on the host element:
 ```
 
 The wrapper must contain the complete component. Closed roots, invalid values
-or placement, additional top-level content, and `<slot>` in an unwrapped
-component fail the build. The compiler never generates this wrapper.
+or placement, and additional top-level content fail the build. Native `<slot>`
+is supported in effective Shadow components and rejected in Light components.
 
 Component templates must use browser-valid HTML nesting. WebUI recognizes native
 void tags case-insensitively and accounts for the `<colgroup>` and `<tbody>` that
@@ -80,34 +96,27 @@ so its SSR hydration markers share one parser context.
 
 ## How Components Work
 
-When WebUI discovers components:
-
-1. **Build Time**:
-   - The component's HTML is parsed and tokenized
-   - Any directives (`<if>`, `<for>`, etc.) and signals (`{{}}`) are processed
-   - The component's CSS is analyzed and included in the protocol
-   - A unique `fragmentId` is assigned to each component
-
-2. **Runtime**:
-   - The server-side handler renders components based on state
-   - Unwrapped components follow the build's Shadow/Light fallback
-   - Components with a valid sole open wrapper always output Declarative Shadow DOM
-   - Dynamic content is injected according to the protocol
+`webui build` compiles the templates and styles. A native handler then renders
+them with request state; it does not execute your component TypeScript.
+Unwrapped templates follow the build's Shadow/Light fallback, while explicit
+root templates choose their own mode. The optional browser framework connects
+bindings and events to this server-rendered HTML.
 
 ## Component Organization
 
-For larger applications, we recommend organizing components following an Atomic Design-inspired structure:
+Group components by feature or by role. Discovery does not require a particular
+folder hierarchy; the filenames still determine the tags. For example:
 
 ```
 app/
 ├── src/
 │   ├── components/
 │   │   ├── atoms/
-│   │   │   ├── button/
-│   │   │   │   ├── button.html
-│   │   │   │   └── button.css
-│   │   │   ├── input/
-│   │   │   └── icon/
+│   │   │   ├── ui-button/
+│   │   │   │   ├── ui-button.html
+│   │   │   │   └── ui-button.css
+│   │   │   ├── ui-input/
+│   │   │   └── ui-icon/
 │   │   ├── molecules/
 │   │   │   ├── search-box/
 │   │   │   ├── notification/
@@ -130,6 +139,8 @@ app/
 
 ### Component Levels
 
+These are organizational labels, not framework APIs:
+
 - **Atoms**: Basic building blocks (buttons, inputs, icons)
 - **Molecules**: Simple combinations of atoms (search boxes, menu items)
 - **Organisms**: Complex UI sections composed of molecules and atoms
@@ -138,8 +149,8 @@ app/
 
 ## Using Components
 
-Once defined, components can be used throughout your application, in this 
-example we have `profile-page.html`, `user-card.html`, and `admin-controls.html`:
+Compose discovered components directly in HTML. This example uses
+`profile-page.html`, `user-card.html`, and `admin-controls.html`:
 
 ```html
 <!-- profile-page.html -->
@@ -179,7 +190,7 @@ The TypeScript file lives alongside the HTML and CSS:
 ```
 user-card/
 ├── user-card.html   ← Template (declarative)
-├── user-card.css    ← Styles (scoped at build time)
+├── user-card.css    ← Styles (global in Light DOM, isolated in Shadow DOM)
 └── user-card.ts     ← Behavior (TypeScript class)
 ```
 
@@ -188,13 +199,14 @@ user-card/
 WebUI intentionally keeps HTML, CSS, and TypeScript in separate files:
 
 - **HTML** defines structure and data bindings (`{{expr}}`, `<if>`, `<for>`)
-- **CSS** defines visual presentation. WebUI scopes Light CSS and preserves
-  native Shadow scoping for Shadow components
+- **CSS** defines visual presentation. Light CSS is global within its Document
+  or ShadowRoot; Shadow components use native CSS isolation
 - **TypeScript** defines interactive behavior (event handlers, state mutations)
 
-There is no JSX, no CSS-in-JS, and no template literals. This separation
-is a performance decision: the HTML template is compiled to binary at build
-time, and only the TypeScript ships to the browser for interactive components.
+Templates use WebUI syntax, not JSX or JavaScript template literals. Compile
+them with WebUI and bundle authored TypeScript separately. Interactive apps
+load the browser framework and compiled template metadata as well as their
+authored code; scriptless SSR does not require that behavior.
 
 For the full interactivity guide, see [Interactivity](/guide/concepts/interactivity).
 

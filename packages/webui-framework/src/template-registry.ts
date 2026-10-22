@@ -121,18 +121,15 @@ function acceptTemplateData(
   componentStyles?: ComponentStyles,
 ): string[] {
   validateComponentStylesRegistration(componentStyles);
-  prepareTemplateData(templates, templateFns);
+  const names = prepareTemplateData(templates, templateFns);
   templateCacheHooks?.accept(templates);
   if (componentStyles) {
     registerPreparedComponentStyles(componentStyles);
   }
-  const w = window as Window;
-  if (!w.__webui) w.__webui = {};
-  if (!w.__webui.templates) w.__webui.templates = {};
-  const names = Object.keys(templates);
+  const registry = (window.__webui ??= {}).templates ??= {};
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
-    w.__webui.templates[tag] = templates[tag];
+    registry[tag] = templates[tag];
   }
   for (let i = 0; i < names.length; i++) {
     const pending = pendingTemplateDefinitions.get(names[i]);
@@ -264,12 +261,13 @@ export function registerTemplateData(
 function prepareTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
-): void {
+): string[] {
   const names = Object.keys(templates);
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
     normalizeTemplate(name, templates[name], templateFns?.[name]);
   }
+  return names;
 }
 
 /**

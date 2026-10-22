@@ -80,8 +80,10 @@ use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
 mod lazy_templates;
 mod named_repeats;
+mod ssr_layout;
 mod template_dependencies;
 use named_repeats::CompileBlocks;
+use ssr_layout::{SsrChildren, SsrLayout};
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
@@ -532,6 +534,7 @@ struct TemplateSectionMeta {
     /// Client event target element indices aligned to `events`.
     event_targets: Vec<usize>,
     refs: Vec<(String, usize)>,
+    ssr_layout: SsrLayout,
 }
 
 #[derive(Clone)]
@@ -556,6 +559,7 @@ struct TemplateSource<'a> {
     source: &'a str,
     range: Range<usize>,
     repeat_key: Option<usize>,
+    trim_boundary_formatting: bool,
 }
 
 impl<'a> From<&'a str> for TemplateSource<'a> {
@@ -564,6 +568,7 @@ impl<'a> From<&'a str> for TemplateSource<'a> {
             source,
             range: 0..source.len(),
             repeat_key: None,
+            trim_boundary_formatting: false,
         }
     }
 }
@@ -578,15 +583,17 @@ impl<'a> TemplateSource<'a> {
             source: self.source,
             range: self.range.start + range.start..self.range.start + range.end,
             repeat_key: self.repeat_key,
+            trim_boundary_formatting: false,
         }
     }
 
-    fn trimmed(mut self) -> Self {
+    fn trim_boundary_formatting(mut self) -> Self {
         let html = self.html();
         let trimmed = html.trim_start();
-        let leading = html.len() - trimmed.len();
-        self.range.start += leading;
-        self.range.end = self.range.start + trimmed.trim_end().len();
+        if trimmed.is_empty() || trimmed.starts_with('<') {
+            self.range.start += html.len() - trimmed.len();
+        }
+        self.trim_boundary_formatting = true;
         self
     }
 
@@ -745,13 +752,13 @@ impl ConditionFunctionEmitter {
         }
     }
 
-    fn push(&mut self, condition: &ConditionExpr) -> usize {
+    fn push(&mut self, condition: &ConditionExpr, needs_truthiness: bool) -> usize {
         if self.count == 0 {
             self.functions.push('[');
         } else {
             self.functions.push(',');
         }
-        emit_js_condition_function(condition, &mut self.functions);
+        emit_js_condition_function(condition, &mut self.functions, needs_truthiness);
         let index = self.count;
         self.count += 1;
         index
@@ -818,8 +825,8 @@ fn generate_compiled_template_with_root_source(
     shadow_dom: bool,
     scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
-    let source = TemplateSource::from(html_content).trimmed();
-    let trimmed = source.html();
+    let source = TemplateSource::from(html_content);
+    let trimmed = html_content.trim();
     let shadow_body = shadow_template_body_range(trimmed);
     let authored_shadow_root = shadow_body.is_some();
     let mut root_events = if authored_shadow_root {
@@ -834,7 +841,13 @@ fn generate_compiled_template_with_root_source(
     {
         root_events = extract_root_events(tag_name, raw_root)?;
     }
-    let body = shadow_body.map_or_else(|| source.clone(), |range| source.slice(range));
+    let body = shadow_body.map_or_else(
+        || source.clone().trim_boundary_formatting(),
+        |range| {
+            let leading = html_content.len() - html_content.trim_start().len();
+            source.slice(leading + range.start..leading + range.end)
+        },
+    );
     let meta = compile_to_metadata(tag_name, body, root_events)?;
     let build_meta = collect_template_build_metadata(&meta);
     if scriptless && build_meta.has_events {
@@ -1319,10 +1332,12 @@ fn add_condition_roots(
     }
 }
 
-/// Emit a compiled condition function as `function(v,s){return EXPR}`.
-/// The function evaluates the condition using `v(path,s)` for value resolution.
-fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String) {
-    out.push_str("function(v,s){return ");
+fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String, needs_truthiness: bool) {
+    out.push_str("function(v,s");
+    if needs_truthiness {
+        out.push_str(",t");
+    }
+    out.push_str("){return ");
     emit_js_condition_expr(condition, out);
     out.push('}');
 }
@@ -1334,12 +1349,12 @@ fn emit_json_condition_ref(
     out: &mut String,
     functions: &mut ConditionFunctionEmitter,
 ) {
-    let function_index = functions.push(condition);
+    let mut paths = Vec::new();
+    let needs_truthiness = collect_condition_paths(condition, &mut paths);
+    let function_index = functions.push(condition, needs_truthiness);
     out.push('[');
     let _ = write!(out, "{}", function_index);
     out.push_str(",[");
-    let mut paths = Vec::new();
-    collect_condition_paths(condition, &mut paths);
     for (i, path) in paths.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -1349,17 +1364,15 @@ fn emit_json_condition_ref(
     out.push_str("]]");
 }
 
-/// Emit the JS expression body for a condition (no wrapping).
 fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
     match &condition.expr {
         Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
             out.push_str(&id.value);
         }
         Some(condition_expr::Expr::Identifier(id)) => {
-            // Truthiness check: !!v("path",s)
-            out.push_str("!!v(");
+            out.push_str("t(v(");
             emit_js_string(&id.value, out);
-            out.push_str(",s)");
+            out.push_str(",s))");
         }
         Some(condition_expr::Expr::Predicate(pred)) => {
             // Comparison: resolve left, compare with right
@@ -1442,13 +1455,15 @@ fn emit_js_predicate_right(value: &str, out: &mut String) {
     out.push_str(",s)");
 }
 
-/// Collect all identifier paths referenced by a condition.
-fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
+// Collect reactive paths and detect coercion in the same build-time traversal.
+fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) -> bool {
+    let mut needs_truthiness = false;
     match &condition.expr {
         Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
         }
         Some(condition_expr::Expr::Identifier(id)) => {
             paths.push(id.value.clone());
+            needs_truthiness = true;
         }
         Some(condition_expr::Expr::Predicate(pred)) => {
             paths.push(pred.left.clone());
@@ -1466,19 +1481,20 @@ fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
         }
         Some(condition_expr::Expr::Not(not_cond)) => {
             if let Some(inner) = not_cond.condition.as_ref() {
-                collect_condition_paths(inner, paths);
+                needs_truthiness = collect_condition_paths(inner, paths);
             }
         }
         Some(condition_expr::Expr::Compound(compound)) => {
             if let Some(left) = compound.left.as_ref() {
-                collect_condition_paths(left, paths);
+                needs_truthiness |= collect_condition_paths(left, paths);
             }
             if let Some(right) = compound.right.as_ref() {
-                collect_condition_paths(right, paths);
+                needs_truthiness |= collect_condition_paths(right, paths);
             }
         }
         None => {}
     }
+    needs_truthiness
 }
 
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
@@ -1592,6 +1608,7 @@ fn emit_json_template_section(
         }
         out.push(']');
     }
+    meta.ssr_layout.emit(out);
 
     if !meta.text_runs.is_empty() {
         out.push_str(",\"tx\":[");
@@ -1603,8 +1620,14 @@ fn emit_json_template_section(
             emit_js_slot(slot, out);
             out.push(',');
             emit_js_text_parts(parts, out);
+            let successor = meta.ssr_layout.text_successor(i);
             if *raw {
                 out.push_str(",1");
+            } else if successor != 0 {
+                out.push_str(",0");
+            }
+            if successor != 0 {
+                let _ = write!(out, ",{successor}");
             }
             out.push(']');
         }
@@ -1758,11 +1781,13 @@ fn compile_section(
         events: Vec::new(),
         event_targets: Vec::new(),
         refs: Vec::new(),
+        ssr_layout: SsrLayout::default(),
     };
 
     let bytes = input.as_bytes();
     let len = bytes.len();
     let mut i = 0;
+    let mut last_markup_end = 0;
 
     while i < len {
         if !input.is_char_boundary(i) {
@@ -1782,6 +1807,7 @@ fn compile_section(
             if remaining.starts_with("<!--") {
                 if let Some(close) = remaining.find("-->") {
                     i += close + 3;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1824,6 +1850,7 @@ fn compile_section(
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
                     i += consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1848,6 +1875,7 @@ fn compile_section(
                     });
                     meta.html.push_str(&format!("<!--r:{idx}-->"));
                     i += repeat.consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1857,6 +1885,7 @@ fn compile_section(
                 compile_style_content(&input[open_end..close_start], &mut meta);
                 meta.html.push_str(&input[close_start..close_end]);
                 i = close_end;
+                last_markup_end = i;
                 continue;
             }
 
@@ -1866,6 +1895,7 @@ fn compile_section(
                 if let Some(consumed) = find_element_end(remaining, "outlet") {
                     meta.html.push_str("<outlet></outlet>");
                     i += consumed;
+                    last_markup_end = i;
                     continue;
                 }
             }
@@ -1878,6 +1908,7 @@ fn compile_section(
             {
                 meta.html.push_str(&tag_html);
                 i += consumed;
+                last_markup_end = i;
                 continue;
             }
         }
@@ -1907,6 +1938,10 @@ fn compile_section(
         }
     }
 
+    if source.trim_boundary_formatting && input[last_markup_end..].trim().is_empty() {
+        let trailing = len - last_markup_end;
+        meta.html.truncate(meta.html.len() - trailing);
+    }
     Ok(meta)
 }
 
@@ -2079,9 +2114,11 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let mut event_cursor = 0usize;
 
     let mut element_cursor = 0usize;
+    let mut ssr_layout = SsrLayout::new();
     process_fragment_children(
         &nodes,
         0,
+        false,
         &text_bindings,
         &mut finalized_html,
         &mut text_runs,
@@ -2091,6 +2128,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
         &mut event_targets,
         &mut event_cursor,
         &mut element_cursor,
+        &mut ssr_layout,
     );
     debug_assert_eq!(event_cursor, meta.events.len());
 
@@ -2100,12 +2138,14 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     meta.condition_slots = condition_slots.into_iter().flatten().collect();
     meta.repeat_slots = repeat_slots.into_iter().flatten().collect();
     meta.event_targets = event_targets.into_iter().flatten().collect();
+    meta.ssr_layout = ssr_layout;
 }
 
 #[allow(clippy::too_many_arguments)]
 fn process_fragment_children(
     nodes: &[FragmentNode],
     parent_index: usize,
+    ignore_initial_lf: bool,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
@@ -2115,6 +2155,7 @@ fn process_fragment_children(
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    ssr_layout: &mut SsrLayout,
 ) {
     let mut child_index = 0usize;
     let mut index = 0usize;
@@ -2122,6 +2163,7 @@ fn process_fragment_children(
     // Track that here so marker-free locator paths match the real client DOM.
     let mut previous_emitted_text = false;
     let mut slot_orders = std::collections::BTreeMap::<usize, usize>::new();
+    let mut ssr_children = SsrChildren::default();
 
     while index < nodes.len() {
         if let Some((parts, consumed, has_dynamic, is_raw)) =
@@ -2137,16 +2179,7 @@ fn process_fragment_children(
                 // (e.g. `&gt;` → `>`).  Static-only text runs are
                 // baked into `meta.h` and parsed via innerHTML which
                 // handles entity decoding natively.
-                let decoded_parts = parts
-                    .into_iter()
-                    .map(|part| match part {
-                        CompiledAttrPart::Static(s) => {
-                            let decoded = html_escape::decode_html_entities(&s);
-                            CompiledAttrPart::Static(decoded.into_owned())
-                        }
-                        other => other,
-                    })
-                    .collect();
+                let decoded_parts = decode_text_parts(parts, ignore_initial_lf && index == 0);
                 let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                 slot_orders.insert(child_index, order + 1);
                 text_runs.push((
@@ -2158,12 +2191,14 @@ fn process_fragment_children(
                     decoded_parts,
                     is_raw,
                 ));
+                ssr_children.text(ssr_layout, text_runs.len() - 1);
             } else {
                 let static_text = collect_static_text(&parts);
                 if !static_text.is_empty() {
                     out.push_str(&static_text);
                     if !previous_emitted_text {
                         child_index += 1;
+                        ssr_children.node(ssr_layout, 3);
                     }
                     previous_emitted_text = true;
                 }
@@ -2200,6 +2235,7 @@ fn process_fragment_children(
                     out.push_str(data);
                     out.push_str("-->");
                     child_index += 1;
+                    ssr_children.node(ssr_layout, 8);
                     previous_emitted_text = false;
                 }
             }
@@ -2208,6 +2244,7 @@ fn process_fragment_children(
                 if !text.is_empty() {
                     if !previous_emitted_text {
                         child_index += 1;
+                        ssr_children.node(ssr_layout, 3);
                     }
                     previous_emitted_text = true;
                 }
@@ -2215,6 +2252,8 @@ fn process_fragment_children(
             FragmentNode::Element(element) => {
                 *element_cursor += 1;
                 let element_index = *element_cursor;
+                ssr_children.node(ssr_layout, 1);
+                ssr_layout.push_element(parent_index, &element.tag_name);
                 serialize_fragment_element(
                     element,
                     element_index,
@@ -2227,6 +2266,7 @@ fn process_fragment_children(
                     event_targets,
                     event_cursor,
                     element_cursor,
+                    ssr_layout,
                 );
                 child_index += 1;
                 previous_emitted_text = false;
@@ -2235,6 +2275,54 @@ fn process_fragment_children(
 
         index += 1;
     }
+    ssr_layout.finish_children(parent_index, &ssr_children, text_runs.len());
+}
+
+fn decode_text_parts(
+    mut parts: Vec<CompiledAttrPart>,
+    ignore_initial_lf: bool,
+) -> Vec<CompiledAttrPart> {
+    for part in &mut parts {
+        if let CompiledAttrPart::Static(text) = part {
+            normalize_text_newlines(text);
+            if let Cow::Owned(decoded) = html_escape::decode_html_entities(text.as_str()) {
+                *text = decoded;
+            }
+        }
+    }
+    // HTML parsing ignores the first LF after pre/textarea/listing. Client
+    // binding assignment bypasses HTML parsing, so mirror it in static parts.
+    if ignore_initial_lf {
+        if let Some(CompiledAttrPart::Static(text)) = parts.first_mut() {
+            if text.starts_with('\n') {
+                text.remove(0);
+            }
+        }
+    }
+    parts
+}
+
+fn normalize_text_newlines(text: &mut String) {
+    let Some(mut carriage_return) = text.find('\r') else {
+        return;
+    };
+    let first_is_crlf = text[carriage_return..].starts_with("\r\n");
+    let mut normalized = String::with_capacity(text.len() - usize::from(first_is_crlf));
+    let mut remaining = text.as_str();
+    loop {
+        normalized.push_str(&remaining[..carriage_return]);
+        normalized.push('\n');
+        remaining = &remaining[carriage_return + 1..];
+        if let Some(after_lf) = remaining.strip_prefix('\n') {
+            remaining = after_lf;
+        }
+        let Some(next) = remaining.find('\r') else {
+            break;
+        };
+        carriage_return = next;
+    }
+    normalized.push_str(remaining);
+    *text = normalized;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2250,6 +2338,7 @@ fn serialize_fragment_element(
     event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
     element_cursor: &mut usize,
+    ssr_layout: &mut SsrLayout,
 ) {
     out.push('<');
     out.push_str(&element.tag_name);
@@ -2296,9 +2385,18 @@ fn serialize_fragment_element(
     } else {
         &mut *element_cursor
     };
+    let mut inert_layout = SsrLayout::default();
+    let layout = if element.tag_name.eq_ignore_ascii_case("template") {
+        &mut inert_layout
+    } else {
+        ssr_layout
+    };
     process_fragment_children(
         &element.children,
         element_index,
+        element.tag_name.eq_ignore_ascii_case("pre")
+            || element.tag_name.eq_ignore_ascii_case("textarea")
+            || element.tag_name.eq_ignore_ascii_case("listing"),
         text_bindings,
         out,
         text_runs,
@@ -2308,6 +2406,7 @@ fn serialize_fragment_element(
         event_targets,
         event_cursor,
         counter,
+        layout,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);
@@ -2866,7 +2965,9 @@ fn parse_if_block(
     let (body_end, close_end) = find_matching_end(input, tag.name, body_start)?;
     Some((
         condition,
-        source.slice(body_start..body_end).trimmed(),
+        source
+            .slice(body_start..body_end)
+            .trim_boundary_formatting(),
         close_end,
     ))
 }
@@ -2925,7 +3026,9 @@ fn parse_for_block<'a>(
     };
 
     let (item_var, collection) = crate::parse_for_each(component, each_val)?;
-    let mut body = source.slice(tag.close + 1..body_end).trimmed();
+    let mut body = source
+        .slice(tag.close + 1..body_end)
+        .trim_boundary_formatting();
     let repeat_key = first_child_repeat_key(component, item_var, body.html())?;
     body.repeat_key = repeat_key
         .as_ref()
@@ -3688,6 +3791,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decoding_plain_text_reuses_owned_buffers() {
+        let text = String::from("\n  plain text \n");
+        let text_pointer = text.as_ptr();
+        let parts = vec![
+            CompiledAttrPart::Static(text),
+            CompiledAttrPart::Dynamic("label".to_string()),
+        ];
+        let parts_pointer = parts.as_ptr();
+        let decoded = decode_text_parts(parts, false);
+        assert_eq!(decoded.as_ptr(), parts_pointer);
+        let CompiledAttrPart::Static(text) = &decoded[0] else {
+            panic!("expected static text");
+        };
+        assert_eq!(text, "\n  plain text \n");
+        assert_eq!(text.as_ptr(), text_pointer);
+    }
+
+    #[test]
+    fn source_newline_normalization_handles_mixed_runs() {
+        for (input, expected) in [
+            ("", ""),
+            ("plain\ntext", "plain\ntext"),
+            ("\r", "\n"),
+            ("\r\n", "\n"),
+            ("\r\r\n\r", "\n\n\n"),
+            ("a\r\nb\rc\n", "a\nb\nc\n"),
+            ("é\r\n中\r🙂", "é\n中\n🙂"),
+        ] {
+            let mut text = input.to_string();
+            normalize_text_newlines(&mut text);
+            assert_eq!(text, expected);
+        }
+    }
+
+    #[test]
+    fn boundary_formatting_stays_separate_from_stripped_comments() {
+        for text in [
+            "plain text",
+            "{{label}}",
+            "{{{label}}}",
+            "<span>{{label}}</span>",
+        ] {
+            let source = format!("\n<!-- leading -->{text}<!-- trailing -->\n");
+            assert_eq!(
+                generate_compiled_template("text-comments", &source),
+                generate_compiled_template("text-comments", text),
+            );
+        }
+    }
+
+    #[test]
+    fn text_run_edges_survive_component_and_block_boundaries() {
+        let text = "\n  {{label}}\n ";
+        let metadata = generate_compiled_template("text-root", text);
+        assert!(metadata.contains(r#"["\n  ",["label"],"\n "]"#));
+        for source in [
+            format!("<if condition=\"ready\">{text}</if>"),
+            format!("<for each=\"item in items\">{text}</for>"),
+        ] {
+            let metadata = generate_compiled_template("text-block", &source);
+            assert!(metadata.contains(r#"["\n  ",["label"],"\n "]"#));
+        }
+    }
+
+    #[test]
+    fn text_parts_follow_html_source_newline_rules() {
+        let button =
+            generate_compiled_template("text-newlines", "<button>\r\n  {{label}}\r</button>");
+        assert!(button.contains(r#"["\n  ",["label"],"\n"]"#));
+        for tag in ["pre", "textarea", "listing"] {
+            let source = format!("<{tag}>\r\n  {{{{label}}}}\r\n</{tag}>");
+            let metadata = generate_compiled_template("text-newlines", &source);
+            assert!(metadata.contains(r#"["  ",["label"],"\n"]"#));
+        }
+        let entity =
+            generate_compiled_template("text-newlines", "<span>&#13;{{label}}&#10;</span>");
+        assert!(entity.contains(r#"["\r",["label"],"\n"]"#));
+    }
+
+    #[test]
     fn boolean_literal_conditions_have_no_state_dependencies() {
         for value in ["true", "false"] {
             let condition = ConditionExpr::identifier(value);
@@ -3698,6 +3881,47 @@ mod tests {
             collect_condition_paths(&condition, &mut paths);
             assert!(paths.is_empty());
         }
+    }
+
+    #[test]
+    fn condition_functions_receive_runtime_truthiness_across_bindings() {
+        let payload = generate_compiled_template_payload(
+            "collection-check",
+            concat!(
+                "<if condition=\"items\"><span>items</span></if>",
+                "<if condition=\"!actions.trailing\"><span>empty</span></if>",
+                "<if condition=\"ready && record\"><span>record</span></if>",
+                "<input ?disabled=\"{{items.length}}\">",
+            ),
+        );
+        let functions = payload.template_functions;
+        assert!(functions.starts_with('['));
+        assert!(functions.ends_with(']'));
+        assert_eq!(functions.matches("function(v,s,t)").count(), 4);
+        assert!(!functions.contains("function t("));
+        assert!(!functions.contains("Array.isArray"));
+        assert!(!functions.contains("Object.keys"));
+        assert!(functions.contains(r#"return t(v("items",s))"#));
+        assert!(functions.contains(r#"return !(t(v("actions.trailing",s)))"#));
+        assert!(functions.contains(r#"return (t(v("ready",s))&&t(v("record",s)))"#));
+        assert!(functions.contains(r#"return t(v("items.length",s))"#));
+    }
+
+    #[test]
+    fn condition_truthiness_helper_is_omitted_when_unused() {
+        let no_conditions = generate_compiled_template_payload("plain-check", "<p>static</p>");
+        assert!(no_conditions.template_functions.is_empty());
+        let payload = generate_compiled_template_payload(
+            "predicate-check",
+            concat!(
+                "<if condition=\"true\"><span>true</span></if>",
+                "<if condition=\"count > 0\"><span>positive</span></if>",
+            ),
+        );
+        assert_eq!(
+            payload.template_functions,
+            r#"[function(v,s){return true},function(v,s){return v("count",s)>0}]"#
+        );
     }
 
     #[test]

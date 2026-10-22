@@ -78,7 +78,7 @@ Template compilation remains a build-time operation:
 npx webui build ./src --out ./dist --plugin=webui
 ```
 
-Building from source requires Rust 1.93 or newer. The source distribution
+Building from source requires Rust 1.99.1 or newer. The source distribution
 bundles the matching WebUI Rust source closure, so it does not require a
 separately installed native library or separately published WebUI crates.
 

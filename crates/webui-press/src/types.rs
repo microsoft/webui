@@ -22,6 +22,10 @@ pub struct DocsConfig {
     /// Display mode, overridden by an explicit CLI `--show` value.
     #[serde(default)]
     pub show: ShowMode,
+    /// Enable page outlines in the full documentation shell. Defaults to false;
+    /// Markdown frontmatter and object-form custom pages may override it.
+    #[serde(default)]
+    pub outline: bool,
     pub base_path: String,
     pub content_dir: String,
     #[serde(default = "default_out_dir")]
@@ -87,6 +91,9 @@ pub struct SiteConfig {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Optional absolute HTTP(S) origin for canonical URLs. Deployment
+    /// subdirectories belong in `basePath`, not this origin.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +131,12 @@ pub enum CustomPage {
     Full {
         html: String,
         layout: Option<String>,
+        /// Page title, falling back to the site title when omitted.
+        title: Option<String>,
+        /// Page description, falling back to the site description when omitted.
+        description: Option<String>,
+        /// Override the site's page-outline setting for this custom page.
+        outline: Option<bool>,
         /// Inline state object merged into the page's render state under the
         /// `pageData` key. Mutually exclusive with `state_file`.
         state: Option<serde_json::Value>,
@@ -151,6 +164,33 @@ impl CustomPage {
         match self {
             Self::Html(_) => "doc",
             Self::Full { layout, .. } => layout.as_deref().unwrap_or("doc"),
+        }
+    }
+
+    /// Return the optional custom-page title.
+    #[must_use]
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { title, .. } => title.as_deref(),
+        }
+    }
+
+    /// Return the optional custom-page description.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { description, .. } => description.as_deref(),
+        }
+    }
+
+    /// Return the optional custom-page outline setting.
+    #[must_use]
+    pub fn outline(&self) -> Option<bool> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { outline, .. } => *outline,
         }
     }
 
@@ -313,6 +353,7 @@ mod tests {
             "nav": [], "sidebar": []
         }"#;
         let config: DocsConfig = serde_json::from_str(json)?;
+        assert!(!config.outline);
         assert_eq!(config.show, ShowMode::All);
         assert_eq!(
             serde_json::from_str::<ShowMode>("\"content\"")?,
@@ -324,6 +365,35 @@ mod tests {
     }
 
     // --- HeadTag::to_html ------------------------------------------------
+    #[test]
+    fn outline_configuration_requires_a_boolean() -> Result<(), serde_json::Error> {
+        let mut value: serde_json::Value = serde_json::from_str(
+            r#"{"site":{"title":"Docs"},"basePath":"/","contentDir":".","nav":[],"sidebar":[]}"#,
+        )?;
+        value["outline"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<DocsConfig>(value.clone())?.outline);
+        value["outline"] = serde_json::Value::String("true".to_string());
+        assert!(serde_json::from_value::<DocsConfig>(value).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn custom_page_outline_override_is_optional_and_boolean() -> Result<(), serde_json::Error> {
+        for (json, expected) in [
+            (r#""<h1>Legacy</h1>""#, None),
+            (r#"{"html":"<h1>Default</h1>"}"#, None),
+            (r#"{"html":"<h1>On</h1>","outline":true}"#, Some(true)),
+            (r#"{"html":"<h1>Off</h1>","outline":false}"#, Some(false)),
+        ] {
+            let page: CustomPage = serde_json::from_str(json)?;
+            assert_eq!(page.outline(), expected);
+        }
+        assert!(serde_json::from_str::<CustomPage>(
+            r#"{"html":"<h1>Invalid</h1>","outline":"false"}"#
+        )
+        .is_err());
+        Ok(())
+    }
 
     fn tag(name: &str, attrs: &[(&str, &str)], content: Option<&str>) -> HeadTag {
         let mut map = BTreeMap::new();
@@ -451,6 +521,30 @@ mod tests {
         let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
         let page: CustomPage = serde_json::from_str(json).unwrap();
         assert!(page.script_file().is_none());
+    }
+
+    #[test]
+    fn custom_page_title_is_optional() -> Result<(), serde_json::Error> {
+        let titled: CustomPage =
+            serde_json::from_str(r#"{"html":"<p>Demo</p>","title":"Playground"}"#)?;
+        assert_eq!(titled.title(), Some("Playground"));
+        let legacy: CustomPage = serde_json::from_str(r#""<p>Demo</p>""#)?;
+        assert_eq!(legacy.title(), None);
+        let untitled: CustomPage = serde_json::from_str(r#"{"html":"<p>Demo</p>"}"#)?;
+        assert_eq!(untitled.title(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn custom_page_description_is_optional() -> Result<(), serde_json::Error> {
+        let described: CustomPage =
+            serde_json::from_str(r#"{"html":"<p>Demo</p>","description":"Try a template"}"#)?;
+        assert_eq!(described.description(), Some("Try a template"));
+        let legacy: CustomPage = serde_json::from_str(r#""<p>Demo</p>""#)?;
+        assert_eq!(legacy.description(), None);
+        let undescribed: CustomPage = serde_json::from_str(r#"{"html":"<p>Demo</p>"}"#)?;
+        assert_eq!(undescribed.description(), None);
+        Ok(())
     }
 
     #[test]

@@ -74,11 +74,13 @@ impl Watcher for ContentChangeWatcher {
 }
 
 fn is_read_only_access_event(event: &Event) -> bool {
+    // inotify reports read-only IN_OPEN as Any; actual writes still emit
+    // modification and close-write events.
     matches!(
         event.kind,
         EventKind::Access(
             AccessKind::Read
-                | AccessKind::Open(AccessMode::Read)
+                | AccessKind::Open(AccessMode::Any | AccessMode::Read)
                 | AccessKind::Close(AccessMode::Read)
         )
     )
@@ -622,6 +624,7 @@ mod tests {
 
         for kind in [
             AccessKind::Read,
+            AccessKind::Open(AccessMode::Any),
             AccessKind::Open(AccessMode::Read),
             AccessKind::Close(AccessMode::Read),
         ] {

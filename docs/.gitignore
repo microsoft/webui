@@ -1,3 +1,5 @@
 dist/
 node_modules/
 .webui-press/public/wasm
+.webui-press/generated/
+.webui-press/public/benchmarks/

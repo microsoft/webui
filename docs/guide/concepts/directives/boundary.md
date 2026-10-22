@@ -1,8 +1,15 @@
+---
+title: "Streaming boundaries"
+description: "Mark regions that can become interactive early, then pace their HTML and state through a host-owned streaming response."
+---
+
 # Streaming Boundaries
 
 `<boundary>` marks a complete region that WebUI can render, flush, and hydrate
 before the rest of the response arrives. It is a compile-time directive and
-does not create a DOM wrapper.
+does not create a DOM wrapper. Use it with a host's progressive streaming API
+and the browser streaming coordinator; adding the directive alone does not
+turn an ordinary render into a progressively hydrated response.
 
 ## Put boundaries where readiness changes
 
@@ -34,12 +41,11 @@ checkpoint:
 </main>
 ```
 
-The server discovers `search-ready` while rendering `<ntp-page>`. It can commit
-and hydrate `<search-box>` before the remaining parent content arrives. WebUI
-creates the required parent span automatically. Do not add an outer boundary
-around `<ntp-page>`, and do not add a sibling boundary merely to separate the
-checkpoint from the parent tail. `resume` returns after the checkpoint;
-`advance` renders the following parent bytes.
+The server reaches `search-ready` while rendering `<ntp-page>`. It can send
+`<search-box>` for hydration before the remaining parent content arrives.
+Do not add an outer boundary around `<ntp-page>`: boundaries cannot nest.
+`resume` writes through the checkpoint; `advance` writes the following parent
+content.
 
 Load the coordinator before component registrations:
 
@@ -128,14 +134,10 @@ descriptor. Interpret each step in this order:
 | no descriptor and `done` is false | Call `advance` |
 | `done` is true | The response is complete |
 
-`resume` is boundary-only so the host can write and flush a resolved occurrence
-without waiting for its parent or document tail. Its step contains the
-occurrence markers, body, checkpoint record, and sentinel, but no bytes that
-follow the occurrence. `advance` renders those following parent or shell bytes
-until discovery pauses again or the terminal completes. This split handles a
-boundary inside an unfinished component directly, so no sibling boundary
-workaround is required. A completed step includes the parent tail, terminal
-record, and document close.
+Write and flush each returned step before waiting for more data. `resume`
+contains only the pending occurrence; `advance` continues through the next
+occurrence or the end of the response. A completed step already includes the
+remaining document bytes.
 
 ```rust
 let mut response =
