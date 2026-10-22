@@ -2,6 +2,7 @@
 name = "demo-shell"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 publish = false
 
 [[bin]]

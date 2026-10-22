@@ -1349,6 +1349,9 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
+Building WebUI or a Rust host from source requires Rust 1.99.1 or newer.
+Prebuilt npm binaries do not require Rust.
+
 ### Web apps
 
 For an interactive app, install the CLI and browser framework, then bundle the

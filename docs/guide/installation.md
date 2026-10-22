@@ -90,6 +90,7 @@ capabilities, and packaging.
 
 ## Rust
 
+Building from source requires Rust 1.99.1 or newer.
 Rust users can install the same compiler through Cargo:
 
 ```bash

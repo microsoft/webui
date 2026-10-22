@@ -563,7 +563,7 @@ Reference it from any `.md`:
 # Install
 
 <my-callout type="warning">
-  Make sure you have **Rust 1.93+** before continuing.
+  Make sure you have **Rust 1.99.1+** before continuing.
 </my-callout>
 ```
 

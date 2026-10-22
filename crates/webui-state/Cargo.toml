@@ -3,6 +3,7 @@ name = "microsoft-webui-state"
 description = "Core state management for WebUI framework"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
