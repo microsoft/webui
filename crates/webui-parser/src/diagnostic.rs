@@ -85,8 +85,8 @@ pub mod codes {
     pub const INVALID_LAZY_ID: &str = "invalid-lazy-id";
     /// Deferred region ids must be unique within their owning template.
     pub const DUPLICATE_LAZY_ID: &str = "duplicate-lazy-id";
-    /// The removed if attribute must not silently become an eager conditional.
-    pub const REMOVED_IF_DEFER: &str = "removed-if-defer";
+    /// The if directive has an unsupported attribute or an id without lazy.
+    pub const INVALID_IF_ATTRIBUTE: &str = "invalid-if-attribute";
     /// `lazy` is a boolean directive attribute, not a state binding.
     pub const INVALID_LAZY_ATTRIBUTE: &str = "invalid-lazy-attribute";
     /// The selected client plugin does not support deferred component metadata.

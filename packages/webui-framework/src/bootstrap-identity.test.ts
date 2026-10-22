@@ -44,7 +44,7 @@ test('progressive resource identity is checked before templates or state can mut
     assert.throws(() => applyBoundaryBootstrap({
       buildId: 'different-build',
       declarationId: 0,
-      templates: { 'unexpected-widget': { h: '<p>Unexpected</p>' } },
+      templates: { 'unexpected-widget': { v: 3, h: '<p>Unexpected</p>' } },
       componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
     }), /different document build/);
     assert.deepEqual(runtime.templates, {});

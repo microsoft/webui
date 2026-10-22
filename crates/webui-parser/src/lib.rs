@@ -3365,8 +3365,8 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        if element.has_attr("defer") {
-            return Err(lazy::removed_defer_attribute()
+        if let Some(error) = lazy::if_attribute_error(&element.tag) {
+            return Err(error
                 .component(&self.current_fragment_id)
                 .at_offset(element.source(), element.start)
                 .into());

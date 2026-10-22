@@ -7,7 +7,7 @@ import { getTemplate } from './template-registry.js';
 
 test('late cache installation fails instead of guessing ownership of existing consumers', async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
-  const meta = { h: '<p>Already consumed</p>' };
+  const meta = { v: 3, h: '<p>Already consumed</p>' };
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: { __webui: { templates: { 'x-used': meta } } },

@@ -14,7 +14,7 @@ test('synchronous definition errors reject transport readiness instead of escapi
     const { deferTemplateDefinition } = await import('./template-registry.js');
     const failure = new Error('definition could not be completed');
     deferTemplateDefinition('failing-definition', class {}, () => { throw failure; });
-    const templates = { 'failing-definition': { h: '<p></p>' } };
+    const templates = { 'failing-definition': { v: 3, h: '<p></p>' } };
     window.__webuiPrepareTemplates?.(templates);
     const waits: PromiseLike<unknown>[] = [];
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {

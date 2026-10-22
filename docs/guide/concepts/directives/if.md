@@ -2,6 +2,9 @@
 
 The `<if>` directive allows you to conditionally render content based on a boolean expression.
 
+Its attributes are `condition`, optional boolean `lazy`, and `id` only when
+`lazy` is present. Unsupported attributes are build errors.
+
 ## Basic Usage
 
 ```html

@@ -13,9 +13,31 @@ import {
 } from './template.js';
 
 describe('template registry helpers', () => {
+  test('only the current compiled format is accepted before publication', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __webui: { templates: {} } },
+    });
+    try {
+      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":2,"h":""}', '{"v":4,"h":""}']) {
+        assert.throws(
+          () => registerTemplateData({ invalid: JSON.parse(json) }),
+          /Unsupported template metadata version/,
+        );
+        assert.equal(window.__webui!.templates!.invalid, undefined);
+      }
+      registerTemplateData({ current: { v: 3, h: '<p>Current</p>' } });
+      assert.equal(getTemplate('current')?.h, '<p>Current</p>');
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'window', previous);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
   test('getTemplate returns registered metadata from window', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const template: TemplateMeta = { h: '<p>Hello</p>' };
+    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
 
     try {
       Object.defineProperty(globalThis, 'window', {
@@ -44,11 +66,12 @@ describe('template registry helpers', () => {
   test('registerTemplateData normalizes indexed conditions once', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const fn = (): boolean => true;
-    const template = {
+    const template: TemplateMeta = {
+      v: 3,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
-      c: [[[0, ['ready']], 0, [[], 0]]],
-    } as unknown as TemplateMeta;
+      c: [[[0, ['ready']], 0, [0, 0]]],
+    };
 
     try {
       Object.defineProperty(globalThis, 'window', {
@@ -97,7 +120,7 @@ describe('template registry helpers', () => {
       });
 
       registerTemplateData(
-        { 'style-card': { h: '<p>Styled</p>' } },
+        { 'style-card': { v: 3, h: '<p>Styled</p>' } },
         undefined,
         {
           version: 1,
@@ -128,6 +151,7 @@ describe('template registry helpers', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const fn = (): boolean => false;
     const template = {
+      v: 3,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
       c: [[[0, ['ready']], 0, [[], 0]]],
@@ -167,6 +191,7 @@ describe('template registry helpers', () => {
     const secondFn = (): boolean => false;
     const lateFn = (): boolean => true;
     const template = (): TemplateMeta => ({
+      v: 3,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
       c: [[[0, ['ready']], 0, [[], 0]]],
@@ -229,7 +254,7 @@ describe('template registry helpers', () => {
           getElementById(id: string) {
             if (id !== 'webui-data') return null;
             return {
-              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"v":3,"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[0,0]]]}}}',
               remove() { removed = true; },
             };
           },
@@ -264,7 +289,7 @@ describe('template registry helpers', () => {
 
   test('releases one-shot SSR state without dropping template metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const template: TemplateMeta = { h: '<p>Hello</p>' };
+    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
     try {
       Object.defineProperty(globalThis, 'window', {
         value: {

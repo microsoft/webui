@@ -930,7 +930,7 @@ fn emit_compiled_template_payload(
         out.push(']');
     }
 
-    out.push('}');
+    out.push_str(",\"v\":3}");
     CompiledTemplatePayload {
         template_json: out,
         template_functions: conditions.finish(),
@@ -1724,10 +1724,9 @@ fn compile_to_metadata(
     let source = input.source;
     let mut root = compile_section(component, input, &mut blocks)?;
     blocks.resolve(component, source, &mut root)?;
-    let compiled_refs = !blocks.lazy.is_empty();
-    finalize_template_section(&mut root, compiled_refs);
+    finalize_template_section(&mut root);
     for block in &mut blocks.blocks {
-        finalize_template_section(block, compiled_refs);
+        finalize_template_section(block);
     }
     Ok(TemplateMeta {
         root,
@@ -1790,15 +1789,13 @@ fn compile_section(
             let opening_tag = parse_tag(remaining).filter(|tag| !tag.closing);
             let opening_name = opening_tag.as_ref().map(|tag| tag.name);
             if opening_name == Some("if") {
-                if opening_tag
+                if let Some(error) = opening_tag
                     .as_ref()
-                    .is_some_and(|tag| tag.has_attr("defer"))
+                    .and_then(crate::lazy::if_attribute_error)
                 {
-                    return Err(source.slice(i..len).locate_error(
-                        crate::lazy::removed_defer_attribute()
-                            .component(component)
-                            .into(),
-                    ));
+                    return Err(source
+                        .slice(i..len)
+                        .locate_error(error.component(component).into()));
                 }
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
                     let lazy_tag = opening_tag.as_ref().filter(|tag| tag.has_attr("lazy"));
@@ -2041,12 +2038,12 @@ struct FragmentAttr {
     value: Option<String>,
 }
 
-fn finalize_template_section(meta: &mut TemplateSectionMeta, compiled_refs: bool) {
+fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
     let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
     insert_implied_table_containers(&mut nodes);
-    if compiled_refs {
+    if raw_html.contains("w-ref") {
         let mut pending: Vec<&FragmentNode> = nodes.iter().rev().collect();
         let mut index = 0usize;
         while let Some(node) = pending.pop() {
@@ -3889,10 +3886,10 @@ mod tests {
                 .template_json
                 .as_str()
         };
-        assert!(metadata("x-parent").contains(r#""v":1"#));
+        assert!(metadata("x-parent").contains(r#""v":3"#));
         assert!(metadata("x-parent").contains(r#""d":["x-child","x-leaf"]"#));
         assert!(metadata("x-child").contains(r#""d":["x-grandchild"]"#));
-        assert!(metadata("x-leaf").contains(r#""v":1"#));
+        assert!(metadata("x-leaf").contains(r#""v":3"#));
         assert!(!metadata("x-leaf").contains(r#""d":"#));
     }
 

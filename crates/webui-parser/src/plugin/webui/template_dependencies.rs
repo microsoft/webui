@@ -21,11 +21,7 @@ pub(super) fn attach(
         }
         let tag = template.tag_name.as_str();
         known.insert(tag);
-        payloads.push((
-            tag,
-            &mut template.template_json,
-            !template.lazy_templates.is_empty(),
-        ));
+        payloads.push((tag, &mut template.template_json));
         for fragment in &mut template.lazy_templates {
             known.insert(fragment.id.as_str());
             lazy_payloads.push(&mut fragment.data);
@@ -36,14 +32,9 @@ pub(super) fn attach(
     }
 
     let mut scratch = DependencyScratch::default();
-    for (tag, json, extracted) in payloads {
+    for (tag, json) in payloads {
         scratch.collect(fragments, &known, tag)?;
-        append_metadata(
-            tag,
-            json,
-            &scratch.dependencies,
-            extracted || scratch.has_lazy,
-        )?;
+        append_dependencies(tag, json, &scratch.dependencies)?;
     }
     for data in lazy_payloads {
         data.dependencies.retain(|id| known.contains(id.as_str()));
@@ -68,7 +59,6 @@ struct DependencyScratch<'a> {
     seen_components: HashSet<&'a str>,
     pending: Vec<&'a str>,
     dependencies: Vec<&'a str>,
-    has_lazy: bool,
 }
 
 impl<'a> DependencyScratch<'a> {
@@ -82,7 +72,6 @@ impl<'a> DependencyScratch<'a> {
         self.seen_components.clear();
         self.pending.clear();
         self.dependencies.clear();
-        self.has_lazy = false;
         self.pending.push(root);
 
         while let Some(id) = self.pending.pop() {
@@ -110,7 +99,6 @@ impl<'a> DependencyScratch<'a> {
                     Some(Fragment::IfCond(condition)) if !condition.lazy => {
                         self.pending.push(condition.fragment_id.as_str());
                     }
-                    Some(Fragment::IfCond(_)) => self.has_lazy = true,
                     Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
                         self.pending.push(attribute.template.as_str());
                     }
@@ -125,12 +113,11 @@ impl<'a> DependencyScratch<'a> {
     }
 }
 
-fn append_metadata(tag: &str, json: &mut String, dependencies: &[&str], lazy: bool) -> Result<()> {
+fn append_dependencies(tag: &str, json: &mut String, dependencies: &[&str]) -> Result<()> {
     if !json.starts_with('{') || !json.ends_with('}') {
         return Err(invalid_payload(tag));
     }
     json.truncate(json.len() - 1);
-    json.push_str(if lazy { ",\"v\":3" } else { ",\"v\":1" });
     if !dependencies.is_empty() {
         json.push_str(",\"d\":[");
         for (index, dependency) in dependencies.iter().enumerate() {
@@ -209,7 +196,7 @@ mod tests {
     fn invalid_plugin_payloads_are_not_repaired_silently() {
         let mut json = "invalid".to_string();
         assert!(matches!(
-            append_metadata("x-root", &mut json, &[], false),
+            append_dependencies("x-root", &mut json, &[]),
             Err(ParserError::ClientTemplateMetadata { .. })
         ));
         assert_eq!(json, "invalid");

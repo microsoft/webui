@@ -3,15 +3,23 @@
 
 pub(crate) use webui_protocol::{lazy_block_id as block_id, lazy_fragment_id as fragment_id};
 
+pub(crate) fn if_attribute_error(tag: &crate::html_parser::Tag<'_>) -> Option<crate::Diagnostic> {
+    let invalid = tag.attrs().find(|attr| match attr.name {
+        "condition" | "lazy" => false,
+        "id" => !tag.has_attr("lazy"),
+        _ => true,
+    })?;
+    Some(invalid_if_attribute(invalid.name))
+}
+
 #[cold]
 #[inline(never)]
-pub(crate) fn removed_defer_attribute() -> crate::Diagnostic {
-    crate::Diagnostic::error("defer is not supported on <if>")
-        .code(crate::codes::REMOVED_IF_DEFER)
+fn invalid_if_attribute(name: &str) -> crate::Diagnostic {
+    crate::Diagnostic::error(format!("unsupported attribute '{name}' on <if>"))
+        .code(crate::codes::INVALID_IF_ATTRIBUTE)
         .element("if")
-        .help(
-            "replace defer with lazy, then rebuild the protocol and client with matching versions",
-        )
+        .snippet(name)
+        .help("use condition, optional boolean lazy, and id only for a lazy region")
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {

@@ -46,7 +46,7 @@ function recordFor(cache: TemplateCache, tag: string): TemplateRecord {
 }
 
 function validateOwnership(tag: string, meta: TemplateMeta): void {
-  if (meta.v !== 1 && meta.v !== 3) {
+  if (meta.v !== 3) {
     throw new Error(
       `[WebUI] Template <${tag}> has no cache ownership metadata. ` +
       'Rebuild the complete protocol with a matching WebUI compiler before collecting templates.',

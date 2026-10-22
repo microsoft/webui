@@ -110,6 +110,7 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
   (window as unknown as { __webui: { templates: Record<string, unknown> } }).__webui.templates[tag] = {
+    v: 3,
     h: '<div></div>',
   };
 }
@@ -138,7 +139,7 @@ test('registered constructors retain attribute names, not complete template meta
     },
   });
   const tag = 'collectible-template';
-  const metadata: TemplateMeta = { h: '<span></span>', tr: ['title'], ta: ['title'] };
+  const metadata: TemplateMeta = { v: 3, h: '<span></span>', tr: ['title'], ta: ['title'] };
   window.__webui!.templates![tag] = metadata;
   class CollectibleTemplate extends TemplateElement {
     templateMetadata(): TemplateMeta | undefined {
@@ -605,7 +606,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
-    raw.$meta = { h: '<span></span>' };
+    raw.$meta = { v: 3, h: '<span></span>' };
     raw.setAttribute('data-ws', '');
 
     raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
@@ -877,6 +878,7 @@ describe('TemplateElement.define — ordinary (non-streaming) authored definitio
       // its partial navigation response resolves.
       registerTemplateData({
         [tag]: {
+          v: 3,
           h: '<div><span></span></div>',
           tr: ['title'],
           ta: ['title'],

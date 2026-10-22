@@ -1819,11 +1819,8 @@ export class TemplateElement extends HTMLElement {
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
       repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
-    if (meta.f) instance.fragment = meta;
-    else if (this.$meta?.v === 3) {
-      const fragment = lazyBlockOwner(meta);
-      if (fragment) instance.fragment = fragment;
-    }
+    const fragment = lazyBlockOwner(meta);
+    if (fragment) instance.fragment = fragment;
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1984,11 +1981,8 @@ export class TemplateElement extends HTMLElement {
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
       repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
-    if (meta.f) instance.fragment = meta;
-    else if (this.$meta?.v === 3) {
-      const fragment = lazyBlockOwner(meta);
-      if (fragment) instance.fragment = fragment;
-    }
+    const fragment = lazyBlockOwner(meta);
+    if (fragment) instance.fragment = fragment;
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in

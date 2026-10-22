@@ -111,9 +111,9 @@ export interface TemplateBlockMeta {
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
-  /** Version 1 declares the complete ordinary component-dependency surface. */
-  v?: 1 | 3;
-  /** Direct compiled component dependencies; absent is empty when v is 1. */
+  /** Current compiled-template format; compiler and runtime must match. */
+  v: 3;
+  /** Direct compiled component dependencies; absent is empty. */
   d?: readonly string[];
   b?: TemplateBlockMeta[];
   re?: [string, string, CompiledEventArgs][];

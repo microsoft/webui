@@ -239,6 +239,8 @@ array or string does work: `<if condition="items.length > 3">`.
   state-last delivery.
 - Give regions an owner-local `id` for application loading. Behavior modules
   remain explicit dynamic imports; deferral does not split owner JavaScript.
+- `<if>` accepts only `condition`, boolean `lazy`, and `id` on a lazy region.
+  Unsupported attributes fail the build. Rebuild protocol and client together.
 - Do not combine this protocol-backed feature with `--emit-component-assets`.
 
 See [lazy UI](guide/concepts/lazy.md) for cancellation, dialog ownership,
@@ -360,6 +362,9 @@ with `invalid-w-ref`. Declare the property in the class:
 Use `w-ref` only for imperative browser APIs - `focus()`, `scrollIntoView()`,
 `showModal()`, `showPopover()`, measurement. Never use it to read or write
 state that a template binding could express.
+
+Refs inside conditional or repeated content are cleared to `undefined` when
+their owning view is removed. Declare those refs as optional properties.
 
 `w-ref` is scalar. Reusing one ref name inside `<for>` overwrites the same
 property, so the last wired occurrence wins; repeat `key` and position do not

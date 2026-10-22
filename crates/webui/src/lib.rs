@@ -1308,27 +1308,67 @@ mod tests {
     }
 
     #[test]
-    fn removed_if_defer_is_rejected_instead_of_silently_rendering_eagerly() {
+    fn if_attributes_are_validated_against_the_current_contract() {
         for plugin in [None, Some(Plugin::WebUI)] {
-            for attributes in ["defer", "defer=\"true\"", "defer lazy"] {
-                let template = format!(
-                    "<h1>Owner</h1>\n<if condition=\"show\" {attributes} id=\"body\"><p>Body</p></if>"
-                );
+            for attributes in [
+                "defer",
+                "async",
+                "lazy unknown",
+                "id=\"body\"",
+                "class=\"panel\"",
+                "data-condition=\"ignored\"",
+            ] {
+                let template =
+                    format!("<h1>Owner</h1>\n<if condition=\"show\" {attributes}><p>Body</p></if>");
                 let app = create_app_dir(&[
                     ("index.html", "<app-owner></app-owner>"),
                     ("app-owner.html", &template),
                 ]);
                 let mut options = default_options(app.path());
                 options.plugin = plugin;
-                let error = build(options).err().expect("old spelling must fail");
+                let error = build(options).err().expect("invalid attribute must fail");
                 let message = error.chain_message();
                 assert!(
-                    message.contains(webui_parser::codes::REMOVED_IF_DEFER),
+                    message.contains(webui_parser::codes::INVALID_IF_ATTRIBUTE),
                     "{message}"
                 );
-                assert!(message.contains("replace defer with lazy"), "{message}");
+                assert!(
+                    message.contains("use condition, optional boolean lazy"),
+                    "{message}"
+                );
                 assert!(message.contains("app-owner"), "{message}");
             }
+        }
+    }
+
+    #[test]
+    fn ordinary_and_lazy_components_use_one_compiled_ref_format() {
+        for lazy in ["", " lazy id=\"body\""] {
+            let template = format!(
+                "<input w-ref=\"{{rootInput}}\"><if condition=\"show\"{lazy}><button w-ref=\"{{action}}\">Action</button></if>"
+            );
+            let app = create_app_dir(&[
+                ("index.html", "<app-owner></app-owner>"),
+                ("app-owner.html", &template),
+                ("app-owner.ts", "export {};"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            let built = build(options).unwrap();
+            let metadata: serde_json::Value =
+                serde_json::from_str(&built.protocol.components["app-owner"].template_json)
+                    .unwrap();
+            assert_eq!(metadata["v"], 3);
+            assert_eq!(metadata["rf"], serde_json::json!([["rootInput", 1]]));
+            let block = if lazy.is_empty() {
+                metadata["b"][0].clone()
+            } else {
+                serde_json::from_str(
+                    &built.protocol.client_fragments["app-owner::lazy:body"].template_json,
+                )
+                .unwrap()
+            };
+            assert_eq!(block["rf"], serde_json::json!([["action", 1]]));
         }
     }
 

@@ -30,10 +30,10 @@ existing component template; the lazy body does not introduce another one.
 </dialog>
 ```
 
-`lazy` is boolean. The old `<if defer>` spelling is rejected rather than aliased.
-Use the matching `lazy.js` imports and `renderLazy*` host APIs, and rebuild both
-protocol and client; the former names and `/_webui/deferred` endpoints are not
-supported. Native `<script defer>` is unrelated and unchanged.
+`lazy` is boolean. `<if>` accepts `condition`, optional `lazy`, and an optional
+`id` only on lazy regions. Unsupported attributes fail at build time.
+Use matching `lazy.js` imports and `renderLazy*` host APIs, and rebuild protocol
+and client together; compiled templates use one current format.
 
 This is different from `w-hydrate="lazy"` and `w-render="lazy"`, which postpone
 work on already server-rendered components. `<if lazy>` omits an inactive

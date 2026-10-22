@@ -5,7 +5,6 @@ import { installLazyResolver } from './lazy-contract.js';
 import { getTemplate } from './template-registry.js';
 import type { TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
-const prepared = new WeakSet<TemplateMeta>();
 const owners = new WeakMap<TemplateBlockMeta, TemplateMeta>();
 installLazyResolver((id, owner) => {
   const template = getTemplate(id);
@@ -15,8 +14,8 @@ installLazyResolver((id, owner) => {
       `[WebUI] Template fragment "${id}" does not belong to <${owner}>. Rebuild matching client and protocol artifacts.`,
     );
   }
-  if (!prepared.has(template)) {
-    prepared.add(template);
+  if (!owners.has(template)) {
+    owners.set(template, template);
     const blocks = template.b;
     if (blocks) {
       for (let i = 0; i < blocks.length; i++) owners.set(blocks[i], template);

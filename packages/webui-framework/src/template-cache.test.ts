@@ -40,9 +40,9 @@ function withCache(run: () => void): void {
 }
 
 test('cache release preserves the ordinary dependency graph of retained metadata', () => withCache(() => {
-  const parent: TemplateMeta = { v: 1, h: '<x-child></x-child>', d: ['x-child'] };
-  const child: TemplateMeta = { v: 1, h: '<x-leaf></x-leaf>', d: ['x-leaf'] };
-  const leaf: TemplateMeta = { v: 1, h: '<span>Leaf</span>' };
+  const parent: TemplateMeta = { v: 3, h: '<x-child></x-child>', d: ['x-child'] };
+  const child: TemplateMeta = { v: 3, h: '<x-leaf></x-leaf>', d: ['x-leaf'] };
+  const leaf: TemplateMeta = { v: 3, h: '<span>Leaf</span>' };
   registerTemplateData({ 'x-parent': parent, 'x-child': child, 'x-leaf': leaf });
 
   assert.equal(collectTemplates(), 3);
@@ -55,12 +55,12 @@ test('cache release preserves the ordinary dependency graph of retained metadata
 }));
 
 test('explicitly retained roots keep their dependency closure in the cache', () => withCache(() => {
-  const parent: TemplateMeta = { v: 1, h: '<x-child></x-child>', d: ['x-child'] };
-  const child: TemplateMeta = { v: 1, h: '<span></span>' };
+  const parent: TemplateMeta = { v: 3, h: '<x-child></x-child>', d: ['x-child'] };
+  const child: TemplateMeta = { v: 3, h: '<span></span>' };
   registerTemplateData({
     'x-parent': parent,
     'x-child': child,
-    'x-unused': { v: 1, h: '<aside></aside>' },
+    'x-unused': { v: 3, h: '<aside></aside>' },
   });
   assert.equal(collectTemplates(['x-parent']), 1);
   assert.deepEqual(Object.keys(window.__webui!.templates!).sort(), ['x-child', 'x-parent']);
@@ -68,8 +68,8 @@ test('explicitly retained roots keep their dependency closure in the cache', () 
 }));
 
 test('late dependency publication fills the retained graph without rebuilding a parent', () => withCache(() => {
-  const parent: TemplateMeta = { v: 1, h: '<x-late></x-late>', d: ['x-late'] };
-  const child: TemplateMeta = { v: 1, h: '<p>Late</p>' };
+  const parent: TemplateMeta = { v: 3, h: '<x-late></x-late>', d: ['x-late'] };
+  const child: TemplateMeta = { v: 3, h: '<p>Late</p>' };
   registerTemplateData({ 'x-parent': parent });
   collectTemplates();
   registerTemplateData({ 'x-late': child });
@@ -77,21 +77,21 @@ test('late dependency publication fills the retained graph without rebuilding a 
 }));
 
 test('repeated resource responses reuse canonical metadata', () => withCache(() => {
-  const original: TemplateMeta = { v: 1, h: '<p>Stable</p>', tr: ['title'], ta: ['title'] };
+  const original: TemplateMeta = { v: 3, h: '<p>Stable</p>', tr: ['title'], ta: ['title'] };
   registerTemplateData({ 'x-card': original });
   collectTemplates();
-  const duplicate: TemplateMeta = { v: 1, h: '<p>Stable</p>', tr: ['title'], ta: ['title'] };
+  const duplicate: TemplateMeta = { v: 3, h: '<p>Stable</p>', tr: ['title'], ta: ['title'] };
   registerTemplateData({ 'x-card': duplicate });
   assert.equal(getTemplate('x-card'), original);
   assert.equal(window.__webui!.templates!['x-card'], original);
 }));
 
 test('conflicting batches fail before publishing any new template', () => withCache(() => {
-  const original: TemplateMeta = { v: 1, h: '<p>Original</p>' };
+  const original: TemplateMeta = { v: 3, h: '<p>Original</p>' };
   registerTemplateData({ 'x-card': original });
   assert.throws(() => registerTemplateData({
-    'x-new': { v: 1, h: '<p>New</p>' },
-    'x-card': { v: 1, h: '<p>Different artifact</p>' },
+    'x-new': { v: 3, h: '<p>New</p>' },
+    'x-card': { v: 3, h: '<p>Different artifact</p>' },
   }), /conflicts with a live compiled template/);
   assert.equal(window.__webui!.templates!['x-new'], undefined);
   assert.equal(getTemplate('x-new'), undefined);
@@ -99,7 +99,7 @@ test('conflicting batches fail before publishing any new template', () => withCa
 }));
 
 test('legacy metadata fails before collection mutates the cache or inventory', () => withCache(() => {
-  const old: TemplateMeta = { h: '<p>Legacy</p>' };
+  const old: TemplateMeta = JSON.parse('{"h":"<p>Invalid format</p>"}');
   window.__webui!.templates!['x-old'] = old;
   assert.throws(() => collectTemplates(), /has no cache ownership metadata/);
   assert.equal(window.__webui!.templates!['x-old'], old);
@@ -107,13 +107,13 @@ test('legacy metadata fails before collection mutates the cache or inventory', (
 }));
 
 test('invalid dependency metadata is rejected before publication', () => withCache(() => {
-  const invalid: TemplateMeta = JSON.parse('{"v":1,"h":"","d":[null]}');
+  const invalid: TemplateMeta = JSON.parse('{"v":3,"h":"","d":[null]}');
   assert.throws(() => registerTemplateData({ 'x-invalid': invalid }), /Invalid component dependencies/);
   assert.equal(window.__webui!.templates!['x-invalid'], undefined);
 }));
 
 test('resource readiness can reclaim a retained template after explicit collection', () => withCache(() => {
-  const meta: TemplateMeta = { v: 1, h: '<p>Reusable</p>' };
+  const meta: TemplateMeta = { v: 3, h: '<p>Reusable</p>' };
   registerTemplateData({ 'x-card': meta });
   collectTemplates();
   assert.equal(window.__webuiRetainTemplate?.('x-card'), meta);
@@ -122,8 +122,8 @@ test('resource readiness can reclaim a retained template after explicit collecti
 
 test('cyclic dependency input remains bounded during an explicit keep walk', () => withCache(() => {
   registerTemplateData({
-    'x-a': { v: 1, h: '', d: ['x-b'] },
-    'x-b': { v: 1, h: '', d: ['x-a'] },
+    'x-a': { v: 3, h: '', d: ['x-b'] },
+    'x-b': { v: 3, h: '', d: ['x-a'] },
   });
   assert.equal(collectTemplates(['x-a']), 0);
   assert.deepEqual(Object.keys(window.__webui!.templates!).sort(), ['x-a', 'x-b']);

@@ -419,6 +419,10 @@ focusInput(): void {
 (or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
 with an actionable error otherwise.
 
+Refs inside `<if>` or `<for>` bodies are cleared to `undefined` when their owning
+view is removed. Declare those refs as optional, such as
+`inputEl?: HTMLInputElement`, and use them only while the body is mounted.
+
 `w-ref` is scalar. Reusing a name inside `<for>` writes the same property, so
 the last wired occurrence wins; repeat keys and positions do not create an
 indexed ref collection. For lookup by item identity, author a stable `id` and

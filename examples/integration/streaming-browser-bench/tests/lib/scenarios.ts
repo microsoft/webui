@@ -64,6 +64,7 @@ const BENCH_DECLARATION_ID = 0;
  * the hydration-mismatch check, so the SSR text need not equal the streamed state.
  */
 export const ISLAND_TEMPLATE = {
+  v: 3,
   h: '<span></span><em></em>',
   tr: ['label', 'note'],
   tx: [

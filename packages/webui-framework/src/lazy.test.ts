@@ -31,7 +31,10 @@ test('the adapter resolves hostless bodies and local block ownership without def
     assert.throws(() => requireLazyFragment(id, 'app-shell'), /webui-framework\/lazy\.js/);
     await import('./lazy-entry.js');
     assert.equal(requireLazyFragment(id, 'app-shell'), meta);
+    assert.equal(lazyBlockOwner(meta), meta);
     assert.equal(lazyBlockOwner(meta.b![0]), meta);
+    window.__webui!.templates!['wrong-identity'] = meta;
+    assert.throws(() => requireLazyFragment('wrong-identity', 'app-shell'), /Invalid fragment/);
     assert.throws(() => requireLazyFragment(id, 'different-owner'), /does not belong/);
     assert.throws(() => requireLazyFragment('missing', 'app-shell'), /not loaded/);
     assert.deepEqual(window.__webuiResolveResources?.(id), [id]);

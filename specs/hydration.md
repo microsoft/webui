@@ -191,11 +191,11 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
 | `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
-| `v` | Ownership metadata version. `1` proves ordinary component dependencies; `3` also supports hostless sections and external/local block references. Absence is legacy metadata. |
-| `d` | Sorted direct ordinary resource dependencies. Absent is empty for versions `1` and `3`. Route activation and nested deferred edges are excluded. |
+| `v` | Required current format `3`, shared by ordinary components and hostless sections. Missing or different versions are rejected. |
+| `d` | Sorted direct ordinary resource dependencies. Absence is empty. Route activation and nested lazy edges are excluded. |
 | `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
 | `e` | `1` for a publicly addressable deferred body; absent on internal shared sections. |
-| `rf` | Version 3 owner refs `[name, elementIndex]`. Absence is proven empty; parent scans must not claim nested-body refs. |
+| `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
 
 The same metadata serves both paths:
 

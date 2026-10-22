@@ -378,11 +378,11 @@ function normalizeTemplate(
   meta: TemplateMeta,
   suppliedFns?: CompiledConditionFn[],
 ): void {
-  if (meta.f && (meta.v !== 3 || meta.f !== name || typeof meta.o !== 'string' || meta.sd || meta.th)) {
+  if (meta.f && (meta.f !== name || typeof meta.o !== 'string' || meta.sd || meta.th)) {
     throw new Error(`[WebUI] Invalid fragment "${name}". Rebuild matching artifacts.`);
   }
   if (normalizedTemplates.has(meta)) return;
-  if (meta.v !== undefined && meta.v !== 1 && meta.v !== 3) {
+  if (meta.v !== 3) {
     throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
   }
   const runtimeFns = window.__webui?.templateFns as
