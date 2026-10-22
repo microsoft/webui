@@ -124,16 +124,16 @@ impl Protocol {
                         ));
                         break;
                     }
-                    if style_metadata_error.is_none() {
-                        for (id, fragment) in &protocol.client_fragments {
-                            if let Err(error) = validate_json_inner(&fragment.template_json) {
-                                style_metadata_error = Some(format!(
-                                    "failed to parse template metadata for {id}: {error}"
-                                ));
-                                break;
-                            }
-                        }
-                    }
+                }
+            }
+        }
+        if style_metadata_error.is_none() {
+            for (id, fragment) in &protocol.client_fragments {
+                if let Err(error) = validate_json_inner(&fragment.template_json) {
+                    style_metadata_error = Some(format!(
+                        "failed to parse template metadata for {id}: {error}"
+                    ));
+                    break;
                 }
             }
         }
@@ -3931,6 +3931,67 @@ mod tests {
 
         assert!(prepared.protocol().fragments.contains_key("index.html"));
         assert_eq!(prepared.tokens(), ["colorBrand"]);
+    }
+
+    fn assert_client_fragment_metadata_validation(component_template: Option<&str>) {
+        for (template_json, valid) in [
+            (r#"{"h":"<p>Body</p>","v":3}"#, true),
+            ("", false),
+            (r#"{"h":"<p>Body</p>","v":3"#, false),
+            (r#"{"h":"<p>Body</p>","v":3} trailing"#, false),
+            (r#"{"h":"<p>Body</p>","v":1e9999}"#, false),
+        ] {
+            let mut document = WebUIProtocol::default();
+            if let Some(template_json) = component_template {
+                document.components.insert(
+                    "app-shell".to_string(),
+                    webui_protocol::ComponentData {
+                        template_json: template_json.to_string(),
+                        ..Default::default()
+                    },
+                );
+            }
+            document.client_fragments.insert(
+                "app-shell::lazy:settings".to_string(),
+                webui_protocol::ClientFragmentData {
+                    owner: "app-shell".to_string(),
+                    name: "settings".to_string(),
+                    entry: true,
+                    template_json: template_json.to_string(),
+                    ..Default::default()
+                },
+            );
+
+            let prepared = Protocol::new(document);
+            let result = prepared.ensure_style_metadata();
+            if valid {
+                assert!(result.is_ok(), "{template_json:?}: {result:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(HandlerError::Invariant(_))),
+                    "{template_json:?}: {result:?}"
+                );
+            }
+            assert!(prepared
+                .template_metadata_cache
+                .read()
+                .is_ok_and(|cache| cache.is_empty()));
+        }
+    }
+
+    #[test]
+    fn protocol_validates_client_fragments_without_components() {
+        assert_client_fragment_metadata_validation(None);
+    }
+
+    #[test]
+    fn protocol_validates_client_fragments_without_component_templates() {
+        assert_client_fragment_metadata_validation(Some(""));
+    }
+
+    #[test]
+    fn protocol_validates_client_fragments_with_component_templates() {
+        assert_client_fragment_metadata_validation(Some(r#"{"h":"<main></main>","v":3}"#));
     }
 
     #[test]
