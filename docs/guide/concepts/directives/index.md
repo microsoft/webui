@@ -1,16 +1,32 @@
-# WebUI Directives
+---
+title: "Template directives"
+description: "Choose bindings, conditions, loops, routes, streaming boundaries, and deferred hydration policies for HTML templates."
+---
 
-WebUI Framework offers directives for dynamic templates and streaming
-checkpoints without server-side JavaScript. They are processed during
-compilation and rendering to produce the final HTML output.
+<a id="webui-directives"></a>
+
+# Template Directives
+
+Use directives to bind state and control which HTML renders. They are template
+syntax, not JavaScript expressions or custom elements you register yourself.
+
+```html
+<if condition="items.length">
+  <ul>
+    <for each="item in items">
+      <li>{{item.name}}</li>
+    </for>
+  </ul>
+</if>
+```
 
 ## Available Directives
 
-WebUI Framework provides the following core directives:
+Choose the directive for the task:
 
 - [**`<if>` Conditional Rendering**](./if) - Conditionally render content based on expressions
 - [**`<for>` Loop Iteration**](./for) - Iterate over collections to generate repeated content
-- [**`<route>` Routing**](./route) - Define client-side routes that map URL paths to components
+- [**`<route>` Routing**](./route) - Map URL paths to components for SSR and optional client navigation
 - [**`<boundary>` Streaming Boundary**](./boundary) - Discover and hydrate complete regions inside entries and reusable components
 - [**Lazy Component Policy**](./lazy) - Defer offscreen rendering and hydration with root-template attributes
 - [**`{{}}` Signal Binding**](./signals) - Insert dynamic values with automatic HTML escaping
@@ -19,10 +35,11 @@ WebUI Framework provides the following core directives:
 
 ## How Directives Work
 
-WebUI directives are processed by the WebUI parser and transformed into a platform-agnostic protocol. This protocol is then rendered by a language-specific handler, allowing the same template to be rendered consistently across multiple platforms.
+The build validates directives and compiles them for the native renderer.
+The renderer evaluates them against request state without executing application
+JavaScript. In an interactive component, the browser framework also updates
+bindings, conditions, and loops when state changes.
 
-```
-Template with directives → WebUI Protocol → Native HTML output
-```
-
-The WebUI protocol is a protobuf binary structure defined by a cross-language .proto schema, making it ideal for cross-platform applications.
+Text bindings read paths only. Conditions and boolean attributes support the
+[documented expression subset](./if#supported-expression-patterns), not
+arbitrary JavaScript.

@@ -1,19 +1,21 @@
 ---
 layout: page
-description: Authoritative WebUI framework reference for generating correct application code - template-first authoring rules, template syntax, styling, interactivity, routing, state JSON, and anti-patterns.
+title: "WebUI authoring reference"
+description: "Canonical application-authoring rules for coding agents: templates, CSS, browser behavior, routing, state, builds, and supported host APIs."
 ---
 
 # WebUI Framework - AI Reference
 
-> **Single-page reference for LLMs.** Everything an AI coding assistant needs to
-> generate correct WebUI code. Read the Rules first - they are the constraints
-> that most often get violated. Deep-dive links are indexed at the bottom.
+> **Authoring reference for coding agents.** Read the rules before generating
+> WebUI application code. Use the linked guides for detailed API options and
+> platform-specific constraints.
 >
 > Install the loader skill **once** with
 > `npx skills add microsoft/webui --skill webui-reference` - see
 > [AI Coding Agents](/guide/installation#ai-coding-agents).
-> It reads `node_modules/@microsoft/webui/ai.md`, so upgrading `@microsoft/webui`
-> updates the reference without reinstalling the skill.
+> In a consuming app it reads the installed `@microsoft/webui/ai.md`, so a
+> package upgrade also updates the reference. In the framework source checkout,
+> it reads `docs/ai.md`. The loader itself does not need reinstalling.
 >
 > Links starting with `/guide/` or `/tutorials/` refer to the
 > [documentation site](https://microsoft.github.io/webui/), which tracks the
@@ -21,8 +23,8 @@ description: Authoritative WebUI framework reference for generating correct appl
 
 ## Rules
 
-These four rules decide almost every authoring question. When in doubt, re-read
-them before writing code.
+Keep structure in templates, styling in CSS, and authored JavaScript focused
+on browser behavior.
 
 ### 1. The template is the UI
 
@@ -108,18 +110,17 @@ scripts/URLs are not promoted. Client-side router partial navigation is not yet
 supported under enforcement. See
 [Trusted Types](/guide/concepts/hydration#trusted-types).
 
-```
-BUILD TIME          SERVER RENDER         CLIENT HYDRATION
----------------     ---------------       -----------------
-HTML + CSS + TS ->  protocol.bin    ->    Web Components
-webui build         + JSON state          hydrate as islands
-                    -> rendered HTML
+```text
+HTML + CSS                  -- build -->          protocol.bin
+protocol.bin + JSON state    -- native render -->  HTML
+HTML + optional browser JS   -- hydrate -->        interactive components
 ```
 
-WebUI is a **language-agnostic server-side rendering framework**. Templates
-compile to a binary Protocol Buffer at build time. At runtime any backend
-(Rust, Node, Go, C#, Python) supplies JSON state and produces HTML. On the
-client, interactive components hydrate as islands.
+Build templates with WebUI and bundle authored browser code separately.
+A supported native host loads the protocol once and supplies JSON state for
+each render. Ordinary SSR sends HTML and assets to the browser, not
+`protocol.bin`. Browser interactivity uses the optional framework runtime;
+static HTML still has transfer, parsing, layout, paint, and memory costs.
 
 1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
@@ -147,7 +148,7 @@ my-app/
 |  |- index.ts                <- Hydration entry point
 |  |- my-component/
 |  |  |- my-component.html    <- Component template
-|  |  |- my-component.css     <- Component styles (scoped)
+|  |  |- my-component.css     <- CSS (global in Light DOM, isolated in Shadow)
 |  |  \- my-component.ts      <- Optional: only if interactive
 |  \- static-widget/
 |     |- static-widget.html   <- Scriptless: no .ts needed
@@ -251,7 +252,7 @@ array or string does work: `<if condition="items.length > 3">`.
   Use `id`, not `template`; the removed `template` attribute is a build error.
   Native WebUI supports recursive client updates; FAST components reject named
   references with an actionable build error.
-  [Recursive loops](guide/concepts/directives/for.md#recursive-loops) covers
+  [Recursive loops](/guide/concepts/directives/for#recursive-loops) covers
   validation and keys.
 - Repeats reconcile by array position by default; item attributes never act as
   keys, and `data-key` is an ordinary application attribute.
@@ -802,12 +803,12 @@ try {
 }
 ```
 
-The compiler marks the root. Hover stores one bounded raw route partial;
-pointer/focus/keyboard/click intent imports components and router concurrently;
-navigation adopts the response without refetching or parsing templates early.
-Non-router apps use `installInteractionHydration({ load })`. This policy trades
-first-interaction latency for lower startup JS/heap and cannot preserve
-transient user activation or closed-shadow click targets.
+Use this policy once in the active document and give the component a matching
+authored `.ts` or `.js` module. Non-router apps use
+`installInteractionHydration({ load })`. It trades first-interaction latency
+for lower startup JS/heap and cannot preserve transient user activation or
+closed-shadow click targets. See
+[Interaction hydration](/guide/concepts/hydration#interaction-triggered-application-hydration).
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
@@ -960,11 +961,8 @@ outlets, and selected route content.
   `resume_current` skips the overlay when retained state is authoritative.
   `start` and `resume` move freshly decoded owned `Value`s or borrow shared
   values through the same method names.
-- Range records may reference the exact prior range state by sequence
-  and carry only a top-level delta. Missing, stale, forward, mismatched, or
-  malformed references fail closed.
-- A component-local boundary uses generated parent spans. Its early marked child
-  may hydrate before the opaque parent tail in light or shadow DOM.
+- A component-local boundary can hydrate its complete child before the parent
+  tail arrives, in Light or open Shadow DOM.
 - `webui:boundary-hydrated` is emitted only when
   `window.__WEBUI_STREAMING_DEBUG__ === true`; its `detail.kind` is
   `checkpoint`, `span`, `update`, or `terminal`. Every commit also emits an
@@ -980,13 +978,10 @@ outlets, and selected route content.
 - A semantic flush hands bytes to the HTTP transport. Server adapters,
   compression, proxies, and CDNs can still buffer them.
 
-Malformed directives use stable diagnostics:
-`missing-boundary-name`, `invalid-boundary-name`,
-`duplicate-boundary-name`, `missing-boundary-key`,
-`invalid-boundary-key`, `nested-boundary`, `boundary-in-repeat`,
-`boundary-crosses-scope`, and `authored-webui-hydrate`. Malformed browser
-records fail closed and release discoverable deferred state within fixed
-bounds.
+Invalid declarations fail the build with stable diagnostics. Do not construct
+browser streaming records yourself; malformed streams fail closed. The
+[`<boundary>` reference](/guide/concepts/directives/boundary) covers placements,
+keys, host ordering, and production delivery.
 
 ### Lazy component mounting
 
@@ -1000,15 +995,11 @@ await Router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 ```
 
-With the framework loaded, `ensureLoaded()` also waits for bounded Link
-stylesheet cache warming or a native-link fallback decision. Warmup bytes are
-never applied; the first mounted instance remains guarded until the browser
-validates its native link and can seed the shared constructable sheet. Redirect,
-service-worker, authored `<style>`, or inaccessible-CSSOM cases keep the native
-link rather than risking different response-base or cascade semantics.
-If an authoritative native link fails, WebUI reports the error, keeps the link
-native, releases the temporary guard, and completes hydration so the component
-remains visible and usable even if it is unstyled.
+With the framework loaded, `ensureLoaded()` also waits for stylesheet cache
+warming or a native-link fallback decision. If the applying stylesheet fails,
+WebUI reports it and completes hydration rather than keeping the component
+hidden; the component may be unstyled. See
+[on-demand loading](/guide/concepts/routing#on-demand-component-loading).
 
 ```html
 <if condition="showSettings">
@@ -1358,191 +1349,18 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
-For a desktop app, start with zero Rust:
+### Web apps
+
+For an interactive app, install the CLI and browser framework, then bundle the
+browser entry into `dist` before serving. A scriptless app can omit the framework
+dependency and `--servedir` when it has no static assets.
 
 ```bash
-npm install @microsoft/webui @microsoft/webui-desktop
-webui desktop run ./src
-```
-
-Use matching package versions and keep optional dependencies enabled to install
-the native desktop sidecar. Installing only `@microsoft/webui` does not include
-desktop support. A standalone Rust CLI can use a matching `webui-desktop`
-sidecar on `PATH`; see the [CLI reference](./guide/cli/#webui-desktop).
-
-Restart desktop `run` after source changes; desktop `--watch` is not supported.
-
-Write a host crate only when you need dynamic route state or IPC. To generate a
-working progressive scaffold, use `webui desktop init ./my-app`; it creates the
-entry template, package metadata, `webui-desktop.json`, and a packaged-vs-source
-Rust runner that shares the same app ID and window title. Existing
-files are protected unless `--force` is passed. Rust apps depend on
-`microsoft-webui-desktop` with `native` enabled and forward an opt-in `source`
-feature to `microsoft-webui-desktop/source`. There is no separate runner or
-compiler dependency. `webui desktop package` builds
-optimized runners without default features automatically. Select optional app
-capabilities with `--runner-features`; use `--debug` only for a debug
-package. Package targets are `macos-app`, `windows-portable`, and
-`linux-portable`; `all` writes all three layouts without cross-compiling the
-runner. App-root packaging accepts `--source`, `--state`, `--assets`,
-`--build-script`, identity, and window flags without `webuiDesktop` in
-`package.json`. Put persistent package settings in app-root
-`webui-desktop.json` instead; explicit flags override them and legacy
-`webuiDesktop` is accepted only when the new file is absent. See the
-[CLI reference](./guide/cli/#webui-desktop).
-Installer generation and signing are not supported. The
-runtime-only build continues to support all `DesktopRuntime::from_bundle*`
-entry points. See the [desktop SDK guide](./guide/concepts/desktop.md) for
-source/bundle construction, window customization, and scoped event subscriptions.
-An existing Rust HTTP app can instead opt into a native window for its bound
-loopback origin with `DesktopApp::from_local_server`; the SDK does not proxy or
-render that server's routes again. Local-server application IPC is a separate
-owned-listener grant, not enabled by the `local-server` feature alone.
-`webui_desktop::bind_owned_local_server(address)` needs only `local-server`.
-It binds an exclusive loopback listener without enabling application IPC;
-retain the listener until the native window closes.
-Incoming macOS custom-scheme URLs require the separate `native-url-activation`
-Cargo feature (which includes `local-server`). Hosts calling
-`LocalServerFrame::on_url_activation("myapp", handler)` must enable this flag;
-the method and activation types are absent with `local-server` alone.
-Delivery is bounded and host-only: it does not register the scheme with the OS,
-navigate the browser or prove cold/warm OS delivery. See the
-[desktop local-server guide](/guide/concepts/desktop#existing-http-application).
-
-macOS local-server browser data stays ephemeral even with `app_id` unless
-the packaged Rust host calls `.app_id(bundle_id).persistent_website_data()`
-before `.build()`. The ID must match the running `.app` bundle, or building
-fails before opening a webview. The public WebKit store is shared across
-windows and allowed frames, not per viewer; normal cookie expiry applies.
-Windows keeps its existing app-ID-owned WebView2 profile. Linux rejects this
-request. See [desktop website data](./guide/concepts/desktop.md#existing-http-application).
-On macOS and Windows, a local-server host can set
-`WindowOptions.titlebar = TitlebarStyle::Overlay { height }` to float native
-controls over web content. On macOS that height also centers standard caption
-controls within the header band outside fullscreen. Include
-`window_css_block(&window, DesktopPlatform::current())` in the host-rendered
-document head, and use `[webui-drag]` with `[webui-no-drag]` on interactive
-children. No separate titlebar strip or application IPC grant is required;
-window controls use a fixed, main-document-only command set. Linux
-local-server frames require the native titlebar.
-For nonce-only `style-src`, pass the current response nonce to
-`window_css_block_with_nonce(&window, DesktopPlatform::current(), nonce)?`
-instead of disabling CSP or rewriting a response.
-For a failure **before** creating a local-server frame, a Rust host can opt
-into the independent `startup-failure` feature and call
-`StartupFailure::new(title, summary, help)` followed by
-`present_startup_failure(&failure)` on the macOS main thread (or a Windows
-host thread), before creating a frame. Supply only
-short checked user-safe copy, not the raw error or its chain; first persist the
-original failure in a durable host log, handle alert errors separately, and
-still return the original failure. The native alert returns only after OK
-acknowledgement. Linux returns `Unsupported`. No webview, renderer
-grant, or automatic hook is added. See
-[before-frame startup failures](./guide/concepts/desktop.md#before-frame-startup-failures).
-On macOS, ordinary local-server window close, owner revocation, and AppKit
-Quit return to the Rust host after `WindowClosed` and IPC retirement, so it
-can drain its backend off the UI thread. Quit is cancellable. See the
-[desktop SDK guide](./guide/concepts/desktop.md) for veto, retry, and failure
-behavior, including terminal window teardown before an unexpected AppKit stop
-returns an error.
-The default macOS Window menu targets this window and includes Toggle Full
-Screen (`Control+Command+F`); custom menus retain their explicit entries.
-On macOS and Windows, an exact `.localhost` preview subdomain needs an
-unprivileged `frame.frame_policy()` grant; it never gains native IPC or
-window controls. Linux currently denies preview subframe document commits.
-For Rust-hosted staged release bytes, `verified-update` provides a host-only
-SHA-256 or SHA-512/size check from independently authenticated expected metadata
-(`ExpectedUpdate` or `ExpectedUpdateSha512`). A digest of the download is not an
-authenticated expectation; neither path proves provenance, archive identity,
-signature, or install safety. See
-[staged release byte integrity](/guide/concepts/desktop#staged-release-byte-integrity).
-With `native-services`, a trusted macOS Rust host can await
-`services.set_theme(ThemeMode::Light | ThemeMode::Dark | ThemeMode::System)`
-and query `services.current_theme()` for the effective native appearance
-of newly admitted documents. Windows/Linux return `ThemeUnsupported`;
-the host persists preferences and owns SSR CSS. No renderer grant is added.
-See [desktop theme and native services](./guide/concepts/desktop.md#trusted-host-os-openers).
-With the separate `native-picker` feature, a trusted macOS or Windows Rust host
-can await `services.pick_directory(DirectoryPickerOptions::new())?.await?` for
-one bounded, absolute folder path or explicit cancellation. Linux returns
-`PickerUnsupported`. Windows uses a dedicated COM STA; the 120-second
-deadline can finish logically while OS work still holds Busy, without a hard
-dialog-teardown guarantee. No renderer grant is added; actual selection through
-the native panel has not yet been verified with a user. See
-[trusted-host OS openers](./guide/concepts/desktop.md#trusted-host-os-openers).
-With `native-dialogs`, a trusted local-server host can await one OS-owned
-error acknowledgement or confirmation without granting renderer IPC. Construct
-bounded `ErrorDialog` or `ConfirmDialog` copy explicitly; do not display raw
-error chains. Navigation/close and a finite deadline cancel delivery, and
-`Cancelled` is a distinct user response. See
-[live native dialogs](./guide/concepts/desktop.md#trusted-host-os-openers).
-With `native-capture`, the macOS or Windows trusted host can request a bounded,
-visible webview PNG (WK snapshot or WebView2 `CapturePreview` on its owning STA)
-after its own preview-readiness handshake, then read/release the opaque
-resource in paced chunks. Windows rejects oversized viewports before native
-capture and has no verified runtime/iframe-pixel evidence. No renderer or
-screen-capture permission is added.
-See [host-owned visible-content capture](./guide/concepts/desktop.md#host-owned-visible-content-capture-macos-and-windows).
-A macOS or Windows trusted host with `native-clipboard` may separately await
-a native PNG clipboard write for that still-retained capture before any
-host-controlled URL opener; no issue-opening or renderer grant is automatic.
-Windows uses the registered `PNG` format, not `CF_DIB`, and remains
-runtime-unverified. See
-[explicit PNG clipboard write](./guide/concepts/desktop.md#explicit-macos-and-windows-png-clipboard-write).
-For an already-compiled Rust host that owns its sealed WebUI assets and
-workers, opt into the build-only `microsoft-webui-desktop/packaging` feature
-and call `package_precompiled_host` with its host executable, target triple,
-identity, optional icon, and explicit executable/data file mappings. This
-creates a macOS `.app` or Windows/Linux portable directory without compiling
-a second render bundle or shipping Node. It refuses unsafe mappings and
-existing output. Mapped resources are preflight-sealed one at a time, then
-reopened and verified against the copied output, bounding open descriptors
-independently of mapping count. Distribution, signing, installers, and
-Windows shared runtime prerequisites remain consumer-owned. See
-[precompiled host layout](./guide/concepts/desktop.md#precompiled-host-layout).
-Use `frame.window_handle().set_title(...)` or `set_background(Rgba { ... })`
-for live presentation changes from Rust; these do not change the stable app ID
-or packaged defaults. The background applies to the native surface, current
-document root, and later full-page renders. Width, height, titlebar style,
-background, and the remaining initial window options can all be set through
-`DesktopAppBuilder::window(WindowOptions { ... })` before `build()`. Live size
-changes use `set_size(width, height)`; titlebar style remains startup-only.
-On macOS, bundle `shell.icon_path` must stay inside the bundle without `..` or
-symlink escapes; source hosts can set an absolute path for Dock artwork.
-Without custom menus, macOS supplies native App, Edit, and Window roles;
-the Window actions target this app's own window.
-`titlebar.height` sizes the application band; Windows caption buttons default
-to 32 DIPs independently. Pass `--caption-button-size tall` for
-48-DIP buttons without changing the application band height.
-For custom headers, mark the drag surface `webui-drag` and interactive children
-`webui-no-drag`; a double-click on the drag surface toggles maximize/restore.
-
-Pass the client bundler's `--projection-manifest <PATH>` to desktop `run`/`build`,
-or use `--projection-manifest` for app-root packaging. Rust source
-hosts set `BuildOptions::projection_manifests`. Desktop and web share navigation
-state projection; unknown requirements keep the correctness-safe full-state
-fallback. Supplied manifests must be current and complete.
-
-For application messages, define one proto3 contract and run
-`webui desktop ipc generate` to produce Rust/TypeScript APIs. Use generated
-host calls, renderer request handlers and notification subscriptions, not raw
-method strings or manual byte encoding. JavaScript 64-bit values are `bigint`,
-bytes are `Uint8Array`, and maps are `Map<K,V>`. Register Rust handlers and
-explicit `IpcOptions` before building the frame. Requests return typed
-promises/futures; notification completion acknowledges admission rather than
-subscriber completion. Dispose subscriptions and honor cancellation.
-See [desktop message passing](./guide/concepts/desktop.md#message-passing)
-for schema generation, the four message flows, and connection lifetime.
-
-```bash
-# Install the native CLIs
-npm install @microsoft/webui @microsoft/webui-press
+# Install the CLI and optional browser framework
+npm install @microsoft/webui @microsoft/webui-framework
 
 # Dev server with live reload
-webui serve ./src --state ./data/state.json --plugin=webui --watch
-
-# Static documentation site
-webui press build
+webui serve ./src --state ./data/state.json --servedir ./dist --plugin=webui --watch
 
 # Production build
 webui build ./src --out ./dist --plugin=webui
@@ -1559,10 +1377,7 @@ names you control.
 Other Hosts are rejected before the app or API proxy handles them. See the
 [serve CLI reference](./guide/cli/#webui-serve) for details.
 
-`webui press` invokes the separately installed native Press sidecar.
-It launches Rust directly; Press does not support `--format json`.
-
-Common flags on both commands: `--entry`, `--css <link|style|module>`,
+Common flags on `build` and `serve`: `--entry`, `--css <link|style|module>`,
 `--dom <shadow|light>` (default `shadow`),
 `--css-bundle` (merge component stylesheets into shared chunks; not valid with
 `--css module`), `--components`, `--theme`,
@@ -1599,6 +1414,81 @@ x error: invalid <for> each expression [invalid-for-each]
 Full flag tables, exit codes, and the error-code list:
 [CLI Reference](/guide/cli/).
 
+### Desktop apps
+
+Install matching packages with optional dependencies enabled:
+
+```bash
+npm install @microsoft/webui @microsoft/webui-desktop
+webui desktop run ./src
+```
+
+`run` needs no authored Rust host, but desktop `--watch` is not supported.
+Use `webui desktop init ./my-app` for a Rust-runner scaffold; existing files are
+protected unless `--force` is passed. Put persistent app-root packaging settings
+in `webui-desktop.json`; explicit flags override them. Pass current, complete
+`--projection-manifest` files when opting into state projection.
+
+Rust apps use `microsoft-webui-desktop` with `native`; enable `source` only for
+template compilation. Construct with `DesktopApp::from_bundle` or
+`DesktopApp::from_source`, configure `WindowOptions` before `build()`, and use
+`frame.window_handle()` for supported live changes. Native callbacks must not
+block the UI thread. See the [desktop Rust API](/guide/concepts/desktop#rust-api)
+and [window controls](/guide/concepts/desktop#events-and-window-control).
+
+For an existing HTTP application, `DesktopApp::from_local_server` requires
+`local-server` and a verified, already-bound loopback origin. It does not
+re-render or proxy the server. Retain the listener and `HostLifetimeOwner`
+until native close completes, revoke the lifetime before releasing ownership,
+and handle failed close delivery. A loopback address is not authentication.
+Preview-frame grants do not grant native authority. Read the
+[local-server contract](/guide/concepts/desktop#existing-http-application)
+before implementing this mode.
+
+Enable native capabilities individually and follow their platform limits:
+
+- `native-services` provides trusted-host openers and macOS theme control.
+  `native-picker` and `native-dialogs` add macOS/Windows UI; Linux returns
+  unsupported errors. Await actual completion, handle cancellation separately,
+  and never display raw error chains. See
+  [native services](/guide/concepts/desktop#trusted-host-os-openers).
+- `native-capture` and `native-clipboard` are explicit host-only capabilities.
+  Capture only covers the visible webview; preview readiness and authorization
+  belong to the host. Runtime qualification is limited, particularly on
+  Windows. Read the [capture limits](/guide/concepts/desktop#host-owned-visible-content-capture-macos-and-windows)
+  and [clipboard ownership rules](/guide/concepts/desktop#explicit-macos-and-windows-png-clipboard-write).
+- `native-url-activation` adds macOS incoming-URL callbacks, not OS scheme
+  registration. `startup-failure` provides pre-frame macOS/Windows alerts.
+  See [URL activation](/guide/concepts/desktop#incoming-custom-scheme-urls) and
+  [startup failures](/guide/concepts/desktop#before-frame-startup-failures).
+- `verified-update` checks staged bytes against independently authenticated
+  expected metadata. It does not prove provenance, archive identity, signatures,
+  or install safety. See [release-byte integrity](/guide/concepts/desktop#staged-release-byte-integrity).
+
+These host services do not automatically expose renderer APIs. For application
+messages, enable `application-ipc`, define a proto3 contract, and run
+`webui desktop ipc generate`. Use generated calls and subscriptions, explicit
+`IpcRegistry`/`IpcOptions` grants, and document-scoped connections. JavaScript
+64-bit integers use `bigint`, bytes use `Uint8Array`, and maps use `Map`.
+Dispose subscriptions and honor cancellation; notifications acknowledge
+admission, not subscriber completion. See
+[message passing](/guide/concepts/desktop#message-passing).
+
+macOS local-server data is ephemeral unless a packaged host explicitly requests
+`persistent_website_data()` with the exact running bundle ID. The store is
+app-wide, not per viewer. Windows uses app-ID-owned WebView2 profiles; Linux
+rejects this persistence request. See
+[website data](/guide/concepts/desktop#website-data-and-persistence).
+
+`webui desktop package` builds an optimized runner by default. Targets
+`macos-app`, `windows-portable`, and `linux-portable` create layouts, not
+cross-compiled runners, installers, or signatures. Select declared runner
+features with `--runner-features`. For an already-compiled host, the separate
+`packaging` feature exposes `package_precompiled_host`. The application owns
+distribution, signing, and platform runtime prerequisites. See
+[packaging](/guide/concepts/desktop#package-and-run) and the
+[desktop CLI](/guide/cli/#webui-desktop).
+
 ### External component discovery
 
 Native `--components` discovery derives names from `<component-name>.html`,
@@ -1621,6 +1511,18 @@ package exports and `.spec.ts` files do not make unrelated scriptless tags
 require registration imports or projection entries.
 
 ### WebUI Press
+
+Install `@microsoft/webui-press` at the same version as `@microsoft/webui`.
+`webui press build` and `webui press serve` invoke the native Press sidecar;
+Press does not support `--format json`.
+
+Set `"outline": true` in `.webui-press/config.json` for the built-in page
+outline; it is off by default. Markdown frontmatter and object-form custom
+pages can override it with the same boolean. Eligible `doc`/`page` layouts get
+a sticky desktop outline and a mobile disclosure without copying templates or
+scripts. Home, `full`, 404, and content-only pages omit it. See
+[page outlines](/guide/webui-press#page-outlines) for heading eligibility,
+browser enhancement, and theme customization.
 
 Use native `webui press build --show=content` or `webui press serve --show=content`
 to generate Markdown/examples/API panels without Press shell UI. Default mode
@@ -1706,7 +1608,9 @@ Add `@microsoft/webui-router` for client-side navigation. Passing
 
 ## Server integration
 
-Any backend loads `protocol.bin` once and renders with JSON state per request.
+Choose a supported [host binding](/guide/integrations/), load `protocol.bin`
+once, and reuse it with JSON state per request. Native bindings need a
+compatible platform library; WASM is a separate browser-hosted option.
 
 ```rust
 let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
@@ -1779,8 +1683,9 @@ one warning and renders the page from fallback state rather than replacing the
 app with the upstream error body. A failure *after* the stream is live still
 fails the response, because bytes already flushed cannot be rewound.
 
-Equivalent APIs exist for WebAssembly, Python (native `microsoft-webui`
-package), Go (cgo), and C#. For `Router.ensureLoaded()`, expose
+Bindings are available for WebAssembly, Python, and .NET; Go can call the C ABI
+through cgo. Python wheels are distributed on GitHub Releases, not yet PyPI.
+For `Router.ensureLoaded()`, expose
 `GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 

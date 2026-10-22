@@ -1,11 +1,14 @@
+---
+title: "Interactivity"
+description: "Add component behavior with WebUIElement, reactive properties, template events, refs, and hydration-safe lifecycle hooks."
+---
+
 # Interactivity
 
-WebUI uses **Islands Architecture** for client-side interactivity. Each Web
-Component is a self-contained island with its own HTML template, authored CSS,
-and TypeScript behavior. Shadow components provide CSS isolation; Light
-components intentionally participate in the owning CSS tree's global cascade.
-Only components that need interactivity ship JavaScript - everything else stays
-as static server-rendered HTML.
+Add a TypeScript or JavaScript file when a component needs event handlers,
+browser APIs, or client-owned state. Its HTML and CSS stay in paired files;
+the optional `@microsoft/webui-framework` runtime connects that behavior to
+server-rendered content.
 
 WebUI uses [Trusted Types](./hydration#trusted-types) automatically for compiled
 templates. Applications control enforcement through CSP; raw state HTML is not
@@ -13,7 +16,7 @@ promoted through the compiler policy.
 
 ## Component Files
 
-Every interactive component consists of three separate files. Templates are declarative - no JavaScript mixing.
+Keep structure, styles, and behavior separate:
 
 ```
 my-counter/
@@ -35,10 +38,9 @@ product-card/
 └── product-card.css
 ```
 
-Create a custom element only for an Interactive Island: event handlers, custom
-lifecycle code, imperative methods, or state that TypeScript code reads or
-mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
-to access the value or when the value is part of the component's public API.
+Write a custom element class only for authored behavior. `@observable` and
+`@attr` are optional; add them when JavaScript needs the value or it is part of
+the component's public API.
 
 The sibling `.ts` or `.js` file is the authored behavior boundary. With
 manifest-enabled projection, only `@observable` and `@attr` fields opt into
@@ -47,8 +49,7 @@ Without a client module, bindings, conditionals, and loops still render on the
 server, but the component contributes no projected keys. If the framework is
 loaded, it can later activate the compiled template for browser-applied state or
 soft navigation. Without any projection manifest, the server preserves full
-state. Add a same-named client module only for events, lifecycle code,
-decorators, or imperative APIs. See
+state. See
 [Hydration](/guide/concepts/hydration) for the full contract.
 
 ## The Component Class
@@ -70,8 +71,36 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
-For a component repeated far beyond the initial viewport, put the complete
-offscreen policy on its root template:
+The matching template (`my-counter.html`):
+
+```html
+<button @click="{increment()}">
+  {{label}}: {{count}}
+</button>
+```
+
+Styles for the default Shadow DOM mode (`my-counter.css`):
+
+```css
+:host {
+  display: inline-block;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+```
+
+Supply `{ "label": "Count", "count": 0 }` in the initial server state and
+import the component module from your browser entry. Class field defaults do
+not replace the data needed for SSR.
+
+### Deferring offscreen components
+
+For a component repeated beyond the initial viewport, put the offscreen
+policy on its root template:
 
 ```html
 <!-- todo-row.html -->
@@ -87,35 +116,13 @@ import '@microsoft/webui-framework/lazy-hydration.js';
 import './todo-row.js';
 ```
 
-The complete policy composes visibility-deferred hydration with
-`content-visibility: auto`. Use `<template w-hydrate="lazy">` for the
-advanced hydration-only policy. On an instance, `w-hydrate="eager"` keeps
-rendering deferral but hydrates immediately, while `w-render="eager"` disables
-both. Put setup that needs bindings, events, or `w-ref` in `hydratedCallback()`.
+This combines visibility-deferred hydration with `content-visibility: auto`.
+Use `w-hydrate="lazy"` alone when rendering containment would break layout.
+On an instance, `w-hydrate="eager"` keeps rendering deferral but hydrates
+immediately; `w-render="eager"` disables both. Put setup that needs bindings or
+refs in `hydratedCallback()`.
 
-See [Lazy Hydration](/guide/concepts/hydration#lazy-hydration).
-
-The matching template (`my-counter.html`):
-
-```html
-<button @click="{increment()}">
-  {{label}}: {{count}}
-</button>
-```
-
-And authored Light DOM styles (`my-counter.css`):
-
-```css
-my-counter {
-  display: inline-block;
-}
-
-button {
-  padding: 0.5rem 1rem;
-  font-size: 1rem;
-  cursor: pointer;
-}
-```
+See [Lazy Component Policy](/guide/concepts/directives/lazy) for all combinations.
 
 ## The `<template>` Tag
 
@@ -244,9 +251,8 @@ values; template bindings still batch in a microtask. Changes while disconnected
 are reconciled on reconnection without repeating the initial callback.
 Constructor-created `ElementInternals` is available in these callbacks.
 For work that runs only once regardless of property values, use
-`hydratedCallback()`. Constructor-time `isConnected` and uninitialized-internals
-guards can be removed when they only protected decorated-property callbacks;
-keep guards for optional resources or lazy descendants.
+`hydratedCallback()`. Optional resources and deferred descendants may still
+need readiness checks.
 
 Callback errors propagate. The failed callback is not retried; call
 `$flushUpdates()` or reconnect the element to resume other pending callbacks.
@@ -470,9 +476,9 @@ knowing:
 - **`stopPropagation()` behaves as written.** An ancestor stopping an event as it
   bubbles cannot suppress a handler bound to the element the event started on.
 
-Dispatch cost does not grow with the number of rows a `<for>` renders. If you do
-want a single listener instead of one per row for a very long list, use root host
-events and find the row yourself with `e.composedPath()`.
+For a single listener instead of one per row, use root host events and find the
+row with `e.composedPath()`. Direct bindings are simpler when the handler needs
+the loop item's state.
 
 ### Custom Events and Parent-Child Communication
 
@@ -506,7 +512,7 @@ onColorChange(e: CustomEvent): void {
 }
 ```
 
-This pattern keeps components decoupled - the child doesn't know who is listening, and the parent reacts declaratively.
+The child emits data without depending on the parent's implementation.
 
 ## Loading Static Component Assets
 
@@ -608,41 +614,18 @@ Render that error in the shell's template with an explicit recovery action:
 </if>
 ```
 
-Each generated root exports a semantic payload. The application owns when to
-import it, when to load authored component code or data, and whether those
-operations are cached. The compiler
-stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
-handler publishes that finite manifest as inert JSON in the document head, or
-at the rendered body start for body-only host protocols. Light builds emit the
-same hrefs as deduplicated document stylesheets because their CSS is globally
-scoped.
-Automatic Shadow intent preloading requires HTML rendered through the WebUI
-handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
-the build artifacts without rendering the protocol still mounts safely through
-the native stylesheet guard, but it cannot start the style preload before
-loading the generated root.
-If an authoritative native stylesheet link fails, WebUI reports the error,
-keeps the native link in place, releases the temporary guard, and completes
-hydration. The component may be unstyled, but it remains visible and usable.
-Only stable generated root input paths belong in authored imports. Generated
-files export semantic payloads only; the application owns the runtime facade,
-loading policy, and final JavaScript chunks. Content-hashed stylesheet
-filenames remain compiler-owned. In Shadow builds,
-`preloadComponentAssetStyles(root)` starts Link styles before the dynamic
-import, while `defineComponentAsset()` registers the imported template graph
-and creates the root element. Concurrent roots deduplicate registration and
-stylesheet work. If registration fails, the runtime facade clears the failed
-attempt so a later preload can retry. Start the root import and application data
-request together when mount latency matters. This avoids a
-CSS-after-JavaScript waterfall without eagerly loading component templates.
-`defineComponentAsset()` returns the same facade for the same imported payload,
-so applications need not cache it themselves. Registration retries do not
-invalidate the browser's native ESM module cache. A failed native dynamic import
-can remain failed for the life of the document. Let the application bundler own
-chunk recovery, or show an error with an explicit **Reload page** action when
-opening fails. Never reload automatically during speculative hover/focus
-preloading. Consume speculative rejections, but handle real open failures with a
-visible error and preserve their diagnostic details.
+Import stable generated root paths, not content-hashed stylesheet filenames.
+`preloadComponentAssetStyles(root)` prepares Shadow styles before the dynamic
+import; automatic style preloading requires HTML rendered through WebUI.
+`defineComponentAsset()` prepares the component and returns a reusable facade.
+Load the root and application data together when first-use latency matters.
+
+Stylesheet failures are reported and do not leave the component permanently
+hidden, though it may render unstyled. A failed native module import can stay
+failed until the page reloads. Let your bundler handle chunk recovery, or show
+an explicit **Reload page** action when opening fails. Do not reload during
+speculative hover/focus preloading; keep real open failures visible and preserve
+their diagnostic details.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
@@ -712,7 +695,7 @@ component into Shadow DOM.
 
 ## SSR + Interactivity Lifecycle
 
-Understanding the lifecycle helps you write components that work correctly from the first paint through interactive use.
+The server provides initial content; browser behavior attaches afterward.
 
 ### 1. Server renders HTML
 
@@ -730,7 +713,9 @@ styles installed inside the shadow root.
 
 ### 2. Browser displays content
 
-The browser parses the HTML and renders it immediately. The user sees fully styled content - no loading spinner, no blank page, no flash of unstyled content.
+The browser can display the HTML before component JavaScript loads. It still
+needs to download resources, parse the document, calculate styles, and paint.
+Check CSS delivery and loading states rather than assuming a flash-free render.
 
 ### 3. JavaScript loads and components hydrate
 
@@ -745,7 +730,8 @@ elements in place:
 
 ### 4. User interacts
 
-From this point on, interactions are handled entirely on the client. Changes to `@observable` properties trigger targeted DOM updates without a server round-trip.
+Changes to `@observable` properties update their bindings without requiring a
+server round trip. Event handlers can still call your backend when needed.
 
 ### Setting observable state during setup
 
@@ -754,9 +740,9 @@ produced. Hydration wires bindings to the existing DOM instead of re-rendering
 it. A value you write *before hydration finishes*, in an `@observable` field
 initializer, the `constructor`, or before you call `super.connectedCallback()`,
 updates the property's backing field but cannot touch the DOM yet, so it is
-dropped. Your element's state then silently disagrees with what is on screen.
+dropped. The property can then disagree with what is on screen.
 
-When the framework detects this it logs a development warning naming the properties, so the mismatch is never silent:
+Development builds warn when the framework detects a mismatch:
 
 ```
 [WebUI] Hydration mismatch on <my-counter>: "count" changed at or before
@@ -820,11 +806,11 @@ esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
 
 ## When NOT to Hydrate
 
-Not every component needs JavaScript. Hydrating a component that has no interactivity adds unnecessary bytes and processing time.
+Do not add an authored module merely to render data.
 
 **Skip hydration for:**
 
-- **Static content pages** - about, docs, marketing, legal. The server renders them perfectly.
+- **Static content pages** - about, docs, marketing, legal.
 - **Read-only data displays** - lists, tables, cards with no user interaction. Server-rendered HTML is sufficient.
 - **Layout components** - headers, footers, sidebars with only links. Standard `<a>` tags work without JS.
 
@@ -835,4 +821,6 @@ Not every component needs JavaScript. Hydrating a component that has no interact
 - User input handling (forms, search, filters)
 - Client-side data manipulation (sorting, filtering, pagination)
 
-The goal is minimal JavaScript: hydrate only what the user will interact with, and let the server handle everything else.
+Scriptless components can still activate for soft navigation or browser-applied
+state when the framework is loaded. Avoid an empty class; it is not required
+for either capability.

@@ -1,6 +1,21 @@
+---
+title: "CLI reference"
+description: "Build, serve, and inspect WebUI apps; configure CSS, themes, external components, desktop packaging, and machine-readable diagnostics."
+---
+
 # CLI Reference
 
-The `webui` command-line tool is the primary way to build WebUI applications. It takes your app folder containing HTML templates and web components, and produces the WebUI protocol output ready for server-side rendering.
+Use `webui` to compile templates, run a development server, or inspect the
+compiled artifact. For an app with `src/index.html` and `data/state.json`:
+
+```bash
+webui serve ./src --state ./data/state.json --plugin=webui --watch
+webui build ./src --out ./dist --plugin=webui
+webui inspect ./dist/protocol.bin
+```
+
+Bundle authored browser TypeScript or JavaScript separately. `webui build`
+produces the protocol and CSS; it does not replace your application bundler.
 
 ## Installation
 
@@ -25,7 +40,8 @@ cargo install microsoft-webui-cli
 
 ## Commands
 
-WebUI Press is an opt-in native sidecar. Both `webui press build` and
+Press and desktop commands require their optional native sidecars.
+Both `webui press build` and
 `webui press serve` accept `--show=all|content` (default `all`) to generate
 the complete site or only page content. See [WebUI Press](/guide/webui-press)
 for configuration, content-mode behavior, and template regions.
@@ -117,9 +133,8 @@ Windows-reserved filename characters are rejected.
 
 **CSS bundling:**
 
-Every component stylesheet is render-blocking, so one file per component costs a
-request each and forfeits cross-file compression. `--css-bundle` merges component
-stylesheets into shared chunks:
+Use `--css-bundle` to group compatible component stylesheets into shared chunks
+rather than requesting or inlining each separately:
 
 ```bash
 webui build ./my-app --out ./dist --css link --css-bundle
@@ -130,12 +145,9 @@ stylesheets are *grouped*, `--css` decides how they *reach the page*. A Link
 build gets fewer `<link>` tags and requests, and a Style build gets fewer inline
 blocks.
 
-Chunks split rather than duplicate. Only components reached by an identical set
-of CSS trees share a chunk, so a stylesheet used by several routes lands in its
-own chunk and is downloaded and cached once instead of being copied into every
-route bundle. Cascade order is preserved exactly: a chunk's members must be
-adjacent and identically ordered in every closure that contains them. The
-compiler verifies both properties and splits any incompatible chunk.
+Bundling preserves cascade order and CSS-tree ownership. Styles share a chunk
+only when the same trees need them in the same adjacent order; incompatible
+groups remain separate.
 
 Chunks are named `_chunk-<first-member>-<count>`, or the component's own tag when
 a chunk has a single member. The leading underscore keeps multi-member resource
@@ -157,12 +169,9 @@ long `Cache-Control: max-age=…, immutable`. With `[hash]` the same chunk becom
 makes a shared chunk worth sharing: it stays in cache across deploys and across
 routes.
 
-Measured on a 26-component example over HTTP/2 with Brotli, bundling is a byte
-and CSSOM optimization first: 14% fewer compressed CSS bytes (identical rules
-compress better in fewer, larger files) and 27% fewer `CSSStyleSheet` objects,
-both deterministic. Load-time metrics improve by low single-digit percentages.
-The win is substantially larger over HTTP/1.1, where request count is bounded by
-head-of-line blocking rather than multiplexed.
+Measure transferred CSS, stylesheet count, and cache reuse with your app and
+delivery setup. Fewer resources do not guarantee a faster page on every
+workload or transport.
 
 `--css-bundle` is rejected with `--css module`, which already inlines every
 stylesheet as a data URI: there is no request to merge, and module specifiers are
@@ -196,12 +205,9 @@ Asset-only records are removed from `protocol.bin`.
 
 These files are intermediate bundler inputs, not final deployable chunks. Import
 the stable root path from application code. The application bundler owns final
-splitting, sharing, hashes, public paths, caching, and delivery. Generated
-roots use version 4 and import compact template/style payloads. The compiler
-proves graph coverage; registration checks external entry templates and live
-style conflicts. Manifest-driven loaders additionally validate untrusted input.
-Publication writes dependencies before switching roots and preserves unchanged
-input modification times. WebUI overwrites current roots but does not delete
+splitting, sharing, hashes, public paths, caching, and delivery.
+WebUI preserves unchanged input modification times and overwrites current
+roots, but does not delete
 older content-addressed inputs or other files in the output directory. Remove
 and recreate your disposable `dist` or component input directory when you need
 a clean build.
@@ -211,9 +217,8 @@ a clean build.
 in an esbuild bundle analyzer or consumed by build tooling. The metafile path is
 collision-checked with protocol and CSS outputs before any files are written.
 
-Every generated module intentionally omits inventory state because a build-time
-input cannot know the page's loaded template bitset. Configure content hashing
-and long-lived JavaScript caching in the application bundler. Link-mode CSS
+Configure content hashing and long-lived JavaScript caching in the application
+bundler. Link-mode CSS
 continues to use `--asset-file-name-template`.
 
 Load an asset before creating the component:
@@ -386,7 +391,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `APP` | Path to the template/component directory | `.` (current directory) |
 | `--state <FILE>` | Path to JSON state file for rendering | *(required)* |
 | `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
-| `--watch` | Enable file watching + HMR | `false` |
+| `--watch` | Rebuild and reload after watched files change | `false` |
 | `--shutdown-timeout <SECONDS>` | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` | *(none)* |
 | `--port <PORT>` | Port to bind the development server (1-65535; port 0 is rejected) | `3000` |
 | `--allowed-host <HOST[:PORT]>` | Permit an additional exact hostname or authority, for example when a reverse proxy forwards a custom Host. Repeatable; URLs and wildcards are not accepted. | *(none)* |
@@ -424,7 +429,7 @@ authenticate proxied API requests.
 Both `webui serve` and `webui press serve` accept `--shutdown-timeout`:
 
 ```bash
-webui serve ./src --watch --shutdown-timeout 10
+webui serve ./src --state ./data/state.json --watch --shutdown-timeout 10
 webui press serve --shutdown-timeout 10
 ```
 
@@ -453,10 +458,10 @@ On Unix, output is relayed by the foreground supervisor so terminals with
 
 1. Builds the protocol from your `APP` directory (no separate `webui build` step needed)
 2. Renders the entry template with state data
-3. Serves the rendered HTML with an injected live-reload script
+3. Serves the rendered HTML and configured static assets
 4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
-6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+6. If `--watch` is enabled, reloads connected browsers through the live-reload script
 
 When `--api-port` is set, backend state requests and `/api/*` forwarding use
 the encoded path and query exactly as received except for the entry route alias.
@@ -533,8 +538,8 @@ such as `/docs/v2.1` can still fall back to the route renderer.
 # Start serving the current directory
 webui serve . --state ./state.json --servedir ./assets
 
-# Start serving a specific templates directory
-webui serve ./examples/app/hello-world/templates --state ./examples/app/hello-world/data/state.json --servedir ./examples/app/hello-world/assets --watch
+# Serve the Hello World example after building its browser assets
+webui serve ./examples/app/hello-world/src --state ./examples/app/hello-world/data/state.json --servedir ./examples/app/hello-world/dist --theme @microsoft/webui-examples-theme --watch
 
 # Use a custom port
 webui serve ./my-app --state ./state.json --servedir ./assets --port 9090 --watch
@@ -614,12 +619,10 @@ successful rebuild clears the error and reloads connected browsers.
 
 ### `webui desktop`
 
-Run desktop tooling through `webui`, the only public CLI. Desktop support is
-implemented by a separate `webui-desktop` sidecar backend so normal
-build/serve/inspect installs stay lean and do not link native webview
-dependencies. The sidecar is resolved automatically from the installed desktop
-support package, next to the `webui` binary, or from the workspace during local
-development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
+Use `webui desktop` to scaffold, run, build, or package a native application.
+Install the matching desktop support package; ordinary web builds do not need
+it. A standalone CLI can find the `webui-desktop` sidecar beside its binary
+or on `PATH`; `WEBUI_DESKTOP_BINARY` overrides discovery.
 
 For a new npm project, install matching versions of both packages with optional
 dependencies enabled:
@@ -743,8 +746,10 @@ packaging.
 The bundle contains `protocol.bin`, generated CSS, copied static assets under
 `assets/`, optional `state.json`, `manifest.webui-desktop.json`, and SHA-256
 integrity hashes. Native window backends use system webviews only: WebView2 on
-Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux. Electron, Node,
-bundled Chromium, and localhost HTTP servers are not part of desktop mode.
+Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux. Source/bundle mode
+does not ship Electron, Node, or a browser engine and does not need an HTTP
+server. The Rust SDK also offers an opt-in
+[local-server mode](/guide/concepts/desktop#existing-http-application).
 
 ```bash
 webui desktop build ./src \
@@ -821,7 +826,7 @@ bundle-building, or package-building APIs. Run unpackaged development builds
 with `cargo run --features source`. Build options are reexported by
 `webui_desktop` when `source` is enabled; applications need no separate compiler
 or runner dependency. The SDK's `cli` feature is for desktop tooling, not shipped
-app code. See the [desktop SDK guide](../concepts/desktop.md) for the shared
+app code. See the [desktop SDK guide](/guide/concepts/desktop) for the shared
 source/bundle app builder and customization APIs.
 
 `webui desktop ipc generate` creates typed Rust and TypeScript bindings from
@@ -832,7 +837,7 @@ generator uses `PROTOC` and then PATH. Compiler inputs and outputs must use
 local drive paths on Windows. Generation never downloads tools silently. With `--format json`, generation
 failures preserve their stable `ipc-*` code and actionable `help`; filesystem
 errors also identify the affected `file`. See
-[message passing](../concepts/desktop.md#message-passing) for the schema,
+[message passing](/guide/concepts/desktop#message-passing) for the schema,
 four communication flows, permissions and lifetime rules.
 
 ## Error output and exit codes
@@ -950,31 +955,10 @@ With `--css style`, only `protocol.bin` is written - CSS is embedded directly in
 
 ### protocol.bin
 
-The protocol file contains a serialized `WebUIProtocol` structure (protobuf binary) with all parsed fragments. This file is consumed by a [platform handler](/guide/integrations/) at runtime to render HTML with your application state.
-
-The binary format is not human-readable. The equivalent proto schema structure looks like:
-
-```protobuf
-// WebUIProtocol
-fragments {
-  key: "index.html"
-  value: FragmentList {
-    fragments: [
-      Raw { value: "<h1>Hello, " },
-      Signal { value: "name", raw: false },
-      Raw { value: "!</h1>" },
-      For { item: "item", collection: "items", fragment_id: "for-1" }
-    ]
-  }
-  key: "for-1"
-  value: FragmentList {
-    fragments: [
-      Component { fragment_id: "my-card" },
-      Signal { value: "item.title", raw: false }
-    ]
-  }
-}
-```
+Load this binary artifact once in a [host integration](/guide/integrations/),
+then render with request-specific state. Do not edit it by hand or send it to
+the browser for ordinary native SSR. Rebuild it from templates when the app
+changes, and use `webui inspect` for a readable debugging view.
 
 ## Error Messages
 

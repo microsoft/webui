@@ -1,0 +1,95 @@
+:host {
+  display: block;
+}
+
+.counter {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 154px;
+  padding: 24px 28px;
+}
+
+.counter-reading {
+  display: grid;
+  gap: 4px;
+}
+
+.counter-reading span {
+  color: var(--docs-color-text-2);
+  font-size: 13px;
+}
+
+output {
+  min-width: 3ch;
+  color: var(--docs-color-text);
+  font: 600 48px/1.2 var(--docs-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 4px;
+  font: 600 14px/1.4 var(--docs-font-sans);
+  cursor: pointer;
+}
+
+.increment {
+  border-color: transparent;
+  background: var(--docs-btn-brand-bg);
+  color: var(--docs-btn-brand-text);
+}
+
+.increment:hover:not(:disabled) {
+  background: var(--docs-btn-brand-hover-bg);
+}
+
+.reset {
+  background: var(--site-paper);
+  color: var(--docs-color-text-2);
+}
+
+.reset:hover:not(:disabled) {
+  border-color: var(--docs-color-brand);
+  color: var(--docs-color-brand);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 4px;
+}
+
+.counter-status {
+  box-sizing: border-box;
+  min-height: 58px;
+  margin: 0;
+  padding: 0 28px 18px;
+  color: var(--docs-color-text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (max-width: 360px) {
+  .counter {
+    padding-inline: 20px;
+    gap: 12px;
+  }
+
+  button {
+    padding-inline: 12px;
+  }
+}

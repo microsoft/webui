@@ -215,7 +215,7 @@ tuples once before hydration.
 The same metadata serves both paths:
 
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
-- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM.
+- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM. Structural blocks retain their insertion container's native parsing context, including SVG, MathML and their HTML integration points. Staging preserves that context for nested blocks whose final parent is not connected yet.
 
 `s` is `[rootNodes, rootShape, ...elementShapes]`. Each pre-order shape encodes
 twice its direct static element-child count, plus an ownership bit. The bit
@@ -236,6 +236,14 @@ per-section text-successor array is serialized or retained by the browser.
 Compiled SSR adoption does not parse `h`, including for absent conditionals or
 empty repeats. The first client creation of a block materializes its template
 through the existing Trusted Types sink, then reuses its weakly cached DOM.
+HTML and foreign-context instances of a shared block must not reuse incompatible
+parsed DOM. Foreign variants remain owned weakly by the template metadata and
+distinguish the namespace, container name and MathML HTML-integration mode,
+not arbitrary attribute values. Native parsing, rather than tag-name guessing,
+determines each child's namespace. Parsing uses the inert template-owner
+document so cache population never constructs live custom elements inside
+foreign HTML integration points. Clones are imported into their destination
+document before live wiring and upgrades.
 Registration, immutable compiler HTML, and CSP policy-name checks remain in
 force during SSR adoption. Missing or malformed topology fails explicitly;
 there is no template-parsing compatibility path. Rebuild the protocol and

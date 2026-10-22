@@ -1,0 +1,135 @@
+:host {
+  display: block;
+  margin-block: 28px;
+  container-type: inline-size;
+}
+
+.rendering-figure {
+  margin: 0;
+}
+
+.phases {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--docs-color-border);
+  background: var(--site-paper, var(--docs-color-bg));
+}
+
+.phase {
+  min-width: 0;
+  padding: 24px 16px;
+}
+
+.phase + .phase {
+  border-left: 1px solid var(--docs-color-border);
+}
+
+h3 {
+  margin: 0 12px 16px;
+  color: var(--docs-color-text);
+  font: 650 18px/1.35 var(--docs-font-sans);
+}
+
+svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.paper {
+  fill: var(--site-plot, var(--docs-color-bg-alt));
+  stroke: var(--docs-color-border);
+  stroke-width: 1.2;
+}
+
+.rule {
+  fill: none;
+  stroke: var(--docs-color-text-3);
+  stroke-width: 1.2;
+}
+
+.source-label {
+  fill: var(--docs-color-text);
+  font: 13px var(--docs-font-mono);
+}
+
+.caption {
+  fill: var(--docs-color-text-2);
+  font: 12px var(--docs-font-sans);
+}
+
+.route,
+.arrow {
+  fill: none;
+  stroke: var(--docs-color-brand);
+  stroke-width: 1.6;
+}
+
+.compiled {
+  fill: var(--docs-color-brand);
+}
+
+.compiled-mark {
+  fill: none;
+  stroke: var(--docs-color-bg);
+  stroke-width: 2;
+}
+
+.state {
+  fill: var(--site-accent-bg, var(--docs-color-bg-alt));
+  stroke: var(--site-accent, var(--docs-color-brand));
+  stroke-width: 1.2;
+}
+
+.state-mark {
+  fill: var(--site-accent, var(--docs-color-brand));
+  font: 20px var(--docs-font-mono);
+}
+
+.interactive-label {
+  fill: var(--site-accent, var(--docs-color-brand));
+  font: 600 15px var(--docs-font-sans);
+}
+
+.interactive-arrow {
+  fill: none;
+  stroke: var(--site-accent, var(--docs-color-brand));
+  stroke-width: 1.6;
+}
+
+.browser-dot {
+  fill: var(--docs-color-text-3);
+}
+
+.phase p {
+  margin: 18px 12px 0;
+  color: var(--docs-color-text-2);
+  font: 14px/1.7 var(--docs-font-sans);
+}
+
+figcaption {
+  max-width: 80ch;
+  margin-top: 16px;
+  color: var(--docs-color-text-2);
+  font: 13px/1.65 var(--docs-font-sans);
+}
+
+@container (max-width: 760px) {
+  .phases {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .phase {
+    padding: 24px 16px;
+  }
+
+  .phase + .phase {
+    border-left: 0;
+    border-top: 1px solid var(--docs-color-border);
+  }
+
+  svg {
+    max-width: 340px;
+    margin-inline: auto;
+  }
+}

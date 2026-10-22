@@ -1,148 +1,123 @@
+---
+description: When WebUI's native renderer and HTML-first component model fit an application, and which tradeoffs to consider.
+---
+
 # Why WebUI?
+
+Choose WebUI when you want server-rendered HTML from a native backend and
+explicit control over the browser code your application loads. It combines a
+compiled template format, a Rust renderer, and optional Web Component behavior.
 
 ## Origin
 
-WebUI started inside Microsoft Edge.
+WebUI started inside Microsoft Edge, where UI needed to fit a native Chromium
+host rather than require a separate JavaScript rendering service. That
+constraint shaped the framework: compile templates ahead of time, supply data
+from the host, and render HTML without executing application JavaScript.
 
-Edge is built on Chromium, a C++ codebase. When the Edge team needed to render dynamic UI for in-browser surfaces, the first answer was a client-rendered application: React, then Web Components. The migration to Web Components improved First Contentful Paint and Largest Contentful Paint, but the experience still felt slow. The reason was structural. When HTML and CSS are bundled inside a JavaScript application, the browser cannot paint until that JavaScript downloads, parses, and executes.
-
-The fix was server-side rendering. The conventional answer for SSR was "spin up a Node.js process and run Next.js, Nuxt, or Remix." That answer never made it past the architecture review.
-
-A C++ application embedding a JavaScript engine, to render JavaScript components, that ultimately produce HTML, is three layers of indirection too many. It is slow to start, heavy on memory, and operationally expensive. Edge needed something native: code that could run *inside* Chromium's process model and produce rendered HTML without spawning a JavaScript runtime at all.
-
-So the team asked a different question. **What if server-side rendering did not need JavaScript on the server?**
-
-The answer was already in the platform. Web Components are native to the browser, and they are fast because they are native. Declarative Shadow DOM makes encapsulated, server-rendered components possible without any JavaScript on the page. The piece that did not exist was a renderer: a tiny, native, language-agnostic component that could fill HTML templates with per-request data without parsing, without an AST, and without a JavaScript engine.
-
-That renderer is WebUI.
-
-It runs inside Chromium. It also runs in Rust services, Go binaries, Python web apps, C# APIs, and on every JavaScript runtime worth caring about: Node.js, Bun, and Deno. Because the protocol it streams is just bytes, the host language does not matter. The framework that had to exist for Microsoft Edge turned out to be the framework everyone else has been waiting for.
+The same renderer can be used outside a browser host. See the
+[integration guides](/guide/integrations) for supported bindings and their
+installation and distribution requirements.
 
 ## The Problem
 
-What Edge ran into is the wall every SSR-heavy team eventually hits. Conventional server-side rendering carries two costs that compound at scale.
+Rendering choices move work between the build, server, and browser. A
+client-rendered page may wait for JavaScript before showing its main content.
+SSR can show that content earlier, but server execution, response size, and
+hydration still need a budget.
 
-**On the server**, traditional SSR frameworks re-parse templates on every request - tokenizing, building an AST, evaluating expressions, and serializing output. This work is redundant: the template structure hasn't changed since the last request, only the data has. JavaScript-based SSR (Next.js, Nuxt, Remix) adds a second layer of overhead by requiring a Node.js runtime - with garbage collection pauses, JIT warmup costs, and memory pressure that grow worse under load.
+There is no single "traditional SSR" implementation. Many frameworks compile
+templates ahead of time. React supports SSR, and React Server Components can
+keep component source out of browser bundles. Compare concrete applications and
+deployment modes, not framework names alone.
 
-**On the client**, modern frameworks ship entire component trees as JavaScript bundles. The pipeline is sequential and blocking: download the JS bundle → parse it → compile it → execute it → fetch data → render. Nothing paints until the bundle finishes. On constrained devices - 4 GB of RAM, older mobile CPUs - this pipeline takes 1–2 seconds. Every component in the tree ships JavaScript, even components that never handle user interaction and never update.
-
-Both approaches do redundant work on every request, ship unnecessary code to the browser, and scale poorly under load.
+WebUI's particular choice is to render compiled HTML templates natively,
+without requiring a JavaScript engine for the rendering step.
 
 ## The Insight
 
-HTML template structure is **static**. It does not change between requests - only the data changes. This is the same insight that separates compiled languages from interpreted ones: move the expensive work (parsing, analysis, optimization) to build time, and keep runtime costs minimal.
+The template structure is known at build time; request data is not.
+`webui build` records the structure in `protocol.bin`. A host loads that
+artifact once, then renders it with new data for each request.
 
-WebUI applies this principle to web rendering. Templates are compiled **once** into a compact Protocol Buffer binary. At runtime, a handler reads the protocol sequentially - emitting static fragments as-is and resolving dynamic fragments from a state object. There is no parsing, no AST walking, no expression compilation at request time.
-
-```
-HTML + CSS templates → webui build → protocol.bin → handler (any lang) + state → rendered HTML
-```
+That moves template parsing and expression compilation out of the request
+path. It does not eliminate data fetching, state preparation, HTML generation,
+or network delivery. [How It Works](/guide/concepts/how-it-works) explains the
+authoring model.
 
 ## The Web Platform Bet
 
-Historically, frameworks existed because the web platform lacked key primitives. That is no longer the case. Modern browsers ship with:
+WebUI uses HTML templates, custom elements, and ordinary CSS. Shadow DOM offers
+native style isolation and slots; Light DOM participates in the containing
+document or shadow tree's normal cascade. Light styles are not automatically
+scoped to a component.
 
-- **Web Components** - reusable custom elements with a standard lifecycle, no framework runtime required
-- **Declarative Shadow DOM** - server-renderable encapsulation without JavaScript
-- **CSS composition** - authored global Light CSS when composition is desired,
-  with native Shadow CSS boundaries when isolation is required
-- **Adopted stylesheets** - shared, constructable stylesheets when module
-  delivery is selected
-- **Navigation API** - client-side routing without framework abstractions
-
-WebUI builds directly on these platform primitives rather than wrapping them in
-an abstraction layer. Templates use standard HTML and native Web Components.
-The optional client-side router uses the Navigation API. Styling uses ordinary
-paired CSS, authored/global in Light DOM and natively isolated in Shadow DOM. No
-proprietary component model or virtual DOM is required.
-
-When you build on the web platform, you inherit its improvements for free. Every browser performance optimization, every new CSS feature, every platform API lands in your app without a framework upgrade.
+This is still a framework. Interactive WebUI components use the optional
+`@microsoft/webui-framework` runtime, and soft navigation uses a separate router.
+Browser primitives do not make those responsibilities disappear.
 
 ## Islands Architecture
 
-WebUI uses an **Islands Architecture** where each Web Component is an independent island of interactivity.
+Add a same-named `.ts` or `.js` module only when a component needs events,
+lifecycle work, or another browser API. A component that only displays
+server-provided data can remain HTML and CSS.
 
-The idea is simple: most of a web page is static content - headings, paragraphs, images, layout. Only specific parts of the page need to respond to user interaction - buttons, forms, search boxes, interactive widgets. Why ship JavaScript for all of it?
-
-With WebUI's Islands Architecture:
-
-- **Static content** is server-rendered HTML. It arrives fully formed in the initial response. No JavaScript is shipped, no hydration occurs, no client-side processing is needed. It is just HTML and CSS - the fastest thing a browser can render.
-
-- **Interactive components** are Web Components that hydrate on the client.
-  Each island has its own template, authored styles, and TypeScript behavior.
-  Unwrapped components default to Shadow. Light builds keep explicit sole open
-  wrappers as Shadow islands for slots or native boundaries. Islands hydrate independently - they don't wait for
-  each other or for a global framework to initialize.
-
-- **You control the boundary.** The hydration plugin system lets you decide exactly which components are interactive islands and how they hydrate (on load, on visible, on interaction).
+Interactive components hydrate the existing server-rendered DOM. Nested
+hydration respects parent ownership; islands are not a promise that every
+component activates independently of its ancestors. Scriptless components can
+also activate later for browser-applied state or navigation when the runtime
+is present.
 
 ### The practical difference
 
-Consider a product page with 10 components: a header, navigation, breadcrumbs, product title, product image, description, price display, "Add to Cart" button, reviews list, and a review form.
+On a product page, the description and price can render without authored
+component code, while the cart control handles clicks. You choose that boundary
+in the application. Inspect the built assets and state payload to see the
+actual result.
 
-| Approach | JavaScript shipped |
-|----------|-------------------|
-| Traditional SPA | All 10 components ship JS, hydrate, and re-render on the client |
-| WebUI Islands | Only 2 components ship JS - the "Add to Cart" button and the review form. The other 8 are static HTML with zero client-side cost |
-
-The result: dramatically less JavaScript, faster time-to-interactive, and better performance on constrained devices.
+Even scriptless content costs bytes, DOM memory, style calculation, layout,
+and paint. Reducing JavaScript is one part of performance, not a substitute for
+measuring the page.
 
 ## Performance
 
-Build-time compilation eliminates per-request template parsing. Islands
-Architecture avoids unnecessary client-side JavaScript. The first-party
-benchmark renders the same 100-item todo application through one product
-matrix. Every row performs dynamic SSR from warm structural input,
-materializes a unique current UTC timestamp into every todo inside the request,
-and keeps its natural response size, one process or worker, one pinned CPU, and
-the same randomized seven-round HTTP protocol.
+WebUI is designed to reduce request-time template work and unnecessary browser
+behavior. Whether it improves a particular application depends on its host,
+data, component structure, assets, and devices.
 
-The matrix keeps product renderer APIs separate from HTTP transports. React and
-Next.js, and Vue and Nuxt therefore remain distinct rows. Products without a
-canonical server share one minimal `node:http` transport. The publication shows
-MAD, p95 latency, and natural response byte ranges beside throughput, and
-derives winner language from the measured gap rather than assuming a WebUI
-lead. See the
-[complete methodology](./concepts/performance).
-The architecture contributes through:
+The [benchmark page](/benchmarks/) keeps the current results explicitly
+historical and limited. The available dataset has **one measured server round**
+and **ten browser navigations**; three WebUI host rows were selectively
+refreshed. Its advertised source repository was unavailable anonymously during
+the site audit, and complete version and revision provenance could not be
+established. These results do not support a current winner or multiplier claim.
 
-- **Static fragments** are pre-serialized bytes copied directly to the output buffer. No string concatenation, no template interpretation.
-- **Dynamic fragments** resolve to simple key lookups against a flat state object. No expression compilation at runtime.
-- **No runtime allocations** for template structure - the protocol binary is read sequentially, and output is written to a pre-allocated buffer.
-- **No client-side framework runtime** - islands hydrate independently using native Web Component lifecycle hooks, not a framework reconciliation pass.
+For decisions in your app, use the separate
+[performance guide](/guide/concepts/performance) and measure the deployment
+you intend to run.
 
 ## No Node.js Required
 
-This is not a minor implementation detail - it is a fundamental architectural advantage.
+The renderer does not require Node.js. You can use it from a native host, or
+choose the Node binding when that fits your backend. npm can install the CLI
+and browser packages without making Node a production rendering requirement.
 
-Traditional SSR frameworks require a Node.js process on every server. That means:
-
-- **V8 engine overhead** - garbage collection pauses cause latency spikes under load
-- **JIT warmup** - the first requests are slow while V8 compiles hot paths
-- **High memory baseline** - a Node.js process starts at ~30–50 MB before your application loads
-- **Single-threaded event loop** - CPU-bound rendering blocks all other requests
-
-WebUI's Rust-native handler eliminates all of this:
-
-- **No garbage collector** - deterministic memory management, no pauses
-- **No JIT warmup** - compiled ahead of time, first request is as fast as the millionth
-- **Minimal memory footprint** - the handler is a small, statically-linked binary
-- **Multi-threaded** - handles concurrent requests across all CPU cores without contention
-
-The practical result is a native SSR option without a required Node.js server.
-Capacity and cost still depend on the application and deployment, so measure
-the complete production stack under its expected load.
+Ahead-of-time native code avoids renderer JIT warmup, but cold starts still
+include process startup, artifact loading, caches, and data connections.
+The first request is not guaranteed to match a warm one. Host runtimes and
+application code can also introduce their own allocation and scheduling costs.
 
 ## Summary
 
-WebUI exists because modern web rendering does too much redundant work on the server and in the browser.
+**A good fit:** a new HTML-first application, native backend integration, and
+a team willing to budget browser behavior deliberately.
 
-| Problem | WebUI's Answer |
-|---------|----------------|
-| Full JS bundles shipped to browser | Islands Architecture, so only interactive components ship JS |
-| Framework abstractions over the platform | Direct use of Web Components, Shadow DOM, Navigation API |
-| Node.js runtime required on server | Rust-native rendering, no JavaScript runtime, no GC pauses |
+**Consider the tradeoffs:** templates do not execute arbitrary JavaScript;
+initial display data must come from the server; interactive code needs a
+bundling step; React components, hooks, and React-specific libraries do not
+transfer unchanged. Check the browser APIs and host packages your deployment
+requires.
 
-The result is a framework designed for **high-throughput native SSR**, **small
-browser runtimes**, and integration from **multiple backend languages** without
-requiring a JavaScript runtime on the server.
+[Build a first page](/tutorials/hello-world) before choosing the framework for a
+larger application. If you know React, start with
+[the same concepts in WebUI](/guide/concepts/react-comparison).

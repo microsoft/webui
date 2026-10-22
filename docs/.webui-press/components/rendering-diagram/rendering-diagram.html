@@ -1,0 +1,62 @@
+<template shadowrootmode="open">
+  <figure class="rendering-figure">
+    <div class="phases">
+      <section class="phase">
+        <h3>Compile once</h3>
+        <svg viewBox="0 0 300 206" role="img" aria-labelledby="compile-title compile-desc">
+          <title id="compile-title">Templates become a compiled artifact</title>
+          <desc id="compile-desc">HTML and CSS are compiled at build time, before requests arrive.</desc>
+          <path class="paper" d="M28 20h168v104H28z" />
+          <path class="rule" d="M28 47h168M42 64h96M42 81h128M42 98h74" />
+          <text class="source-label" x="42" y="38">HTML + CSS</text>
+          <path class="route" d="M112 125v24h91" />
+          <path class="arrow" d="m195 143 8 6-8 6" />
+          <rect class="compiled" x="204" y="123" width="68" height="54" rx="3" />
+          <path class="compiled-mark" d="M218 137v26m12-26v26m12-26v26m12-26v26" />
+          <text class="caption" x="28" y="195">Structure is already known.</text>
+        </svg>
+        <p>Parse templates and plan their bindings before serving the page.</p>
+      </section>
+      <section class="phase">
+        <h3>Render with your data</h3>
+        <svg viewBox="0 0 300 206" role="img" aria-labelledby="render-title render-desc">
+          <title id="render-title">A native renderer combines the artifact and request data</title>
+          <desc id="render-desc">The loaded artifact is reused. JSON state supplies dynamic values for the HTML response.</desc>
+          <rect class="compiled" x="28" y="20" width="58" height="42" rx="3" />
+          <path class="compiled-mark" d="M40 30v22m10-22v22m10-22v22m10-22v22" />
+          <text class="source-label" x="105" y="46">Loaded artifact</text>
+          <rect class="state" x="28" y="86" width="58" height="42" rx="3" />
+          <text class="state-mark" x="41" y="113">{ }</text>
+          <text class="source-label" x="105" y="113">Request data</text>
+          <path class="route" d="M57 62v12h180v73M86 107h10v25h141" />
+          <path class="arrow" d="m231 139 6 8 6-8" />
+          <path class="paper" d="M192 149h80v28h-80z" />
+          <text class="source-label" x="209" y="168">HTML</text>
+          <text class="caption" x="28" y="195">Your host. Native rendering.</text>
+        </svg>
+        <p>Your backend supplies state. Rust renders the response without a JavaScript SSR engine.</p>
+      </section>
+      <section class="phase">
+        <h3>Activate what needs it</h3>
+        <svg viewBox="0 0 300 206" role="img" aria-labelledby="browser-title browser-desc">
+          <title id="browser-title">HTML renders before optional component behavior</title>
+          <desc id="browser-desc">A page has static content and one interactive region. Optional browser code connects that region to events and state.</desc>
+          <rect class="paper" x="28" y="20" width="244" height="158" rx="3" />
+          <path class="rule" d="M28 46h244M44 64h129M44 80h204M44 94h175" />
+          <circle class="browser-dot" cx="43" cy="33" r="3" />
+          <circle class="browser-dot" cx="55" cy="33" r="3" />
+          <circle class="browser-dot" cx="67" cy="33" r="3" />
+          <rect class="state" x="44" y="112" width="212" height="48" rx="3" />
+          <text class="interactive-label" x="61" y="141">Optional behavior</text>
+          <path class="interactive-arrow" d="m229 128 7 8-7 8" />
+          <text class="caption" x="28" y="195">HTML first. Interactivity by choice.</text>
+        </svg>
+        <p>Hydrate interactive components. Keep purely presentational components scriptless.</p>
+      </section>
+    </div>
+    <figcaption>
+      The server loads the compiled template. The browser receives HTML and the
+      optional assets your components need, not the server's binary artifact.
+    </figcaption>
+  </figure>
+</template>

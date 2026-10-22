@@ -1,0 +1,14 @@
+<header class="nav-bar">
+  <a href="{{site.base}}" class="logo" aria-label="{{site.title}} home">
+    <img src="{{site.base}}logo.svg" alt="" width="32" height="32" />
+    <span>{{site.title}}</span>
+  </a>
+  <docs-site-navigation
+    :navigation="{{navigation}}"
+    :sections="{{sidebar.sections}}"
+    section="{{page.section}}"
+    ?home="{{page.isHome}}"
+    ?full-layout="{{page.layout == 'full'}}"
+    :open="{{page.mobileNavigationOpen}}"
+  ></docs-site-navigation>
+</header>

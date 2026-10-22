@@ -1,74 +1,67 @@
+---
+description: Start a new WebUI app with HTML templates, server-provided data, and optional browser interactivity.
+---
+
 # What is WebUI Framework?
 
-WebUI is a **language-agnostic server-side rendering framework** that compiles HTML templates into a binary protocol at build time and uses **Web Components Islands Architecture** for client-side interactivity. There is no JavaScript runtime on the server - rendering is Rust-native, sub-millisecond, and available from any backend language.
+WebUI is an HTML-first framework for native server-side rendering. You write
+templates and CSS, your backend supplies JSON data, and a Rust renderer produces
+HTML. Add TypeScript and the browser runtime where you need interactions.
 
-At its core, WebUI separates **static content** from **dynamic content** at build time. At runtime, the server fills in state data. On the client, Web Components hydrate as **interactive islands** - only components that need interactivity ship JavaScript. Static content stays static.
+**Start with [your first app](/tutorials/hello-world).** You'll render a page
+using the locally installed npm CLI, then add a working counter. You do not need
+Rust, a repository checkout, or a production server to follow along.
 
-> **New here?** Jump straight into the [Playground](/playground/) or follow the [Hello World Tutorial](/tutorials/hello-world). For the design rationale, see [Why WebUI?](./why).
+Coming from React? Components, state, events, and composition will be familiar.
+The [React learning bridge](/guide/concepts/react-comparison) explains what
+transfers and what changes. WebUI is for building a new application, not running
+existing JSX or React hooks unchanged.
 
 ## How WebUI Works
 
-WebUI splits the work into three phases:
-
 ### 1. Build - Compile templates to binary
 
-The CLI (`webui build`) parses your HTML templates, discovers Web Components, evaluates static content, and compiles everything into a compact **Protocol Buffer binary**. Static fragments are pre-serialized. Dynamic fragments (expressions, conditionals, loops) are recorded as lightweight instructions. This happens **once**, ahead of time.
+`webui build` compiles HTML templates into `protocol.bin` and prepares their
+styles. If the app has browser code, your JavaScript bundler builds it
+separately.
 
 ### 2. Render - Fill in state data from any backend
 
-Your backend handler loads the pre-compiled protocol, receives state data, and produces rendered HTML. No parsing, no AST walking, no expression compilation - just sequential reads through the protocol, emitting static bytes directly and resolving dynamic fragments from the state object. This is what makes rendering sub-millisecond and language-agnostic.
+A supported host loads the compiled protocol once and supplies data for each
+request. WebUI's renderer does not execute application JavaScript to produce
+HTML. The host still owns data access, authentication, and HTTP delivery.
 
 ### 3. Hydrate - Interactive islands come alive
 
-On the client, only **Web Components marked as interactive** hydrate. Each
-component is an island with its own template, authored styles, and behavior.
-Unwrapped components default to Shadow; a build can opt into Light while
-retaining explicit Shadow islands. A page
-with 10 components where only 2 need click handlers ships JavaScript for just
-those 2. The other 8 remain server-rendered HTML with zero client-side cost.
+The browser can display server-rendered content before application JavaScript
+loads. Interactive components use `@microsoft/webui-framework` to connect
+behavior to that HTML. Components without authored behavior need no component
+module; HTML, CSS, and DOM still have transfer, rendering, and memory costs.
 
 ## Key Concepts
 
-- **Protocol Buffer binary** - Templates compile to a compact binary format. The handler reads fragments sequentially - static fragments are emitted as-is, dynamic fragments are resolved from state. See [How It Works](/guide/concepts/how-it-works).
-
-- **Islands Architecture** - Each Web Component is an interactive island. Static content is server-rendered with no JavaScript. Only components that need interactivity hydrate on the client. See [Interactivity](/guide/concepts/interactivity).
-
-- **Explicit startup state boundary** - A same-named `.ts` or `.js` module opts a component into authored hydration state. Scriptless templates remain dormant at startup and activate only when browser use requires them. See [Hydration](/guide/concepts/hydration).
-
-- **Language agnostic** - Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings. See [Language Integrations](/guide/integrations/ffi).
+| Concept | What you author |
+| --- | --- |
+| [Templates](/guide/concepts/directives/) | HTML with bindings, conditions, and loops, not arbitrary JavaScript expressions |
+| [Components](/guide/concepts/components) | A hyphenated `.html` filename, paired CSS, and an optional same-named `.ts` file |
+| [State](/guide/concepts/state-management/) | The data needed for the initial HTML; browser behavior can update observable values after hydration |
+| [Styling](/guide/concepts/how-it-works#light-dom-and-declarative-shadow-dom) | Ordinary global CSS in Light DOM, or native isolation in Shadow DOM |
+| [Server integration](/guide/integrations) | A host around the native renderer, using a direct binding or the C ABI |
 
 ## Quick Overview
 
-```
-                        BUILD TIME                              RUNTIME
-  ┌──────────────────────────────────────┐    ┌──────────────────────────────────────┐
-  │                                      │    │                                      │
-  │  ┌────────────┐    ┌──────────────┐  │    │  ┌────────────┐    ┌──────────────┐  │
-  │  │ HTML + CSS │───▶│ webui build  │  │    │  │ JSON state │───▶│   handler    │  │
-  │  │ templates  │    │  (compile)   │  │    │  │ (per req)  │    │  (any lang)  │  │
-  │  └────────────┘    └──────┬───────┘  │    │  └────────────┘    └──────┬───────┘  │
-  │                           │          │    │                           │          │
-  │                    ┌──────▼───────┐  │    │                    ┌──────▼───────┐  │
-  │                    │ .webui bin   │──╋────╋───────────────────▶│ rendered HTML│  │
-  │                    │ (protocol)   │  │    │                    └──────┬───────┘  │
-  │                    └──────────────┘  │    │                           │          │
-  └──────────────────────────────────────┘    └──────────────────────────────────────┘
-                                                                         │
-                        CLIENT                                           ▼
-  ┌──────────────────────────────────────────────────────────────────────────────────┐
-  │                                                                                  │
-  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐     │
-  │  │  static HTML  │  │ 🏝️ island    │  │  static HTML  │  │ 🏝️ island    │     │
-  │  │  (no JS)      │  │ (hydrates)   │  │  (no JS)      │  │ (hydrates)   │     │
-  │  └───────────────┘  └───────────────┘  └───────────────┘  └───────────────┘     │
-  │                                                                                  │
-  └──────────────────────────────────────────────────────────────────────────────────┘
-```
+Choose a starting point:
+
+- **Build a new app:** [Hello World](/tutorials/hello-world), then the
+  [Todo tutorial](/tutorials/todo-app).
+- **Try template syntax:** the [playground](/playground/) edits HTML, CSS, and
+  JSON state. It is not a TypeScript application runner.
+- **Evaluate the fit:** [Why WebUI?](/guide/why) describes the tradeoffs;
+  [benchmarks](/benchmarks/) explains the available evidence and its limits.
+- **Understand execution:** [How It Works](/guide/concepts/how-it-works)
+  separates build, server, and browser responsibilities.
 
 ## Ready to Try It?
 
-- **[Playground](/playground/)** - Experiment in the browser with zero setup.
-- **[Installation Guide](./installation)** - Set up WebUI locally.
-- **[Hello World Tutorial](/tutorials/hello-world)** - Build your first WebUI app step by step.
-- **[WebUI Press named regions](./webui-press)** - Customize documentation layouts without forking the template.
-- **[Why WebUI?](./why)** - Understand the architecture and performance benefits in depth.
+[Build your first app](/tutorials/hello-world), or check
+[installation options](/guide/installation) for your toolchain.

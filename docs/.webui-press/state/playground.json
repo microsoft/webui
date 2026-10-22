@@ -14,12 +14,12 @@
     {
       "name": "person-card.css",
       "active": false,
-      "content": ".card {\n  padding: 8px 16px;\n  margin: 4px 0;\n  border-left: 3px solid #646cff;\n}\n"
+      "content": ".card {\n  padding: 12px 16px;\n  margin: 8px 0;\n  border: 1px solid #a9b8cc;\n  border-radius: 6px;\n}\n"
     },
     {
       "name": "state.json",
       "active": false,
-      "content": "{\n  \"name\": \"WebUI\",\n  \"greeting\": \"This framework rocks!\",\n  \"showGreeting\": true,\n  \"people\": [\n    { \"name\": \"Alice\", \"role\": \"Engineer\" },\n    { \"name\": \"Bob\", \"role\": \"Designer\" },\n    { \"name\": \"Charlie\", \"role\": \"PM\" }\n  ]\n}"
+      "content": "{\n  \"name\": \"WebUI\",\n  \"greeting\": \"Change a value in state.json to update this page.\",\n  \"showGreeting\": true,\n  \"people\": [\n    { \"name\": \"Alice\", \"role\": \"Engineer\" },\n    { \"name\": \"Bob\", \"role\": \"Designer\" },\n    { \"name\": \"Charlie\", \"role\": \"Product manager\" }\n  ]\n}"
     }
   ]
 }

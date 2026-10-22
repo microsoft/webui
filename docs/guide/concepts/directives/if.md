@@ -1,6 +1,12 @@
+---
+title: "Conditional rendering"
+description: "Render a region with if conditions, comparisons, and logical operators, using the same truthiness rules on server and client."
+---
+
 # `<if>` Conditional Directive
 
-The `<if>` directive allows you to conditionally render content based on a boolean expression.
+Use `<if condition="...">` to include a region when its condition is truthy.
+The directive does not create an extra DOM element.
 
 ## Basic Usage
 
@@ -10,11 +16,11 @@ The `<if>` directive allows you to conditionally render content based on a boole
 </if>
 ```
 
-In this example, the welcome message will only be rendered if `isLoggedIn` evaluates to `true` in the current state.
+The welcome message renders when `isLoggedIn` is truthy in the current state.
 
 ## Condition Expressions
 
-The `condition` attribute supports various types of expressions:
+Write the expression directly in `condition`, without binding braces:
 
 ### Simple Identifier
 
@@ -62,7 +68,7 @@ Supported logical operators:
 
 ## Notes and Limitations
 
-- Nested conditions are supported but limited to a maximum of 5 logical operators
+- Conditions may nest; each expression supports at most 5 logical operators
 - You cannot mix different types of logical operators (`&&` and `||`) in the same condition
 - Parentheses for grouping are not supported
 - The condition is evaluated against the current state object
