@@ -1,6 +1,6 @@
 ---
 title: Benchmark results
-description: Inspect WebUI's historical benchmark results across JavaScript heap, renderer memory, LCP, and server throughput, with all 16 cases and explicit provenance limits.
+description: Inspect WebUI's historical benchmark results across JavaScript heap, renderer memory, LCP, and server throughput, with 14 selected cases and explicit provenance limits.
 layout: page
 outline: false
 stateFile: ./.webui-press/generated/benchmark-state.json
@@ -11,10 +11,11 @@ stateFile: ./.webui-press/generated/benchmark-state.json
 Different measurements answer different questions. Start with browser memory,
 then inspect paint timing or server throughput. These are **historical, limited
 results**, not a current framework ranking or an overall performance score.
+This page presents 14 selected configurations from the recorded snapshot.
 
 The server snapshot contains **one measured round**. Browser metrics describe
 **10 isolated runs**. Three WebUI hosts were selectively refreshed on
-**2026-09-04**; the other 13 cases retain earlier official results. This is not
+**2026-09-04**; the other 11 cases retain earlier official results. This is not
 a uniform rerun.
 
 <benchmark-explorer :benchmarks="{{benchmarks}}"></benchmark-explorer>
@@ -75,7 +76,7 @@ must not be promoted as statistically established wins.
 ## Inspect the data, then measure your application
 
 [Download the displayed data as JSON](/benchmarks/historical-results.json).
-This generated, sanitized extract includes all 16 cases, the five metrics,
+This generated, sanitized extract includes the 14 displayed cases, the five metrics,
 recorded notes, sampling information, and the limitations on this page.
 It omits bulk server telemetry and unsupported winner summaries. It makes the
 display inspectable; it is **not a complete reproducibility package**.

@@ -48,7 +48,7 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
   await expect(tabs).toHaveCount(4);
   assert.deepEqual(await tabs.allTextContents(), metrics.map(metric => metric.label));
   await expect(preview.getByRole('tab', { name: 'RPS', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(preview.getByRole('link')).toContainText('3 of 16 configurations');
+  await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
   for (const metric of metrics) {
     const tab = preview.getByRole('tab', { name: metric.label, exact: true });
     await expect(tab).toBeEnabled();
@@ -83,7 +83,7 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
       assert.ok(shape.graphics && shape.width > 0 && shape.height > 0, 'Each selected bar must actually paint, not merely carry numeric attributes.');
     }
     await expect(preview.getByRole('link')).toHaveAttribute('href', '/webui/benchmarks/');
-    await expect(preview.getByRole('link')).toContainText('3 of 16 configurations');
+    await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
   }
   await expect(preview.locator('.context')).toContainText('private bytes, not RSS');
   assert.deepEqual(errors, []);

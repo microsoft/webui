@@ -56,7 +56,7 @@ try {
       throw new Error(`[benchmark-write] Cannot write ${fileURLToPath(file)}.\nhelp: Make the generated docs directories writable, then rerun the build.`, { cause: error });
     }
   }
-  console.log("Prepared historical benchmark state and sanitized JSON (16 cases, 5 metrics).");
+  console.log(`Prepared historical benchmark state and sanitized JSON (${evidence.rows.length} cases, ${evidence.metrics.length} metrics).`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : "[benchmark-prepare] Unknown evidence preparation failure.");
   process.exitCode = 1;

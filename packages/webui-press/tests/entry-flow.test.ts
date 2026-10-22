@@ -58,7 +58,7 @@ test('the entry page serves the install command and qualified fixed-case preview
     assert.ok(Math.abs(widths[index] - expected) < 1e-10, 'SSR must preserve the full-view bar ratios.');
   }
   await expect(preview.getByRole('link')).toHaveAttribute('href', '/webui/benchmarks/');
-  await expect(preview.getByRole('link')).toContainText('3 of 16 configurations');
+  await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
   const bootstrap = JSON.parse(await page.locator('#webui-data').textContent() ?? 'null') as {
     state: Record<string, unknown> & { previewMetrics: BenchmarkPreview[] };
   };

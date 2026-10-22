@@ -42,9 +42,9 @@ stateFile: ../target/benchmark-state.json
   const decodedSlashes = html.replaceAll('&#x2F;', '/');
   assert.match(html, /data-layout="page"/);
   assert.match(html, /Historical measurements with explicit limits/);
-  assert.equal((html.match(/class="benchmark-plot"/g) ?? []).length, 16);
-  assert.equal((html.match(/class="benchmark-row"/g) ?? []).length, 16);
-  assert.equal((html.match(/<rect class="benchmark-bar"/g) ?? []).length, 16);
+  assert.equal((html.match(/class="benchmark-plot"/g) ?? []).length, 14);
+  assert.equal((html.match(/class="benchmark-row"/g) ?? []).length, 14);
+  assert.equal((html.match(/<rect class="benchmark-bar"/g) ?? []).length, 14);
   assert.match(html, /<svg[^>]*role="img"/);
   const titles = [...decodedSlashes.matchAll(/<title[^>]*>(.*?)<\/title>/gs)]
     .map(match => match[1].replace(/<!--.*?-->/gs, ''));

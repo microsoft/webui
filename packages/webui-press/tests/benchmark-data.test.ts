@@ -27,6 +27,7 @@ const press = path.join(workspace, 'docs/.webui-press');
 const sourceText = fs.readFileSync(path.join(press, 'state/benchmark-summary.json'), 'utf8');
 
 interface HistoricalInput {
+  benchmarksJson: string;
   benchmarks: {
     asyncDataBoundary: { canonicalWebuiVersion: string; status: string };
     metrics: { id: MetricId; unit: string; direction: string; methodology: string }[];
@@ -125,10 +126,19 @@ test('homepage evidence preserves unavailable and measured-zero values', () => {
   }
 });
 
-test('historical evidence keeps every case and numeric value, with JS heap selected by default', () => {
+test('historical input keeps its serialized mirror aligned', () => {
+  const original = source();
+  assert.deepEqual(JSON.parse(original.benchmarksJson), original.benchmarks);
+});
+
+test('historical evidence preserves the reviewed configurations and numeric values, with JS heap selected by default', () => {
   const original = source();
   const evidence = prepareBenchmarkEvidence(original);
-  assert.equal(evidence.rows.length, 16);
+  assert.deepEqual(evidence.rows.map(row => row.caseId), [
+    'lit', 'next', 'nuxt', 'react', 'react-tanstack', 'solid', 'sveltekit', 'vue',
+    'webui-bun-serve', 'webui-deno-serve', 'webui-fast-rust-actix', 'webui-node-http',
+    'webui-rust-actix', 'webui-shadowdom-rust-actix',
+  ]);
   assert.deepEqual(evidence.metrics.map(metric => metric.id), METRIC_IDS);
   for (const oldRow of original.benchmarks.rows) {
     const row = evidence.rows.find(candidate => candidate.caseId === oldRow.caseId);
@@ -143,7 +153,7 @@ test('historical evidence keeps every case and numeric value, with JS heap selec
   assert.equal(view.selectedMetric, DEFAULT_METRIC);
   assert.equal(view.activeMetric.label, 'JavaScript heap');
   assert.deepEqual(view.metrics.filter(metric => metric.selected).map(metric => metric.id), [DEFAULT_METRIC]);
-  assert.equal(view.availableCount, 16);
+  assert.equal(view.availableCount, 14);
   assert.equal(view.unavailableCount, 0);
   assert.equal(view.rows[0].caseId, 'webui-deno-serve');
   assert.equal(view.rows[1].caseId, 'webui-bun-serve');
@@ -229,7 +239,7 @@ test('an empty scale is unavailable, and an all-zero scale is a measured zero', 
   assert.equal(missing.maximumLabel, 'Unavailable');
   assert.equal(missing.midpointLabel, 'Unavailable');
   assert.equal(missing.scaleAvailable, false);
-  assert.equal(missing.unavailableCount, 16);
+  assert.equal(missing.unavailableCount, 14);
   assert.ok(missing.rows.every(row => row.barWidth === null));
   for (const row of input.benchmarks.rows) {
     row.metrics.jsHeapUsedBytes = {
@@ -319,7 +329,7 @@ test('the real preparation script emits deterministic ignored assets and fails i
   const run = () => execFileSync(process.execPath, args, {
     cwd: f.site, encoding: 'utf8', stdio: 'pipe',
   });
-  run();
+  assert.match(run(), /Prepared historical benchmark state and sanitized JSON \(14 cases, 5 metrics\)\./);
   const compiledFile = path.join(local, 'generated/benchmark-data.mjs');
   const compiledBytes = fs.readFileSync(compiledFile, 'utf8');
   const compiledPreview = path.join(local, 'generated/benchmark-preview-data.mjs');
@@ -338,7 +348,7 @@ test('the real preparation script emits deterministic ignored assets and fails i
   assert.deepEqual(Object.keys(state), ['benchmarks']);
   assert.deepEqual(Object.keys(home), ['previewMetrics', 'previewCaseCount', 'previewTotalCases']);
   assert.equal(home.previewCaseCount, 3);
-  assert.equal(home.previewTotalCases, 16);
+  assert.equal(home.previewTotalCases, 14);
   assert.deepEqual(home.previewMetrics, buildBenchmarkPreviews(state.benchmarks));
   assert.ok(homeBytes.length < 4096, 'four three-case previews must stay below 4 KiB of generated JSON');
   assert.deepEqual(JSON.parse(downloadBytes), prepareBenchmarkEvidence(source()));

@@ -299,7 +299,7 @@ export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
   const metrics = readMetrics(source.metrics);
   const refresh = readRefresh(source.selectiveRefresh);
   const ids = new Set<string>();
-  const rows = array(source.rows, "benchmarks.rows", 16).map((item, index) => {
+  const rows = array(source.rows, "benchmarks.rows", 14).map((item, index) => {
     const field = `benchmarks.rows[${index}]`;
     const row = object(item, field);
     const caseId = text(row.caseId, `${field}.caseId`);
@@ -334,7 +334,7 @@ export function prepareBenchmarkEvidence(input: unknown): BenchmarkEvidence {
       missing: [
         "An anonymously inspectable source revision and raw run artifacts",
         "A complete per-case framework and runtime version trail",
-        "Original measurement dates for the other 13 cases",
+        "Original measurement dates for the other 11 cases",
         "A complete hardware and operating-system record",
         "An unambiguous browser response-mode record",
       ],
