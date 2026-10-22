@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="128" viewBox="0 0 460 128">
+  <title>WebUI</title>
+  <path fill="#2864dc" d="M109.255 48A48 48 0 1 0 109.255 80H88V88H40V40H88V48Z"/>
+  <path fill="#568ce5" d="M88 56H104V72H88Z"/>
+  <text x="152" y="85" fill="#14243b" font-family="Segoe UI,Arial,sans-serif" font-size="64" font-weight="600" letter-spacing="-2">WebUI</text>
+</svg>

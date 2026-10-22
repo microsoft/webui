@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="192" viewBox="0 0 720 192">
+  <title>WebUI - HTML first. Native rendering.</title>
+  <rect width="720" height="192" rx="8" fill="#f1f5fc"/>
+  <g transform="translate(24 32)">
+    <path fill="#2864dc" d="M109.255 48A48 48 0 1 0 109.255 80H88V88H40V40H88V48Z"/>
+    <path fill="#568ce5" d="M88 56H104V72H88Z"/>
+  </g>
+  <text x="184" y="98" fill="#14243b" font-family="Segoe UI,Arial,sans-serif" font-size="56" font-weight="600" letter-spacing="-1.5">WebUI</text>
+  <text x="187" y="132" fill="#4c5d73" font-family="Segoe UI,Arial,sans-serif" font-size="20">HTML first. Native rendering.</text>
+</svg>
