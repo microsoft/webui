@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
 import { collectTemplates } from '../../../src/template-cache-entry.js';
-import { getTemplate, observable, WebUIElement } from '../../../src/core.js';
+import { getTemplate, observable, WebUIElement } from '../../../src/index.js';
 import type { TemplateMeta } from '../../../src/template-types.js';
+
+startRuntime();
 
 class CacheParent extends WebUIElement {
   @observable show = false;

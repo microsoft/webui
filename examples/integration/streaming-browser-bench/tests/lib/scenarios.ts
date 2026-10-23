@@ -66,6 +66,7 @@ const BENCH_DECLARATION_ID = 0;
 export const ISLAND_TEMPLATE = {
   v: 3,
   h: '<span></span><em></em>',
+  s: [2, 5, 1, 1],
   tr: ['label', 'note'],
   tx: [
     [[1, 0], [['label']]],

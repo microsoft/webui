@@ -25,8 +25,8 @@ export function installTemplateCacheHooks(hooks: TemplateCacheHooks): void {
   if (templateCacheHooks === hooks) return;
   if (templateCacheHooks || consumedWithoutCache) {
     throw new Error(
-      '[WebUI] Import @microsoft/webui-framework/template-cache.js before component definitions ' +
-      'and share one framework instance. Template ownership cannot be reconstructed after use.',
+      '[WebUI] Import @microsoft/webui-framework/template-cache.js before startRuntime() or template reads, ' +
+      'and share one framework instance.',
     );
   }
   templateCacheHooks = hooks;

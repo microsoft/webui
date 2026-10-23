@@ -119,23 +119,21 @@ import {
   installInteractionHydration,
   wakeInteractionHydration,
 } from '@microsoft/webui-framework/interaction-hydration.js';
-import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
+import { routePreload } from '@microsoft/webui-delivery/router.js';
 
-let prepared: ReturnType<typeof prepareRoutePreload> | undefined;
+const preload = routePreload({ onIntent: () => wakeInteractionHydration() });
 const disposeHydration = installInteractionHydration({
-  onError: () => prepared?.destroy(),
+  onError: () => preload.destroy(),
   load: async () => {
-    const [, { Router }] = await Promise.all([
+    const [, { WebUIRouter, navigationCache }] = await Promise.all([
       import('./component-definitions.js'),
-      import('@microsoft/webui-router'),
+      import('@microsoft/webui-delivery/router.js'),
     ]);
-    Router.start({ preload: prepared, loaders });
+    new WebUIRouter().start({ preload, cache: navigationCache(), loaders });
   },
 });
 try {
-  prepared = prepareRoutePreload({
-    onIntent: () => wakeInteractionHydration(),
-  });
+  preload.prepare();
 } catch (error) {
   disposeHydration();
   throw error;
@@ -144,6 +142,8 @@ try {
 
 Mouse hover can prefetch a route. Pointer-down, focus, and keyboard interaction
 start loading the application; an eligible click waits until it is ready.
+The component-definitions entry imports `startRuntime` from `runtime.js`,
+`styles.js` when needed, and its component modules, then calls `startRuntime()`.
 
 This policy trades first-interaction latency for lower startup JS and heap, so
 measure both. Prefer an eager root with `w-render="lazy"` descendants when
@@ -216,9 +216,13 @@ For a manually authored early entry, import the coordinator before the
 component registrations needed for early interactivity:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/streaming.js';
 import './ntp-page.js';
 import './search-box.js';
+
+startRuntime();
 ```
 
 The host receives a descriptor when rendering reaches `search-ready`.

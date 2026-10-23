@@ -23,12 +23,14 @@ function entry(mode, interactive = false) {
   const source = file => JSON.stringify(join(root, 'packages', 'webui-framework', 'src', file));
   return `
 import { collectTemplates } from ${source('template-cache-entry.ts')};
-import { WebUIElement, observable } from ${source('core.ts')};
+import { startRuntime } from ${source('runtime.ts')};
+import { WebUIElement, observable } from ${source('index.ts')};
 ${interactive ? `import ${source('styles-entry.ts')};` : ''}
 ${mode === 'lazy' ? `
 import ${source('lazy-entry.ts')};
-import { createLazyLoader } from ${JSON.stringify(join(root, 'packages', 'webui-router', 'src', 'lazy-entry.ts'))};
+import { createLazyLoader } from ${JSON.stringify(join(root, 'packages', 'webui-delivery', 'src', 'lazy-entry.ts'))};
 const loader = createLazyLoader({ endpoint: new URL('resources', document.baseURI).href });` : ''}
+startRuntime();
 class BenchOwner extends WebUIElement {
   @observable shown = false;
   @observable value = 'Fresh';

@@ -12,7 +12,9 @@
   ],
   "scripts": {
     "build:test": "tsc --project tsconfig.test.json --noEmit && esbuild \"tests/**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=tests --outdir=dist-test --out-extension:.js=.mjs",
-    "test": "cargo build -p microsoft-webui-cli -p microsoft-webui-press && pnpm --filter @webui/docs... build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
+    "build:e2e": "cargo build -p microsoft-webui-cli -p microsoft-webui-press && pnpm --filter @webui/docs... build && pnpm run build:test",
+    "test:e2e": "node --test dist-test/**/*.test.mjs",
+    "test": "pnpm run build:e2e && pnpm run test:e2e"
   },
   "optionalDependencies": {
     "@microsoft/webui-press-darwin-arm64": "workspace:*",

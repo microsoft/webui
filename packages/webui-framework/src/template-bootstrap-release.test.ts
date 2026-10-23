@@ -32,7 +32,9 @@ test('hydration completion releases the non-routed bootstrap handoff once', asyn
       writable: true,
     });
 
-    await import('./template.js');
+    const { installTemplateRegistry } = await import('./template.js');
+    assert.equal(listeners.size, 0, 'pure API imports do not install the registry');
+    installTemplateRegistry();
 
     const registration = listeners.get('webui:hydration-complete');
     assert.ok(registration);

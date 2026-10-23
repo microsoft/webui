@@ -202,7 +202,7 @@ MyCounter.define('my-counter');
 ```
 
 `@attr` exposes an HTML attribute; `@observable` connects a value changed by
-TypeScript to its template binding. The `define()` call registers the element.
+TypeScript to its template binding. The `define()` call declares the component.
 
 **`src/index.ts`**
 
@@ -210,10 +210,15 @@ TypeScript to its template binding. The `define()` call registers the element.
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import './my-counter/my-counter.js';
+
+startRuntime();
 ```
 
 The `.js` import is intentional: esbuild resolves it to the TypeScript source.
+`startRuntime()` registers the imported component and starts hydration.
 
 Replace the entry template with this complete file:
 

@@ -34,7 +34,7 @@ export function requireComponentStyleRuntime(
   if (hasComponentStyleWork(tag, ownerDocument) || containsTemplateLinks(meta)) {
     throw new Error(
       `[WebUI] Styles for <${tag}> require @microsoft/webui-framework/styles.js. ` +
-      'Import that entry before defining styled components, or use the default framework entry.',
+      'Import that entry before startRuntime().',
     );
   }
   return undefined;

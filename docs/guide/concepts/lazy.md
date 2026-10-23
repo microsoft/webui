@@ -67,7 +67,12 @@ and focus still use the browser's `showModal()` API.
 The WebUI renderer adapter contains no fetching or routing:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/lazy.js';
+import './app-shell.js';
+
+startRuntime();
 ```
 
 Inventory, preloading, transport, and instance-independent resource reuse remain
@@ -75,18 +80,18 @@ in the hydration-agnostic client package. Importing lazy delivery does not
 start routing or install a rendering engine:
 
 ```typescript
-import { createLazyLoader } from '@microsoft/webui-router/lazy.js';
-import { lazyNdjson } from '@microsoft/webui-router/lazy-ndjson.js';
+import { createLazyLoader } from '@microsoft/webui-delivery/lazy.js';
+import { ndjson } from '@microsoft/webui-delivery/resources.js';
 
 const fragments = createLazyLoader({
   endpoint: '/_webui/lazy',
-  transport: lazyNdjson,
+  transport: ndjson(),
 });
 ```
 
 Omit `transport` for JSON-only delivery. That composition does not include the
-NDJSON reader. `lazyNdjson` accepts JSON fallback and limits each NDJSON
-record to 256 KiB; use `createLazyNdjson(maxRecordBytes)` for a different
+NDJSON reader. `ndjson()` accepts JSON responses and limits each NDJSON
+record to 256 KiB; use `ndjson(maxRecordBytes)` for a different
 finite record budget. `timeoutMs` defaults to 10 seconds and covers the complete
 request, including state and resource preparation.
 
@@ -165,7 +170,7 @@ Optional behavior modules remain explicit. Deferring an inline body does not
 split its owner's JavaScript automatically:
 
 ```typescript
-import { createLazyLoader, lazyFragment } from '@microsoft/webui-router/lazy.js';
+import { createLazyLoader, lazyFragment } from '@microsoft/webui-delivery/lazy.js';
 
 const fragments = createLazyLoader({
   loaders: {

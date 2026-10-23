@@ -172,7 +172,7 @@ fn routes_unsupported(owner: &str) -> WebUIError {
     .component(owner)
     .element("route")
     .help(
-        "remove --emit-component-assets and use @microsoft/webui-router, or remove <route> and import generated component roots from application code",
+        "remove --emit-component-assets and use @microsoft/webui-delivery, or remove <route> and import generated component roots from application code",
     );
     WebUIError::ComponentAssets(Box::new(diagnostic))
 }

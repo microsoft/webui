@@ -5,8 +5,8 @@
  * In-memory bundling of the *actual* framework sources into two minified
  * browser fixtures, plus their exact minified/gzip byte sizes.
  *
- * The ordinary fixture imports `WebUIElement` from the framework default entry
- * only; the streaming fixture imports the public streaming entry
+ * Both fixtures explicitly install rendering and managed styles. The ordinary
+ * fixture imports `WebUIElement`; the streaming fixture also imports the streaming entry
  * (`streaming-entry.ts`, side-effect coordinator install) before the default
  * entry. Both then define one instrumented `bench-island` subclass. Bundling
  * the real sources (not a synthetic clone) is the whole point: the benchmark
@@ -150,10 +150,10 @@ window.__defineBenchIsland = function defineBenchIsland() {
 `;
 
 const ORDINARY_ENTRY =
-  `import { WebUIElement } from './index.js';\n${ISLAND_DEFINITION}`;
+  `import { startRuntime } from './runtime.js';\nimport './styles-entry.js';\nimport { WebUIElement } from './index.js';\nstartRuntime();\n${ISLAND_DEFINITION}`;
 
 const STREAMING_ENTRY =
-  `import './streaming-entry.js';\nimport { WebUIElement } from './index.js';\n${ISLAND_DEFINITION}`;
+  `import './streaming-entry.js';\n${ORDINARY_ENTRY}`;
 
 async function bundle(kind: Fixture['kind'], contents: string): Promise<Fixture> {
   const result = await build({

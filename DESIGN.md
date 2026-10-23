@@ -54,7 +54,7 @@ The **compiler** (`webui`, `webui-discovery`, `webui-parser`,
 artifact. The **handler** (`webui-handler`, `webui-state`,
 `webui-expressions`) owns request-scoped evaluation and output; it does not
 know how to find source files. The **browser** (`@microsoft/webui-framework`
-and, independently, `@microsoft/webui-router`) consumes compiler output and
+and, independently, `@microsoft/webui-delivery`) consumes compiler output and
 server HTML rather than compiling templates again. CLI, desktop, and language
 bindings are hosts around the same protocol and handler.
 
@@ -66,13 +66,21 @@ application's JavaScript bundle.
 Browser resource data, rendering, and delivery are separate layers. Template
 registration and style catalogs do not require a renderer or navigation
 orchestrator. Buffered rendering selects its style adapter explicitly; routing
-selects transport and optional navigation policies. Convenience entry points may
-compose those capabilities, but lean entry points must not reach unselected
-implementations through either static or dynamic imports.
+selects transport and optional navigation policies. Public API imports do not
+install runtimes or construct application singletons. Applications select
+renderer/style installers explicitly, start rendering after their selected
+modules have loaded, and configure routing once at startup;
+selected request-critical policies are ready before interaction begins.
+Unselected implementations must not reach production output through either
+static or dynamic imports. Application feature code can load on demand without
+changing global routing policy.
 
 Shared browser delivery remains hydration-agnostic. Navigation and lazy
-template loading consume the same resource availability, build identity,
-preload, and transport mechanisms. A renderer adapter registers opaque compiled
+template loading consume one request-lifetime, resource availability, build
+identity, and transport contract. Route reconciliation owns early commits and
+per-level state; lazy loading returns scoped state to its existing owner only
+after resources are ready. Resource-only preloading does not cache application
+state. A renderer adapter registers opaque compiled
 payloads, reports readiness and release, and owns its live views. Delivery does
 not import the WebUI element renderer or turn a template section into a component.
 
@@ -554,8 +562,8 @@ engineering another; they are not public application-authoring guides.
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |
 | Progressive response wire and host-step invariants | [`specs/streaming.md`](specs/streaming.md); `crates/webui-handler/src/streaming/`, `packages/webui-framework/src/streaming-protocol.ts` |
 | Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
-| Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
-| Optional client delivery and inventory ownership | [`specs/client-delivery.md`](specs/client-delivery.md); `packages/webui-router/src/`, `packages/webui-framework/src/template-cache.ts` |
+| Browser routing | `packages/webui-delivery/`, `docs/guide/concepts/routing.md` |
+| Optional client delivery and inventory ownership | [`specs/client-delivery.md`](specs/client-delivery.md); `packages/webui-delivery/src/`, `packages/webui-framework/src/template-cache.ts` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
 | Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |

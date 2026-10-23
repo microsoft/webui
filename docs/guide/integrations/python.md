@@ -150,7 +150,7 @@ templates = renderer.render_component_templates(
 ```
 
 Both return `bytes`; write them directly as the response body for
-`Router.ensureLoaded()` / partial-navigation requests from the client.
+`router.ensureLoaded()` / partial-navigation requests from the client.
 
 ## Progressive (host-driven) streaming
 

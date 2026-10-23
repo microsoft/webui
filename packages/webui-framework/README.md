@@ -5,7 +5,7 @@ Lightweight Web Component runtime for WebUI apps.
 This package is the browser-side runtime used by `webui build --plugin=webui`. It provides:
 
 - `WebUIElement` for SSR hydration and client-created elements
-- `@observable`, `@attr`, and `@volatile` decorators
+- `@observable` and `@attr` decorators
 - direct DOM binding updates
 - Shadow-default components with opt-in global Light and authored Shadow islands
 - SSR state seeding
@@ -49,13 +49,23 @@ TypeScript must enable decorator emit:
 
 ## Quick Example
 
-For smaller compositions, `core.js` excludes component stylesheet installation;
-`styles.js` adds it explicitly. `templates.js` exposes registration without a
-renderer, and `template-cache.js` adds lifetime-aware collection when imported
-before component definitions. See
+The package root is a pure API barrel. Select rendering and styles once in the
+application entry, then start rendering after the imports:
+
+```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
+import './counter-card.js';
+
+startRuntime();
+```
+
+Omit `styles.js` for components without managed CSS. `templates.js` exposes
+registration without a renderer, and `template-cache.js` adds lifetime-aware
+collection when imported before `startRuntime()` or template lookups. Component
+declarations wait for startup and their metadata before registering. See
 [Runtime entrypoints](https://microsoft.github.io/webui/guide/concepts/interactivity#runtime-entrypoints)
-for requirements and examples. The default entry continues to include core and
-stylesheet support.
+for requirements and examples.
 
 `lazy.js` is the opt-in renderer adapter for ordinary `<if lazy>` bodies.
 It preserves the existing owner and scope without creating a component or
@@ -70,16 +80,11 @@ See [Lazy UI](https://microsoft.github.io/webui/guide/concepts/lazy).
 ### `counter-card.ts`
 
 ```ts
-import { WebUIElement, attr, observable, volatile } from '@microsoft/webui-framework';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
 export class CounterCard extends WebUIElement {
   @attr label = 'Clicks';
   @observable count = 0;
-
-  @volatile
-  get doubled(): number {
-    return this.count * 2;
-  }
 
   increment(): void {
     this.count += 1;
@@ -92,7 +97,7 @@ CounterCard.define('counter-card');
 ### `counter-card.html`
 
 ```html
-<p>{{label}}: {{count}} ({{doubled}})</p>
+<p>{{label}}: {{count}}</p>
 <button @click="{increment()}">Increment</button>
 ```
 
@@ -184,7 +189,9 @@ back to eager; `content-visibility` remains browser-managed. See
 [Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
 
 Router applications should author `<template w-hydrate="interaction">` and use
-the framework-agnostic `@microsoft/webui-router/preload.js` handle. FAST and
+the framework-agnostic `routePreload()` policy from
+`@microsoft/webui-delivery/router.js`. Call `prepare()` before activation and
+pass the same policy and a configured cache to the router. FAST and
 other hydration runtimes use that same handle with their own readiness signal.
 Non-router apps use the lower-level framework entry:
 

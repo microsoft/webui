@@ -5,7 +5,10 @@
  * Shared fixture bootstrap for scriptless dormant-host tests.
  *
  * These fixtures intentionally have no `element.ts`; importing the framework
- * root proves they do not need empty component stubs.
+ * runtime entry proves they do not need empty component stubs.
  */
 
-import '../src/index.js';
+import { startRuntime } from '../src/runtime.js';
+import '../src/styles-entry.js';
+
+startRuntime();

@@ -133,6 +133,7 @@ export interface TemplateMeta extends TemplateBlockMeta {
   v: 3;
   /** Direct compiled component dependencies; absent is empty. */
   d?: readonly string[];
+  /** Flat table of local conditional and repeat bodies, indexed from this owner. */
   b?: TemplateBlockMeta[];
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */

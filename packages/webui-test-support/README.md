@@ -2,7 +2,7 @@
 
 Private workspace-only helpers for WebUI package tests.
 
-This package exists so `webui-framework` and `webui-router` can share the same
+This package exists so `webui-framework` and `webui-delivery` can share the same
 test infrastructure instead of each package carrying slightly different copies
 of it.
 

@@ -14,7 +14,7 @@ test('late cache installation fails instead of guessing ownership of existing co
   });
   try {
     assert.equal(getTemplate('x-used'), meta);
-    await assert.rejects(import('./template-cache-entry.js'), /before component definitions/);
+    await assert.rejects(import('./template-cache-entry.js'), /before startRuntime\(\) or template reads/);
     assert.equal(window.__webui!.templates!['x-used'], meta);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'window', previous);

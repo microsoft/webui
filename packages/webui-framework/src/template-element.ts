@@ -47,7 +47,7 @@
  * minimum DOM structure needed for the framework to operate.
  */
 
-import { deferTemplateDefinition, getTemplate } from './template-registry.js';
+import { deferTemplateDefinition, getTemplate, templateRuntimeReady } from './template-registry.js';
 import { lazyBlockOwner, findLazyFragment, requireLazyFragment } from './lazy-contract.js';
 import { templateCacheHooks } from './template-cache-contract.js';
 import { cloneTemplateContent, createTemplateContainer } from './template-content.js';
@@ -240,7 +240,7 @@ function getTextMarkerBoundaries(meta: TemplateBlockMeta): Int32Array {
 // ── Sentinels ───────────────────────────────────────────────────
 
 const EMPTY_ARR: readonly never[] = [];
-const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 /** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 /** Branded fatal-stream cleanup hook, invoked before `data-ws` is removed. */
@@ -311,64 +311,47 @@ function childNodesArray(parent: Node): Node[] {
 }
 
 /**
- * Merge authored `observedAttributes` with template-read roots.
+ * Register a constructor with authored and template-derived observed attributes.
  *
  * This is the key that makes `@attr` optional for HTML-only values: if a template
  * reads `title`, then a host `title="..."` mutation can update the hidden
  * template state even when the class never declared an `@attr title` property.
  */
-function installTemplateObservedAttributes(
-  ctor: TemplateObservedConstructor,
-  tagName: string,
-  meta = getTemplate(tagName),
-): void {
-  if (!meta) return;
-
-  templateTagByCtor.set(ctor, tagName);
-  const attrs = meta.ta ?? EMPTY_ARR;
-  if (attrs.length === 0) return;
-
-  const existing = ctor.observedAttributes ?? EMPTY_ARR;
-  const merged = new Array<string>(existing.length + attrs.length);
-  let count = 0;
-  for (let i = 0; i < existing.length; i++) {
-    merged[count] = existing[i];
-    count += 1;
-  }
-  for (let attrIndex = 0; attrIndex < attrs.length; attrIndex++) {
-    const attrName = attrs[attrIndex];
-    let found = false;
-    for (let i = 0; i < count; i++) {
-      if (merged[i] === attrName) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      merged[count] = attrName;
-      count += 1;
-    }
-  }
-  merged.length = count;
-
-  Object.defineProperty(ctor, 'observedAttributes', {
-    get() {
-      return merged;
-    },
-    configurable: true,
-  });
-}
-
 function defineTemplateConstructor(
   ctor: TemplateObservedConstructor,
   tagName: string,
-  meta?: TemplateMeta,
+  meta: TemplateMeta,
 ): void {
-  installTemplateObservedAttributes(ctor, tagName, meta);
-  if (meta) {
-    const ready = requireComponentStyleRuntime(tagName, meta)?.prepareTemplate(meta);
-    if (ready) void ready;
+  templateTagByCtor.set(ctor, tagName);
+  const attrs = meta.ta ?? EMPTY_ARR;
+  if (attrs.length > 0) {
+    const existing = ctor.observedAttributes ?? EMPTY_ARR;
+    const merged = new Array<string>(existing.length + attrs.length);
+    let count = existing.length;
+    for (let i = 0; i < count; i++) {
+      merged[i] = existing[i];
+    }
+    for (let attrIndex = 0; attrIndex < attrs.length; attrIndex++) {
+      const attrName = attrs[attrIndex];
+      let found = false;
+      for (let i = 0; i < count; i++) {
+        if (merged[i] === attrName) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        merged[count] = attrName;
+        count += 1;
+      }
+    }
+    merged.length = count;
+    Object.defineProperty(ctor, 'observedAttributes', {
+      value: merged,
+      configurable: true,
+    });
   }
+  void requireComponentStyleRuntime(tagName, meta)?.prepareTemplate(meta);
   customElements.define(tagName, ctor);
 }
 
@@ -380,11 +363,9 @@ function defineTemplateConstructor(
  * like `title` and `id` do not block template-only state roots with those names.
  */
 function hasAuthoredMember(instance: object, key: string): boolean {
-  if (Object.prototype.hasOwnProperty.call(instance, key)) return true;
-
-  let proto = Object.getPrototypeOf(instance) as object | null;
+  let proto: object | null = instance;
   while (proto && proto !== TemplateElement.prototype) {
-    if (Object.prototype.hasOwnProperty.call(proto, key)) return true;
+    if (Object.hasOwn(proto, key)) return true;
     proto = Object.getPrototypeOf(proto) as object | null;
   }
   return false;
@@ -583,24 +564,16 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
-   * Register this constructor for a tag and install template-derived observers.
+   * Declare this constructor; register it once rendering and its metadata are ready.
    */
   static define(tagName: string): void {
     const ctor = this as TemplateObservedConstructor;
-    const meta = getTemplate(tagName);
+    const meta = templateRuntimeReady ? getTemplate(tagName) : undefined;
     if (!meta) {
-      // Metadata supplies template-derived observed attributes. The browser
-      // snapshots that list at native define() time, so any page must wait
-      // rather than permanently define an incomplete observer surface —
-      // not only a streamed one. Ordinary (non-streaming) WebUI Router
-      // partial navigation can register a route's template metadata after
-      // an eagerly imported authored nested component module has already
-      // run its top-level `define()` call; deferring here lets that later
-      // registration (`registerTemplateData()`) complete the definition
-      // with the full attribute list instead of leaving it stuck with only
-      // the host's own compiled attributes.
-      deferTemplateDefinition(tagName, ctor, () => {
-        defineTemplateConstructor(ctor, tagName, getTemplate(tagName));
+      // Shared chunks can evaluate before the entry's installers. Metadata
+      // can also arrive later; native define() snapshots its observer surface.
+      deferTemplateDefinition(tagName, ctor, (metadata) => {
+        defineTemplateConstructor(ctor, tagName, metadata);
       });
       return;
     }
@@ -1024,7 +997,7 @@ export class TemplateElement extends HTMLElement {
     this.$flushUpdates();
   }
 
-  protected $observableNames(): Set<string> {
+  protected $observableNames(): ReadonlySet<string> {
     return EMPTY_SET;
   }
 
@@ -1402,7 +1375,7 @@ export class TemplateElement extends HTMLElement {
       this.$templateState = Object.create(null) as Record<string, unknown>;
     }
     if (
-      Object.prototype.hasOwnProperty.call(this.$templateState, key) &&
+      Object.hasOwn(this.$templateState, key) &&
       Object.is(this.$templateState[key], value)
     ) return false;
     this.$templateState[key] = value;
@@ -2060,7 +2033,7 @@ export class TemplateElement extends HTMLElement {
         // than claiming the first static sibling after <!--/wc-->.
         if (marker && blockMeta) {
           condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
-          if (condInstance) this.$setInstanceParent(condInstance, instance);
+          if (condInstance) condInstance.parent = instance;
         }
 
         // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
@@ -2151,7 +2124,7 @@ export class TemplateElement extends HTMLElement {
               const itemEl = nextElement(itemMarkers[j]);
               if (itemEl) {
                 const childInstance = this.$hydrate(itemEl, blockMeta, itemScope, 1);
-                this.$setInstanceParent(childInstance, instance);
+                childInstance.parent = instance;
                 repeatInsts.push(childInstance);
               }
             } else {
@@ -2179,7 +2152,7 @@ export class TemplateElement extends HTMLElement {
                   itemParent as ParentNode & Node,
                 );
               }
-              this.$setInstanceParent(inst, instance);
+              inst.parent = instance;
               repeatInsts.push(inst);
             }
           }
@@ -2857,7 +2830,7 @@ export class TemplateElement extends HTMLElement {
     const root = dot === -1 ? path : path.substring(0, dot);
     return hasAuthoredMember(this, root)
       || (this.$templateState !== null
-        && Object.prototype.hasOwnProperty.call(this.$templateState, root));
+        && Object.hasOwn(this.$templateState, root));
   }
 
   private $resolveComponentRoot(root: string): unknown {
@@ -2865,7 +2838,7 @@ export class TemplateElement extends HTMLElement {
     // Template-only state wins only when the component did not author the member.
     if (
       this.$templateState &&
-      Object.prototype.hasOwnProperty.call(this.$templateState, root) &&
+      Object.hasOwn(this.$templateState, root) &&
       !hasAuthoredMember(this, root)
     ) {
       return this.$templateState[root];
@@ -2885,13 +2858,6 @@ export class TemplateElement extends HTMLElement {
   }
 
   // ── Block instance management ─────────────────────────────────
-
-  private $setInstanceParent(
-    instance: TemplateInstance,
-    parent: TemplateInstance | undefined,
-  ): void {
-    instance.parent = parent;
-  }
 
   $block(blockIndex: TemplateBlockReference, fragment?: TemplateMeta): TemplateBlockMeta | undefined {
     if (typeof blockIndex === 'string') return findLazyFragment(blockIndex, this.localName);
@@ -2923,7 +2889,7 @@ export class TemplateElement extends HTMLElement {
     } else if (container) {
       inst.container = container;
     }
-    this.$setInstanceParent(inst, parent);
+    inst.parent = parent;
     return inst;
   }
 

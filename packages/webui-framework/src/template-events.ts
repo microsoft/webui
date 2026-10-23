@@ -4,7 +4,7 @@
 /**
  * Template registration bridge shared by framework and router.
  *
- * `@microsoft/webui-router` stays framework-independent and dispatches this DOM
+ * `@microsoft/webui-delivery` stays framework-independent and dispatches this DOM
  * event after registering compiled template data. The framework listens for the
  * event and defines compiler-owned dormant hosts.
  */

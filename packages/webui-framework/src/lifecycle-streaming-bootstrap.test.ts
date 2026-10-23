@@ -29,6 +29,7 @@ test('streaming mode reserves completion when the application arrives before its
   });
   try {
     const lifecycle = await import('./lifecycle.js');
+    lifecycle.installHydrationLifecycle();
     lifecycle.hydrationStart();
     lifecycle.hydrationEnd();
     document.readyState = 'interactive';

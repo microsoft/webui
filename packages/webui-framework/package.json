@@ -5,6 +5,23 @@
     "tag": "latest"
   },
   "type": "module",
+  "sideEffects": [
+    "./tests/**",
+    "./dist/styles-entry.js",
+    "./dist/lazy-entry.js",
+    "./dist/template-cache-entry.js",
+    "./dist/streaming-entry.js",
+    "./dist/streaming-coordinator.js",
+    "./dist/streaming-deferred.js",
+    "./dist/lazy-hydration-entry.js",
+    "./src/styles-entry.ts",
+    "./src/lazy-entry.ts",
+    "./src/template-cache-entry.ts",
+    "./src/streaming-entry.ts",
+    "./src/streaming-coordinator.ts",
+    "./src/streaming-deferred.ts",
+    "./src/lazy-hydration-entry.ts"
+  ],
   "description": "WebUI Framework Next — lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
   "license": "MIT",
   "exports": {
@@ -20,10 +37,10 @@
         "default": "./dist/template-cache-entry.js"
       }
     },
-    "./core.js": {
+    "./runtime.js": {
       "import": {
-        "types": "./dist/core.d.ts",
-        "default": "./dist/core.js"
+        "types": "./dist/runtime.d.ts",
+        "default": "./dist/runtime.js"
       }
     },
     "./templates.js": {
@@ -76,14 +93,16 @@
     }
   },
   "files": [
-    "dist/"
+    "dist/",
+    "!dist/**/*.test.*"
   ],
   "scripts": {
     "build": "tsc",
+    "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --incremental false",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc -p tsconfig.test.json --noEmit",
     "test": "pnpm test:unit && pnpm test:e2e",
-    "test:unit": "tsc -p tsconfig.unit-test.json && node --test \"dist/**/*.test.js\"",
+    "test:unit": "tsc -p tsconfig.unit-test.json --incremental false && node --test \"dist/**/*.test.js\"",
     "test:e2e": "pnpm typecheck:e2e && playwright test",
     "test:update-snapshots": "pnpm test:e2e:update-snapshots",
     "test:e2e:update-snapshots": "pnpm typecheck:e2e && playwright test --update-snapshots"

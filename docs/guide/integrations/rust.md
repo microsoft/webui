@@ -208,7 +208,7 @@ Use `Protocol::matches_route(entry, path)` when only route existence is needed.
 ## Router-aware request helper
 
 Use `webui::server::serve_request` when one endpoint serves both initial HTML
-documents and `webui-router` JSON partials. Build the `ServeRequest` with the
+documents and `webui-delivery` JSON partials. Build the `ServeRequest` with the
 complete `RenderOptions` value for that HTTP response:
 
 ```rust

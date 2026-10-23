@@ -36,6 +36,7 @@ export type LazyBenchMode = 'eager' | 'lazy-hydrate' | 'lazy-render';
 const TODO_TEMPLATE: TemplateMeta = {
   v: 3,
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
+  s: [1, 3, 15, 1, 1, 1, 1, 1, 1, 1],
   tr: ['title', 'description', 'priority', 'due'],
   tx: [
     [[3, 0], [['title']]],
@@ -56,7 +57,10 @@ function entrySource(mode: LazyBenchMode): string {
     ? ''
     : "import './lazy-hydration-entry.js';\n";
   return `
-${optionalImport}import { WebUIElement } from './index.js';
+${optionalImport}import { startRuntime } from './runtime.js';
+import './styles-entry.js';
+import { WebUIElement } from './index.js';
+startRuntime();
 
 function noteHydration(el, started) {
   const win = window;

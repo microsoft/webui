@@ -41,7 +41,7 @@ Only the triggers, empty native containers, and their external loading/error
 feedback are eager. Every element inside the popover and dialog, including
 headings, close buttons, and form controls, belongs to its lazy body.
 `activity` and `settings` use the shared hydration-agnostic loader from
-`@microsoft/webui-router/lazy.js` with the opt-in NDJSON decoder. The
+`@microsoft/webui-delivery/lazy.js` with the opt-in NDJSON decoder. The
 framework's lazy entry only provides rendering in the existing owner.
 Endpoints resolve against the document's base URL so the same app works in the
 demo catalog's subdirectory.

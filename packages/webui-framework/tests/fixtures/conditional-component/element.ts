@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 /**
  * Regression fixture: custom elements inside a false <if> block must mount
  * correctly when the condition flips true client-side.
@@ -13,6 +15,8 @@
  */
 
 import { WebUIElement, observable } from '../../../src/index.js';
+
+startRuntime();
 
 export class TestChildComp extends WebUIElement {
   @observable label = 'Child Active';

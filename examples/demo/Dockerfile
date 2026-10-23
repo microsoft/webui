@@ -46,7 +46,7 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 
 # Build framework libraries first (needed by apps with build:deps)
-RUN pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build
+RUN pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-delivery run build
 
 # Build each app's client assets
 RUN cd examples/app/hello-world && \

@@ -156,7 +156,7 @@ function retainCachedTemplate(tag: string): TemplateMeta | undefined {
  * lifetime. Browser collection remains asynchronous; the return value counts
  * cache entries released, not objects already reclaimed.
  *
- * Import the template-cache entry before component definitions. Older protocols
+ * Import the template-cache entry before runtime startup or template reads. Older protocols
  * without compiler-owned dependencies fail before any cache entries are removed.
  */
 export function collectTemplates(keep: readonly string[] = []): number {

@@ -88,6 +88,7 @@ Object.defineProperty(globalThis, 'window', {
 });
 
 const { installTemplateElementRuntime } = await import('./static-host.js');
+await import('./styles-entry.js');
 const { deferTemplateDefinition } = await import('./template.js');
 const { TemplateElement } = await import('./template-element.js');
 const {

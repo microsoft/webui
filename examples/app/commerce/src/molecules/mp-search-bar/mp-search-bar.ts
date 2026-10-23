@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, attr } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
+import { router } from '../../router.js';
 
 export class MpSearchBar extends WebUIElement {
   @attr action = './search';
@@ -27,7 +27,7 @@ export class MpSearchBar extends WebUIElement {
       url.searchParams.set('q', query);
     }
 
-    Router.navigate(`${url.pathname}${url.search}`);
+    router.navigate(`${url.pathname}${url.search}`);
   }
 }
 

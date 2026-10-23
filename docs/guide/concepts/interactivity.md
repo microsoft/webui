@@ -16,33 +16,38 @@ promoted through the compiler policy.
 
 ## Runtime entrypoints
 
-The default `@microsoft/webui-framework` entry includes compiled rendering,
-authored behavior, and stylesheet installation. Streaming and deferred-hydration
-coordinators remain separate imports.
-
-For components that do not need framework-managed component CSS or template
-stylesheet links, use the smaller core:
+The default `@microsoft/webui-framework` entry exports component classes,
+decorators, and data helpers without installing a runtime. Component modules
+import their APIs normally:
 
 ```typescript
-import { WebUIElement, observable } from '@microsoft/webui-framework/core.js';
+import { WebUIElement, observable } from '@microsoft/webui-framework';
 ```
 
-Add stylesheet support before defining styled components:
+Start rendering once in the application entry, after its imports.
+Include `styles.js` when using managed component CSS or template stylesheet links:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import '@microsoft/webui-framework/styles.js';
 import './my-component.js';
+
+startRuntime();
 ```
 
-This composition supports the same Link, Style, and Module strategies as the
-default entry. A core-only application that encounters managed component styles
+This composition supports Link, Style, and Module strategies. An unstyled app
+omits `styles.js`. A renderer-only application that encounters managed component styles
 gets an actionable error rather than silently mounting unstyled content.
 The core still includes conditions, repeats, events, refs, and reactive state;
 it is not a different template language.
+Component modules declare their classes with `.define()`. `startRuntime()`
+registers available declarations synchronously; declarations without metadata
+wait for it to arrive. Repeated startup calls do not repeat installation.
 
 | Entry | Use |
 | --- | --- |
-| `core.js` | Compiled hydration/client mounting and authored component behavior, without stylesheet installation |
+| Package root | Pure component, decorator, and data API exports |
+| `runtime.js` | `startRuntime()` starts compiled hydration/client mounting and scriptless hosts, without stylesheet installation |
 | `styles.js` | Component stylesheet installation and readiness |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
@@ -53,14 +58,17 @@ it is not a different template language.
 
 ### Releasing unused templates
 
-Import the cache entry before any component definitions. Rebuild the protocol
+Import the cache entry before `startRuntime()` or any template lookups. Rebuild the protocol
 with the matching compiler when enabling this capability.
-For independently bundled application entries, keep that initialization ahead of
-definition side effects in the emitted graph as well as in the source imports.
+Independently bundled application entries must share one framework instance.
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import { collectTemplates } from '@microsoft/webui-framework/template-cache.js';
 import './app-shell.js';
+
+startRuntime();
 
 // Later, release cached templates that no live component needs.
 const released = collectTemplates();
@@ -80,7 +88,7 @@ explicitly.
 
 [Lazy template bodies](./lazy) let an ordinary `<if>` keep complex UI out
 of initial delivery until it is needed. Resource/state loading is a separate
-`@microsoft/webui-router/lazy.js` capability, not part of the renderer.
+`@microsoft/webui-delivery/lazy.js` capability, not part of the renderer.
 
 ## Component Files
 
@@ -177,11 +185,14 @@ policy on its root template:
 </template>
 ```
 
-Import the optional coordinator once before component registration modules:
+Select the optional coordinator in the application entry before startup:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import '@microsoft/webui-framework/lazy-hydration.js';
 import './todo-row.js';
+
+startRuntime();
 ```
 
 This combines visibility-deferred hydration with `content-visibility: auto`.
@@ -588,7 +599,7 @@ The child emits data without depending on the parent's implementation.
 
 ## Loading Static Component Assets
 
-When you are not using `@microsoft/webui-router`, deferred UI can still be
+When you are not using `@microsoft/webui-delivery`, deferred UI can still be
 loaded from static files. Build the root components as assets:
 
 ```bash
@@ -606,7 +617,7 @@ protocol. Asset-only fragments and component records do not remain in
 `protocol.bin`.
 
 Static component assets and `<route>` cannot be used in the same build. Use
-`@microsoft/webui-router` for routed components, or use component assets for
+`@microsoft/webui-delivery` for routed components, or use component assets for
 non-routed deferred UI.
 
 During development, pass the same flag to `webui serve` so these roots are

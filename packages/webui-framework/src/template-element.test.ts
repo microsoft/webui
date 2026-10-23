@@ -88,6 +88,8 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
+const { activateTemplateDefinitions } = await import('./template-registry.js');
+activateTemplateDefinitions();
 const {
   ACTIVATION_ACTIVATED,
   ACTIVATION_ANCESTOR_BARRIER,
@@ -149,6 +151,7 @@ test('registered constructors retain attribute names, not complete template meta
   try {
     CollectibleTemplate.define(tag);
     assert.deepEqual(Reflect.get(CollectibleTemplate, 'observedAttributes'), ['title']);
+    assert.equal(Object.getOwnPropertyDescriptor(CollectibleTemplate, 'observedAttributes')?.get, undefined);
     assert.equal(new CollectibleTemplate().templateMetadata(), metadata);
 
     delete window.__webui!.templates![tag];

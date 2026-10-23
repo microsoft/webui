@@ -181,7 +181,7 @@ size and emitted resource names are unchanged unless you opt in.
 **Component assets:**
 
 Use `--emit-component-assets` with the WebUI plugin to generate semantic ESM
-inputs for deferred UI such as dialogs loaded without `@microsoft/webui-router`:
+inputs for deferred UI such as dialogs loaded without `@microsoft/webui-delivery`:
 
 ```bash
 webui build ./my-app --out ./dist --plugin=webui \

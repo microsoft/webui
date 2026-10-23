@@ -217,7 +217,7 @@ pub fn run_example_builds() -> Result<(), String> {
 /// Build the shared workspace JS packages once, before the parallel app builds.
 ///
 /// Every example app's `build:deps` step compiles the shared packages
-/// (`@microsoft/webui`, `@microsoft/webui-framework`, `@microsoft/webui-router`)
+/// (`@microsoft/webui`, `@microsoft/webui-framework`, `@microsoft/webui-delivery`)
 /// with `tsc` into their `dist/` directories. Building the apps in parallel
 /// makes those `tsc` invocations race for the shared output: one app reads
 /// `packages/webui/dist/projection/adapters/esbuild.js` while another app's
@@ -239,7 +239,7 @@ fn ensure_example_deps() -> Result<(), String> {
             "--filter",
             "@microsoft/webui-framework",
             "--filter",
-            "@microsoft/webui-router",
+            "@microsoft/webui-delivery",
             "--filter",
             "@microsoft/webui-desktop",
             "run",

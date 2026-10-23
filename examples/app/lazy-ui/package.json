@@ -6,7 +6,7 @@
   "webuiProjectionManifest": "./dist/webui-projection.json",
   "scripts": {
     "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:protocol && pnpm run typecheck",
-    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-delivery run build",
     "build:client": "node ../../build-client.mjs",
     "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --out ./dist",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
@@ -22,7 +22,7 @@
     "@microsoft/webui": "workspace:*",
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
-    "@microsoft/webui-router": "workspace:*",
+    "@microsoft/webui-delivery": "workspace:*",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
     "esbuild": "catalog:",

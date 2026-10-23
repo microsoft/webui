@@ -1,17 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import '../../../src/template-cache-entry.js';
 import '../../../src/lazy-entry.js';
 import { attr, getTemplate, observable, WebUIElement } from '../../../src/index.js';
-import { createLazyLoader, lazyFragment } from '../../../../webui-router/src/lazy-entry.js';
-import { lazyNdjson } from '../../../../webui-router/src/lazy-ndjson.js';
+import { createLazyLoader, lazyFragment } from '../../../../webui-delivery/src/lazy-entry.js';
+import { ndjson } from '../../../../webui-delivery/src/ndjson.js';
 import { collectTemplates } from '../../../src/template-cache.js';
+
+startRuntime();
 
 let moduleLoads = 0;
 const loader = createLazyLoader({
   endpoint: '/lazy-ui/resources',
-  transport: lazyNdjson,
+  transport: ndjson(),
   loaders: {
     [lazyFragment('test-lazy-shadow', 'details')]: async () => { moduleLoads++; },
     [lazyFragment('test-lazy-light', 'details')]: async () => { moduleLoads++; },

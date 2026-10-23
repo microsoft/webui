@@ -525,9 +525,10 @@ describe('component asset helpers', () => {
             componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
             templates: {
               'fn-card': {
+                v: 3,
                 h: '<!--wc:0--><!--/wc-->',
                 b: [{ h: '<p>Fn</p>' }],
-                c: [[[0, ['ready']], 0, [[], 0]]]
+                c: [[[0, ['ready']], 0, [0, 0]]]
               }
             },
             templateFunctions: { 'fn-card': [function(v,s){return !!v('ready',s);}] }
@@ -965,8 +966,9 @@ describe('component asset helpers', () => {
             componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
             templates: {
               'condition-card': {
+                v: 3,
                 h: '<valid-child></valid-child>',
-                c: [[[1, ['ready']], 0, [[], 0]]]
+                c: [[[1, ['ready']], 0, [0, 0]]]
               }
             },
             templateFunctions: {
@@ -974,7 +976,7 @@ describe('component asset helpers', () => {
             }
             }, {
               componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
-              templates: { 'valid-child': { h: '<p>Valid</p>' } }
+              templates: { 'valid-child': { v: 3, h: '<p>Valid</p>' } }
             }],
             componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} }
           }`),
@@ -1017,9 +1019,10 @@ describe('component asset helpers', () => {
             componentStyles: emptyComponentStyles(),
             templates: {
               'stale-condition-card': {
+                v: 3,
                 h: '<!--wc:0--><!--/wc-->',
                 b: [{ h: '<p>Ready</p>' }],
-                c: [[[0, ['ready']], 0, [[], 0]]],
+                c: [[[0, ['ready']], 0, [0, 0]]],
               },
             },
             }],
@@ -1089,7 +1092,7 @@ describe('component asset helpers', () => {
 
     const shared = {
       componentStyles: emptyComponentStyles(),
-      templates: { 'shared-detail': { h: '<p>Shared</p>' } },
+      templates: { 'shared-detail': { v: 3, h: '<p>Shared</p>' } },
     };
     const rootModule = (root: string) => assetObjectModule({
       type: 'webui-component-asset',
@@ -1098,7 +1101,7 @@ describe('component asset helpers', () => {
       externalComponents: [],
       imports: [shared, {
         componentStyles: emptyComponentStyles(),
-        templates: { [root]: { h: '<shared-detail></shared-detail>' } },
+        templates: { [root]: { v: 3, h: '<shared-detail></shared-detail>' } },
       }],
       componentStyles: emptyComponentStyles(),
     });

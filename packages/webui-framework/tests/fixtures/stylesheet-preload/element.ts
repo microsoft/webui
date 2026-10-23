@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import {
   registerTemplateData,
   WebUIElement,
@@ -8,6 +10,8 @@ import {
 import {
   preloadComponentAssetStyles,
 } from '../../../src/element/link-styles.js';
+
+startRuntime();
 
 const TAG_NAME = 'test-preloaded-stylesheet';
 const STYLESHEET_HREF = '/stylesheet-preload/early.css';

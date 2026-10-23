@@ -153,7 +153,7 @@ the decorators and browser bundler as shown in
 Ordinary document navigation needs no client router. For soft navigation:
 
 ```bash
-npm install @microsoft/webui-router
+npm install @microsoft/webui-delivery
 ```
 
 The router is a separate browser package, with server-side route and partial

@@ -7,7 +7,7 @@ description: "Declare nested routes in HTML and add browser navigation, loaders,
 
 Declare routes in HTML and place `<outlet />` where a child page belongs.
 The native renderer matches the request path and returns the selected
-components. Add `@microsoft/webui-router` for client-side navigation that keeps
+components. Add `@microsoft/webui-delivery` for client-side navigation that keeps
 unchanged parent components mounted.
 
 Cache tags, pending UI, and error components are optional route attributes
@@ -17,7 +17,7 @@ server's JavaScript engine.
 ## Installation
 
 ```bash
-npm install @microsoft/webui-router
+npm install @microsoft/webui-delivery
 ```
 
 Only needed when your app has client-side navigation. Server-only apps with full page loads don't need it.
@@ -69,9 +69,10 @@ duplicated layout into the matched child component instead.
 **4. Start the router:**
 
 ```typescript
-import { Router } from '@microsoft/webui-router';
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
 
-Router.start();
+const router = new WebUIRouter();
+router.start();
 ```
 
 The server renders the matched route on first load. The router intercepts
@@ -84,19 +85,18 @@ Route segments may contain literal dots, such as `/docs/v2.1` or
 client navigation.
 
 The router never imports framework code. Authored route components use their
-registered classes. When the application also loads
-`@microsoft/webui-framework`, HTML-only route templates can mount during soft
+registered classes. When the application calls `startRuntime()` from
+`@microsoft/webui-framework/runtime.js`, HTML-only route templates can mount during soft
 navigation without empty TypeScript modules. The router falls back to a full
 document request only when no runtime registers the destination tag.
 
 ## Selecting router capabilities
 
-The default package entry keeps the convenience `Router` singleton and existing
-JSON/NDJSON, boundary, and transition behavior. Use `core.js` to exclude optional
-implementations from the application graph:
+There is one router class. Configure it once in `start()`; the constructor takes
+no configuration and importing the package does not create a singleton.
 
 ```typescript
-import { WebUIRouter } from '@microsoft/webui-router/core.js';
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
 
 const router = new WebUIRouter();
 router.start();
@@ -109,41 +109,38 @@ server-authoritative route chains, outlets, and component loaders work normally.
 Import only the capabilities you select:
 
 ```typescript
-import { WebUIRouter } from '@microsoft/webui-router/core.js';
-import { ndjson } from '@microsoft/webui-router/ndjson.js';
-import { routeBoundaries } from '@microsoft/webui-router/boundaries.js';
-import { viewTransitions } from '@microsoft/webui-router/transitions.js';
-import { createNavigationCache } from '@microsoft/webui-router/cache.js';
-import { setupFormInterception } from '@microsoft/webui-router/actions.js';
+import {
+  WebUIRouter, navigationCache, routeActions, routeBoundaries, viewTransitions,
+} from '@microsoft/webui-delivery/router.js';
+import { ndjson } from '@microsoft/webui-delivery/resources.js';
 
-const router = new WebUIRouter({
-  streaming: ndjson,
+const router = new WebUIRouter();
+router.start({
+  transport: ndjson(),
   boundaries: routeBoundaries,
   transitions: viewTransitions,
-  cache: createNavigationCache,
-  actions: setupFormInterception,
-});
-
-router.start({
-  cache: { maxEntries: 20, staleTime: 10_000 },
-  actions: true,
+  cache: navigationCache({ maxEntries: 20, staleTime: 10_000 }),
+  actions: routeActions(),
 });
 ```
 
-| Capability | Import and constructor property |
+| Capability | `start()` option |
 | --- | --- |
-| NDJSON partials | `ndjson.js`: `streaming: ndjson` |
-| Pending/error UI | `boundaries.js`: `boundaries: routeBoundaries` |
-| View transitions | `transitions.js`: `transitions: viewTransitions` |
-| Navigation cache | `cache.js`: `cache: createNavigationCache` |
-| Mutation actions | `actions.js`: `actions: setupFormInterception` |
-| Automatic route preload | `route-preload.js`: `preload: setupPreloadListeners`, plus the cache capability |
-| Development warnings | `diagnostics.js`: `diagnostics: validateRoutes` |
+| NDJSON partials | `transport: ndjson()` from `resources.js` |
+| Pending/error UI | `boundaries: routeBoundaries` |
+| View transitions | `transitions: viewTransitions` |
+| Navigation cache | `cache: navigationCache(options)` |
+| Mutation actions | `actions: routeActions()` |
+| Intent preload | `preload: routePreload(options)`, with a configured cache |
+| Development warnings | `diagnostics: routeDiagnostics` |
 
-The `cache`, `actions`, `preload`, and `dev` options still activate/configure their
-selected implementations. Enabling an option without its capability throws an
-actionable error. The existing `preload.js` entry for `prepareRoutePreload()` is
-separate from the automatic route-preload capability.
+The route policies are named exports from `router.js`. Selecting a configured
+policy enables it; there is no second boolean flag. Unselected implementations
+are excluded by production tree-shaking. Selected event listeners are ready
+before `start()` returns. Load application components lazily through `loaders`,
+not by changing global configuration during navigation. Do not mutate loader
+maps after startup. Calling `start()` on an active router is an error; destroy
+it before restarting.
 
 The NDJSON adapter is ready when imported; it does not wait until the first
 response to import its decoder. JSON-only applications do not import it at all.
@@ -154,13 +151,13 @@ tails are reported and never marked complete in the navigation cache.
 For custom delivery code, `resources.js` exports `fetchComponentTemplates()`,
 `registerTemplatesAndStyles()`, `readJsonPartial()`, and
 `waitForTemplateReadiness()` without importing a router or renderer.
-`ndjson-reader.js` exports the independent `NdjsonReader` for bounded record
-decoding. These are resource/transport primitives, not a new component-state
+The same `ndjson()` transport works with `createLazyLoader()`. These are
+resource/transport primitives, not a new component-state
 endpoint or a replacement for declaring compiled components.
 
 With the transition capability selected, the router uses the View Transitions
 API when available. Define transition styles in CSS; do not wrap
-`Router.navigate()` in another view transition. Navigation does not wait for the
+`router.navigate()` in another view transition. Navigation does not wait for the
 animation to finish.
 
 ## Nested Routes
@@ -274,7 +271,9 @@ Prefetch route data when a mouse hovers an internal link to reduce the wait
 after a click:
 
 ```ts
-Router.start({ preload: true });
+import { navigationCache, routePreload } from '@microsoft/webui-delivery/router.js';
+
+router.start({ cache: navigationCache(), preload: routePreload() });
 ```
 
 Preloading applies to internal links hovered with a mouse. A ready, fresh
@@ -282,10 +281,11 @@ result avoids another fetch on click; hovering another link cancels the previous
 preload. It is off by default, so enable it only when the navigation benefit
 justifies speculative requests.
 
-`@microsoft/webui-router/preload.js` exposes the framework-agnostic
-`prepareRoutePreload()` handle. Start framework-specific hydration from its
-`onIntent` callback, then pass the handle to
-`Router.start({ preload: prepared })`. WebUI Framework calls
+For interaction-deferred apps, create the same `routePreload({ onIntent })`
+policy and call its `prepare()` method before activation. It starts one bounded
+JSON prefetch without loading the router or a stream decoder. Pass that policy
+and a configured cache to `router.start()` to adopt the request without another
+fetch. Start framework-specific hydration from `onIntent`. WebUI Framework calls
 `wakeInteractionHydration()` from that callback; FAST uses its own hydration
 readiness signal. The router imports neither runtime.
 
@@ -295,7 +295,7 @@ Define a static `loader()` method on a component class to fetch data from a cust
 
 ```typescript
 import { WebUIElement } from '@microsoft/webui-framework';
-import type { RouteLoaderContext } from '@microsoft/webui-router';
+import type { RouteLoaderContext } from '@microsoft/webui-delivery/router.js';
 
 export class LiveDashboard extends WebUIElement {
   static async loader({ params, signal }: RouteLoaderContext) {
@@ -358,16 +358,16 @@ including when an `<outlet />` is inside a Shadow component.
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
 
-The cache is opt-in. The default `Router.start()` path does not load the cache
-module; enabling `cache` or `preload` loads it on demand.
+The cache is opt-in. Select it once at startup; a default `router.start()` does
+not allocate it. Resource inventories do not cache application state.
 
 ```typescript
-Router.start({
-  cache: {
+router.start({
+  cache: navigationCache({
     staleTime: 30_000,   // ms before refetch (default: 0 = disabled)
     gcTime: 300_000,     // ms before eviction from memory (default: 5 min)
     maxEntries: 50,      // LRU cap (default: 50)
-  },
+  }),
 });
 ```
 
@@ -391,7 +391,7 @@ Tag placeholders must name declared route parameters. For `/email/42`,
 
 <webui-blockquote appearance="tip" title="Preload + cache interaction" icon="💡">
 
-When `preload: true` is enabled, hover fetches write to the same cache. Preloaded entries get a minimum 5-second freshness window even when `staleTime` is 0 (disabled).
+With `preload: routePreload()`, hover fetches write to the same cache. Preloaded entries get a minimum 5-second freshness window even when `staleTime` is 0.
 
 </webui-blockquote>
 
@@ -413,18 +413,18 @@ mutation changes; the router cannot infer your application's data dependencies.
 Programmatic invalidation:
 
 ```typescript
-Router.invalidateTags(['inbox', 'thread:42']);  // evict by tag
-Router.invalidate('/email/42');                  // evict by path
-Router.invalidate();                             // evict everything
+router.invalidateTags(['inbox', 'thread:42']);  // evict by tag
+router.invalidate('/email/42');                  // evict by path
+router.invalidate();                             // evict everything
 ```
 
 ### Mutation Actions
 
-The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache. Enable this optional runtime with `Router.start({ actions: true })`:
+The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache. Select it with `router.start({ actions: routeActions() })`, importing `routeActions` from `router.js`:
 
 ```typescript
 import { WebUIElement } from '@microsoft/webui-framework';
-import type { RouteActionContext, RouteActionResult } from '@microsoft/webui-router';
+import type { RouteActionContext, RouteActionResult } from '@microsoft/webui-delivery/router.js';
 
 export class ComposePage extends WebUIElement {
   static async action({ formData, params, signal }: RouteActionContext): Promise<RouteActionResult> {
@@ -479,7 +479,7 @@ export class ErrorDisplay extends WebUIElement {
   @observable status = 0;    // HTTP status code (0 if network error)
   @observable path = '';     // the path that failed
 
-  onRetry = () => Router.navigate(this.path);
+  onRetry = () => router.navigate(this.path);
 }
 ```
 
@@ -507,7 +507,7 @@ do not construct route bootstrap data yourself.
 
 #### SSR Fresh / Loaders
 
-By default, `Router.start({ ssrFresh: true })` skips running route loaders on the initial SSR-bootstrapped navigation. The server-rendered state is considered authoritative, so there is no redundant client-side fetch on first load.
+By default, `router.start({ ssrFresh: true })` skips running route loaders on the initial SSR-bootstrapped navigation. The server-rendered state is considered authoritative, so there is no redundant client-side fetch on first load.
 
 Components that need to run their loader even during SSR bootstrap can opt in:
 
@@ -526,90 +526,95 @@ Loaders always run on subsequent client-side navigations regardless of the `ssrF
 
 <a id="client-navigation"></a>
 
-## The `Router` API
+## The `WebUIRouter` API
 
-### `Router.start(config?)`
+### `router.start(config?)`
 
-Starts the router. Call after hydration completes.
+Starts an application-owned router. Call once after hydration completes.
+The constructor takes no configuration.
 
 ```typescript
-Router.start({
+router.start({
   loaders: { ... },           // lazy-loading map (component tag -> async import)
-  preload: true,              // speculative fetch on link hover
-  actions: true,              // intercept POST forms and call static action()
+  preload: routePreload(),    // speculative fetch on link hover
+  actions: routeActions(),    // intercept POST forms and call static action()
   ssrFresh: true,             // skip initial loader replay (default: true)
-  cache: {                    // tagged navigation cache
+  cache: navigationCache({    // tagged navigation cache
     staleTime: 30_000,        // ms before refetch (0 = disabled)
     gcTime: 300_000,          // ms before memory eviction
     maxEntries: 50,           // LRU cap
-  },
+  }),
 });
 ```
 
 > **Base path:** The router automatically reads `<base href>` from the DOM. No `basePath` config needed — just set `<base href="/my-app/">` in your HTML.
 
-### `Router.navigate(path)`
+### `router.navigate(path)`
 
 ```typescript
-Router.navigate('/users/42');
+router.navigate('/users/42');
 ```
 
-### `Router.back()`
+### `router.back()`
 
 ```typescript
-Router.back();
+router.back();
 ```
 
-### `Router.invalidateTags(tags)`
+### `router.invalidateTags(tags)`
 
 Evict all cache entries whose tags overlap with the given tags:
 
 ```typescript
-Router.invalidateTags(['inbox', 'thread:42']);
+router.invalidateTags(['inbox', 'thread:42']);
 ```
 
-### `Router.invalidate(path?)`
+### `router.invalidate(path?)`
 
 Evict cache entries by path, or all entries if no path is given:
 
 ```typescript
-Router.invalidate('/email/42');  // evict one entry
-Router.invalidate();             // evict everything
+router.invalidate('/email/42');  // evict one entry
+router.invalidate();             // evict everything
 ```
 
-### `Router.activeComponent`
+### `router.activeComponent`
 
 The component tag of the currently active leaf route:
 
 ```typescript
-console.log(Router.activeComponent); // "user-detail"
+console.log(router.activeComponent); // "user-detail"
 ```
 
-### `Router.activeParams`
+### `router.activeParams`
 
 The bound parameters of the current route:
 
 ```typescript
-console.log(Router.activeParams); // { id: "42" }
+console.log(router.activeParams); // { id: "42" }
 ```
 
-### `Router.destroy()`
+### `router.destroy()`
 
 Tears down the router, removes event listeners, and clears the cache.
 
-### `Router.gc()`
+### `router.gc()`
 
 Release cached component templates to free memory. Later navigation can fetch
 them again when needed.
 
-With the WebUI framework, import its optional cache adapter before component
-definitions and use a freshly rebuilt protocol:
+With the WebUI framework, import its optional cache adapter before runtime
+startup or template reads, and use a freshly rebuilt protocol:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/template-cache.js';
 import './app-shell.js';
 
-Router.gc();
+startRuntime();
+
+router.gc();
 ```
 
 Collection releases cache ownership while live components retain the ordinary
@@ -621,7 +626,7 @@ not continue retaining the same resources.
 
 The operation does not destroy mounted components or unload JavaScript modules,
 native custom-element definitions, or shared document styles. Garbage collection
-is asynchronous. Calling `Router.gc()` for WebUI templates without the adapter
+is asynchronous. Calling `router.gc()` for WebUI templates without the adapter
 now fails explicitly rather than reporting a release that can leave metadata
 retained by component definitions.
 
@@ -637,7 +642,7 @@ long-lived app when measured template memory warrants the later refetch cost.
 Lazy-load route components so their JavaScript is only fetched on navigation:
 
 ```typescript
-Router.start({
+router.start({
   loaders: {
     'user-list': () => import('./pages/user-list.js'),
     'user-detail': () => import('./pages/user-detail.js'),
@@ -668,7 +673,7 @@ the build compiles them:
 Then load dynamically before first use:
 
 ```typescript
-await Router.ensureLoaded('settings-dialog');
+await router.ensureLoaded('settings-dialog');
 ```
 
 A component outside the active route stays deferred until it is requested.
@@ -682,7 +687,7 @@ unstyled rather than remain permanently hidden.
 Configure a custom template endpoint:
 
 ```typescript
-Router.start({
+router.start({
   templateEndpoint: '/api/templates', // default: '/_webui/templates'
 });
 ```
@@ -906,10 +911,15 @@ Hidden routes use inline `display: none`. Do not override that with
 
 ```typescript
 // index.ts
-import { Router } from '@microsoft/webui-router';
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
+import './app-shell.js';
+
+const router = new WebUIRouter();
 
 window.addEventListener('webui:hydration-complete', () => {
-  Router.start({
+  router.start({
     loaders: {
       'home-page': () => import('./pages/home-page.js'),
       'contacts-page': () => import('./pages/contacts-page.js'),
@@ -919,6 +929,5 @@ window.addEventListener('webui:hydration-complete', () => {
   });
 });
 
-// Shell component - eagerly loaded
-import './app-shell.js';
+startRuntime();
 ```

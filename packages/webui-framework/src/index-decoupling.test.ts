@@ -121,8 +121,8 @@ function walkIndexImportGraph(distDir: string, entry = './index.js'): Set<string
 describe('default entry decoupling', () => {
   test('the core entry excludes stylesheet installation and resource preparation', () => {
     const distDir = dirname(fileURLToPath(import.meta.url));
-    assert.ok(existsSync(resolve(distDir, 'core.js')), 'the lean core entry must be emitted');
-    const visited = walkIndexImportGraph(distDir, './core.js');
+    assert.ok(existsSync(resolve(distDir, 'runtime.js')), 'the renderer installer must be emitted');
+    const visited = walkIndexImportGraph(distDir, './runtime.js');
     for (const forbidden of [
       './element/styles.js',
       './element/link-styles.js',
@@ -135,7 +135,7 @@ describe('default entry decoupling', () => {
       assert.equal(visited.has(forbidden), false, `${forbidden} must not reach the core entry`);
     }
     assert.ok(visited.has('./template-element.js'));
-    assert.ok(visited.has('./element.js'));
+    assert.equal(visited.has('./element.js'), false, 'scriptless runtime does not require authored behavior');
   });
 
   test('the template data entry excludes rendering and transport implementations', () => {

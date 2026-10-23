@@ -48,7 +48,7 @@ test('template-owned links also require the stylesheet runtime', () => {
   ] satisfies TemplateMeta[]) {
     assert.throws(
       () => requireComponentStyleRuntime('linked-card', meta, ownerDocument()),
-      /Import that entry before defining styled components/,
+      /Import that entry before startRuntime\(\)/,
     );
   }
 });

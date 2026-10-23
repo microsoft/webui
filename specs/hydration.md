@@ -620,38 +620,37 @@ per-instance readiness.
 
 ## Module map
 
-The paths below are relative to `packages/webui-framework/`.
+The public API entry exports component classes, decorators, and template data
+operations without registering DOM listeners or scheduling work.
+`startRuntime()` from the pure `runtime.js` entry installs the template registry
+bridge and document readiness tracking, enables authored definitions, and
+schedules scriptless host registration.
+`styles.js` separately installs the chosen managed-style implementation.
+Streaming and visibility coordinators initialize lifecycle tracking when
+selected, without making those coordinators dependencies of ordinary rendering.
 
-```
-src/
-├── element.ts                  Orchestrator: $mount, $hydrate, $wire,
-│                               $wire, $hydrate, $update, events,
-│                               teardown, path index
-├── element/
-│   ├── markers.ts              Marker constants, collectItemMarkers,
-│   │                           buildSSRIndex (block-skipping pre-order walk)
-│   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
-│   ├── styles.ts               componentStyles catalog, installComponentStyles
-│   │                           (Link/Style/Module resources, import maps)
-│   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
-│                               TextBinding, ScopeFrame, TemplateInstance
-├── decorators.ts               @observable, @attr, attribute name registry,
-│                               toKebabCase fast path
-├── template.ts                 TemplateMeta types + getTemplate registry
-├── lifecycle.ts                Hydration timing, hydration-complete event
-└── index.ts                    Public surface
-```
+Declarations evaluated before startup wait without reading metadata or calling
+native custom-element registration, even when resources arrive meanwhile.
+Startup runs after the application's static imports, including selected
+installers and shared component chunks. Available declarations then register
+synchronously in one completion cohort, so an early root cannot release shared
+SSR state before the remaining roots consume it. Empty batches do not start
+hydration timing. Missing metadata keeps a declaration pending. Authored pending
+definitions run before fallback scriptless hosts, including when streaming
+demands the host runtime. After startup, metadata acceptance can complete pending
+definitions and later declarations with metadata register immediately.
 
-Public exports:
+In `packages/webui-framework/src`, `template-element.ts` owns compiled rendering
+and `element.ts` adds authored events, refs, and reactive effects.
+`template-registry.ts` owns metadata and its explicitly installed bridge;
+`lifecycle.ts` owns timing and completion. The `element/` modules own marker
+traversal, repeat reconciliation, styles, and binding types.
 
-```typescript
-export { WebUIElement } from './element.js';
-export { observable, attr } from './decorators.js';
-export { getTemplate, type TemplateMeta } from './template.js';
-export { hydrationStart, hydrationEnd } from './lifecycle.js';
-```
-
-Everything else is internal and may change without notice.
+Installation is idempotent. A pure API import cannot seal parser startup or
+consume the one-shot SSR state. Package side-effect declarations must retain
+the selected installer graph, while helper-only bundles omit renderer code.
+The public entrypoint map is defined in the package manifest and documented
+in the interactivity guide.
 
 ---
 

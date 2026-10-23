@@ -11,7 +11,13 @@ test('synchronous definition errors reject transport readiness instead of escapi
     value: Object.assign(new EventTarget(), { __webui: { templates: {} } }),
   });
   try {
-    const { deferTemplateDefinition } = await import('./template-registry.js');
+    const {
+      activateTemplateDefinitions,
+      deferTemplateDefinition,
+      installTemplateRegistry,
+    } = await import('./template-registry.js');
+    installTemplateRegistry();
+    activateTemplateDefinitions();
     const failure = new Error('definition could not be completed');
     deferTemplateDefinition('failing-definition', class {}, () => { throw failure; });
     const templates = { 'failing-definition': { v: 3, h: '<p></p>' } };

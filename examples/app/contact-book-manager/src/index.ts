@@ -1,15 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 /**
  * Contact-book-manager entry point — bootstraps WebUI Framework hydration
  * and the client-side router.
  */
 
-import { Router } from '@microsoft/webui-router';
+import { routeBoundaries, viewTransitions } from '@microsoft/webui-delivery/router.js';
+import { ndjson } from '@microsoft/webui-delivery/resources.js';
+import { router } from './router.js';
 
 // Shell component — eagerly loaded.
 import './cb-app/cb-app.js';
+
+startRuntime();
 
 // Listen for the framework's global hydration-complete event.
 window.addEventListener('webui:hydration-complete', onHydrationComplete);
@@ -23,7 +29,10 @@ function onHydrationComplete(): void {
 
   // Start router AFTER hydration — shadow roots are ready.
   // Page components use lazy loaders for code-split navigation.
-  Router.start({
+  router.start({
+    transport: ndjson(),
+    boundaries: routeBoundaries,
+    transitions: viewTransitions,
     loaders: {
       'cb-contact-detail': () => import('./organisms/cb-contact-detail/cb-contact-detail.js'),
       'cb-contact-form': () => import('./organisms/cb-contact-form/cb-contact-form.js'),

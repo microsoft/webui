@@ -1,0 +1,57 @@
+{
+  "description": "Renderer-independent resource and state delivery for WebUI routing and lazy template regions.",
+  "devDependencies": {
+    "@microsoft/webui-framework": "workspace:*",
+    "@microsoft/webui-delivery": "workspace:*",
+    "@playwright/test": "catalog:",
+    "@types/dom-navigation": "catalog:",
+    "@types/dom-view-transitions": "catalog:",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:",
+    "urlpattern-polyfill": "catalog:"
+  },
+  "exports": {
+    "./lazy.js": {
+      "import": {
+        "types": "./dist/lazy-entry.d.ts",
+        "default": "./dist/lazy-entry.js"
+      }
+    },
+    "./router.js": {
+      "import": {
+        "types": "./dist/router.d.ts",
+        "default": "./dist/router.js"
+      }
+    },
+    "./resources.js": {
+      "import": {
+        "types": "./dist/resources-entry.d.ts",
+        "default": "./dist/resources-entry.js"
+      }
+    }
+  },
+  "files": [
+    "dist/",
+    "!dist/**/*.test.*",
+    "!dist/browser-shim.*"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-delivery",
+  "scripts": {
+    "build": "tsc",
+    "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --incremental false",
+    "build:e2e": "esbuild tests/fixtures/router-app/src/index.ts tests/fixtures/router-app/src/interaction-entry.ts --bundle --outdir=tests/fixtures/router-app/dist --format=esm --splitting --sourcemap --tsconfig=tsconfig.e2e.json && esbuild tests/fixtures/router-app/src/lean-entry.ts --bundle --outfile=tests/fixtures/router-app/dist/lean-entry.js --format=esm --sourcemap --tsconfig=tsconfig.e2e.json",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./tests/fixtures/router-app/src --plugin=webui --servedir ./tests/fixtures/router-app/dist --state ./tests/fixtures/router-app/data/state.json --port 39102",
+    "test:unit": "tsc -p tsconfig.unit-test.json --incremental false && node --test \"dist/**/*.test.js\"",
+    "test": "pnpm test:unit && pnpm build:e2e && playwright test",
+    "test:e2e": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "publishConfig": {
+    "tag": "latest"
+  },
+  "version": "3.0.4"
+}

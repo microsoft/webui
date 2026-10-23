@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { installTemplateResourcePreparation } from './template-registry.js';
+import { installTemplateRegistry, installTemplateResourcePreparation } from './template-registry.js';
 import { installComponentStyleRuntime } from './element/style-runtime.js';
 import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
 import {
@@ -19,6 +19,7 @@ import {
   validateComponentStylesRegistration,
 } from './element/style-catalog.js';
 
+installTemplateRegistry();
 installComponentStyleRuntime({
   claimSsr: claimSsrComponentStyles,
   install: installComponentStyles,

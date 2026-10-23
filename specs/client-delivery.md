@@ -6,14 +6,18 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
 
 ## Import boundaries
 
-- The framework core owns compiled mounting/hydration and authored behavior.
+- The framework API entry has no installation side effects. Its explicit
+  runtime installer owns the registry bridge, parser-readiness tracking, and
+  scriptless hosts. Component classes still own mounting and authored behavior.
   Stylesheet installation is a separate adapter; required but uninstalled style
   support fails before an unstyled component mount.
 - The template-data entry installs no rendering engine. Registration can notify
   an already selected renderer, but does not import one.
-- The lean router owns URL/history and authoritative-chain reconciliation.
-  Its constructor accepts coarse capabilities for optional policies; it has no
-  static or dynamic import of their implementations.
+- One router owns URL/history and authoritative-chain reconciliation.
+  Its constructor takes no configuration. `start()` selects already-configured
+  policies once; action/preload listeners and selected transports are ready
+  before it returns. Reconfiguration while active is rejected. No singleton,
+  constructor/start duplication, or hidden optional dynamic import remains.
 - Lazy delivery is another consumer of the neutral resource layer, not part
   of navigation or the element renderer. JSON and NDJSON are separately selected.
   The WebUI lazy entry only resolves hostless sections and their owner context.
@@ -22,8 +26,15 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
   before the first response.
 - Progressive HTML coordination is a separate opt-in graph. It shares template
   and style data contracts, not route-state framing or navigation cancellation.
-- Convenience entries may compose capabilities. They are not evidence that an
-  unselected feature is absent from a lean application bundle.
+- The delivery package has three task entries: routing, lazy regions, and shared
+  resources. Their pure named exports do not install features; private
+  implementation-file layout is not the public API.
+
+The framework's side-effect allowlist retains every explicit installer,
+including streaming failure and resume-hook modules, and excludes pure API modules.
+Source-test fixtures containing authored definitions remain side-effectful.
+Public-import graph tests use package manifests without source-path aliases;
+mixing source and installed runtime aliases can duplicate the renderer.
 
 ## Resource readiness and inventory
 
@@ -54,6 +65,20 @@ Application state is never inferred from inventory. Route cache freshness,
 component instance state, and resource retention have distinct owners.
 
 ## Partial records and cancellation
+
+Both route and region consumers select the same `PartialTransport`. JSON
+returns one decoded value; optional NDJSON returns the initial value plus an
+owned, bounded record tail. The transport does not inspect route components,
+apply state, or choose navigation fallback. A common request lifetime propagates
+external cancellation and bounds the complete operation; disposing it removes
+its timer and external abort listener. A failed consumer aborts the request
+before disposal so rejected HTTP responses or transports cannot leave unread
+bodies active.
+
+Early intent preparation requests bounded JSON without importing a decoder.
+The same preload policy is adopted at router startup, replacing the early
+listener with the selected active policy. Destruction releases both stages.
+After startup the router uses its explicitly selected transport.
 
 The independent `NdjsonReader` retains one transport chunk plus a reusable
 record buffer. Its default limit is 256 KiB of UTF-8 record bytes, excluding LF.
@@ -126,8 +151,10 @@ actionable error, not an incomplete view or document-navigation fallback.
 
 ## Validation
 
-Application-profile bundles test the emitted static and dynamic graphs, not
-just source filenames. JSON-only routing must exclude the NDJSON implementation,
+Application-profile bundles use public package imports and test emitted static
+and dynamic graphs, not just source filenames or parsed-but-eliminated inputs.
+Helper-only imports must exclude renderer/navigation implementations and
+perform no installation. JSON-only routing must exclude the NDJSON implementation,
 and resource-only consumers must exclude route reconciliation and rendering.
 Existing progressive-bootstrap size ceilings continue to apply to its initial
 graph; they are not a whole-application budget.

@@ -8,6 +8,7 @@ import { isConditionTruthy } from './template-conditions.js';
 import {
   getTemplate,
   registerTemplateData,
+  prepareAssetTemplateData,
   releaseNonRoutedSSRBootstrapState,
   releaseSSRBootstrapState,
   type TemplateMeta,
@@ -32,6 +33,29 @@ describe('compiled condition truthiness', () => {
 });
 
 describe('template registry helpers', () => {
+  test('component assets obey the same current-format validation as SSR templates', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __webui: { templates: {} } },
+    });
+    try {
+      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":4,"h":""}']) {
+        assert.throws(
+          () => prepareAssetTemplateData({ invalid: JSON.parse(json) }),
+          /Unsupported template metadata version/,
+        );
+      }
+      const current: TemplateMeta = { v: 3, h: '<p>Current</p>' };
+      prepareAssetTemplateData({ current });
+      registerTemplateData({ current });
+      assert.equal(getTemplate('current'), current);
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'window', previous);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
   test('only the current compiled format is accepted before publication', () => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
     Object.defineProperty(globalThis, 'window', {
@@ -133,6 +157,39 @@ describe('template registry helpers', () => {
       assert.equal(getTemplate('greeting'), template);
     } finally {
       if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
+  test('normalizes root and nested conditionals across the flat local block table', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const rootCondition = (): boolean => true;
+    const childCondition = (): boolean => false;
+    const attributeCondition = (): boolean => true;
+    const template: TemplateMeta = {
+      v: 3,
+      h: '',
+      c: [[[0, ['visible']], 0, [0, 0]]],
+      b: [
+        { h: '', c: [[[1, ['expanded']], 1, [0, 0]]] },
+        { h: '<button></button>', a: [['disabled', 2, [2, ['disabled']]]] },
+      ],
+    };
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __webui: {} },
+    });
+    try {
+      registerTemplateData({ nested: template }, {
+        nested: [rootCondition, childCondition, attributeCondition],
+      });
+      assert.equal(template.c![0][0][0], rootCondition);
+      assert.equal(template.b![0].c![0][0][0], childCondition);
+      const attribute = template.b![1].a![0];
+      assert.ok(attribute[1] === 2);
+      assert.equal(attribute[2][0], attributeCondition);
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'window', previous);
       else Reflect.deleteProperty(globalThis, 'window');
     }
   });

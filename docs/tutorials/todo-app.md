@@ -343,12 +343,16 @@ across Shadow DOM boundaries.
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import './todo-app/todo-app.js';
 import './todo-item/todo-item.js';
+
+startRuntime();
 ```
 
-These imports register the elements. The runtime adopts the rendered DOM and
-connects behavior; no explicit "hydrate the page" call is needed. The initial
+`startRuntime()` registers the imported components, adopts the rendered DOM, and
+connects behavior. The initial
 content remains visible without JavaScript, but the todo actions need this
 bundle.
 

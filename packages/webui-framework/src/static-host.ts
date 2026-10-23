@@ -17,6 +17,7 @@ import {
 } from './template-element.js';
 import { hasComponentStyleWork } from './element/style-catalog.js';
 import {
+  activateTemplateDefinitions,
   getTemplateRegistry,
   installTemplateDefinitionPreparation,
 } from './template-registry.js';
@@ -33,6 +34,7 @@ import {
 } from './template-events.js';
 import type { TemplateMeta } from './template.js';
 import { templateCacheHooks } from './template-cache-contract.js';
+import { runHydrationBatch } from './lifecycle.js';
 
 let runtimeInstalled = false;
 
@@ -149,7 +151,7 @@ function defineTemplateHosts(templates?: Record<string, TemplateMeta>): void {
 /**
  * Install the runtime for compiler-owned dormant template hosts.
  *
- * Installed by the framework root or demanded by a streamed compiler-owned
+ * Installed by runtime startup or demanded by a streamed compiler-owned
  * root. Authored custom elements always win.
  */
 export function installTemplateElementRuntime(): void {
@@ -158,6 +160,7 @@ export function installTemplateElementRuntime(): void {
     return;
   }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  runHydrationBatch(activateTemplateDefinitions);
   runtimeInstalled = true;
   installTemplateDefinitionPreparation(null);
 
