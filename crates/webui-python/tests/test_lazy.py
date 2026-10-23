@@ -12,6 +12,17 @@ def test_lazy_resources_and_terminal_state(lazy_renderer: Renderer) -> None:
     metadata = json.loads(prepared.json)
     assert metadata["type"] == "webui-lazy"
     assert "state" not in metadata
+    fragment = metadata["templates"]["test-panel::lazy:details"]
+    assert fragment["v"] == 3
+    assert fragment["f"] == "test-panel::lazy:details"
+    assert fragment["o"] == "test-panel"
+    assert fragment["e"] == 1
+    assert fragment["s"] == [6, 7, 1, 1, 1]
+    assert fragment["tx"] == [[[2, 0], [["message"]]]]
+    assert fragment["r"] == [["items", "item", -1, [3, 0]]]
+    assert fragment["b"] == [{
+        "h": "<li></li>", "s": [1, 3, 1], "tx": [[[1, 0], [["item"]]]],
+    }]
     assert prepared.options.inventory == metadata["inventory"]
     assert prepared.json == lazy_renderer.render_lazy_resources("test-panel", "details")
 

@@ -122,7 +122,7 @@ async openSettings(): Promise<void> {
 
   try {
     const state = await fragments.fetchPartial('app-shell', 'settings', {
-      url: '/ui/settings',
+      url: '/_webui/lazy/state?owner=app-shell&id=settings',
       signal: request.signal,
     });
     if (generation !== this.settingsGeneration || request.signal.aborted) return;
@@ -212,7 +212,11 @@ See the [Node](../integrations/node#lazy-template-responses),
 
 For local development, `webui serve` provides `/_webui/lazy?owner=...&id=...`
 and `/_webui/lazy/state?owner=...&id=...`. The state endpoint uses configured
-state or the API state provider and supports JSON/NDJSON negotiation. Data
+state or the API state provider and supports JSON/NDJSON negotiation. With
+`--api-port`, the provider receives the complete lazy-state path and query shown
+above and returns `{ "state": { ... } }`; the CLI wraps that state with the
+matching protocol resources. A custom URL such as `/ui/settings` requires a
+custom host that returns the complete lazy response, not just application state. Data
 failures are explicit, including failures after metadata has been sent.
 
 Build with the WebUI plugin and the matching compiler/runtime. This

@@ -5,6 +5,7 @@ import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -148,6 +149,56 @@ async function serve(root: string, command: string) {
     throw new Error(`Tutorial preview failed:\n${output}\n${responseError}`, { cause: error });
   }
 }
+
+test('the lazy guide loads scoped state through the documented CLI host', async t => {
+  const guide = fs.readFileSync(path.join(workspace, 'docs/guide/concepts/lazy.md'), 'utf8');
+  const template = guide.match(/```html\r?\n<!-- app-shell\.html -->\r?\n([\s\S]*?)```/)?.[1];
+  const request = guide.match(/fetchPartial\('([^']+)', '([^']+)', \{\s*url: '([^']+)'/);
+  assert.ok(template && request, 'the guide must contain its component and state request');
+  const [, owner, id, url] = request;
+  const parent = path.join(workspace, 'packages/webui-press/dist-test/sites');
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'lazy-guide-'));
+  t.after(() => removeFixtureRoot(root));
+  write(path.join(root, 'src/index.html'),
+    `<!doctype html><html><head></head><body><${owner}></${owner}></body></html>`);
+  write(path.join(root, `src/${owner}.html`), template);
+  write(path.join(root, `src/${owner}.ts`), 'export {};');
+  const state = {
+    displayName: 'Ada', settingsReady: false, settingsLoading: false, settingsError: '',
+  };
+  const requested: string[] = [];
+  const api = createServer((request, response) => {
+    requested.push(request.url ?? '');
+    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ state }));
+  });
+  api.listen(0, '127.0.0.1');
+  await once(api, 'listening');
+  const address = api.address();
+  assert.ok(address && typeof address !== 'string');
+  t.after(async () => {
+    const closed = new Promise<void>((resolve, reject) =>
+      api.close(error => error ? reject(error) : resolve()));
+    api.closeAllConnections();
+    await closed;
+  });
+  const server = await serve(root, `webui serve ./src --plugin webui --api-port ${address.port}`);
+  try {
+    requested.length = 0;
+    const response = await fetch(new URL(url, server.url), {
+      headers: { Accept: 'application/json' },
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.type, 'webui-lazy');
+    assert.equal(result.owner, owner);
+    assert.equal(result.fragment, `${owner}::lazy:${id}`);
+    assert.deepEqual(result.state, { basePath: '/', ...state });
+    assert.deepEqual(requested, [url], 'the CLI forwards the complete state path to its provider');
+  } finally {
+    await server.stop();
+  }
+});
 
 test('Hello World scriptless commands use the documented files', async t => {
   const markdown = tutorial('hello-world').split('## Adding Interactivity')[0];
