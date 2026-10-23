@@ -1,6 +1,6 @@
 ---
 title: Benchmark results
-description: Inspect WebUI's historical benchmark results across JavaScript heap, renderer memory, LCP, and server throughput, with 14 selected cases and explicit provenance limits.
+description: Inspect the uniform official WebUI benchmark campaign across JavaScript heap, renderer memory, LCP, and server throughput, with 15 cases and explicit provenance limits.
 layout: page
 outline: false
 stateFile: ./.webui-press/generated/benchmark-state.json
@@ -9,14 +9,12 @@ stateFile: ./.webui-press/generated/benchmark-state.json
 # Measurements, with their limits
 
 Different measurements answer different questions. Start with browser memory,
-then inspect paint timing or server throughput. These are **historical, limited
-results**, not a current framework ranking or an overall performance score.
-This page presents 14 selected configurations from the recorded snapshot.
+then inspect paint timing or server throughput. These results are from the
+uniform official campaign and are not a current framework ranking or an overall
+performance score. This page presents all 15 configurations in the campaign.
 
-The server snapshot contains **one measured round**. Browser metrics describe
-**10 isolated runs**. Three WebUI hosts were selectively refreshed on
-**2026-09-04**; the other 11 cases retain earlier official results. This is not
-a uniform rerun.
+The server snapshot contains **one 20-second measured round per response mode**.
+Browser metrics describe **10 isolated runs per configuration**.
 
 <benchmark-explorer :benchmarks="{{benchmarks}}"></benchmark-explorer>
 
@@ -28,7 +26,7 @@ structural variants, and current UTC state materialized per request. It records
 to one CPU, with one 20-second measured round. Responses retain their natural
 byte sizes.
 
-The browser setup identifies Chromium 151.0.7922.34, a 1,440 × 900 viewport,
+The browser setup identifies Chromium 156.0.8078.4, a 1,440 × 900 viewport,
 10 randomized cold-cache navigations, and a fresh foreground
 process/context/page per sample. Native occlusion throttling was disabled;
 there was no CPU or network throttling. These are lab measurements, not
@@ -38,7 +36,8 @@ field Core Web Vitals.
   collection. It is only part of browser memory.
 - **Renderer private bytes** describe the isolated Chromium renderer process,
   not server RSS. Both memory metrics display MiB, where 1 MiB is 1,048,576 bytes;
-  the download retains the original byte values.
+  the download retains the original byte values. Some renderer-private samples
+  are unavailable; the per-case notes disclose the sample counts.
 - **LCP** is pre-interaction largest contentful paint from navigation start,
   in milliseconds. It does not describe interaction responsiveness.
 - **Complete and progressive throughput** are requests per second under
@@ -53,30 +52,25 @@ they are not combined with these five metrics or presented as an overall score.
 
 ## What is missing
 
-The advertised [benchmark source](https://github.com/microsoft/webui-benchmarks)
-returned **HTTP 404 without authentication** during the website audit. We could
-not verify a publicly inspectable source revision or the full raw artifacts.
-We do not know whether that source is private, moved, or unavailable.
+The [benchmark source](https://github.com/microsoft/webui-benchmarks) records
+the complete and progressive SSR reports and the progressive browser report.
+The displayed campaign uses released WebUI 3.0.4 and one clean source revision
+across all 15 cases; it is not the earlier selective refresh.
 
-The available summary does not establish a complete per-case framework/runtime
-version trail, the original measurement dates for the other cases, a complete
-hardware/OS record, or an unambiguous browser response-mode record.
-The mention of **WebUI 0.0.28** in capability metadata does **not** prove
-that every measurement used that version.
-
-Only the WebUI Light DOM **Bun.serve, Deno.serve, and Node node:http** cases were
-refreshed on 2026-09-04. The diamond beside those labels records that provenance,
-not a quality rating.
+The sanitized extract does not embed the complete raw-run archive or every
+framework binary artifact. Campaign source revision, fixture digest, WebUI
+version, response modes, sampling counts, and methodology are recorded in the
+benchmark evidence contract.
 
 One server round cannot estimate run-to-run variability. A MAD of zero in that
 record is not a confidence claim. Browser MAD and p95 notes remain descriptive;
-without the raw samples and a consistent comparison campaign, small differences
+without repeated independent server rounds, small differences
 must not be promoted as statistically established wins.
 
 ## Inspect the data, then measure your application
 
-[Download the displayed data as JSON](/benchmarks/historical-results.json).
-This generated, sanitized extract includes the 14 displayed cases, the five metrics,
+[Download the displayed data as JSON](/benchmarks/official-results.json).
+This generated, sanitized extract includes the 15 displayed cases, the five metrics,
 recorded notes, sampling information, and the limitations on this page.
 It omits bulk server telemetry and unsupported winner summaries. It makes the
 display inspectable; it is **not a complete reproducibility package**.

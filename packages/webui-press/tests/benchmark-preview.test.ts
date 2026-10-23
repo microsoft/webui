@@ -8,27 +8,27 @@ import { startWebsite } from './website-fixture.js';
 
 const metrics = [
   {
-    label: 'RPS', id: 'noStreamingRequestsPerSecond', maximum: '1,593.4',
-    values: ['1,593.4 req/s', '319.35 req/s', '138.4 req/s'],
-    widths: [100, 20.042048449855653, 8.685829044809841],
+    label: 'RPS', id: 'noStreamingRequestsPerSecond', maximum: '1,741.15',
+    values: ['1,741.15 req/s', '490.55 req/s', '151.2 req/s'],
+    widths: [100, 28.173908049277774, 8.683915802774028],
     sampling: '1 measured round (20 s)', direction: 'Higher serves more requests',
   },
   {
-    label: 'Streaming', id: 'streamingRequestsPerSecond', maximum: '1,388.45',
-    values: ['1,388.45 req/s', '267.85 req/s', '141.6 req/s'],
-    widths: [100, 19.291296049551658, 10.198422701573696],
+    label: 'Streaming', id: 'streamingRequestsPerSecond', maximum: '1,569.3',
+    values: ['1,569.3 req/s', '286.3 req/s', '154.4 req/s'],
+    widths: [100, 18.243802969476835, 9.838781622379402],
     sampling: '1 measured round (20 s)', direction: 'Higher serves more requests',
   },
   {
-    label: 'JS heap', id: 'jsHeapUsedBytes', maximum: '5.22',
-    values: ['2.1 MiB', '2.92 MiB', '3.69 MiB'],
-    widths: [40.24523190606928, 55.87096208890706, 70.7244143933641],
+    label: 'JS heap', id: 'jsHeapUsedBytes', maximum: '4.94',
+    values: ['2.14 MiB', '2.96 MiB', '3.75 MiB'],
+    widths: [43.281342630766886, 60.01838373734428, 75.95260394439306],
     sampling: '10 isolated Chromium desktop runs', direction: 'Lower uses less JS memory',
   },
   {
-    label: 'Renderer memory', id: 'rendererPrivateBytes', maximum: '73.31',
-    values: ['58.48 MiB', '63.72 MiB', '65.81 MiB'],
-    widths: [79.77354469162115, 86.9188757159984, 89.76954842147329],
+    label: 'Renderer memory', id: 'rendererPrivateBytes', maximum: '57.01',
+    values: ['42.4 MiB', '48.19 MiB', '48.18 MiB'],
+    widths: [74.3713600548133, 84.51867077766359, 84.50154162384378],
     sampling: '10 isolated Chromium desktop runs', direction: 'Lower uses less renderer memory',
   },
 ];
@@ -48,7 +48,7 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
   await expect(tabs).toHaveCount(4);
   assert.deepEqual(await tabs.allTextContents(), metrics.map(metric => metric.label));
   await expect(preview.getByRole('tab', { name: 'RPS', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
+  await expect(preview.getByRole('link')).toContainText('3 of 15 configurations');
   for (const metric of metrics) {
     const tab = preview.getByRole('tab', { name: metric.label, exact: true });
     await expect(tab).toBeEnabled();
@@ -66,7 +66,7 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
     await expect(webui.locator('th')).toHaveText('WebUI');
     await expect(preview.locator('.value')).toHaveText(metric.values);
     await expect(preview.locator('.qualification')).toContainText(metric.sampling);
-    await expect(preview.locator('.qualification')).toContainText('provenance are incomplete');
+    await expect(preview.locator('.qualification')).toContainText('sample-availability limits');
     await expect(preview.locator('.reading')).toContainText(metric.direction);
     await expect(preview.locator('.scale')).toContainText(metric.maximum);
     const widths = await preview.locator('.bar').evaluateAll(elements =>
@@ -83,7 +83,7 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
       assert.ok(shape.graphics && shape.width > 0 && shape.height > 0, 'Each selected bar must actually paint, not merely carry numeric attributes.');
     }
     await expect(preview.getByRole('link')).toHaveAttribute('href', '/webui/benchmarks/');
-    await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
+    await expect(preview.getByRole('link')).toContainText('3 of 15 configurations');
   }
   await expect(preview.locator('.context')).toContainText('private bytes, not RSS');
   assert.deepEqual(errors, []);

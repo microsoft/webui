@@ -162,7 +162,7 @@ test('benchmark evidence remains useful without JavaScript', async t => {
   await expect(page.locator('benchmark-explorer')).toBeVisible();
   assert.ok(await page.locator('benchmark-explorer svg').count() > 0, 'Measurements need an SSR SVG figure.');
   assert.ok(await page.locator('benchmark-explorer table').count() > 0, 'Measurements need an equivalent data table.');
-  await expect(page.getByText(/historical/i).first()).toBeVisible();
+  await expect(page.getByText(/uniform official campaign/i).first()).toBeVisible();
   const dimensions = await page.locator('.main-content').evaluate(element => ({
     scroll: element.scrollWidth,
     client: element.clientWidth,

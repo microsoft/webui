@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -12,6 +13,7 @@ import {
   DEFAULT_METRIC,
   formatMeasurement,
   METRIC_IDS,
+  prepareBenchmarkCampaignDigestPayload,
   prepareBenchmarkEvidence,
 } from '../../../docs/.webui-press/components/benchmark-explorer/benchmark-data.js';
 import type {
@@ -26,7 +28,7 @@ const workspace = path.resolve(import.meta.dirname, '../../..');
 const press = path.join(workspace, 'docs/.webui-press');
 const sourceText = fs.readFileSync(path.join(press, 'state/benchmark-summary.json'), 'utf8');
 
-interface HistoricalInput {
+interface CampaignInput {
   benchmarksJson: string;
   benchmarks: {
     asyncDataBoundary: { canonicalWebuiVersion: string; status: string };
@@ -36,12 +38,27 @@ interface HistoricalInput {
       label: string;
       metrics: Record<MetricId, { available: boolean; value: number | null; detail: string }>;
     }[];
-    selectiveRefresh: { refreshedAt: string; caseIds: string[] };
+    campaign: {
+      canonicalWebuiVersion: string;
+      sourceCommit: string;
+      sourceDigest: string;
+      fixtureDigest: string;
+      evidenceDigest: string;
+      responseModes: string[];
+      uniformOfficialMatrix: boolean;
+      workingTreeDirty: boolean;
+      rowCount: number;
+      serverMeasuredRounds: number;
+      browserRoundsPerApp: number;
+      progressiveMeasuredAt: string;
+      completeMeasuredAt: string;
+      browserMeasuredAt: string;
+    };
   };
 }
 
-function source(): HistoricalInput {
-  return JSON.parse(sourceText) as HistoricalInput;
+function source(): CampaignInput {
+  return JSON.parse(sourceText) as CampaignInput;
 }
 
 test('homepage evidence defaults to RPS and retains full-view scales for four ordered metrics', () => {
@@ -55,7 +72,7 @@ test('homepage evidence defaults to RPS and retains full-view scales for four or
   assert.deepEqual(previews.map(preview => preview.selected), [true, false, false, false]);
   assert.deepEqual(previews.map(preview => preview.tabIndex), [0, -1, -1, -1]);
   assert.deepEqual(previews.map(preview => preview.samples), [1, 1, 10, 10]);
-  assert.deepEqual(previews.map(preview => preview.maximumLabel), ['1,593.4', '1,388.45', '5.22', '73.31']);
+  assert.deepEqual(previews.map(preview => preview.maximumLabel), ['1,741.15', '1,569.3', '4.94', '57.01']);
   for (const preview of previews) {
     const view = buildBenchmarkView(evidence, preview.id);
     assert.deepEqual(preview.rows.map(row => row.caseId), ['webui-rust-actix', 'react', 'next']);
@@ -74,7 +91,7 @@ test('homepage evidence defaults to RPS and retains full-view scales for four or
     }
   }
   assert.deepEqual(previews.map(preview => preview.rows[0].barWidth), [
-    100, 100, 40.24523190606928, 79.77354469162115,
+    100, 100, 43.281342630766886, 74.3713600548133,
   ]);
   assert.match(previews[0].samplingLabel, /1 measured round.*variability/);
   assert.match(previews[3].description, /private bytes, not RSS/);
@@ -126,17 +143,45 @@ test('homepage evidence preserves unavailable and measured-zero values', () => {
   }
 });
 
-test('historical input keeps its serialized mirror aligned', () => {
+test('campaign input keeps its serialized mirror aligned', () => {
   const original = source();
   assert.deepEqual(JSON.parse(original.benchmarksJson), original.benchmarks);
 });
 
-test('historical evidence preserves the reviewed configurations and numeric values, with JS heap selected by default', () => {
+test('campaign evidence digest is pinned to the reviewed canonical measurements', () => {
+  const original = source();
+  const evidence = prepareBenchmarkEvidence(original);
+  const digest = createHash('sha256')
+    .update(JSON.stringify(prepareBenchmarkCampaignDigestPayload(evidence)), 'utf8')
+    .digest('hex');
+  assert.equal(digest, 'fd005660c1af487600a266a0669e905e54cbad73a9e075608ca8a676afd9fdd3');
+  assert.equal(original.benchmarks.campaign.evidenceDigest, digest);
+  for (const row of evidence.rows) {
+    for (const id of METRIC_IDS) {
+      const measurement = row.values[id];
+      const before = { ...measurement };
+      for (const change of [
+        () => { measurement.value = (before.value ?? 0) + 1; },
+        () => { measurement.detail += ' Changed note.'; },
+      ]) {
+        change();
+        const changedDigest = createHash('sha256')
+          .update(JSON.stringify(prepareBenchmarkCampaignDigestPayload(evidence)), 'utf8')
+          .digest('hex');
+        assert.notEqual(changedDigest, digest, `${row.caseId}.${id} values and notes must be bound`);
+        Object.assign(measurement, before);
+      }
+    }
+  }
+  assert.equal(JSON.stringify(original), JSON.stringify(source()), 'canonicalization must not mutate input');
+});
+
+test('campaign evidence preserves all official configurations and numeric values, with JS heap selected by default', () => {
   const original = source();
   const evidence = prepareBenchmarkEvidence(original);
   assert.deepEqual(evidence.rows.map(row => row.caseId), [
-    'lit', 'next', 'nuxt', 'react', 'react-tanstack', 'solid', 'sveltekit', 'vue',
-    'webui-bun-serve', 'webui-deno-serve', 'webui-fast-rust-actix', 'webui-node-http',
+    'astro', 'lit', 'next', 'nuxt', 'preact', 'react', 'react-tanstack', 'solid', 'sveltekit', 'vue',
+    'webui-bun-serve', 'webui-fast-rust-actix', 'webui-node-http',
     'webui-rust-actix', 'webui-shadowdom-rust-actix',
   ]);
   assert.deepEqual(evidence.metrics.map(metric => metric.id), METRIC_IDS);
@@ -153,11 +198,11 @@ test('historical evidence preserves the reviewed configurations and numeric valu
   assert.equal(view.selectedMetric, DEFAULT_METRIC);
   assert.equal(view.activeMetric.label, 'JavaScript heap');
   assert.deepEqual(view.metrics.filter(metric => metric.selected).map(metric => metric.id), [DEFAULT_METRIC]);
-  assert.equal(view.availableCount, 14);
+  assert.equal(view.availableCount, 15);
   assert.equal(view.unavailableCount, 0);
-  assert.equal(view.rows[0].caseId, 'webui-deno-serve');
-  assert.equal(view.rows[1].caseId, 'webui-bun-serve');
-  assert.equal(view.rows[2].caseId, 'webui-node-http');
+  assert.equal(view.rows[0].caseId, 'webui-bun-serve');
+  assert.equal(view.rows[1].caseId, 'webui-node-http');
+  assert.equal(view.rows[2].caseId, 'webui-rust-actix');
   assert.equal(view.rows[0].valueLabel, view.rows[1].valueLabel, 'sorting uses raw values, not rounded labels');
 });
 
@@ -239,7 +284,7 @@ test('an empty scale is unavailable, and an all-zero scale is a measured zero', 
   assert.equal(missing.maximumLabel, 'Unavailable');
   assert.equal(missing.midpointLabel, 'Unavailable');
   assert.equal(missing.scaleAvailable, false);
-  assert.equal(missing.unavailableCount, 14);
+  assert.equal(missing.unavailableCount, 15);
   assert.ok(missing.rows.every(row => row.barWidth === null));
   for (const row of input.benchmarks.rows) {
     row.metrics.jsHeapUsedBytes = {
@@ -252,16 +297,18 @@ test('an empty scale is unavailable, and an all-zero scale is a measured zero', 
   assert.ok(zero.rows.every(row => row.available && row.zero && row.barWidth === 0));
 });
 
-test('sanitized provenance preserves sampling and mixed refresh, without winner or private-source metadata', () => {
+test('sanitized provenance preserves the uniform campaign without winner or bulk telemetry', () => {
   const evidence = prepareBenchmarkEvidence(source());
   assert.equal(evidence.provenance.serverMeasuredRounds, 1);
   assert.equal(evidence.provenance.browserIsolatedRuns, 10);
-  assert.deepEqual(evidence.rows.filter(row => row.refreshed).map(row => row.caseId), [
-    'webui-bun-serve', 'webui-deno-serve', 'webui-node-http',
-  ]);
-  assert.equal(evidence.provenance.selectiveRefresh.refreshedAt, '2026-09-04T03:28:11.463Z');
-  assert.match(evidence.provenance.sourceAccess, /HTTP 404 without authentication/);
-  assert.match(evidence.provenance.limitations.join('\n'), /0\.0\.28.*capability metadata only/);
+  const campaign = source().benchmarks.campaign;
+  assert.equal(evidence.provenance.campaign.sourceCommit, campaign.sourceCommit);
+  assert.equal(evidence.provenance.campaign.sourceDigest, campaign.sourceDigest);
+  assert.equal(evidence.provenance.campaign.fixtureDigest, campaign.fixtureDigest);
+  assert.equal(evidence.provenance.campaign.canonicalWebuiVersion, '3.0.4');
+  assert.equal(evidence.provenance.campaign.browserMeasuredAt, campaign.browserMeasuredAt);
+  assert.deepEqual(evidence.provenance.campaign.responseModes, ['complete', 'progressive']);
+  assert.match(evidence.provenance.limitations.join('\n'), /unavailable.*sample counts/);
   assert.match(evidence.provenance.limitations.join('\n'), /not a complete reproducibility package/);
   const json = JSON.stringify(evidence);
   for (const removed of ['benchmarksJson', 'serverTelemetry', 'baseCommit', 'refreshedCommit', 'metricSummary', '399.0%']) {
@@ -270,7 +317,15 @@ test('sanitized provenance preserves sampling and mixed refresh, without winner 
   assert.ok(json.length < sourceText.length / 5, 'do not hydrate the original bulk telemetry and duplicated JSON');
 });
 
-const invalidCases: [string, string, (input: HistoricalInput) => void][] = [
+test('renderer-private notes retain partial sample counts and unavailability', () => {
+  const evidence = prepareBenchmarkEvidence(source());
+  const bun = evidence.rows.find(row => row.caseId === 'webui-bun-serve');
+  assert.ok(bun);
+  assert.match(bun.values.rendererPrivateBytes.detail, /^3 isolated runs .*7 unavailable$/);
+  assert.equal(bun.values.rendererPrivateBytes.value, 40861696);
+});
+
+const invalidCases: [string, string, (input: CampaignInput) => void][] = [
   ['missing measurement', 'benchmark-object', input => { delete (input.benchmarks.rows[0].metrics as Partial<Record<MetricId, unknown>>).jsHeapUsedBytes; }],
   ['missing raw value', 'benchmark-value', input => { delete (input.benchmarks.rows[0].metrics.jsHeapUsedBytes as { value?: unknown }).value; }],
   ['negative value', 'benchmark-value', input => { input.benchmarks.rows[0].metrics.jsHeapUsedBytes.value = -1; }],
@@ -286,9 +341,21 @@ const invalidCases: [string, string, (input: HistoricalInput) => void][] = [
   ['duplicate metric', 'benchmark-metric', input => { input.benchmarks.metrics[1].id = input.benchmarks.metrics[0].id; }],
   ['different sampling', 'benchmark-sampling', input => { input.benchmarks.metrics[0].methodology = '7 measured rounds'; }],
   ['different browser samples', 'benchmark-sampling', input => { input.benchmarks.rows[0].metrics.jsHeapUsedBytes.detail = '7 runs'; }],
-  ['unrecorded refresh date', 'benchmark-refresh', input => { input.benchmarks.selectiveRefresh.refreshedAt = '2026-09-05'; }],
-  ['changed refresh cases', 'benchmark-refresh', input => { input.benchmarks.selectiveRefresh.caseIds[0] = 'react'; }],
-  ['capability is not a measured version', 'benchmark-capability', input => { input.benchmarks.asyncDataBoundary.canonicalWebuiVersion = '3.0.4'; }],
+  ['unknown case', 'benchmark-case', input => { input.benchmarks.rows[0].caseId = 'webui-deno-serve'; }],
+  ['nonuniform campaign', 'benchmark-campaign', input => { input.benchmarks.campaign.uniformOfficialMatrix = false; }],
+  ['wrong campaign row count', 'benchmark-campaign', input => { input.benchmarks.campaign.rowCount = 14; }],
+  ['dirty campaign revision', 'benchmark-campaign', input => { input.benchmarks.campaign.workingTreeDirty = true; }],
+  ['wrong server sampling', 'benchmark-campaign', input => { input.benchmarks.campaign.serverMeasuredRounds = 2; }],
+  ['wrong browser sampling', 'benchmark-campaign', input => { input.benchmarks.campaign.browserRoundsPerApp = 3; }],
+  ['missing response mode', 'benchmark-count', input => { input.benchmarks.campaign.responseModes.pop(); }],
+  ['wrong response modes', 'benchmark-campaign', input => { input.benchmarks.campaign.responseModes.reverse(); }],
+  ['invalid source commit', 'benchmark-campaign', input => { input.benchmarks.campaign.sourceCommit = 'invalid'; }],
+  ['mismatched digest', 'benchmark-campaign', input => { input.benchmarks.campaign.fixtureDigest = 'a'.repeat(64); }],
+  ['invalid evidence digest', 'benchmark-campaign', input => { input.benchmarks.campaign.evidenceDigest = 'invalid'; }],
+  ['invalid timestamp', 'benchmark-campaign', input => { input.benchmarks.campaign.browserMeasuredAt = 'invalid'; }],
+  ['mismatched capability version', 'benchmark-capability', input => { input.benchmarks.asyncDataBoundary.canonicalWebuiVersion = '0.0.28'; }],
+  ['undisclosed missing samples', 'benchmark-sampling', input => { input.benchmarks.rows[0].metrics.rendererPrivateBytes.detail = '3 isolated runs · MAD 0 MiB'; }],
+  ['too many samples', 'benchmark-sampling', input => { input.benchmarks.rows[0].metrics.rendererPrivateBytes.detail = '11 isolated runs · MAD 0 MiB'; }],
 ];
 
 for (const [name, code, mutate] of invalidCases) {
@@ -305,7 +372,9 @@ test('evidence and initial view are deterministic even when input rows and metri
   const expected = prepareBenchmarkEvidence(input);
   input.benchmarks.rows.reverse();
   input.benchmarks.metrics.reverse();
-  assert.equal(JSON.stringify(prepareBenchmarkEvidence(input)), JSON.stringify(expected));
+  const reordered = prepareBenchmarkEvidence(input);
+  assert.equal(JSON.stringify(reordered), JSON.stringify(expected));
+  assert.deepEqual(prepareBenchmarkCampaignDigestPayload(reordered), prepareBenchmarkCampaignDigestPayload(expected));
   assert.equal(JSON.stringify(buildBenchmarkView(prepareBenchmarkEvidence(input))), JSON.stringify(buildBenchmarkView(expected)));
 });
 
@@ -329,14 +398,14 @@ test('the real preparation script emits deterministic ignored assets and fails i
   const run = () => execFileSync(process.execPath, args, {
     cwd: f.site, encoding: 'utf8', stdio: 'pipe',
   });
-  assert.match(run(), /Prepared historical benchmark state and sanitized JSON \(14 cases, 5 metrics\)\./);
+  assert.match(run(), /Prepared official benchmark state and sanitized JSON \(15 cases, 5 metrics\)\./);
   const compiledFile = path.join(local, 'generated/benchmark-data.mjs');
   const compiledBytes = fs.readFileSync(compiledFile, 'utf8');
   const compiledPreview = path.join(local, 'generated/benchmark-preview-data.mjs');
   const previewBytes = fs.readFileSync(compiledPreview, 'utf8');
   const stateFile = path.join(local, 'generated/benchmark-state.json');
   const homeFile = path.join(local, 'generated/home-benchmark-state.json');
-  const downloadFile = path.join(local, 'public/benchmarks/historical-results.json');
+  const downloadFile = path.join(local, 'public/benchmarks/official-results.json');
   const stateBytes = fs.readFileSync(stateFile, 'utf8');
   const homeBytes = fs.readFileSync(homeFile, 'utf8');
   const downloadBytes = fs.readFileSync(downloadFile, 'utf8');
@@ -348,7 +417,7 @@ test('the real preparation script emits deterministic ignored assets and fails i
   assert.deepEqual(Object.keys(state), ['benchmarks']);
   assert.deepEqual(Object.keys(home), ['previewMetrics', 'previewCaseCount', 'previewTotalCases']);
   assert.equal(home.previewCaseCount, 3);
-  assert.equal(home.previewTotalCases, 14);
+  assert.equal(home.previewTotalCases, 15);
   assert.deepEqual(home.previewMetrics, buildBenchmarkPreviews(state.benchmarks));
   assert.ok(homeBytes.length < 4096, 'four three-case previews must stay below 4 KiB of generated JSON');
   assert.deepEqual(JSON.parse(downloadBytes), prepareBenchmarkEvidence(source()));
@@ -358,6 +427,48 @@ test('the real preparation script emits deterministic ignored assets and fails i
   assert.equal(fs.readFileSync(stateFile, 'utf8'), stateBytes);
   assert.equal(fs.readFileSync(homeFile, 'utf8'), homeBytes);
   assert.equal(fs.readFileSync(downloadFile, 'utf8'), downloadBytes);
+  const tamperingCases: [string, (input: CampaignInput) => void][] = [
+    ['measurement', value => { value.benchmarks.rows[0].metrics.jsHeapUsedBytes.value = 123456789; }],
+    ['note', value => { value.benchmarks.rows[0].metrics.jsHeapUsedBytes.detail += ' Changed note.'; }],
+    ['availability', value => {
+      value.benchmarks.rows[0].metrics.jsHeapUsedBytes.available = false;
+      value.benchmarks.rows[0].metrics.jsHeapUsedBytes.value = null;
+    }],
+    ['label', value => { value.benchmarks.rows[0].label += ' Changed label'; }],
+    ['methodology', value => { value.benchmarks.metrics[0].methodology += ' Changed methodology.'; }],
+    ['source revision', value => { value.benchmarks.campaign.sourceCommit = 'a'.repeat(40); }],
+    ['timestamp', value => { value.benchmarks.campaign.browserMeasuredAt = '2026-10-23T00:00:00.000Z'; }],
+    ['matching source and fixture digests', value => {
+      value.benchmarks.campaign.sourceDigest = value.benchmarks.campaign.fixtureDigest = 'b'.repeat(64);
+    }],
+    ['self-consistent but unreviewed evidence digest', value => {
+      value.benchmarks.rows[0].metrics.jsHeapUsedBytes.value = 123456789;
+      value.benchmarks.campaign.evidenceDigest = createHash('sha256')
+        .update(JSON.stringify(prepareBenchmarkCampaignDigestPayload(prepareBenchmarkEvidence(value))), 'utf8')
+        .digest('hex');
+    }],
+  ];
+  for (const [name, mutate] of tamperingCases) {
+    const changed = source();
+    mutate(changed);
+    changed.benchmarksJson = JSON.stringify(changed.benchmarks);
+    write(input, JSON.stringify(changed));
+    const failure = spawnSync(process.execPath, args, { cwd: f.site, encoding: 'utf8' });
+    assert.equal(failure.status, 1, `reject changed ${name}`);
+    assert.match(failure.stderr, /\[benchmark-digest\]/, name);
+    assert.match(failure.stderr, /help:/, name);
+    for (const [file, bytes] of [[stateFile, stateBytes], [homeFile, homeBytes], [downloadFile, downloadBytes]]) {
+      assert.equal(fs.readFileSync(file, 'utf8'), bytes, `changed ${name} must not replace ${file}`);
+    }
+  }
+  const reordered = source();
+  reordered.benchmarks.rows.reverse();
+  reordered.benchmarks.metrics.reverse();
+  reordered.benchmarksJson = JSON.stringify(reordered.benchmarks);
+  write(input, JSON.stringify(reordered));
+  run();
+  assert.equal(fs.readFileSync(downloadFile, 'utf8'), downloadBytes, 'input order must not change the canonical digest');
+  write(input, sourceText);
   const helper = path.join(local, 'components/benchmark-explorer/benchmark-data.ts');
   write(helper, 'export const broken = ;');
   const compilationFailure = spawnSync(process.execPath, args, {

@@ -50,12 +50,12 @@ test('benchmark controls switch metrics with a compact mobile select and retain 
   await expect(staticSelect).toHaveValue('jsHeapUsedBytes');
   await expect(staticSelect.locator('option')).toHaveCount(5);
   await expect(staticExplorer.locator('.benchmark-metrics')).toBeHidden();
-  await expect(staticExplorer.locator('.benchmark-row')).toHaveCount(14);
-  await expect(staticExplorer.locator('svg.benchmark-plot')).toHaveCount(14);
+  await expect(staticExplorer.locator('.benchmark-row')).toHaveCount(15);
+  await expect(staticExplorer.locator('svg.benchmark-plot')).toHaveCount(15);
   await expect(staticExplorer.locator('.benchmark-figure-heading h3')).toContainText('JavaScript heap');
   await staticExplorer.locator('.benchmark-data-table > summary').click();
   await expect(staticExplorer.locator('table')).toBeVisible();
-  await expect(staticExplorer.locator('tbody tr')).toHaveCount(14);
+  await expect(staticExplorer.locator('tbody tr')).toHaveCount(15);
   await expect(staticExplorer.locator('tbody tr').first().locator('td')).toHaveCount(5);
   await staticPage.setViewportSize({ width: 1280, height: 900 });
   await expect(staticSelect).toBeHidden();
@@ -85,7 +85,7 @@ test('benchmark controls switch metrics with a compact mobile select and retain 
   await expect(explorer.locator('.benchmark-figure-heading h3')).toContainText('Progressive response');
   await expect(explorer.locator('.benchmark-direction')).toHaveText('Higher serves more requests');
   await expect(explorer.locator('.benchmark-row').first()).toHaveAttribute('data-case', 'webui-rust-actix');
-  await expect(explorer.locator('.benchmark-row')).toHaveCount(14);
+  await expect(explorer.locator('.benchmark-row')).toHaveCount(15);
 
   await select.focus();
   await select.press('Home');
