@@ -39,7 +39,7 @@ RUN cargo chef cook --release --bin marketplace-api --recipe-path recipe.json
 
 COPY . .
 RUN pnpm install --frozen-lockfile --filter=commerce... && \
-    pnpm --filter=@microsoft/webui-framework --filter=@microsoft/webui-router run build && \
+    pnpm --filter=@microsoft/webui-framework --filter=@microsoft/webui-delivery run build && \
     cd examples/app/commerce && pnpm build
 
 RUN cargo build --release -p marketplace-api

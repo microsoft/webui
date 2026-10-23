@@ -21,7 +21,7 @@ export interface TemplateStylesheetDescriptor {
 
 interface TemplateContent {
   readonly fragment: DocumentFragment;
-  readonly stylesheets: readonly TemplateStylesheetDescriptor[];
+  readonly stylesheets: readonly TemplateStylesheetDescriptor[] | undefined;
 }
 
 interface ForeignTemplateContent {
@@ -36,7 +36,6 @@ const MATH_NAMESPACE = 'http://www.w3.org/1998/Math/MathML';
 const HTML_ENCODING = 'text/html';
 const XHTML_ENCODING = 'application/xhtml+xml';
 const EMPTY_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
-const NO_LINK_STYLESHEETS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
 const templateContentCache = new WeakMap<TemplateBlockMeta, TemplateContent>();
 let foreignTemplateContentCache: WeakMap<TemplateBlockMeta, ForeignTemplateContent[]> | undefined;
 
@@ -73,8 +72,7 @@ export function getTemplateFragment(meta: TemplateBlockMeta): DocumentFragment {
 export function getTemplateStylesheets(
   meta: TemplateBlockMeta,
 ): readonly TemplateStylesheetDescriptor[] | undefined {
-  const stylesheets = getTemplateContent(meta, true).stylesheets;
-  return stylesheets === NO_LINK_STYLESHEETS ? undefined : stylesheets;
+  return getTemplateContent(meta, true).stylesheets;
 }
 
 /** Return whether template HTML may contain a `<link>` start tag. */
@@ -118,7 +116,7 @@ function getTemplateContent(
   const fragment = template.content;
   const stylesheets = (mayContainLink ?? templateHtmlMayContainLink(meta.h))
     ? collectStylesheetDescriptors(fragment)
-    : NO_LINK_STYLESHEETS;
+    : undefined;
   cached = { fragment, stylesheets };
   templateContentCache.set(meta, cached);
   return cached;
@@ -169,7 +167,7 @@ function getForeignTemplateFragment(
 
 function collectStylesheetDescriptors(
   fragment: DocumentFragment,
-): readonly TemplateStylesheetDescriptor[] {
+): readonly TemplateStylesheetDescriptor[] | undefined {
   const elements = fragment.querySelectorAll('*');
   let hasLink = false;
   let hasInlineStyles: boolean | undefined;
@@ -202,7 +200,7 @@ function collectStylesheetDescriptors(
       type: link.type,
     });
   }
-  return stylesheets ?? (hasLink ? EMPTY_STYLESHEETS : NO_LINK_STYLESHEETS);
+  return stylesheets ?? (hasLink ? EMPTY_STYLESHEETS : undefined);
 }
 
 function asciiLower(code: number): number {

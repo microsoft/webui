@@ -89,6 +89,7 @@
             ]
           },
           { "text": "Interactivity", "link": "/guide/concepts/interactivity" },
+          { "text": "Lazy UI", "link": "/guide/concepts/lazy" },
           { "text": "State and data", "link": "/guide/concepts/state-management" },
           { "text": "CSS and themes", "link": "/guide/concepts/css-tokens" },
           { "text": "How rendering works", "link": "/guide/concepts/how-it-works" }

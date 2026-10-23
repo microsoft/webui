@@ -19,9 +19,12 @@ test('one registry listener preserves lazy definition and resource readiness', a
       installTemplateDefinitionPreparation,
       installTemplateResourcePreparation,
       registerTemplateData,
+      installTemplateRegistry,
     } = await import('./template-registry.js');
+    installTemplateRegistry();
+    installTemplateRegistry();
     const templates: Record<string, TemplateMeta> = {
-      'late-static': { h: '<p></p>', th: 1 },
+      'late-static': { v: 3, h: '<p></p>', th: 1 },
     };
     const ready = Promise.withResolvers<void>();
     let definitions = 0;

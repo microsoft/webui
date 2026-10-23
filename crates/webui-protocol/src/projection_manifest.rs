@@ -446,15 +446,8 @@ fn append_record(output: &mut String, label: &str, fields: &[&str]) {
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(71);
-    output.push_str("sha256:");
-    for byte in digest {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
+    crate::build_hash::format_sha256(digest.as_slice())
 }
 
 /// Whether a value is exactly `sha256:` plus 64 lowercase hex characters.

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 /**
  * Routes example — nested routing with WebUI Framework.
  *
@@ -10,7 +12,10 @@
  *       ./topics/:topicId → topic-page (lessons list)
  *         ./lessons/:lessonId → lesson-page (lesson content)
  */
-import { Router } from '@microsoft/webui-router';
+import { WebUIRouter, routeBoundaries, viewTransitions } from '@microsoft/webui-delivery/router.js';
+import { ndjson } from '@microsoft/webui-delivery/resources.js';
+
+const router = new WebUIRouter();
 
 // Listen for the framework's global hydration-complete event.
 // NOTE: ES module imports are hoisted, so hydration may complete before
@@ -21,7 +26,10 @@ function onHydrationComplete(): void {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
   console.log(`Hydration complete in ${total?.duration.toFixed(1)}ms`);
 
-  Router.start({
+  router.start({
+    transport: ndjson(),
+    boundaries: routeBoundaries,
+    transitions: viewTransitions,
     loaders: {
       'section-page': () => import('./section-page/section-page.js'),
       'topic-page': () => import('./topic-page/topic-page.js'),
@@ -31,6 +39,8 @@ function onHydrationComplete(): void {
 
 // Side-effect imports — register custom elements and trigger hydration
 import './routes-app/routes-app.js';
+
+startRuntime();
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

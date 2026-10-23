@@ -1,0 +1,54 @@
+<template shadowrootmode="open" @keydown="{onKeydown(e)}">
+  <button class="button primary settings-trigger" @pointerenter="{preload()}"
+    w-ref="{triggerElement}" aria-busy="{{settingsLoading}}"
+    @focus="{preload()}" @click="{onTrigger()}">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>
+    <if condition="settingsLoading">Cancel settings load</if>
+    <if condition="!settingsLoading">View settings</if>
+  </button>
+
+  <if condition="settingsLoading">
+    <p class="loading-state" role="status"><span class="loading-dot" aria-hidden="true"></span>Loading view settings...</p>
+  </if>
+  <if condition="settingsError">
+    <div class="error-state" role="alert">
+      <p>{{settingsError}}</p>
+      <button class="button" @click="{open()}">Try again</button>
+    </div>
+  </if>
+
+  <dialog class="settings-dialog" w-ref="{dialog}" aria-labelledby="settings-title"
+    aria-describedby="settings-intro" @close="{onClosed()}">
+    <if condition="settingsReady" lazy id="settings">
+      <header class="overlay-header">
+        <h2 id="settings-title">View settings</h2>
+        <button class="icon-button" @click="{dismiss()}" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <p id="settings-intro" class="dialog-intro">Make this workspace easier to read.</p>
+      <form class="settings-body" @submit="{apply(e)}">
+        <fieldset>
+          <legend>Reading layout</legend>
+          <label class="field-label" for="density">Item spacing</label>
+          <select id="density" value="{{densityDraft}}" @change="{changeDensity(e)}">
+            <for each="option in layoutOptions">
+              <option value="{{option.value}}" ?selected="{{option.value == densityDraft}}">{{option.label}}</option>
+            </for>
+          </select>
+          <p class="field-description">Choose more breathing room or fit more items on screen.</p>
+          <label class="check-control preference">
+            <input type="checkbox" ?checked="{{highlightDraft}}" @change="{changeHighlight(e)}" />
+            <span><strong>Highlight pinned items</strong><small>Keep your next read easy to spot.</small></span>
+          </label>
+        </fieldset>
+        <p class="settings-note">{{settingsNote}}</p>
+        <footer class="dialog-actions">
+          <button class="button" type="button" @click="{dismiss()}">Cancel</button>
+          <button class="button primary" type="submit">Apply to this page</button>
+        </footer>
+        <p class="response-stamp">{{settingsStamp}}</p>
+      </form>
+    </if>
+  </dialog>
+</template>

@@ -92,6 +92,9 @@ Bun.serve({
 | `protocol.renderStream(state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
 | `protocol.streamResponse(options?)` | Open a [progressive streaming session](#progressive-streaming) that returns one `Buffer` per host call |
 | `protocol.renderPartial(state, entry, requestPath, inventory)` | Produce a complete partial-navigation JSON response |
+| `protocol.renderLazyResources(owner, id, options?)` | Resource-only JSON for a named lazy body |
+| `protocol.prepareLazyResources(owner, id, options?)` | Resource JSON and acknowledgement for two-phase delivery |
+| `protocol.renderLazyPartial(state, owner, id, options?)` | Fresh scoped state and missing resources |
 | `protocol.renderComponentTemplates(tags, inventory)` | Return on-demand template payloads |
 | `protocol.tokens()` | Return CSS token names in build order |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
@@ -109,6 +112,36 @@ Bun.serve({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `plugin` | `string` | - | Handler plugin bound for the lifetime of the protocol |
+
+## Lazy template responses
+
+Use the existing `Protocol` for [lazy bodies](../concepts/lazy). These
+operations do not create routes or invoke application data providers:
+
+```typescript
+const prepared = protocol.prepareLazyResources('app-shell', 'settings', {
+  inventory: clientInventory,
+  styleInventory: clientStyleInventory,
+  buildId: clientBuildId,
+});
+const pendingState = loadSettings(signal);
+await writeRecord(prepared.json);
+const state = await pendingState;
+await writeRecord(protocol.renderLazyPartial(
+  state, 'app-shell', 'settings', prepared.options,
+));
+```
+
+`loadSettings` and `writeRecord` are application functions. Authenticate before
+writing headers. The writer appends LF, flushes, and handles backpressure;
+disconnects cancel the data operation. Catch failures after the first record and
+send a terminal `{"error":{"code":"state-failed","message":"..."}}` record rather
+than returning successful empty state. For a complete JSON response, call
+`renderLazyPartial` directly with the client's options.
+
+Keep the same protocol snapshot throughout the request. `prepared.options`
+avoids reparsing metadata or resending its templates. Inventory affects resources,
+not state freshness.
 
 ## Reusing Protocol
 

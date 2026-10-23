@@ -123,6 +123,16 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
+        name: "lazy-ui",
+        dir: "examples/app/lazy-ui",
+        ports: &[3021, 3011],
+        scripts: &["start:api", "start:server"],
+        build_client: false,
+        pre_script: Some("build"),
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
+    PlaywrightSuite {
         name: "native-services",
         dir: "examples/app/native-services",
         ports: &[3022],
@@ -163,8 +173,8 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
-        name: "webui-router",
-        dir: "packages/webui-router",
+        name: "webui-delivery",
+        dir: "packages/webui-delivery",
         ports: &[39102],
         scripts: &["start:server"],
         build_client: false,
@@ -178,8 +188,8 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[],
         scripts: &[],
         build_client: false,
-        pre_script: None,
-        test_script: "test",
+        pre_script: Some("build:e2e"),
+        test_script: "test:e2e",
         update_snapshots_script: "test:update-snapshots",
     },
 ];
@@ -611,4 +621,20 @@ fn set_env_var(key: &str, value: &str) {
     // SAFETY: single-threaded; no other thread is reading or writing
     // process env. Children inherit the new value when spawned later.
     unsafe { std::env::set_var(key, value) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SUITES;
+
+    #[test]
+    fn press_prepares_shared_binaries_before_servers() -> Result<(), &'static str> {
+        let press = SUITES
+            .iter()
+            .find(|suite| suite.name == "webui-press")
+            .ok_or("Press suite must be configured")?;
+        assert_eq!(press.pre_script, Some("build:e2e"));
+        assert_eq!(press.test_script, "test:e2e");
+        Ok(())
+    }
 }

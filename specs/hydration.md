@@ -205,12 +205,17 @@ tuples once before hydration.
 | `s` | Root child-node count followed by the pre-order static element shapes. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
-| `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, lazy?]`; lazy is `1` when present. |
+| `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
 | `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
+| `v` | Required current format `3`, shared by ordinary components and hostless sections. Missing or different versions are rejected. |
+| `d` | Sorted direct ordinary resource dependencies. Absence is empty. Route activation and nested lazy edges are excluded. |
+| `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
+| `e` | `1` for a publicly addressable deferred body; absent on internal shared sections. |
+| `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
 
 The same metadata serves both paths:
 
@@ -250,6 +255,36 @@ there is no template-parsing compatibility path. Rebuild the protocol and
 browser bundle together with matching compiler and framework versions.
 Stylesheet preparation can still materialize a template containing authored
 links to preserve its existing browser-based stylesheet discovery semantics.
+
+### Template ownership
+
+The WebUI parser finalizes ownership metadata against typed fragment records,
+not HTML text. It follows if/for and attribute-template records and stops at
+known component roots, retaining sparse direct edges rather than materializing
+every root's transitive closure. Named fragment cycles are traversed iteratively.
+Plugins that do not need the graph retain their existing finalization behavior.
+
+Native constructors keep tag/observed-attribute identity, not a complete template
+object. Instances look up current metadata at mount time. The optional template
+cache adapter must be installed before metadata is consumed; otherwise it cannot
+reconstruct the ownership of existing consumers and fails explicitly.
+
+While the adapter is active, each live metadata object owns its direct
+dependency records. The tag index holds weak references to those records.
+Registry collection drops cache ownership; mounted metadata and DOM-keyed SSR
+pins retain only what their consumers may still need. Collection scans the
+current Document and open Shadow roots on explicit request, not on updates.
+Retained parents keep conditional/repeat descendants available even when those
+descendants have no live DOM or native definition yet.
+
+Equivalent responses reuse canonical metadata; conflicting live templates fail
+rather than replacing an artifact still in use. Compiled condition closures are
+resolver/scope-only code, allowing equivalent closure source to participate in
+that comparison. Browser-native ESM/custom-element lifetimes and CSS ownership
+remain independent and are not reclaimed by this adapter.
+
+See [Client delivery](client-delivery.md) for inventory acknowledgement,
+capability boundaries, and partial-stream ownership.
 
 ### Condition references
 
@@ -585,38 +620,37 @@ per-instance readiness.
 
 ## Module map
 
-The paths below are relative to `packages/webui-framework/`.
+The public API entry exports component classes, decorators, and template data
+operations without registering DOM listeners or scheduling work.
+`startRuntime()` from the pure `runtime.js` entry installs the template registry
+bridge and document readiness tracking, enables authored definitions, and
+schedules scriptless host registration.
+`styles.js` separately installs the chosen managed-style implementation.
+Streaming and visibility coordinators initialize lifecycle tracking when
+selected, without making those coordinators dependencies of ordinary rendering.
 
-```
-src/
-├── element.ts                  Orchestrator: $mount, $hydrate, $wire,
-│                               $wire, $hydrate, $update, events,
-│                               teardown, path index
-├── element/
-│   ├── markers.ts              Marker constants, collectItemMarkers,
-│   │                           buildSSRIndex (block-skipping pre-order walk)
-│   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
-│   ├── styles.ts               componentStyles catalog, installComponentStyles
-│   │                           (Link/Style/Module resources, import maps)
-│   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
-│                               TextBinding, ScopeFrame, TemplateInstance
-├── decorators.ts               @observable, @attr, attribute name registry,
-│                               toKebabCase fast path
-├── template.ts                 TemplateMeta types + getTemplate registry
-├── lifecycle.ts                Hydration timing, hydration-complete event
-└── index.ts                    Public surface
-```
+Declarations evaluated before startup wait without reading metadata or calling
+native custom-element registration, even when resources arrive meanwhile.
+Startup runs after the application's static imports, including selected
+installers and shared component chunks. Available declarations then register
+synchronously in one completion cohort, so an early root cannot release shared
+SSR state before the remaining roots consume it. Empty batches do not start
+hydration timing. Missing metadata keeps a declaration pending. Authored pending
+definitions run before fallback scriptless hosts, including when streaming
+demands the host runtime. After startup, metadata acceptance can complete pending
+definitions and later declarations with metadata register immediately.
 
-Public exports:
+In `packages/webui-framework/src`, `template-element.ts` owns compiled rendering
+and `element.ts` adds authored events, refs, and reactive effects.
+`template-registry.ts` owns metadata and its explicitly installed bridge;
+`lifecycle.ts` owns timing and completion. The `element/` modules own marker
+traversal, repeat reconciliation, styles, and binding types.
 
-```typescript
-export { WebUIElement } from './element.js';
-export { observable, attr } from './decorators.js';
-export { getTemplate, type TemplateMeta } from './template.js';
-export { hydrationStart, hydrationEnd } from './lifecycle.js';
-```
-
-Everything else is internal and may change without notice.
+Installation is idempotent. A pure API import cannot seal parser startup or
+consume the one-shot SSR state. Package side-effect declarations must retain
+the selected installer graph, while helper-only bundles omit renderer code.
+The public entrypoint map is defined in the package manifest and documented
+in the interactivity guide.
 
 ---
 

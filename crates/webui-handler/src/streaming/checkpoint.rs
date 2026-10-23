@@ -372,10 +372,20 @@ impl WebUIHandler {
                 },
             },
         };
+        let style_inventory = if context.protocol.build_id.is_empty() {
+            String::new()
+        } else {
+            crate::route_handler::borrowed_style_inventory(
+                &component_styles,
+                context.style_resource_index,
+            )?
+        };
         write_webui_bootstrap(
             context.writer,
             &mut context.json_scratch,
             WebUiBootstrap {
+                build_id: &context.protocol.build_id,
+                style_inventory: &style_inventory,
                 declaration_id,
                 enclosing_span_instance_id,
                 state: bootstrap_state,

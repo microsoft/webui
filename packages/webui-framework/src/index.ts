@@ -6,6 +6,8 @@
  *
  * Provides a reactive base class, decorators, and hydration utilities for
  * building Web Components that work with WebUI's server-side rendering pipeline.
+ * Applications call startRuntime() after importing their installers and component declarations.
+ * Importing this API module does not install either runtime.
  *
  * @example
  * ```ts
@@ -21,28 +23,8 @@
  * @packageDocumentation
  */
 
-import { installTemplateElementRuntime } from './static-host.js';
-
-// Set up compiler-owned dormant template hosts. The default entry deliberately
-// carries no dependency on the streaming coordinator or the lazy-hydration
-// coordinator: streaming apps import the separate
-// `@microsoft/webui-framework/streaming.js` entry (see `streaming-entry.ts`),
-// and visibility-deferred apps import
-// `@microsoft/webui-framework/lazy-hydration.js` (see
-// `lazy-hydration-entry.ts`), so an app that uses neither never loads them.
-setTimeout(installTemplateElementRuntime, 0);
-
 export { WebUIElement } from './element.js';
 export { observable, attr } from './decorators.js';
-export { getTemplate, registerTemplateData } from './template.js';
-export type { TemplateMeta } from './template.js';
-export {
-  installComponentStyles,
-  prepareComponentStyles,
-  registerComponentStyles,
-} from './element/styles.js';
-export type {
-  ComponentStyleResource,
-  ComponentStyles,
-} from './element/styles.js';
+export { getTemplate, registerTemplateData } from './template-registry.js';
+export type { TemplateMeta } from './template-types.js';
 export { hydrationStart, hydrationEnd } from './lifecycle.js';

@@ -3,6 +3,7 @@
 
 mod component_assets;
 mod host;
+mod lazy;
 mod streaming_api;
 
 use actix_web::body::BoxBody;
@@ -269,8 +270,8 @@ struct SharedState {
     /// the publication directory rather than retained in this map.
     component_assets: HashMap<String, String>,
     protocol: Option<Arc<Protocol>>,
-    state_data: Option<Value>,
-    token_css: Option<HashMap<String, String>>,
+    state_data: Option<Arc<Value>>,
+    token_css: Option<Arc<HashMap<String, String>>>,
     rebuild_error: Option<String>,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
@@ -429,8 +430,8 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         css_files: initial_result.css_files,
         component_assets: initial_result.component_assets,
         protocol: Some(initial_result.protocol),
-        state_data: Some(initial_result.state_data),
-        token_css: initial_result.token_css,
+        state_data: Some(Arc::new(initial_result.state_data)),
+        token_css: initial_result.token_css.map(Arc::new),
         rebuild_error: None,
         entry: args.app_args.entry.clone(),
     }));
@@ -549,6 +550,8 @@ fn serve_app(
         "/_webui/templates",
         web::get().to(handle_component_templates),
     )
+    .route("/_webui/lazy", web::get().to(lazy::resources))
+    .route("/_webui/lazy/state", web::get().to(lazy::state))
     .route("/{tail:.*}", web::get().to(handle_asset))
     .default_service(web::route().to(handle_not_found))
 }
@@ -1031,7 +1034,8 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
                 match context.state.lock() {
                     Ok(s) => (
                         s.state_data
-                            .clone()
+                            .as_deref()
+                            .cloned()
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
                         s.token_css.clone(),
                     ),
@@ -1043,7 +1047,8 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
         match context.state.lock() {
             Ok(s) => (
                 s.state_data
-                    .clone()
+                    .as_deref()
+                    .cloned()
                     .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
                 s.token_css.clone(),
             ),
@@ -1215,7 +1220,7 @@ fn fallback_state(context: &ServerContext) -> Value {
         .state
         .lock()
         .ok()
-        .and_then(|state| state.state_data.clone())
+        .and_then(|state| state.state_data.as_deref().cloned())
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
@@ -1227,7 +1232,7 @@ fn streaming_state_defaults(
         .state
         .lock()
         .ok()
-        .and_then(|state| state.token_css.clone());
+        .and_then(|state| state.token_css.as_deref().cloned());
     streaming_api::StateDefaults::new(
         token_css,
         context.base_path.as_deref().unwrap_or("/").to_owned(),
@@ -1963,8 +1968,8 @@ fn rebuild_and_update_state(
                 s.css_files = result.css_files;
                 s.component_assets = result.component_assets;
                 s.protocol = Some(result.protocol);
-                s.state_data = Some(result.state_data);
-                s.token_css = result.token_css;
+                s.state_data = Some(Arc::new(result.state_data));
+                s.token_css = result.token_css.map(Arc::new);
                 s.rebuild_error = None;
                 // The rebuild worker prints these under the "rebuilt" line.
                 Ok(result.warnings)
@@ -2062,14 +2067,14 @@ mod tests {
         })
     }
 
-    fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
+    pub(super) fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
         web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
                 entry: "index.html".to_string(),
@@ -2850,7 +2855,7 @@ mod tests {
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
                 entry: "index.html".to_string(),
@@ -3373,7 +3378,7 @@ mod tests {
             .render_partial(state.clone(), "index.html", "/", "")
             .unwrap();
         let context = test_route_context(protocol);
-        context.state.lock().unwrap().state_data = Some(state);
+        context.state.lock().unwrap().state_data = Some(Arc::new(state));
         let app = actix_test::init_service(
             App::new()
                 .app_data(context)

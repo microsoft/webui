@@ -218,6 +218,37 @@ Each side of a comparison is either a literal (number, quoted string, `true`,
 server send a precomputed `lastIndex` (or `isLast`) instead. Bare `.length` on an
 array or string does work: `<if condition="items.length > 3">`.
 
+### Lazy conditional bodies
+
+```html
+<if condition="settingsReady" lazy id="settings">
+  <h2>Settings</h2>
+  <p>{{displayName}}</p>
+</if>
+```
+
+- The body is an ordinary template fragment, not a component. It keeps owner
+  state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
+- Initially false omits lazy-only markup/metadata; initially true renders
+  normally and hydrates existing DOM.
+- Import `@microsoft/webui-framework/lazy.js` for WebUI rendering.
+  Use `createLazyLoader` from `@microsoft/webui-delivery/lazy.js` for
+  hydration-agnostic resource/state delivery. Routing is not started.
+- `ensureLoaded(owner, id)` preloads resources only. `fetchPartial(owner, id,
+  { url, signal })` returns fresh state without mounting or changing global
+  state. Apply state to the existing owner/scope, then change the condition.
+- JSON is the default transport. Select `transport: ndjson()` from
+  `@microsoft/webui-delivery/resources.js` for metadata-first,
+  state-last delivery.
+- Give regions an owner-local `id` for application loading. Behavior modules
+  remain explicit dynamic imports; deferral does not split owner JavaScript.
+- `<if>` accepts only `condition`, boolean `lazy`, and `id` on a lazy region.
+  Unsupported attributes fail the build. Rebuild protocol and client together.
+- Do not combine this protocol-backed feature with `--emit-component-assets`.
+
+See [lazy UI](/guide/concepts/lazy) for cancellation, dialog ownership,
+server APIs, and complete examples.
+
 ### Loops
 
 ```html
@@ -334,6 +365,9 @@ with `invalid-w-ref`. Declare the property in the class:
 Use `w-ref` only for imperative browser APIs - `focus()`, `scrollIntoView()`,
 `showModal()`, `showPopover()`, measurement. Never use it to read or write
 state that a template binding could express.
+
+Refs inside conditional or repeated content are cleared to `undefined` when
+their owning view is removed. Declare those refs as optional properties.
 
 `w-ref` is scalar. Reusing one ref name inside `<for>` overwrites the same
 property, so the last wired occurrence wins; repeat `key` and position do not
@@ -561,8 +595,8 @@ Always honor `prefers-reduced-motion`.
 
 ### View transitions
 
-The router wraps every client-side navigation in `document.startViewTransition()`
-automatically. **Do not** wrap `Router.navigate()` in your own
+Select `transitions: viewTransitions` from the delivery `router.js` entry to wrap
+route commits in `document.startViewTransition()`. **Do not** wrap `router.navigate()` in your own
 `startViewTransition()` - that would double-transition.
 
 Name the transitioning element in **component CSS**:
@@ -595,7 +629,7 @@ reached from inside a shadow root:
 While the router is active it installs a nonce-bearing
 `@view-transition { navigation: none; }` override, because automatic
 cross-document transitions conflict with intercepted routes that fall back to
-SSR document requests. `Router.destroy()` removes the override. The router
+SSR document requests. `router.destroy()` removes the override. The router
 awaits `updateCallbackDone` (not `.finished`) so rapid navigations supersede
 each other without queuing. Resizing or superseding the animation does not fail
 a committed route; route commit errors still follow normal navigation error handling
@@ -751,7 +785,7 @@ use:
 This keeps rendering containment active while interaction defers JavaScript and
 heap. It is a singleton interaction boundary, not a repeated-item policy.
 
-Import the optional coordinator once before component definitions:
+Import the optional coordinator in the application entry before `startRuntime()`:
 
 ```typescript
 import '@microsoft/webui-framework/lazy-hydration.js';
@@ -780,23 +814,21 @@ import {
   installInteractionHydration,
   wakeInteractionHydration,
 } from '@microsoft/webui-framework/interaction-hydration.js';
-import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
+import { routePreload } from '@microsoft/webui-delivery/router.js';
 
-let prepared: ReturnType<typeof prepareRoutePreload> | undefined;
+const preload = routePreload({ onIntent: () => wakeInteractionHydration() });
 const disposeHydration = installInteractionHydration({
-  onError: () => prepared?.destroy(),
+  onError: () => preload.destroy(),
   load: async () => {
-    const [, { Router }] = await Promise.all([
+    const [, { WebUIRouter, navigationCache }] = await Promise.all([
       import('./component-definitions.js'),
-      import('@microsoft/webui-router'),
+      import('@microsoft/webui-delivery/router.js'),
     ]);
-    Router.start({ preload: prepared, loaders });
+    new WebUIRouter().start({ preload, cache: navigationCache(), loaders });
   },
 });
 try {
-  prepared = prepareRoutePreload({
-    onIntent: () => wakeInteractionHydration(),
-  });
+  preload.prepare();
 } catch (error) {
   disposeHydration();
   throw error;
@@ -849,12 +881,30 @@ onItemSelected(e: CustomEvent): void {
 
 ```typescript
 // index.ts
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import './app-shell/app-shell.js';
 import './user-card/user-card.js';
+
+startRuntime();
 ```
 
-Importing a component module registers it as a custom element, which triggers
-hydration. Nothing else is required.
+Component modules declare classes with `.define()`. `startRuntime()` registers
+available declarations synchronously; missing metadata waits for delivery.
+Later imports register immediately when their metadata is available. Runtime
+setup belongs in the application entry, not in every component module.
+
+The package root and `runtime.js` are pure API entries. Call `startRuntime()`
+after importing selected installers and component modules, including in an
+interaction-loaded component-definitions entry. `styles.js` installs managed CSS
+and can be omitted for an unstyled app. Streaming and visibility
+coordinators remain explicit opt-ins.
+
+Optional template collection requires
+`@microsoft/webui-framework/template-cache.js` before `startRuntime()` or template lookups and a
+matching rebuilt protocol. `collectTemplates(keep?)` releases cache ownership,
+not live component dependencies or browser module definitions. See
+[runtime entrypoints](/guide/concepts/interactivity#runtime-entrypoints).
 
 ### The hydration boundary
 
@@ -991,7 +1041,7 @@ because a lazily loaded component has no template representation until fetched.
 Prefer the template-driven form, which needs no DOM insertion at all:
 
 ```typescript
-await Router.ensureLoaded('settings-dialog');
+await router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 ```
 
@@ -1007,7 +1057,7 @@ hidden; the component may be unstyled. See
 </if>
 ```
 
-Without `@microsoft/webui-router`, prebuild the asset and mount it into a
+Without `@microsoft/webui-delivery`, prebuild the asset and mount it into a
 `w-ref` slot:
 
 ```bash
@@ -1099,7 +1149,10 @@ All attributes are validated at build time. Referencing a non-existent `pending`
 or `error` component is a compile error.
 
 ```typescript
-Router.start({
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
+
+const router = new WebUIRouter();
+router.start({
   loaders: {
     'home-page': () => import('./pages/home-page.js'),
     'user-detail': () => import('./pages/user-detail.js'),
@@ -1107,11 +1160,21 @@ Router.start({
 });
 ```
 
+The default is JSON-only. Configure selected policies once in `start()`:
+`transport: ndjson()` from `resources.js`; `cache: navigationCache(options)`,
+`actions: routeActions()`, `preload: routePreload()`,
+`boundaries: routeBoundaries`, and `transitions: viewTransitions` from
+`router.js`. Preload requires a configured cache. There is no singleton or
+second constructor configuration. Do not mutate configuration while running;
+destroy before restarting.
+See [selecting router capabilities](/guide/concepts/routing#selecting-router-capabilities)
+for the import/configuration pairs.
+
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by
-`Router.start({ actions: true })`) live on the component class. Cache and
-preload are optional runtime tiers; a default `Router.start()` does not load the
-cache module.
+`router.start({ actions: routeActions() })`) live on the component class.
+Unselected policies are excluded by tree-shaking. Selected event listeners
+are ready at startup; route/component behavior modules remain lazy imports.
 
 Every route intended for partial navigation must register a custom element.
 Scriptless templates are registered by the compiler-owned host runtime. If a
@@ -1605,7 +1668,7 @@ for the stable built-in region list and full configuration contract.
 }
 ```
 
-Add `@microsoft/webui-router` for client-side navigation. Passing
+Add `@microsoft/webui-delivery` for client-side navigation. Passing
 `--projection-manifest` narrows hydration state to exactly the `@observable` and
 `@attr` fields your bundle uses; omitting it keeps full state.
 
@@ -1688,7 +1751,7 @@ fails the response, because bytes already flushed cannot be rewound.
 
 Bindings are available for WebAssembly, Python, and .NET; Go can call the C ABI
 through cgo. Python wheels are distributed on GitHub Releases, not yet PyPI.
-For `Router.ensureLoaded()`, expose
+For `router.ensureLoaded()`, expose
 `GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 

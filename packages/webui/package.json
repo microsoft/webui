@@ -24,6 +24,7 @@
     "wasm/"
   ],
   "scripts": {
+    "test:wasm-lazy": "node test/wasm-lazy.mjs",
     "build": "tsc",
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",

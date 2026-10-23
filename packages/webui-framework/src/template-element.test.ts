@@ -88,6 +88,8 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
+const { activateTemplateDefinitions } = await import('./template-registry.js');
+activateTemplateDefinitions();
 const {
   ACTIVATION_ACTIVATED,
   ACTIVATION_ANCESTOR_BARRIER,
@@ -110,6 +112,7 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
   (window as unknown as { __webui: { templates: Record<string, unknown> } }).__webui.templates[tag] = {
+    v: 3,
     h: '<div></div>',
   };
 }
@@ -126,6 +129,88 @@ interface ComplexPropertyWriter {
 interface PendingParentStateConsumer {
   $applyPendingParentState(replayAfterHydration: boolean): void;
 }
+
+test('registered constructors retain attribute names, not complete template metadata', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'customElements');
+  const constructors = new Map<string, CustomElementConstructor>();
+  Object.defineProperty(globalThis, 'customElements', {
+    configurable: true,
+    value: {
+      get: (tag: string) => constructors.get(tag),
+      define: (tag: string, ctor: CustomElementConstructor) => constructors.set(tag, ctor),
+    },
+  });
+  const tag = 'collectible-template';
+  const metadata: TemplateMeta = { v: 3, h: '<span></span>', tr: ['title'], ta: ['title'] };
+  window.__webui!.templates![tag] = metadata;
+  class CollectibleTemplate extends TemplateElement {
+    templateMetadata(): TemplateMeta | undefined {
+      return this.$currentTemplateMetadata();
+    }
+  }
+  try {
+    CollectibleTemplate.define(tag);
+    assert.deepEqual(Reflect.get(CollectibleTemplate, 'observedAttributes'), ['title']);
+    assert.equal(Object.getOwnPropertyDescriptor(CollectibleTemplate, 'observedAttributes')?.get, undefined);
+    assert.equal(new CollectibleTemplate().templateMetadata(), metadata);
+
+    delete window.__webui!.templates![tag];
+    assert.equal(new CollectibleTemplate().templateMetadata(), undefined);
+    assert.deepEqual(Reflect.get(CollectibleTemplate, 'observedAttributes'), ['title']);
+  } finally {
+    delete window.__webui!.templates![tag];
+    if (previous) Object.defineProperty(globalThis, 'customElements', previous);
+    else Reflect.deleteProperty(globalThis, 'customElements');
+  }
+});
+
+for (const wildcard of [false, true]) {
+  test(`unmounted template state preserves unrelated SSR bindings (wildcard: ${wildcard})`, () => {
+    const element = new TemplateElement();
+    const rootTexts: unknown[] = [];
+    const wildcardTexts: unknown[] = [];
+    const updated: unknown[][] = [];
+    const bindings = (texts: unknown[]) => ({ texts, attrs: [], conds: [], repeats: [] });
+    Object.defineProperties(element, {
+      $ready: { value: true },
+      $root: { value: bindings(rootTexts) },
+      $meta: { value: { h: '', tr: ['deferredValue'] } },
+      $pathIndex: { value: new Map() },
+      $wildcardBindings: { value: wildcard ? bindings(wildcardTexts) : null },
+      $updateBindings: { value(texts: unknown[]) { updated.push(texts); } },
+    });
+
+    element.setState({ deferredValue: 'Loaded before the body mounts' });
+    assert.equal(element.$resolveValue('deferredValue'), 'Loaded before the body mounts');
+    assert.equal(updated.length, wildcard ? 1 : 0);
+    if (wildcard) assert.equal(updated[0], wildcardTexts);
+
+    updated.length = 0;
+    element.$update('untracked.path');
+    assert.equal(updated.length, 1, 'unknown paths retain the full-update behavior');
+    assert.equal(updated[0], rootTexts);
+    element.$update();
+    assert.equal(updated.length, 2, 'an explicit full update still visits the root');
+  });
+}
+
+test('an observable without live bindings does not trigger a full template update', () => {
+  const names = new Set(['deferredValue']);
+  class DormantObservable extends TemplateElement {
+    protected override $observableNames(): Set<string> { return names; }
+  }
+  const element = new DormantObservable();
+  let updates = 0;
+  Object.defineProperties(element, {
+    $ready: { value: true },
+    $root: { value: { texts: [], attrs: [], conds: [], repeats: [] } },
+    $pathIndex: { value: new Map() },
+    $updateBindings: { value() { updates++; } },
+  });
+  element.$update('deferredValue');
+  element.$flushUpdates();
+  assert.equal(updates, 0);
+});
 
 test('a rejected binding releases the flush gate and preserves re-entrant updates', () => {
   const originalQueue = globalThis.queueMicrotask;
@@ -524,7 +609,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
-    raw.$meta = { h: '<span></span>' };
+    raw.$meta = { v: 3, h: '<span></span>' };
     raw.setAttribute('data-ws', '');
 
     raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
@@ -796,6 +881,7 @@ describe('TemplateElement.define — ordinary (non-streaming) authored definitio
       // its partial navigation response resolves.
       registerTemplateData({
         [tag]: {
+          v: 3,
           h: '<div><span></span></div>',
           tr: ['title'],
           ta: ['title'],

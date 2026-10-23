@@ -19,7 +19,7 @@
  *   <!--/wN-->  raw HTML binding end
  */
 
-import { isComponentStyleResourceMarker } from './styles.js';
+import { isComponentStyleResourceMarker } from './style-markers.js';
 
 // Marker data constants matching the handler plugin output.
 export const MARKER_REPEAT_START = 'wr';

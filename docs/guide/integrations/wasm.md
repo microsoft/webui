@@ -26,6 +26,20 @@ Ordinary native SSR does not require browser WASM or a browser download of
 Use the narrowest bundle your application needs. The handler excludes the
 parser, and the parser excludes the renderer.
 
+## Lazy template responses
+
+The loaded `Protocol` also serves [lazy bodies](../concepts/lazy).
+`renderLazyResources(owner, id, options)` returns resource JSON;
+`prepareLazyResources` returns `{ json, options }` for two-phase delivery.
+Pass the acknowledgement to
+`renderLazyPartial(stateJson, owner, id, prepared.options)` after resolving
+application state. Options use `inventory`, `styleInventory`, and `buildId`.
+
+The host owns state loading and transport. These APIs do not navigate, create
+components, or perform browser hydration. The handler-only variant can serve a
+protocol built elsewhere; the parser and combined variants assign artifact
+identity when building new protocols.
+
 ## Building the WASM bundles
 
 ```bash
@@ -63,6 +77,9 @@ same bytes repeatedly.
 | `streamResponse(entry, requestPath, options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
 | `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
+| `renderLazyResources(owner, id, options?)` | Resource-only JSON for a named template body |
+| `prepareLazyResources(owner, id, options?)` | Resource JSON and acknowledgement for two-phase delivery |
+| `renderLazyPartial(stateJson, owner, id, options?)` | Complete/terminal JSON with fresh scoped state |
 | `tokens()` | Return CSS token names in build order |
 
 For a service-worker example that drives a progressive session and prepares

@@ -47,6 +47,47 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
+/// Client resource availability for a lazy template request.
+#[napi(object)]
+pub struct JsLazyOptions {
+    /// Loaded template-resource inventory.
+    pub inventory: Option<String>,
+    /// Loaded stylesheet-definition inventory.
+    pub style_inventory: Option<String>,
+    /// Artifact identity associated with both inventories.
+    pub build_id: Option<String>,
+}
+
+/// A resource record and acknowledgement for two-phase host-owned delivery.
+#[napi(object)]
+pub struct JsPreparedLazyResources {
+    /// Resource JSON to flush immediately.
+    pub json: String,
+    /// Availability for the terminal state record.
+    pub options: JsLazyOptions,
+}
+
+fn lazy_request<'a>(
+    owner: &'a str,
+    id: &'a str,
+    options: &'a Option<JsLazyOptions>,
+) -> webui_handler::LazyRequest<'a> {
+    let options = options.as_ref();
+    webui_handler::LazyRequest {
+        owner,
+        id,
+        inventory: options
+            .and_then(|options| options.inventory.as_deref())
+            .unwrap_or(""),
+        style_inventory: options
+            .and_then(|options| options.style_inventory.as_deref())
+            .unwrap_or(""),
+        build_id: options
+            .and_then(|options| options.build_id.as_deref())
+            .unwrap_or(""),
+    }
+}
+
 /// Build statistics returned from the build function.
 #[napi(object)]
 pub struct JsBuildStats {
@@ -360,6 +401,55 @@ impl Protocol {
             })?;
         serde_json::to_string(&result)
             .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+    }
+
+    /// Prepare a named lazy body's resources without fetching application state.
+    #[napi]
+    pub fn render_lazy_resources(
+        &self,
+        owner: String,
+        id: String,
+        options: Option<JsLazyOptions>,
+    ) -> napi::Result<String> {
+        self.inner
+            .render_lazy_resources(lazy_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))
+    }
+
+    /// Prepare streaming resource JSON together with its acknowledgement.
+    #[napi]
+    pub fn prepare_lazy_resources(
+        &self,
+        owner: String,
+        id: String,
+        options: Option<JsLazyOptions>,
+    ) -> napi::Result<JsPreparedLazyResources> {
+        let prepared = self
+            .inner
+            .prepare_lazy_resources(lazy_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))?;
+        Ok(JsPreparedLazyResources {
+            json: prepared.json,
+            options: JsLazyOptions {
+                inventory: Some(prepared.options.inventory),
+                style_inventory: Some(prepared.options.style_inventory),
+                build_id: Some(prepared.options.build_id),
+            },
+        })
+    }
+
+    /// Render fresh scoped state and any still-missing lazy resources.
+    #[napi]
+    pub fn render_lazy_partial(
+        &self,
+        state_json: String,
+        owner: String,
+        id: String,
+        options: Option<JsLazyOptions>,
+    ) -> napi::Result<String> {
+        self.inner
+            .render_lazy_partial_json(&state_json, lazy_request(&owner, &id, &options))
+            .map_err(|error| NapiError::from_reason(error.to_string()))
     }
 
     /// Return CSS token names in build order.

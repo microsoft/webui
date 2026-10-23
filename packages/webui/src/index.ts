@@ -163,6 +163,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Versioned component style definitions and ordered closures. */
   componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -173,8 +175,39 @@ export interface ComponentTemplatesResponse {
   inventory: string;
 }
 
+/** Client availability for a named deferred body. */
+export interface LazyOptions {
+  inventory?: string;
+  styleInventory?: string;
+  buildId?: string;
+}
+
+/** Resource JSON and its small acknowledgement for two-phase delivery. */
+export interface PreparedLazyResources {
+  json: string;
+  options: Required<LazyOptions>;
+}
+
+/** Resource-only record, or a complete/terminal deferred state response. */
+export interface LazyResponse<State = Record<string, unknown>> {
+  type: "webui-lazy";
+  version: 1;
+  owner: string;
+  fragment: string;
+  buildId: string;
+  inventory: string;
+  styleInventory: string;
+  required: string[];
+  templates?: Record<string, unknown>;
+  templateFunctions?: Record<string, string>;
+  componentStyles?: ComponentStyles;
+  state?: State;
+}
+
 /** Complete JSON partial response from the server for client-side navigation. */
 export interface PartialResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Application state for the matched route. */
   state: Record<string, unknown>;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -242,6 +275,9 @@ interface NativeProtocol {
   ): NativeStreamingSession;
   renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
   renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
+  renderLazyResources(owner: string, id: string, options?: LazyOptions): string;
+  prepareLazyResources(owner: string, id: string, options?: LazyOptions): PreparedLazyResources;
+  renderLazyPartial(stateJson: string, owner: string, id: string, options?: LazyOptions): string;
   tokens(): string[];
 }
 
@@ -424,6 +460,27 @@ export class Protocol {
     inventoryHex: string,
   ): string {
     return this.#native.renderComponentTemplates(componentTags, inventoryHex);
+  }
+
+  /** Prepare resources for an owning template's <if lazy id="..."> region. */
+  renderLazyResources(owner: string, id: string, options?: LazyOptions): string {
+    return this.#native.renderLazyResources(owner, id, options);
+  }
+
+  /** Prepare metadata plus the inventory to use after that metadata is flushed. */
+  prepareLazyResources(owner: string, id: string, options?: LazyOptions): PreparedLazyResources {
+    return this.#native.prepareLazyResources(owner, id, options);
+  }
+
+  /** Produce complete JSON, or the final NDJSON record, with fresh scoped state. */
+  renderLazyPartial(
+    state: object | string,
+    owner: string,
+    id: string,
+    options?: LazyOptions,
+  ): string {
+    const json = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.renderLazyPartial(json, owner, id, options);
   }
 
   /** Return CSS token names in build order. */

@@ -181,7 +181,7 @@ size and emitted resource names are unchanged unless you opt in.
 **Component assets:**
 
 Use `--emit-component-assets` with the WebUI plugin to generate semantic ESM
-inputs for deferred UI such as dialogs loaded without `@microsoft/webui-router`:
+inputs for deferred UI such as dialogs loaded without `@microsoft/webui-delivery`:
 
 ```bash
 webui build ./my-app --out ./dist --plugin=webui \
@@ -611,11 +611,19 @@ successful rebuild clears the error and reloads connected browsers.
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
+| `/_webui/lazy?owner=...&id=...` | Resource-only JSON for a named deferred template body |
+| `/_webui/lazy/state?owner=...&id=...` | Fresh configured/API state with missing resources; JSON or explicit NDJSON |
 | `/*.webui.js` | In-memory generated root and component modules emitted by `--emit-component-assets` |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
 | Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
+
+Deferred endpoints use `X-WebUI-Inventory`, `X-WebUI-Style-Inventory`, and
+`X-WebUI-Build`. Unknown regions return 404, incompatible builds return 409, and
+invalid availability input returns 400. A state-provider failure is not replaced
+with stale file state after a resource record has been sent.
+See [deferred UI](../concepts/lazy) for authoring and production host APIs.
 
 ### `webui desktop`
 

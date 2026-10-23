@@ -118,6 +118,55 @@ public sealed class Protocol : IDisposable
         return NativeBindings.ReadAndFreeString(resultPtr)!;
     }
 
+    /// <summary>Prepare resources for an owner's named deferred body without application state.</summary>
+    public string RenderLazyResources(string owner, string id, LazyOptions? options = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(id);
+        IntPtr result = NativeBindings.webui_protocol_render_lazy_resources(
+            _handle, owner, id, JsonSerializer.Serialize(options ?? new LazyOptions()));
+        if (result == IntPtr.Zero)
+        {
+            throw new WebUIException(NativeBindings.GetLastError() ?? "RenderLazyResources failed.");
+        }
+        return NativeBindings.ReadAndFreeString(result)!;
+    }
+
+    /// <summary>Prepare metadata and acknowledgement for a two-phase response without reparsing metadata.</summary>
+    public PreparedLazyResources PrepareLazyResources(string owner, string id, LazyOptions? options = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(id);
+        IntPtr result = NativeBindings.webui_protocol_prepare_lazy_resources(
+            _handle, owner, id, JsonSerializer.Serialize(options ?? new LazyOptions()), out IntPtr updated);
+        if (result == IntPtr.Zero)
+        {
+            throw new WebUIException(NativeBindings.GetLastError() ?? "PrepareLazyResources failed.");
+        }
+        var prepared = NativeBindings.ReadAndFreeLazy(result, updated);
+        var acknowledgement = JsonSerializer.Deserialize<LazyOptions>(prepared.Options)
+            ?? throw new WebUIException("Invalid deferred acknowledgement.");
+        return new PreparedLazyResources(prepared.Json, acknowledgement);
+    }
+
+    /// <summary>Render fresh scoped state and any missing deferred template resources.</summary>
+    public string RenderLazyPartial(string stateJson, string owner, string id, LazyOptions? options = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(stateJson);
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(id);
+        IntPtr result = NativeBindings.webui_protocol_render_lazy_partial(
+            _handle, stateJson, owner, id, JsonSerializer.Serialize(options ?? new LazyOptions()));
+        if (result == IntPtr.Zero)
+        {
+            throw new WebUIException(NativeBindings.GetLastError() ?? "RenderLazyPartial failed.");
+        }
+        return NativeBindings.ReadAndFreeString(result)!;
+    }
+
     /// <summary>
     /// Returns CSS token names in build order.
     /// </summary>

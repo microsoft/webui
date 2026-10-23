@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -86,11 +86,11 @@ const ALLOWED_LAZY_HYDRATION_MODULES = new Set(['./lazy-hydration-contract.js'])
  * relative import verbatim — a transitive guarantee a single-file source grep
  * cannot give.
  */
-function walkIndexImportGraph(distDir: string): Set<string> {
-  const staticImport = /(?:from|import)\s*\(?\s*['"](\.\/[^'"]+)['"]/g;
+function walkIndexImportGraph(distDir: string, entry = './index.js'): Set<string> {
+  const staticImport = /(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g;
 
   const visited = new Set<string>();
-  const stack: string[] = ['./index.js'];
+  const stack: string[] = [entry];
 
   while (stack.length > 0) {
     const spec = stack.pop() as string;
@@ -119,6 +119,43 @@ function walkIndexImportGraph(distDir: string): Set<string> {
 }
 
 describe('default entry decoupling', () => {
+  test('the core entry excludes stylesheet installation and resource preparation', () => {
+    const distDir = dirname(fileURLToPath(import.meta.url));
+    assert.ok(existsSync(resolve(distDir, 'runtime.js')), 'the renderer installer must be emitted');
+    const visited = walkIndexImportGraph(distDir, './runtime.js');
+    for (const forbidden of [
+      './element/styles.js',
+      './element/link-styles.js',
+      './styles-entry.js',
+      './template-cache.js',
+      './template-cache-entry.js',
+      './streaming-coordinator.js',
+      './lazy-hydration-coordinator.js',
+    ]) {
+      assert.equal(visited.has(forbidden), false, `${forbidden} must not reach the core entry`);
+    }
+    assert.ok(visited.has('./template-element.js'));
+    assert.equal(visited.has('./element.js'), false, 'scriptless runtime does not require authored behavior');
+  });
+
+  test('the template data entry excludes rendering and transport implementations', () => {
+    const distDir = dirname(fileURLToPath(import.meta.url));
+    assert.ok(existsSync(resolve(distDir, 'templates-entry.js')), 'the template data entry must be emitted');
+    const visited = walkIndexImportGraph(distDir, './templates-entry.js');
+    for (const forbidden of [
+      './template-element.js',
+      './element.js',
+      './static-host.js',
+      './element/styles.js',
+      './element/link-styles.js',
+      './template-cache.js',
+      './streaming-coordinator.js',
+    ]) {
+      assert.equal(visited.has(forbidden), false, `${forbidden} must not reach the template data entry`);
+    }
+    assert.ok(visited.has('./template-registry.js'));
+  });
+
   test('dist/index.js has no static or dynamic path to any streaming coordinator module', () => {
     // This compiled test lives beside the emitted modules in `dist/`.
     const distDir = dirname(fileURLToPath(import.meta.url));

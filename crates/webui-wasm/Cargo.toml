@@ -23,7 +23,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["all"]
 all = ["handler", "parser"]
 handler = ["dep:microsoft-webui-handler"]
-parser = ["dep:microsoft-webui-parser", "microsoft-webui-protocol/projection-manifest"]
+parser = ["dep:microsoft-webui-parser", "microsoft-webui-protocol/projection-manifest", "microsoft-webui-protocol/content-identity"]
 
 [dependencies]
 microsoft-webui-parser = { path = "../webui-parser", version = "3.0.4", default-features = false, optional = true }

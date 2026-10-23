@@ -45,6 +45,17 @@ type PyRenderOptions = (
 );
 type PyPartialOptions = (String, String, String);
 type PyTemplateOptions = (Vec<String>, String);
+type PyLazyOptions = (String, String, String, String, String);
+
+fn lazy_request(options: &PyLazyOptions) -> webui_handler::LazyRequest<'_> {
+    webui_handler::LazyRequest {
+        owner: &options.0,
+        id: &options.1,
+        inventory: &options.2,
+        style_inventory: &options.3,
+        build_id: &options.4,
+    }
+}
 
 webui_handler::define_bytes_response_writer!(BytesWriter, bytes);
 
@@ -266,6 +277,62 @@ impl NativeRenderer {
                         "failed to serialize component templates: {error}"
                     ))
                 })
+            })
+            .map_err(BindingError::into_py_error)?;
+        Ok(PyBytes::new(py, &result))
+    }
+
+    fn render_lazy_resources<'py>(
+        &self,
+        py: Python<'py>,
+        options: PyLazyOptions,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let result = py
+            .detach(|| {
+                self.protocol
+                    .render_lazy_resources(lazy_request(&options))
+                    .map(String::into_bytes)
+                    .map_err(render_binding_error)
+            })
+            .map_err(BindingError::into_py_error)?;
+        Ok(PyBytes::new(py, &result))
+    }
+
+    fn prepare_lazy_resources<'py>(
+        &self,
+        py: Python<'py>,
+        options: PyLazyOptions,
+    ) -> PyResult<(Bound<'py, PyBytes>, (String, String, String))> {
+        let prepared = py
+            .detach(|| {
+                self.protocol
+                    .prepare_lazy_resources(lazy_request(&options))
+                    .map_err(render_binding_error)
+            })
+            .map_err(BindingError::into_py_error)?;
+        Ok((
+            PyBytes::new(py, prepared.json.as_bytes()),
+            (
+                prepared.options.inventory,
+                prepared.options.style_inventory,
+                prepared.options.build_id,
+            ),
+        ))
+    }
+
+    fn render_lazy_partial<'py>(
+        &self,
+        py: Python<'py>,
+        state_json: &Bound<'_, PyAny>,
+        options: PyLazyOptions,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let input = JsonInput::extract(state_json)?;
+        let result = py
+            .detach(|| {
+                self.protocol
+                    .render_lazy_partial_json(input.as_str()?, lazy_request(&options))
+                    .map(String::into_bytes)
+                    .map_err(partial_binding_error)
             })
             .map_err(BindingError::into_py_error)?;
         Ok(PyBytes::new(py, &result))

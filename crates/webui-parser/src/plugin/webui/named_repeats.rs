@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use super::{CompiledRepeat, ParsedForBlock, RootScope, TemplateSectionMeta};
+use super::{CompiledRepeat, LazyDefinition, ParsedForBlock, RootScope, TemplateSectionMeta};
 use crate::scoped_visits::ScopedVisits;
 use crate::{NamedForLoops, Result};
 
@@ -27,6 +27,8 @@ pub(super) fn visit_scope<'a>(
 #[derive(Default)]
 pub(super) struct CompileBlocks {
     pub(super) blocks: Vec<TemplateSectionMeta>,
+    pub(super) lazy: Vec<LazyDefinition>,
+    pub(super) lazy_names: std::collections::HashSet<String>,
     named: Vec<NamedBlock>,
     validation: NamedForLoops,
 }

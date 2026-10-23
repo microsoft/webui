@@ -38,9 +38,9 @@ pub use webui_handler::route_handler::{encode_inventory, get_needed_components, 
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
     plugin::HandlerPlugin, BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode,
-    FlushWriter, HandlerError, Protocol, RenderOptions, ResponseWriter, SessionOptions,
-    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
-    WebUIHandler,
+    FlushWriter, HandlerError, LazyOptions, LazyRequest, LazyRequestError, PreparedLazyResources,
+    Protocol, RenderOptions, ResponseWriter, SessionOptions, SpanInstanceId, StreamStatus,
+    StreamStep, StreamingResponse, StreamingSession, StreamingState, WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
@@ -417,7 +417,8 @@ fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> D
 pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
     let started = Instant::now();
 
-    let raw = build_protocol_inner(&options)?;
+    let mut raw = build_protocol_inner(&options)?;
+    raw.protocol.assign_build_id()?;
 
     let protocol_bytes = raw.protocol.to_protobuf()?;
 
@@ -872,6 +873,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         };
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
+        for fragment in &artifact.lazy_templates {
+            let mut data = fragment.data.clone();
+            data.inherit_owner_state(component);
+            protocol.client_fragments.insert(fragment.id.clone(), data);
+        }
     }
 
     let mut component_asset_graph = component_assets::render_component_assets(
@@ -1038,6 +1044,12 @@ mod tests {
         }
     }
 
+    impl webui_handler::FlushWriter for StringWriter {
+        fn flush(&mut self) -> webui_handler::Result<()> {
+            Ok(())
+        }
+    }
+
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
         for (name, content) in files {
@@ -1076,6 +1088,339 @@ mod tests {
     }
 
     mod fast;
+
+    #[test]
+    fn lazy_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                r#"<dialog><if condition="showSettings" lazy><settings-panel></settings-panel></if></dialog>"#,
+            ),
+            (
+                "settings-panel.html",
+                "<h2>Lazy settings content</h2><settings-child></settings-child>",
+            ),
+            ("settings-panel.css", "h2 { color: red; }"),
+            ("settings-child.html", "<p>Nested settings content</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let built = build(options).expect("compiled lazy UI");
+        assert!(built.protocol.fragments.contains_key("settings-panel"));
+        assert!(built.protocol.components.contains_key("settings-child"));
+        let protocol = Protocol::new(built.protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for shown in [false, true] {
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &serde_json::json!({ "showSettings": shown }),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .expect("render lazy condition");
+            assert_eq!(
+                writer.buf.contains("Lazy settings content"),
+                shown,
+                "inactive metadata must not embed the lazy body: {}",
+                writer.buf
+            );
+            assert_eq!(writer.buf.contains("Nested settings content"), shown);
+            assert_eq!(writer.buf.contains("settings-panel.css"), shown);
+            assert_eq!(writer.buf.contains(r#""settings-panel":{"h":"#), shown);
+            assert_eq!(writer.buf.contains(r#""settings-child":{"h":"#), shown);
+            let head = writer.buf.split("</head>").next().expect("document head");
+            assert_eq!(head.contains("settings-panel.css"), shown);
+        }
+    }
+
+    #[test]
+    fn lazy_if_keeps_inline_bodies_hostless_and_preserves_dom_mode() {
+        for dom in [DomStrategy::Shadow, DomStrategy::Light] {
+            let app = create_app_dir(&[
+                (
+                    "index.html",
+                    "<html><head></head><body><app-shell></app-shell></body></html>",
+                ),
+                (
+                    "app-shell.html",
+                    concat!(
+                        "<h1>Shell</h1><dialog>",
+                        r#"<if condition="show" lazy id="settings">"#,
+                        "<h2>Inline lazy settings</h2><p>{{subtitle}}</p>",
+                        r#"<if condition="loaded"><strong>{{detail}}</strong></if>"#,
+                        r#"<for each="item in items"><button @click="{pick(item.id)}">{{item.label}}</button></for>"#,
+                        r#"<if condition="advanced" lazy id="advanced"><em>Advanced lazy settings</em></if>"#,
+                        "</if></dialog>",
+                    ),
+                ),
+                ("app-shell.ts", "export {};"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.dom = dom;
+            let built = build(options).expect("arbitrary lazy body");
+            assert_eq!(
+                built.protocol.components.len(),
+                1,
+                "a lazy body must not become a component"
+            );
+            let root = "app-shell::lazy:settings";
+            let nested = "app-shell::lazy:advanced";
+            assert!(built.protocol.fragments.contains_key(root));
+            assert!(built.protocol.client_fragments[root].entry);
+            assert_eq!(built.protocol.client_fragments[root].owner, "app-shell");
+            assert!(!built.protocol.client_fragments[root]
+                .dependencies
+                .iter()
+                .any(|id| id == nested));
+            assert!(!built.protocol.components["app-shell"]
+                .template_json
+                .contains("Inline lazy settings"));
+            assert!(!built.protocol.components["app-shell"]
+                .template_json
+                .contains("pick"));
+            assert!(built.protocol.fragments["app-shell"].fragments.iter().any(|fragment| {
+                matches!(fragment.fragment.as_ref(), Some(Fragment::IfCond(condition)) if condition.lazy && condition.fragment_id == root)
+            }));
+            let protocol = Protocol::new(built.protocol);
+            let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+            for (shown, advanced) in [(false, false), (true, false), (true, true)] {
+                let state = serde_json::json!({
+                    "show": shown, "advanced": advanced, "loaded": true,
+                    "subtitle": "Current", "detail": "Detail", "items": [{"id":1,"label":"First"}],
+                });
+                let mut writer = StringWriter { buf: String::new() };
+                handler
+                    .render(
+                        &protocol,
+                        &state,
+                        &RenderOptions::new("index.html", "/"),
+                        &mut writer,
+                    )
+                    .unwrap();
+                assert_eq!(writer.buf.contains("Inline lazy settings"), shown);
+                assert_eq!(writer.buf.contains("Advanced lazy settings"), advanced);
+                assert!(
+                    !writer.buf.contains("<app-shell::"),
+                    "fragment resources have no element host"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_named_repeat_reuses_the_owners_eager_block_table() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                concat!(
+                    r#"<for id="shared" each="item in outsideItems" />"#,
+                    r#"<if condition="show" lazy id="panel">"#,
+                    r#"<for id="shared" each="item in items"><span>{{item.label}}</span></for>"#,
+                    "</if>",
+                ),
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let built = build(options).unwrap();
+        let owner: serde_json::Value =
+            serde_json::from_str(&built.protocol.components["app-shell"].template_json).unwrap();
+        let region: serde_json::Value = serde_json::from_str(
+            &built.protocol.client_fragments["app-shell::lazy:panel"].template_json,
+        )
+        .unwrap();
+        assert_eq!(owner["b"].as_array().unwrap().len(), 1);
+        assert_eq!(region["r"][0][2], 0);
+        assert_eq!(region["o"], "app-shell");
+    }
+
+    #[test]
+    fn lazy_resource_selection_preserves_props_and_loop_shadowing() {
+        let app = create_app_dir(&[
+            ("index.html", "<html><head></head><body><scope-owner :item=\"{{fallback}}\"></scope-owner></body></html>"),
+            ("scope-owner.html", concat!(
+                r#"<for each="item in items"><if condition="item.expanded" lazy id="row"><p>Visible row payload</p></if></for>"#,
+                r#"<if condition="item.expanded" lazy id="outside"><p>Outside payload</p></if>"#,
+            )),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let protocol = Protocol::new(build(options).unwrap().protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for (rows, fallback, expected_row, expected_outside) in [
+            (vec![false, false], true, false, true),
+            (vec![false, true], false, true, false),
+        ] {
+            let state = serde_json::json!({
+                "items": rows.into_iter().map(|expanded| serde_json::json!({ "expanded": expanded })).collect::<Vec<_>>(),
+                "fallback": { "expanded": fallback },
+            });
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &state,
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(writer.buf.contains("Visible row payload"), expected_row);
+            assert_eq!(writer.buf.contains("Outside payload"), expected_outside);
+        }
+    }
+
+    #[test]
+    fn lazy_authoring_errors_have_stable_codes() {
+        for (template, code) in [
+            (
+                r#"<if condition="show" lazy="yes"><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_LAZY_ATTRIBUTE,
+            ),
+            (
+                r#"<if condition="show" lazy id=""><p>Body</p></if>"#,
+                webui_parser::codes::INVALID_LAZY_ID,
+            ),
+            (
+                r#"<if condition="show" lazy id="same"></if><if condition="other" lazy id="same"></if>"#,
+                webui_parser::codes::DUPLICATE_LAZY_ID,
+            ),
+        ] {
+            let app = create_app_dir(&[
+                ("index.html", "<app-owner></app-owner>"),
+                ("app-owner.html", template),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            let error = build(options).err().expect("invalid lazy authoring");
+            assert!(error.chain_message().contains(code), "{error}");
+        }
+    }
+
+    #[test]
+    fn if_attributes_are_validated_against_the_current_contract() {
+        for plugin in [None, Some(Plugin::WebUI)] {
+            for attributes in [
+                "defer",
+                "async",
+                "lazy unknown",
+                "id=\"body\"",
+                "class=\"panel\"",
+                "data-condition=\"ignored\"",
+            ] {
+                let template =
+                    format!("<h1>Owner</h1>\n<if condition=\"show\" {attributes}><p>Body</p></if>");
+                let app = create_app_dir(&[
+                    ("index.html", "<app-owner></app-owner>"),
+                    ("app-owner.html", &template),
+                ]);
+                let mut options = default_options(app.path());
+                options.plugin = plugin;
+                let error = build(options).err().expect("invalid attribute must fail");
+                let message = error.chain_message();
+                assert!(
+                    message.contains(webui_parser::codes::INVALID_IF_ATTRIBUTE),
+                    "{message}"
+                );
+                assert!(
+                    message.contains("use condition, optional boolean lazy"),
+                    "{message}"
+                );
+                assert!(message.contains("app-owner"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_and_lazy_components_use_one_compiled_ref_format() {
+        for lazy in ["", " lazy id=\"body\""] {
+            let template = format!(
+                "<input w-ref=\"{{rootInput}}\"><if condition=\"show\"{lazy}><button w-ref=\"{{action}}\">Action</button></if>"
+            );
+            let app = create_app_dir(&[
+                ("index.html", "<app-owner></app-owner>"),
+                ("app-owner.html", &template),
+                ("app-owner.ts", "export {};"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            let built = build(options).unwrap();
+            let metadata: serde_json::Value =
+                serde_json::from_str(&built.protocol.components["app-owner"].template_json)
+                    .unwrap();
+            assert_eq!(metadata["v"], 3);
+            assert_eq!(metadata["rf"], serde_json::json!([["rootInput", 1]]));
+            assert_eq!(metadata["s"], serde_json::json!([1, 3, 1]));
+            let block = if lazy.is_empty() {
+                metadata["b"][0].clone()
+            } else {
+                serde_json::from_str(
+                    &built.protocol.client_fragments["app-owner::lazy:body"].template_json,
+                )
+                .unwrap()
+            };
+            assert_eq!(block["rf"], serde_json::json!([["action", 1]]));
+            assert_eq!(block["s"], serde_json::json!([1, 3, 1]));
+        }
+    }
+
+    #[test]
+    fn static_only_assets_reject_protocol_backed_lazy_bodies() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-owner></app-owner>"),
+            (
+                "app-owner.html",
+                r#"<if condition="show" lazy id="body"><p>Body</p></if>"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["app-owner".into()];
+        let error = build(options)
+            .err()
+            .expect("incompatible asset delivery mode");
+        assert!(error
+            .chain_message()
+            .contains(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY));
+    }
+
+    #[test]
+    fn progressive_checkpoints_deliver_active_hostless_body_resources() {
+        let app = create_app_dir(&[
+            ("index.html", "<html><head><script type=\"module\" async src=\"./index.js\"></script></head><body><stream-owner></stream-owner></body></html>"),
+            ("stream-owner.html", r#"<boundary name="region"><if condition="shown" lazy id="body"><p>Streamed inline body</p><for each="item in items"><span>{{item}}</span></for></if></boundary>"#),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let protocol = Protocol::new(build(options).unwrap().protocol);
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        for shown in [false, true] {
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render_streaming(
+                    &protocol,
+                    &serde_json::json!({"shown": shown, "items": ["one"]}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(writer.buf.contains("Streamed inline body"), shown);
+            assert_eq!(
+                writer.buf.contains(r#""stream-owner::lazy:body":{"h":"#),
+                shown
+            );
+        }
+    }
 
     #[test]
     fn test_build_simple_html() {

@@ -6,7 +6,9 @@
 from ._api import (
     BoundaryDescriptor,
     BoundaryMode,
+    LazyOptions,
     Plugin,
+    PreparedLazyResources,
     Renderer,
     StateInput,
     StreamingSession,
@@ -24,7 +26,9 @@ from ._native import (
 __all__ = [
     "BoundaryDescriptor",
     "BoundaryMode",
+    "LazyOptions",
     "Plugin",
+    "PreparedLazyResources",
     "ProtocolError",
     "RenderError",
     "Renderer",

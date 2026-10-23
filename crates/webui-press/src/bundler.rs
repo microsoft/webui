@@ -1199,6 +1199,14 @@ fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
     None
 }
 
+fn append_framework_runtime(entry: &mut String, has_components: bool, node_modules: &Path) {
+    if has_components && default_framework_alias(node_modules).is_some() {
+        entry.push_str("import { startRuntime } from '@microsoft/webui-framework/runtime.js';\n");
+        entry.push_str("import '@microsoft/webui-framework/styles.js';\n");
+        entry.push_str("startRuntime();\n");
+    }
+}
+
 fn normalized_alias_target(config_dir: &Path, target: &str) -> String {
     let path = Path::new(target);
     if path.is_absolute() {
@@ -1217,6 +1225,16 @@ fn build_aliases(opts: &BundleOptions<'_>) -> Result<BTreeMap<String, String>> {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     if let Some(node_modules) = opts.node_modules {
         if let Some(path) = default_framework_alias(node_modules) {
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("js");
+            for (entry, file) in [("runtime", "runtime"), ("styles", "styles-entry")] {
+                aliases.insert(
+                    format!("@microsoft/webui-framework/{entry}.js"),
+                    path_for_js(&path.with_file_name(format!("{file}.{extension}"))),
+                );
+            }
             aliases.insert("@microsoft/webui-framework".to_string(), path_for_js(&path));
         }
     }
@@ -1494,6 +1512,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         let entry_path = bundle_tmp.path().join("index.ts");
         let mut entry = String::with_capacity(32 + root.component_scripts.len() * 80);
         entry.push_str("// Root template script\n");
+        append_framework_runtime(&mut entry, !root.component_scripts.is_empty(), node_modules);
         let mut imports = HashSet::with_capacity(
             root.component_scripts.len() + usize::from(root.script_path.is_some()),
         );
@@ -1529,6 +1548,11 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         entry.push_str("// Page: ");
         entry.push_str(&bundle.page_path);
         entry.push('\n');
+        append_framework_runtime(
+            &mut entry,
+            !bundle.component_scripts.is_empty(),
+            node_modules,
+        );
         let mut imports =
             HashSet::with_capacity(bundle.component_scripts.len() + bundle.explicit_scripts.len());
 
@@ -2060,6 +2084,27 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("@microsoft/webui-framework")));
         assert!(args.contains(&"--external:cdn-only-package".to_string()));
+    }
+
+    #[test]
+    fn only_component_entries_install_the_framework_runtime() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let framework = temporary
+            .path()
+            .join("@microsoft")
+            .join("webui-framework")
+            .join("dist");
+        fs::create_dir_all(&framework)?;
+        fs::write(framework.join("index.js"), "export {};")?;
+        let mut entry = String::new();
+        append_framework_runtime(&mut entry, false, temporary.path());
+        assert!(entry.is_empty());
+        append_framework_runtime(&mut entry, true, temporary.path());
+        assert_eq!(
+            entry,
+            "import { startRuntime } from '@microsoft/webui-framework/runtime.js';\nimport '@microsoft/webui-framework/styles.js';\nstartRuntime();\n"
+        );
+        Ok(())
     }
 
     #[test]

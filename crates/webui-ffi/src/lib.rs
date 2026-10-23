@@ -31,7 +31,12 @@ use webui_handler::{
     SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
+mod lazy;
 mod render_capacity;
+pub use lazy::{
+    webui_protocol_prepare_lazy_resources, webui_protocol_render_lazy_partial,
+    webui_protocol_render_lazy_resources,
+};
 use render_capacity::RenderCapacityHint;
 
 /// Opaque C handle for a loaded WebUI protocol.

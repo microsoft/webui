@@ -861,6 +861,9 @@ impl ContinuationVm {
             .as_ref()
             .ok_or_else(missing_if_condition_error)?;
         let condition_met = handler.evaluate_condition(condition, context)?;
+        if condition_met && if_cond.lazy {
+            record_checkpoint_tag(context, &if_cond.fragment_id);
+        }
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_if_start(&if_cond.fragment_id, context.writer)?;
         }

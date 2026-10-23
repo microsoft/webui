@@ -95,7 +95,7 @@ function shouldDefer(el: object, wp?: 1 | 2 | 3 | 4): boolean {
     el as unknown as {
       $shouldDeferSSRHydration(meta: TemplateMeta): boolean;
     }
-  ).$shouldDeferSSRHydration({ h: '', wp });
+  ).$shouldDeferSSRHydration({ v: 3, h: '', wp });
 }
 
 function withConsoleWarn<T>(run: (calls: unknown[][]) => T): T {

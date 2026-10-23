@@ -676,6 +676,7 @@ impl SessionCore {
         let mut context = WebUIProcessContext {
             protocol: protocol.protocol(),
             render_fragments: protocol.render_fragments().resolve(protocol.protocol()),
+            lazy_index: protocol.lazy_index(),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,

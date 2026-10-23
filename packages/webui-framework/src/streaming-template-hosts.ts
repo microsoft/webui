@@ -13,7 +13,10 @@ export function loadTemplateHostRuntime(): Promise<void> | undefined {
   if (installed) return;
   if (!pending) {
     const current = generation;
-    pending = import('./static-host.js').then(({ installTemplateElementRuntime }) => {
+    pending = Promise.all([
+      import('./static-host.js'),
+      import('./styles-entry.js'),
+    ]).then(([{ installTemplateElementRuntime }]) => {
       if (current !== generation) {
         throw new Error('[WebUI] Template-host activation was abandoned.');
       }

@@ -195,6 +195,29 @@ internal static class NativeBindings
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_render_lazy_resources(
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string optionsJson);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_prepare_lazy_resources(
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string optionsJson,
+        out IntPtr updatedOptionsJson);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_render_lazy_partial(
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string owner,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string id,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string optionsJson);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_protocol_tokens(
         WebUIProtocolSafeHandle protocolPtr);
 
@@ -369,6 +392,21 @@ internal static class NativeBindings
         finally
         {
             webui_free(ptr);
+        }
+    }
+
+    internal static (string Json, string Options) ReadAndFreeLazy(IntPtr json, IntPtr options)
+    {
+        try
+        {
+            return (
+                Marshal.PtrToStringUTF8(json) ?? throw new WebUIException("Missing deferred resource JSON."),
+                Marshal.PtrToStringUTF8(options) ?? throw new WebUIException("Missing deferred acknowledgement."));
+        }
+        finally
+        {
+            webui_free(json);
+            webui_free(options);
         }
     }
 

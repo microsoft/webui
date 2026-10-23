@@ -49,21 +49,26 @@ let started = false;
 let completed = false;
 
 /** Ordinary startup does not complete before parser-loaded components register. */
-const hasBrowserDocument =
-  typeof document !== 'undefined' &&
-  typeof Document !== 'undefined' &&
-  document instanceof Document;
-const navigationTiming = hasBrowserDocument &&
-  typeof performance.getEntriesByType === 'function'
-  ? performance.getEntriesByType('navigation')[0] as
-    | PerformanceNavigationTiming
-    | undefined
-  : undefined;
-let documentReady = !hasBrowserDocument ||
-  document.readyState === 'complete' ||
-  (navigationTiming?.domContentLoadedEventStart ?? 0) > 0;
+let documentReady = true;
+let lifecycleInstalled = false;
+let hasBrowserDocument = false;
 
-if (!documentReady) {
+/** Install parser-readiness tracking explicitly, without side effects from API imports. */
+export function installHydrationLifecycle(): void {
+  if (lifecycleInstalled) return;
+  lifecycleInstalled = true;
+  hasBrowserDocument =
+    typeof document !== 'undefined' &&
+    typeof Document !== 'undefined' &&
+    document instanceof Document;
+  const navigationTiming = hasBrowserDocument &&
+    typeof performance.getEntriesByType === 'function'
+    ? performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    : undefined;
+  documentReady = !hasBrowserDocument ||
+    document.readyState === 'complete' ||
+    (navigationTiming?.domContentLoadedEventStart ?? 0) > 0;
+  if (documentReady) return;
   const markDocumentReady = (): void => {
     if (documentReady) return;
     documentReady = true;
@@ -130,6 +135,16 @@ export function hydrationEnd(): void {
   if (pendingCount === 0) return;
   pendingCount--;
   tryComplete();
+}
+
+/** Keep synchronous definition batches in one cohort without starting a timing mark. */
+export function runHydrationBatch<T>(work: () => T): T {
+  pendingCount++;
+  try {
+    return work();
+  } finally {
+    hydrationEnd();
+  }
 }
 
 /** Opt this page into the streaming-aware completion gate. Idempotent. */
