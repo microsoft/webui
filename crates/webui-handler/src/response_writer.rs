@@ -44,6 +44,20 @@ pub fn append_boolean_attribute_to_bytes(output: &mut Vec<u8>, name: &str) {
 #[macro_export]
 macro_rules! string_response_writer_methods {
     ($field:ident) => {
+        fn write_escaped(&mut self, content: &str) -> $crate::Result<()> {
+            $crate::append_escaped_to_string(&mut self.$field, content);
+            Ok(())
+        }
+
+        fn write_escaped_attribute(&mut self, name: &str, value: &str) -> $crate::Result<()> {
+            self.$field.push(' ');
+            self.$field.push_str(name);
+            self.$field.push_str("=\"");
+            $crate::append_escaped_to_string(&mut self.$field, value);
+            self.$field.push('"');
+            Ok(())
+        }
+
         fn write_attribute(&mut self, name: &str, value: &str) -> $crate::Result<()> {
             self.$field.push(' ');
             self.$field.push_str(name);
@@ -66,6 +80,20 @@ macro_rules! string_response_writer_methods {
 #[macro_export]
 macro_rules! bytes_response_writer_methods {
     ($field:ident) => {
+        fn write_escaped(&mut self, content: &str) -> $crate::Result<()> {
+            $crate::append_escaped_to_bytes(&mut self.$field, content);
+            Ok(())
+        }
+
+        fn write_escaped_attribute(&mut self, name: &str, value: &str) -> $crate::Result<()> {
+            self.$field.push(b' ');
+            self.$field.extend_from_slice(name.as_bytes());
+            self.$field.extend_from_slice(b"=\"");
+            $crate::append_escaped_to_bytes(&mut self.$field, value);
+            self.$field.push(b'"');
+            Ok(())
+        }
+
         fn write_attribute(&mut self, name: &str, value: &str) -> $crate::Result<()> {
             self.$field.push(b' ');
             self.$field.extend_from_slice(name.as_bytes());
@@ -145,4 +173,69 @@ macro_rules! define_bytes_response_writer {
             }
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{HandlerError, ResponseWriter, Result};
+
+    crate::define_string_response_writer!(StringWriter, output);
+    crate::define_bytes_response_writer!(BytesWriter, output);
+
+    struct DefaultWriter(String);
+
+    impl ResponseWriter for DefaultWriter {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.0.push_str(content);
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn buffered_escaped_writes_match_default_methods() -> Result<()> {
+        let ascii: String = (0..=127).map(char::from).collect();
+        let mut default = DefaultWriter(String::new());
+        let mut text = StringWriter::with_capacity(1024);
+        let mut bytes = BytesWriter::with_capacity(1024);
+        for value in ["", "plain", "&<>\"'/", "&amp;", "é水🙂/", &ascii] {
+            for writer in [
+                &mut default as &mut dyn ResponseWriter,
+                &mut text,
+                &mut bytes,
+            ] {
+                writer.write_escaped(value)?;
+                writer.write_escaped_attribute("data-value", value)?;
+            }
+        }
+        assert_eq!(text.output, default.0);
+        assert_eq!(bytes.output, default.0.as_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn default_escaped_methods_preserve_writer_errors() {
+        struct Disconnected;
+        impl ResponseWriter for Disconnected {
+            fn write(&mut self, _content: &str) -> Result<()> {
+                Err(HandlerError::ClientDisconnected)
+            }
+
+            fn end(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        assert!(matches!(
+            Disconnected.write_escaped("untrusted <text>"),
+            Err(HandlerError::ClientDisconnected)
+        ));
+        assert!(matches!(
+            Disconnected.write_escaped_attribute("title", "untrusted <text>"),
+            Err(HandlerError::ClientDisconnected)
+        ));
+    }
 }

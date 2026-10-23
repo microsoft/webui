@@ -1189,6 +1189,125 @@ fn adjacent_boundaries_do_not_flush_the_same_position_twice() {
 }
 
 #[test]
+fn template_attribute_pieces_stay_inside_their_semantic_checkpoint() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="ready"><a title="before/{{value}}/after">ready</a></boundary>"#,
+            "<footer>tail</footer>",
+        )),
+        &[],
+    );
+    let value = "é<&\"'/";
+    let state = test_json!({ "value": value });
+    let handler = WebUIHandler::new();
+    let mut writer = FlushStringWriter::default();
+    let mut response = handler
+        .stream_response(
+            &protocol,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+    let first = response.start(&state).unwrap();
+    let boundary = first.boundary.unwrap();
+    response
+        .resume_current(boundary.instance_id, BoundaryMode::Final)
+        .unwrap();
+    assert!(response.advance().unwrap().done);
+    drop(response);
+
+    let expected = format!(
+        r#"<a title="{}">ready</a>"#,
+        webui_handler::encode_safe(&format!("before/{value}/after"))
+    );
+    assert_eq!(writer.flushes, 3);
+    assert!(writer
+        .flush_positions
+        .windows(2)
+        .all(|pair| pair[0] < pair[1]));
+    let prefix = writer.flush_positions[0];
+    let checkpoint = writer.flush_positions[1];
+    assert!(!writer.output[..prefix].contains("<a title="));
+    assert!(writer.output[prefix..checkpoint].contains(&expected));
+    assert!(writer.output[..checkpoint].ends_with("<webui-hydrate></webui-hydrate>"));
+    assert!(writer.output[checkpoint..].starts_with("<footer>tail</footer>"));
+    assert!(writer.ended);
+}
+
+#[test]
+fn streaming_reuses_json_and_attribute_storage_from_large_to_small() {
+    let mut data = parsed_protocol_data(
+        &document(concat!(
+            r#"<boundary name="first"><a title="prefix/{{value}}/suffix">first</a></boundary>"#,
+            r#"<boundary name="second"><a title="prefix/{{value}}/suffix">second</a></boundary>"#,
+            "<footer>tail</footer>",
+        )),
+        &[],
+    );
+    data.initial_state_strategy = InitialStateStrategy::Full as i32;
+    let protocol = Arc::new(Protocol::new(data));
+    let handler = WebUIHandler::with_plugin(|| {
+        Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
+    });
+    let large = "é<&\"'/</script>".repeat(1024);
+    let small = "small-é<&\"'/";
+    let mut writer = FlushStringWriter::default();
+    let mut response = handler
+        .stream_response(
+            &protocol,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+    let first = response
+        .start(test_json!({ "value": "initial" }))
+        .unwrap()
+        .boundary
+        .unwrap();
+    response
+        .resume(
+            first.instance_id,
+            &test_json!({ "value": large }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    let second = response.advance().unwrap().boundary.unwrap();
+    response
+        .resume(
+            second.instance_id,
+            &test_json!({ "value": small }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    assert!(response.advance().unwrap().done);
+    drop(response);
+
+    for (value, label) in [(&*large, "first"), (small, "second")] {
+        let attribute = webui_handler::encode_safe(&format!("prefix/{value}/suffix")).into_owned();
+        assert!(writer
+            .output
+            .contains(&format!(r#"<a title="{attribute}">{label}</a>"#)));
+        let literal = serde_json::to_string(value).unwrap();
+        let found = writer
+            .output
+            .split(r#"<script type="application/json" data-webui-boundary>"#)
+            .skip(1)
+            .any(|script| {
+                let (json, _) = script.split_once("</script>").unwrap();
+                let record: serde_json::Value = serde_json::from_str(json).unwrap();
+                record.to_string().contains(&literal)
+            });
+        assert!(found, "checkpoint state lost the {label} value");
+    }
+    assert_eq!(writer.flushes, 4);
+    assert!(writer
+        .flush_positions
+        .windows(2)
+        .all(|pair| pair[0] < pair[1]));
+    assert!(writer.ended);
+}
+
+#[test]
 fn borrowed_api_flushes_each_returned_semantic_step() {
     let protocol = parsed_protocol(
         &document(concat!(

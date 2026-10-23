@@ -254,10 +254,10 @@ where
     };
 
     let right_val = if is_literal(&predicate.right) {
-        Cow::Owned(parse_literal(&predicate.right)?)
+        parse_literal(&predicate.right)?
     } else {
         match resolver(&predicate.right) {
-            Some(val) => val,
+            Some(val) => Operand::Value(val),
             None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
         }
     };
@@ -269,7 +269,30 @@ where
         ))
     })?;
 
-    compare_values(left_val.as_ref(), &op, right_val.as_ref())
+    compare_values(left_val.as_ref(), &op, &right_val)
+}
+
+enum Operand<'a> {
+    Value(Cow<'a, Value>),
+    // Quoted literals already live in the condition, so comparison needs no
+    // temporary Value::String or retained copy of the protocol's text.
+    String(&'a str),
+}
+
+impl Operand<'_> {
+    fn equals(&self, left: &Value) -> bool {
+        match self {
+            Self::Value(right) => left == right.as_ref(),
+            Self::String(right) => left.as_str() == Some(*right),
+        }
+    }
+
+    fn number(&self) -> Result<f64> {
+        match self {
+            Self::Value(value) => extract_number(value),
+            Self::String(value) => parse_string_number(value),
+        }
+    }
 }
 
 // Check if a string is a literal value
@@ -288,52 +311,57 @@ fn is_literal(s: &str) -> bool {
         || s == "false"
 }
 
-// Parse a literal string into a JSON value
-fn parse_literal(s: &str) -> Result<Value> {
+// Quoted literals borrow their text; scalar literals retain JSON value semantics.
+fn parse_literal(s: &str) -> Result<Operand<'_>> {
     // Handle quoted strings
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        let content = &s[1..s.len() - 1];
-        return Ok(Value::String(content.to_string()));
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        return Ok(Operand::String(&s[1..s.len() - 1]));
     }
 
     // Handle booleans
     if s == "true" {
-        return Ok(Value::Bool(true));
+        return Ok(Operand::Value(Cow::Owned(Value::Bool(true))));
     }
     if s == "false" {
-        return Ok(Value::Bool(false));
+        return Ok(Operand::Value(Cow::Owned(Value::Bool(false))));
     }
 
     // Handle numbers
     if let Ok(num) = s.parse::<i64>() {
-        return Ok(Value::Number(num.into()));
+        return Ok(Operand::Value(Cow::Owned(Value::Number(num.into()))));
     }
 
     if let Ok(num) = s.parse::<f64>() {
         // Create a JSON number from f64, handling error if it's not representable
         match serde_json::Number::from_f64(num) {
-            Some(n) => return Ok(Value::Number(n)),
-            None => {
-                return Err(ExpressionError::TypeError(format!(
-                    "Cannot convert {} to JSON number",
-                    s
-                )))
-            }
+            Some(n) => return Ok(Operand::Value(Cow::Owned(Value::Number(n)))),
+            None => return Err(unrepresentable_literal_error(s)),
         }
     }
 
     // If we get here, it's not a recognized literal
-    Err(ExpressionError::TypeError(format!(
-        "Invalid literal: {}",
-        s
-    )))
+    Err(invalid_literal_error(s))
 }
 
-// Compare two JSON values based on the comparison operator
-fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Result<bool> {
+#[cold]
+#[inline(never)]
+fn unrepresentable_literal_error(s: &str) -> ExpressionError {
+    ExpressionError::TypeError(format!("Cannot convert {s} to JSON number"))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_literal_error(s: &str) -> ExpressionError {
+    ExpressionError::TypeError(format!("Invalid literal: {s}"))
+}
+
+// Compare a JSON value with a resolved operand.
+fn compare_values(left: &Value, op: &ComparisonOperator, right: &Operand<'_>) -> Result<bool> {
     match op {
-        ComparisonOperator::Equal => Ok(left == right),
-        ComparisonOperator::NotEqual => Ok(left != right),
+        ComparisonOperator::Equal => Ok(right.equals(left)),
+        ComparisonOperator::NotEqual => Ok(!right.equals(left)),
 
         // Handle numeric comparisons
         ComparisonOperator::GreaterThan => compare_ordered(left, right, |a, b| a > b),
@@ -347,13 +375,13 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
 }
 
 // Helper for ordered comparisons
-fn compare_ordered<F>(left: &Value, right: &Value, compare_fn: F) -> Result<bool>
+fn compare_ordered<F>(left: &Value, right: &Operand<'_>, compare_fn: F) -> Result<bool>
 where
     F: Fn(&f64, &f64) -> bool,
 {
     // Extract numeric values
     let left_num = extract_number(left)?;
-    let right_num = extract_number(right)?;
+    let right_num = right.number()?;
 
     Ok(compare_fn(&left_num, &right_num))
 }
@@ -371,19 +399,23 @@ fn extract_number(val: &Value) -> Result<f64> {
                 )))
             }
         }
-        Value::String(s) => match s.parse::<f64>() {
-            Ok(num) => Ok(num),
-            Err(_) => Err(ExpressionError::TypeError(format!(
-                "Cannot convert string to number: {}",
-                s
-            ))),
-        },
+        Value::String(s) => parse_string_number(s),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => Err(ExpressionError::TypeError(format!(
             "Cannot convert to number: {:?}",
             val
         ))),
     }
+}
+
+fn parse_string_number(s: &str) -> Result<f64> {
+    s.parse::<f64>().map_err(|_| string_number_error(s))
+}
+
+#[cold]
+#[inline(never)]
+fn string_number_error(s: &str) -> ExpressionError {
+    ExpressionError::TypeError(format!("Cannot convert string to number: {s}"))
 }
 
 #[cfg(test)]
@@ -656,6 +688,106 @@ mod tests {
             "Expected Ok(true), got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn quoted_literals_match_string_state_operands() {
+        let values = [
+            Value::Null,
+            test_json!(false),
+            test_json!(true),
+            test_json!(0),
+            test_json!(-0.0),
+            test_json!(42),
+            test_json!(i64::MIN),
+            test_json!(u64::MAX),
+            test_json!(0.5),
+            test_json!(""),
+            test_json!("active"),
+            test_json!("42"),
+            test_json!("NaN"),
+            test_json!([]),
+            test_json!({}),
+        ];
+        let literals = ["", "active", "42", "-0", "1e300", "NaN", "é水", r"a\nb"];
+        let operators = [
+            ComparisonOperator::Equal,
+            ComparisonOperator::NotEqual,
+            ComparisonOperator::GreaterThan,
+            ComparisonOperator::LessThan,
+            ComparisonOperator::GreaterThanOrEqual,
+            ComparisonOperator::LessThanOrEqual,
+            ComparisonOperator::Unspecified,
+        ];
+
+        for left in values {
+            for literal in literals {
+                let state = test_json!({ "left": left, "right": literal });
+                for op in operators {
+                    let variable = ConditionExpr::predicate("left", op, "right");
+                    let expected = evaluate(&variable, &state).map_err(|error| error.to_string());
+                    for quote in ['\'', '"'] {
+                        let condition = ConditionExpr::predicate(
+                            "left",
+                            op,
+                            format!("{quote}{literal}{quote}"),
+                        );
+                        assert_eq!(
+                            evaluate(&condition, &state).map_err(|error| error.to_string()),
+                            expected,
+                            "literal {literal:?}, left {left:?}, operator {op:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_literals_borrow_the_condition_text() {
+        for text in ["''", "\"\"", "'active'", "\"é水\"", r"'a\nb'"] {
+            let Ok(Operand::String(value)) = parse_literal(text) else {
+                panic!("expected a borrowed string literal for {text:?}");
+            };
+            let expected = &text[1..text.len() - 1];
+            assert_eq!(value, expected);
+            assert_eq!(value.as_ptr(), expected.as_ptr());
+        }
+    }
+
+    #[test]
+    fn malformed_quoted_literals_return_errors() {
+        let state = test_json!({ "value": "active" });
+        for right in ["'", "\"", "'active", "\"active", "'active\"", "\"active'"] {
+            let condition = ConditionExpr::predicate("value", ComparisonOperator::Equal, right);
+            assert_eq!(
+                evaluate(&condition, &state).map_err(|error| error.to_string()),
+                Err(format!("Type error: Invalid literal: {right}"))
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_literals_preserve_error_order_and_short_circuiting() {
+        let state = test_json!({ "value": "active", "enabled": false });
+        let missing = ConditionExpr::predicate("absent", ComparisonOperator::Unspecified, "'");
+        assert!(matches!(
+            evaluate(&missing, &state),
+            Err(ExpressionError::MissingValue(name)) if name == "absent"
+        ));
+
+        let malformed = ConditionExpr::predicate("value", ComparisonOperator::Unspecified, "'");
+        assert!(matches!(
+            evaluate(&malformed, &state),
+            Err(ExpressionError::TypeError(_))
+        ));
+
+        let short_circuit = ConditionExpr::compound(
+            ConditionExpr::identifier("enabled"),
+            LogicalOperator::And,
+            malformed,
+        );
+        assert_eq!(evaluate(&short_circuit, &state).ok(), Some(false));
     }
 
     #[test]

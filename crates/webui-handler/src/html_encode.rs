@@ -25,9 +25,7 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
 
     // Fast path: find the first byte that needs escaping.
-    let first = bytes
-        .iter()
-        .position(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\'' | b'/'));
+    let first = bytes.iter().position(|&byte| needs_escape(byte));
 
     let Some(pos) = first else {
         return Cow::Borrowed(input);
@@ -41,14 +39,8 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
 
     let mut start = pos;
     for (i, &b) in bytes[pos..].iter().enumerate() {
-        let replacement = match b {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            b'"' => "&quot;",
-            b'\'' => "&#x27;",
-            b'/' => "&#x2F;",
-            _ => continue,
+        let Some(replacement) = escaped_replacement(b) else {
+            continue;
         };
         // Flush the unescaped run before this match.
         out.push_str(&input[start..pos + i]);
@@ -59,6 +51,63 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     out.push_str(&input[start..]);
 
     Cow::Owned(out)
+}
+
+#[inline]
+const fn needs_escape(byte: u8) -> bool {
+    matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'' | b'/')
+}
+
+#[inline]
+const fn escaped_replacement(byte: u8) -> Option<&'static str> {
+    match byte {
+        b'&' => Some("&amp;"),
+        b'<' => Some("&lt;"),
+        b'>' => Some("&gt;"),
+        b'"' => Some("&quot;"),
+        b'\'' => Some("&#x27;"),
+        b'/' => Some("&#x2F;"),
+        _ => None,
+    }
+}
+
+#[inline]
+fn escaped_chunks(input: &str, mut append: impl FnMut(&str)) {
+    let Some(first) = input.as_bytes().iter().position(|&byte| needs_escape(byte)) else {
+        append(input);
+        return;
+    };
+    if first > 0 {
+        append(&input[..first]);
+    }
+    let mut start = first;
+    for (offset, &byte) in input.as_bytes()[first..].iter().enumerate() {
+        let index = first + offset;
+        if let Some(replacement) = escaped_replacement(byte) {
+            if start < index {
+                append(&input[start..index]);
+            }
+            append(replacement);
+            start = index + 1;
+        }
+    }
+    if start < input.len() {
+        append(&input[start..]);
+    }
+}
+
+/// Append HTML-escaped text directly to a string using [`crate::encode_safe`]'s entity rules.
+#[doc(hidden)]
+#[inline]
+pub fn append_escaped_to_string(output: &mut String, input: &str) {
+    escaped_chunks(input, |chunk| output.push_str(chunk));
+}
+
+/// Append HTML-escaped text directly to a byte buffer using [`crate::encode_safe`]'s entity rules.
+#[doc(hidden)]
+#[inline]
+pub fn append_escaped_to_bytes(output: &mut Vec<u8>, input: &str) {
+    escaped_chunks(input, |chunk| output.extend_from_slice(chunk.as_bytes()));
 }
 
 /// Bytes [`encode_safe`] adds when it replaces `b` with its entity.
@@ -121,6 +170,20 @@ pub(crate) fn write_style_text(writer: &mut dyn ResponseWriter, css: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escaped_append_preserves_existing_content_and_encoding() {
+        let ascii: String = (0..=127).map(char::from).collect();
+        for input in ["", "plain text", "&<>\"'/", "&amp;", "é水🙂/", &ascii] {
+            let expected = format!("prefix{}", encode_safe(input));
+            let mut text = String::from("prefix");
+            let mut bytes = b"prefix".to_vec();
+            append_escaped_to_string(&mut text, input);
+            append_escaped_to_bytes(&mut bytes, input);
+            assert_eq!(text, expected);
+            assert_eq!(bytes, expected.as_bytes());
+        }
+    }
 
     #[derive(Default)]
     struct StyleWriter {

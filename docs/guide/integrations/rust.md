@@ -12,6 +12,12 @@ APIs. Load one `Protocol` at startup and reuse it with request state.
 `WebUIHandler` writes HTML through `ResponseWriter`; the host chooses buffered
 output or a backpressured streaming writer.
 
+Custom writers only need to implement `write` and `end`. The optional
+`write_escaped` and `write_escaped_attribute` methods let buffered writers append
+escaped values directly to their output buffer. Their defaults handle escaping;
+overrides must preserve `encode_safe`'s replacements for `&`, `<`, `>`, `"`, `'`,
+and `/`. Attribute names passed to `write_escaped_attribute` must be trusted.
+
 ## Installation
 
 ```toml

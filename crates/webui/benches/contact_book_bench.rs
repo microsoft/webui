@@ -8,13 +8,15 @@
 //!
 //! Run with: `cargo bench -p microsoft-webui --bench contact_book_bench`
 
-use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, BatchSize, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use webui::server::{serve_request, ServeRequest, ServeResponse};
 use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{Protocol, RenderOptions};
 use webui_protocol::WebUIProtocol;
 
@@ -92,6 +94,23 @@ const RENDER_WARMUP_ITERATIONS: usize = 3;
 
 /// Maximum number of recent contacts shown on the dashboard page.
 const MAX_RECENT_CONTACTS: usize = 5;
+
+#[derive(Clone, Copy, Debug)]
+enum RenderPlugin {
+    None,
+    WebUI,
+    FastV2,
+}
+
+impl RenderPlugin {
+    fn handler(self) -> WebUIHandler {
+        match self {
+            Self::None => WebUIHandler::new(),
+            Self::WebUI => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
+            Self::FastV2 => WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new())),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Bench writer — captures rendered HTML into a pre-allocated buffer
@@ -331,6 +350,14 @@ fn protocol_deserialization_bench(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("runtime_protocol", |b| {
+        b.iter(|| {
+            let protocol = Protocol::from_protobuf(black_box(&fixture.protocol_bytes))
+                .expect("runtime protocol preparation failed");
+            black_box(&protocol);
+        });
+    });
+
     group.finish();
 }
 
@@ -339,57 +366,39 @@ fn protocol_deserialization_bench(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn handler_rendering_bench(c: &mut Criterion) {
-    let fixture = setup();
-    let mut group = c.benchmark_group("contact_book_contacts_render");
-    group.measurement_time(MEASUREMENT_TIME);
-
-    for (count, state) in &fixture.states {
-        // Pre-render to measure output size for throughput calculation
-        let handler = WebUIHandler::new();
-        let mut warmup_writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
-        handler
-            .render(
-                &fixture.protocol,
-                state,
-                &RenderOptions::new("index.html", REQUEST_PATH),
-                &mut warmup_writer,
-            )
-            .unwrap_or_else(|e| panic!("warmup render failed for {count} contacts: {e}"));
-        group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
-
-        group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
-            let h = WebUIHandler::new();
-            let mut w = BenchWriter::new(warmup_writer.len() + WRITER_HEADROOM);
-
-            b.iter(|| {
-                w.clear();
-                h.render(
-                    black_box(&fixture.protocol),
-                    black_box(state),
-                    &RenderOptions::new("index.html", REQUEST_PATH),
-                    &mut w,
-                )
-                .unwrap_or_else(|e| panic!("render failed for {count} contacts: {e}"));
-            });
-        });
-    }
-
-    group.finish();
+    handler_rendering_for_plugin(c, "contact_book_contacts_render", RenderPlugin::None);
 }
 
-// ---------------------------------------------------------------------------
-// Benchmark: Handler rendering with deprecated FAST 2 compatibility plugin
-// ---------------------------------------------------------------------------
+fn handler_rendering_native_bench(c: &mut Criterion) {
+    handler_rendering_for_plugin(
+        c,
+        "contact_book_contacts_render_webui_plugin",
+        RenderPlugin::WebUI,
+    );
+}
 
 fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
+    handler_rendering_for_plugin(
+        c,
+        "contact_book_contacts_render_fast_plugin",
+        RenderPlugin::FastV2,
+    );
+}
+
+fn handler_rendering_for_plugin(c: &mut Criterion, name: &str, plugin: RenderPlugin) {
     let fixture = setup();
-    let mut group = c.benchmark_group("contact_book_contacts_render_fast_plugin");
+    let mut group = c.benchmark_group(name);
     group.measurement_time(MEASUREMENT_TIME);
 
     for (count, state) in &fixture.states {
-        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
-        let mut warmup_writer =
-            BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
+        let handler = plugin.handler();
+        let capacity = match plugin {
+            RenderPlugin::None | RenderPlugin::WebUI => count * BYTES_PER_CONTACT + BASE_HTML_BYTES,
+            RenderPlugin::FastV2 => {
+                count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN
+            }
+        };
+        let mut warmup_writer = BenchWriter::new(capacity);
         handler
             .render(
                 &fixture.protocol,
@@ -398,12 +407,18 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
                 &mut warmup_writer,
             )
             .unwrap_or_else(|e| {
-                panic!("warmup render with plugin failed for {count} contacts: {e}")
+                panic!("{plugin:?} warmup render failed for {count} contacts: {e}")
             });
+        if matches!(plugin, RenderPlugin::WebUI) {
+            assert!(
+                warmup_writer.output.contains("id=\"webui-data\""),
+                "native benchmark must include the WebUI hydration bootstrap"
+            );
+        }
         group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
-            let h = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+            let h = plugin.handler();
             let mut w = BenchWriter::new(warmup_writer.len() + WRITER_HEADROOM);
 
             b.iter(|| {
@@ -414,11 +429,49 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
                     &RenderOptions::new("index.html", REQUEST_PATH),
                     &mut w,
                 )
-                .unwrap_or_else(|e| panic!("render with plugin failed for {count} contacts: {e}"));
+                .unwrap_or_else(|e| panic!("{plugin:?} render failed for {count} contacts: {e}"));
             });
         });
     }
 
+    group.finish();
+}
+
+fn server_request_bench(c: &mut Criterion) {
+    let fixture = setup();
+    let handler = RenderPlugin::WebUI.handler();
+    let request = ServeRequest::new(RenderOptions::new("index.html", REQUEST_PATH), false, "");
+    let mut group = c.benchmark_group("contact_book_server_request");
+    group.measurement_time(MEASUREMENT_TIME);
+
+    for (count, state) in &fixture.states {
+        let response = serve_request(&fixture.protocol, &handler, state.clone(), &request)
+            .unwrap_or_else(|error| panic!("server request warmup failed: {error}"));
+        let ServeResponse::Html(html) = response else {
+            panic!("full-document server request returned a partial response");
+        };
+        assert!(html.contains("id=\"webui-data\""));
+        group.throughput(Throughput::Bytes(html.len() as u64));
+        group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
+            b.iter_batched(
+                || state.clone(),
+                |state| {
+                    let response = serve_request(
+                        black_box(&fixture.protocol),
+                        black_box(&handler),
+                        state,
+                        black_box(&request),
+                    )
+                    .unwrap_or_else(|error| panic!("server request render failed: {error}"));
+                    match response {
+                        ServeResponse::Html(html) => black_box(html.len()),
+                        ServeResponse::Json(_) => panic!("full-document request returned JSON"),
+                    }
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
     group.finish();
 }
 
@@ -430,7 +483,9 @@ criterion_group!(
     benches,
     protocol_deserialization_bench,
     handler_rendering_bench,
+    handler_rendering_native_bench,
     handler_rendering_with_plugin_bench,
+    server_request_bench,
 );
 
 // ---------------------------------------------------------------------------
@@ -530,14 +585,10 @@ fn collect_render_samples(
     name: &str,
     protocol: &Protocol,
     state: &Value,
-    use_plugin: bool,
+    plugin: RenderPlugin,
 ) -> SummaryRow {
     // Warm up — also measures output size
-    let handler = if use_plugin {
-        WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-    } else {
-        WebUIHandler::new()
-    };
+    let handler = plugin.handler();
     let mut writer = BenchWriter::new(SUMMARY_WRITER_CAPACITY);
     for _ in 0..RENDER_WARMUP_ITERATIONS {
         writer.clear();
@@ -626,22 +677,19 @@ fn run_summary_pass(fixture: &BenchFixture) {
         &fixture.protocol_bytes,
     ));
 
-    for (count, state) in &fixture.states {
-        rows.push(collect_render_samples(
-            &format!("Render/{count}"),
-            &fixture.protocol,
-            state,
-            false,
-        ));
-    }
-
-    for (count, state) in &fixture.states {
-        rows.push(collect_render_samples(
-            &format!("RenderFAST/{count}"),
-            &fixture.protocol,
-            state,
-            true,
-        ));
+    for (prefix, plugin) in [
+        ("Render", RenderPlugin::None),
+        ("RenderFAST", RenderPlugin::FastV2),
+        ("RenderWebUI", RenderPlugin::WebUI),
+    ] {
+        for (count, state) in &fixture.states {
+            rows.push(collect_render_samples(
+                &format!("{prefix}/{count}"),
+                &fixture.protocol,
+                state,
+                plugin,
+            ));
+        }
     }
 
     print_summary(&rows);
