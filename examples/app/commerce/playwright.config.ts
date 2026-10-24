@@ -9,9 +9,10 @@ export default defineConfig({
     '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}{ext}',
   timeout: 30_000,
   use: {
-    baseURL: 'http://127.0.0.1:3004',
+    baseURL: process.env['COMMERCE_TEST_URL'] ?? 'http://127.0.0.1:3004',
     screenshot: 'only-on-failure',
     launchOptions: {
+      channel: process.env['COMMERCE_BROWSER_CHANNEL'],
       // The Module CSS strategy emits `<style type="module" specifier="…">`
       // pairs with `shadowrootadoptedstylesheets` on declarative shadow roots.
       // This relies on the Declarative CSS Modules proposal, which is currently

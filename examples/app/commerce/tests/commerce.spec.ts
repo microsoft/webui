@@ -156,6 +156,42 @@ test.describe('SSR pages', () => {
 // ── Client-side navigation ───────────────────────────────────────
 
 test.describe('client-side navigation', () => {
+  test('product navigation preserves module CSS under the document CSP', async ({ page }) => {
+    const response = await page.goto('/');
+    await expect(page.locator('mp-app')).toHaveJSProperty('$ready', true);
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => {
+      if (message.type() === 'error') errors.push(message.text());
+    });
+    const policy = response?.headers()['content-security-policy'];
+    const nonce = policy?.match(/'nonce-([^']+)'/)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(policy?.split(';').find(directive => directive.trim().startsWith('script-src ')))
+      .not.toContain('data:');
+    const html = await response!.text();
+    const moduleTags = html.match(/<(?:script|link)\b[^>]*(?:type="module"|rel="modulepreload")[^>]*>/g);
+    expect(moduleTags?.length).toBeGreaterThan(1);
+    for (const tag of moduleTags ?? []) expect(tag).toContain(`nonce="${nonce}"`);
+
+    await expectSoftNavigation(page, () => page.locator('mp-product-card')
+      .filter({ hasText: 'Acme Circles T-Shirt' }).first().click());
+    await expect(page).toHaveURL('/product/acme-geometric-circles-t-shirt');
+    await expect(page.locator('mp-page-product')).toHaveJSProperty('$ready', true);
+    for (const tag of [
+      'mp-page-product', 'mp-product-gallery', 'mp-variant-selector', 'mp-add-to-cart',
+      'mp-price', 'mp-product-card', 'mp-product-image', 'mp-product-label',
+    ]) {
+      const host = tag === 'mp-page-product'
+        ? page.locator(tag)
+        : page.locator('mp-page-product').locator(tag).first();
+      await expect.poll(() => host.evaluate(element =>
+        element.shadowRoot?.adoptedStyleSheets.some(sheet => sheet.cssRules.length > 0) ?? false,
+      ), { message: `${tag} must adopt its module stylesheet after soft navigation` }).toBe(true);
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('home → search category via navbar', async ({ page }) => {
     await page.goto('/');
     await page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click();

@@ -374,8 +374,19 @@ handler, and browser assets from compatible versions.
 ### CSP and delivery
 
 Pass the request nonce with `RenderOptions::with_nonce`. The handler applies it
-to generated inline boundary scripts, while your Content Security Policy must
-also allow the external application module. Use a fresh nonce per response.
+to generated inline boundary scripts and module-preload hints. Give authored
+application module scripts and any host-authored `rel="modulepreload"` links
+the same response nonce. Preloading without it can give an imported module graph
+different CSP authorization than its entry script, including later CSS-module
+imports. Keep the application's script and style policies in force; do not
+allow `data:` scripts to compensate. Use a fresh nonce per response.
+
+For an authored entry, supply `cspNonce` as trusted server state using the same
+value passed to `with_nonce`:
+
+```html
+<script type="module" src="/index.js" nonce="{{cspNonce}}"></script>
+```
 
 `FlushWriter::flush` means that WebUI handed all currently buffered bytes to the
 HTTP transport. A server adapter, compression layer, CDN, or reverse proxy can

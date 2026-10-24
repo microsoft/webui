@@ -894,6 +894,10 @@ available declarations synchronously; missing metadata waits for delivery.
 Later imports register immediately when their metadata is available. Runtime
 setup belongs in the application entry, not in every component module.
 
+With a nonce-based CSP, give authored module scripts and host-authored
+module-preload links the same response nonce passed to the renderer.
+See [CSP and delivery](/guide/concepts/hydration#csp-and-delivery).
+
 The package root and `runtime.js` are pure API entries. Call `startRuntime()`
 after importing selected installers and component modules, including in an
 interaction-loaded component-definitions entry. `styles.js` installs managed CSS

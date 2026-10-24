@@ -317,8 +317,8 @@ pub struct RenderOptions<'a> {
     pub entry_id: &'a str,
     /// The URL path to match routes against (e.g., `"/contacts/42"`).
     pub request_path: &'a str,
-    /// Optional CSP nonce for inline `<script>` tags.
-    /// When set, all inline scripts include `nonce="VALUE"` and a
+    /// Optional CSP nonce for generated scripts and module-preload hints.
+    /// When set, generated scripts and hints include `nonce="VALUE"` and a
     /// `<meta name="webui-nonce">` tag is emitted for the client router.
     pub nonce: Option<&'a str>,
     /// Optional HTML to emit immediately before the document's
@@ -403,8 +403,8 @@ impl<'a> RenderOptions<'a> {
         }
     }
 
-    /// Set the CSP nonce for inline scripts. Pass an empty string to
-    /// disable (`None` semantics) — empty `<meta name="webui-nonce"
+    /// Set the CSP nonce for generated scripts and module-preload hints.
+    /// Pass an empty string to disable (`None` semantics) — empty `<meta name="webui-nonce"
     /// content="">` would be browser-ignored noise.
     #[must_use]
     pub fn with_nonce(mut self, nonce: &'a str) -> Self {
@@ -3534,7 +3534,15 @@ impl WebUIHandler {
                         .writer
                         .write("<link rel=\"modulepreload\" href=\"")?;
                     context.writer.write(href)?;
-                    context.writer.write("\">")?;
+                    context.writer.write("\"")?;
+                    if let Some(nonce) = context.nonce {
+                        context.writer.write(" nonce=\"")?;
+                        context
+                            .writer
+                            .write(&crate::html_encode::encode_safe(nonce))?;
+                        context.writer.write("\"")?;
+                    }
+                    context.writer.write(">")?;
                 }
             }
 
@@ -11825,6 +11833,38 @@ mod tests {
             ),
             "hints must appear in <head> in the compiler's order: {html}"
         );
+    }
+
+    #[test]
+    fn module_preloads_carry_the_escaped_request_nonce() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body></body></html>".to_string()),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.module_preloads = vec!["/shared.js".to_string(), "/another.js".to_string()];
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/").with_nonce("request\"nonce"),
+            &mut writer,
+        )
+        .unwrap();
+        let escaped = crate::html_encode::encode_safe("request\"nonce");
+        for href in &protocol.module_preloads {
+            assert!(writer.get_content().contains(&format!(
+                "<link rel=\"modulepreload\" href=\"{href}\" nonce=\"{escaped}\">"
+            )));
+        }
     }
 
     #[test]
