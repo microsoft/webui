@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, observable } from "@microsoft/webui-framework";
+import { WebUIElement, attr, observable } from "@microsoft/webui-framework";
 import type { BenchmarkPreview } from "./benchmark-preview-data.js";
 
 export class BenchmarkPreviewElement extends WebUIElement {
+  @attr base = "";
   @observable previewMetrics: BenchmarkPreview[] = [];
   @observable previewReady = false;
 

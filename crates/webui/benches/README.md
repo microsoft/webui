@@ -19,7 +19,7 @@ Four criterion benches in this directory:
   partial responses including a large state with sparse navigation
   projection.
 
-Two **examples** (in `crates/webui/examples/`) round out the suite:
+Two **examples** (in `crates/webui/reference/examples/`) round out the suite:
 
 * **`streaming_resource_bench.rs`** — exact allocation count, bytes
   allocated, getrusage CPU time, and peak RSS via a custom

@@ -3,7 +3,7 @@
 This is the internal, cross-language contract between a bundler adapter, the
 build-only projection compiler, and the Rust WebUI build. See
 [DESIGN.md](../DESIGN.md#optional-state-projection) for why projection exists;
-see the [hydration guide](../docs/guide/concepts/hydration.md#build-time-state-projection)
+see the [hydration guide](../docs/build/hydration.md#build-time-state-projection)
 for application usage. The manifest is a **proof of one completed bundler
 build**, not a request-time input or a secrecy boundary.
 

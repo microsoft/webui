@@ -178,9 +178,37 @@ summary:focus-visible {
 .intro-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px 24px;
-  margin-top: 8px;
+  margin-top: 20px;
+}
+
+.intro-path {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 4px;
+  font-size: 16px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+.intro-audience {
+  color: var(--docs-color-text-2);
+}
+
+.intro-path-action {
+  color: var(--docs-color-brand);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.intro-path:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 4px;
 }
 
 .site-button {
@@ -223,27 +251,19 @@ summary:focus-visible {
   stroke-width: 1.6;
 }
 
-.install-methods {
-  display: inline-block;
-  margin-top: 8px;
-  color: var(--docs-color-text-2);
-  font-size: 13px;
-  text-underline-offset: 3px;
-}
-
-.render-options {
+.intro-resources {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
-  margin-top: 20px;
+  gap: 0 24px;
+  margin-top: 12px;
 }
 
-.render-options a {
+.intro-resources a {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
-  color: var(--docs-color-brand);
-  font-size: 14px;
+  min-height: 44px;
+  color: var(--docs-color-text-2);
+  font-size: 15px;
   text-underline-offset: 3px;
 }
 
@@ -449,6 +469,45 @@ summary:focus-visible {
   color: var(--docs-color-text-2);
 }
 
+.benchmark-notes {
+  padding-block: 24px 40px;
+  color: var(--docs-color-text-2);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.benchmark-notes h2 {
+  margin: 0 0 16px;
+  color: var(--docs-color-text);
+  font-size: 18px;
+}
+
+.benchmark-notes p,
+.benchmark-notes ol {
+  max-width: 90ch;
+  margin: 12px 0;
+}
+
+.benchmark-notes ol {
+  padding-left: 24px;
+}
+
+.benchmark-notes li {
+  padding-left: 4px;
+  margin-block: 12px;
+  scroll-margin-top: calc(var(--docs-nav-height) + 24px);
+}
+
+.benchmark-notes li:target {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 6px;
+}
+
+.benchmark-notes a {
+  color: var(--docs-color-brand);
+  text-underline-offset: 3px;
+}
+
 .site-footer {
   text-align: left;
   color: var(--docs-color-text-2);
@@ -603,7 +662,6 @@ summary:focus-visible {
 
   .intro-actions {
     gap: 12px 20px;
-    margin-top: 8px;
   }
 
   .logo span {
