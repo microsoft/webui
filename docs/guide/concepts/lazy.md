@@ -1,28 +1,20 @@
 # Lazy template bodies
 
 Try the [popover and dialog example](https://github.com/microsoft/webui/tree/main/examples/app/lazy-ui):
-`cargo xtask dev lazy-ui`. Its `lazy-popover` and `lazy-dialog`
-components own native overlays, with all interior content in an inline lazy
-body. Loading and retry feedback stay at the trigger until the overlay is ready.
+`cargo xtask dev lazy-ui`. Its `lazy-popover` and `lazy-dialog` components own
+native overlays, with all interior content in an inline lazy body.
 
 Add `lazy` to an ordinary `<if>` when its UI should stay compiled but not be
 delivered until it is needed. The body can contain native HTML, multiple roots,
 conditions, repeats, refs, events, and component calls. It does not become a
 component: state, handlers, refs, and loop variables keep their existing owner.
-As with other reactive directives, WebUI browser activation runs inside an
-existing component template; the lazy body does not introduce another one.
 
 ```html
 <!-- app-shell.html -->
-<button @pointerenter="{preloadSettings()}" @focus="{preloadSettings()}"
-  @click="{openSettings()}">Settings</button>
+<button @click="{openSettings()}">Settings</button>
 
 <dialog w-ref="{settingsDialog}" @close="{onSettingsClosed()}">
-  <button @click="{dismissSettings()}">Close</button>
-  <if condition="settingsLoading"><p role="status">Loading...</p></if>
-  <if condition="settingsError"><p role="alert">{{settingsError}}</p></if>
-
-  <if condition="settingsReady" lazy id="settings">
+  <if condition="settingsReady" lazy>
     <h2>Settings</h2>
     <p>{{displayName}}</p>
     <button @click="{saveSettings()}">Save</button>
@@ -30,41 +22,39 @@ existing component template; the lazy body does not introduce another one.
 </dialog>
 ```
 
-`lazy` is boolean. `<if>` accepts `condition`, optional `lazy`, and an optional
-`id` only on lazy regions. Unsupported attributes fail at build time.
-Use matching `lazy.js` imports and `renderLazy*` host APIs, and rebuild protocol
-and client together; compiled templates use one current format.
+The build compiles each lazy body into a static, content-addressed **template
+pack**. The page only references it. When the condition becomes true, the
+framework fetches the pack, registers its templates, and renders the body. No
+server endpoint, region id, or loader code is involved.
 
 This is different from `w-hydrate="lazy"` and `w-render="lazy"`, which postpone
-work on already server-rendered components. `<if lazy>` omits an inactive
-template body's markup and metadata from initial delivery.
+work on already server-rendered components. `<if lazy>` omits an inactive body's
+markup and templates from the initial document.
 
-Use an optional `id` for application-controlled loading;
-names are unique within the owning template and may contain letters, digits,
-periods, underscores, and hyphens, up to 128 characters. The directive does not
-produce an HTML element or DOM id. Unnamed regions have compiler-managed
-identities; do not hardcode them.
+## Choose when to prefetch
 
-## Initial server rendering
+The optional value of `lazy` sets when the pack is fetched before the condition
+becomes true. Prefetching only fetches and registers templates; it never renders
+or requests application state.
 
-The condition still controls SSR:
+| Declaration | Prefetches | Use for |
+| --- | --- | --- |
+| `lazy` or `lazy="intent"` | When a pointer moves over, focus enters, or a touch starts inside the owning component | Most dialogs, popovers, and panels behind a control |
+| `lazy="idle"` | When the browser is idle after the page loads | UI that is likely to be used soon |
+| `lazy="load"` | Right after startup hydration | UI that is needed almost immediately |
+| `lazy="demand"` | Never; it loads when activated or prefetched | Rare UI, and regions nested in other lazy regions |
 
-| Initial condition | Result |
-| --- | --- |
-| False | No body markup or lazy-only template metadata is sent. |
-| True | The body renders with the initial request's state and required metadata. The browser hydrates that DOM without a second state request or replacement host. |
+Idle and load prefetch are skipped when the user has enabled data saving. Call
+`this.$prefetch()` to load all of a component's lazy regions on a signal of your
+own, such as a keyboard shortcut or a route change.
 
-Existing CSS ownership and DOM-mode rules are unchanged. Owner styles and
-dependencies used elsewhere are not removed merely because one use is lazy.
-Likewise, deferral does not remove unrelated state the host supplied to an
-active owner; state projection is not a secrecy boundary.
+Prefer `intent` for UI that opens from a control in the owner. A region that is
+fetched only on activation costs at least one extra network round trip after the
+click, even from the HTTP cache.
 
-A native dialog's content can be server-rendered, but modal top-layer placement
-and focus still use the browser's `showModal()` API.
+## Set up the runtime
 
-## Select the renderer and delivery capabilities
-
-The WebUI renderer adapter contains no fetching or routing:
+Import the lazy runtime once, before starting the renderer:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
@@ -75,153 +65,120 @@ import './app-shell.js';
 startRuntime();
 ```
 
-Inventory, preloading, transport, and instance-independent resource reuse remain
-in the hydration-agnostic client package. Importing lazy delivery does not
-start routing or install a rendering engine:
+Pages without lazy regions do not need this import and pay nothing for the
+feature: the rendering core contains no lazy code. The import also adds
+`$rendered()` and `$prefetch()` to your components, along with their TypeScript
+types. Activating a lazy region without it throws an error that names the
+import.
 
-```typescript
-import { createLazyLoader } from '@microsoft/webui-delivery/lazy.js';
-import { ndjson } from '@microsoft/webui-delivery/resources.js';
+## Load state and open
 
-const fragments = createLazyLoader({
-  endpoint: '/_webui/lazy',
-  transport: ndjson(),
-});
-```
-
-Omit `transport` for JSON-only delivery. That composition does not include the
-NDJSON reader. `ndjson()` accepts JSON responses and limits each NDJSON
-record to 256 KiB; use `ndjson(maxRecordBytes)` for a different
-finite record budget. `timeoutMs` defaults to 10 seconds and covers the complete
-request, including state and resource preparation.
-
-## Preload resources, then request fresh state
-
-Inside the owning `app-shell` class:
+State remains owned by your application. Fetch it the way you fetch any other
+data, set the condition, and await `this.$rendered()` before you use anything
+inside the body:
 
 ```typescript
 private settingsRequest?: AbortController;
-private settingsGeneration = 0;
-
-async preloadSettings(): Promise<void> {
-  try {
-    await fragments.ensureLoaded('app-shell', 'settings');
-  } catch (error) {
-    this.settingsError = String(error);
-  }
-}
 
 async openSettings(): Promise<void> {
-  const generation = ++this.settingsGeneration;
   this.settingsRequest?.abort();
   const request = new AbortController();
   this.settingsRequest = request;
-  this.settingsLoading = true;
-  this.settingsError = '';
-  if (!this.settingsDialog.open) this.settingsDialog.showModal();
-
   try {
-    const state = await fragments.fetchPartial('app-shell', 'settings', {
-      url: '/_webui/lazy/state?owner=app-shell&id=settings',
-      signal: request.signal,
-    });
-    if (generation !== this.settingsGeneration || request.signal.aborted) return;
+    // Fetch the template pack in parallel with the state.
+    const [state] = await Promise.all([
+      fetch('/api/settings', { signal: request.signal }).then(response => response.json()),
+      this.$prefetch(),
+    ]);
+    if (request.signal.aborted) return;
     this.setState(state);
     this.settingsReady = true;
+    await this.$rendered();
+    this.settingsDialog.showModal();
   } catch (error) {
-    if (generation === this.settingsGeneration && !request.signal.aborted) {
-      this.settingsError = String(error);
-    }
-  } finally {
-    if (generation === this.settingsGeneration) this.settingsLoading = false;
+    if (!request.signal.aborted) this.settingsError = String(error);
   }
 }
 
-dismissSettings(): void {
-  this.settingsDialog.close();
-}
-
 onSettingsClosed(): void {
-  this.settingsGeneration++;
   this.settingsRequest?.abort();
-  this.settingsRequest = undefined;
   this.settingsReady = false;
-  this.settingsLoading = false;
-  this.displayName = '';
 }
 ```
 
-Declare the mutable template fields as observables, as with ordinary
-[interactive components](./interactivity). The body mounts after state and
-resources are ready; it has no separate component lifecycle. `fetchPartial()`
-returns state and never applies it globally or mounts DOM. When a body is inside
-a repeat, update the appropriate owner/collection state before activating it.
-
-`ensureLoaded()` fetches no application state and creates no UI. Reopening still
-requests fresh state even when all resources are available. A state request does
-not wait for an unfinished speculative preload. Concurrent instances share
-resources, not state or cancellation.
+`$rendered()` applies queued updates, waits for every active lazy region of the
+component, including nested regions activated by that render, and then resolves.
+It rejects if a pack cannot be loaded, including a request that does not finish
+within 10 seconds. Calling it again, or activating the region again, retries.
+If the condition turns false before the pack arrives, the body is not rendered.
 
 Refs inside a lazy body are valid while that view exists. Removing it clears
 refs that still point to its nodes, so the owner does not keep a detached UI tree
-alive. A newer ref assignment is not cleared by an older view's cleanup.
+alive. Deferring an inline body does not split its owner's JavaScript.
 
-Optional behavior modules remain explicit. Deferring an inline body does not
-split its owner's JavaScript automatically:
+## Initial server rendering
 
-```typescript
-import { createLazyLoader, lazyFragment } from '@microsoft/webui-delivery/lazy.js';
+The condition still controls SSR:
 
-const fragments = createLazyLoader({
-  loaders: {
-    [lazyFragment('app-shell', 'settings')]: () => import('./settings-logic.js'),
-    'custom-input': () => import('./custom-input.js'),
-  },
-});
-```
-
-Handlers in the lazy body still resolve on the existing owner. Optional
-modules must provide the behavior that the application expects; the loader does
-not turn a fragment into a custom element.
-
-## Host endpoints
-
-Use the same loaded protocol for SSR and lazy requests. Hosts authenticate
-and authorize before committing headers, and own data loading, cancellation,
-backpressure, and flushing.
-
-| Operation | Purpose |
+| Initial condition | Result |
 | --- | --- |
-| `renderLazyResources(owner, id, options?)` | Resource-only JSON for preload |
-| `prepareLazyResources(owner, id, options?)` | Resource JSON plus its acknowledgement for two-phase delivery |
-| `renderLazyPartial(state, owner, id, options?)` | Complete JSON, or the final NDJSON state record |
+| False | No body markup or body template is sent. The owner's template references the pack URL. |
+| True | The body renders with the initial state, its templates are inline, and the browser hydrates that DOM without fetching the pack. |
 
-The options are `inventory`, `styleInventory`, and `buildId`, supplied by the
-client's corresponding `X-WebUI-*` headers. For NDJSON, flush the prepared
-resource record, await the application's state work, then render the state
-record with `prepared.options`. This avoids resending the first record's
-resources or reparsing its metadata. A final state record can add resources for
-nested lazy bodies that the returned state activates.
+Existing CSS ownership and DOM-mode rules are unchanged. Components used
+elsewhere on the page are not removed from it merely because one use is lazy;
+when a pack also contains them, the runtime skips templates the page already
+holds. State projection is not a secrecy boundary.
 
-See the [Node](../integrations/node#lazy-template-responses),
-[Rust](../integrations/rust#lazy-template-responses),
-[Python](../integrations/python#lazy-template-responses),
-[.NET](../integrations/dotnet#lazy-template-responses),
-[WASM](../integrations/wasm#lazy-template-responses), and
-[C](../integrations/ffi#lazy-template-responses) APIs.
+A native dialog's content can be server-rendered, but modal top-layer placement
+and focus still use the browser's `showModal()` API.
 
-For local development, `webui serve` provides `/_webui/lazy?owner=...&id=...`
-and `/_webui/lazy/state?owner=...&id=...`. The state endpoint uses configured
-state or the API state provider and supports JSON/NDJSON negotiation. With
-`--api-port`, the provider receives the complete lazy-state path and query shown
-above and returns `{ "state": { ... } }`; the CLI wraps that state with the
-matching protocol resources. A custom URL such as `/ui/settings` requires a
-custom host that returns the complete lazy response, not just application state. Data
-failures are explicit, including failures after metadata has been sent.
+## Memory
 
-Build with the WebUI plugin and the matching compiler/runtime. This
-protocol-backed feature is not combined with `--emit-component-assets`.
-Inventory belongs to one artifact identity; a mismatch requires a document
-refresh rather than reinterpreting old bits. Explicit collection invalidates
-availability, and an in-flight request retries against fresh inventory before
-returning state.
+Once a region whose pack was loaded has been shown and no instance of it is
+rendered anymore, the framework releases its body template at the next idle
+period and clears its inventory bit. Regions that were only prefetched stay
+loaded until they are first shown, and idle or load prefetch does not load a
+released region again. If a released region opens again before the browser
+reclaims its template, it is reused without a request; otherwise its pack is
+fetched again, normally from the HTTP cache. Component templates delivered by a
+pack stay registered like other templates; use `collectTemplates()` from
+`@microsoft/webui-framework/template-cache.js` to release those.
+
+## Build and host packs
+
+`webui build` writes packs to `<out>/_webui/packs/<owner>.<hash>.json`, and
+`webui serve` serves them during development. Serve them as static files
+beside the page:
+
+- File names change whenever their content changes, so serve them with long-lived
+  immutable caching, such as `Cache-Control: public, max-age=31536000, immutable`.
+- Keep the previous build's packs available during a deployment window, as you
+  would JavaScript chunks; a page always requests the packs of its own build.
+- Pack URLs are relative to the document base URL. Pass
+  `--pack-public-base https://cdn.example.com/app/packs/` (or `packPublicBase`
+  in `build()`) to serve them elsewhere. Cross-origin packs need CORS.
+
+Packs contain only compiled templates, condition functions, styles, and
+inventory data. Hosts render pages with the usual APIs; there is no lazy-specific
+host API. When you build programmatically, publish the returned pack files:
+`lazyPackFiles` from [Node](../integrations/node) `build()`,
+`lazy_pack_files` from the [Rust](../integrations/rust) `build()` (or call
+`webui::write_lazy_packs`), and `buildApp()` in the [WASM](../integrations/wasm)
+build.
+
+Condition functions in a pack run with the page's CSP nonce and the `webui`
+Trusted Types policy, as in SSR. Allow the policy name `webui` when you enforce
+Trusted Types.
+
+Build with the WebUI plugin and matching compiler and runtime versions. This
+feature is not combined with `--emit-component-assets`.
+
+## When not to use it
+
+The lazy runtime adds about 1.8 KB (brotli) to an application that imports it,
+and each pack costs a request. A small body that is cheap to deliver with the
+page, or UI that is used immediately, is usually better as an ordinary `<if>`.
+Lazy regions pay off when an application has many bodies that are not initially
+visible, or a few large ones. Their trade-offs are measured in the
+[lazy UI benchmark](https://github.com/microsoft/webui/tree/main/examples/integration/lazy-ui-bench).

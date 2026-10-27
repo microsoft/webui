@@ -32,28 +32,12 @@ string html = handler.Render(
     "/");
 ```
 
-## Lazy template responses
+## Lazy template packs
 
-The same `Protocol` serves [lazy bodies](../concepts/lazy) without
-creating a route or another component:
-
-```csharp
-PreparedLazyResources prepared =
-    protocol.PrepareLazyResources("app-shell", "settings", clientOptions);
-Task<string> pendingState = LoadSettingsAsync(cancellationToken);
-await Response.WriteAsync(prepared.Json + "\n", cancellationToken);
-await Response.Body.FlushAsync(cancellationToken);
-string stateJson = await pendingState;
-await Response.WriteAsync(protocol.RenderLazyPartial(
-    stateJson, "app-shell", "settings", prepared.Options) + "\n",
-    cancellationToken);
-```
-
-`LazyOptions` contains `Inventory`, `StyleInventory`, and `BuildId`.
-Use `RenderLazyResources` for preload-only JSON or `RenderLazyPartial`
-directly for a complete JSON response. The host authenticates before headers,
-sets `application/x-ndjson` for two-phase delivery, and turns post-header data
-failures into explicit terminal error records.
+[Lazy bodies](../concepts/lazy) need no .NET API. `webui build` writes their
+template packs to `<out>/_webui/packs/`; serve that directory as immutable
+static files, for example with `UseStaticFiles`, and render pages with the same
+`Protocol`.
 
 ## Progressive streaming
 

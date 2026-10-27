@@ -29,13 +29,12 @@ test('the initial state contains only the shell and local view preferences', asy
 });
 
 test('each region has fresh scoped state rather than a shared form state cache', async () => {
-  const activity = '/_webui/lazy/state?owner=lazy-popover&id=activity';
-  const first = await (await fetch(origin + activity)).json();
-  const second = await (await fetch(origin + activity)).json();
+  const first = await (await fetch(origin + '/api/activity')).json();
+  const second = await (await fetch(origin + '/api/activity')).json();
   assert.notEqual(first.state.activityStamp, second.state.activityStamp);
   assert.equal(first.state.activityItems.length, 3);
   assert.equal(first.state.layoutOptions, undefined);
-  const settings = await (await fetch(origin + '/_webui/lazy/state?owner=lazy-dialog&id=settings')).json();
+  const settings = await (await fetch(origin + '/api/settings')).json();
   assert.equal(settings.state.layoutOptions.length, 2);
   assert.equal(settings.state.activityItems, undefined);
 });
@@ -47,11 +46,9 @@ test('an explicitly active SSR body gets its data in the initial state', async (
   assert.equal(state.activityReady, false);
 });
 
-test('unknown owners, mismatched regions, and writes are rejected', async () => {
-  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=lazy-popover&id=missing')).status, 404);
-  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=another-owner&id=settings')).status, 404);
-  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=lazy-workspace&id=activity')).status, 404);
-  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=lazy-popover&id=settings')).status, 404);
-  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=lazy-dialog&id=activity')).status, 404);
+test('unknown endpoints and writes are rejected', async () => {
+  assert.equal((await fetch(origin + '/api/missing')).status, 404);
+  assert.equal((await fetch(origin + '/_webui/lazy/state?owner=lazy-popover&id=activity')).status, 404);
+  assert.equal((await fetch(origin + '/api/settings', { method: 'POST' })).status, 405);
   assert.equal((await fetch(origin, { method: 'POST' })).status, 405);
 });

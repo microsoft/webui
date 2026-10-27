@@ -59,6 +59,10 @@ pub struct AppArgs {
     #[arg(long)]
     pub css_public_base: Option<String>,
 
+    /// URL prefix for lazy-region template packs, ending in '/' (default: _webui/packs/)
+    #[arg(long, value_name = "URL")]
+    pub pack_public_base: Option<String>,
+
     /// Legal comment handling: inline preserves legal CSS comments, none strips all comments
     #[arg(long, value_enum, default_value_t = LegalComments::Inline)]
     pub legal_comments: LegalComments,
@@ -79,6 +83,7 @@ impl AppArgs {
             metafile: false,
             css_file_name_template: self.asset_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
+            pack_public_base: self.pack_public_base.clone(),
             legal_comments: self.legal_comments,
             theme: None,
             projection_manifests: self
@@ -150,6 +155,7 @@ mod tests {
             ],
             asset_file_name_template: "[name]-[hash].[ext]".to_string(),
             css_public_base: Some("https://cdn.example.com/assets".to_string()),
+            pack_public_base: None,
             legal_comments: LegalComments::None,
         };
         let options = args.to_build_options(std::path::Path::new("."));

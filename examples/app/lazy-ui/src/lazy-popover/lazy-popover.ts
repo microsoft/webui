@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { attr, observable, WebUIElement } from '@microsoft/webui-framework';
-import { fragments, stateUrl } from '../lazy-state.js';
+import { fetchState } from '../state-api.js';
 
 export class LazyPopover extends WebUIElement {
   @attr({ mode: 'boolean' }) slowData = false;
@@ -23,15 +23,6 @@ export class LazyPopover extends WebUIElement {
     this.generation++;
     this.request?.abort();
     super.disconnectedCallback();
-  }
-
-  async preload(): Promise<void> {
-    try {
-      await fragments.ensureLoaded(this.localName, 'activity');
-    } catch (error) {
-      console.error('Activity preload failed:', error);
-      this.$emit('overlay-notice', 'Preload was unavailable. Opening the overlay will try again.');
-    }
   }
 
   onToggle(event: ToggleEvent): void {
@@ -68,14 +59,17 @@ export class LazyPopover extends WebUIElement {
     this.activityLoading = true;
     this.activityError = '';
     try {
-      const state = await fragments.fetchPartial(this.localName, 'activity', {
-        url: stateUrl(this.localName, 'activity', this.slowData),
-        signal: request.signal,
-      });
+      // Hover or focus usually prefetched the template pack; this covers keyboard
+      // and programmatic opens by loading it in parallel with the state.
+      const [state] = await Promise.all([
+        fetchState('activity', this.slowData, request.signal),
+        this.$prefetch(),
+      ]);
       if (generation !== this.generation || request.signal.aborted) return;
       this.setState(state);
       this.activityReady = true;
-      this.$flushUpdates();
+      await this.$rendered();
+      if (generation !== this.generation) return;
       this.popoverElement.showPopover({ source: this.triggerElement });
     } catch (error) {
       if (generation === this.generation && !request.signal.aborted) {

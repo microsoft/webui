@@ -238,6 +238,12 @@ pub fn build_desktop_bundle(options: DesktopBundleOptions) -> Result<DesktopBund
     let mut claimed_assets = HashSet::new();
     let mut assets =
         write_generated_css(&assets_dest, &mut claimed_assets, &build_result.css_files)?;
+    write_lazy_packs(
+        &assets_dest,
+        &mut claimed_assets,
+        &mut assets,
+        &build_result.lazy_pack_files,
+    )?;
     #[cfg(feature = "application-ipc")]
     write_ipc_assets(&assets_dest, &mut claimed_assets, &mut assets)?;
     let protocol = webui::Protocol::new(build_result.protocol);
@@ -498,6 +504,35 @@ fn write_generated_css(
         assets.push(asset_record(name, &path)?);
     }
     Ok(assets)
+}
+
+/// Bundle lazy-region packs at the URL path compiled into template metadata.
+#[cfg(feature = "source")]
+fn write_lazy_packs(
+    assets_dest: &Path,
+    claimed_assets: &mut HashSet<String>,
+    assets: &mut Vec<BundleAsset>,
+    packs: &[webui::LazyPackFile],
+) -> Result<()> {
+    if packs.is_empty() {
+        return Ok(());
+    }
+    let directory = assets_dest.join(webui::PACK_OUTPUT_DIR);
+    fs::create_dir_all(&directory).map_err(|source| DesktopError::Io {
+        context: format!("creating desktop pack directory {}", directory.display()),
+        source,
+    })?;
+    for pack in packs {
+        let name = format!("{}/{}", webui::PACK_OUTPUT_DIR, pack.file_name);
+        claim_asset(claimed_assets, &name)?;
+        let path = directory.join(&pack.file_name);
+        fs::write(&path, &pack.content).map_err(|source| DesktopError::Io {
+            context: format!("writing desktop lazy pack {}", path.display()),
+            source,
+        })?;
+        assets.push(asset_record(&name, &path)?);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "source")]

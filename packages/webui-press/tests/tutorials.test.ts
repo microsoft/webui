@@ -5,7 +5,6 @@ import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -150,12 +149,14 @@ async function serve(root: string, command: string) {
   }
 }
 
-test('the lazy guide loads scoped state through the documented CLI host', async t => {
+test('the lazy guide builds its documented region into a pack the CLI serves', async t => {
   const guide = fs.readFileSync(path.join(workspace, 'docs/guide/concepts/lazy.md'), 'utf8');
   const template = guide.match(/```html\r?\n<!-- app-shell\.html -->\r?\n([\s\S]*?)```/)?.[1];
-  const request = guide.match(/fetchPartial\('([^']+)', '([^']+)', \{\s*url: '([^']+)'/);
-  assert.ok(template && request, 'the guide must contain its component and state request');
-  const [, owner, id, url] = request;
+  assert.ok(template, 'the guide must contain its component template');
+  assert.match(guide, /import '@microsoft\/webui-framework\/lazy\.js';/);
+  assert.match(guide, /await this\.\$rendered\(\);/);
+  const owner = 'app-shell';
+  const region = `${owner}::lazy:@0`;
   const parent = path.join(workspace, 'packages/webui-press/dist-test/sites');
   fs.mkdirSync(parent, { recursive: true });
   const root = fs.mkdtempSync(path.join(parent, 'lazy-guide-'));
@@ -164,37 +165,21 @@ test('the lazy guide loads scoped state through the documented CLI host', async 
     `<!doctype html><html><head></head><body><${owner}></${owner}></body></html>`);
   write(path.join(root, `src/${owner}.html`), template);
   write(path.join(root, `src/${owner}.ts`), 'export {};');
-  const state = {
-    displayName: 'Ada', settingsReady: false, settingsLoading: false, settingsError: '',
-  };
-  const requested: string[] = [];
-  const api = createServer((request, response) => {
-    requested.push(request.url ?? '');
-    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ state }));
-  });
-  api.listen(0, '127.0.0.1');
-  await once(api, 'listening');
-  const address = api.address();
-  assert.ok(address && typeof address !== 'string');
-  t.after(async () => {
-    const closed = new Promise<void>((resolve, reject) =>
-      api.close(error => error ? reject(error) : resolve()));
-    api.closeAllConnections();
-    await closed;
-  });
-  const server = await serve(root, `webui serve ./src --plugin webui --api-port ${address.port}`);
+  write(path.join(root, 'state.json'), JSON.stringify({ displayName: 'Ada', settingsReady: false }));
+  const server = await serve(root, 'webui serve ./src --state ./state.json --plugin webui');
   try {
-    requested.length = 0;
-    const response = await fetch(new URL(url, server.url), {
-      headers: { Accept: 'application/json' },
-    });
+    const html = await (await fetch(server.url)).text();
+    assert.ok(!html.includes('<h2>Settings</h2>'), 'a closed body is not delivered with the page');
+    const url = html.match(new RegExp(`"lp":\\{"${region}":"([^"]+)"\\}`))?.[1];
+    assert.match(url ?? '', /^_webui\/packs\/app-shell\.[0-9a-f]{16}\.json$/);
+    const response = await fetch(new URL(url!, server.url));
     assert.equal(response.status, 200);
-    const result = await response.json();
-    assert.equal(result.type, 'webui-lazy');
-    assert.equal(result.owner, owner);
-    assert.equal(result.fragment, `${owner}::lazy:${id}`);
-    assert.deepEqual(result.state, { basePath: '/', ...state });
-    assert.deepEqual(requested, [url], 'the CLI forwards the complete state path to its provider');
+    assert.match(response.headers.get('content-type') ?? '', /application\/json/);
+    const pack = await response.json();
+    assert.equal(pack.type, 'webui-pack');
+    assert.equal(pack.fragment, region);
+    assert.equal(pack.state, undefined);
+    assert.match(pack.templates[region].h, /Settings/);
   } finally {
     await server.stop();
   }

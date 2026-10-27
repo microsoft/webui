@@ -6,21 +6,9 @@ import '../../../src/styles-entry.js';
 import '../../../src/template-cache-entry.js';
 import '../../../src/lazy-entry.js';
 import { attr, getTemplate, observable, WebUIElement } from '../../../src/index.js';
-import { createLazyLoader, lazyFragment } from '../../../../webui-delivery/src/lazy-entry.js';
-import { ndjson } from '../../../../webui-delivery/src/ndjson.js';
 import { collectTemplates } from '../../../src/template-cache.js';
 
 startRuntime();
-
-let moduleLoads = 0;
-const loader = createLazyLoader({
-  endpoint: '/lazy-ui/resources',
-  transport: ndjson(),
-  loaders: {
-    [lazyFragment('test-lazy-shadow', 'details')]: async () => { moduleLoads++; },
-    [lazyFragment('test-lazy-light', 'details')]: async () => { moduleLoads++; },
-  },
-});
 
 export class LazyOwner extends WebUIElement {
   @attr label = '';
@@ -39,12 +27,7 @@ export class LazyOwner extends WebUIElement {
   private generation = 0;
   private request: AbortController | undefined;
 
-  preload(): void {
-    void loader.ensureLoaded(this.localName, 'details').catch(error => {
-      this.error = String(error);
-    });
-  }
-
+  /** Fetch application state and activate the body; the framework loads its pack. */
   async open(): Promise<void> {
     const generation = ++this.generation;
     this.request?.abort();
@@ -54,15 +37,14 @@ export class LazyOwner extends WebUIElement {
     this.error = '';
     const query = new URLSearchParams(window.location.search);
     query.set('owner', this.localName);
-    query.set('id', 'details');
     try {
-      const state = await loader.fetchPartial(this.localName, 'details', {
-        url: `/lazy-ui/state?${query}`,
-        signal: controller.signal,
-      });
+      const response = await fetch(`/lazy-ui/state?${query}`, { signal: controller.signal });
+      if (!response.ok) throw new Error(`could not load lazy state (${response.status})`);
+      const state = await response.json() as Record<string, unknown>;
       if (generation !== this.generation || controller.signal.aborted) return;
       this.setState(state);
       this.opened = true;
+      await this.$rendered();
     } catch (error) {
       if (generation === this.generation && !controller.signal.aborted) this.error = String(error);
     } finally {
@@ -116,7 +98,9 @@ declare global {
   interface Window {
     __lazyFixture: {
       collect(): number;
-      moduleLoads(): number;
+      registered(owner: string, ordinal?: number): boolean;
+      packUrl(owner: string, ordinal?: number): string;
+      inventory(): string;
       track(owner: string): void;
       retained(): boolean;
     };
@@ -125,9 +109,19 @@ declare global {
 let observed: WeakRef<object> | undefined;
 window.__lazyFixture = {
   collect: collectTemplates,
-  moduleLoads: () => moduleLoads,
+  registered: (owner, ordinal = 0) => window.__webui?.templates?.[`${owner}::lazy:@${ordinal}`] !== undefined,
+  packUrl(owner, ordinal = 0) {
+    const region = `${owner}::lazy:@${ordinal}`;
+    const templates = window.__webui?.templates ?? {};
+    for (const name in templates) {
+      const url = templates[name].lp?.[region];
+      if (url) return new URL(url, document.baseURI).href;
+    }
+    return '';
+  },
+  inventory: () => window.__webui?.inventory ?? '',
   track(owner) {
-    const metadata = getTemplate(lazyFragment(owner, 'details'));
+    const metadata = getTemplate(`${owner}::lazy:@0`);
     if (!metadata) throw new Error('The observed lazy body must be loaded.');
     observed = new WeakRef(metadata);
   },

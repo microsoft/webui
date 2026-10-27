@@ -51,7 +51,7 @@ wait for it to arrive. Repeated startup calls do not repeat installation.
 | `styles.js` | Component stylesheet installation and readiness |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
-| `lazy.js` | Hostless lazy-body rendering in the existing owner and scope; no network loader |
+| `lazy.js` | Loads `<if lazy>` template packs, runs their prefetch triggers, and releases inactive regions |
 | `streaming.js` | Progressive HTML streaming hydration |
 | `lazy-hydration.js` | Visibility-based hydration coordination |
 | `interaction-hydration.js` | Interaction-based activation |
@@ -87,8 +87,8 @@ Older protocols without dependency metadata and late cache installation fail
 explicitly.
 
 [Lazy template bodies](./lazy) let an ordinary `<if>` keep complex UI out
-of initial delivery until it is needed. Resource/state loading is a separate
-`@microsoft/webui-delivery/lazy.js` capability, not part of the renderer.
+of initial delivery until it is needed. The build emits each body as a static
+template pack, and `lazy.js` loads it in the existing owner.
 
 ## Component Files
 

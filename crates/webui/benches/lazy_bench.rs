@@ -5,12 +5,14 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::fmt::Write as _;
 use std::hint::black_box;
 use tempfile::TempDir;
-use webui::{build, BuildOptions, LazyRequest, Plugin, Protocol, RenderOptions, WebUIHandler};
+use webui::{build, BuildOptions, BuildResult, Plugin, Protocol, RenderOptions, WebUIHandler};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 
 webui_handler::define_string_response_writer!(Output, text);
 
-fn protocol(lazy: bool) -> Protocol {
+const REGION: &str = "bench-owner::lazy:@0";
+
+fn compile(lazy: bool) -> BuildResult {
     let directory = TempDir::new().unwrap();
     std::fs::write(
         directory.path().join("index.html"),
@@ -19,7 +21,7 @@ fn protocol(lazy: bool) -> Protocol {
     .unwrap();
     let mut template = String::with_capacity(20_000);
     template.push_str(if lazy {
-        "<h1>Shell</h1><if condition=\"show\" lazy id=\"settings\">"
+        "<h1>Shell</h1><if condition=\"show\" lazy>"
     } else {
         "<h1>Shell</h1><if condition=\"show\">"
     });
@@ -29,13 +31,12 @@ fn protocol(lazy: bool) -> Protocol {
     }
     template.push_str("</if>");
     std::fs::write(directory.path().join("bench-owner.html"), template).unwrap();
-    let result = build(BuildOptions {
+    build(BuildOptions {
         app_dir: directory.path().to_owned(),
         plugin: Some(Plugin::WebUI),
         ..BuildOptions::default()
     })
-    .unwrap();
-    Protocol::new(result.protocol)
+    .unwrap()
 }
 
 fn render(protocol: &Protocol, state: &serde_json::Value, handler: &WebUIHandler) -> String {
@@ -52,31 +53,33 @@ fn render(protocol: &Protocol, state: &serde_json::Value, handler: &WebUIHandler
 }
 
 fn lazy_bench(c: &mut Criterion) {
-    let eager = protocol(false);
-    let lazy = protocol(true);
+    let eager = compile(false);
+    let lazy = compile(true);
+    assert!(eager.lazy_pack_files.is_empty());
+    assert_eq!(lazy.lazy_pack_files.len(), 1);
+    let pack_bytes = lazy.lazy_pack_files[0].content.len();
+    let eager = Protocol::new(eager.protocol);
+    let lazy = Protocol::new(lazy.protocol);
     let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
     let closed = serde_json::json!({ "show": false, "value": "Fresh" });
     let open = serde_json::json!({ "show": true, "value": "Fresh" });
     let eager_bytes = render(&eager, &closed, &handler).len();
-    let lazy_bytes = render(&lazy, &closed, &handler).len();
-    let prepared = lazy
-        .prepare_lazy_resources(LazyRequest::new("bench-owner", "settings"))
-        .unwrap();
-    let request = LazyRequest::new("bench-owner", "settings").with_options(&prepared.options);
-    let state = r#"{"value":"Fresh","unused":"not selected"}"#;
-    let warm_bytes = lazy.render_lazy_partial_json(state, request).unwrap().len();
+    let lazy_html = render(&lazy, &closed, &handler);
     let plain = WebUIHandler::new();
     assert_eq!(
         render(&eager, &closed, &plain),
         render(&lazy, &closed, &plain)
     );
     assert_eq!(render(&eager, &open, &plain), render(&lazy, &open, &plain));
-    let warm: serde_json::Value =
-        serde_json::from_str(&lazy.render_lazy_partial_json(state, request).unwrap()).unwrap();
-    assert_eq!(warm["state"], serde_json::json!({ "value": "Fresh" }));
-    assert!(warm.get("templates").is_none());
-    assert!(lazy_bytes < eager_bytes / 4);
-    eprintln!("lazy fixture bytes: eager_closed={eager_bytes}, lazy_closed={lazy_bytes}, resources={}, warm_state={warm_bytes}", prepared.json.len());
+    assert!(
+        lazy_html.contains("\"lp\":"),
+        "closed owner metadata references its pack"
+    );
+    assert!(lazy_html.len() < eager_bytes / 4);
+    eprintln!(
+        "lazy fixture bytes: eager_closed={eager_bytes}, lazy_closed={}, pack={pack_bytes}",
+        lazy_html.len()
+    );
 
     for (name, protocol, state) in [
         ("closed_eager", &eager, &closed),
@@ -88,21 +91,9 @@ fn lazy_bench(c: &mut Criterion) {
             b.iter(|| black_box(render(black_box(protocol), black_box(state), &handler)));
         });
     }
-    c.bench_function("lazy/resources_cold", |b| {
-        b.iter(|| {
-            black_box(
-                lazy.render_lazy_resources(LazyRequest::new("bench-owner", "settings"))
-                    .unwrap(),
-            )
-        });
-    });
-    c.bench_function("lazy/state_warm", |b| {
-        b.iter(|| {
-            black_box(
-                lazy.render_lazy_partial_json(black_box(state), request)
-                    .unwrap(),
-            )
-        });
+    // Build-time only: hosts serve the rendered pack as a static file.
+    c.bench_function("lazy/pack_render", |b| {
+        b.iter(|| black_box(lazy.render_lazy_pack(black_box(REGION)).unwrap()));
     });
 }
 

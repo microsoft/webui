@@ -47,47 +47,6 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
-/// Client resource availability for a lazy template request.
-#[napi(object)]
-pub struct JsLazyOptions {
-    /// Loaded template-resource inventory.
-    pub inventory: Option<String>,
-    /// Loaded stylesheet-definition inventory.
-    pub style_inventory: Option<String>,
-    /// Artifact identity associated with both inventories.
-    pub build_id: Option<String>,
-}
-
-/// A resource record and acknowledgement for two-phase host-owned delivery.
-#[napi(object)]
-pub struct JsPreparedLazyResources {
-    /// Resource JSON to flush immediately.
-    pub json: String,
-    /// Availability for the terminal state record.
-    pub options: JsLazyOptions,
-}
-
-fn lazy_request<'a>(
-    owner: &'a str,
-    id: &'a str,
-    options: &'a Option<JsLazyOptions>,
-) -> webui_handler::LazyRequest<'a> {
-    let options = options.as_ref();
-    webui_handler::LazyRequest {
-        owner,
-        id,
-        inventory: options
-            .and_then(|options| options.inventory.as_deref())
-            .unwrap_or(""),
-        style_inventory: options
-            .and_then(|options| options.style_inventory.as_deref())
-            .unwrap_or(""),
-        build_id: options
-            .and_then(|options| options.build_id.as_deref())
-            .unwrap_or(""),
-    }
-}
-
 /// Build statistics returned from the build function.
 #[napi(object)]
 pub struct JsBuildStats {
@@ -114,6 +73,9 @@ pub struct JsBuildResult {
     pub css_files: Vec<String>,
     /// Static component asset files as alternating [filename, content, filename, content, ...].
     pub component_asset_files: Vec<String>,
+    /// Lazy-region packs as alternating [filename, content, ...]; publish them
+    /// under `_webui/packs/` in the build output.
+    pub lazy_pack_files: Vec<String>,
     /// Esbuild-compatible component asset metafile JSON when requested.
     pub metafile: Option<String>,
     /// Non-fatal build advisories (plain text), e.g. CSS tokens used only with a
@@ -160,6 +122,8 @@ pub struct JsBuildOptions {
     pub css_file_name_template: Option<String>,
     /// Optional base URL/path prefix for Link-mode css hrefs.
     pub css_public_base: Option<String>,
+    /// URL prefix for lazy-region packs, ending in "/" (default "_webui/packs/").
+    pub pack_public_base: Option<String>,
     /// Legal comment handling: "inline" (default) or "none".
     pub legal_comments: Option<String>,
     /// Design token theme: a JSON file path or npm package name.
@@ -240,6 +204,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             .css_file_name_template
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
         css_public_base: options.css_public_base,
+        pack_public_base: options.pack_public_base,
         legal_comments,
         theme,
         projection_manifests,
@@ -259,12 +224,18 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .into_iter()
         .flat_map(|file| [file.name, file.content])
         .collect();
+    let lazy_pack_files: Vec<String> = result
+        .lazy_pack_files
+        .into_iter()
+        .flat_map(|pack| [pack.file_name, pack.content])
+        .collect();
     let warnings: Vec<String> = result.warnings.iter().map(|d| d.to_string()).collect();
 
     Ok(JsBuildResult {
         protocol: Buffer::from(result.protocol_bytes),
         css_files,
         component_asset_files,
+        lazy_pack_files,
         metafile: result.metafile,
         warnings,
         stats: JsBuildStats {
@@ -401,55 +372,6 @@ impl Protocol {
             })?;
         serde_json::to_string(&result)
             .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
-    }
-
-    /// Prepare a named lazy body's resources without fetching application state.
-    #[napi]
-    pub fn render_lazy_resources(
-        &self,
-        owner: String,
-        id: String,
-        options: Option<JsLazyOptions>,
-    ) -> napi::Result<String> {
-        self.inner
-            .render_lazy_resources(lazy_request(&owner, &id, &options))
-            .map_err(|error| NapiError::from_reason(error.to_string()))
-    }
-
-    /// Prepare streaming resource JSON together with its acknowledgement.
-    #[napi]
-    pub fn prepare_lazy_resources(
-        &self,
-        owner: String,
-        id: String,
-        options: Option<JsLazyOptions>,
-    ) -> napi::Result<JsPreparedLazyResources> {
-        let prepared = self
-            .inner
-            .prepare_lazy_resources(lazy_request(&owner, &id, &options))
-            .map_err(|error| NapiError::from_reason(error.to_string()))?;
-        Ok(JsPreparedLazyResources {
-            json: prepared.json,
-            options: JsLazyOptions {
-                inventory: Some(prepared.options.inventory),
-                style_inventory: Some(prepared.options.style_inventory),
-                build_id: Some(prepared.options.build_id),
-            },
-        })
-    }
-
-    /// Render fresh scoped state and any still-missing lazy resources.
-    #[napi]
-    pub fn render_lazy_partial(
-        &self,
-        state_json: String,
-        owner: String,
-        id: String,
-        options: Option<JsLazyOptions>,
-    ) -> napi::Result<String> {
-        self.inner
-            .render_lazy_partial_json(&state_json, lazy_request(&owner, &id, &options))
-            .map_err(|error| NapiError::from_reason(error.to_string()))
     }
 
     /// Return CSS token names in build order.
@@ -1340,6 +1262,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1398,6 +1321,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1428,6 +1352,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1452,6 +1377,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1479,6 +1405,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1506,6 +1433,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1534,6 +1462,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1573,6 +1502,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: Some(theme_path.to_string_lossy().to_string()),
             projection_manifests: None,
@@ -1607,6 +1537,7 @@ mod tests {
             metafile: Some(true),
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1659,6 +1590,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: Some("none".to_string()),
             theme: None,
             projection_manifests: None,
@@ -1686,6 +1618,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: Some("linked".to_string()),
             theme: None,
             projection_manifests: None,
@@ -1714,6 +1647,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1743,6 +1677,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1776,6 +1711,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1812,6 +1748,7 @@ mod tests {
             metafile: None,
             css_file_name_template: None,
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,

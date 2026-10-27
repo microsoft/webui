@@ -30,34 +30,11 @@ Linux (manylinux), each for x86_64 and ARM64, plus one source distribution.
 See [Wheel matrix and scope](#wheel-matrix-and-scope) for what isn't covered
 and why.
 
-## Lazy template responses
+## Lazy template packs
 
-`Renderer` provides resource-only and stateful operations for
-[lazy bodies](../concepts/lazy):
-
-```python
-from microsoft_webui import LazyOptions
-
-prepared = renderer.prepare_lazy_resources(
-    "app-shell", "settings",
-    options=LazyOptions(
-        inventory=client_inventory,
-        style_inventory=client_style_inventory,
-        build_id=client_build_id,
-    ),
-)
-send_and_flush(prepared.json + b"\n")
-state = load_settings()
-send_and_flush(renderer.render_lazy_partial(
-    state, "app-shell", "settings", options=prepared.options,
-) + b"\n")
-```
-
-The send/data functions belong to the application. Schedule data work alongside
-resource delivery, authenticate before headers, and cancel it on disconnect.
-All rendering operations return UTF-8 `bytes`; state also accepts pre-serialized
-inputs. `render_lazy_resources` is the resource-only convenience call.
-Catch post-header errors and send an explicit terminal error record.
+[Lazy bodies](../concepts/lazy) need no Python API. `webui build` writes their
+template packs to `<out>/_webui/packs/`; serve that directory as immutable
+static files beside the page, and render pages with the same `Renderer`.
 
 ## Buffered rendering
 

@@ -7,10 +7,11 @@
 //! into final HTML output based on provided data.
 
 pub mod css_module;
-mod lazy;
-mod lazy_response;
-pub use lazy_response::{LazyOptions, LazyRequest, LazyRequestError, PreparedLazyResources};
 pub(crate) mod html_encode;
+mod lazy;
+mod lazy_pack;
+#[cfg(feature = "packs")]
+pub mod lazy_packs;
 pub mod plugin;
 mod render_capacity;
 mod response_writer;
@@ -75,9 +76,6 @@ use webui_state::find_value_by_dotted_path_ref;
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
-    /// Invalid target, identity, or availability information for lazy delivery.
-    #[error("lazy request [{}]: {}", .0.code, .0.message)]
-    LazyRequest(Box<LazyRequestError>),
     #[error("Rendering error: {0}")]
     Rendering(String),
 

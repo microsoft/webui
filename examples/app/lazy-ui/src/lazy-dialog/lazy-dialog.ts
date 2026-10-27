@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { attr, observable, WebUIElement } from '@microsoft/webui-framework';
-import { fragments, stateUrl } from '../lazy-state.js';
+import { fetchState } from '../state-api.js';
 
 export interface ViewPreferences {
   compactMode: boolean;
@@ -34,15 +34,6 @@ export class LazyDialog extends WebUIElement {
     super.disconnectedCallback();
   }
 
-  async preload(): Promise<void> {
-    try {
-      await fragments.ensureLoaded(this.localName, 'settings');
-    } catch (error) {
-      console.error('Settings preload failed:', error);
-      this.$emit('overlay-notice', 'Preload was unavailable. Opening the overlay will try again.');
-    }
-  }
-
   onTrigger(): void {
     if (this.settingsLoading) this.dismiss();
     else void this.open();
@@ -68,16 +59,18 @@ export class LazyDialog extends WebUIElement {
     this.settingsLoading = true;
     this.settingsError = '';
     try {
-      const state = await fragments.fetchPartial(this.localName, 'settings', {
-        url: stateUrl(this.localName, 'settings', this.slowData),
-        signal: request.signal,
-      });
+      // Load the template pack in parallel with the state; hover usually started it already.
+      const [state] = await Promise.all([
+        fetchState('settings', this.slowData, request.signal),
+        this.$prefetch(),
+      ]);
       if (generation !== this.generation || request.signal.aborted) return;
       this.setState(state);
       this.densityDraft = this.compactMode ? 'compact' : 'comfortable';
       this.highlightDraft = this.highlightPinned;
       this.settingsReady = true;
-      this.$flushUpdates();
+      await this.$rendered();
+      if (generation !== this.generation) return;
       this.dialog.showModal();
     } catch (error) {
       if (generation === this.generation && !request.signal.aborted) {

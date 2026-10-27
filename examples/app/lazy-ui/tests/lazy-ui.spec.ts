@@ -3,7 +3,6 @@
 
 import { expect, test, type Page } from '@playwright/test';
 import type { LazyDialog } from '../src/lazy-dialog/lazy-dialog.js';
-import type { LazyPopover } from '../src/lazy-popover/lazy-popover.js';
 
 async function ready(page: Page, path = '/'): Promise<void> {
   await page.goto(path);
@@ -22,12 +21,18 @@ async function hydrated(page: Page): Promise<void> {
 }
 
 function isState(url: string): boolean {
-  return new URL(url).pathname === '/_webui/lazy/state';
+  return /^\/api\/(activity|settings)$/.test(new URL(url).pathname);
 }
 
-test('initial SSR omits all overlay contents and their lazy metadata', async ({ page }) => {
+function isPack(url: string): boolean {
+  return new URL(url).pathname.startsWith('/_webui/packs/');
+}
+
+test('initial SSR omits overlay contents and only references their packs', async ({ page }) => {
   const response = await page.goto('/');
   const html = await response!.text();
+  expect(html).toMatch(/"lp":\{"lazy-popover::lazy:@0":"_webui\/packs\/lazy-popover\.[0-9a-f]{16}\.json"\}/);
+  expect(html).toMatch(/"lp":\{"lazy-dialog::lazy:@0":"_webui\/packs\/lazy-dialog\.[0-9a-f]{16}\.json"\}/);
   expect(html).not.toContain('Review queue');
   expect(html).not.toContain('Reading layout');
   expect(html).not.toContain('A quick look at this sample workspace.');
@@ -46,40 +51,41 @@ test('initial SSR omits all overlay contents and their lazy metadata', async ({ 
   }
 });
 
-test('hover preloads the popover without showing it or fetching state', async ({ page }) => {
+test('hover prefetches the popover pack without showing it or fetching state', async ({ page }) => {
   await ready(page);
   let stateRequests = 0;
   page.on('request', request => { if (isState(request.url())) stateRequests++; });
-  const metadata = page.waitForResponse(response => {
-    const url = new URL(response.url());
-    return url.pathname === '/_webui/lazy' && url.searchParams.get('id') === 'activity';
-  });
+  const pack = page.waitForResponse(response => isPack(response.url()));
   await page.getByRole('button', { name: 'Recent activity', exact: true }).hover();
-  const response = await metadata;
+  const response = await pack;
   expect(response.ok()).toBe(true);
+  expect(new URL(response.url()).pathname).toMatch(/^\/_webui\/packs\/lazy-popover\.[0-9a-f]{16}\.json$/);
   const payload = await response.json();
-  expect(payload).toMatchObject({
-    owner: 'lazy-popover', fragment: 'lazy-popover::lazy:activity',
-  });
-  expect(payload.templates['lazy-popover::lazy:activity'].h).toContain('overlay-header');
-  expect(payload.templates['lazy-popover::lazy:activity'].h).toContain('Close activity');
-  await page.locator('lazy-popover').evaluate(element => (element as LazyPopover).preload());
+  expect(payload).toMatchObject({ type: 'webui-pack', version: 1, fragment: 'lazy-popover::lazy:@0' });
+  expect(payload.state).toBeUndefined();
+  expect(payload.templates['lazy-popover::lazy:@0'].h).toContain('overlay-header');
+  expect(payload.templates['lazy-popover::lazy:@0'].h).toContain('Close activity');
   await expect(page.locator('#activity-popover')).not.toBeVisible();
   await expect(page.locator('.activity-body')).toHaveCount(0);
   await expect(page.locator('#activity-popover .overlay-header')).toHaveCount(0);
   expect(stateRequests).toBe(0);
 });
 
-test('a warm native popover requests fresh state without repeating its template', async ({ page }) => {
+test('a warm native popover requests fresh state without refetching its pack', async ({ page }) => {
   await ready(page);
-  await page.locator('lazy-popover').evaluate(element => (element as LazyPopover).preload());
+  const trigger = page.getByRole('button', { name: 'Recent activity', exact: true });
+  const prefetched = page.waitForResponse(response => isPack(response.url()));
+  await trigger.hover();
+  await prefetched;
+  const packs: string[] = [];
+  page.on('request', request => { if (isPack(request.url())) packs.push(request.url()); });
   const state = page.waitForResponse(response => isState(response.url()));
-  await page.getByRole('button', { name: 'Recent activity', exact: true }).click();
-  const records = (await (await state).text()).trim().split('\n').map(line => JSON.parse(line));
-  expect(records).toHaveLength(2);
-  expect(records.every(record => record.owner === 'lazy-popover')).toBe(true);
-  expect(records.every(record => record.templates === undefined)).toBe(true);
+  await trigger.click();
+  const body = await (await state).json();
+  expect(body.state.activityItems).toHaveLength(3);
+  expect(body.templates).toBeUndefined();
   await expect(page.locator('.activity-list li')).toHaveCount(3);
+  expect(packs).toEqual([]);
   const stamp = await page.locator('.activity-body .response-stamp').textContent();
   await page.keyboard.press('Escape');
   await expect(page.locator('.activity-body')).toHaveCount(0);
@@ -102,8 +108,7 @@ test('the dialog emits preferences to the workspace and receives updated attribu
   const state = page.waitForResponse(response => isState(response.url()));
   await opener.click();
   const dialog = page.getByRole('dialog', { name: 'View settings' });
-  const records = (await (await state).text()).trim().split('\n').map(line => JSON.parse(line));
-  expect(records.every(record => record.owner === 'lazy-dialog')).toBe(true);
+  expect((await (await state).json()).state.layoutOptions).toHaveLength(2);
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(element => element instanceof HTMLDialogElement && element.matches(':modal'))).toBe(true);
   await expect(dialog.getByLabel('Item spacing')).toBeVisible();
@@ -156,11 +161,11 @@ for (const overlay of ['activity', 'settings'] as const) {
       await page.getByLabel('Simulate slow data').check();
       let requests = 0;
       page.on('request', request => { if (isState(request.url())) requests++; });
-      const response = page.waitForResponse(value => isState(value.url()));
+      const pending = page.waitForRequest(value => isState(value.url()));
       await page.getByRole('button', {
         name: overlay === 'activity' ? 'Recent activity' : 'View settings', exact: true,
       }).click();
-      await response;
+      await pending;
       const component = page.locator(overlay === 'activity' ? 'lazy-popover' : 'lazy-dialog');
       const shell = component.locator(overlay === 'activity' ? '#activity-popover' : '.settings-dialog');
       await expect(component.locator('.loading-state')).toBeVisible();
@@ -181,11 +186,11 @@ for (const overlay of ['activity', 'settings'] as const) {
   test(`${overlay} disconnect aborts its pending state request`, async ({ page }) => {
     await ready(page);
     await page.getByLabel('Simulate slow data').check();
-    const response = page.waitForResponse(value => isState(value.url()));
+    const pending = page.waitForRequest(value => isState(value.url()));
     await page.getByRole('button', {
       name: overlay === 'activity' ? 'Recent activity' : 'View settings', exact: true,
     }).click();
-    await response;
+    await pending;
     const component = overlay === 'activity' ? 'lazy-popover' : 'lazy-dialog';
     const cancelled = page.waitForEvent('requestfailed', request => isState(request.url()));
     await page.locator(component).evaluate(element => element.remove());
@@ -203,7 +208,7 @@ for (const [tag, label, selector, error] of [
     await page.emulateMedia({ colorScheme: 'light' });
     await ready(page);
     let failed = false;
-    await page.route('**/_webui/lazy/state?**', async route => {
+    await page.route('**/api/**', async route => {
       if (!failed) {
         failed = true;
         await route.fulfill({
@@ -243,9 +248,9 @@ for (const [tag, label, selector, error] of [
 }
 
 for (const overlay of ['popover', 'dialog'] as const) {
-  test(`an initially active ${overlay} uses SSR without another state request`, async ({ page }) => {
+  test(`an initially active ${overlay} uses SSR without state or pack requests`, async ({ page }) => {
     let requests = 0;
-    page.on('request', request => { if (isState(request.url())) requests++; });
+    page.on('request', request => { if (isState(request.url()) || isPack(request.url())) requests++; });
     const response = await page.goto(`/?open=${overlay}`);
     const html = await response!.text();
     expect(html).toContain(overlay === 'popover' ? 'class="activity-body"' : 'class="settings-body"');
@@ -309,13 +314,19 @@ test('the popover uses its component-local native invoker and CSS anchor', async
   await expect(trigger).toBeFocused();
 });
 
-test('a component preload failure reaches the workspace announcement', async ({ page }) => {
+test('a failed pack prefetch stays silent, fails the open visibly, and retries', async ({ page }) => {
   await ready(page);
-  await page.route('**/_webui/lazy?**', route => route.fulfill({ status: 503, body: 'Unavailable' }));
-  await page.getByRole('button', { name: 'Recent activity', exact: true }).hover();
-  await expect(page.getByRole('status').filter({ hasText: 'Preload was unavailable' })).toBeVisible();
-  await page.unroute('**/_webui/lazy?**');
-  await page.getByRole('button', { name: 'Recent activity', exact: true }).click();
+  await page.route('**/_webui/packs/**', route => route.fulfill({ status: 503, body: 'Unavailable' }));
+  const trigger = page.getByRole('button', { name: 'Recent activity', exact: true });
+  const prefetch = page.waitForResponse(response => isPack(response.url()));
+  await trigger.hover();
+  expect((await prefetch).status()).toBe(503);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await trigger.click();
+  await expect(page.locator('lazy-popover').getByRole('alert')).toContainText('Activity could not be loaded');
+  await expect(page.locator('#activity-popover')).not.toBeVisible();
+  await page.unroute('**/_webui/packs/**');
+  await page.locator('lazy-popover').getByRole('button', { name: 'Try again' }).click();
   await expect(page.locator('lazy-popover .activity-body')).toBeVisible();
 });
 

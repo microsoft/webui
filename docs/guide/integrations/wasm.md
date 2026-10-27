@@ -21,24 +21,19 @@ Ordinary native SSR does not require browser WASM or a browser download of
 |---------|-------------|---------|----------|
 | Handler | `wasm/handler/webui_wasm_handler.js` | `Protocol` | You already have protocol bytes and only need rendering |
 | Parser | `wasm/parser/webui_wasm_parser.js` | `build_protocol` | You need to compile virtual browser files into protocol bytes |
-| All | `wasm/all/webui_wasm_all.js` | Parser and handler exports | You need both sides in one module, such as the docs playground |
+| All | `wasm/all/webui_wasm_all.js` | Parser and handler exports, plus `buildApp` | You need both sides in one module, such as the docs playground |
 
 Use the narrowest bundle your application needs. The handler excludes the
 parser, and the parser excludes the renderer.
 
-## Lazy template responses
+## Lazy template packs
 
-The loaded `Protocol` also serves [lazy bodies](../concepts/lazy).
-`renderLazyResources(owner, id, options)` returns resource JSON;
-`prepareLazyResources` returns `{ json, options }` for two-phase delivery.
-Pass the acknowledgement to
-`renderLazyPartial(stateJson, owner, id, prepared.options)` after resolving
-application state. Options use `inventory`, `styleInventory`, and `buildId`.
-
-The host owns state loading and transport. These APIs do not navigate, create
-components, or perform browser hydration. The handler-only variant can serve a
-protocol built elsewhere; the parser and combined variants assign artifact
-identity when building new protocols.
+[Lazy bodies](../concepts/lazy) compile to static template packs, so
+`build_protocol` rejects templates that contain them. Use `buildApp(files,
+entry, projectionManifests?, dom?, packPublicBase?)` from the combined bundle: it
+returns `{ protocol, lazyPackFiles }`, where `lazyPackFiles` alternates file
+names and JSON contents to serve under `_webui/packs/`. Rendering needs no lazy
+API; the handler renders closed regions as references to their packs.
 
 ## Building the WASM bundles
 
@@ -77,9 +72,6 @@ same bytes repeatedly.
 | `streamResponse(entry, requestPath, options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
 | `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
-| `renderLazyResources(owner, id, options?)` | Resource-only JSON for a named template body |
-| `prepareLazyResources(owner, id, options?)` | Resource JSON and acknowledgement for two-phase delivery |
-| `renderLazyPartial(stateJson, owner, id, options?)` | Complete/terminal JSON with fresh scoped state |
 | `tokens()` | Return CSS token names in build order |
 
 For a service-worker example that drives a progressive session and prepares

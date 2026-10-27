@@ -213,8 +213,12 @@ export function installTemplateRegistry(): void {
 declare global {
   interface WebUIRuntimeGlobal {
     buildId?: string;
+    /** Hex bitset of compiled templates this document holds. */
+    inventory?: string;
     styleInventory?: string;
     inventoryEpoch?: number;
+    /** CSP nonce for scripts and styles the runtime inserts. */
+    nonce?: string;
     state?: Record<string, unknown>;
     templates?: Record<string, TemplateMeta>;
     templateFns?: Record<string, CompiledConditionFn[]>;
@@ -229,7 +233,6 @@ declare global {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
     __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
-    __webuiResolveResources?: (id: string) => readonly string[] | undefined;
     __webuiPrepareResources?: (ids: readonly string[]) => Promise<void> | undefined;
     __webuiCollectTemplates?: (keep?: readonly string[]) => number;
     __webuiRetainTemplate?: (tag: string) => unknown;

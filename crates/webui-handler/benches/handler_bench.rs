@@ -614,10 +614,9 @@ fn handler_protocol_construction_bench(c: &mut Criterion) {
         }
         for fragment in 0..fragment_count {
             document.client_fragments.insert(
-                format!("card-0::lazy:region-{fragment}"),
+                format!("card-0::lazy:@{fragment}"),
                 webui_protocol::ClientFragmentData {
                     owner: "card-0".into(),
-                    name: format!("region-{fragment}"),
                     entry: true,
                     template_json: r#"{"v":3,"h":"<section><h2>Settings</h2><input></section>","s":[1,3,5,1,1]}"#.into(),
                     ..Default::default()

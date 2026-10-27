@@ -326,8 +326,8 @@ message WebUIFragmentIf {
 // Compiled client metadata for a template section, without a component host.
 message ClientFragmentData {
   string owner = 1;
-  // Optional owner-scoped authored id for a publicly loadable lazy region.
-  string name = 2;
+  reserved 2;
+  reserved "name";
   string template_json = 3;
   string template_functions = 4;
   // Ordinary template resources required by this section; nested lazy edges

@@ -33,6 +33,8 @@ export interface RenderedFixture {
   /** Opt-in for request/stream fixtures that reuse one compiled protocol. */
   protocol?: Protocol;
   render?: (state: string) => string;
+  /** Lazy-region packs by file name; serve them under `_webui/packs/` beside the page. */
+  packs?: ReadonlyMap<string, string>;
 }
 
 export interface RenderFixturesOptions {
@@ -137,8 +139,12 @@ function renderOne(
     }
   }
 
-  if (rerender) return { name, html, protocol, render: rerender };
-  return { name, html };
+  let packs: Map<string, string> | undefined;
+  for (let i = 0; i + 1 < result.lazyPackFiles.length; i += 2) {
+    (packs ??= new Map()).set(result.lazyPackFiles[i], result.lazyPackFiles[i + 1]);
+  }
+  if (rerender) return { name, html, protocol, render: rerender, packs };
+  return packs ? { name, html, packs } : { name, html };
 }
 
 interface AuthoredSourceMirror {

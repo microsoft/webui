@@ -1,5 +1,5 @@
 {
-  "description": "Renderer-independent resource and state delivery for WebUI routing and lazy template regions.",
+  "description": "Renderer-independent resource and state delivery for WebUI routing.",
   "devDependencies": {
     "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-delivery": "workspace:*",
@@ -12,12 +12,6 @@
     "urlpattern-polyfill": "catalog:"
   },
   "exports": {
-    "./lazy.js": {
-      "import": {
-        "types": "./dist/lazy-entry.d.ts",
-        "default": "./dist/lazy-entry.js"
-      }
-    },
     "./router.js": {
       "import": {
         "types": "./dist/router.d.ts",

@@ -832,7 +832,6 @@ pub struct HtmlParser {
     /// Next protocol-wide compile-time boundary declaration identity.
     next_boundary_declaration_id: u32,
     lazy_ordinal: usize,
-    lazy_names: HashSet<String>,
 
     /// Authored boundary names keyed by their owning entry/component template.
     boundary_names_by_owner: HashMap<String, HashSet<String>>,
@@ -1551,7 +1550,6 @@ impl HtmlParser {
             named_for_fragment_ids: HashSet::new(),
             next_boundary_declaration_id: 0,
             lazy_ordinal: 0,
-            lazy_names: HashSet::new(),
             boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
             boundary_ancestor_depth: 0,
@@ -2480,10 +2478,8 @@ impl HtmlParser {
             .or_insert(owner_index);
 
         let previous_lazy_ordinal = std::mem::replace(&mut self.lazy_ordinal, 0);
-        let previous_lazy_names = std::mem::take(&mut self.lazy_names);
         let mut result = self.parse_inner(fragment_id, html_content);
         self.lazy_ordinal = previous_lazy_ordinal;
-        self.lazy_names = previous_lazy_names;
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
             if result.is_ok() {
@@ -3390,11 +3386,7 @@ impl HtmlParser {
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
         let fragment_id = if lazy {
-            let id = lazy::fragment_id(
-                &self.current_fragment_id,
-                element.attr("id"),
-                self.lazy_ordinal,
-            );
+            let id = lazy::fragment_id(&self.current_fragment_id, self.lazy_ordinal);
             self.lazy_ordinal += 1;
             id
         } else {
@@ -3417,15 +3409,11 @@ impl HtmlParser {
     #[cold]
     #[inline(never)]
     fn validate_lazy_condition(&mut self, element: &Element<'_>) -> Result<()> {
-        if element.attr("lazy").is_some_and(|value| !value.is_empty()) {
-            return Err(self
-                .authoring_error_at(
-                    codes::INVALID_LAZY_ATTRIBUTE,
-                    "lazy must be a boolean attribute",
-                    element,
-                )
-                .element("if")
-                .help("write <if condition=\"ready\" lazy>; use condition to control activation")
+        let trigger = element.attr("lazy");
+        if lazy::Trigger::parse(trigger).is_none() {
+            return Err(lazy::invalid_trigger(trigger.unwrap_or_default())
+                .component(&self.current_fragment_id)
+                .at_offset(element.source(), element.start)
                 .into());
         }
         if self
@@ -3442,24 +3430,6 @@ impl HtmlParser {
                 .element("if")
                 .help("select a client plugin with lazy fragment support, or remove lazy")
                 .into());
-        }
-        if let Some(name) = element.attr("id") {
-            if !lazy::valid_name(name) {
-                return Err(self.authoring_error_at(codes::INVALID_LAZY_ID,
-                    "invalid lazy region id", element).element("if")
-                    .help("use 1-128 ASCII letters, digits, periods, underscores, or hyphens, e.g. id=\"settings\"").into());
-            }
-            if !self.lazy_names.insert(name.to_owned()) {
-                return Err(self
-                    .authoring_error_at(
-                        codes::DUPLICATE_LAZY_ID,
-                        "duplicate lazy region id",
-                        element,
-                    )
-                    .element("if")
-                    .help("choose a unique id within this owning template")
-                    .into());
-            }
         }
         Ok(())
     }

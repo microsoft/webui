@@ -38,7 +38,7 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-/** The API returns state only; the Rust host owns protocol, inventory, and NDJSON. */
+/** The API returns state only; WebUI builds the region templates into static packs. */
 export function createStateServer() {
   let revision = 0;
   return createServer((request, response) => {
@@ -60,17 +60,10 @@ export function createStateServer() {
       json(response, 200, { state });
       return;
     }
-    if (url.pathname !== '/_webui/lazy/state') {
+    const region = url.pathname === '/api/activity' ? 'activity'
+      : url.pathname === '/api/settings' ? 'settings' : undefined;
+    if (!region) {
       json(response, 404, { error: 'Unknown sample state endpoint.' });
-      return;
-    }
-    const region = url.searchParams.get('id');
-    const owner = url.searchParams.get('owner');
-    const validRegion = region === 'activity'
-      ? owner === 'lazy-popover'
-      : region === 'settings' && owner === 'lazy-dialog';
-    if (!validRegion) {
-      json(response, 404, { error: 'Unknown lazy region.' });
       return;
     }
     const controller = new AbortController();

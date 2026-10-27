@@ -221,33 +221,47 @@ array or string does work: `<if condition="items.length > 3">`.
 ### Lazy conditional bodies
 
 ```html
-<if condition="settingsReady" lazy id="settings">
+<if condition="settingsReady" lazy>
   <h2>Settings</h2>
   <p>{{displayName}}</p>
 </if>
 ```
 
+```typescript
+// In the owning component: fetch state and the pack together, then render.
+const [state] = await Promise.all([fetchSettings(signal), this.$prefetch()]);
+this.setState(state);
+this.settingsReady = true;
+await this.$rendered(); // refs inside the body exist after this
+this.settingsDialog.showModal();
+```
+
 - The body is an ordinary template fragment, not a component. It keeps owner
   state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
-- Initially false omits lazy-only markup/metadata; initially true renders
-  normally and hydrates existing DOM.
-- Import `@microsoft/webui-framework/lazy.js` for WebUI rendering.
-  Use `createLazyLoader` from `@microsoft/webui-delivery/lazy.js` for
-  hydration-agnostic resource/state delivery. Routing is not started.
-- `ensureLoaded(owner, id)` preloads resources only. `fetchPartial(owner, id,
-  { url, signal })` returns fresh state without mounting or changing global
-  state. Apply state to the existing owner/scope, then change the condition.
-- JSON is the default transport. Select `transport: ndjson()` from
-  `@microsoft/webui-delivery/resources.js` for metadata-first,
-  state-last delivery.
-- Give regions an owner-local `id` for application loading. Behavior modules
-  remain explicit dynamic imports; deferral does not split owner JavaScript.
-- `<if>` accepts only `condition`, boolean `lazy`, and `id` on a lazy region.
-  Unsupported attributes fail the build. Rebuild protocol and client together.
+- The build emits each body as a static, content-addressed template pack under
+  `_webui/packs/`. Initially false omits the body and references its pack;
+  initially true renders normally, inlines its templates, and hydrates.
+- Import `@microsoft/webui-framework/lazy.js` once before `startRuntime()`.
+  The framework loads a region's pack when its condition becomes true. There is
+  no loader, endpoint, region id, or host API. The import also adds
+  `$rendered()`/`$prefetch()` and their types; without lazy regions, skip it and
+  the app ships no lazy code.
+- `lazy` (= `lazy="intent"`) prefetches on pointer/focus/touch in the owner;
+  `lazy="idle"` after load when idle; `lazy="load"` right after hydration;
+  `lazy="demand"` only on activation or `this.$prefetch()`. Prefetch never
+  renders or fetches state. Prefer `intent` for UI opened from a control.
+- State is application-owned: fetch it, `setState`, flip the condition, and
+  `await this.$rendered()` before touching body refs. `$rendered()` rejects on
+  a failed pack and retries on the next call.
+- Shown regions release their body templates at idle once closed; reopening
+  reuses or refetches them. Do not cache pack contents yourself.
+- `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
+  the build. Rebuild protocol, packs, and client together.
+- Small or immediately used UI is cheaper as an ordinary `<if>`.
 - Do not combine this protocol-backed feature with `--emit-component-assets`.
 
-See [lazy UI](/guide/concepts/lazy) for cancellation, dialog ownership,
-server APIs, and complete examples.
+See [lazy UI](/guide/concepts/lazy) for triggers, hosting packs, and complete
+examples.
 
 ### Loops
 

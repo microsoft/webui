@@ -15,6 +15,10 @@ categories = ["web-programming", "template-engine"]
 [lib]
 name = "webui_handler"
 
+[features]
+# Build-time content-addressed lazy-region packs; runtime hosts never need them.
+packs = ["dep:sha2"]
+
 [dependencies]
 microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4" }
 microsoft-webui-expressions = { path = "../webui-expressions", version = "3.0.4" }
@@ -22,6 +26,7 @@ microsoft-webui-state = { path = "../webui-state", version = "3.0.4" }
 memchr = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

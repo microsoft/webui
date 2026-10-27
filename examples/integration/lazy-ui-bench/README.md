@@ -1,100 +1,156 @@
 # Lazy template delivery benchmark
 
-Compare `<if>` and `<if lazy>` using the real compiler, production-minified
-browser bundles, and identical rendered controls. This is not a benchmark of
-`w-hydrate="lazy"` or `w-render="lazy"`.
+Compare `<if>` and `<if lazy>` using the real compiler, build-time template packs,
+the framework's `lazy.js` runtime, and production-minified browser bundles. This
+is not a benchmark of `w-hydrate="lazy"` or `w-render="lazy"`.
 
-From the repository root on Windows:
+Build the release native addon first. From the repository root on Windows:
 
 ```powershell
 cargo build --release -p microsoft-webui-node
-pnpm --filter @microsoft/webui build
+pnpm --filter @microsoft/webui --filter @microsoft/webui-framework build
 $env:WEBUI_ADDON_PATH = Join-Path (Get-Location) 'target\release\webui_node.dll'
+node examples\integration\lazy-ui-bench\triggers.mjs
 node examples\integration\lazy-ui-bench\bench.mjs
 cargo bench -p microsoft-webui --bench lazy_bench
 ```
 
-On macOS/Linux point `WEBUI_ADDON_PATH` at the freshly built release
-`libwebui_node.dylib` / `libwebui_node.so`. Playwright Chromium must be installed.
+On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
+`libwebui_node.so`. Playwright Chromium must be installed; `triggers.mjs` uses
+Microsoft Edge when available (`WEBUI_BENCH_CHANNEL` overrides it).
 
-The browser run writes `target/lazy-browser-proof.json`, including every sample,
-environment, median, and p90. `WEBUI_BENCH_SAMPLES` defaults to 20 (plus two
-discarded warmups); `WEBUI_BENCH_LATENCY_MS` defaults to 40 ms of state-provider
-delay. Set it to zero to isolate local processing. An optional argument changes
-the output JSON path.
+## Prefetch triggers and pay-for-play
 
-Three cases expose the trade-off rather than hiding it:
+`triggers.mjs` compiles one app five times: an ordinary `<if>` (**eager**) and
+`<if lazy="demand|intent|idle|load">`. Each app has a grid of cards; each card owns
+a native `<dialog>` whose 24-field form, repeat, and nested component live in the
+body. **s1** has one dialog; **s30** has 30, and the user opens one. Opening sets
+the condition, calls `showModal()` once the body has rendered (lazy pages await
+`this.$rendered()`; eager pages, which do not import `lazy.js`, flush updates), and
+waits for paint.
+
+The run uses Edge with the Lighthouse mobile profile (150 ms RTT, 1.6 Mbps down,
+750 Kbps up, 4x CPU), 20 samples after one warmup in alternating order, and fresh
+browser contexts. **Cold** has an empty HTTP cache; **warm** first visits the page
+and opens the dialog in another tab, so scripts and packs come from the HTTP cache.
+That tab is closed 1.5 seconds before the measured page loads: Chromium tears a
+closed tab's compositor down about a second later on the renderer thread that
+same-origin pages share, which otherwise adds hundreds of milliseconds to an
+open that coincides with it. For intent, the driver hovers for 200 ms before
+clicking. Idle and load count as started only after every pack is registered.
+Static scripts and packs use Brotli 11 and immutable caching; HTML uses Brotli 5
+and `no-store`. Memory runs are unthrottled: open and close all 30 dialogs three
+times, wait for idle release, force GC, and read the JS heap. Output:
+`target/lazy-triggers.json` with every sample, including each open's input
+delay, pack wait, render, `showModal()`, and paint segments.
+
+### Recorded result: 2026-10-27
+
+Windows 10.0.26300, Intel Core Ultra 9 285K, Edge 156.0.4314.50, Node 24.12.0,
+release addon. Medians unless noted; open is input-to-paint. Every variant,
+including eager, opened 15-30 ms slower than in the 2026-10-25 recording on the
+same machine, so compare variants within one run.
+
+Startup JavaScript, Brotli 11: eager 25,347 / 26,005 bytes for s1 / s30; with
+`lazy.js` 27,112 / 27,686 (**+1,765 / +1,681 bytes**). Each pack is about 1,155
+bytes. Apps without lazy regions do not include `lazy.js`, and the rendering core
+contains no lazy code, so they pay nothing for the feature.
+
+| Scenario | Variant | Cold startup bytes | Startup heap | Cold open (p90) | Pack wait | Warm open (p90) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| s1 | eager | 28,333 | 1,449 KiB | 135 (164) ms | - | 201 (258) ms |
+| s1 | demand | 29,228 | 1,444 KiB | 308 (337) ms | 183 ms | 178 (255) ms |
+| s1 | intent | 29,228 | 1,446 KiB | 137 (196) ms | 0 | 200 (233) ms |
+| s1 | idle | 30,657 | 1,499 KiB | 139 (172) ms | 0 | 198 (253) ms |
+| s1 | load | 30,657 | 1,498 KiB | 126 (158) ms | 0 | 188 (237) ms |
+| s30 | eager | 35,595 | 2,136 KiB | 145 (185) ms | - | 183 (241) ms |
+| s30 | demand | 32,049 | 1,866 KiB | 311 (339) ms | 181 ms | 188 (242) ms |
+| s30 | intent | 32,043 | 1,880 KiB | 124 (179) ms | 0 | 176 (219) ms |
+| s30 | idle | 75,072 | 2,247 KiB | 148 (171) ms | 0 | 178 (251) ms |
+| s30 | load | 75,071 | 2,246 KiB | 145 (172) ms | 0 | 193 (294) ms |
+
+Warm opens are slower than cold ones for every variant, eager included: their
+render and `showModal()` segments take 1.2 to 1.5 times as long. The cause is
+shared by all variants and is not lazy loading.
+
+Warm startup transfers 9,317 bytes for s30 eager and about 4,090 for every lazy
+variant. Releasing regions after use, s30:
+
+| Variant | Startup heap | After cycle 1 | After cycle 3 | Regions loaded after release |
+| --- | ---: | ---: | ---: | ---: |
+| eager | 2,109 KiB | 2,422 KiB | 2,434 KiB | - |
+| demand | 1,846 KiB | 2,241 KiB | 2,276 KiB | 0 of 30 in 5/5 runs |
+
+Startup blocking time (sum over 50 ms, through two seconds after hydration) was
+0 ms for every s1 variant. For s30 the cold medians were 41 ms eager, 28 ms
+demand, 34 ms intent, 41 ms idle, and 43 ms load, with overlapping ranges.
+
+What this shows:
+
+- **Pay for play.** With 30 dialogs that start closed, lazy regions transfer 10.0%
+  fewer startup bytes and use 12.6% less startup heap than eager, and 56% fewer
+  bytes on a repeat visit. After three cycles of using all 30, the heap is 6.5%
+  below eager because closed regions are released.
+- **Prefetch hides the network.** Intent, idle, and load opens wait 0 ms for packs
+  and match eager latency. Intent costs nothing at startup, so it is the default.
+- **Demand pays for the network.** A cold demand open adds one round trip (150 ms
+  RTT here). From the HTTP cache its pack arrives in about 12 ms, within this
+  run's variation between variants. Unthrottled, an earlier probe measured a
+  cached demand open about 25 ms slower than one triggered without input: the
+  response is delivered in a task after the click's frame.
+- **Prefetching everything is not free.** Idle or load prefetch of all 30 regions
+  transfers and retains more than eager. Use those triggers for the few regions a
+  user is likely to open soon.
+- **One small region costs more than it saves.** For s1, lazy adds the runtime
+  and a request but saves no meaningful startup heap.
+
+For comparison, an earlier run of this workload on the same machine measured the
+previous endpoint design at 321 / 310 ms for a cold demand open (s1 / s30), with
+4.4 KB more startup JavaScript than eager. Its start-time preload of all 30
+regions added 107 ms of startup blocking time; packs now install one per network
+task.
+
+## Startup, open, and retention by body size
+
+`bench.mjs` compares one owner with 25, 250, or 1,000 controls in a lazy body:
 
 - **eager-local**: ordinary `<if>`, templates and state already local; no open request.
 - **eager-fresh**: ordinary `<if>`, templates local, fresh state fetched on every open.
-- **lazy**: `<if lazy>`, metadata and fresh state fetched together; warm inventory
-  suppresses metadata on later opens.
+- **lazy**: `<if lazy="demand">`; opening fetches state and calls
+  `this.$prefetch()` in parallel, then awaits `this.$rendered()`.
 
-All cases use the same core renderer and optional template collection. Only lazy
-loads the delivery/renderer adapters. Total compressed startup bytes include those
-extra modules, not just the smaller SSR document. Each sample checks every rendered
-label/input value and confirms closed bodies have no DOM.
+`WEBUI_BENCH_SAMPLES` defaults to 20 (plus two discarded warmups);
+`WEBUI_BENCH_LATENCY_MS` defaults to 40 ms of state-provider delay. Fresh browser
+contexts alternate execution order. Heap readings follow forced GC; closed-body
+weak-reference results are reported separately. Output:
+`target/lazy-browser-proof.json`.
 
-Fresh browser contexts alternate execution order. Heap readings follow forced GC;
-closed-body weak-reference results are reported separately. The live ordinary owner
-must retain its eager template, whereas an unused lazy body can be collected.
-These measurements describe this synthetic workload, not universal latency or
-whole-process memory savings. A small body may cost more because of loader code;
-cold lazy opening cannot beat an already-local body over a network.
+### Recorded result: 2026-10-27
 
-## Recorded result: 2026-10-21
+Same machine and addon, Playwright Chromium. Medians.
 
-Windows 10.0.26300, Intel Core Ultra 9 285K, Node 24.12.0, Chromium 153.0.8010.12,
-esbuild 0.28.2. Release native addon; 20 browser samples per case, alternating
-order, two discarded warmups. Values below are medians unless described otherwise.
+| Controls | Mode | Startup HTML + JS gzip | Initial heap | Cold open | Warm open | Closed body retained |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 25 | eager-fresh | 21,837 | 1,859,348 | 51.2 ms | 54.7 ms | 20/20 |
+| 25 | lazy | 23,784 | 1,857,408 | 51.1 ms | 54.4 ms | 0/20 |
+| 250 | eager-fresh | 23,556 | 1,887,480 | 55.1 ms | 48.6 ms | 20/20 |
+| 250 | lazy | 23,785 | 1,857,408 | 53.7 ms | 48.7 ms | 0/20 |
+| 1,000 | eager-fresh | 29,317 | 1,980,568 | 56.4 ms | 47.4 ms | 20/20 |
+| 1,000 | lazy | 23,782 | 1,857,408 | 56.2 ms | 49.0 ms | 0/20 |
 
-For 1,000 identical controls, comparing ordinary `<if>` with fresh-state requests
-against `<if lazy>`:
+Lazy startup no longer grows with the body. The fixed cost at 25 controls is
+1,947 gzip bytes, against 4,152 with the earlier endpoint design. Since the
+2026-10-25 recording, applications without lazy regions became 247 gzip bytes
+smaller because the rendering core no longer carries lazy hooks, and the lazy
+runtime grew by 130 gzip bytes. Lazy delivery breaks even just above 250 controls
+(229 bytes more at 250), and 1,000 controls save 19% of startup bytes and 123 KB
+of heap. Because the pack loads in parallel with state, opening matches
+eager-fresh. Eager-local, which requests nothing, opens in 1.2-4.6 ms.
 
-| Measurement | Eager-fresh | Lazy | Difference |
-| --- | ---: | ---: | ---: |
-| Initial HTML, raw bytes | 69,139 | 889 | -98.7% |
-| Total startup HTML + JS, gzip bytes | 29,856 | 26,243 | -12.1% |
-| Definition + hydration activation | 3.50 ms | 1.80 ms | -48.6% |
-| Initial JS heap after GC | 1,983,400 bytes | 1,871,832 bytes | -5.6% |
-| JS heap after opening, closing, and collecting | 2,134,140 bytes | 2,051,136 bytes | -3.9% |
-| Closed body metadata still retained | 20/20 runs | 0/20 runs | Owner remains connected |
-| Cold open, with 40 ms provider delay | 50.50 ms | 53.00 ms | +2.50 ms |
-| Warm open, with 40 ms provider delay | 55.40 ms | 51.40 ms | -4.00 ms |
-
-Activation p90 was 3.80/2.10 ms; cold-open p90 was 60.10/62.10 ms. Warm lazy
-responses contained 278 raw bytes and no templates, versus 67,726 raw bytes for
-the first lazy response. Timing spreads are in the JSON; the warm-open result
-is not a universal speed guarantee.
-
-The 0 ms provider-delay repeat showed the same 1,000-control startup bytes and
-heap. Cold open was 14.0 ms eager-fresh versus 17.8 ms lazy; warm open was
-11.3/11.1 ms. Eager-local, which performs no data request, opened in 3.4 ms with
-the default run. Lazy delivery is a startup/memory trade-off, not free I/O.
-
-Small bodies do not necessarily win: total gzip startup was **24,118 bytes eager
-versus 26,242 lazy at 250 controls**, and **22,412 versus 26,242 at 25 controls**.
-The optional loader cost is included. Prefer ordinary `<if>` for small,
-frequently/immediately used UI; lazy helps sufficiently large, initially unused
-UI, particularly when the delivery runtime is already needed.
-
-The release Rust benchmark uses 250 controls, 100 Criterion samples, two seconds
-of warmup, and five seconds of measurement per case. Plain rendered HTML is
-asserted equal for both open and closed states:
-
-| Measurement | Eager | Lazy |
-| --- | ---: | ---: |
-| Closed SSR bytes | 17,544 | 825 |
-| Closed SSR median (95% CI) | 7.025 us (6.980-7.089) | 3.512 us (3.490-3.545) |
-| Initially open SSR median (95% CI) | 14.393 us (14.196-14.809) | 15.307 us (15.233-15.459) |
-
-Closed SSR is about 50% faster here, but initially open SSR is about 6.4% slower.
-Renaming `defer` to `lazy` itself provides no speedup. No server allocation-count
-or whole-renderer/RSS reduction is claimed; the memory figures above are JS heap.
+The release Rust benchmark (`lazy_bench`) compares closed and open SSR for 250
+controls and measures rendering one pack at build time.
 
 ## UI responsiveness
-
-Run the separate interactive fixture with the same release addon:
 
 ```powershell
 node --test examples\integration\lazy-ui-bench\responsiveness.test.mjs
@@ -104,154 +160,17 @@ node examples\integration\lazy-ui-bench\responsiveness.mjs
 Output: `target/lazy-responsiveness.json`, including individual trusted events,
 all trials, median/p95, input delay, long tasks, and frame gaps. The defaults are
 20 measured contexts per case after two warmups, 250/1,000 controls, native and
-4x CPU throttling, and the same 40 ms state-provider delay.
+4x CPU throttling, and the same 40 ms state-provider delay. The driver sends real
+mouse and keyboard input and checks `Event.isTrusted`. It measures cold opening,
+a shell click while data is pending, single-field and whole-form typing, closing,
+and warm reopening.
 
-This fixture is a fixed-column grid of native inputs in a scrollable section,
-without virtualization or `content-visibility`. All controls exist after opening.
-Its toolbar, CSS, and interactivity are opt-in; the original startup benchmark's
-HTML/JS/gzip sizes remain unchanged for all nine cases.
+Event Timing measures input to the next paint with 8 ms quantization and a 16 ms
+reporting threshold; unreported fast events are kept as `<16 ms`. This is a
+laboratory measurement, not field INP. Long Tasks and rAF gaps expose blocking
+during later mounting.
 
-The driver sends real browser mouse clicks and keyboard input, and checks
-`Event.isTrusted`. It measures cold opening, another shell click while data is
-pending, five single-field edits with a reactive preview, five edits broadcasting
-to every value binding, closing, and warm reopening. Output checks prove that
-single-field edits leave the other controls untouched and broadcast edits update
-every control. There is no forced GC during interaction measurements.
-
-**Measurement boundaries matter:**
-
-- Browser **Event Timing** measures click/keydown to the next paint, with 8 ms
-  quantization and a 16 ms reporting threshold. Unreported fast events are
-  retained as `<16 ms`, not omitted or replaced with zero. This is a laboratory
-  interaction measurement, **not field INP**.
-- Opening can paint a loading state before the form exists. Its asynchronous
-  **form-readiness** measurement therefore runs separately, from the click
-  timestamp through DOM readiness and two animation frames. It is a render-
-  opportunity proxy, not an assertion of the exact pixel-presentation time.
-- Long Tasks and rAF gaps expose blocking during later mounting. A responsive
-  loading indicator does not prove a jank-free form mount.
-- 4x CPU is a reproducible simulation on this desktop, not evidence from a
-  physical low-end device. Typing uses 100 keystrokes per case across 20 contexts;
-  the five keystrokes within each context are not independent page loads.
-
-### Recorded interaction result: 2026-10-21
-
-Same software/hardware as above. Values are **median / p95 milliseconds**.
-Eager-fresh and lazy both fetch fresh state on each opening.
-
-| CPU | Controls | Interaction | Eager-fresh next paint | Lazy next paint |
-| --- | ---: | --- | ---: | ---: |
-| Native | 250 | Single-field typing | <16 / 16 | <16 / 16 |
-| Native | 1,000 | Single-field typing | <16 / 16 | <16 / 16 |
-| 4x | 250 | Single-field typing | 24 / 24 | 24 / 24 |
-| 4x | 1,000 | Single-field typing | 32 / 40 | 32 / 40 |
-| Native | 250 | Whole-form typing | 16 / 16 | 16 / 16 |
-| Native | 1,000 | Whole-form typing | 16 / 16 | 16 / 24 |
-| 4x | 250 | Whole-form typing | 32 / 48 | 32 / 56 |
-| 4x | 1,000 | Whole-form typing | 96 / 152 | 104 / 168 |
-
-Both fresh-state modes painted the open-button feedback at p95 16 ms natively
-and 24 ms at 4x CPU for both counts. The shell click actually occurred while
-loading in 20/20 cases for each fresh-state mode/count/CPU combination; it had
-no observed long task. This measures input while awaiting data, not input
-deliberately injected into the later mount task.
-
-Cold **form-ready two-rAF proxy**, including the 40 ms provider delay:
-
-| CPU | Controls | Eager-fresh | Lazy |
-| --- | ---: | ---: | ---: |
-| Native | 250 | 76.4 / 86.5 ms | 71.8 / 84.6 ms |
-| Native | 1,000 | 77.4 / 88.5 ms | 80.4 / 91.9 ms |
-| 4x | 250 | 115.3 / 136.7 ms | 127.4 / 152.3 ms |
-| 4x | 1,000 | 225.8 / 370.1 ms | 250.7 / 346.9 ms |
-
-At 4x CPU, both modes encountered long tasks in **all 20 cold opens** of 1,000
-controls: maximum 262 ms eager-fresh and 233 ms lazy, with maximum rAF gaps
-300.1/283.3 ms. Whole-form typing encountered long tasks in **97/100 keystrokes**
-in both modes. At native speed neither fresh-state mode observed a long task in
-these measured actions. The JSON also records warm opening and closing.
-
-**Conclusion:** lazy delivery postpones work and reduces startup/retention costs;
-it does not make the mounted control tree intrinsically faster. A 1,000-control
-mount or global update can still visibly stall a CPU-constrained browser.
-Single-field edits are much cheaper than broadcast updates. These measurements
-do not establish a steady-state responsiveness improvement from `<if lazy>`.
-
-## Delivery API refactor measurements
-
-The baseline for this comparison is commit `44192b58`. Both revisions used the
-same current release native addon, Node/browser installation, 20 measured
-samples after two warmups, and the existing 40 ms state-provider delay.
-Baseline JavaScript was built from an isolated archive, without replacing the
-working tree. The refactor changes browser APIs and installation, not the
-native rendering algorithm.
-
-Public-import tests now bundle the actual package exports and inspect every
-emitted chunk. They also run against clean packed packages in an isolated
-consumer directory. Total compressed JavaScript:
-
-| Public composition | Before gzip | After gzip |
-| --- | ---: | ---: |
-| Query helper only | 17,668 B | 175 B |
-| Decorator only | 26,114 B | 1,020 B |
-| Explicit JSON router | 10,350 B | 10,986 B |
-| JSON lazy loader | 4,281 B | 4,609 B |
-| JSON router plus lazy loader | 12,142 B | 12,732 B |
-
-Pure helper imports no longer retain a renderer or router. The package's
-normal routing path now selects JSON only rather than retaining the previous
-all-capability convenience graph. That change is not a like-for-like feature
-comparison. The already-lean JSON paths grew modestly while acquiring the
-common request/transport contract; no universal bundle reduction is claimed.
-No existing streaming or component-asset budget was increased.
-
-For the **lazy** mode in the actual UI fixture:
-
-| Controls | Startup HTML + JS gzip, before / after | Cold open median, before / after | Warm open median, before / after |
-| --- | ---: | ---: | ---: |
-| 25 | 25,635 / 25,982 B | 52.5 / 54.1 ms | 55.6 / 45.3 ms |
-| 250 | 25,636 / 25,983 B | 52.2 / 55.8 ms | 51.2 / 48.3 ms |
-| 1,000 | 25,636 / 25,983 B | 55.0 / 57.3 ms | 47.3 / 54.7 ms |
-
-Initial post-GC JS heap was 1,862,204 / 1,863,976 bytes. Closed lazy metadata
-was collectible in every sample while the owner remained alive. Small bodies
-still do not amortize the loader's fixed cost; ordinary `<if>` remains the
-appropriate baseline for them. Cold/open timings also varied in the unchanged
-workload of the eager controls, so these runs do not isolate a causal latency change.
-
-Within the final build, lazy loading adds 4,152 startup gzip bytes versus
-`eager-fresh` at 25 controls. At 1,000 controls it instead saves 3,327 startup
-gzip bytes and 116,432 initial post-GC JS heap bytes. This is the benefit of
-omitting a large inactive body, not a speedup caused by renaming the APIs.
-
-Trusted-input p95 keydown-to-next-paint for lazy UI:
-
-| CPU | Controls | Single-field typing, before / after | Whole-form typing, before / after |
-| --- | ---: | ---: | ---: |
-| Native | 250 | 16 / 16 ms | 16 / 16 ms |
-| Native | 1,000 | 16 / 16 ms | 24 / 16 ms |
-| 4x | 250 | 32 / 24 ms | 72 / 40 ms |
-| 4x | 1,000 | 40 / 32 ms | 160 / 104 ms |
-
-At 4x CPU, 1,000-control cold opens still produced long tasks in all 20 samples.
-Whole-form typing produced them in 85 of 100 measured keystrokes after the
-refactor. Eager-control timings improved in that run too; this is not proof
-that API consolidation speeds up mounted-tree updates. Event Timing remains
-quantized/censored, and two-rAF form readiness remains a proxy, not field INP.
-
-For those 1,000-control throttled cold opens, median two-rAF readiness was
-248.7 / 233.9 ms. The shell click sampled while the state request was pending
-had a 16 ms p95 before and after; that does not measure input arriving during
-the later long mounting task.
-
-The 100-distinct-component correctness probe was repeated: an inactive lazy
-wrapper delivered none of those component templates, while the resource
-response and initially active SSR contained all 100. Its initial document was
-870 bytes (519 gzip), versus 177,414 bytes (10,475 gzip) for ordinary `<if>`.
-
-Raw evidence is written under `target`:
-`delivery-public-audit.json`, `delivery-public-after.json`,
-`delivery-packed-public.json`, `delivery-startup-before.json`,
-`delivery-startup-after.json`, `delivery-responsiveness-before.json`,
-`delivery-responsiveness-after.json`, and `lazy-unique-components-proof.json`.
-These generated measurements and package archives are not committed.
+Earlier recordings showed the same keydown-to-paint latency for eager and lazy
+bodies, and long tasks for 1,000-control mounts at 4x CPU in both. Lazy delivery
+postpones and releases work; it does not make a mounted control tree faster.
+Very large regions still need smaller bodies or progressive rendering.

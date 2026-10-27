@@ -49,34 +49,22 @@ public class ProtocolTests
     }
 
     [Fact]
-    public void Protocol_LazyResourcesAndState_PreserveAcknowledgementAndProjection()
+    public void Protocol_LazyRegions_RenderPackReferencesOrInlineBodies()
     {
         using var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
             AppContext.BaseDirectory, "fixtures", "lazy-app", "protocol.bin")));
-        var prepared = protocol.PrepareLazyResources("test-panel", "details");
-        using var metadata = JsonDocument.Parse(prepared.Json);
-        Assert.Equal("webui-lazy", metadata.RootElement.GetProperty("type").GetString());
-        Assert.False(metadata.RootElement.TryGetProperty("state", out _));
-        Assert.Equal(prepared.Json, protocol.RenderLazyResources("test-panel", "details"));
-        string body = protocol.RenderLazyPartial(
-            """{"message":"Fresh","items":["one"],"unused":"not sent"}""",
-            "test-panel", "details", prepared.Options);
-        using var response = JsonDocument.Parse(body);
-        Assert.False(response.RootElement.TryGetProperty("templates", out _));
-        Assert.Equal("Fresh", response.RootElement.GetProperty("state").GetProperty("message").GetString());
-        Assert.False(response.RootElement.GetProperty("state").TryGetProperty("unused", out _));
-    }
-
-    [Fact]
-    public void Protocol_LazyRequests_RejectMissingTargetsStaleBuildsAndDisposedHandles()
-    {
-        var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
-            AppContext.BaseDirectory, "fixtures", "lazy-app", "protocol.bin")));
-        Assert.Throws<WebUIException>(() => protocol.RenderLazyResources("test-panel", "missing"));
-        Assert.Throws<WebUIException>(() => protocol.RenderLazyResources("test-panel", "details",
-            new LazyOptions { BuildId = "different" }));
-        protocol.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => protocol.RenderLazyPartial("{}", "test-panel", "details"));
+        using var handler = new WebUIHandler("webui");
+        string closed = handler.Render(
+            protocol, """{"show":false,"message":"Fresh","items":["one"]}""", "index.html", "/");
+        Assert.DoesNotContain("Lazy inline UI", closed);
+        Assert.Matches(
+            "\"lp\":\\{\"test-panel::lazy:@0\":\"_webui/packs/test-panel\\.[0-9a-f]{16}\\.json\"\\}",
+            closed);
+        string open = handler.Render(
+            protocol, """{"show":true,"message":"Fresh","items":["one"]}""", "index.html", "/");
+        Assert.Contains("Lazy inline UI", open);
+        Assert.Contains("Fresh", open);
+        Assert.Contains("\"test-panel::lazy:@0\":{", open);
     }
 
     [Fact]

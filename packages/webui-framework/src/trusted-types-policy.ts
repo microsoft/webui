@@ -92,6 +92,23 @@ function getTemplatePolicy(meta: TemplateBlockMeta): CompilerPolicy | undefined 
   return trust;
 }
 
+/**
+ * @internal Run compiler-emitted condition closures from a same-build pack.
+ *
+ * The document nonce satisfies CSP and the compiler-owned `webui` policy
+ * satisfies Trusted Types, matching how SSR delivers the same closures.
+ */
+export function runCompilerScript(source: string, nonce: string): void {
+  const script = document.createElement('script');
+  if (nonce) script.nonce = nonce;
+  const trust = getDocumentPolicy(window);
+  script.textContent = trust
+    ? trust.policy.createScript(source, trust.capability) as string & TrustedValue
+    : source;
+  document.head.appendChild(script);
+  script.remove();
+}
+
 /** @internal Serialize CSS data into an inert import map, never executable source. */
 export function setImportMapContent(
   script: HTMLScriptElement,

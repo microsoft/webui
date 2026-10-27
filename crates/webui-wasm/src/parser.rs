@@ -17,7 +17,9 @@ use webui_protocol::{InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 /// `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
 /// authored open Shadow roots remain Shadow in either mode.
 ///
-/// Returns the serialized `WebUIProtocol` as protobuf bytes.
+/// Returns the serialized `WebUIProtocol` as protobuf bytes. Templates with
+/// lazy regions also need their template packs; use `buildApp` from the
+/// combined WASM build, which returns both.
 #[wasm_bindgen]
 pub fn build_protocol(
     files: JsValue,
@@ -25,6 +27,66 @@ pub fn build_protocol(
     projection_manifests: Option<JsValue>,
     dom: Option<String>,
 ) -> Result<Vec<u8>, JsValue> {
+    let (files_map, manifests, dom) = build_inputs(files, projection_manifests, dom)?;
+    build_protocol_inner_with_dom(&files_map, entry, &manifests, dom)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Build protocol bytes plus content-addressed lazy-region template packs.
+///
+/// Returns `{ protocol: Uint8Array, lazyPackFiles: string[] }`, where
+/// `lazyPackFiles` alternates file names and JSON content. Serve them under
+/// `packPublicBase` (default `_webui/packs/`, relative to the document base).
+#[cfg(feature = "all")]
+#[wasm_bindgen(js_name = buildApp)]
+pub fn build_app(
+    files: JsValue,
+    entry: &str,
+    projection_manifests: Option<JsValue>,
+    dom: Option<String>,
+    pack_public_base: Option<String>,
+) -> Result<JsValue, JsValue> {
+    let (files_map, manifests, dom) = build_inputs(files, projection_manifests, dom)?;
+    let base = pack_public_base
+        .as_deref()
+        .unwrap_or(DEFAULT_PACK_PUBLIC_BASE);
+    if let Some(message) = webui_handler::lazy_packs::public_base_error(base) {
+        return Err(JsValue::from_str(&message));
+    }
+    let (protocol, packs) = compile(&files_map, entry, &manifests, dom, base)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let bytes = protocol
+        .to_protobuf()
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let files = js_sys::Array::new_with_length(u32::try_from(packs.len() * 2).unwrap_or(u32::MAX));
+    for (index, (name, content)) in packs.iter().enumerate() {
+        let position = u32::try_from(index * 2).unwrap_or(u32::MAX);
+        files.set(position, JsValue::from_str(name));
+        files.set(position + 1, JsValue::from_str(content));
+    }
+    let result = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &result,
+        &"protocol".into(),
+        &js_sys::Uint8Array::from(bytes.as_slice()),
+    )?;
+    js_sys::Reflect::set(&result, &"lazyPackFiles".into(), &files)?;
+    Ok(result.into())
+}
+
+const DEFAULT_PACK_PUBLIC_BASE: &str = "_webui/packs/";
+
+type BuildInputs = (
+    HashMap<String, String>,
+    Vec<ProjectionManifest>,
+    DomStrategy,
+);
+
+fn build_inputs(
+    files: JsValue,
+    projection_manifests: Option<JsValue>,
+    dom: Option<String>,
+) -> Result<BuildInputs, JsValue> {
     let files_map: HashMap<String, String> =
         serde_wasm_bindgen::from_value(files).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let manifests: Vec<ProjectionManifest> = projection_manifests
@@ -37,9 +99,7 @@ pub fn build_protocol(
         .transpose()
         .map_err(|error| JsValue::from_str(&error))?
         .unwrap_or_default();
-
-    build_protocol_inner_with_dom(&files_map, entry, &manifests, dom)
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    Ok((files_map, manifests, dom))
 }
 
 #[cfg(test)]
@@ -57,8 +117,52 @@ fn build_protocol_inner_with_dom(
     projection_manifests: &[ProjectionManifest],
     dom: DomStrategy,
 ) -> Result<Vec<u8>, WasmError> {
-    let protocol = parse_to_protocol_with_dom(files, entry, projection_manifests, dom)?;
+    let (protocol, packs) = compile(
+        files,
+        entry,
+        projection_manifests,
+        dom,
+        DEFAULT_PACK_PUBLIC_BASE,
+    )?;
+    if !packs.is_empty() {
+        return Err(lazy_packs_unavailable());
+    }
     protocol.to_protobuf().map_err(WasmError::Protocol)
+}
+
+/// Emit lazy-region packs when supported, then assign identity over final metadata.
+fn finish(
+    protocol: &mut WebUIProtocol,
+    pack_public_base: &str,
+) -> Result<Vec<(String, String)>, WasmError> {
+    #[cfg(feature = "all")]
+    let packs = webui_handler::lazy_packs::emit(protocol, pack_public_base)
+        .map_err(|error| WasmError::LazyPacks(error.to_string()))?
+        .into_iter()
+        .map(|pack| (pack.file_name, pack.content))
+        .collect();
+    #[cfg(not(feature = "all"))]
+    let packs = {
+        let _ = pack_public_base;
+        if protocol
+            .client_fragments
+            .values()
+            .any(|fragment| fragment.entry)
+        {
+            return Err(lazy_packs_unavailable());
+        }
+        Vec::new()
+    };
+    protocol.assign_build_id().map_err(WasmError::Protocol)?;
+    Ok(packs)
+}
+
+#[cold]
+#[inline(never)]
+fn lazy_packs_unavailable() -> WasmError {
+    WasmError::LazyPacks(
+        "lazy regions need template packs: call buildApp() from the combined WebUI WASM build, or build with `webui build`".to_string(),
+    )
 }
 
 /// Register all component `.html` files and optional companion `.css` files
@@ -165,12 +269,30 @@ pub(crate) fn parse_to_protocol(
     parse_to_protocol_with_dom(files, entry, projection_manifests, DomStrategy::Shadow)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_to_protocol_with_dom(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
     dom: DomStrategy,
 ) -> Result<WebUIProtocol, WasmError> {
+    compile(
+        files,
+        entry,
+        projection_manifests,
+        dom,
+        DEFAULT_PACK_PUBLIC_BASE,
+    )
+    .map(|(protocol, _)| protocol)
+}
+
+fn compile(
+    files: &HashMap<String, String>,
+    entry: &str,
+    projection_manifests: &[ProjectionManifest],
+    dom: DomStrategy,
+    pack_public_base: &str,
+) -> Result<(WebUIProtocol, Vec<(String, String)>), WasmError> {
     let entry_html = files
         .get(entry)
         .ok_or_else(|| WasmError::MissingEntry(entry.to_string()))?;
@@ -251,7 +373,7 @@ pub(crate) fn parse_to_protocol_with_dom(
         }
     }
     apply_component_delivery(&mut protocol, component_delivery, entry);
-    protocol.assign_build_id().map_err(WasmError::Protocol)?;
+    let packs = finish(&mut protocol, pack_public_base)?;
 
     fn merge_projection_manifests(
         manifests: &[ProjectionManifest],
@@ -291,7 +413,7 @@ pub(crate) fn parse_to_protocol_with_dom(
         keys.dedup();
         keys
     }
-    Ok(protocol)
+    Ok((protocol, packs))
 }
 
 fn encode_state_surface(surface: StateSurface) -> (i32, Vec<String>) {
@@ -311,6 +433,44 @@ mod tests {
         let files = HashMap::new();
         let err = build_protocol_inner(&files, "index.html", &[]).unwrap_err();
         assert_eq!(err.to_string(), "Entry file 'index.html' not found");
+    }
+
+    #[test]
+    fn lazy_regions_emit_packs_and_protocol_only_builds_explain_how_to_get_them() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><body><app-owner></app-owner></body></html>".to_string(),
+            ),
+            (
+                "app-owner.html".to_string(),
+                r#"<if condition="show" lazy><p>Body</p></if>"#.to_string(),
+            ),
+        ]);
+        let error = build_protocol_inner(&files, "index.html", &[]).unwrap_err();
+        assert!(error.to_string().contains("buildApp()"), "{error}");
+        #[cfg(feature = "all")]
+        {
+            let (protocol, packs) = compile(
+                &files,
+                "index.html",
+                &[],
+                DomStrategy::Shadow,
+                DEFAULT_PACK_PUBLIC_BASE,
+            )
+            .unwrap();
+            assert_eq!(packs.len(), 1);
+            assert!(packs[0].0.starts_with("app-owner."), "{}", packs[0].0);
+            assert!(packs[0].1.starts_with(r#"{"type":"webui-pack""#));
+            let reference = format!(
+                r#""lp":{{"app-owner::lazy:@0":"_webui/packs/{}"}}"#,
+                packs[0].0
+            );
+            assert!(protocol.components["app-owner"]
+                .template_json
+                .contains(&reference));
+            assert!(protocol.build_id.starts_with("sha256:"));
+        }
     }
 
     #[test]

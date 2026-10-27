@@ -530,51 +530,6 @@ const char *webui_streaming_step_boundary_key_string(const webui_streaming_step_
 bool webui_streaming_step_boundary_key_number(const webui_streaming_step_t *step_ptr,
                                               double *out_value);
 
-/**
- * Render resource JSON for an owner-scoped deferred body. Free it with `webui_free`.
- *
- * # Safety
- *
- * `protocol` must be a live handle from `webui_protocol_create`. `owner` and `id`
- * must be non-null terminated UTF-8 strings. `options_json` may be null for
- * defaults; otherwise it must be readable, terminated UTF-8 JSON.
- */
-char *webui_protocol_render_lazy_resources(const webui_protocol_t *protocol,
-                                               const char *owner,
-                                               const char *id,
-                                               const char *options_json);
-
-/**
- * Render complete or terminal JSON with fresh scoped state for a deferred body.
- *
- * # Safety
- *
- * `protocol` must be a live protocol handle. `state_json`, `owner`, and `id`
- * must be non-null, readable, terminated UTF-8. `options_json` may be null.
- * Release a successful returned string with `webui_free`.
- */
-char *webui_protocol_render_lazy_partial(const webui_protocol_t *protocol,
-                                             const char *state_json,
-                                             const char *owner,
-                                             const char *id,
-                                             const char *options_json);
-
-/**
- * Prepare resource JSON and a small inventory-options JSON acknowledgement.
- *
- * # Safety
- *
- * The protocol/string arguments follow `webui_protocol_render_lazy_resources`.
- * `updated_options_json` must point to a writable pointer slot and must not be
- * null. On success free both returned strings with `webui_free`; on failure the
- * output slot is null.
- */
-char *webui_protocol_prepare_lazy_resources(const webui_protocol_t *protocol,
-                                                const char *owner,
-                                                const char *id,
-                                                const char *options_json,
-                                                char **updated_options_json);
-
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

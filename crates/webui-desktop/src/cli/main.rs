@@ -311,6 +311,7 @@ impl AppArgs {
             metafile: false,
             css_file_name_template: self.css_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
+            pack_public_base: None,
             legal_comments: self.legal_comments,
             theme: None,
             projection_manifests: self
@@ -1299,6 +1300,7 @@ fn generated_css_names(
         metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
         css_public_base: None,
+        pack_public_base: None,
         legal_comments: webui::LegalComments::Inline,
         theme: None,
         projection_manifests: Vec::new(),
@@ -1406,6 +1408,7 @@ fn resolve_theme_for_source(
         metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
         css_public_base: None,
+        pack_public_base: None,
         legal_comments: webui::LegalComments::Inline,
         theme: None,
         projection_manifests: Vec::new(),

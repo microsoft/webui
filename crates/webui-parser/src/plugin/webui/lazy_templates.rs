@@ -153,9 +153,6 @@ impl Plan {
                 id: id.clone(),
                 data: ClientFragmentData {
                     owner: owner.to_owned(),
-                    name: declaration
-                        .map_or("", |(_, entry)| entry.name.as_str())
-                        .to_owned(),
                     template_json: json,
                     template_functions: functions.finish(),
                     dependencies,
@@ -203,7 +200,7 @@ impl Plan {
 
 fn push_ordinary(section: &TemplateSectionMeta, pending: &mut Vec<usize>) {
     for (position, (_, index)) in section.conditionals.iter().enumerate() {
-        if !section.lazy_conditions.contains(&position) {
+        if !section.is_lazy_condition(position) {
             pending.push(*index);
         }
     }

@@ -2,50 +2,40 @@
 # Licensed under the MIT license.
 
 import json
+import re
+from typing import Any
 
-import pytest
-from microsoft_webui import LazyOptions, Renderer, RenderError, StateError
+from microsoft_webui import Renderer
+
+REGION = "test-panel::lazy:@0"
 
 
-def test_lazy_resources_and_terminal_state(lazy_renderer: Renderer) -> None:
-    prepared = lazy_renderer.prepare_lazy_resources("test-panel", "details")
-    metadata = json.loads(prepared.json)
-    assert metadata["type"] == "webui-lazy"
-    assert "state" not in metadata
-    fragment = metadata["templates"]["test-panel::lazy:details"]
-    assert fragment["v"] == 3
-    assert fragment["f"] == "test-panel::lazy:details"
+def _bootstrap(html: bytes) -> dict[str, Any]:
+    match = re.search(rb'id="webui-data"[^>]*>(.*?)</script>', html, re.S)
+    assert match, html
+    data: dict[str, Any] = json.loads(match.group(1))
+    return data
+
+
+def test_closed_regions_reference_their_build_time_pack(lazy_renderer: Renderer) -> None:
+    html = lazy_renderer.render({"show": False, "message": "Fresh", "items": ["one"]})
+    assert b"Lazy inline UI" not in html
+    templates = _bootstrap(html)["templates"]
+    owner = templates["test-panel"]
+    url = owner["lp"][REGION]
+    assert url.startswith("_webui/packs/test-panel.")
+    assert url.endswith(".json")
+    trigger = next(entry[3] for entry in owner["c"] if entry[1] == REGION)
+    assert trigger == 2
+    assert REGION not in templates
+
+
+def test_open_regions_render_inline_with_their_template(lazy_renderer: Renderer) -> None:
+    html = lazy_renderer.render({"show": True, "message": "Fresh", "items": ["one"]})
+    assert b"Lazy inline UI" in html
+    assert b"Fresh" in html
+    fragment = _bootstrap(html)["templates"][REGION]
+    assert fragment["f"] == REGION
     assert fragment["o"] == "test-panel"
     assert fragment["e"] == 1
-    assert fragment["s"] == [6, 7, 1, 1, 1]
-    assert fragment["tx"] == [[[2, 0], [["message"]]]]
     assert fragment["r"] == [["items", "item", -1, [3, 0]]]
-    assert fragment["b"] == [{
-        "h": "<li></li>", "s": [1, 3, 1], "tx": [[[1, 0], [["item"]]]],
-    }]
-    assert prepared.options.inventory == metadata["inventory"]
-    assert prepared.json == lazy_renderer.render_lazy_resources("test-panel", "details")
-
-    state = {"message": "Fresh", "items": ["one"], "unused": "not sent"}
-    outputs = [
-        lazy_renderer.render_lazy_partial(
-            value, "test-panel", "details", options=prepared.options
-        )
-        for value in [state, json.dumps(state), json.dumps(state).encode()]
-    ]
-    assert outputs[0] == outputs[1] == outputs[2]
-    payload = json.loads(outputs[0])
-    assert payload["state"] == {"message": "Fresh", "items": ["one"]}
-    assert "templates" not in payload
-    assert "componentStyles" not in payload
-
-
-def test_lazy_errors_remain_explicit(lazy_renderer: Renderer) -> None:
-    with pytest.raises(RenderError, match="lazy-not-found"):
-        lazy_renderer.render_lazy_resources("test-panel", "missing")
-    with pytest.raises(RenderError, match="lazy-build-mismatch"):
-        lazy_renderer.render_lazy_resources(
-            "test-panel", "details", options=LazyOptions(build_id="old")
-        )
-    with pytest.raises(StateError):
-        lazy_renderer.render_lazy_partial("{", "test-panel", "details")

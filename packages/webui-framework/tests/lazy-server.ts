@@ -12,13 +12,16 @@ const initialState = {
   dialogPage: false,
 };
 
+const PACK_PREFIX = '/lazy-ui/_webui/packs/';
+
+/** Serve the page, its build-time packs as static files, and app-owned JSON state. */
 export function lazyFixtureHandler(fixture: RenderedFixture | undefined): (context: FixtureRequestContext) => boolean {
-  if (!fixture?.protocol || !fixture.render) throw new Error('Lazy fixture must retain its compiled protocol.');
-  const protocol = fixture.protocol;
+  if (!fixture?.render || !fixture.packs) throw new Error('Lazy fixture must retain its renderer and packs.');
   const render = fixture.render;
+  const packs = fixture.packs;
   let revision = 0;
   return context => {
-    const { url, req, res, send } = context;
+    const { url, res, send } = context;
     if (url.pathname === '/lazy-ui/fixture.html') {
       send(200, render(JSON.stringify({
         ...initialState,
@@ -28,69 +31,28 @@ export function lazyFixtureHandler(fixture: RenderedFixture | undefined): (conte
       })), 'text/html; charset=utf-8');
       return true;
     }
-    if (url.pathname !== '/lazy-ui/resources' && url.pathname !== '/lazy-ui/state') return false;
-    const owner = url.searchParams.get('owner') ?? '';
-    const id = url.searchParams.get('id') ?? '';
-    const header = (name: string): string => {
-      const value = req.headers[name];
-      if (Array.isArray(value)) throw new Error(`Repeated ${name} header`);
-      return value ?? '';
-    };
-    let options: NonNullable<Parameters<typeof protocol.renderLazyResources>[2]>;
-    try {
-      options = {
-        inventory: header('x-webui-inventory'),
-        styleInventory: header('x-webui-style-inventory'),
-        buildId: header('x-webui-build'),
-      };
-      if (url.pathname.endsWith('/resources')) {
-        send(200, protocol.renderLazyResources(owner, id, options), 'application/json');
-        return true;
-      }
-    } catch (error) {
-      send(400, JSON.stringify({ error: String(error) }), 'application/json');
+    if (url.pathname.startsWith(PACK_PREFIX)) {
+      const pack = packs.get(url.pathname.slice(PACK_PREFIX.length));
+      if (pack === undefined) send(404, 'Unknown pack');
+      else send(200, pack, 'application/json');
       return true;
     }
-    const controller = new AbortController();
-    const cancel = (): void => controller.abort(new DOMException('Client closed', 'AbortError'));
-    res.once('close', cancel);
-    const state = new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        controller.signal.removeEventListener('abort', abort);
-        if (url.searchParams.get('fail') === '1') {
-          reject(new Error('Fixture data unavailable'));
-          return;
-        }
-        resolve({
-          message: `Fresh ${owner} ${++revision}`,
-          count: revision,
-          items: [{ id: 'fresh', label: 'Fresh row' }],
-          expanded: true,
-          advanced: url.searchParams.get('advanced') === '1',
-        });
-      }, Number(url.searchParams.get('delay') ?? 80));
-      const abort = (): void => { clearTimeout(timer); reject(controller.signal.reason); };
-      controller.signal.addEventListener('abort', abort, { once: true });
-    });
-    // State work has already started; an early metadata error still owns cancellation.
-    void state.catch(() => {});
-    void (async () => {
-      try {
-        const metadata = protocol.prepareLazyResources(owner, id, options);
-        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-        res.write(metadata.json + '\n');
-        const value = await state;
-        if (controller.signal.aborted) return;
-        res.end(protocol.renderLazyPartial(value, owner, id, metadata.options) + '\n');
-      } catch (error) {
-        controller.abort(error);
-        if (res.destroyed) return;
-        if (!res.headersSent) send(400, JSON.stringify({ error: String(error) }), 'application/json');
-        else res.end(JSON.stringify({ error: { code: 'fixture-state-failed', message: String(error) } }) + '\n');
-      } finally {
-        res.removeListener('close', cancel);
+    if (url.pathname !== '/lazy-ui/state') return false;
+    const owner = url.searchParams.get('owner') ?? '';
+    const timer = setTimeout(() => {
+      if (url.searchParams.get('fail') === '1') {
+        send(503, JSON.stringify({ error: 'Fixture data unavailable' }), 'application/json');
+        return;
       }
-    })();
+      send(200, JSON.stringify({
+        message: `Fresh ${owner} ${++revision}`,
+        count: revision,
+        items: [{ id: 'fresh', label: 'Fresh row' }],
+        expanded: true,
+        advanced: url.searchParams.get('advanced') === '1',
+      }), 'application/json');
+    }, Number(url.searchParams.get('delay') ?? 80));
+    res.once('close', () => clearTimeout(timer));
     return true;
   };
 }

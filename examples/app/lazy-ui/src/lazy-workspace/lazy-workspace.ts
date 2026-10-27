@@ -11,10 +11,6 @@ export class LazyWorkspace extends WebUIElement {
   @observable slowData = false;
   @observable announcement = '';
 
-  onOverlayNotice(event: CustomEvent<string>): void {
-    this.announcement = event.detail;
-  }
-
   changeDelay(event: Event): void {
     const input = event.currentTarget;
     if (input instanceof HTMLInputElement) this.slowData = input.checked;

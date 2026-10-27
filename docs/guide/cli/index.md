@@ -76,7 +76,7 @@ See [WebUI Press](/guide/webui-press) for configuration.
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--component-assets-out <DIR>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--component-assets-out <DIR>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--pack-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -98,6 +98,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
+| `--pack-public-base <BASE>` | URL/path prefix ending in `/` for `<if lazy>` template packs, relative to the document base | `_webui/packs/` |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 Path inputs for `APP`, `--state`, `--servedir`, `--projection-manifest`,
@@ -130,6 +131,12 @@ truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
 emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
 (`#`, `%`, and `?`), path separators, whitespace, control characters, and
 Windows-reserved filename characters are rejected.
+
+`webui build` writes the template pack of each `<if lazy>` region to
+`<out>/_webui/packs/<owner>.<hash>.json`. Pack names are content hashes; serve
+them with long-lived immutable caching. `--pack-public-base` changes only the
+pack URLs compiled into `protocol.bin`, for example to serve packs from a CDN
+with CORS.
 
 **CSS bundling:**
 
@@ -381,7 +388,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--allowed-host <HOST[:PORT]>]... [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--allowed-host <HOST[:PORT]>]... [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--pack-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -409,6 +416,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
+| `--pack-public-base <BASE>` | URL/path prefix ending in `/` for `<if lazy>` template packs, relative to the document base | `_webui/packs/` |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
@@ -611,19 +619,17 @@ successful rebuild clears the error and reloads connected browsers.
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
-| `/_webui/lazy?owner=...&id=...` | Resource-only JSON for a named deferred template body |
-| `/_webui/lazy/state?owner=...&id=...` | Fresh configured/API state with missing resources; JSON or explicit NDJSON |
+| `/_webui/packs/*.json` | Template packs for `<if lazy>` regions from the current build |
 | `/*.webui.js` | In-memory generated root and component modules emitted by `--emit-component-assets` |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
 | Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
-Deferred endpoints use `X-WebUI-Inventory`, `X-WebUI-Style-Inventory`, and
-`X-WebUI-Build`. Unknown regions return 404, incompatible builds return 409, and
-invalid availability input returns 400. A state-provider failure is not replaced
-with stale file state after a resource record has been sent.
-See [deferred UI](../concepts/lazy) for authoring and production host APIs.
+Packs are served with `Cache-Control: no-cache` so rebuilds are picked up
+immediately. Serve them at the default pack base; `--pack-public-base` affects
+only the URLs a build writes. See [lazy template bodies](../concepts/lazy) for
+authoring and hosting packs in production.
 
 ### `webui desktop`
 

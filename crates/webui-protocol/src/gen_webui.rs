@@ -391,9 +391,6 @@ pub struct WebUiFragmentIf {
 pub struct ClientFragmentData {
     #[prost(string, tag = "1")]
     pub owner: ::prost::alloc::string::String,
-    /// Optional owner-scoped authored id for a publicly loadable lazy region.
-    #[prost(string, tag = "2")]
-    pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub template_json: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]

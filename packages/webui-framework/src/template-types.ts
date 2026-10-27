@@ -66,11 +66,14 @@ export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
 /** Local block index or an independently delivered template-fragment identity. */
 export type TemplateBlockReference = number | string;
+/** Lazy region prefetch trigger: 1 intent, 2 idle, 3 load, 4 demand. */
+export type LazyTrigger = 1 | 2 | 3 | 4;
 export type CompiledConditionalMeta = [
   condition: TemplateCondition,
   blockIndex: TemplateBlockReference,
   slot: TemplateSlot,
-  lazy?: 1,
+  /** Present only on lazy regions, whose `blockIndex` is the region identity. */
+  trigger?: LazyTrigger,
 ];
 
 export type CompiledAttrMeta =
@@ -133,6 +136,8 @@ export interface TemplateMeta extends TemplateBlockMeta {
   v: 3;
   /** Direct compiled component dependencies; absent is empty. */
   d?: readonly string[];
+  /** Pack URLs of the lazy regions whose conditions this template contains. */
+  lp?: Readonly<Record<string, string>>;
   /** Flat table of local conditional and repeat bodies, indexed from this owner. */
   b?: TemplateBlockMeta[];
   re?: [string, string, CompiledEventArgs][];

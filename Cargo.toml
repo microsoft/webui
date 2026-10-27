@@ -44,7 +44,6 @@ actix-web = { version = "4.15.0", default-features = false, features = [
     "macros",
     "compress-brotli",
     "compress-gzip",
-    "compress-zstd",
     "cookies",
     "http2",
     "unicode",

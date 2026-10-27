@@ -18,16 +18,19 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
   policies once; action/preload listeners and selected transports are ready
   before it returns. Reconfiguration while active is rejected. No singleton,
   constructor/start duplication, or hidden optional dynamic import remains.
-- Lazy delivery is another consumer of the neutral resource layer, not part
-  of navigation or the element renderer. JSON and NDJSON are separately selected.
-  The WebUI lazy entry only resolves hostless sections and their owner context.
+- Lazy regions are not a delivery consumer. The framework's optional `lazy.js`
+  runtime fetches static template packs and registers them through the renderer
+  bridge; it imports no router, transport, or NDJSON reader. The rendering core
+  contains no lazy code beyond resolving string block references through an
+  installable resolver; `lazy.js` extends the element itself, so pages without
+  lazy regions ship nothing for them.
 - JSON partial consumers import resource registration but not the NDJSON reader.
   Selecting NDJSON changes content negotiation and makes the decoder available
   before the first response.
 - Progressive HTML coordination is a separate opt-in graph. It shares template
   and style data contracts, not route-state framing or navigation cancellation.
-- The delivery package has three task entries: routing, lazy regions, and shared
-  resources. Their pure named exports do not install features; private
+- The delivery package has two task entries: routing and shared resources.
+  Their pure named exports do not install features; private
   implementation-file layout is not the public API.
 
 The framework's side-effect allowlist retains every explicit installer,
@@ -51,10 +54,10 @@ captures the epoch before starting; after collection its resource data may still
 be accepted, but its old inventory acknowledgement cannot resurrect evicted bits.
 
 This local epoch is distinct from the compiler's deterministic artifact identity.
-Lazy requests send `buildId` with nonempty inventory. The server rejects a
-different build, and clients validate response identity before resource mutation.
-Initial and partial payloads carry the identity. An old bitset is never
-reinterpreted against a new artifact.
+Initial and partial payloads carry the identity, and clients validate response
+identity before resource mutation. An old bitset is never reinterpreted against
+a new artifact. Lazy-region packs carry no identity: their URLs are
+content-addressed and referenced only by their own build's metadata.
 
 Template-resource and stylesheet-definition inventories are separate. Collection
 can invalidate template availability without discarding document-owned styles.
@@ -66,7 +69,7 @@ component instance state, and resource retention have distinct owners.
 
 ## Partial records and cancellation
 
-Both route and region consumers select the same `PartialTransport`. JSON
+Route consumers select a `PartialTransport`. JSON
 returns one decoded value; optional NDJSON returns the initial value plus an
 owned, bounded record tail. The transport does not inspect route components,
 apply state, or choose navigation fallback. A common request lifetime propagates
@@ -112,8 +115,8 @@ preparation promise.
 `WebUIFragmentIf.lazy` extends the existing if instruction. `fragment_id`
 still references its ordinary server body. Client payloads live in the
 `client_fragments` table; they are not `ComponentData` entries or custom elements.
-Owner-scoped authored ids are stable application addresses. Anonymous identities
-are build-local.
+Region identities are compiler-owned and build-local
+(`<owner>::lazy:@<ordinal>`); authors write no id.
 
 Owner metadata retains only eager blocks and references to deferred roots.
 A hostless resource bundles its private ordinary blocks. Nonnegative block
@@ -124,30 +127,79 @@ external section. State, events, refs, and repeat scope always remain on the
 existing owner. No new hydration root, state store, or component lifecycle is
 created for the deferred body.
 
+### Compiled metadata
+
+A lazy condition entry is `[condition, region, slot, trigger]`, where trigger
+`1` is intent (the default for bare `lazy`), `2` idle, `3` load, and `4` demand.
+The template JSON containing that entry, whether a component, a region, or a
+shared block, carries `"lp": { region: url }` for the regions its conditions name.
+URLs are the pack public base (default `_webui/packs/`, resolved against the
+document base) plus `<owner>.<16 hex digits of SHA-256>.json`.
+
+### Packs
+
+A pack is `{ type: "webui-pack", version: 1, fragment, inventory,
+styleInventory, required, bits, componentStyles?, templates?,
+templateFunctions? }`. `templates` is the region's resource closure minus the
+owner's eager closure; nested regions are separate packs. `required` lists
+everything the region needs, including owner-provided resources. `bits` maps
+each serialized template to its inventory bit. `componentStyles` is omitted
+when the region adds no style resources or closures. Packs contain no state and
+no build identity.
+
+### Runtime
+
+The rendering core resolves string block references through a resolver that
+`lazy.js` installs and holds no other lazy logic. `lazy.js` extends the element:
+when a closed region's condition becomes true and its template is not
+registered, it loads the pack its container's `lp` names and re-enters the owner
+once the pack is registered, which re-evaluates the condition. A region that
+closed meanwhile stays unmounted, and a binding whose owner instance was
+disposed cannot mount. Without the runtime, activation throws an error that
+names `lazy.js`.
+
+Activation and prefetch share one load per URL, with a 10 second deadline so a
+stalled request fails and the next activation retries. Installation validates
+the type, version, and region; registers only templates the document does not
+already hold (registered, still held by the template cache, which registers
+them again, or still alive after release); runs their condition closures with
+the document nonce and the compiler-owned Trusted Types policy; publishes them
+through the registration event, waiting for its readiness; and then merges the
+pack's inventory bits. Every template a pack names is registered at that point,
+so its bits are safe to merge in any inventory epoch.
+
+Triggers arm when the block containing a closed region renders or hydrates:
+intent through one delegated document listener for pointer, focus, and touch
+events whose composed path includes an element with the owner's tag; idle in an
+idle callback after the window load event; load in the task after hydration.
+Demand regions load only on activation or explicit prefetch. Idle and load
+prefetch yield to `navigator.connection.saveData` and skip regions that were
+already released. Prefetch failures are silent; activation surfaces errors and
+retries.
+
+The runtime remembers, weakly, the bindings that mounted each region it
+registered. After instances are removed, a region that none of them still shows
+is deleted from the registry at idle, its inventory bit is cleared, and a weak
+reference is kept. Mounting it again revives the same metadata, and its bit,
+while it is alive; lookups and trigger arming do not. Otherwise activation
+reloads the pack, normally from the HTTP cache. Regions loaded only by prefetch
+stay registered until they are shown and closed. Shared blocks and component
+templates from packs stay registered; ordinary template collection governs them.
+Collection in a new epoch leaves the runtime's earlier registrations to that
+collection.
+
+`lazy.js` adds `$rendered()` and `$prefetch()` to elements, and to their types
+through module augmentation. `$rendered()` flushes queued updates, then waits for
+the owner's pending regions, including nested regions activated by their mounts.
+It rejects with a pack failure and retries failed regions that remain active
+when called again. `$prefetch()` loads every region named by the owner
+template's `lp`.
+
 The WebUI adapter uses metadata identity for parsed DOM caching and weak
 block-to-fragment ownership. Active views retain their fragment; disconnected
 owners retain only fragments needed for a later reconnect. Closing a body
 releases its view ownership. Unhydrated SSR owners are pinned conservatively
 until the renderer can take over that ownership.
-
-A deferred response has `type: "webui-lazy"`, `version: 1`, `owner`,
-`fragment`, `buildId`, both inventories, and `required` resource identities.
-Template/function/style maps are omitted when unnecessary. `state` distinguishes
-a complete or terminal response from resource-only metadata. Resource preload
-does not call a state provider. Hosts can obtain metadata plus its small
-acknowledgement without reparsing the metadata JSON.
-
-NDJSON accepts a complete record or resources followed by one terminal state
-record. Metadata-only EOF, duplicate terminal state, extra records, invalid
-identity, and server error records fail explicitly. The terminal record may
-include resources for newly active nested deferred regions. Resource preparation
-and configured imports can overlap data loading; the caller receives state only
-after all required work succeeds.
-
-The loader keeps no instance state cache. One preload waiter can cancel without
-cancelling shared resource work. An epoch change during loading causes one
-bounded retry using fresh inventory and state; repeated collection is an
-actionable error, not an incomplete view or document-navigation fallback.
 
 ## Validation
 

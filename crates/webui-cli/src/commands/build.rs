@@ -99,6 +99,16 @@ fn validate_output_file_names(
             );
         }
     }
+    let pack_dir = out_dir.join(webui::PACK_OUTPUT_DIR);
+    for pack in &result.lazy_pack_files {
+        if !paths.insert(&pack_dir.join(&pack.file_name))? {
+            anyhow::bail!(
+                "lazy pack '{}' collides with another build output. Move that output out of {}.",
+                pack.file_name,
+                pack_dir.display()
+            );
+        }
+    }
     if let Some(metafile) = metafile {
         component_asset_output::validate_metafile_path(
             component_assets_out,
@@ -214,6 +224,8 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
+    webui::write_lazy_packs(&out_dir, &result.lazy_pack_files)
+        .with_context(|| "Failed to write lazy-region packs")?;
     let write_metafile = || -> Result<()> {
         let Some(path) = &metafile else {
             return Ok(());
@@ -267,9 +279,23 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
+    if !result.lazy_pack_files.is_empty() {
+        output::success(&format!(
+            "Emitted {} lazy pack{} to {}",
+            console::style(result.lazy_pack_files.len()).bold(),
+            if result.lazy_pack_files.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            console::style(webui::PACK_OUTPUT_DIR).bold()
+        ));
+    }
+
     let files_written = 1
         + stats.css_file_count
         + result.component_asset_files.len()
+        + result.lazy_pack_files.len()
         + usize::from(metafile.is_some());
     output::success(&format!(
         "Wrote {}",
@@ -305,6 +331,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             projection_manifests: Vec::new(),
             asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
+            pack_public_base: None,
             legal_comments: LegalComments::Inline,
         },
         out: out.to_path_buf(),
@@ -433,6 +460,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -476,6 +504,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -548,6 +577,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -598,6 +628,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -633,6 +664,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -675,6 +707,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: linked_out,
@@ -717,6 +750,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: linked.join(".."),
@@ -758,6 +792,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out,
@@ -797,6 +832,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out,
@@ -827,6 +863,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -863,6 +900,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -899,6 +937,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: "[name]-[hash].[ext]".to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -1037,6 +1076,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -1109,6 +1149,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -1186,6 +1227,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -1249,6 +1291,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
@@ -1296,6 +1339,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: custom_path.clone(),
@@ -1337,6 +1381,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: nested.clone(),

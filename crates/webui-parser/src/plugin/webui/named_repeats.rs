@@ -28,7 +28,6 @@ pub(super) fn visit_scope<'a>(
 pub(super) struct CompileBlocks {
     pub(super) blocks: Vec<TemplateSectionMeta>,
     pub(super) lazy: Vec<LazyDefinition>,
-    pub(super) lazy_names: std::collections::HashSet<String>,
     named: Vec<NamedBlock>,
     validation: NamedForLoops,
 }

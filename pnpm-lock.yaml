@@ -341,9 +341,6 @@ importers:
       '@microsoft/webui':
         specifier: workspace:*
         version: link:../../../packages/webui
-      '@microsoft/webui-delivery':
-        specifier: workspace:*
-        version: link:../../../packages/webui-delivery
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme

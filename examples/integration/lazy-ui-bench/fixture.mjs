@@ -26,11 +26,13 @@ import { collectTemplates } from ${source('template-cache-entry.ts')};
 import { startRuntime } from ${source('runtime.ts')};
 import { WebUIElement, observable } from ${source('index.ts')};
 ${interactive ? `import ${source('styles-entry.ts')};` : ''}
-${mode === 'lazy' ? `
-import ${source('lazy-entry.ts')};
-import { createLazyLoader } from ${JSON.stringify(join(root, 'packages', 'webui-delivery', 'src', 'lazy-entry.ts'))};
-const loader = createLazyLoader({ endpoint: new URL('resources', document.baseURI).href });` : ''}
+${mode === 'lazy' ? `import ${source('lazy-entry.ts')};` : ''}
 startRuntime();
+async function fetchState() {
+  const response = await fetch(new URL('state', document.baseURI));
+  if (!response.ok) throw new Error('State request failed');
+  return response.json();
+}
 class BenchOwner extends WebUIElement {
   @observable shown = false;
   @observable value = 'Fresh';
@@ -78,12 +80,10 @@ class BenchOwner extends WebUIElement {
   async open() {
     const start = performance.now();
     ${mode === 'lazy'
-      ? "this.setState(await loader.fetchPartial('bench-owner', 'panel', { url: new URL('state', document.baseURI).href }));"
+      ? "const [state] = await Promise.all([fetchState(), this.$prefetch()]); this.setState(state); this.shown = true; await this.$rendered();"
       : mode === 'eager-fresh'
-        ? "const response = await fetch(new URL('state', document.baseURI)); if (!response.ok) throw new Error('State request failed'); this.setState(await response.json());"
-        : ''}
-    this.shown = true;
-    this.$flushUpdates();
+        ? "this.setState(await fetchState()); this.shown = true; this.$flushUpdates();"
+        : 'this.shown = true; this.$flushUpdates();'}
     return performance.now() - start;
   }
   close() { this.shown = false; this.$flushUpdates(); }
@@ -97,7 +97,7 @@ window.bench = {
   collect: collectTemplates,
   track() {
     const templates = window.__webui.templates;
-    this.observed = new WeakRef(${mode === 'lazy' ? "templates['bench-owner::lazy:panel']" : "templates['bench-owner'].b[0]"});
+    this.observed = new WeakRef(${mode === 'lazy' ? "templates['bench-owner::lazy:@0']" : "templates['bench-owner'].b[0]"});
   },
   retained() { return this.observed.deref() !== undefined; },
 };
@@ -136,15 +136,19 @@ export async function startFixtures(counts, latencyMs, interactive = false) {
         const toolbar = interactive
           ? '<div class="toolbar"><button @click="{onOpen(e)}" ?disabled="{{loading}}">Open panel</button><button @click="{onShell(e)}">Shell click</button><button @click="{onClose(e)}">Close panel</button><output class="shell-count">{{shellCount}}</output><label><input type="checkbox" ?checked="{{broadcast}}" @change="{changeBroadcast(e)}">Broadcast edits</label><output class="edit-preview">{{editedValue}}</output></div><p role="status">{{status}}</p>'
           : '';
-        const template = `<h1>Shell</h1>${toolbar}<if condition="shown"${mode === 'lazy' ? ' lazy id="panel"' : ''}><section>${body}</section></if>`;
+        const template = `<h1>Shell</h1>${toolbar}<if condition="shown"${mode === 'lazy' ? ' lazy="demand"' : ''}><section>${body}</section></if>`;
         await writeFile(join(scratch, 'index.html'), html);
         await writeFile(join(scratch, 'bench-owner.html'), template);
         await writeFile(join(scratch, 'bench-owner.ts'), entry(mode, interactive));
         const built = build({ appDir: scratch, plugin: 'webui', ...(interactive ? { css: 'style' } : {}) });
         const protocol = new Protocol(built.protocol, { plugin: 'webui' });
         const document = Buffer.from(protocol.render(initial, { entry: 'index.html' }));
+        const packs = new Map();
+        for (let i = 0; i + 1 < built.lazyPackFiles.length; i += 2) {
+          packs.set(built.lazyPackFiles[i], gzipSync(built.lazyPackFiles[i + 1]));
+        }
         fixtures.set(base, {
-          protocol, document, script, gzipDocument: gzipSync(document), gzipScript: gzipSync(script),
+          protocol, document, script, packs, gzipDocument: gzipSync(document), gzipScript: gzipSync(script),
           mode, count,
         });
       }
@@ -163,24 +167,14 @@ export async function startFixtures(counts, latencyMs, interactive = false) {
       let bytes, type;
       if (!resource) { bytes = fixture.gzipDocument; type = 'text/html'; }
       else if (resource === 'app.js') { bytes = fixture.gzipScript; type = 'text/javascript'; }
-      else {
-        const options = {
-          inventory: request.headers['x-webui-inventory'] ?? '',
-          styleInventory: request.headers['x-webui-style-inventory'] ?? '',
-          buildId: request.headers['x-webui-build'] ?? '',
-        };
-        let json;
-        if (resource === 'resources') {
-          json = fixture.protocol.renderLazyResources('bench-owner', 'panel', options);
-        } else if (resource === 'state') {
-          await delay(latencyMs);
-          json = fixture.mode === 'lazy'
-            ? fixture.protocol.renderLazyPartial({ value: 'Fresh' }, 'bench-owner', 'panel', options)
-            : JSON.stringify({ value: 'Fresh' });
-        } else { response.writeHead(404).end(); return; }
-        bytes = gzipSync(json);
+      else if (resource === '_webui' && segments[4] === 'packs' && fixture.packs.has(segments[5])) {
+        bytes = fixture.packs.get(segments[5]);
         type = 'application/json';
-      }
+      } else if (resource === 'state') {
+        await delay(latencyMs);
+        bytes = gzipSync(JSON.stringify({ value: 'Fresh' }));
+        type = 'application/json';
+      } else { response.writeHead(404).end(); return; }
       response.writeHead(200, {
         'Content-Type': type, 'Content-Encoding': 'gzip',
         'Content-Length': bytes.length, 'Cache-Control': 'no-store',

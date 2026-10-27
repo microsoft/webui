@@ -18,14 +18,14 @@ Current entries:
 | `app/contact-book-manager` | Full CRUD contact manager with WebUI Framework + router + Node API |
 | `app/native-services` | Native directory picker, dialogs, visible webview capture, and PNG clipboard demo |
 | `app/component-assets` | No-router WebUI Framework app that lazy-loads a static component asset on demand |
-| `app/lazy-ui` | Native popover and dialog with inline lazy bodies, scoped state streaming, preload, and cancellation |
+| `app/lazy-ui` | Native popover and dialog with inline lazy bodies, build-time template packs, intent prefetch, and cancellation |
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls |
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
 | `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
 | `app/streaming` | Progressive hydration demo with runtime-discovered component boundaries, descriptor-driven backend pacing, and a bounded browser stream |
 | `integration/node` | Node.js integration via native addon |
 | `integration/node-addon-bench` | Node/V8/N-API runtime benchmark for the native addon |
-| `integration/lazy-ui-bench` | Reproducible eager/lazy startup, interaction, payload, and retained-heap comparison |
+| `integration/lazy-ui-bench` | Reproducible eager/lazy startup, prefetch-trigger, interaction, payload, and retained-heap comparison |
 | `integration/rust` | Rust integration via `webui-handler` |
 | `integration/tauri` | Rust-only Tauri snapshot viewer for pre-built WebUI apps |
 

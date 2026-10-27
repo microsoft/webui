@@ -523,8 +523,8 @@ struct TemplateSectionMeta {
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
     condition_slots: Vec<SlotLocator>,
-    /// Present only in sections with explicitly lazy component callsites.
-    lazy_conditions: Vec<usize>,
+    /// Lazy conditional positions paired with their client prefetch trigger codes.
+    lazy_conditions: Vec<(usize, u8)>,
     /// For-loop blocks and their optional first-child key paths.
     repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
@@ -535,6 +535,19 @@ struct TemplateSectionMeta {
     event_targets: Vec<usize>,
     refs: Vec<(String, usize)>,
     ssr_layout: SsrLayout,
+}
+
+impl TemplateSectionMeta {
+    /// Client prefetch trigger for a lazy conditional at `position`.
+    fn lazy_trigger(&self, position: usize) -> Option<u8> {
+        self.lazy_conditions
+            .iter()
+            .find_map(|&(index, trigger)| (index == position).then_some(trigger))
+    }
+
+    fn is_lazy_condition(&self, position: usize) -> bool {
+        self.lazy_trigger(position).is_some()
+    }
 }
 
 #[derive(Clone)]
@@ -642,7 +655,6 @@ struct TemplateMeta {
 struct LazyDefinition {
     block_index: usize,
     id: String,
-    name: String,
 }
 
 type EventBinding = (String, String, Vec<EventArg>);
@@ -1198,7 +1210,7 @@ fn collect_template_roots<const SHARED: bool, const STOP_LAZY: bool>(
 
         for (position, (condition, block_index)) in block.conditionals.iter().enumerate() {
             add_condition_roots(&mut roots, condition, &scopes, visit.scope);
-            if STOP_LAZY && block.lazy_conditions.contains(&position) {
+            if STOP_LAZY && block.is_lazy_condition(position) {
                 continue;
             }
             if let Some(child) = blocks.get(*block_index) {
@@ -1542,50 +1554,30 @@ fn emit_block_reference(index: usize, references: Option<&lazy_templates::Plan>,
     }
 }
 
-#[cold]
-#[inline(never)]
-fn validate_lazy_metadata(
+/// Parse a lazy region's prefetch trigger, reporting unknown values (cold path on error).
+fn lazy_trigger(
     component: &str,
     tag: &crate::html_parser::Tag<'_>,
     source: &TemplateSource<'_>,
-    names: &mut std::collections::HashSet<String>,
-) -> Result<()> {
-    let failure = if tag.attr("lazy").is_some_and(|value| !value.is_empty()) {
-        Some((
-            crate::codes::INVALID_LAZY_ATTRIBUTE,
-            "lazy must be a boolean attribute",
-            "write lazy without a value; use an optional id to name the region",
-        ))
-    } else if let Some(name) = tag.attr("id") {
-        if !crate::lazy::valid_name(name) {
-            Some((
-                crate::codes::INVALID_LAZY_ID,
-                "invalid lazy region id",
-                "use 1-128 ASCII letters, digits, periods, underscores, or hyphens",
-            ))
-        } else if !names.insert(name.to_owned()) {
-            Some((
-                crate::codes::DUPLICATE_LAZY_ID,
-                "duplicate lazy region id",
-                "choose a unique id within this owning template",
-            ))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    if let Some((code, title, help)) = failure {
-        return Err(source.locate_error(
-            crate::Diagnostic::error(title)
-                .code(code)
-                .component(component)
-                .element("if")
-                .help(help)
-                .into(),
-        ));
-    }
-    Ok(())
+) -> Result<u8> {
+    let value = tag.attr("lazy");
+    crate::lazy::Trigger::parse(value)
+        .map(crate::lazy::Trigger::code)
+        .ok_or_else(|| invalid_lazy_trigger(component, value.unwrap_or_default(), source))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_lazy_trigger(
+    component: &str,
+    value: &str,
+    source: &TemplateSource<'_>,
+) -> crate::ParserError {
+    source.locate_error(
+        crate::lazy::invalid_trigger(value)
+            .component(component)
+            .into(),
+    )
 }
 
 fn emit_json_template_section(
@@ -1679,8 +1671,8 @@ fn emit_json_template_section(
             emit_block_reference(*block_index, references, out);
             out.push(',');
             emit_js_slot(slot, out);
-            if meta.lazy_conditions.contains(&i) {
-                out.push_str(",1");
+            if let Some(trigger) = meta.lazy_trigger(i) {
+                let _ = write!(out, ",{trigger}");
             }
             out.push(']');
         }
@@ -1824,28 +1816,22 @@ fn compile_section(
                         .locate_error(error.component(component).into()));
                 }
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
-                    let lazy_tag = opening_tag.as_ref().filter(|tag| tag.has_attr("lazy"));
-                    let lazy = lazy_tag.is_some();
+                    let trigger = match opening_tag.as_ref().filter(|tag| tag.has_attr("lazy")) {
+                        Some(tag) => Some(lazy_trigger(component, tag, &source.slice(i..len))?),
+                        None => None,
+                    };
                     let block_index = blocks.reserve();
-                    if let Some(tag) = lazy_tag {
-                        let name = tag.attr("id");
-                        validate_lazy_metadata(
-                            component,
-                            tag,
-                            &source.slice(i..len),
-                            &mut blocks.lazy_names,
-                        )?;
+                    if trigger.is_some() {
                         blocks.lazy.push(LazyDefinition {
                             block_index,
-                            id: crate::lazy::fragment_id(component, name, blocks.lazy.len()),
-                            name: name.unwrap_or_default().to_owned(),
+                            id: crate::lazy::fragment_id(component, blocks.lazy.len()),
                         });
                     }
                     let block = compile_section(component, body, blocks)?;
                     blocks.blocks[block_index] = block;
                     let idx = meta.conditionals.len();
-                    if lazy {
-                        meta.lazy_conditions.push(idx);
+                    if let Some(trigger) = trigger {
+                        meta.lazy_conditions.push((idx, trigger));
                     }
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));

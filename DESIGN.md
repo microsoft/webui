@@ -75,14 +75,15 @@ Unselected implementations must not reach production output through either
 static or dynamic imports. Application feature code can load on demand without
 changing global routing policy.
 
-Shared browser delivery remains hydration-agnostic. Navigation and lazy
-template loading consume one request-lifetime, resource availability, build
-identity, and transport contract. Route reconciliation owns early commits and
-per-level state; lazy loading returns scoped state to its existing owner only
-after resources are ready. Resource-only preloading does not cache application
-state. A renderer adapter registers opaque compiled
-payloads, reports readiness and release, and owns its live views. Delivery does
-not import the WebUI element renderer or turn a template section into a component.
+Shared browser delivery remains hydration-agnostic. Navigation consumes one
+request-lifetime, resource availability, build identity, and transport
+contract; route reconciliation owns early commits and per-level state.
+Resource-only preloading does not cache application state. A renderer adapter
+registers opaque compiled payloads, reports readiness and release, and owns its
+live views. Delivery does not import the WebUI element renderer or turn a
+template section into a component. Lazy regions do not use delivery at all:
+their templates are static build artifacts that the renderer's optional lazy
+runtime fetches itself.
 
 ## Compilation and artifact ownership
 
@@ -117,12 +118,21 @@ become typed instructions or references. `<if>`, `<for>`, `<route>`,
 parser rejects invalid structure and unsupported syntax with source-located
 diagnostics, rather than trying to repair arbitrary browser HTML.
 
-A lazy `<if>` is an ordinary conditional with a delivery annotation. Its
-body retains the enclosing template's state, lexical scope, refs, and event
-ownership. Compilation separates that body's client payload from eager owner
-metadata without introducing a custom-element host. The protocol retains both
-server instructions and independently deliverable client sections; private
+A lazy `<if>` is an ordinary conditional with a delivery annotation and an
+optional prefetch trigger (intent, idle, load, or demand). Its body retains the
+enclosing template's state, lexical scope, refs, and event ownership; identities
+are compiler-owned. Compilation separates that body's client payload from eager
+owner metadata without introducing a custom-element host. The protocol retains
+both server instructions and independently deliverable client sections; private
 sub-blocks travel together, while genuinely shared blocks remain reusable.
+
+At build time each lazy region becomes an immutable, content-addressed template
+pack: its client closure minus what the owner already guarantees, plus the
+inventory bits that closure sets. Nested regions are separate packs. The
+template containing a region's condition records the pack URL, so packs that
+reference other packs are rendered in dependency order and build identity is
+assigned afterwards over final metadata. Packs are static files with no
+per-request rendering, state, or host API.
 
 Component templates may share named loop bodies without expanding them at each
 callsite. Structural recursion through component templates is invalid; finite
@@ -264,13 +274,15 @@ the handler does not finish rendering into an abandoned channel. Host entry
 points may render a whole document, a component fragment, a route partial,
 or a host-paced streaming session from the same loaded protocol.
 
-Lazy-body requests name an existing owner and region, not a route. A preload
-delivers the body's ordinary resource closure without application state or DOM
-creation. A stateful response can send resources first and fresh scoped state
-later; the final record adds any nested deferred resources selected by that
-state. Hosts own authorization, data providers, cancellation, and backpressure.
-The browser applies state to its existing owner/scope and uses normal conditional
-mounting. Initially active regions instead use ordinary SSR and hydrate that DOM.
+Lazy regions add no server request path. Closed regions render no body and only
+reference their pack; initially active regions use ordinary SSR, inline their
+templates, and hydrate that DOM. In the browser, a region loads its pack when
+its condition becomes true or its trigger fires, then mounts through normal
+conditional rendering in the existing owner. That loading lives in an opt-in
+runtime that extends the renderer; the rendering core holds no lazy logic, so
+pages without lazy regions ship none. State remains
+application-owned. Inactive regions release their templates and inventory bits
+at idle; a reopened region reuses live metadata or reloads its pack.
 
 ### Server-authoritative routing
 

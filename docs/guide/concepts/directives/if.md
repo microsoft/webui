@@ -8,8 +8,8 @@ description: "Render a region with if conditions, comparisons, and logical opera
 Use `<if condition="...">` to include a region when its condition is truthy.
 The directive does not create an extra DOM element.
 
-Its attributes are `condition`, optional boolean `lazy`, and `id` only when
-`lazy` is present. Unsupported attributes are build errors.
+Its attributes are `condition` and optional `lazy`, whose value is an optional
+prefetch trigger. Unsupported attributes, including `id`, are build errors.
 
 ## Basic Usage
 
@@ -23,22 +23,26 @@ The welcome message renders when `isLoggedIn` is truthy in the current state.
 
 ## Lazy bodies
 
-Add boolean `lazy` to retain an ordinary template body in the protocol without
-eagerly delivering it while its condition is false:
+Add `lazy` to retain an ordinary template body in the protocol without
+delivering it with the page while its condition is false. The build emits the
+body as a static template pack that the framework loads when the condition
+becomes true:
 
 ```html
-<if condition="settingsReady" lazy id="settings">
+<if condition="settingsReady" lazy>
   <h2>Settings</h2>
   <p>{{displayName}}</p>
 </if>
 ```
 
-An initially true condition still renders on the server. The body keeps its
-owning template's state, events, refs, and loop scope; it does not become a
-component, and DOM-mode rules are unchanged. Await its resources/state before
-turning an initially inactive condition on. See
-[lazy template bodies](../lazy) for the renderer adapter, preload,
-state requests, and host endpoints.
+`lazy` prefetches the pack when the user interacts with the owning component.
+Use `lazy="idle"`, `lazy="load"`, or `lazy="demand"` to prefetch when the
+browser is idle, right after startup, or not at all. An initially true condition
+still renders on the server. The body keeps its owning template's state, events,
+refs, and loop scope; it does not become a component, and DOM-mode rules are
+unchanged. Await `this.$rendered()` after turning the condition on before you
+use refs inside the body. See [lazy template bodies](../lazy) for setup,
+triggers, state loading, and hosting packs.
 
 ## Condition Expressions
 

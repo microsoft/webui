@@ -59,8 +59,10 @@ try {
       const errors = [];
       page.on('pageerror', error => errors.push(String(error)));
       const responses = [];
+      const packs = [];
       page.on('response', response => {
         if (response.url().endsWith('/state')) responses.push(response);
+        else if (response.url().includes('/_webui/packs/')) packs.push(response);
       });
       try {
         await session.send('Performance.enable');
@@ -82,16 +84,18 @@ try {
         await page.evaluate(() => window.bench.open());
         await correctness(page, count);
         await page.evaluate(() => window.bench.close());
+        const packsBeforeWarm = packs.length;
         const warmMs = await page.evaluate(() => window.bench.open());
         await correctness(page, count);
         const bodies = await Promise.all(responses.map(response => response.body()));
+        const packBody = packs[0] ? await packs[0].body() : Buffer.alloc(0);
         if (mode === 'lazy') {
           assert.equal(responses.length, 3);
-          const cold = JSON.parse(bodies[0]);
-          const warm = JSON.parse(bodies[2]);
-          assert.ok(cold.templates?.['bench-owner::lazy:panel']);
-          assert.equal(warm.templates, undefined);
-          assert.equal(warm.state.value, 'Fresh');
+          const pack = JSON.parse(packBody);
+          assert.equal(pack.type, 'webui-pack');
+          assert.ok(pack.templates?.['bench-owner::lazy:@0']);
+          assert.equal(packs.length, packsBeforeWarm, 'a warm open fetches only state');
+          assert.deepEqual(JSON.parse(bodies[2]), { value: 'Fresh' });
         }
         assert.deepEqual(errors, []);
         if (iteration >= 0) {
@@ -103,7 +107,7 @@ try {
               initialHtmlBytes: fixture.document.length,
               initialJsBytes: fixture.script.length,
               initialGzipBytes: fixture.gzipDocument.length + fixture.gzipScript.length,
-              coldResponseBytes: bodies[0]?.length ?? 0,
+              coldResponseBytes: (bodies[0]?.length ?? 0) + packBody.length,
               warmResponseBytes: bodies[2]?.length ?? 0,
               activationMs: [], initialHeapBytes: [], openMs: [], openHeapBytes: [],
               collectedHeapBytes: [], warmMs: [], closedBodyRetained: [],

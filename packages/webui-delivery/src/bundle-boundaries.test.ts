@@ -39,9 +39,8 @@ const entries = {
   fullRouter: `import { WebUIRouter, navigationCache, routeActions, routePreload, routeBoundaries, viewTransitions, routeDiagnostics } from '@microsoft/webui-delivery/router.js'; import { ndjson } from '@microsoft/webui-delivery/resources.js'; new WebUIRouter().start({ transport: ndjson(), cache: navigationCache(), actions: routeActions(), preload: routePreload(), boundaries: routeBoundaries, transitions: viewTransitions, diagnostics: routeDiagnostics });`,
   resources: `export { fetchComponentTemplates, readJsonPartial } from '@microsoft/webui-delivery/resources.js';`,
   records: `export { ndjson } from '@microsoft/webui-delivery/resources.js';`,
-  deferredJson: `export { createLazyLoader } from '@microsoft/webui-delivery/lazy.js';`,
-  deferredStream: `import { createLazyLoader } from '@microsoft/webui-delivery/lazy.js'; import { ndjson } from '@microsoft/webui-delivery/resources.js'; window.loader = createLazyLoader({ transport: ndjson() });`,
-  combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import { createLazyLoader } from '@microsoft/webui-delivery/lazy.js'; new WebUIRouter().start(); window.loader = createLazyLoader();`,
+  lazyRegions: `import '@microsoft/webui-framework/lazy.js'; ${renderer}`,
+  combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import '@microsoft/webui-framework/lazy.js'; ${renderer} new WebUIRouter().start();`,
   queryHelper: `export { parseQuery } from '@microsoft/webui-delivery/router.js';`,
   decoratorOnly: `export { observable } from '@microsoft/webui-framework';`,
 };
@@ -190,17 +189,18 @@ test('resource and record consumers have no route or rendering engine dependency
   excludes(resources.inputs, ['streaming.js', 'ndjson-reader.js']);
 });
 
-test('deferred delivery stays hydration-agnostic and JSON consumers exclude NDJSON', async () => {
-  const [json, streamed] = await Promise.all([bundle('deferredJson'), bundle('deferredStream')]);
-  for (const output of [json, streamed]) {
-    excludes(output.inputs, [
-      'router-core.js', 'chain.js', 'route-element.js',
-      'template-element.js', 'element.js', 'element/styles.js',
-      'streaming-coordinator.js', 'pending.js', 'view-transitions.js',
-    ]);
-  }
-  excludes(json.inputs, ['ndjson-reader.js', 'ndjson.js']);
-  assert.ok([...streamed.inputs].some(input => input.endsWith('/ndjson-reader.js')));
+test('lazy regions add one small framework runtime and no delivery code', async () => {
+  const [core, lazy] = await Promise.all([bundle('buffered'), bundle('lazyRegions')]);
+  assert.equal(
+    [...lazy.inputs].some(input => /\/webui-delivery\/(dist|src)\//.test(input)),
+    false,
+    'lazy regions must not depend on routing delivery',
+  );
+  assert.ok([...lazy.initialInputs].some(input => input.endsWith('/lazy-entry.js')));
+  excludes(core.inputs, ['lazy-entry.js', 'lazy-runtime.js']);
+  // The rendering core holds no lazy logic, so this is the whole cost of the feature.
+  const added = lazy.initialBrotli - core.initialBrotli;
+  assert.ok(added <= 1_900, `lazy runtime adds ${added} brotli bytes`);
 });
 test('early progressive HTML remains separate from network partial decoding and authored rendering', async () => {
   const progressive = await bundle('progressive');
@@ -214,9 +214,9 @@ test('combined delivery reuses shared code and records public bundle measurement
   const names = Object.keys(entries) as Profile[];
   const profiles = await Promise.all(names.map(bundle));
   const combined = await bundle('combined');
-  const json = await bundle('jsonRouter');
-  const lazy = await bundle('deferredJson');
-  assert.ok(combined.totalBytes < (json.totalBytes + lazy.totalBytes) * 0.9);
+  for (const file of ['/router-core.js', '/lazy-entry.js', '/template-element.js']) {
+    assert.ok([...combined.inputs].some(input => input.endsWith(file)), `${file} is bundled once`);
+  }
   const output = resolve(root, 'target', process.env.WEBUI_PACKAGE_TEST_ROOT
     ? 'delivery-packed-public.json' : 'delivery-public-after.json');
   mkdirSync(dirname(output), { recursive: true });

@@ -1,9 +1,9 @@
-<button class="open" @pointerenter="{preload()}" @focus="{preload()}" @click="{open()}">Open dialog</button>
+<button class="open" @click="{open()}">Open dialog</button>
 <dialog w-ref="{dialogEl}" @close="{onNativeClosed()}">
   <button class="close" @click="{close()}">Close</button>
   <if condition="loading"><p class="loading">Loading...</p></if>
   <if condition="error"><p class="error">{{error}}</p></if>
-  <if condition="opened" lazy id="details">
+  <if condition="opened" lazy>
     <h2>{{label}}</h2>
     <p class="message">{{message}}</p>
     <input w-ref="{inputEl}" value="{{message}}" />

@@ -3,7 +3,6 @@
 
 mod component_assets;
 mod host;
-mod lazy;
 mod streaming_api;
 
 use actix_web::body::BoxBody;
@@ -269,6 +268,8 @@ struct SharedState {
     /// Current generated root entries. Immutable dependencies are served from
     /// the publication directory rather than retained in this map.
     component_assets: HashMap<String, String>,
+    /// Lazy-region packs keyed by their `_webui/packs/<file>` request path.
+    lazy_packs: HashMap<String, String>,
     protocol: Option<Arc<Protocol>>,
     state_data: Option<Arc<Value>>,
     token_css: Option<Arc<HashMap<String, String>>>,
@@ -429,6 +430,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         rendered_html: initial_result.html,
         css_files: initial_result.css_files,
         component_assets: initial_result.component_assets,
+        lazy_packs: initial_result.lazy_packs,
         protocol: Some(initial_result.protocol),
         state_data: Some(Arc::new(initial_result.state_data)),
         token_css: initial_result.token_css.map(Arc::new),
@@ -550,8 +552,6 @@ fn serve_app(
         "/_webui/templates",
         web::get().to(handle_component_templates),
     )
-    .route("/_webui/lazy", web::get().to(lazy::resources))
-    .route("/_webui/lazy/state", web::get().to(lazy::state))
     .route("/{tail:.*}", web::get().to(handle_asset))
     .default_service(web::route().to(handle_not_found))
 }
@@ -597,6 +597,8 @@ struct BuildRenderResult {
     css_files: HashMap<String, String>,
     /// Static component assets (`<tag>.webui.js`) keyed by filename.
     component_assets: HashMap<String, String>,
+    /// Lazy-region packs keyed by their `_webui/packs/<file>` request path.
+    lazy_packs: HashMap<String, String>,
     protocol: Arc<Protocol>,
     state_data: Value,
     token_css: Option<HashMap<String, String>>,
@@ -702,11 +704,24 @@ fn build_and_render(
         })
         .map(|file| (file.name, file.content))
         .collect();
+    let lazy_packs: HashMap<String, String> = build_result
+        .lazy_pack_files
+        .into_iter()
+        .map(|pack| {
+            let mut path =
+                String::with_capacity(webui::PACK_OUTPUT_DIR.len() + pack.file_name.len() + 1);
+            path.push_str(webui::PACK_OUTPUT_DIR);
+            path.push('/');
+            path.push_str(&pack.file_name);
+            (path, pack.content)
+        })
+        .collect();
 
     Ok(BuildRenderResult {
         html,
         css_files: css_map,
         component_assets,
+        lazy_packs,
         protocol,
         state_data: state,
         token_css,
@@ -1523,6 +1538,14 @@ async fn handle_asset(
                 .content_type("text/javascript; charset=utf-8")
                 .body(asset.clone());
         }
+        if let Some(pack) = s.lazy_packs.get(&relative) {
+            // Content-addressed in production; the dev server always serves
+            // the current build, so revalidate instead of caching forever.
+            return HttpResponse::Ok()
+                .content_type("application/json")
+                .insert_header(("Cache-Control", "no-cache"))
+                .body(pack.clone());
+        }
     }
 
     if relative.starts_with("components/") && relative.ends_with(".webui.js") {
@@ -1967,6 +1990,7 @@ fn rebuild_and_update_state(
                 s.rendered_html = result.html;
                 s.css_files = result.css_files;
                 s.component_assets = result.component_assets;
+                s.lazy_packs = result.lazy_packs;
                 s.protocol = Some(result.protocol);
                 s.state_data = Some(Arc::new(result.state_data));
                 s.token_css = result.token_css.map(Arc::new);
@@ -2048,6 +2072,7 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -2073,6 +2098,7 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: Some(protocol),
                 state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
@@ -2393,6 +2419,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2426,6 +2453,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2465,6 +2493,7 @@ mod tests {
                     projection_manifests: Vec::new(),
                     asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                     css_public_base: None,
+                    pack_public_base: None,
                     legal_comments: LegalComments::Inline,
                 },
                 app_dir: app.path().to_path_buf(),
@@ -2518,6 +2547,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2561,6 +2591,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2591,6 +2622,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2620,6 +2652,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -2854,6 +2887,7 @@ mod tests {
                 rendered_html: String::new(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: Some(protocol),
                 state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
@@ -3161,6 +3195,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3215,6 +3250,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir,
@@ -3243,6 +3279,7 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3316,6 +3353,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3557,6 +3595,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3631,6 +3670,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3691,6 +3731,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3710,6 +3751,7 @@ mod tests {
             rendered_html: "<html><body>stale ok</body></html>".to_string(),
             css_files: HashMap::new(),
             component_assets: HashMap::new(),
+            lazy_packs: HashMap::new(),
             protocol: None,
             state_data: None,
             token_css: None,
@@ -3762,6 +3804,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3781,6 +3824,7 @@ mod tests {
             rendered_html: String::new(),
             css_files: HashMap::new(),
             component_assets: HashMap::new(),
+            lazy_packs: HashMap::new(),
             protocol: None,
             state_data: None,
             token_css: None,
@@ -3829,6 +3873,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3877,6 +3922,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3979,6 +4025,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -4123,6 +4170,7 @@ mod tests {
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                pack_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -4327,6 +4375,7 @@ mod tests {
                     "components/lazy-panel.webui.js".to_string(),
                     "export default {\"type\":\"webui-component-asset\"};".to_string(),
                 )]),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -4387,6 +4436,104 @@ mod tests {
         assert_eq!(
             actix_test::read_body(response).await,
             ":host { color: red; }"
+        );
+    }
+
+    #[actix_web::test]
+    async fn test_dev_server_builds_and_serves_lazy_packs() {
+        let app_dir = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                r#"<button>Open</button><if condition="open" lazy="idle"><p>Lazy body</p></if>"#,
+            ),
+            ("app-shell.ts", "export {};"),
+        ]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                pack_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app_dir.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: Vec::new(),
+            component_assets_out: None,
+            metafile: None,
+            base_path: None,
+        };
+        let result = build_and_render(&config, None).unwrap();
+        assert_eq!(result.lazy_packs.len(), 1);
+        let (path, pack) = result.lazy_packs.iter().next().unwrap();
+        assert!(path.starts_with("_webui/packs/app-shell."), "{path}");
+        assert!(pack.starts_with(r#"{"type":"webui-pack""#), "{pack}");
+        assert!(
+            result
+                .html
+                .contains(&format!(r#""lp":{{"app-shell::lazy:@0":"{path}"}}"#)),
+            "owner metadata references the pack: {}",
+            result.html
+        );
+        assert!(!result.html.contains("Lazy body"));
+
+        let context = web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: result.html,
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                lazy_packs: result.lazy_packs.clone(),
+                protocol: Some(result.protocol),
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            component_assets_dir: None,
+            api: None,
+            plugin: Some(Plugin::WebUI),
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        });
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri(&format!("/{path}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        assert_eq!(response.headers().get("cache-control").unwrap(), "no-cache");
+        assert_eq!(
+            actix_test::read_body(response).await.as_ref(),
+            pack.as_bytes()
         );
     }
 }

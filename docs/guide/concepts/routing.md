@@ -151,8 +151,7 @@ tails are reported and never marked complete in the navigation cache.
 For custom delivery code, `resources.js` exports `fetchComponentTemplates()`,
 `registerTemplatesAndStyles()`, `readJsonPartial()`, and
 `waitForTemplateReadiness()` without importing a router or renderer.
-The same `ndjson()` transport works with `createLazyLoader()`. These are
-resource/transport primitives, not a new component-state
+These are resource/transport primitives, not a new component-state
 endpoint or a replacement for declaring compiled components.
 
 With the transition capability selected, the router uses the View Transitions

@@ -667,6 +667,11 @@ impl BorrowedComponentStyleDelta<'_> {
     pub(crate) fn resource_names(&self) -> impl Iterator<Item = &str> {
         self.resources.iter().map(|resource| resource.name)
     }
+
+    /// Whether the delta carries no style resources or closures.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.resources.is_empty() && self.closures.is_empty()
+    }
 }
 
 impl Serialize for BorrowedComponentStyleDelta<'_> {
@@ -3952,10 +3957,9 @@ mod tests {
                 );
             }
             document.client_fragments.insert(
-                "app-shell::lazy:settings".to_string(),
+                "app-shell::lazy:@0".to_string(),
                 webui_protocol::ClientFragmentData {
                     owner: "app-shell".to_string(),
-                    name: "settings".to_string(),
                     entry: true,
                     template_json: template_json.to_string(),
                     ..Default::default()

@@ -6,17 +6,16 @@ import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import type { RouterConfig } from '@microsoft/webui-delivery/router.js';
-import type { LazyLoaderOptions } from '@microsoft/webui-delivery/lazy.js';
 import type { PartialTransport } from '@microsoft/webui-delivery/resources.js';
 
-test('delivery has three task entrypoints and no compatibility facade', () => {
+test('delivery has two task entrypoints and no compatibility facade', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.name, '@microsoft/webui-delivery');
-  assert.deepEqual(Object.keys(manifest.exports).sort(), ['./lazy.js', './resources.js', './router.js']);
+  assert.deepEqual(Object.keys(manifest.exports).sort(), ['./resources.js', './router.js']);
   for (const entry of [
     '@microsoft/webui-delivery', '@microsoft/webui-delivery/core.js',
     '@microsoft/webui-delivery/preload.js', '@microsoft/webui-delivery/lazy-ndjson.js',
-    '@microsoft/webui-framework/core.js',
+    '@microsoft/webui-delivery/lazy.js', '@microsoft/webui-framework/core.js',
   ]) {
     assert.throws(() => import.meta.resolve(entry), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
   }
@@ -33,12 +32,11 @@ test('importing public delivery APIs does not construct or start a router', asyn
   assert.equal(listeners, 0);
 });
 
-test('one public transport type configures both consumers', async () => {
+test('the public transport type configures routing', async () => {
   const { ndjson } = await import('@microsoft/webui-delivery/resources.js');
   const transport: PartialTransport = ndjson();
   const routing: RouterConfig = { transport };
-  const regions: LazyLoaderOptions = { transport };
-  assert.equal(routing.transport, regions.transport);
+  assert.equal(routing.transport, transport);
   for (const invalid of [0, -1, NaN, Infinity, 0.5]) {
     assert.throws(() => ndjson(invalid), RangeError);
   }

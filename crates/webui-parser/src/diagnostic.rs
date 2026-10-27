@@ -81,13 +81,9 @@ pub mod codes {
     pub const MISSING_IF_CONDITION: &str = "missing-if-condition";
     /// `<if condition>` value is not a parseable expression.
     pub const INVALID_IF_CONDITION: &str = "invalid-if-condition";
-    /// A deferred region id is not a static, bounded identifier.
-    pub const INVALID_LAZY_ID: &str = "invalid-lazy-id";
-    /// Deferred region ids must be unique within their owning template.
-    pub const DUPLICATE_LAZY_ID: &str = "duplicate-lazy-id";
-    /// The if directive has an unsupported attribute or an id without lazy.
+    /// The if directive has an unsupported attribute.
     pub const INVALID_IF_ATTRIBUTE: &str = "invalid-if-attribute";
-    /// `lazy` is a boolean directive attribute, not a state binding.
+    /// `lazy` names an unknown prefetch trigger.
     pub const INVALID_LAZY_ATTRIBUTE: &str = "invalid-lazy-attribute";
     /// The selected client plugin does not support deferred component metadata.
     pub const UNSUPPORTED_LAZY_PLUGIN: &str = "unsupported-lazy-plugin";

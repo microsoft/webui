@@ -27,11 +27,9 @@ a Python string.
 `render_component_templates()` accepts either one component tag as a string or
 an iterable of tags.
 
-For named lazy template bodies, use `render_lazy_resources()` or
-`prepare_lazy_resources()`, then `render_lazy_partial()` with fresh
-scoped state. The prepared result carries the small inventory acknowledgement
-without reparsing the resource JSON. See the
-[lazy response API](https://microsoft.github.io/webui/guide/integrations/python#lazy-template-responses).
+Lazy template bodies need no Python API: `webui build` writes their
+content-addressed packs to `_webui/packs/`. Serve that directory as static
+files with long-lived caching, as you would JavaScript chunks.
 
 Host-driven streaming discovers runtime occurrences instead of resolving
 compile-time names:

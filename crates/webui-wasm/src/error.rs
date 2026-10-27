@@ -21,6 +21,11 @@ pub(crate) enum WasmError {
     #[error("{0}")]
     Projection(String),
 
+    /// Lazy regions need template packs that this WASM variant cannot emit.
+    #[cfg(feature = "parser")]
+    #[error("{0}")]
+    LazyPacks(String),
+
     /// Protocol protobuf bytes could not be decoded or encoded.
     #[error("Protocol error: {0}")]
     Protocol(#[from] webui_protocol::ProtocolError),

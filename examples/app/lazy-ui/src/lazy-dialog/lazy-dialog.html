@@ -1,7 +1,7 @@
 <template shadowrootmode="open" @keydown="{onKeydown(e)}">
-  <button class="button primary settings-trigger" @pointerenter="{preload()}"
+  <button class="button primary settings-trigger"
     w-ref="{triggerElement}" aria-busy="{{settingsLoading}}"
-    @focus="{preload()}" @click="{onTrigger()}">
+    @click="{onTrigger()}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>
     <if condition="settingsLoading">Cancel settings load</if>
     <if condition="!settingsLoading">View settings</if>
@@ -19,7 +19,7 @@
 
   <dialog class="settings-dialog" w-ref="{dialog}" aria-labelledby="settings-title"
     aria-describedby="settings-intro" @close="{onClosed()}">
-    <if condition="settingsReady" lazy id="settings">
+    <if condition="settingsReady" lazy>
       <header class="overlay-header">
         <h2 id="settings-title">View settings</h2>
         <button class="icon-button" @click="{dismiss()}" aria-label="Close settings">

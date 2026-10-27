@@ -14,7 +14,7 @@ export interface PartialBody {
   readonly records?: PartialRecords;
 }
 
-/** Selected response format shared by routing and lazy conditional loading. */
+/** Selected response format for route partials. */
 export interface PartialTransport {
   readonly accept: string;
   read(response: Response, signal: AbortSignal): Promise<PartialBody>;

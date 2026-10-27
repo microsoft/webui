@@ -205,7 +205,7 @@ tuples once before hydration.
 | `s` | Root child-node count followed by the pre-order static element shapes. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockRef, slot, lazy?]`; lazy is `1` when present. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` load, or `4` demand. |
 | `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
@@ -214,7 +214,8 @@ tuples once before hydration.
 | `v` | Required current format `3`, shared by ordinary components and hostless sections. Missing or different versions are rejected. |
 | `d` | Sorted direct ordinary resource dependencies. Absence is empty. Route activation and nested lazy edges are excluded. |
 | `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
-| `e` | `1` for a publicly addressable deferred body; absent on internal shared sections. |
+| `e` | `1` for a lazy region's root section; absent on internal shared sections. |
+| `lp` | Pack URLs for the lazy regions whose conditions this template contains, keyed by region identity. |
 | `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
 
 The same metadata serves both paths:

@@ -21,7 +21,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["all"]
-all = ["handler", "parser"]
+all = ["handler", "parser", "microsoft-webui-handler/packs"]
 handler = ["dep:microsoft-webui-handler"]
 parser = ["dep:microsoft-webui-parser", "microsoft-webui-protocol/projection-manifest", "microsoft-webui-protocol/content-identity"]
 
