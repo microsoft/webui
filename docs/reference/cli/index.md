@@ -19,18 +19,80 @@ produces the protocol and CSS; it does not replace your application bundler.
 
 ## Installation
 
-Install via npm:
+Install with your package manager:
+
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui
 ```
 
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
 Install WebUI Press separately when you need the documentation/static-site
 generator CLI:
+
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui-press
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 Or install via Cargo for standalone CLI use:
 
@@ -624,12 +686,43 @@ Install the matching desktop support package; ordinary web builds do not need
 it. A standalone CLI can find the `webui-desktop` sidecar beside its binary
 or on `PATH`; `WEBUI_DESKTOP_BINARY` overrides discovery.
 
-For a new npm project, install matching versions of both packages with optional
+For a new JavaScript project, install matching versions of both packages with optional
 dependencies enabled:
+
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui @microsoft/webui-desktop
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 `webui desktop` invokes the native Rust sidecar directly, without a Node wrapper.
 Running it without desktop support exits with a hint to install

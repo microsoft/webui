@@ -57,10 +57,12 @@ try {
     );
   }
   const fullView = buildBenchmarkView(evidence);
-  const renderedState = { benchmarks: fullView };
+  const renderedState = {
+    benchmarks: fullView,
+    benchmarkNotes: buildBenchmarkNotes(evidence),
+  };
   const previewState = {
     previewMetrics: buildBenchmarkPreviews(evidence),
-    benchmarkNotes: buildBenchmarkNotes(evidence),
   };
   for (const [file, content] of [[download, evidence], [state, renderedState], [homeState, previewState]]) {
     try {

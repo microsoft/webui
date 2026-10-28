@@ -50,19 +50,14 @@ test('the entry page serves the install command and qualified fixed-case preview
   await expect(preview.locator('tbody tr[data-webui]')).toHaveAttribute('data-case', 'webui-rust-actix');
   await expect(preview.locator('.chart-caption')).toContainText('Complete responses (req/s)');
   await expect(preview.locator('.direction')).toHaveText('Higher is better');
-  const notes = page.locator('.benchmark-notes');
-  await expect(notes).toContainText('Official campaign results for a 100-todo app');
-  await expect(notes).toContainText('1 measured round (20 s)');
-  await expect(notes).toContainText('variability is not established');
-  await expect(notes).toContainText('Some samples were unavailable');
-  await expect(notes).toContainText('not a complete raw-run archive');
+  await expect(page.locator('.benchmark-notes')).toHaveCount(0);
   await expect(preview.locator('.scale')).toContainText('1,741.15');
   const widths = await preview.locator('.bar').evaluateAll(elements =>
     elements.map(element => Number(element.getAttribute('width'))));
   for (const [index, expected] of [100, 28.173908049277774, 8.683915802774028].entries()) {
     assert.ok(Math.abs(widths[index] - expected) < 1e-10, 'SSR must preserve the full-view bar ratios.');
   }
-  const fullData = preview.getByRole('link', { name: 'Full data and methodology', exact: true });
+  const fullData = preview.getByRole('link', { name: 'More frameworks and methodology', exact: true });
   await expect(fullData).toHaveAttribute('href', '/webui/reference/benchmarks/');
   await expect(fullData).toBeVisible();
   await expect(preview.locator('details')).toHaveCount(0);
@@ -87,6 +82,12 @@ test('the entry page serves the install command and qualified fixed-case preview
   await expect(fullData).toHaveCSS('outline-style', 'solid');
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(`${server.origin}/webui/reference/benchmarks/`);
+  const notes = page.locator('.benchmark-notes');
+  await expect(notes).toContainText('Official campaign results for a 100-todo app');
+  await expect(notes).toContainText('1 measured round (20 s)');
+  await expect(notes).toContainText('variability is not established');
+  await expect(notes).toContainText('Some samples were unavailable');
+  await expect(notes).toContainText('not a complete raw-run archive');
 });
 
 test('install choices copy exact commands and support native keyboard selection', async t => {

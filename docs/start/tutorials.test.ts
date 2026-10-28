@@ -12,7 +12,7 @@ import type { TestContext } from 'node:test';
 import {
   build as buildPress, fixture as pressFixture, removeFixtureRoot, unusedPort, write,
 } from '../../packages/webui-press/tests/native-fixture.js';
-import { docsDist } from '../../packages/webui-press/tests/website-fixture.js';
+import { docsDist, startWebsite } from '../../packages/webui-press/tests/website-fixture.js';
 
 const docs = path.dirname(docsDist);
 const workspace = path.dirname(docs);
@@ -107,6 +107,90 @@ test('installation scripts match the scriptless first app', () => {
   assert.ok(interactive);
   assert.equal(JSON.parse(interactive).type, JSON.parse(packageJson).type);
   assert.equal(JSON.parse(interactive).private, JSON.parse(packageJson).private);
+});
+
+test('package-manager command tabs render and switch across the documentation', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const pages = [
+    ['start/installation', 3],
+    ['start/first-page', 1],
+    ['start/first-component', 1],
+    ['start/add-interactivity', 2],
+    ['start/todo-app', 2],
+    ['learn/how-it-works', 1],
+    ['build/desktop', 2],
+    ['build/hydration', 1],
+    ['build/routing', 1],
+    ['build/integrations/node', 1],
+    ['reference/cli', 3],
+    ['reference/webui-press', 1],
+  ] as const;
+  for (const [pathname, count] of pages) {
+    await page.goto(`${server.origin}/webui/${pathname}/`);
+    if (pathname === 'start/installation') {
+      const policies = page.locator('details').filter({ hasText: 'Setup scripts blocked?' });
+      await expect(policies).not.toHaveAttribute('open', '');
+      await policies.locator('summary').click();
+    }
+    const groups = page.locator('webui-press-tabs').filter({
+      has: page.locator('webui-press-tab', { hasText: /^npm$/ }),
+    });
+    await expect(groups).toHaveCount(count);
+    await expect(page.locator('webui-press-tabs[sync="package-manager"][storage="local"]')).toHaveCount(count);
+    const restored = pathname === 'start/installation' ? 'npm' : 'bun';
+    await expect(groups.locator(`:scope > webui-press-tab[value="${restored}"][active]`))
+      .toHaveCount(count);
+    for (const group of await groups.all()) {
+      const tabs = group.locator(':scope > webui-press-tab');
+      const panels = group.locator(':scope > webui-press-tab-panel');
+      await expect(tabs).toHaveText(['npm', 'pnpm', 'Yarn', 'Bun']);
+      await expect(panels).toHaveCount(4);
+      const commands = [
+        ['npm', /^(?:npm|npx)\b/],
+        ['pnpm', /^pnpm\b/],
+        ['Yarn', /^yarn\b/],
+        ['Bun', /^(?:bun|bunx)\b/],
+      ] as const;
+      for (const [index, [label, command]] of commands.entries()) {
+        await tabs.nth(index).getByRole('button', { name: label, exact: true }).click();
+        await expect(groups.locator(`:scope > webui-press-tab[value="${label.toLowerCase()}"][active]`),
+          `${pathname}: selecting ${label} must synchronize every package-manager group`)
+          .toHaveCount(count);
+        await expect(panels.nth(index)).toBeVisible();
+        await expect(panels.nth(index).locator('code-block').last().locator('code')).toContainText(command);
+        await expect(group.locator(':scope > webui-press-tab-panel[active]')).toHaveCount(1);
+        for (let other = 0; other < 4; other++) {
+          if (other !== index) await expect(panels.nth(other)).toBeHidden();
+        }
+      }
+    }
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('installation keeps first-page setup separate from deep integrations', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ javaScriptEnabled: false });
+  await page.goto(`${server.origin}/webui/start/installation/`);
+  const content = page.locator('.doc-content');
+  await expect(content.getByRole('heading', { level: 2 })).toHaveText([
+    'Install the CLI #', 'Verify the CLI #', 'Create your first page #',
+    'Installation policies #', 'Deep integrations #', 'Add what your app needs #',
+  ]);
+  for (const host of ['rust', 'node', 'dotnet', 'python', 'ffi', 'wasm']) {
+    await expect(content.locator(`a[href="/webui/build/integrations/${host}"]`)).toHaveCount(1);
+  }
+  await expect(content.locator('a[href="/webui/start/first-page"]')).toBeVisible();
+  await expect(content.locator('details[open]')).toHaveCount(0);
 });
 
 test('introductory page frontmatter builds with WebUI Press', t => {

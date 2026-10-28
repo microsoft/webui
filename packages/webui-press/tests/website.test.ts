@@ -111,8 +111,11 @@ test('current runtime guidance keeps Node.js and Bun without Deno recommendation
   await page.goto(`${server.origin}/webui/build/integrations/node/`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Node.js and Bun #');
   await expect(page.locator('#nodejs-bun-and-deno')).toHaveCount(1);
-  await expect(page.locator('webui-press-tab[slot="tab"]')).toHaveText(['Node.js', 'Bun']);
-  await expect(page.locator('webui-press-tab-panel')).toHaveCount(2);
+  const runtimeTabs = page.locator('webui-press-tabs').filter({
+    has: page.locator('webui-press-tab', { hasText: 'Node.js' }),
+  });
+  await expect(runtimeTabs.locator('webui-press-tab[slot="tab"]')).toHaveText(['Node.js', 'Bun']);
+  await expect(runtimeTabs.locator('webui-press-tab-panel')).toHaveCount(2);
   await expect(page.getByRole('link', { name: 'Node / Bun', exact: true })).toBeVisible();
   await expect(page.locator('.doc-content')).not.toContainText(/deno/i);
   for (const pathname of ['build/integrations/', 'build/performance/']) {

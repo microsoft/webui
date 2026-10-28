@@ -16,7 +16,7 @@
         >{{metric.label}}</button>
       </for>
     </div>
-    <p class="visually-hidden" id="preview-help">The initial RPS chart is available without JavaScript. Enable JavaScript to switch tabs, or open the full data and methodology.</p>
+    <p class="visually-hidden" id="preview-help">The initial RPS chart is available without JavaScript. Enable JavaScript to switch tabs, or open the full framework comparison and methodology.</p>
     <for each="metric in previewMetrics">
       <section
         key="{{metric.id}}"
@@ -32,7 +32,7 @@
             <caption class="chart-caption">
               <span class="metric-title">
                 {{metric.caption}} ({{metric.unit}})<sup><a
-                  href="{{base}}#benchmark-note-{{metric.id}}"
+                  href="{{base}}reference/benchmarks/#benchmark-note-{{metric.id}}"
                   aria-label="{{metric.caption}} measurement notes"
                 >{{metric.noteNumber}}</a></sup>
               </span>
@@ -73,6 +73,6 @@
         </if>
       </section>
     </for>
-    <a class="details-link" href="{{base}}reference/benchmarks/">Full data and methodology</a>
+    <a class="details-link" href="{{base}}reference/benchmarks/">More frameworks and methodology</a>
   </section>
 </template>

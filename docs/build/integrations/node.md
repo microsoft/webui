@@ -14,11 +14,42 @@ and pass JSON state for each render. Buffered output is a UTF-8 `Buffer`.
 
 ## Installation
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm install @microsoft/webui
 ```
 
-Keep optional dependencies enabled so npm can install the matching native
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
+Keep optional dependencies enabled so your manager can install the matching native
 package. This API needs native-addon support; it is not a browser or
 JavaScript-only edge-runtime package.
 

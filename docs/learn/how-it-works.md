@@ -30,9 +30,40 @@ A small interactive app has these inputs:
 into `protocol.bin`. It also prepares the chosen CSS output. Rebuild when those
 sources change, not for each request.
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npx webui build ./src --out ./dist --plugin webui
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm exec webui build ./src --out ./dist --plugin webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn run webui build ./src --out ./dist --plugin webui
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun run webui build ./src --out ./dist --plugin webui
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 This command **does not bundle application TypeScript**. Use a JavaScript
 bundler for the browser entry and load its output from the page. The

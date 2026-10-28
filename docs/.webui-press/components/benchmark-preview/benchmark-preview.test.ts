@@ -99,7 +99,7 @@ test('homepage evidence preserves unavailable and measured-zero values', () => {
   }
 });
 
-test('homepage notes use the chart metric order and preserve sampling and measurement limitations', () => {
+test('benchmark notes use the chart metric order and preserve sampling and measurement limitations', () => {
   const evidence = prepareBenchmarkEvidence(source());
   const previews = buildBenchmarkPreviews(evidence);
   const notes = buildBenchmarkNotes(evidence);
@@ -183,7 +183,8 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
     await expect(preview.locator('.value')).toHaveText(metric.values);
     await expect(preview.locator('.chart-caption')).toContainText(metric.caption);
     await expect(preview.locator('.direction')).toHaveText(metric.direction);
-    await expect(page.locator(`#benchmark-note-${metric.id}`)).toContainText(metric.sampling);
+    await expect(preview.locator('.chart-caption sup a')).toHaveAttribute(
+      'href', `/webui/reference/benchmarks/#benchmark-note-${metric.id}`);
     await expect(preview.locator('.scale')).toContainText(metric.maximum);
     const widths = await preview.locator('.bar').evaluateAll(elements =>
       elements.map(element => Number(element.getAttribute('width'))));
@@ -199,13 +200,13 @@ test('the homepage defaults to RPS and switches four ordered metrics without mou
       assert.ok(shape.graphics && shape.width > 0 && shape.height > 0, 'Each selected bar must actually paint, not merely carry numeric attributes.');
     }
     await expect(preview.locator('.details-link')).toHaveAttribute('href', '/webui/reference/benchmarks/');
-    await expect(preview.getByRole('link', { name: 'Full data and methodology', exact: true })).toBeVisible();
+    await expect(preview.getByRole('link', { name: 'More frameworks and methodology', exact: true })).toBeVisible();
   }
   assert.deepEqual(errors, []);
   assert.equal(await page.evaluate(() => customElements.get('benchmark-explorer') !== undefined), false);
 });
 
-test('metric notes are native document fragment targets with and without JavaScript', async t => {
+test('metric notes link to the benchmark page with and without JavaScript', async t => {
   const server = await startWebsite();
   t.after(() => server.close());
   const browser = await chromium.launch({ headless: true });
@@ -213,9 +214,10 @@ test('metric notes are native document fragment targets with and without JavaScr
   for (const javaScriptEnabled of [false, true]) {
     const page = await browser.newPage({ javaScriptEnabled });
     await page.route('https://**', route => route.abort());
-    await page.goto(`${server.origin}/webui/`);
     const preview = page.locator('benchmark-preview');
     for (const metric of javaScriptEnabled ? metrics : metrics.slice(0, 1)) {
+      await page.goto(`${server.origin}/webui/`);
+      await expect(page.locator('.benchmark-notes')).toHaveCount(0);
       if (javaScriptEnabled) {
         const tab = preview.getByRole('tab', { name: metric.label, exact: true });
         await expect(tab).toBeEnabled();
@@ -224,7 +226,7 @@ test('metric notes are native document fragment targets with and without JavaScr
       const link = preview.locator('.chart-caption sup a');
       await expect(link).toHaveAccessibleName(/measurement notes/);
       await link.click();
-      await expect(page).toHaveURL(`${server.origin}/webui/#benchmark-note-${metric.id}`);
+      await expect(page).toHaveURL(`${server.origin}/webui/reference/benchmarks/#benchmark-note-${metric.id}`);
       const note = page.locator(`#benchmark-note-${metric.id}`);
       assert.equal(await note.evaluate(element => element.getRootNode() === document), true);
       await expect(note).toBeInViewport();

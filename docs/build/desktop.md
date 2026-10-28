@@ -13,11 +13,42 @@ The target machine still needs the platform's webview and runtime prerequisites.
 
 ## Get started
 
-For an npm project, opt in to desktop support with matching package versions:
+For a JavaScript project, opt in to desktop support with matching package versions:
+
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui @microsoft/webui-desktop
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 The desktop package installs the native sidecar for your platform without
 adding webview dependencies to the base `@microsoft/webui` package. Do not
@@ -1010,9 +1041,41 @@ Check platform capabilities before requesting menus, tray, or effects.
 
 Enable the SDK's `application-ipc` feature and install the browser runtime:
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
+```bash
+npm install @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
 ```bash
 pnpm add @microsoft/webui-desktop
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui-desktop
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
 
 Define one proto3 contract for your app. For example:
 

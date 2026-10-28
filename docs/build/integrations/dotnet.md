@@ -12,6 +12,11 @@ then dispose native-backed objects when their work is complete.
 
 ## Installation
 
+**Check package availability first.** NuGet artifacts are staged by the release
+pipeline, but automatic NuGet.org publishing is not enabled pending an approved
+signing path. Obtain matching packages from an available release or approved
+feed; the command below requires that feed to be configured.
+
 ```bash
 dotnet add package Microsoft.WebUI
 ```

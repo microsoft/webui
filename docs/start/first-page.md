@@ -70,12 +70,42 @@ so the same HTML can display different data.
 
 ## Previewing with `webui serve`
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm run dev
 ```
 
-Use `pnpm run dev`, `yarn run dev`, or `bun run dev` if you installed with
-that manager. Open **http://127.0.0.1:3000/**:
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun run dev
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
+Open **http://127.0.0.1:3000/**:
 
 ```text
 Hello, Ada!

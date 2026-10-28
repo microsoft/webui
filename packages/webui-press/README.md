@@ -646,6 +646,13 @@ Generated root and page entries also receive build-time `<link rel="modulepreloa
 Plus shadow components used by the chrome itself: `<docs-site-navigation>`,
 `<docs-sidebar-navigation>`, `<docs-search>`, and `<docs-theme-toggle>`.
 
+Related tab groups can share a page-local selection with the same `sync`
+attribute on `<webui-press-tabs>` and matching `value` attributes on their tabs.
+Add `storage="local"` to remember that category across page loads.
+Ungrouped controls stay independent. See
+[tabbed content](https://microsoft.github.io/webui/reference/webui-press/#tabbed-content)
+for initial selection and lifetime behavior.
+
 ---
 
 ## Markdown features

@@ -328,15 +328,15 @@ test('the real preparation script emits deterministic ignored assets and fails i
   const stateBytes = fs.readFileSync(stateFile, 'utf8');
   const homeBytes = fs.readFileSync(homeFile, 'utf8');
   const downloadBytes = fs.readFileSync(downloadFile, 'utf8');
-  const state = JSON.parse(stateBytes) as { benchmarks: BenchmarkView };
-  const home = JSON.parse(homeBytes) as {
-    previewMetrics: BenchmarkPreview[]; benchmarkNotes: BenchmarkNote[];
+  const state = JSON.parse(stateBytes) as {
+    benchmarks: BenchmarkView; benchmarkNotes: BenchmarkNote[];
   };
+  const home = JSON.parse(homeBytes) as { previewMetrics: BenchmarkPreview[] };
   assert.equal(state.benchmarks.selectedMetric, DEFAULT_METRIC);
-  assert.deepEqual(Object.keys(state), ['benchmarks']);
-  assert.deepEqual(Object.keys(home), ['previewMetrics', 'benchmarkNotes']);
+  assert.deepEqual(Object.keys(state), ['benchmarks', 'benchmarkNotes']);
+  assert.deepEqual(Object.keys(home), ['previewMetrics']);
   assert.deepEqual(home.previewMetrics, buildBenchmarkPreviews(state.benchmarks));
-  assert.deepEqual(home.benchmarkNotes, buildBenchmarkNotes(state.benchmarks));
+  assert.deepEqual(state.benchmarkNotes, buildBenchmarkNotes(state.benchmarks));
   assert.ok(Buffer.byteLength(JSON.stringify(home.previewMetrics)) < 4096,
     'four three-case previews must stay below 4 KiB; notes are separate server-only state');
   assert.deepEqual(JSON.parse(downloadBytes), prepareBenchmarkEvidence(source()));
