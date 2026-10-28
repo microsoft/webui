@@ -56,6 +56,8 @@ const scanned = new WeakSet<TemplateMeta>();
 /** Regions with a prefetch trigger, by the block that contains their condition. */
 const armable = new WeakMap<TemplateBlockMeta, Armed[]>();
 const loads = new Map<string, Promise<void>>();
+/** Templates each pack published before its install last failed; absent once it succeeds. */
+const unready = new Map<string, Record<string, TemplateMeta>>();
 const registered = new Map<string, Registration>();
 const released = new Map<string, Registration & { template: WeakRef<TemplateMeta> }>();
 /** Bindings that mounted each region this runtime registered. */
@@ -106,7 +108,8 @@ export function load(region: string, url: string, priority: Priority = 'auto'): 
   // and resources are ready, so every caller joins the in-flight load.
   let loading = loads.get(url);
   if (loading) return loading;
-  if (resolve(region, undefined, true)) return RESOLVED;
+  // A failed install may have published templates whose resources never became ready.
+  if (!unready.has(url) && resolve(region, undefined, true)) return RESOLVED;
   // A stalled request must settle so the next activation can retry it.
   loading = fetch(url, { priority, signal: AbortSignal.timeout?.(PACK_TIMEOUT_MS) } as RequestInit)
     .then(response => {
@@ -121,9 +124,9 @@ export function load(region: string, url: string, priority: Priority = 'auto'): 
   return loading;
 }
 
-/** Whether a pack is still loading or installing, so its region cannot mount yet. */
+/** Whether a pack has not finished installing, so its region cannot mount yet. */
 export function installing(url: string): boolean {
-  return loads.has(url);
+  return loads.has(url) || unready.has(url);
 }
 
 /** Register a pack's missing templates; resolves once they can mount. */
@@ -132,17 +135,21 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
   const runtime = window.__webui ??= {};
   const registry = getTemplateRegistry();
   const templates = pack.templates ?? {};
+  // A failed install's templates are registered again so their readiness reruns.
+  const retry = unready.get(url);
   let fresh: Record<string, TemplateMeta> | undefined;
   let closures = '';
   for (const id in templates) {
     // Packs are coarse; the page may already own shared templates. Ones only
     // the template cache still holds weakly are registered again, so the
     // merged inventory never names a template the page can lose.
-    if (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id)) continue;
+    if (!retry?.[id] && (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id))) continue;
     (fresh ??= {})[id] = templates[id];
     const source = pack.templateFunctions?.[id];
     if (source) closures += `f[${JSON.stringify(id)}]=${source};`;
   }
+  // Published templates are present but not ready until every step below succeeds.
+  unready.set(url, fresh ?? {});
   const waits: PromiseLike<unknown>[] = [];
   if (fresh) {
     if (closures) {
@@ -171,6 +178,7 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
   runtime.inventory = mergeBits(runtime.inventory ?? '', pack.inventory ?? '');
   runtime.styleInventory = mergeBits(runtime.styleInventory ?? '', pack.styleInventory ?? '');
   await window.__webuiPrepareResources?.(pack.required ?? []);
+  unready.delete(url);
 }
 
 function mismatch(url: string, region: string): Error {

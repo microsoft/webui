@@ -396,6 +396,55 @@ test('a pack that is still installing is joined rather than treated as ready', a
   }
 });
 
+test('resources that fail after a pack publishes keep its region unready until a retry', async () => {
+  const id = region('partial-owner');
+  const url = '_webui/packs/partial-owner.0017.json';
+  serve(url, pack('partial-owner'));
+  const target = browser as unknown as Window;
+  let prepared = 0;
+  target.__webuiPrepareResources = () => (
+    ++prepared === 1 ? Promise.reject(new Error('styles failed')) : Promise.resolve()
+  );
+  try {
+    requests.length = 0;
+    await assert.rejects(runtime.load(id, url), /styles failed/);
+    assert.ok(registry()[id], 'the failed install published its templates');
+    assert.equal(runtime.installing(url), true, 'published templates without resources cannot mount');
+    await runtime.load(id, url);
+    assert.equal(prepared, 2, 'the retry prepares the resources again');
+    assert.equal(runtime.installing(url), false);
+    assert.equal(requests.length, 2);
+  } finally {
+    delete target.__webuiPrepareResources;
+  }
+});
+
+test('registration readiness that fails runs again when the region retries', async () => {
+  const id = region('defining-owner');
+  const url = '_webui/packs/defining-owner.0018.json';
+  serve(url, pack('defining-owner'));
+  let registrations = 0;
+  const listener = (event: Event): void => {
+    const detail = (event as CustomEvent<{
+      templates?: Record<string, TemplateMeta>;
+      waitUntil?(ready: PromiseLike<unknown>): void;
+    }>).detail;
+    if (!detail.templates?.[id]) return;
+    if (++registrations === 1) detail.waitUntil?.(Promise.reject(new Error('definitions failed')));
+  };
+  browser.addEventListener('webui:templates-registered', listener);
+  try {
+    await assert.rejects(runtime.load(id, url), /definitions failed/);
+    assert.equal(runtime.installing(url), true);
+    await runtime.load(id, url);
+    assert.equal(registrations, 2, 'the retry registers the published templates again');
+    assert.equal(runtime.installing(url), false);
+    assert.ok(registry()[id]);
+  } finally {
+    browser.removeEventListener('webui:templates-registered', listener);
+  }
+});
+
 test('the element waits for a closed region condition and never mounts into a disposed owner', async () => {
   const { TemplateElement } = await import('./template-element.js');
   const id = region('glue-owner');

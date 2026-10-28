@@ -162,6 +162,9 @@ Activation and prefetch share one load per URL, with a 10 second deadline so a
 stalled request fails and the next activation retries. A region whose pack is
 still loading or installing is not ready even after its templates are
 published: activation and prefetch join that load instead of mounting early.
+An install that fails after publishing leaves the region not ready; the next
+load registers those templates again so their readiness and resource
+preparation rerun.
 Installation validates
 the type, version, and region; registers only templates the document does not
 already hold (registered, still held by the template cache, which registers
