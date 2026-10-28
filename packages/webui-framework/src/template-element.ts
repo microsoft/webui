@@ -79,12 +79,12 @@ import {
 } from './element/diff.js';
 import {
   collectItemMarkers,
-  nextElement,
+  findBlockEnd,
   findByOrdinal,
   buildSSRIndex,
   collectTemplateElements,
+  rangeChildAt,
   MARKER_COND_START,
-  MARKER_COND_END,
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
@@ -317,6 +317,15 @@ function childNodesArray(parent: Node): Node[] {
   const len = children.length;
   const result = new Array<Node>(len);
   for (let i = 0; i < len; i++) result[i] = children[i];
+  return result;
+}
+
+/** Snapshot the siblings strictly between two block range boundaries. */
+function rangeNodesArray(start: Node, end: Node | null): Node[] {
+  const result: Node[] = [];
+  for (let node = start.nextSibling; node !== null && node !== end; node = node.nextSibling) {
+    result.push(node);
+  }
   return result;
 }
 
@@ -1912,24 +1921,24 @@ export class TemplateElement extends HTMLElement {
   /**
    * Hydrate SSR-rendered DOM against compiled template metadata.
    *
-   * When pathStart=0 (default): ssrRoot is a container with children
-   * (top-level component hydration).
-   *
-   * When pathStart=1: ssrRoot is a block element itself (repeat item
-   * in-place hydration). The leading [0] wrapper segment is skipped
-   * so compiled paths resolve directly against the element.
+   * Component hydration passes its render root, whose children are the
+   * section. Block hydration passes the live parent and the exclusive markers
+   * around the block's rendered range, so the block adopts that range in place:
+   * its nodes never leave the document, and the instance owns every node in it.
    */
   private $hydrate(
     ssrRoot: Node,
     meta: TemplateBlockMeta,
     scope?: ScopeFrame,
-    pathStart = 0,
+    rangeStart?: Node,
+    rangeEnd: Node | null = null,
   ): TemplateInstance {
     const ownerDocument = this.ownerDocument;
     const instance: TemplateInstance = {
       scope,
-      container: (pathStart > 0 ? ssrRoot.parentNode : ssrRoot) as (ParentNode & Node) | null,
-      nodes: pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
+      container: ssrRoot as ParentNode & Node,
+      // A block range snapshots its nodes once its own markers are gone.
+      nodes: rangeStart ? EMPTY_ARR as unknown as Node[] : childNodesArray(ssrRoot),
       texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
       attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
@@ -1967,7 +1976,8 @@ export class TemplateElement extends HTMLElement {
       layout,
       ssrRoot,
       meta.c !== undefined || meta.r !== undefined || rawTextCount !== 0,
-      pathStart > 0,
+      rangeStart ? rangeStart.nextSibling : ssrRoot.firstChild,
+      rangeEnd,
     );
     const ssrElements = ssrIndex.elements;
     const textMarkerBoundaries = getTextMarkerBoundaries(meta);
@@ -2002,14 +2012,20 @@ export class TemplateElement extends HTMLElement {
           }
           instance.texts.push(binding);
         } else {
+          // A block range bounds its root-level slots, not the shared parent.
+          const rootStart = ssrParent === ssrRoot ? rangeStart : undefined;
+          const slotEnd = rootStart ? rangeEnd : null;
           const insertRef = this.$findSSRSlotRef(
             ssrParent,
             meta,
             ssrIndex,
             textMarkerBoundaries[i] ?? 0,
             entry[3] ?? 0,
+            rootStart ? rootStart.nextSibling : ssrParent.firstChild,
+            slotEnd,
           );
-          let previous = insertRef ? insertRef.previousSibling : ssrParent.lastChild;
+          const before = insertRef ?? slotEnd;
+          let previous = before ? before.previousSibling : ssrParent.lastChild;
           if (
             previous?.nodeType === 8
             && (previous as Comment).data === ''
@@ -2020,7 +2036,7 @@ export class TemplateElement extends HTMLElement {
           let textNode = previous?.nodeType === 3 ? previous as Text : null;
           if (textNode === null) {
             textNode = ownerDocument.createTextNode('');
-            ssrParent.insertBefore(textNode, insertRef);
+            ssrParent.insertBefore(textNode, before);
           }
           instance.texts.push({ node: textNode, parts, scope });
         }
@@ -2055,31 +2071,30 @@ export class TemplateElement extends HTMLElement {
         let condAnchor: Comment;
         if (marker) {
           condAnchor = marker;
+          // Trust the SSR marker range regardless of the current condition.
+          // Parent bindings may not have arrived yet, so the client value can
+          // temporarily disagree with SSR. An empty range must stay empty rather
+          // than claiming the first static sibling after <!--/wc-->.
+          const endMarker = findBlockEnd(marker, MARKER_COND_START);
+          if (blockMeta && marker.nextSibling !== endMarker) {
+            // Wire bindings only — do NOT call $updateInstance. SSR text
+            // already holds trusted values; evaluating bindings now could
+            // overwrite them with state a parent has not delivered yet.
+            condInstance = this.$hydrate(ssrParent, blockMeta, scope, marker, endMarker);
+            this.$setInstanceParent(condInstance, instance);
+          }
+          // Defer <!--/wc--> removal: later phases still need intact marker
+          // pairs to skip structural block content.
+          if (endMarker) staleMarkers.push(endMarker);
         } else {
           // No marker — insert anchor at the slot position
           condAnchor = ownerDocument.createComment('');
-          const [, beforeIndex] = slotMeta;
-          const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
-          ssrParent.insertBefore(condAnchor, insertRef);
-        }
-        // Trust the SSR marker range regardless of the current condition.
-        // Parent bindings may not have arrived yet, so the client value can
-        // temporarily disagree with SSR. An empty range must stay empty rather
-        // than claiming the first static sibling after <!--/wc-->.
-        if (marker && blockMeta) {
-          condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
-          if (condInstance) this.$setInstanceParent(condInstance, instance);
-        }
-
-        // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
-        // it here - later phases still need intact marker pairs to skip
-        // structural block content.
-        if (marker) {
-          const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
-          const endMarker = lastNode?.nextSibling;
-          if (endMarker && endMarker.nodeType === 8 && (endMarker as Comment).data === MARKER_COND_END) {
-            staleMarkers.push(endMarker);
-          }
+          const rootStart = ssrParent === ssrRoot ? rangeStart : undefined;
+          ssrParent.insertBefore(condAnchor, rangeChildAt(
+            rootStart ? rootStart.nextSibling : ssrParent.firstChild,
+            rootStart ? rangeEnd : null,
+            slotMeta[1],
+          ));
         }
 
         let liveAnchor: Comment | null = condAnchor;
@@ -2107,11 +2122,6 @@ export class TemplateElement extends HTMLElement {
         const marker = repMarkers ? repMarkers[i] : null;
         const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const blockLayout = blockMeta ? getTemplateSSRLayout(blockMeta) : null;
-        const singleRoot = blockMeta
-          && blockLayout?.[0] === 1
-          && (blockLayout[1] >> 1) === 1
-          && !this.$hasRootStructuralSlot(blockMeta);
 
         let anchor: Comment;
         if (marker) {
@@ -2119,9 +2129,12 @@ export class TemplateElement extends HTMLElement {
         } else {
           // No marker — insert anchor at the slot position for client-created content
           anchor = ownerDocument.createComment('');
-          const [, beforeIndex] = slotMeta;
-          const insertRef = ssrParent.childNodes[Math.min(beforeIndex, ssrParent.childNodes.length)] ?? null;
-          ssrParent.insertBefore(anchor, insertRef);
+          const rootStart = ssrParent === ssrRoot ? rangeStart : undefined;
+          ssrParent.insertBefore(anchor, rangeChildAt(
+            rootStart ? rootStart.nextSibling : ssrParent.firstChild,
+            rootStart ? rangeEnd : null,
+            slotMeta[1],
+          ));
         }
         const repeatInsts: TemplateInstance[] = [];
         const hasCollectionState = this.$hasStateRoot(collection, scope);
@@ -2154,41 +2167,11 @@ export class TemplateElement extends HTMLElement {
               known,
             };
 
-            if (singleRoot) {
-              const itemEl = nextElement(itemMarkers[j]);
-              if (itemEl) {
-                const childInstance = this.$hydrate(itemEl, blockMeta, itemScope, 1);
-                this.$setInstanceParent(childInstance, instance);
-                repeatInsts.push(childInstance);
-              }
-            } else {
-              const itemParent = itemMarkers[j].parentNode;
-              const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
-              const wrapper = ownerDocument.createElement('div');
-              let cursor = itemMarkers[j].nextSibling;
-              while (cursor && cursor !== nextBound) {
-                const next = cursor.nextSibling;
-                wrapper.appendChild(cursor);
-                cursor = next;
-              }
-              const inst = this.$hydrate(wrapper, blockMeta, itemScope);
-              inst.nodes = childNodesArray(wrapper);
-              let afterNode: Node = itemMarkers[j];
-              for (let nodeIndex = 0; nodeIndex < inst.nodes.length; nodeIndex++) {
-                const node = inst.nodes[nodeIndex];
-                itemParent?.insertBefore(node, afterNode.nextSibling);
-                afterNode = node;
-              }
-              if (itemParent) {
-                this.$replaceInstanceContainer(
-                  inst,
-                  wrapper,
-                  itemParent as ParentNode & Node,
-                );
-              }
-              this.$setInstanceParent(inst, instance);
-              repeatInsts.push(inst);
-            }
+            // Each item owns its SSR range up to the next item boundary.
+            const itemEnd = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
+            const item = this.$hydrate(ssrParent, blockMeta, itemScope, itemMarkers[j], itemEnd);
+            this.$setInstanceParent(item, instance);
+            repeatInsts.push(item);
           }
 
           // Defer <!--wi--> item marker removal (anchor <!--wr--> stays
@@ -2219,7 +2202,15 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Events + refs - this is the last phase that reads the resolved index.
-    this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope);
+    // A block range has no subtree root of its own: the enclosing render root
+    // wires its refs after every nested block has hydrated.
+    this.$finalize(
+      instance,
+      rangeStart ? null : ssrRoot,
+      meta,
+      (_r, i) => ssrElements[i] ?? null,
+      scope,
+    );
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping. Repeat starts and starts
@@ -2227,38 +2218,23 @@ export class TemplateElement extends HTMLElement {
     for (let i = 0; i < staleMarkers.length; i++) {
       staleMarkers[i].parentNode?.removeChild(staleMarkers[i]);
     }
-    this.$compactNodeArray(instance);
+    if (rangeStart) {
+      // The parent still holds this range's boundary markers.
+      instance.nodes = rangeNodesArray(rangeStart, rangeEnd);
+    } else {
+      this.$compactNodeArray(instance);
+    }
 
     return instance;
   }
 
   // ── SSR helpers ───────────────────────────────────────────────
 
-  /** Collect a conditional range through its matching closing marker. */
-  private $collectConditionalRange(start: Comment): Node[] {
-    const nodes: Node[] = [];
-    let depth = 0;
-    let node: Node | null = start.nextSibling;
-    while (node) {
-      if (node.nodeType === 8) {
-        const data = (node as Comment).data;
-        if (data === MARKER_COND_START) {
-          depth++;
-        } else if (data === MARKER_COND_END) {
-          if (depth === 0) break;
-          depth--;
-        }
-      }
-      nodes.push(node);
-      node = node.nextSibling;
-    }
-    return nodes;
-  }
-
   /** Return whether a compiled block has structural slots beside its root element. */
   private $hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
-    // Index 0 is the section root, so a slot anchored there sits outside the
-    // block's own root element and rules out in-place single-root hydration.
+    // Index 0 is the section root. Nodes a nested block later inserts there
+    // can be missing from this block's node snapshot, so owners compact after
+    // removing it.
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         if (meta.c[i][2][0] === 0) return true;
@@ -2277,54 +2253,15 @@ export class TemplateElement extends HTMLElement {
     return false;
   }
 
-  /**
-   * Hydrate a conditional block's content — shared by top-level and
-   * repeat-item conditional hydration paths.
-   */
-  private $hydrateCondContent(
-    condAnchor: Comment,
-    blockMeta: TemplateBlockMeta,
-    scope: ScopeFrame | undefined,
-  ): TemplateInstance | null {
-    const layout = getTemplateSSRLayout(blockMeta);
-    if (blockMeta.h.charCodeAt(0) === 60 && (layout[1] >> 1) === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
-      // Single-root optimisation: hydrate the element in-place (pathStart=1).
-      const el = nextElement(condAnchor);
-      if (el) {
-        // Wire bindings only — do NOT call $updateInstance.  SSR text
-        // nodes already contain correct values; evaluating bindings now
-        // would overwrite them with stale data (e.g. a complex property
-        // from a parent that hasn't hydrated yet).  This is consistent
-        // with $mount which also skips $updateInstance for SSR roots.
-        return this.$hydrate(el, blockMeta, scope, 1);
-      }
-      return null;
-    }
-    // Multi-root, text-only, or root-level structural content needs the full range.
-    const condNodes = this.$collectConditionalRange(condAnchor);
-    if (condNodes.length === 0) return null;
-    const wrapper = this.ownerDocument.createElement('div');
-    for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-    const inst = this.$hydrate(wrapper, blockMeta, scope);
-    inst.nodes = childNodesArray(wrapper);
-    let afterNode: Node = condAnchor;
-    for (let cn = 0; cn < inst.nodes.length; cn++) {
-      condAnchor.parentNode?.insertBefore(inst.nodes[cn], afterNode.nextSibling);
-      afterNode = inst.nodes[cn];
-    }
-    const container = condAnchor.parentNode as (ParentNode & Node) | null;
-    if (container) this.$replaceInstanceContainer(inst, wrapper, container);
-    // Same as above — trust SSR DOM, skip binding evaluation.
-    return inst;
-  }
-
-  /** Find the SSR right-hand boundary for an escaped text slot. */
+  /** Find the SSR right-hand boundary for an escaped text slot within `first..end`. */
   private $findSSRSlotRef(
     ssrParent: Node,
     meta: TemplateBlockMeta,
     ssrIndex: SSRIndex,
     markerBoundary: number,
     staticBoundary: number,
+    first: ChildNode | null,
+    end: Node | null,
   ): Node | null {
     let marker: Comment | null = null;
     if (markerBoundary >= RAW_MARKER_BOUNDARY_BASE) {
@@ -2347,7 +2284,13 @@ export class TemplateElement extends HTMLElement {
 
     if (!staticBoundary) return null;
     const kind = staticBoundary & 3;
-    return findByOrdinal(ssrParent, kind === 1 ? 1 : kind === 2 ? 3 : 8, staticBoundary >> 2);
+    return findByOrdinal(
+      ssrParent,
+      kind === 1 ? 1 : kind === 2 ? 3 : 8,
+      staticBoundary >> 2,
+      first,
+      end,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2433,13 +2376,14 @@ export class TemplateElement extends HTMLElement {
   /**
    * Hook for wiring interactivity (events + refs). This template-only base class
    * does nothing here; the interactive {@link WebUIElement} subclass overrides
-   * it.
+   * it. `root` is null for an SSR block range, whose refs the enclosing render
+   * root wires.
    */
   protected $finalize(
     _instance: TemplateInstance,
-    _root: Node,
+    _root: Node | null,
     _meta: TemplateBlockMeta,
-    _resolver: (root: Node, index: TemplateNodeIndex) => Node | null,
+    _resolver: (root: Node | null, index: TemplateNodeIndex) => Node | null,
     _scope?: ScopeFrame,
   ): void {}
 

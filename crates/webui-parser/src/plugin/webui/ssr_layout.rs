@@ -10,7 +10,6 @@ pub(super) struct SsrLayout {
     elements: Vec<usize>,
     /// Node-kind ordinal of the next static sibling for each text slot; 0 is end.
     texts: Vec<usize>,
-    root_nodes: usize,
 }
 
 impl SsrLayout {
@@ -38,14 +37,13 @@ impl SsrLayout {
             return; // Inert <template> content is not in the numbered DOM.
         };
         *shape |= usize::from(children.count != 0);
-        if parent == 0 {
-            self.root_nodes = children.count;
-        }
         self.texts.resize(text_count, 0);
     }
 
     pub(super) fn emit(&self, out: &mut String) {
-        let _ = write!(out, ",\"s\":[{},", self.root_nodes);
+        // A layout format change also renames this key, so a compiler and
+        // runtime from mismatched releases reject each other's metadata.
+        out.push_str(",\"l\":[");
         emit_numbers(&self.elements, out);
         out.push(']');
     }
@@ -113,7 +111,6 @@ mod tests {
             Vec::new(),
         )?;
         assert_eq!(meta.root.ssr_layout.elements, [3, 9, 0, 3, 1, 1, 1]);
-        assert_eq!(meta.root.ssr_layout.root_nodes, 1);
         Ok(())
     }
 
@@ -136,7 +133,8 @@ mod tests {
             "layout-test",
             "<div>{{a}}<span>x</span>{{{b}}}<i></i>{{c}}</div>",
         )?;
-        assert!(output.contains(r#""s":[1,3,5,1,1]"#), "{output}");
+        assert!(output.contains(r#""l":[3,5,1,1]"#), "{output}");
+        assert!(!output.contains(r#""s":"#), "{output}");
         assert!(
             output.contains(r#""tx":[[[1,0],[["a"]],0,1],[[1,1],[["b"]],1,5],[[1,2],[["c"]]]]"#),
             "{output}"
@@ -181,7 +179,6 @@ mod tests {
         for block in &meta.blocks {
             assert_eq!(block.ssr_layout.elements, [3, 1]);
             assert_eq!(block.ssr_layout.texts, [0]);
-            assert_eq!(block.ssr_layout.root_nodes, 1);
         }
         Ok(())
     }

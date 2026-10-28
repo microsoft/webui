@@ -569,11 +569,17 @@ impl<'a> TemplateSource<'a> {
         }
     }
 
+    /// Trim formatting at both edges of a block or component body the way SSR
+    /// drops it: only whitespace runs with a line break. Inline spaces and
+    /// tabs at an edge are content and stay in `h`.
     fn trim_boundary_formatting(mut self) -> Self {
         let html = self.html();
         let trimmed = html.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('<') {
-            self.range.start += html.len() - trimmed.len();
+        let leading = html.len() - trimmed.len();
+        if (trimmed.is_empty() || trimmed.starts_with('<'))
+            && crate::is_formatting_whitespace(&html[..leading])
+        {
+            self.range.start += leading;
         }
         self.trim_boundary_formatting = true;
         self
@@ -1682,9 +1688,8 @@ fn compile_section(
                 }
             }
 
-            let opening_name = parse_tag(remaining)
-                .filter(|tag| !tag.closing)
-                .map(|tag| tag.name);
+            let tag = parse_tag(remaining);
+            let opening_name = tag.as_ref().filter(|tag| !tag.closing).map(|tag| tag.name);
             if opening_name == Some("if") {
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
                     let block_index = blocks.reserve();
@@ -1744,6 +1749,21 @@ fn compile_section(
                 }
             }
 
+            // An end tag (`</` + ASCII letter) also ends markup, so the boundary
+            // trim below sees any formatting after the last one.
+            if let Some(end_tag) = tag.as_ref().filter(|tag| tag.closing) {
+                if remaining
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(u8::is_ascii_alphabetic)
+                {
+                    meta.html.push_str(&remaining[..=end_tag.close]);
+                    i += end_tag.close + 1;
+                    last_markup_end = i;
+                    continue;
+                }
+            }
+
             let repeat_key = source
                 .repeat_key
                 .and_then(|offset| offset.checked_sub(source.range.start + i));
@@ -1782,7 +1802,8 @@ fn compile_section(
         }
     }
 
-    if source.trim_boundary_formatting && input[last_markup_end..].trim().is_empty() {
+    if source.trim_boundary_formatting && crate::is_formatting_whitespace(&input[last_markup_end..])
+    {
         let trailing = len - last_markup_end;
         meta.html.truncate(meta.html.len() - trailing);
     }

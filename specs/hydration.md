@@ -104,6 +104,10 @@ whitespace within a binding's text node. State values are never trimmed.
 Static text parts follow browser HTML parsing: source CR/CRLF becomes LF,
 character references are decoded, and the initial LF after
 `pre`/`textarea`/`listing` is ignored before client text assignment.
+SSR drops whitespace-only text that contains a line break and keeps inline
+spaces and tabs. The leading and trailing edges of a component, `<if>`, or
+`<for>` body follow the same rule in `h`, so client-created blocks start and
+end with the same nodes as adopted ones.
 
 Whole-value dynamic attributes omit missing and null values during SSR and
 client binding updates. Empty strings, zero, and false remain values; mixed
@@ -152,6 +156,18 @@ Server output:
 ```
 
 Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Pre-order element indices reach those.
+
+### Blocks adopt their marker ranges in place
+
+A visible conditional owns the SSR nodes between `<!--wc-->` and its matching
+`<!--/wc-->`; each repeat item owns the nodes from its `<!--wi-->` to the next
+`<!--wi-->` or `<!--/wr-->`. The block's walk and root-level slots are bounded
+by that range, so it cannot claim a following sibling's markers. Hydration
+binds the range where the parser placed it: adopted nodes never leave the
+document, so custom elements see no disconnect or reconnect. The instance owns
+every node in the range, including static text beside its elements, so later
+moves and removals take the whole range. An empty conditional range stays
+empty and keeps its start marker as the anchor.
 
 ### Marker removal is deferred
 
@@ -202,7 +218,7 @@ tuples once before hydration.
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
-| `s` | Root child-node count followed by the pre-order static element shapes. |
+| `l` | Pre-order static element shapes, starting with the section root. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
@@ -217,13 +233,13 @@ The same metadata serves both paths:
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
 - **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM. Structural blocks retain their insertion container's native parsing context, including SVG, MathML and their HTML integration points. Staging preserves that context for nested blocks whose final parent is not connected yet.
 
-`s` is `[rootNodes, rootShape, ...elementShapes]`. Each pre-order shape encodes
+`l` is `[rootShape, ...elementShapes]`. Each pre-order shape encodes
 twice its direct static element-child count, plus an ownership bit. The bit
 allows marker collection inside ordinary elements and explicitly authored
 projected children, but not inside an otherwise empty child component.
 The root is index zero. Inert `<template>` contents are not numbered.
-`rootNodes` counts all static root child nodes, including text and comments,
-so single-root conditional and repeat adoption preserve their existing rules.
+A layout format change also renames its key, so metadata from a mismatched
+compiler fails the layout check instead of being read with the wrong shape.
 
 Each `tx` tuple may carry a static successor as its fourth entry. Omission
 means no static successor; otherwise the low two bits encode element (1),

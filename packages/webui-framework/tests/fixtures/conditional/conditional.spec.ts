@@ -4,6 +4,13 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import type { TestConditionTruthiness } from './element.js';
+import { hydrationRemovals, recordHydrationRemovals } from '../../hydration-removals.js';
+
+test('hydrates multi-node conditional ranges in place', async ({ page }) => {
+  await recordHydrationRemovals(page, 'test-conditional-hydration-ranges');
+  await page.goto('/conditional/fixture.html');
+  expect(await hydrationRemovals(page, 'test-conditional-hydration-ranges')).toEqual([]);
+});
 
 test.describe('conditional fixture', () => {
   test.beforeEach(async ({ page }) => {
@@ -148,6 +155,33 @@ test.describe('conditional fixture', () => {
     await host.locator('.outer-toggle').click();
     await expect(host.locator('.outer-details')).toHaveCount(1);
     await expect(host.locator('.nested-details')).toHaveCount(0);
+  });
+
+  test('removes static text beside a conditional element with the element', async ({ page }) => {
+    const host = page.locator('test-conditional-hydration-ranges');
+    const labelText = () => host.evaluate(element =>
+      element.shadowRoot!.textContent!.split('after label').length - 1);
+    expect(await labelText()).toBe(1);
+
+    await host.locator('.outer-toggle').click();
+    await expect(host.locator('.outer-label')).toHaveCount(0);
+    expect(await labelText()).toBe(0);
+
+    await host.locator('.outer-toggle').click();
+    await expect(host.locator('.outer-label')).toHaveText('Outer label');
+    expect(await labelText()).toBe(1);
+  });
+
+  test('keeps inline separators at conditional edges when recreated', async ({ page }) => {
+    const host = page.locator('test-conditional-hydration-ranges');
+    const edges = host.locator('.inline-edges');
+    await expect(edges).toHaveJSProperty('textContent', 'Z A B');
+
+    await host.locator('.outer-toggle').click();
+    await expect(edges).toHaveJSProperty('textContent', 'ZB');
+
+    await host.locator('.outer-toggle').click();
+    await expect(edges).toHaveJSProperty('textContent', 'Z A B');
   });
 
   test('compacts a resnapshotted root repeat when its condition hides', async ({ page }) => {
