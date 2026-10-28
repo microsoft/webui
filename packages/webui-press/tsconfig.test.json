@@ -11,5 +11,12 @@
       "@microsoft/webui-framework": ["../webui-framework/dist/index.d.ts"]
     }
   },
-  "include": ["tests", "../../crates/webui-press/template/docs-outline"]
+  "include": [
+    "tests",
+    "../../crates/webui-press/template/docs-outline",
+    "../../docs/.webui-press/components/**/*.test.ts",
+    "../../docs/.webui-press/regions/**/*.test.ts",
+    "../../docs/.webui-press/scripts/**/*.test.ts",
+    "../../docs/start/**/*.test.ts"
+  ]
 }

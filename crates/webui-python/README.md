@@ -81,7 +81,7 @@ bundles the matching WebUI Rust source closure, so it does not require a
 separately installed native library or separately published WebUI crates.
 
 See the [Python integration
-guide](https://microsoft.github.io/webui/guide/integrations/python) for partial
+guide](https://microsoft.github.io/webui/build/integrations/python) for partial
 navigation and host-driven streaming examples.
 
 ## Testing from source

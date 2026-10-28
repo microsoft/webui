@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { startWebsite } from './website-fixture.js';
 
-const article = '/webui/guide/concepts/interactivity/';
+const article = '/webui/learn/interactivity/';
 
 test('the reading scrollbar reaches the window edge without widening the article', async t => {
   const server = await startWebsite();
@@ -15,7 +15,7 @@ test('the reading scrollbar reaches the window edge without widening the article
   t.after(() => browser.close());
   for (const width of [1440, 1696, 1920, 2560]) {
     const page = await browser.newPage({ javaScriptEnabled: false, viewport: { width, height: 900 } });
-    await page.goto(`${server.origin}/webui/guide/`);
+    await page.goto(`${server.origin}/webui/start/`);
     const bounds = await page.evaluate(() => {
       const main = document.querySelector<HTMLElement>('.main-content');
       const article = document.querySelector<HTMLElement>('.doc-content');
@@ -44,7 +44,7 @@ test('a short desktop TOC stays sticky while the article scrolls', async t => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ javaScriptEnabled: false, viewport: { width: 1440, height: 900 } });
-  await page.goto(`${server.origin}/webui/guide/`);
+  await page.goto(`${server.origin}/webui/start/`);
   const main = page.locator('.main-content');
   const rail = page.locator('.toc-rail');
   await expect(rail).toHaveCSS('position', 'sticky');
@@ -95,7 +95,7 @@ test('native CSS follows the visible heading without JavaScript or changing the 
     });
     await page.mouse.move(wheelTarget.x, wheelTarget.y);
     await page.mouse.wheel(0, wheelTarget.delta);
-    await expect(current).toHaveAttribute('href', '/webui/guide/concepts/interactivity/#attr-html-attributes');
+    await expect(current).toHaveAttribute('href', '/webui/learn/interactivity/#attr-html-attributes');
     for (const id of ['component-files', 'attr-html-attributes', 'direct-method-calls', 'when-not-to-hydrate']) {
       await page.evaluate(target => {
         const heading = document.getElementById(target);
@@ -103,7 +103,7 @@ test('native CSS follows the visible heading without JavaScript or changing the 
         heading.scrollIntoView({ block: 'start', behavior: 'instant' });
       }, id);
       await expect(current).toHaveCount(1);
-      await expect(current).toHaveAttribute('href', `/webui/guide/concepts/interactivity/#${id}`);
+      await expect(current).toHaveAttribute('href', `/webui/learn/interactivity/#${id}`);
       await expect(current).toHaveCSS('text-decoration-line', 'underline');
       await expect(current).toHaveCSS('text-decoration-thickness', '2px');
       await expect(current).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
@@ -194,7 +194,7 @@ test('the mobile outline expands into normal page flow and retains every heading
   assert.ok(await nav.locator('a').count() > 30);
   await nav.locator('a[href$="#when-not-to-hydrate"]').click();
   await expect(page).toHaveURL(/#when-not-to-hydrate$/);
-  await expect(nav.locator('a:target-current')).toHaveAttribute('href', '/webui/guide/concepts/interactivity/#when-not-to-hydrate');
+  await expect(nav.locator('a:target-current')).toHaveAttribute('href', '/webui/learn/interactivity/#when-not-to-hydrate');
 });
 
 test('ordinary TOC links remain usable when native section tracking is unavailable', async t => {
@@ -225,7 +225,6 @@ test('the full framework title remains readable without colliding with navigatio
     await page.goto(`${server.origin}/webui/`);
     await expect(page.locator('.logo span')).toHaveText('WebUI Framework');
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('The Modern Web, Without the Weight');
-    await expect(page.locator('.intro-copy')).toContainText('without a JavaScript SSR engine');
     const header = await page.locator('.nav-bar').boundingBox();
     const name = await page.locator('.logo span').boundingBox();
     const controls = await page.locator('docs-site-navigation').boundingBox();

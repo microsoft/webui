@@ -31,13 +31,14 @@ test('the entry page serves the install command and qualified fixed-case preview
   await page.goto(`${server.origin}/webui/`);
   const install = page.locator('install-command');
   await expect(install.locator('code')).toHaveText(commands[0][1]);
+  await expect(install.getByRole('status')).toBeEmpty();
   await expect(install.getByRole('button', { name: 'Copy install command' })).toBeDisabled();
   await expect(install.getByRole('radio', { name: 'npm', exact: true })).toBeChecked();
   for (const [label] of commands) {
     await expect(install.getByRole('radio', { name: label, exact: true })).toBeDisabled();
   }
   const preview = page.locator('benchmark-preview');
-  await expect(preview.getByRole('heading', { name: 'Recorded performance' })).toBeVisible();
+  await expect(preview.getByRole('heading', { name: 'Benchmark snapshot' })).toBeVisible();
   await expect(preview.getByRole('tab')).toHaveCount(4);
   for (const tab of await preview.getByRole('tab').all()) await expect(tab).toBeDisabled();
   await expect(preview.getByRole('tab', { name: 'RPS', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -45,20 +46,26 @@ test('the entry page serves the install command and qualified fixed-case preview
   assert.deepEqual(await preview.locator('tbody th').allTextContents(), [
     'WebUI', 'React', 'Next.js',
   ]);
-  assert.deepEqual(await preview.locator('.value').allTextContents(), ['1,593.4 req/s', '319.35 req/s', '138.4 req/s']);
+  assert.deepEqual(await preview.locator('.value').allTextContents(), ['1,741.15 req/s', '490.55 req/s', '151.2 req/s']);
   await expect(preview.locator('tbody tr[data-webui]')).toHaveAttribute('data-case', 'webui-rust-actix');
-  await expect(preview.locator('.qualification')).toContainText('Historical, limited snapshot');
-  await expect(preview.locator('.qualification')).toContainText('1 measured round (20 s)');
-  await expect(preview.locator('.qualification')).toContainText('variability is not established');
-  await expect(preview.locator('.qualification')).toContainText('provenance are incomplete');
-  await expect(preview.locator('.scale')).toContainText('1,593.4');
+  await expect(preview.locator('.chart-caption')).toContainText('Complete responses (req/s)');
+  await expect(preview.locator('.direction')).toHaveText('Higher is better');
+  const notes = page.locator('.benchmark-notes');
+  await expect(notes).toContainText('Official campaign results for a 100-todo app');
+  await expect(notes).toContainText('1 measured round (20 s)');
+  await expect(notes).toContainText('variability is not established');
+  await expect(notes).toContainText('Some samples were unavailable');
+  await expect(notes).toContainText('not a complete raw-run archive');
+  await expect(preview.locator('.scale')).toContainText('1,741.15');
   const widths = await preview.locator('.bar').evaluateAll(elements =>
     elements.map(element => Number(element.getAttribute('width'))));
-  for (const [index, expected] of [100, 20.042048449855653, 8.685829044809841].entries()) {
+  for (const [index, expected] of [100, 28.173908049277774, 8.683915802774028].entries()) {
     assert.ok(Math.abs(widths[index] - expected) < 1e-10, 'SSR must preserve the full-view bar ratios.');
   }
-  await expect(preview.getByRole('link')).toHaveAttribute('href', '/webui/benchmarks/');
-  await expect(preview.getByRole('link')).toContainText('3 of 14 configurations');
+  const fullData = preview.getByRole('link', { name: 'Full data and methodology', exact: true });
+  await expect(fullData).toHaveAttribute('href', '/webui/reference/benchmarks/');
+  await expect(fullData).toBeVisible();
+  await expect(preview.locator('details')).toHaveCount(0);
   const bootstrap = JSON.parse(await page.locator('#webui-data').textContent() ?? 'null') as {
     state: Record<string, unknown> & { previewMetrics: BenchmarkPreview[] };
   };
@@ -66,14 +73,20 @@ test('the entry page serves the install command and qualified fixed-case preview
   assert.equal(bootstrap.state.previewMetrics.length, 4);
   assert.ok(bootstrap.state.previewMetrics.every(metric => metric.rows.length === 3));
   assert.ok(bootstrap.state.previewMetrics.every(metric => metric.rows.every(row => !('values' in row))));
-  assert.ok(JSON.stringify(bootstrap.state.previewMetrics).length < 4096, 'hydrate only four compact three-case views');
-  assert.ok(!('previewCaseCount' in bootstrap.state), 'static disclosure counts need no bootstrap state');
+  assert.ok(Buffer.byteLength(JSON.stringify(bootstrap.state.previewMetrics)) < 4096,
+    'hydrate only four compact three-case views below 4 KiB');
+  assert.ok(!('benchmarkNotes' in bootstrap.state), 'static measurement notes need no bootstrap state');
+  assert.ok(!('previewCaseCount' in bootstrap.state));
   assert.ok(!('previewTotalCases' in bootstrap.state));
   assert.ok(!('benchmarks' in bootstrap.state), 'The full explorer dataset must stay off the homepage.');
   const installBox = await install.boundingBox();
   const previewBox = await preview.boundingBox();
   assert.ok(installBox && previewBox && previewBox.y > installBox.y + installBox.height,
     'Mobile installation must precede the evidence, not sit beside it.');
+  await fullData.focus();
+  await expect(fullData).toHaveCSS('outline-style', 'solid');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(`${server.origin}/webui/reference/benchmarks/`);
 });
 
 test('install choices copy exact commands and support native keyboard selection', async t => {
@@ -180,7 +193,7 @@ test('a completed clipboard request cannot claim a newly selected command was co
   assert.deepEqual(await page.evaluate(() => window.installTestCopies), [commands[0][1], commands[1][1]]);
 });
 
-test('the approved entry layout keeps desktop action and qualification visible without overflow', async t => {
+test('the approved entry layout keeps desktop action and chart visible without overflow', async t => {
   const server = await startWebsite();
   t.after(() => server.close());
   const browser = await chromium.launch({ headless: true });
@@ -195,11 +208,13 @@ test('the approved entry layout keeps desktop action and qualification visible w
     }));
     assert.ok(main.scroll <= main.client + 1, `${width}px must not overflow horizontally.`);
     const install = await page.locator('install-command').boundingBox();
+    const actions = await page.locator('.intro-actions').boundingBox();
     const preview = await page.locator('benchmark-preview').boundingBox();
-    assert.ok(install && preview);
+    assert.ok(install && actions && preview);
+    assert.ok(actions.y + actions.height <= install.y, 'Offer guided entry points before the install command.');
     if (width >= 1280) {
       assert.ok(install.y + install.height <= height, `${width}px: install must fit in the first viewport.`);
-      assert.ok(preview.y + preview.height <= height, `${width}px: all evidence qualification must fit.`);
+      assert.ok(preview.y + preview.height <= height, `${width}px: the benchmark card must fit.`);
       assert.ok(preview.x > install.x + install.width, 'Desktop proof must sit to the right of installation.');
     } else if (width <= 700) {
       assert.ok(preview.y > install.y + install.height, 'Mobile proof must follow the installation flow.');
@@ -233,7 +248,7 @@ test('entry commands, evidence and controls remain readable in both themes and f
       const paper = root?.querySelector('.preview');
       if (!root || !paper) throw new Error('Missing benchmark preview');
       const background = getComputedStyle(paper).backgroundColor;
-      return [...root.querySelectorAll('h2, .metric-tabs button, .context, .qualification, th, .value, .scale, .reading, a')]
+      return [...root.querySelectorAll('h2, .metric-tabs button, .metric-title, .direction, th, .value, .scale, a')]
         .map(label => ({ name: label.textContent, color: getComputedStyle(label).color, background }));
     });
     const controls = await page.locator('install-command code, install-command button').evaluateAll(elements =>

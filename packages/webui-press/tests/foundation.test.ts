@@ -220,7 +220,7 @@ test('full Press output preserves module identity, document metadata and native 
       await skip.focus();
       await page.keyboard.press('Enter');
       await expect(page.locator('#main-content')).toBeFocused();
-      assert.equal(page.url(), `${url}#main-content`);
+      await expect(page).toHaveURL(`${url}#main-content`);
       assert.deepEqual(documents, [], 'Skip navigation must not request another document');
       page.off('request', track);
     }
@@ -229,7 +229,7 @@ test('full Press output preserves module identity, document metadata and native 
       await noJs.goto(`${f.origin}${basePath}doc/`);
       await noJs.getByRole('link', { name: 'Skip to content' }).focus();
       await noJs.keyboard.press('Enter');
-      assert.equal(noJs.url(), `${f.origin}${basePath}doc/#main-content`);
+      await expect(noJs).toHaveURL(`${f.origin}${basePath}doc/#main-content`);
       await expect(noJs.locator('#main-content')).toBeFocused();
     } finally {
       await noJs.close();

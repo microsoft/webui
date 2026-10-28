@@ -39,15 +39,11 @@
   "nav": [
     {
       "text": "Docs",
-      "link": "/guide/"
+      "link": "/start/"
     },
     {
-      "text": "Examples",
-      "link": "/examples/"
-    },
-    {
-      "text": "Benchmarks",
-      "link": "/benchmarks/"
+      "text": "AI",
+      "link": "/ai/"
     },
     {
       "text": "Playground",
@@ -58,89 +54,86 @@
       "link": "https://github.com/microsoft/webui"
     }
   ],
-  "sidebar": [],
+  "sidebar": [
+    {
+      "title": "Start",
+      "items": [
+        { "text": "What is WebUI?", "link": "/start/" },
+        { "text": "Installation", "link": "/start/installation" },
+        { "text": "Your first page", "link": "/start/first-page" },
+        { "text": "Add a component", "link": "/start/first-component" },
+        { "text": "Add interaction", "link": "/start/add-interactivity" },
+        { "text": "Build a Todo app", "link": "/start/todo-app" }
+      ]
+    },
+    {
+      "title": "Learn",
+      "items": [
+        { "text": "Overview", "link": "/learn/" },
+        { "text": "Components", "link": "/learn/components" },
+        {
+          "text": "Template syntax",
+          "link": "/learn/directives/",
+          "items": [
+            { "text": "Text bindings", "link": "/learn/directives/signals" },
+            { "text": "Conditions", "link": "/learn/directives/if" },
+            { "text": "Lists and keys", "link": "/learn/directives/for" },
+            { "text": "Attributes", "link": "/learn/directives/attributes" },
+            { "text": "Lazy policies", "link": "/learn/directives/lazy" },
+            { "text": "Routes", "link": "/learn/directives/route" },
+            { "text": "Streaming boundaries", "link": "/learn/directives/boundary" }
+          ]
+        },
+        { "text": "Interactivity", "link": "/learn/interactivity" },
+        { "text": "Lazy UI", "link": "/learn/lazy" },
+        { "text": "State and data", "link": "/learn/state-management" },
+        { "text": "CSS and themes", "link": "/learn/css-tokens" },
+        { "text": "How rendering works", "link": "/learn/how-it-works" },
+        { "text": "Coming from React", "link": "/learn/react-comparison" },
+        { "text": "Why WebUI?", "link": "/learn/why" }
+      ]
+    },
+    {
+      "title": "Build",
+      "items": [
+        { "text": "Overview", "link": "/build/" },
+        { "text": "Routing", "link": "/build/routing" },
+        { "text": "Hydration", "link": "/build/hydration" },
+        { "text": "Performance guide", "link": "/build/performance" },
+        {
+          "text": "Backend integrations",
+          "link": "/build/integrations/",
+          "items": [
+            { "text": "Rust", "link": "/build/integrations/rust" },
+            { "text": "Node / Bun", "link": "/build/integrations/node" },
+            { "text": "Python", "link": "/build/integrations/python" },
+            { "text": ".NET", "link": "/build/integrations/dotnet" },
+            { "text": "C / FFI", "link": "/build/integrations/ffi" },
+            { "text": "WebAssembly", "link": "/build/integrations/wasm" },
+            { "text": "Electron", "link": "/build/integrations/electron" },
+            { "text": "Tauri", "link": "/build/integrations/tauri" }
+          ]
+        },
+        { "text": "Desktop apps", "link": "/build/desktop" },
+        { "text": "Service-worker rendering", "link": "/build/serverless-architecture" }
+      ]
+    },
+    {
+      "title": "Reference",
+      "items": [
+        { "text": "Overview", "link": "/reference/" },
+        { "text": "Examples", "link": "/reference/examples/" },
+        { "text": "Benchmarks", "link": "/reference/benchmarks/" },
+        { "text": "CLI", "link": "/reference/cli/" },
+        { "text": "Best practices", "link": "/reference/best-practices" },
+        { "text": "Plugins", "link": "/reference/plugins/" },
+        { "text": "WebUI Press", "link": "/reference/webui-press" },
+        { "text": "AI authoring reference", "link": "/ai" }
+      ]
+    }
+  ],
   "sidebarGroups": {
-    "/guide/": [
-      {
-        "title": "Start",
-        "items": [
-          { "text": "What is WebUI?", "link": "/guide/" },
-          { "text": "Build your first app", "link": "/tutorials/hello-world" },
-          { "text": "Installation", "link": "/guide/installation" },
-          { "text": "Coming from React", "link": "/guide/concepts/react-comparison" },
-          { "text": "Why WebUI?", "link": "/guide/why" }
-        ]
-      },
-      {
-        "title": "Learn",
-        "items": [
-          { "text": "Components", "link": "/guide/concepts/components" },
-          {
-            "text": "Template syntax",
-            "link": "/guide/concepts/directives/",
-            "items": [
-              { "text": "Text bindings", "link": "/guide/concepts/directives/signals" },
-              { "text": "Conditions", "link": "/guide/concepts/directives/if" },
-              { "text": "Lists and keys", "link": "/guide/concepts/directives/for" },
-              { "text": "Attributes", "link": "/guide/concepts/directives/attributes" },
-              { "text": "Lazy policies", "link": "/guide/concepts/directives/lazy" },
-              { "text": "Routes", "link": "/guide/concepts/directives/route" },
-              { "text": "Streaming boundaries", "link": "/guide/concepts/directives/boundary" }
-            ]
-          },
-          { "text": "Interactivity", "link": "/guide/concepts/interactivity" },
-          { "text": "Lazy UI", "link": "/guide/concepts/lazy" },
-          { "text": "State and data", "link": "/guide/concepts/state-management" },
-          { "text": "CSS and themes", "link": "/guide/concepts/css-tokens" },
-          { "text": "How rendering works", "link": "/guide/concepts/how-it-works" }
-        ]
-      },
-      {
-        "title": "Build",
-        "items": [
-          { "text": "Routing", "link": "/guide/concepts/routing" },
-          { "text": "Hydration", "link": "/guide/concepts/hydration" },
-          { "text": "Performance guide", "link": "/guide/concepts/performance" },
-          {
-            "text": "Backend integrations",
-            "link": "/guide/integrations/",
-            "items": [
-              { "text": "Rust", "link": "/guide/integrations/rust" },
-              { "text": "Node / Bun", "link": "/guide/integrations/node" },
-              { "text": "Python", "link": "/guide/integrations/python" },
-              { "text": ".NET", "link": "/guide/integrations/dotnet" },
-              { "text": "C / FFI", "link": "/guide/integrations/ffi" },
-              { "text": "WebAssembly", "link": "/guide/integrations/wasm" },
-              { "text": "Electron", "link": "/guide/integrations/electron" },
-              { "text": "Tauri", "link": "/guide/integrations/tauri" }
-            ]
-          },
-          { "text": "Desktop apps", "link": "/guide/concepts/desktop" },
-          { "text": "Service-worker rendering", "link": "/guide/serverless-architecture" }
-        ]
-      },
-      {
-        "title": "Reference",
-        "items": [
-          { "text": "CLI", "link": "/guide/cli/" },
-          { "text": "Best practices", "link": "/guide/concepts/best-practices" },
-          { "text": "Plugins", "link": "/guide/concepts/plugins/" },
-          { "text": "WebUI Press", "link": "/guide/webui-press" },
-          { "text": "AI authoring reference", "link": "/ai" }
-        ]
-      }
-    ],
-    "/tutorials/": [
-      {
-        "title": "Start building",
-        "items": [
-          { "text": "Your first app", "link": "/tutorials/hello-world" },
-          { "text": "A Todo app", "link": "/tutorials/todo-app" },
-          { "text": "Coming from React", "link": "/guide/concepts/react-comparison" },
-          { "text": "More examples", "link": "/examples/" }
-        ]
-      }
-    ]
+    "/playground/": []
   },
   "customPages": {
     "/playground/": {
@@ -153,6 +146,6 @@
     }
   },
   "footer": {
-    "html": "WebUI is an open-source project from Microsoft Edge. <a href=\"https://opensource.org/licenses/MIT\">MIT licensed</a>. Built with <a href=\"/webui/guide/webui-press/\">WebUI Press</a>. <a href=\"https://github.com/microsoft/webui\">Source</a> &middot; <a href=\"/webui/ai/\">AI reference</a> &middot; <a href=\"https://github.com/microsoft/webui/issues/new/choose\">Feedback</a>"
+    "html": "WebUI is an open-source project from Microsoft Edge. <a href=\"https://opensource.org/licenses/MIT\">MIT licensed</a>. Built with <a href=\"/webui/reference/webui-press/\">WebUI Press</a>. <a href=\"https://github.com/microsoft/webui\">Source</a> &middot; <a href=\"/webui/ai/\">AI reference</a> &middot; <a href=\"https://github.com/microsoft/webui/issues/new/choose\">Feedback</a>"
   }
 }

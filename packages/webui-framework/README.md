@@ -12,12 +12,12 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
-> 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)**, see the [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity) for component authoring patterns. For framework internals (hydration, path resolution, reactive update model), see [the hydration contract](https://github.com/microsoft/webui/blob/main/specs/hydration.md).
+> 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)**, see the [Interactivity Guide](https://microsoft.github.io/webui/learn/interactivity) for component authoring patterns. For framework internals (hydration, path resolution, reactive update model), see [the hydration contract](https://github.com/microsoft/webui/blob/main/specs/hydration.md).
 
 ## Install
 
 Trusted Types support is automatic; no setup call is needed. To enforce it,
-allow the `webui` policy in CSP. See [Trusted Types](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types)
+allow the `webui` policy in CSP. See [Trusted Types](https://microsoft.github.io/webui/build/hydration#trusted-types)
 for CSP requirements and raw-HTML limits.
 
 In this workspace:
@@ -64,7 +64,7 @@ Omit `styles.js` for components without managed CSS. `templates.js` exposes
 registration without a renderer, and `template-cache.js` adds lifetime-aware
 collection when imported before `startRuntime()` or template lookups. Component
 declarations wait for startup and their metadata before registering. See
-[Runtime entrypoints](https://microsoft.github.io/webui/guide/concepts/interactivity#runtime-entrypoints)
+[Runtime entrypoints](https://microsoft.github.io/webui/learn/interactivity#runtime-entrypoints)
 for requirements and examples.
 
 `lazy.js` is the opt-in runtime for `<if lazy>` bodies. It loads each region's
@@ -73,7 +73,7 @@ fires, renders it in the existing owner and scope without creating a component,
 and releases closed regions at idle. The rendering core contains no lazy code.
 Setting the condition is all a component does; `await this.$rendered()`, added
 by `lazy.js`, is only for code that needs the body's DOM right away.
-See [Lazy UI](https://microsoft.github.io/webui/guide/concepts/lazy).
+See [Lazy UI](https://microsoft.github.io/webui/learn/lazy).
 
 1. Author a component class in TypeScript
 2. Author a WebUI template in HTML
@@ -189,7 +189,7 @@ hatches:
 Client-created instances and reconnects after a successful mount remain eager.
 If the optional entry or `IntersectionObserver` is unavailable, hydration falls
 back to eager; `content-visibility` remains browser-managed. See
-[Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
+[Lazy Hydration](https://microsoft.github.io/webui/build/hydration#lazy-hydration).
 
 Router applications should author `<template w-hydrate="interaction">` and use
 the framework-agnostic `routePreload()` policy from
@@ -285,7 +285,7 @@ application-first delivery without a second framework bundle.
 The application may load later, but early-interactive components still need
 their registration modules. Use `fetchpriority="low"` on deferred authored
 module scripts to exclude them from automatic modulepreload hints. See
-[Separate coordinator and application assets](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets).
+[Separate coordinator and application assets](https://microsoft.github.io/webui/build/hydration#separate-coordinator-and-application-assets).
 
 Boundaries may be authored in entries and reusable components, including
 runtime conditions, outlets, and selected routes. A boundary-bearing subtree
@@ -353,7 +353,7 @@ the SSR state, or assign them from `hydratedCallback()`. The warning is
 development-only and is dead-code-eliminated from production bundles via the
 `__WEBUI_DEV__` compile-time flag (on by default; `webui press build` sets it to
 `false`). See the
-[Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
+[Interactivity Guide](https://microsoft.github.io/webui/learn/interactivity#setting-observable-state-during-setup).
 
 Override the protected `hydratedCallback()` hook for work that requires the
 component's bindings, events, and `w-ref` references to be ready. It runs

@@ -46,9 +46,9 @@ pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 | Resource | Link |
 |----------|------|
 | Full documentation | <https://microsoft.github.io/webui> |
-| Getting started | <https://microsoft.github.io/webui/guide/> |
-| CLI reference | <https://microsoft.github.io/webui/guide/cli/> |
-| Language integrations | <https://microsoft.github.io/webui/guide/integrations> |
+| Getting started | <https://microsoft.github.io/webui/start/> |
+| CLI reference | <https://microsoft.github.io/webui/reference/cli/> |
+| Language integrations | <https://microsoft.github.io/webui/build/integrations> |
 | Benchmarks | [`BENCHMARKS.md`](BENCHMARKS.md) |
 
 ## Development

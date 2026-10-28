@@ -13,7 +13,7 @@ behavior.
 
 This document is for framework contributors and plugin authors. For component
 authoring, read the [framework README](../packages/webui-framework/README.md)
-and the [Interactivity guide](../docs/guide/concepts/interactivity.md).
+and the [Interactivity guide](../docs/learn/interactivity.md).
 
 ---
 
@@ -670,7 +670,7 @@ in the interactivity guide.
 - `examples/app/todo-webui` — minimal SSR + interactivity example
 - `examples/app/contact-book-manager` — repeat block reconciliation
 - `examples/app/commerce` — larger composition, multiple components per page
-- [Interactivity guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — component-author view of the same machinery
+- [Interactivity guide](https://microsoft.github.io/webui/learn/interactivity) — component-author view of the same machinery
 
 ## Defining sources
 
@@ -680,5 +680,5 @@ in the interactivity guide.
   [marker resolution](../packages/webui-framework/src/element/markers.ts),
   and [repeat reconciliation](../packages/webui-framework/src/element/diff.ts).
 - [Framework tests](../packages/webui-framework/src/) and
-  [browser hydration guide](../docs/guide/concepts/hydration.md) for
+  [browser hydration guide](../docs/build/hydration.md) for
   executable coverage and supported application behavior.

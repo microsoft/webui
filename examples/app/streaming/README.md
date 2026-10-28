@@ -37,7 +37,7 @@ instruction instead of silently falling back to full-state payloads.
 
 This example keeps a small critical registration entry in the head. For a
 coordinator-only head entry with application startup deferred, use
-the [bundler-independent delivery contract](https://microsoft.github.io/webui/guide/concepts/hydration#separate-coordinator-and-application-assets),
+the [bundler-independent delivery contract](https://microsoft.github.io/webui/build/hydration#separate-coordinator-and-application-assets),
 with an explicit streaming import in a small application-owned entry and no
 streaming build plugin or second deployment manifest.
 Early-interactive boundaries still need their component registration modules;
@@ -204,7 +204,7 @@ Measured here (four feed items, cold context, 100 ms RTT): `style` is 12,228 B
 with the composer styled at 147 ms, `module` is 10,061 B at 158 ms, and `link`
 is 8,368 B at 268 ms. Time to interactive is ~616 ms in all three — it is gated
 by the application bundle, not by CSS. See
-`docs/guide/concepts/directives/boundary.md` for the full trade-off.
+`docs/learn/directives/boundary.md` for the full trade-off.
 
 ### How it stays deterministic
 

@@ -46,6 +46,20 @@ The `webui-test-utils` crate provides common Rust test helpers, builders, and fi
 webui-test-utils = { path = "../webui-test-utils" }
 ```
 
+## Docs component tests
+
+Colocate docs component tests under `docs/.webui-press/components/<component>/`,
+for example `benchmark-preview/benchmark-preview.test.ts`. Keep component
+coverage with its owner rather than in `packages/webui-press/tests/`.
+
+Keep tutorial tests beside the Markdown lessons in `docs/start/` and
+site-navigation tests beside their regions in `docs/.webui-press/regions/`.
+The shared Press runner includes these tests through
+`pnpm --filter @microsoft/webui-press test`. Its `build:test` command type-checks
+and bundles these locations into `dist-test`; use unique owner-prefixed test
+filenames. Reuse the existing native and website fixture helpers. Test modules
+are not component runtime entries and must not enter the published site.
+
 ## webui-framework E2E fixtures
 
 The `packages/webui-framework` package uses Playwright for E2E tests. Each fixture is a mini WebUI app compiled and rendered by the real pipeline.

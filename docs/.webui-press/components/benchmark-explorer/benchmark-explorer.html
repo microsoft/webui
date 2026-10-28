@@ -7,7 +7,7 @@
   <section class="benchmark-explorer" aria-labelledby="benchmark-title">
     <div class="benchmark-toolbar">
       <h2 id="benchmark-title">One workload. Different measurements</h2>
-      <p>Choose a metric, not an overall score. All 14 selected cases remain in view.</p>
+      <p>Choose a metric, not an overall score. All 15 official campaign cases remain in view.</p>
       <div class="benchmark-mobile-metric">
         <label for="benchmark-metric-select">Measurement to plot</label>
         <select
@@ -50,7 +50,7 @@
       </div>
       <p class="benchmark-description">{{benchmarks.activeMetric.description}}</p>
       <p class="benchmark-evidence-note">
-        Historical, limited, mixed-refresh data. Browser metrics: 10 isolated runs. Server metrics: 1 measured round.
+        Official uniform campaign. Browser metrics: 10 isolated runs. Server metrics: 1 × 20-second measured round.
         Ordering is descriptive, not evidence of a statistically established winner.
       </p>
       <div class="benchmark-scale" aria-hidden="true">
@@ -68,7 +68,6 @@
           <li key="{{row.caseId}}" class="benchmark-row" data-case="{{row.caseId}}">
             <span class="benchmark-case">
               {{row.label}}
-              <if condition="row.refreshed"><span class="benchmark-refresh" aria-label="Selectively refreshed 2026-09-04">◇</span></if>
             </span>
             <svg
               class="benchmark-plot"
@@ -78,7 +77,7 @@
               aria-label="{{row.label}}: {{row.valueLabel}}"
             >
               <title>{{row.label}}: {{row.valueLabel}}</title>
-              <desc>Linear bar from zero to {{benchmarks.maximumLabel}} {{benchmarks.activeMetric.unit}}. {{row.refreshLabel}}. Equivalent values and notes are in the data table.</desc>
+              <desc>Linear bar from zero to {{benchmarks.maximumLabel}} {{benchmarks.activeMetric.unit}}. Uniform official campaign row. Equivalent values and notes are in the data table.</desc>
               <path class="benchmark-grid" d="M0 0V20 M50 0V20 M100 0V20"></path>
               <if condition="row.available">
                 <rect class="benchmark-bar" x="0" y="5" width="{{row.barWidth}}" height="10"></rect>
@@ -95,8 +94,7 @@
       <figcaption id="benchmark-caption">
         All bars start at zero and share the same linear scale. Values are sorted
         {{benchmarks.activeMetric.direction}} first; small differences are not proof of significance.
-        <span class="benchmark-refresh">◇</span> marks the three selectively refreshed WebUI hosts (2026-09-04).
-        Unmarked cases retain earlier results. Lower memory is not a universal performance score.
+        Lower memory is not a universal performance score.
       </figcaption>
       <if condition="benchmarks.unavailableCount > 0">
         <p class="benchmark-unavailable">{{benchmarks.unavailableCount}} unavailable measurements are retained at the end, with a cross instead of a bar. Unavailable never means zero.</p>
@@ -104,17 +102,17 @@
       <details class="benchmark-method">
         <summary>Recorded setup for {{benchmarks.activeMetric.label}}</summary>
         <p>{{benchmarks.activeMetric.methodology}}</p>
-        <p>The summary does not establish every measured version, a complete environment record, or the browser response mode. See the provenance limits below.</p>
+        <p>Both SSR response modes use one measured round. Browser measurements use progressive responses; renderer-private sample availability is disclosed in the notes.</p>
       </details>
     </figure>
 
     <details class="benchmark-data-table">
-      <summary>Data table and measurement notes <span>14 cases · all 5 metrics</span></summary>
+      <summary>Data table and measurement notes <span>15 cases · all 5 metrics</span></summary>
       <p>All five metrics are present without JavaScript. The table follows the plot's order.
         At narrow widths, scroll the table horizontally. Expand a case for its selected-metric notes.</p>
       <div class="benchmark-table-scroll" role="region" aria-label="All benchmark measurements" tabindex="0">
         <table>
-          <caption>Historical results. Memory in MiB (1 MiB = 1,048,576 bytes); LCP in ms; throughput in req/s.</caption>
+          <caption>Official uniform campaign results. Memory in MiB (1 MiB = 1,048,576 bytes); LCP in ms; throughput in req/s.</caption>
           <thead>
             <tr>
               <th scope="col">Case and recorded notes</th>
@@ -133,7 +131,7 @@
                   <details class="benchmark-case-notes">
                     <summary>{{benchmarks.activeMetric.label}} notes</summary>
                     <p>{{row.detail}}</p>
-                    <p>{{row.refreshLabel}}. The measured framework/runtime versions are not fully recorded.</p>
+                    <p>Uniform official campaign row. The campaign records the benchmark source revision and exact campaign configuration.</p>
                   </details>
                 </th>
                 <td ?data-active="{{benchmarks.selectedMetric == 'jsHeapUsedBytes'}}">{{row.values.jsHeapUsedBytes.display}}</td>
@@ -149,8 +147,8 @@
       <p class="benchmark-table-note">MAD and p95 in the supplied notes are descriptive. In particular, server MAD of zero from one round cannot establish variability or confidence.</p>
     </details>
     <p class="benchmark-download">
-      <a href="benchmarks/historical-results.json" download="webui-historical-results.json">Download the displayed data (JSON)</a>
-      <span>Five metrics, all cases, and the same limitations. Not a complete reproducibility package.</span>
+      <a href="benchmarks/official-results.json" download="webui-official-results.json">Download the displayed data (JSON)</a>
+      <span>Five metrics, all 15 cases, and the campaign limitations. Not a complete reproducibility package.</span>
     </p>
   </section>
 </template>

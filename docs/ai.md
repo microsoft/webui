@@ -12,12 +12,12 @@ description: "Canonical application-authoring rules for coding agents: templates
 >
 > Install the loader skill **once** with
 > `npx skills add microsoft/webui --skill webui-reference` - see
-> [AI Coding Agents](/guide/installation#ai-coding-agents).
+> [AI Coding Agents](/start/installation#ai-coding-agents).
 > In a consuming app it reads the installed `@microsoft/webui/ai.md`, so a
 > package upgrade also updates the reference. In the framework source checkout,
 > it reads `docs/ai.md`. The loader itself does not need reinstalling.
 >
-> Links starting with `/guide/` or `/tutorials/` refer to the
+> Links starting with `/start/`, `/learn/`, `/build/`, or `/reference/` refer to the
 > [documentation site](https://microsoft.github.io/webui/), which tracks the
 > current release rather than your installed version.
 
@@ -108,7 +108,7 @@ alongside the normal nonce CSP. Share one framework module across bundles; do no
 pre-create its policy. Raw triple-brace state HTML, FAST strings and arbitrary
 scripts/URLs are not promoted. Client-side router partial navigation is not yet
 supported under enforcement. See
-[Trusted Types](/guide/concepts/hydration#trusted-types).
+[Trusted Types](/build/hydration#trusted-types).
 
 ```text
 HTML + CSS                  -- build -->          protocol.bin
@@ -261,7 +261,7 @@ this.settingsDialog.showModal();
 - Small or immediately used UI is cheaper as an ordinary `<if>`.
 - Do not combine this protocol-backed feature with `--emit-component-assets`.
 
-See [lazy UI](/guide/concepts/lazy) for triggers, hosting packs, and complete
+See [lazy UI](/learn/lazy) for triggers, hosting packs, and complete
 examples.
 
 ### Loops
@@ -298,7 +298,7 @@ examples.
   Use `id`, not `template`; the removed `template` attribute is a build error.
   Native WebUI supports recursive client updates; FAST components reject named
   references with an actionable build error.
-  [Recursive loops](/guide/concepts/directives/for#recursive-loops) covers
+  [Recursive loops](/learn/directives/for#recursive-loops) covers
   validation and keys.
 - Repeats reconcile by array position by default; item attributes never act as
   keys, and `data-key` is an ordinary application attribute.
@@ -515,7 +515,7 @@ my-component[variant="primary"] {
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Scoped token overrides do not replace theme defaults for other elements.
   Use bare `:host` rules for shared Shadow component defaults or `:root` for
-  document defaults. See [design tokens](/guide/concepts/css-tokens).
+  document defaults. See [design tokens](/learn/css-tokens).
 - Malformed CSS fails the build, including unterminated `var()` calls,
   comments, strings, and unmatched delimiters.
 
@@ -855,7 +855,7 @@ authored `.ts` or `.js` module. Non-router apps use
 `installInteractionHydration({ load })`. It trades first-interaction latency
 for lower startup JS/heap and cannot preserve transient user activation or
 closed-shadow click targets. See
-[Interaction hydration](/guide/concepts/hydration#interaction-triggered-application-hydration).
+[Interaction hydration](/build/hydration#interaction-triggered-application-hydration).
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
@@ -911,7 +911,7 @@ setup belongs in the application entry, not in every component module.
 
 With a nonce-based CSP, give authored module scripts and host-authored
 module-preload links the same response nonce passed to the renderer.
-See [CSP and delivery](/guide/concepts/hydration#csp-and-delivery).
+See [CSP and delivery](/build/hydration#csp-and-delivery).
 
 The package root and `runtime.js` are pure API entries. Call `startRuntime()`
 after importing selected installers and component modules, including in an
@@ -923,7 +923,7 @@ Optional template collection requires
 `@microsoft/webui-framework/template-cache.js` before `startRuntime()` or template lookups and a
 matching rebuilt protocol. `collectTemplates(keep?)` releases cache ownership,
 not live component dependencies or browser module definitions. See
-[runtime entrypoints](/guide/concepts/interactivity#runtime-entrypoints).
+[runtime entrypoints](/learn/interactivity#runtime-entrypoints).
 
 ### The hydration boundary
 
@@ -1004,7 +1004,7 @@ outlets, and selected route content.
   initialization, share framework modules, and use native output metadata for
   the host's existing asset handoff. No streaming JSON file is required.
   See
-  [Separate coordinator and application assets](/guide/concepts/hydration#separate-coordinator-and-application-assets).
+  [Separate coordinator and application assets](/build/hydration#separate-coordinator-and-application-assets).
 - Deferred application scripts can use `fetchpriority="low"` to stay out of
   automatic modulepreload hints. Components remain inert and retain pending
   state until their definitions arrive, so load early-interactive registrations
@@ -1049,7 +1049,7 @@ outlets, and selected route content.
 
 Invalid declarations fail the build with stable diagnostics. Do not construct
 browser streaming records yourself; malformed streams fail closed. The
-[`<boundary>` reference](/guide/concepts/directives/boundary) covers placements,
+[`<boundary>` reference](/learn/directives/boundary) covers placements,
 keys, host ordering, and production delivery.
 
 ### Lazy component mounting
@@ -1068,7 +1068,7 @@ With the framework loaded, `ensureLoaded()` also waits for stylesheet cache
 warming or a native-link fallback decision. If the applying stylesheet fails,
 WebUI reports it and completes hydration rather than keeping the component
 hidden; the component may be unstyled. See
-[on-demand loading](/guide/concepts/routing#on-demand-component-loading).
+[on-demand loading](/build/routing#on-demand-component-loading).
 
 ```html
 <if condition="showSettings">
@@ -1186,7 +1186,7 @@ The default is JSON-only. Configure selected policies once in `start()`:
 `router.js`. Preload requires a configured cache. There is no singleton or
 second constructor configuration. Do not mutate configuration while running;
 destroy before restarting.
-See [selecting router capabilities](/guide/concepts/routing#selecting-router-capabilities)
+See [selecting router capabilities](/build/routing#selecting-router-capabilities)
 for the import/configuration pairs.
 
 Route loaders (`static loader({ params, query, signal })`) and actions
@@ -1200,7 +1200,7 @@ Scriptless templates are registered by the compiler-owned host runtime. If a
 route remains unregistered after template publication and loader resolution, the
 router navigates the document so the server can render it.
 
-Full detail: [Routing](/guide/concepts/routing).
+Full detail: [Routing](/build/routing).
 
 ## State JSON
 
@@ -1249,7 +1249,7 @@ state, so client-side templates and code cannot read it.
 
 **Never put request-derived or otherwise untrusted content in `$webui`.** The
 values are not escaped and can create an XSS vulnerability. See
-[Integrations](/guide/integrations/) for host-specific rendering details.
+[Integrations](/build/integrations/) for host-specific rendering details.
 
 ### Truthiness
 
@@ -1434,6 +1434,14 @@ Before emitting WebUI code, confirm:
 Building WebUI or a Rust host from source requires Rust 1.99.1 or newer.
 Prebuilt npm binaries do not require Rust.
 
+Keep platform optional dependencies enabled. Package managers can block
+WebUI's CLI setup script: follow the
+[npm, pnpm, Yarn, or Bun approval steps](/start/installation#installation-policies)
+before running it. Approve only reviewed packages, including separately
+installed build tools when needed. Script approval and registry download
+permissions are different; do not add blanket `--allow-remote=all` or
+all-scripts overrides to generated install commands.
+
 ### Web apps
 
 For an interactive app, install the CLI and browser framework, then bundle the
@@ -1460,7 +1468,7 @@ rejected). It accepts `127.0.0.1`, `localhost`, and subdomains such as
 Host, add an exact `--allowed-host dev.example[:port]` (repeatable); only add
 names you control.
 Other Hosts are rejected before the app or API proxy handles them. See the
-[serve CLI reference](./guide/cli/#webui-serve) for details.
+[serve CLI reference](./reference/cli/#webui-serve) for details.
 
 Common flags on `build` and `serve`: `--entry`, `--css <link|style|module>`,
 `--dom <shadow|light>` (default `shadow`),
@@ -1477,7 +1485,7 @@ On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
 retain the default wait for an active rebuild with no deadline. Forced shutdown
 returns nonzero and may leave incomplete outputs; supervised mode reserves
-stdin. See [bounded shutdown](/guide/cli/#bounded-dev-server-shutdown) for
+stdin. See [bounded shutdown](/reference/cli/#bounded-dev-server-shutdown) for
 platform limits.
 
 Unwrapped components default to Shadow. Under `--dom light`, they use
@@ -1497,7 +1505,7 @@ x error: invalid <for> each expression [invalid-for-each]
 ```
 
 Full flag tables, exit codes, and the error-code list:
-[CLI Reference](/guide/cli/).
+[CLI Reference](/reference/cli/).
 
 ### Desktop apps
 
@@ -1518,8 +1526,8 @@ Rust apps use `microsoft-webui-desktop` with `native`; enable `source` only for
 template compilation. Construct with `DesktopApp::from_bundle` or
 `DesktopApp::from_source`, configure `WindowOptions` before `build()`, and use
 `frame.window_handle()` for supported live changes. Native callbacks must not
-block the UI thread. See the [desktop Rust API](/guide/concepts/desktop#rust-api)
-and [window controls](/guide/concepts/desktop#events-and-window-control).
+block the UI thread. See the [desktop Rust API](/build/desktop#rust-api)
+and [window controls](/build/desktop#events-and-window-control).
 
 For an existing HTTP application, `DesktopApp::from_local_server` requires
 `local-server` and a verified, already-bound loopback origin. It does not
@@ -1527,7 +1535,7 @@ re-render or proxy the server. Retain the listener and `HostLifetimeOwner`
 until native close completes, revoke the lifetime before releasing ownership,
 and handle failed close delivery. A loopback address is not authentication.
 Preview-frame grants do not grant native authority. Read the
-[local-server contract](/guide/concepts/desktop#existing-http-application)
+[local-server contract](/build/desktop#existing-http-application)
 before implementing this mode.
 
 Enable native capabilities individually and follow their platform limits:
@@ -1536,19 +1544,19 @@ Enable native capabilities individually and follow their platform limits:
   `native-picker` and `native-dialogs` add macOS/Windows UI; Linux returns
   unsupported errors. Await actual completion, handle cancellation separately,
   and never display raw error chains. See
-  [native services](/guide/concepts/desktop#trusted-host-os-openers).
+  [native services](/build/desktop#trusted-host-os-openers).
 - `native-capture` and `native-clipboard` are explicit host-only capabilities.
   Capture only covers the visible webview; preview readiness and authorization
   belong to the host. Runtime qualification is limited, particularly on
-  Windows. Read the [capture limits](/guide/concepts/desktop#host-owned-visible-content-capture-macos-and-windows)
-  and [clipboard ownership rules](/guide/concepts/desktop#explicit-macos-and-windows-png-clipboard-write).
+  Windows. Read the [capture limits](/build/desktop#host-owned-visible-content-capture-macos-and-windows)
+  and [clipboard ownership rules](/build/desktop#explicit-macos-and-windows-png-clipboard-write).
 - `native-url-activation` adds macOS incoming-URL callbacks, not OS scheme
   registration. `startup-failure` provides pre-frame macOS/Windows alerts.
-  See [URL activation](/guide/concepts/desktop#incoming-custom-scheme-urls) and
-  [startup failures](/guide/concepts/desktop#before-frame-startup-failures).
+  See [URL activation](/build/desktop#incoming-custom-scheme-urls) and
+  [startup failures](/build/desktop#before-frame-startup-failures).
 - `verified-update` checks staged bytes against independently authenticated
   expected metadata. It does not prove provenance, archive identity, signatures,
-  or install safety. See [release-byte integrity](/guide/concepts/desktop#staged-release-byte-integrity).
+  or install safety. See [release-byte integrity](/build/desktop#staged-release-byte-integrity).
 
 These host services do not automatically expose renderer APIs. For application
 messages, enable `application-ipc`, define a proto3 contract, and run
@@ -1557,13 +1565,13 @@ messages, enable `application-ipc`, define a proto3 contract, and run
 64-bit integers use `bigint`, bytes use `Uint8Array`, and maps use `Map`.
 Dispose subscriptions and honor cancellation; notifications acknowledge
 admission, not subscriber completion. See
-[message passing](/guide/concepts/desktop#message-passing).
+[message passing](/build/desktop#message-passing).
 
 macOS local-server data is ephemeral unless a packaged host explicitly requests
 `persistent_website_data()` with the exact running bundle ID. The store is
 app-wide, not per viewer. Windows uses app-ID-owned WebView2 profiles; Linux
 rejects this persistence request. See
-[website data](/guide/concepts/desktop#website-data-and-persistence).
+[website data](/build/desktop#website-data-and-persistence).
 
 `webui desktop package` builds an optimized runner by default. Targets
 `macos-app`, `windows-portable`, and `linux-portable` create layouts, not
@@ -1571,8 +1579,8 @@ cross-compiled runners, installers, or signatures. Select declared runner
 features with `--runner-features`. For an already-compiled host, the separate
 `packaging` feature exposes `package_precompiled_host`. The application owns
 distribution, signing, and platform runtime prerequisites. See
-[packaging](/guide/concepts/desktop#package-and-run) and the
-[desktop CLI](/guide/cli/#webui-desktop).
+[packaging](/build/desktop#package-and-run) and the
+[desktop CLI](/reference/cli/#webui-desktop).
 
 ### External component discovery
 
@@ -1606,7 +1614,7 @@ outline; it is off by default. Markdown frontmatter and object-form custom
 pages can override it with the same boolean. Eligible `doc`/`page` layouts get
 a sticky desktop outline and a mobile disclosure without copying templates or
 scripts. Home, `full`, 404, and content-only pages omit it. See
-[page outlines](/guide/webui-press#page-outlines) for heading eligibility,
+[page outlines](/reference/webui-press#page-outlines) for heading eligibility,
 browser enhancement, and theme customization.
 
 Use native `webui press build --show=content` or `webui press serve --show=content`
@@ -1616,7 +1624,7 @@ Content mode retains the complete document, themes, SSR, and hydration.
 Content colors follow the OS, including live preference changes, without
 reading the full site's saved manual theme. Full mode retains its persisted
 theme control and applies that choice to native theme tokens and controls.
-See [WebUI Press](/guide/webui-press) for layout and asset behavior.
+See [WebUI Press](/reference/webui-press) for layout and asset behavior.
 
 Keep initial example data local to its Markdown file using YAML frontmatter:
 
@@ -1654,7 +1662,7 @@ errors, as are invalid or missing includes. Namespace examples to avoid reserved
 `label`, and `icon`; `example.label` is fine. Never store secrets in render state.
 `customPages` replaces Markdown rather than supplementing it, and Markdown
 state does not populate `pageData`. See the
-[full state contract and reserved-key list](/guide/webui-press#markdown-local-state).
+[full state contract and reserved-key list](/reference/webui-press#markdown-local-state).
 
 In a WebUI Press template, use paired regions for fallback markup and
 self-closing regions for empty insertion points:
@@ -1669,7 +1677,7 @@ A matching `regions` entry in `.webui-press/config.json` may replace or clear
 the HTML, add object state beneath the dotted `regions.*` path, and add a
 page-scoped `scriptFile`. Omit `html`/`htmlFile` to retain the fallback. Regions
 resolve before component discovery and compilation; do not manually register
-their components elsewhere. See [WebUI Press named regions](/guide/webui-press)
+their components elsewhere. See [WebUI Press named regions](/reference/webui-press)
 for the stable built-in region list and full configuration contract.
 
 ```json
@@ -1693,7 +1701,7 @@ Add `@microsoft/webui-delivery` for client-side navigation. Passing
 
 ## Server integration
 
-Choose a supported [host binding](/guide/integrations/), load `protocol.bin`
+Choose a supported [host binding](/build/integrations/), load `protocol.bin`
 once, and reuse it with JSON state per request. Native bindings need a
 compatible platform library; WASM is a separate browser-hosted option.
 
@@ -1774,21 +1782,23 @@ For `router.ensureLoaded()`, expose
 `GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 
-Full detail: [Integrations](/guide/integrations/).
+Full detail: [Integrations](/build/integrations/).
 
 ## Where to read more
 
 | Topic | Page |
 |---|---|
-| Directives (`if`, `for`, attributes, `route`) | [/guide/concepts/directives/](/guide/concepts/directives/) |
-| Component authoring and interactivity | [/guide/concepts/interactivity](/guide/concepts/interactivity) |
-| Lazy/interaction policy syntax and combinations | [/guide/concepts/directives/lazy](/guide/concepts/directives/lazy) |
-| Hydration lifecycle, projection, and streaming | [/guide/concepts/hydration](/guide/concepts/hydration) |
-| Best practices and React-habit pitfalls | [/guide/concepts/best-practices](/guide/concepts/best-practices) |
-| Performance strategy and measurement | [/guide/concepts/performance](/guide/concepts/performance) |
-| Routing, loaders, actions, caching | [/guide/concepts/routing](/guide/concepts/routing) |
-| Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
-| CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
-| WebUI Press named regions | [/guide/webui-press](/guide/webui-press) |
-| Rust, Node, Python, WASM, FFI, Electron, Tauri | [/guide/integrations/](/guide/integrations/) |
-| Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |
+| Directives (`if`, `for`, attributes, `route`) | [/learn/directives/](/learn/directives/) |
+| Component authoring and interactivity | [/learn/interactivity](/learn/interactivity) |
+| Lazy/interaction policy syntax and combinations | [/learn/directives/lazy](/learn/directives/lazy) |
+| Hydration lifecycle, projection, and streaming | [/build/hydration](/build/hydration) |
+| Best practices and React-habit pitfalls | [/reference/best-practices](/reference/best-practices) |
+| Performance strategy and measurement | [/build/performance](/build/performance) |
+| Routing, loaders, actions, caching | [/build/routing](/build/routing) |
+| Design tokens and theming | [/learn/css-tokens](/learn/css-tokens) |
+| CLI flags, diagnostics, exit codes | [/reference/cli/](/reference/cli/) |
+| WebUI Press named regions | [/reference/webui-press](/reference/webui-press) |
+| Rust, Node, Python, WASM, FFI, Electron, Tauri | [/build/integrations/](/build/integrations/) |
+| Render a first page | [/start/first-page/](/start/first-page/) |
+| Add a scriptless component | [/start/first-component/](/start/first-component/) |
+| Add browser behavior | [/start/add-interactivity/](/start/add-interactivity/) |

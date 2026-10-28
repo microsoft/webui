@@ -21,6 +21,8 @@ pub(crate) mod route_renderer;
 pub(crate) mod streaming;
 
 #[doc(hidden)]
+pub use html_encode::{append_escaped_to_bytes, append_escaped_to_string};
+#[doc(hidden)]
 pub use render_capacity::RenderCapacityHints;
 #[doc(hidden)]
 pub use response_writer::{
@@ -208,6 +210,22 @@ fn route_style_plan_length_error(routes: usize, targets: usize) -> HandlerError 
 pub trait ResponseWriter {
     /// Write content to the output
     fn write(&mut self, content: &str) -> Result<()>;
+
+    /// Write untrusted text with the same HTML escaping as [`encode_safe`].
+    ///
+    /// Buffered writers may override this to append encoded text directly
+    /// without allocating an intermediate string.
+    fn write_escaped(&mut self, content: &str) -> Result<()> {
+        self.write(&encode_safe(content))
+    }
+
+    /// Write a quoted HTML attribute, escaping its untrusted value.
+    ///
+    /// The name must already be a valid, trusted attribute name. Implementations
+    /// must preserve the six entity replacements used by [`encode_safe`].
+    fn write_escaped_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        self.write_attribute(name, &encode_safe(value))
+    }
 
     /// Write one complete quoted HTML attribute.
     #[doc(hidden)]
@@ -1049,10 +1067,10 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) reachable_components: Option<Vec<String>>,
     /// Present only for the opt-in progressive streaming render path.
     pub(crate) streaming: Option<&'output mut StreamingRenderState<'protocol>>,
-    /// Reusable JSON serialization scratch buffer, owned by the render context.
+    /// Reusable serialization scratch buffer, owned by the render context.
     /// The bootstrap/field/template helpers borrow it so each render reuses one
-    /// buffer across every serialized field and every streaming checkpoint
-    /// instead of allocating per value. It grows lazily on first serialization
+    /// buffer across JSON fields, native template attributes, and streaming
+    /// checkpoints instead of allocating per value. It grows lazily
     /// and is dropped with the context at request end — no per-thread
     /// high-water buffer is retained between requests.
     pub(crate) json_scratch: Vec<u8>,
@@ -3854,10 +3872,10 @@ impl WebUIHandler {
             }
         } else {
             match value {
-                Value::String(s) => writer.write(&crate::html_encode::encode_safe(s)),
+                Value::String(s) => writer.write_escaped(s),
                 _ => {
                     let s = value.to_string();
-                    writer.write(&crate::html_encode::encode_safe(&s))
+                    writer.write_escaped(&s)
                 }
             }
         }
@@ -3943,10 +3961,14 @@ impl WebUIHandler {
 
         // Template attribute (mixed static + dynamic)
         if !attr.template.is_empty() {
+            if !context.collecting_component_attrs || attr.attr_skip {
+                return self.write_template_attribute(attr, template_target, context);
+            }
             let raw_value =
-                self.render_template_attr_value(&attr.template, template_target, context)?;
-            let escaped = crate::html_encode::encode_safe(&raw_value);
-            write_attr(context.writer, &attr.name, &escaped)?;
+                self.render_template_attr_value(&attr.template, template_target, context, None)?;
+            context
+                .writer
+                .write_escaped_attribute(&attr.name, &raw_value)?;
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
@@ -3962,11 +3984,9 @@ impl WebUIHandler {
         if attr.raw_value || !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                write_attr(
-                    context.writer,
-                    &attr.name,
-                    &crate::html_encode::encode_safe(&attr.value),
-                )?;
+                context
+                    .writer
+                    .write_escaped_attribute(&attr.name, &attr.value)?;
                 if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                     context.component_borrowed_attrs.remove(name);
@@ -4036,11 +4056,7 @@ impl WebUIHandler {
                 };
                 match value.as_deref() {
                     Some(Value::String(s)) => {
-                        write_attr(
-                            context.writer,
-                            &attr.name,
-                            &crate::html_encode::encode_safe(s),
-                        )?;
+                        context.writer.write_escaped_attribute(&attr.name, s)?;
                     }
                     Some(Value::Null) | None => {}
                     Some(other) => {
@@ -4051,11 +4067,7 @@ impl WebUIHandler {
                             }
                             None => {
                                 let s = other.to_string();
-                                write_attr(
-                                    context.writer,
-                                    &attr.name,
-                                    &crate::html_encode::encode_safe(&s),
-                                )?;
+                                context.writer.write_escaped_attribute(&attr.name, &s)?;
                             }
                         }
                     }
@@ -4083,21 +4095,38 @@ impl WebUIHandler {
         Ok(())
     }
 
+    fn write_template_attribute(
+        &self,
+        attr: &webui_protocol::WebUIFragmentAttribute,
+        target: Option<usize>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        let mut scratch = std::mem::take(&mut context.json_scratch);
+        let previous_capacity = scratch.capacity();
+        scratch.clear();
+        if scratch.capacity() < TEMPLATE_SIGNAL_CAPACITY_HINT * 2 {
+            scratch.reserve(TEMPLATE_SIGNAL_CAPACITY_HINT * 2);
+        }
+        let buffer = String::from_utf8(scratch).map_err(invalid_template_buffer_error)?;
+        let value =
+            self.render_template_attr_value(&attr.template, target, context, Some(buffer))?;
+        let result = context.writer.write_escaped_attribute(&attr.name, &value);
+        context.json_scratch = recycle_template_buffer(value, previous_capacity);
+        result
+    }
+
     /// Render a template attribute's fragments into a raw (unescaped) string.
     fn render_template_attr_value(
         &self,
         template_id: &str,
         target: Option<usize>,
         context: &WebUIProcessContext,
+        buffer: Option<String>,
     ) -> Result<String> {
-        let Some(index) = target.or_else(|| context.render_fragments.index(template_id)) else {
-            return Err(HandlerError::MissingFragment(template_id.to_string()));
-        };
-        let fragments = context
-            .render_fragments
-            .list(index)
-            .ok_or_else(|| HandlerError::MissingFragment(template_id.to_string()))?;
-        let mut raw_value = String::with_capacity(template_attr_capacity(fragments.fragments));
+        let fragments = template_attr_fragments(template_id, target, &context.render_fragments)?;
+        let mut raw_value = buffer
+            .unwrap_or_else(|| String::with_capacity(template_attr_capacity(fragments.fragments)));
+        raw_value.clear();
         for frag in fragments.fragments {
             match frag.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
@@ -4269,10 +4298,44 @@ impl Default for WebUIHandler {
 /// Bytes reserved for each signal when pre-sizing a template attribute value.
 /// Signals in attribute templates are typically ids, numbers, or path segments.
 const TEMPLATE_SIGNAL_CAPACITY_HINT: usize = 32;
+const MAX_REUSED_TEMPLATE_CAPACITY: usize = 4 * 1024;
 
-/// Starting capacity for a rendered template attribute value: the exact static
-/// text plus a per-signal estimate, so typical values fill one allocation
-/// instead of regrowing on every append.
+#[cold]
+#[inline(never)]
+fn invalid_template_buffer_error(error: std::string::FromUtf8Error) -> HandlerError {
+    HandlerError::Invariant(format!(
+        "cleared template output buffer is not valid UTF-8: {}",
+        error.utf8_error()
+    ))
+}
+
+fn recycle_template_buffer(value: String, previous_capacity: usize) -> Vec<u8> {
+    if value.capacity() <= MAX_REUSED_TEMPLATE_CAPACITY || value.capacity() <= previous_capacity {
+        value.into_bytes()
+    } else {
+        Vec::new()
+    }
+}
+
+fn template_attr_fragments<'protocol>(
+    template_id: &str,
+    target: Option<usize>,
+    index: &ResolvedRenderFragmentIndex<'protocol>,
+) -> Result<RenderFragmentList<'protocol>> {
+    target
+        .or_else(|| index.index(template_id))
+        .and_then(|slot| index.list(slot))
+        .ok_or_else(|| missing_attribute_template_error(template_id))
+}
+
+#[cold]
+#[inline(never)]
+fn missing_attribute_template_error(template_id: &str) -> HandlerError {
+    HandlerError::MissingFragment(template_id.to_owned())
+}
+
+// Owned component props retain the raw attribute value. Size its buffer from
+// the static text and a per-signal estimate to avoid repeated growth.
 fn template_attr_capacity(fragments: &[WebUIFragment]) -> usize {
     fragments
         .iter()
@@ -4747,6 +4810,263 @@ mod tests {
             .write_boolean_attribute("disabled")
             .unwrap_or_else(|error| panic!("boolean attribute write failed: {error}"));
         assert_eq!(writer.output, " data-id=\"42\" disabled");
+    }
+
+    #[test]
+    fn template_attributes_preserve_escaping_and_raw_component_values() -> Result<()> {
+        crate::define_string_response_writer!(StringWriter, output);
+        crate::define_bytes_response_writer!(BytesWriter, output);
+
+        let values = [
+            None,
+            Some(Value::Null),
+            Some(test_json!(false)),
+            Some(test_json!(u64::MAX)),
+            Some(test_json!(-0.0)),
+            Some(test_json!("é水🙂<&\"'/&amp;")),
+            Some(Value::String("é<&\"'/".repeat(1024))),
+            Some(test_json!(["<item>", 7])),
+            Some(test_json!({ "key": "quoted \"value\"" })),
+        ];
+        for component_prop in [false, true] {
+            let mut attribute = WebUIFragment::attribute_template("data-value", "value-template");
+            if let Some(Fragment::Attribute(attribute)) = &mut attribute.fragment {
+                attribute.attr_start = component_prop;
+            }
+            let body = if component_prop {
+                WebUIFragment::component("value-host")
+            } else {
+                WebUIFragment::signal("label", false)
+            };
+            let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".to_owned(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<value-host"),
+                            attribute,
+                            WebUIFragment::raw(">"),
+                            body,
+                            WebUIFragment::raw("</value-host>"),
+                        ],
+                        contains_boundary: false,
+                    },
+                ),
+                (
+                    "value-template".to_owned(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("prefix/"),
+                            WebUIFragment::signal("value", true),
+                            WebUIFragment::raw("/suffix&"),
+                        ],
+                        contains_boundary: false,
+                    },
+                ),
+                (
+                    "value-host".to_owned(),
+                    FragmentList {
+                        fragments: vec![WebUIFragment::signal("dataValue", false)],
+                        contains_boundary: false,
+                    },
+                ),
+            ])));
+            assert_eq!(std::mem::size_of::<RenderFragmentMetadata>(), 12);
+            for value in &values {
+                let mut state = test_json!({ "label": "outside<&" });
+                if let Some(value) = value {
+                    state["value"] = value.clone();
+                }
+                let rendered = match value {
+                    None => Cow::Borrowed(""),
+                    Some(Value::String(value)) => Cow::Borrowed(value.as_str()),
+                    Some(value) => Cow::Owned(value.to_string()),
+                };
+                let raw_value = format!("prefix/{rendered}/suffix&");
+                let escaped = encode_safe(&raw_value);
+                let content = if component_prop {
+                    escaped.as_ref()
+                } else {
+                    "outside&lt;&amp;"
+                };
+                let expected =
+                    format!("<value-host data-value=\"{escaped}\">{content}</value-host>");
+                let mut default = TestWriter::new();
+                let mut text = StringWriter::with_capacity(expected.len());
+                let mut bytes = BytesWriter::with_capacity(expected.len());
+                for writer in [
+                    &mut default as &mut dyn ResponseWriter,
+                    &mut text,
+                    &mut bytes,
+                ] {
+                    WebUIHandler::new().render(
+                        &protocol,
+                        &state,
+                        &RenderOptions::new("index.html", "/"),
+                        writer,
+                    )?;
+                }
+                assert_eq!(default.get_content(), expected);
+                assert_eq!(text.output, expected);
+                assert_eq!(bytes.output, expected.as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn template_buffer_reuse_does_not_add_a_large_high_water_mark() {
+        let small = String::with_capacity(64);
+        assert_eq!(recycle_template_buffer(small, 0).capacity(), 64);
+
+        let large = String::with_capacity(MAX_REUSED_TEMPLATE_CAPACITY * 2);
+        assert_eq!(recycle_template_buffer(large, 0).capacity(), 0);
+
+        let existing = String::with_capacity(MAX_REUSED_TEMPLATE_CAPACITY * 2);
+        let capacity = existing.capacity();
+        assert_eq!(
+            recycle_template_buffer(existing, capacity).capacity(),
+            capacity
+        );
+    }
+
+    #[test]
+    fn shared_attribute_template_preserves_raw_and_component_rendering() -> Result<()> {
+        crate::define_string_response_writer!(BufferedWriter, output);
+        let mut component_attribute =
+            WebUIFragment::attribute_template("data-value", "shared-template");
+        if let Some(Fragment::Attribute(attribute)) = &mut component_attribute.fragment {
+            attribute.attr_start = true;
+        }
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<a"),
+                        WebUIFragment::attribute_template("title", "shared-template"),
+                        WebUIFragment::raw("></a><value-host"),
+                        component_attribute,
+                        WebUIFragment::raw(">"),
+                        WebUIFragment::component("value-host"),
+                        WebUIFragment::raw("</value-host><section>"),
+                        WebUIFragment::component("shared-template"),
+                        WebUIFragment::raw("</section>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "shared-template".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("prefix/&"),
+                        WebUIFragment::signal("value", false),
+                        WebUIFragment::raw("<em>suffix</em>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "value-host".to_owned(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::signal("dataValue", false)],
+                    contains_boundary: false,
+                },
+            ),
+        ])));
+        let value = "é<&\"'/";
+        let state = test_json!({ "value": value });
+        let raw_value = format!("prefix/&{value}<em>suffix</em>");
+        let escaped = encode_safe(&raw_value);
+        let expected = format!(
+            "<a title=\"{escaped}\"></a><value-host data-value=\"{escaped}\">\
+             {escaped}</value-host><section>prefix/&{}<em>suffix</em></section>",
+            encode_safe(value)
+        );
+        let mut writer = BufferedWriter::with_capacity(expected.len());
+        WebUIHandler::new().render(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        assert_eq!(writer.output, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn split_template_attribute_stops_at_the_first_writer_error() {
+        struct FailAfter {
+            writes: usize,
+            fail_at: usize,
+            ended: bool,
+        }
+
+        impl ResponseWriter for FailAfter {
+            fn write(&mut self, _content: &str) -> Result<()> {
+                self.writes += 1;
+                if self.writes == self.fail_at {
+                    Err(HandlerError::ClientDisconnected)
+                } else {
+                    Ok(())
+                }
+            }
+
+            fn end(&mut self) -> Result<()> {
+                self.ended = true;
+                Ok(())
+            }
+        }
+
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<a"),
+                        WebUIFragment::attribute_template("href", "value-template"),
+                        WebUIFragment::raw(">must not be written</a>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "value-template".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("prefix/"),
+                        WebUIFragment::signal("value", false),
+                        WebUIFragment::raw("/suffix"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+        ])));
+        let state = test_json!({ "value": "é<&\"'/" });
+        let options = RenderOptions::new("index.html", "/");
+        let handler = WebUIHandler::new();
+        let mut complete = FailAfter {
+            writes: 0,
+            fail_at: usize::MAX,
+            ended: false,
+        };
+        handler
+            .render(&protocol, &state, &options, &mut complete)
+            .unwrap();
+        assert!(complete.writes > 1);
+        assert!(complete.ended);
+        for fail_at in 1..complete.writes {
+            let mut writer = FailAfter {
+                writes: 0,
+                fail_at,
+                ended: false,
+            };
+            let result = handler.render(&protocol, &state, &options, &mut writer);
+            assert!(matches!(result, Err(HandlerError::ClientDisconnected)));
+            assert_eq!(writer.writes, fail_at);
+            assert!(!writer.ended);
+        }
     }
 
     #[test]

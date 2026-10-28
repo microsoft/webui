@@ -30,7 +30,7 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://microsoft.github.io/webui"
-Documentation = "https://microsoft.github.io/webui/guide/integrations/python"
+Documentation = "https://microsoft.github.io/webui/build/integrations/python/"
 Repository = "https://github.com/microsoft/webui"
 Issues = "https://github.com/microsoft/webui/issues"
 

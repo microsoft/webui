@@ -1,7 +1,7 @@
 ---
 layout: home
 title: The Modern Web, Without the Weight
-description: Build reactive web apps with native SSR and streaming, WebAssembly and service-worker rendering, or static generation with WebUI Press.
+description: WebUI is an open-source framework for building web apps with HTML and CSS. Compile your templates once, render pages using your backend's data, and add JavaScript for interactive behavior.
 stateFile: ./.webui-press/generated/home-benchmark-state.json
 state:
   count: 0

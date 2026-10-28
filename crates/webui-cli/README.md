@@ -26,7 +26,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--out` | *(required)* | Output directory for protocol.bin + CSS, or a `.bin` file path to customize the protocol filename (e.g. `./dist/app1.bin`) |
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
-| `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
+| `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/reference/plugins/) for available identifiers) |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
@@ -53,7 +53,7 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--servedir` | *(none)* | Static assets directory served at `/*` |
 | `--port` | `3000` | Server port |
 | `--api-port` | *(none)* | Proxy API requests; JSON provides buffered state and `application/x-webui-stream` drives progressive boundaries |
-| `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
+| `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/reference/plugins/) for available identifiers) |
 | `--watch` | off | Enable file watching + HMR |
 | `--shutdown-timeout <SECONDS>` | *(none)* | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
@@ -69,7 +69,7 @@ By default, shutdown waits for an active rebuild without a deadline. Add
 request cannot finish within ten seconds; a second stop request escalates
 sooner. Forced shutdown returns nonzero and can leave incomplete outputs.
 Supervised mode reserves stdin, so interactive build tools are unsupported.
-See [bounded shutdown](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
+See [bounded shutdown](https://microsoft.github.io/webui/reference/cli/#bounded-dev-server-shutdown)
 for platform limits.
 
 Features:
@@ -167,7 +167,7 @@ On macOS, inspect from Safari's Develop menu.
 Rust desktop apps that need dynamic route data can configure `.route(...)` on
 `webui_desktop::DesktopApp::from_bundle(path)?` or, with the `source` feature,
 `DesktopApp::from_source(config)`. Both builders produce a desktop frame.
-See the [desktop SDK guide](https://microsoft.github.io/webui/guide/concepts/desktop)
+See the [desktop SDK guide](https://microsoft.github.io/webui/build/desktop)
 for setup and customization. The CLI `--state` flag is a file-backed fallback
 for simple demos.
 
