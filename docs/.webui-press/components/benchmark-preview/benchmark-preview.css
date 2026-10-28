@@ -96,7 +96,7 @@ table {
 }
 
 .configuration-column {
-  width: 41%;
+  width: 20%;
 }
 
 th {
@@ -166,7 +166,7 @@ tr[data-webui] th {
 .scale {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 2px calc(var(--preview-value-width) + var(--preview-value-gap)) 0 41%;
+  margin: 2px calc(var(--preview-value-width) + var(--preview-value-gap)) 0 20%;
   color: var(--docs-color-text-2);
   font-size: 12px;
   white-space: nowrap;

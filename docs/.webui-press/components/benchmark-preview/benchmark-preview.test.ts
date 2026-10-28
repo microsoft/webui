@@ -315,10 +315,15 @@ test('all four previews retain readable values and aligned scales across viewpor
   t.after(() => server.close());
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
-  for (const width of [1280, 820, 390, 320]) {
+  const layouts = [1280, 1100, 820, 481, 480, 390, 320].flatMap(width =>
+    ['theme', 'fallback'].map(font => ({ width, font })));
+  for (const { width, font } of layouts) {
     const page = await browser.newPage({ viewport: { width, height: 800 } });
     await page.route('https://**', route => route.abort());
     await page.goto(`${server.origin}/webui/`);
+    if (font === 'fallback') {
+      await page.addStyleTag({ content: ':root { --docs-font-mono: "Courier New", monospace; }' });
+    }
     const preview = page.locator('benchmark-preview');
     for (const metric of metrics) {
       const tab = preview.getByRole('tab', { name: metric.label, exact: true });
@@ -343,11 +348,17 @@ test('all four previews retain readable values and aligned scales across viewpor
           const bounds = range.getBoundingClientRect();
           return { left: bounds.left, right: bounds.right };
         }));
+      assert.equal(labels.length, bounds.width <= 440 ? 2 : 3);
       assert.ok(Math.abs(labels[0].left - plot.x) <= 1);
       assert.ok(Math.abs(labels[labels.length - 1].right - plot.x - plot.width) <= 1,
         `${width}px ${metric.label}: the maximum label must end at the plotted maximum.`);
+      if (labels.length === 3) {
+        assert.ok(Math.abs((labels[1].left + labels[1].right) / 2 - plot.x - plot.width / 2) <= 1,
+          `${width}px ${metric.label}: the midpoint label must center on the plotted midpoint.`);
+      }
       for (let index = 1; index < labels.length; index++) {
-        assert.ok(labels[index].left - labels[index - 1].right >= 4, 'Axis labels need separation, not overlap.');
+        assert.ok(labels[index].left - labels[index - 1].right >= 4,
+          `${width}px ${font} ${metric.label}: Axis labels need separation, not overlap.`);
       }
       const dimensions = await preview.evaluate(element => ({
         width: element.clientWidth,
