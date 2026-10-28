@@ -1,0 +1,48 @@
+<template shadowrootmode="open">
+  <output>{{selected}}</output>
+  <section id="compact"><for each="item in items"><connectivity-probe key="{{item.id}}" data-id="{{item.id}}">{{item.title}}</connectivity-probe></for><p class="sentinel">Compact tail</p></section>
+  <section id="formatted">
+    <for each="item in items">
+      <connectivity-probe key="{{item.id}}" data-id="{{item.id}}">{{item.title}}</connectivity-probe>
+    </for>
+    <p class="sentinel">Formatted tail</p>
+  </section>
+  <section id="fragment">
+    <for each="item in items">
+      <connectivity-probe key="{{item.id}}" data-id="{{item.id}}">{{item.title}}</connectivity-probe> Lead {{item.title}}<!-- item trivia --><span class="detail">{{item.detail}}</span><button @click="{select(item.id)}">Choose {{item.title}}</button>{{{item.html}}} tail {{item.title}}
+    </for>
+    <p class="sentinel">Fragment tail</p>
+  </section>
+  <section id="unkeyed">
+    <for each="item in items">
+      Lead {{item.title}}<connectivity-probe data-id="{{item.id}}">{{item.title}}</connectivity-probe> tail {{item.title}}
+    </for>
+    <p class="sentinel">Unkeyed tail</p>
+  </section>
+  <section id="nested">
+    <for each="item in items">
+      <h3>{{item.title}}</h3>
+      <for each="child in item.children">
+        <connectivity-probe key="{{child.id}}" data-id="{{child.id}}">{{child.title}}</connectivity-probe>
+      </for>
+      {{item.title}} end
+    </for>
+    <p class="sentinel">Nested tail</p>
+  </section>
+  <section id="structural">
+    <for each="item in items">
+      <if condition="visible"><connectivity-probe data-id="{{item.id}}">{{item.title}}</connectivity-probe> conditional {{item.title}}</if>
+      <span class="detail">{{item.detail}}</span>
+    </for>
+    <p class="sentinel">Structural tail</p>
+  </section>
+  <section id="conditional">
+    <if condition="visible">
+      <for each="item in items">
+        <connectivity-probe key="{{item.id}}" data-id="{{item.id}}">{{item.title}}</connectivity-probe>
+      </for>
+      <span class="detail">Conditional detail</span>
+    </if>
+    <p class="sentinel">Conditional tail</p>
+  </section>
+</template>

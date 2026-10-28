@@ -432,6 +432,27 @@ describe('findByOrdinal', () => {
     );
   });
 
+  test('bounds element, text and comment ordinals to one live sibling range', () => {
+    const start = comment('wi');
+    const end = comment('wi');
+    const trivia = comment('authored');
+    const content = text('item');
+    const target = el('target');
+    const parent = makeParent(
+      el('before'), text('before'), comment('before'), start, trivia, content,
+      comment('wc'), el('conditional'), comment('/wc'), target, end,
+      el('after'), text('after'), comment('after'),
+    );
+    const range = { start: start as unknown as Comment, end: end as unknown as Node };
+
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 0, range), target);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, TEXT, 0, range), content);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, COMMENT, 0, range), trivia);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 1, range), null);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, TEXT, 1, range), null);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, COMMENT, 1, range), null);
+  });
+
   test('returns null for empty parent', () => {
     const parent = { nodeType: ELEMENT, firstChild: null } as unknown as MockNode;
 
@@ -718,5 +739,40 @@ describe('buildSSRIndex', () => {
     const ssr = el('ROOT', el('MY-CHILD', ssrSpan));
 
     assert.strictEqual(build(tpl, ssr).elements[2], ssrSpan);
+  });
+
+  test('indexes a live fragment without claiming markers from neighboring items', () => {
+    const start = cmt('wi');
+    const end = cmt('wi');
+    const first = el('SPAN');
+    const second = el('BUTTON');
+    const conditional = cmt('wc');
+    const repeat = cmt('wr');
+    const raw = cmt('w0');
+    const rawEnd = cmt('/w0');
+    const root = el('ROOT',
+      cmt('wc'), el('BEFORE'), cmt('/wc'),
+      start, txt(), first, conditional, el('CONDITIONAL'), cmt('/wc'),
+      second, raw, el('RAW'), rawEnd, repeat, cmt('/wr'), txt(),
+      end, cmt('wc'), el('AFTER'), cmt('/wc'), cmt('wr'), cmt('/wr'),
+    );
+    const range = { start: start as unknown as Comment, end: end as unknown as Node };
+    const index = buildSSRIndex([3, 5, 1, 1], root as unknown as Node, true, false, range);
+
+    assert.deepStrictEqual(index.elements, [root, first, second]);
+    assert.deepStrictEqual(index.conds, [conditional]);
+    assert.deepStrictEqual(index.repeats, [repeat]);
+    assert.deepStrictEqual(index.raws, [[raw, rawEnd]]);
+  });
+
+  test('does not enter neighboring content from an empty sibling range', () => {
+    const start = cmt('wi');
+    const end = cmt('wi');
+    const root = el('ROOT', el('BEFORE'), start, end, cmt('wr'), cmt('/wr'));
+    const range = { start: start as unknown as Comment, end: end as unknown as Node };
+    const index = buildSSRIndex([0, 1], root as unknown as Node, true, false, range);
+
+    assert.deepStrictEqual(index.elements, [root]);
+    assert.deepStrictEqual(index.repeats, []);
   });
 });

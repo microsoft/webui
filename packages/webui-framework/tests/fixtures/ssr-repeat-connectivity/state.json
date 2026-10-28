@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "id": "a",
+      "title": "Alpha",
+      "detail": "Alpha detail",
+      "html": "<b>Alpha raw</b>",
+      "children": [
+        { "id": "a1", "title": "Alpha child" }
+      ]
+    },
+    {
+      "id": "b",
+      "title": "Beta",
+      "detail": "Beta detail",
+      "html": "<b>Beta raw</b>",
+      "children": [
+        { "id": "b1", "title": "Beta child" }
+      ]
+    }
+  ],
+  "visible": true,
+  "selected": ""
+}

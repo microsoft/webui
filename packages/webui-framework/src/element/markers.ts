@@ -156,6 +156,12 @@ export function collectTemplateElements(root: Node): Array<Node | undefined> {
   return elements;
 }
 
+/** Live siblings after `start` and before the exclusive `end` boundary. */
+export interface SSRRange {
+  start: Comment;
+  end: Node | null;
+}
+
 /**
  * A resolved view of one SSR subtree, built in a single pre-order pass.
  *
@@ -168,6 +174,7 @@ export interface SSRIndex {
   conds: Comment[];
   repeats: Comment[];
   raws: Array<[Comment, Comment]>;
+  range?: SSRRange;
 }
 
 /**
@@ -205,6 +212,7 @@ export function buildSSRIndex(
   ssrRoot: Node,
   needMarkers: boolean,
   ssrIsSectionChild = false,
+  range?: SSRRange,
 ): SSRIndex {
   // Hydrating a single-root block in place starts from the block's own root
   // element, which the compiler numbered 1 rather than 0.  Entering the walk
@@ -218,11 +226,12 @@ export function buildSSRIndex(
   // block hydration starts inside the block's own `<!--wc-->` range, so an
   // unbounded frame would run past the closing marker once the template ran
   // out and adopt a following sibling block's marker as its own.
-  const stack: Array<{ remaining: number; s: ChildNode | null; solo: boolean }> = [
+  const stack: Array<{ remaining: number; s: ChildNode | null; solo: boolean; end: Node | null }> = [
     {
       remaining: shape[1] >> 1,
-      s: ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild,
+      s: range ? range.start.nextSibling : ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild,
       solo: ssrIsSectionChild,
+      end: range?.end ?? null,
     },
   ];
   let index = 0;
@@ -233,7 +242,7 @@ export function buildSSRIndex(
     // Advance the SSR cursor to the next element, recording block markers in
     // document order and stepping over their ranges.
     let s = frame.s;
-    while (s) {
+    while (s && s !== frame.end) {
       const type = s.nodeType;
       if (type === 8 /* COMMENT_NODE */) {
         const data = (s as Comment).data;
@@ -277,6 +286,7 @@ export function buildSSRIndex(
       }
       s = s.nextSibling;
     }
+    if (s === frame.end) s = null;
 
     if (frame.remaining === 0) {
       stack.pop();
@@ -303,11 +313,11 @@ export function buildSSRIndex(
     const childShape = shape[index + 1];
     const childCount = childShape >> 1;
     if (childCount > 0 || (needMarkers && (childShape & 1) && s?.firstChild)) {
-      stack.push({ remaining: childCount, s: s ? s.firstChild : null, solo: false });
+      stack.push({ remaining: childCount, s: s ? s.firstChild : null, solo: false, end: null });
     }
   }
 
-  return { elements, conds, repeats, raws };
+  return { elements, conds, repeats, raws, range };
 }
 
 
@@ -335,10 +345,11 @@ export function buildSSRIndex(
  * `<!--/wc-->`, `<!--/wr-->`, and paired raw-range end markers until all
  * resolution is done.
  */
-export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): Node | null {
+export function findByOrdinal(parent: Node, nodeType: number, ordinal: number, range?: SSRRange): Node | null {
   let count = 0;
-  let child = parent.firstChild;
-  while (child) {
+  let child = range ? range.start.nextSibling : parent.firstChild;
+  const end = range?.end ?? null;
+  while (child && child !== end) {
     // Detect a structural block opening marker and skip the entire range.
     if (child.nodeType === 8 /* COMMENT_NODE */) {
       const data = (child as Comment).data;

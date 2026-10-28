@@ -87,6 +87,7 @@ import {
   MARKER_COND_END,
   rawMarker,
   type SSRIndex,
+  type SSRRange,
 } from './element/markers.js';
 import {
   claimSsrComponentStyles,
@@ -1924,12 +1925,13 @@ export class TemplateElement extends HTMLElement {
     meta: TemplateBlockMeta,
     scope?: ScopeFrame,
     pathStart = 0,
+    range?: SSRRange,
   ): TemplateInstance {
     const ownerDocument = this.ownerDocument;
     const instance: TemplateInstance = {
       scope,
       container: (pathStart > 0 ? ssrRoot.parentNode : ssrRoot) as (ParentNode & Node) | null,
-      nodes: pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
+      nodes: range ? [] : pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
       texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
       attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
       conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
@@ -1968,6 +1970,7 @@ export class TemplateElement extends HTMLElement {
       ssrRoot,
       meta.c !== undefined || meta.r !== undefined || rawTextCount !== 0,
       pathStart > 0,
+      range,
     );
     const ssrElements = ssrIndex.elements;
     const textMarkerBoundaries = getTextMarkerBoundaries(meta);
@@ -2111,7 +2114,7 @@ export class TemplateElement extends HTMLElement {
         const singleRoot = blockMeta
           && blockLayout?.[0] === 1
           && (blockLayout[1] >> 1) === 1
-          && !this.$hasRootStructuralSlot(blockMeta);
+          && !this.$hasRootSlot(blockMeta);
 
         let anchor: Comment;
         if (marker) {
@@ -2164,28 +2167,10 @@ export class TemplateElement extends HTMLElement {
             } else {
               const itemParent = itemMarkers[j].parentNode;
               const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
-              const wrapper = ownerDocument.createElement('div');
-              let cursor = itemMarkers[j].nextSibling;
-              while (cursor && cursor !== nextBound) {
-                const next = cursor.nextSibling;
-                wrapper.appendChild(cursor);
-                cursor = next;
-              }
-              const inst = this.$hydrate(wrapper, blockMeta, itemScope);
-              inst.nodes = childNodesArray(wrapper);
-              let afterNode: Node = itemMarkers[j];
-              for (let nodeIndex = 0; nodeIndex < inst.nodes.length; nodeIndex++) {
-                const node = inst.nodes[nodeIndex];
-                itemParent?.insertBefore(node, afterNode.nextSibling);
-                afterNode = node;
-              }
-              if (itemParent) {
-                this.$replaceInstanceContainer(
-                  inst,
-                  wrapper,
-                  itemParent as ParentNode & Node,
-                );
-              }
+              if (!itemParent) continue;
+              const inst = this.$hydrate(itemParent, blockMeta, itemScope, 0, {
+                start: itemMarkers[j], end: nextBound,
+              });
               this.$setInstanceParent(inst, instance);
               repeatInsts.push(inst);
             }
@@ -2227,16 +2212,24 @@ export class TemplateElement extends HTMLElement {
     for (let i = 0; i < staleMarkers.length; i++) {
       staleMarkers[i].parentNode?.removeChild(staleMarkers[i]);
     }
-    this.$compactNodeArray(instance);
+    if (range) {
+      // Capture after wiring: text slots may be inserted and nested markers removed.
+      let node = range.start.nextSibling;
+      while (node && node !== range.end) {
+        instance.nodes.push(node);
+        node = node.nextSibling;
+      }
+    } else {
+      this.$compactNodeArray(instance);
+    }
 
     return instance;
   }
 
   // ── SSR helpers ───────────────────────────────────────────────
 
-  /** Collect a conditional range through its matching closing marker. */
-  private $collectConditionalRange(start: Comment): Node[] {
-    const nodes: Node[] = [];
+  /** Find the closing marker without entering a nested conditional's range. */
+  private $conditionalRangeEnd(start: Comment): Comment | null {
     let depth = 0;
     let node: Node | null = start.nextSibling;
     while (node) {
@@ -2245,18 +2238,17 @@ export class TemplateElement extends HTMLElement {
         if (data === MARKER_COND_START) {
           depth++;
         } else if (data === MARKER_COND_END) {
-          if (depth === 0) break;
+          if (depth === 0) return node as Comment;
           depth--;
         }
       }
-      nodes.push(node);
       node = node.nextSibling;
     }
-    return nodes;
+    return null;
   }
 
-  /** Return whether a compiled block has structural slots beside its root element. */
-  private $hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
+  /** Return whether a compiled block has bindings beside its root element. */
+  private $hasRootSlot(meta: TemplateBlockMeta): boolean {
     // Index 0 is the section root, so a slot anchored there sits outside the
     // block's own root element and rules out in-place single-root hydration.
     if (meta.c) {
@@ -2271,7 +2263,7 @@ export class TemplateElement extends HTMLElement {
     }
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
-        if (meta.tx[i][2] === 1 && meta.tx[i][0][0] === 0) return true;
+        if (meta.tx[i][0][0] === 0) return true;
       }
     }
     return false;
@@ -2287,7 +2279,7 @@ export class TemplateElement extends HTMLElement {
     scope: ScopeFrame | undefined,
   ): TemplateInstance | null {
     const layout = getTemplateSSRLayout(blockMeta);
-    if (blockMeta.h.charCodeAt(0) === 60 && (layout[1] >> 1) === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
+    if (layout[0] === 1 && (layout[1] >> 1) === 1 && !this.$hasRootSlot(blockMeta)) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
@@ -2301,21 +2293,11 @@ export class TemplateElement extends HTMLElement {
       return null;
     }
     // Multi-root, text-only, or root-level structural content needs the full range.
-    const condNodes = this.$collectConditionalRange(condAnchor);
-    if (condNodes.length === 0) return null;
-    const wrapper = this.ownerDocument.createElement('div');
-    for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-    const inst = this.$hydrate(wrapper, blockMeta, scope);
-    inst.nodes = childNodesArray(wrapper);
-    let afterNode: Node = condAnchor;
-    for (let cn = 0; cn < inst.nodes.length; cn++) {
-      condAnchor.parentNode?.insertBefore(inst.nodes[cn], afterNode.nextSibling);
-      afterNode = inst.nodes[cn];
-    }
-    const container = condAnchor.parentNode as (ParentNode & Node) | null;
-    if (container) this.$replaceInstanceContainer(inst, wrapper, container);
+    const end = this.$conditionalRangeEnd(condAnchor);
+    const container = condAnchor.parentNode;
+    if (!end || condAnchor.nextSibling === end || !container) return null;
     // Same as above — trust SSR DOM, skip binding evaluation.
-    return inst;
+    return this.$hydrate(container, blockMeta, scope, 0, { start: condAnchor, end });
   }
 
   /** Find the SSR right-hand boundary for an escaped text slot. */
@@ -2345,9 +2327,11 @@ export class TemplateElement extends HTMLElement {
     }
     if (marker?.parentNode === ssrParent) return marker;
 
-    if (!staticBoundary) return null;
+    const range = ssrParent === ssrIndex.elements[0] ? ssrIndex.range : undefined;
+    if (!staticBoundary) return range?.end ?? null;
     const kind = staticBoundary & 3;
-    return findByOrdinal(ssrParent, kind === 1 ? 1 : kind === 2 ? 3 : 8, staticBoundary >> 2);
+    return findByOrdinal(ssrParent, kind === 1 ? 1 : kind === 2 ? 3 : 8, staticBoundary >> 2, range)
+      ?? range?.end ?? null;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -2809,7 +2793,7 @@ export class TemplateElement extends HTMLElement {
     } else if (c.instance) {
       const instance = c.instance;
       const block = this.$block(c.blockIndex);
-      const compactOwners = !!block && this.$hasRootStructuralSlot(block);
+      const compactOwners = !!block && this.$hasRootSlot(block);
       const first = instance.nodes[0] ?? null;
       const container = first?.parentNode as (ParentNode & Node) | null;
       if (first && container) {
