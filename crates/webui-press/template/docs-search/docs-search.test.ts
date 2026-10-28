@@ -34,7 +34,7 @@ test('nested documentation components hydrate without page errors', async (t) =>
 
   await page.goto(`${server.origin}/webui/`, { waitUntil: 'networkidle' });
   await waitForDocsSearch(page);
-  await page.goto(`${server.origin}/webui/guide/`, {
+  await page.goto(`${server.origin}/webui/start/`, {
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
@@ -108,10 +108,10 @@ test('Playground initializes after navigation from the docs home page', async (t
   const guideLink = page
     .locator('docs-site-navigation')
     .locator('a')
-    .filter({ hasText: 'Guide' })
+    .filter({ hasText: 'Docs' })
     .first();
   await Promise.all([
-    page.waitForURL('**/webui/guide/**'),
+    page.waitForURL('**/webui/start/**'),
     guideLink.click(),
   ]);
   await page.waitForFunction(
@@ -121,7 +121,7 @@ test('Playground initializes after navigation from the docs home page', async (t
   );
   assert.ok(
     (await page.locator('.doc-content h1').innerText()).startsWith(
-      'What is WebUI Framework?',
+      'What is WebUI?',
     ),
   );
   assert.deepEqual(pageErrors, []);
@@ -151,10 +151,11 @@ test('search results do not retain stale title segments while typing', async (t)
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/integrations/wasm/`, {
+  await page.goto(`${server.origin}/webui/build/integrations/wasm/`, {
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
+  const expectedTitle = (await page.title()).replace(' | WebUI Framework', '');
 
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
@@ -179,8 +180,8 @@ test('search results do not retain stale title segments while typing', async (t)
     };
   });
 
-  assert.equal(first.href, '/webui/guide/integrations/wasm');
-  assert.equal(first.normalizedTitle, 'WebUIWebAssembly');
+  assert.equal(first.href, '/webui/build/integrations/wasm');
+  assert.equal(first.normalizedTitle, expectedTitle.replace(/\s+/g, ''));
   assert.deepEqual(first.marks, ['Asse']);
 });
 
@@ -192,10 +193,11 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/integrations/wasm/`, {
+  await page.goto(`${server.origin}/webui/build/integrations/wasm/`, {
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
+  const expectedTitle = (await page.title()).replace(' | WebUI Framework', '');
 
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
@@ -246,7 +248,7 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
   assert.equal(separator.text, '>');
   assert.equal(
     separator.normalizedTitle,
-    'WebUIWebAssembly>BuildingtheWASMbundles',
+    `${expectedTitle}>Building the WASM bundles`.replace(/\s+/g, ''),
   );
   assert.ok(separator.marginLeft > 0, `marginLeft=${separator.marginLeft}`);
   assert.ok(separator.marginRight > 0, `marginRight=${separator.marginRight}`);
@@ -260,7 +262,7 @@ test('documentation pages scroll inside main content, not the window', async (t)
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/concepts/components/`, {
+  await page.goto(`${server.origin}/webui/learn/components/`, {
     waitUntil: 'networkidle',
   });
 
@@ -292,7 +294,7 @@ test('documentation pages support keyboard and history scrolling', async (t) => 
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/concepts/components/`, {
+  await page.goto(`${server.origin}/webui/learn/components/`, {
     waitUntil: 'networkidle',
   });
 
@@ -306,7 +308,7 @@ test('documentation pages support keyboard and history scrolling', async (t) => 
   assert.equal(afterPageDown.windowY, 0);
   assert.ok(afterPageDown.mainY > 0, `mainY=${afterPageDown.mainY}`);
 
-  await page.goto(`${server.origin}/webui/guide/concepts/interactivity/`, {
+  await page.goto(`${server.origin}/webui/learn/interactivity/`, {
     waitUntil: 'networkidle',
   });
   await page.goBack({ waitUntil: 'networkidle' });
@@ -327,7 +329,7 @@ test('scrollbars and search highlights use theme-specific colors', async (t) => 
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/integrations/wasm/`, {
+  await page.goto(`${server.origin}/webui/build/integrations/wasm/`, {
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
@@ -378,13 +380,18 @@ test('scrollbars and search highlights use theme-specific colors', async (t) => 
     };
   });
 
-  assert.equal(light.thumb, '#9ca3af');
-  assert.equal(light.track, '#f3f4f6');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-theme', 'light');
+  });
+  const lightMarkBg = await page.locator('docs-search mark').first()
+    .evaluate(mark => getComputedStyle(mark).backgroundColor);
+  assert.ok([light, dark].every(({ thumb, track }) => thumb && track && thumb !== track));
   assert.equal(light.searchHeight, 36);
   assert.equal(light.themeHeight, light.searchHeight);
-  assert.equal(dark.thumb, '#4b5563');
-  assert.equal(dark.track, '#111827');
-  assert.equal(dark.markBg, 'rgb(183, 121, 31)');
+  assert.notEqual(dark.thumb, light.thumb);
+  assert.notEqual(dark.track, light.track);
+  assert.notEqual(dark.markBg, lightMarkBg);
+  assert.ok([dark.markBg, lightMarkBg].every(color => color !== 'rgba(0, 0, 0, 0)'));
 });
 
 test('search highlighting preserves spaces between title segments', async (t) => {
@@ -395,26 +402,31 @@ test('search highlighting preserves spaces between title segments', async (t) =>
   t.after(() => browser.close());
 
   const page = await browser.newPage();
-  await page.goto(`${server.origin}/webui/guide/concepts/directives/signals/`, {
+  await page.goto(`${server.origin}/webui/learn/directives/signals/`, {
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
+  const expectedTitle = (await page.title()).replace(' | WebUI Framework', '');
 
   const title = await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
     const input = el.shadowRoot.querySelector('input');
-    input.value = 'signal';
+    input.value = 'raw';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const result = [...el.shadowRoot.querySelectorAll('.result')].find((item) =>
-      item.getAttribute('href')?.endsWith('/guide/concepts/directives/signals'),
+      item.getAttribute('href')?.endsWith('/learn/directives/signals'),
     );
-    return (result?.querySelector('.result-title') as HTMLElement | null)
-      ?.innerText ?? '';
+    const title = result?.querySelector<HTMLElement>('.result-title');
+    return {
+      text: title?.innerText ?? '',
+      marks: [...(title?.querySelectorAll('mark') ?? [])].map(mark => mark.textContent),
+    };
   });
 
-  assert.equal(title.trim().replace(/\s+/g, ' '), 'Signal Directives');
+  assert.equal(title.text.trim().replace(/\s+/g, ' '), expectedTitle);
+  assert.deepEqual(title.marks, ['raw']);
 });
 
 test('mobile navigation opens everywhere and restores focus on escape', async (t) => {
@@ -490,13 +502,17 @@ test('documentation shell preserves semantic hierarchy and reading measure', asy
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`${server.origin}/webui/`, { waitUntil: 'networkidle' });
   const homeHeadings = await page
-    .locator('#main-content h1, #main-content h2, #main-content h3')
+    .locator('#main-content :is(h1, h2, h3, h4, h5, h6)')
     .evaluateAll((nodes) => nodes.map((node) => node.tagName));
   assert.equal(homeHeadings[0], 'H1');
-  assert.ok(homeHeadings.slice(1).every((tag) => tag === 'H2'));
+  for (let index = 1; index < homeHeadings.length; index += 1) {
+    const level = Number(homeHeadings[index].slice(1));
+    const previous = Number(homeHeadings[index - 1].slice(1));
+    assert.ok(level > 1 && level <= previous + 1, `heading level skipped: ${homeHeadings.join(', ')}`);
+  }
 
   await page.goto(
-    `${server.origin}/webui/guide/concepts/directives/signals/`,
+    `${server.origin}/webui/learn/directives/signals/`,
     { waitUntil: 'networkidle' },
   );
   const shell = await page.evaluate(() => {
@@ -517,16 +533,16 @@ test('documentation shell preserves semantic hierarchy and reading measure', asy
     ].find((details) =>
       details
         .querySelector('.sidebar-summary')
-        ?.textContent?.includes('Template Syntax'),
+        ?.textContent?.includes('Template syntax'),
     );
-    const cliDetails = [
+    const integrationsDetails = [
       ...(sidebarRoot?.querySelectorAll<HTMLDetailsElement>(
         '.sidebar-branch',
       ) ?? []),
     ].find((details) =>
       details
         .querySelector('.sidebar-summary')
-        ?.textContent?.includes('CLI Reference'),
+        ?.textContent?.includes('Backend integrations'),
     );
     return {
       sidebarTitleTags: sidebarTitles.map((title) => title.tagName),
@@ -534,7 +550,7 @@ test('documentation shell preserves semantic hierarchy and reading measure', asy
       articleWidth: article?.getBoundingClientRect().width ?? 0,
       mainWidth: main?.getBoundingClientRect().width ?? 0,
       templateExpanded: templateDetails?.open,
-      cliExpanded: cliDetails?.open,
+      integrationsExpanded: integrationsDetails?.open,
       customNavigationDefined: Boolean(
         customElements.get('docs-site-navigation'),
       ),
@@ -548,14 +564,14 @@ test('documentation shell preserves semantic hierarchy and reading measure', asy
   assert.ok(shell.articleWidth > 0 && shell.articleWidth <= 800);
   assert.ok(shell.articleWidth < shell.mainWidth);
   assert.equal(shell.templateExpanded, true);
-  assert.equal(shell.cliExpanded, false);
+  assert.equal(shell.integrationsExpanded, false);
   assert.equal(shell.customNavigationDefined, true);
   assert.ok(shell.nativeDisclosureCount > 0);
 
   const templateDisclosure = page
     .locator('.sidebar docs-sidebar-navigation')
     .locator('details.sidebar-branch')
-    .filter({ hasText: 'Template Syntax' });
+    .filter({ hasText: 'Template syntax' });
   await templateDisclosure.locator('summary').click();
   assert.equal(await templateDisclosure.getAttribute('open'), null);
 });

@@ -25,7 +25,7 @@ use std::{fs, path};
 
 /// Project-local scratch directory used when the system temp directory lives
 /// on another volume. Self-ignoring, so consuming repositories need no change.
-const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
+pub(crate) const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
 
 /// Returns the base directory for Press scratch and cache directories.
 ///

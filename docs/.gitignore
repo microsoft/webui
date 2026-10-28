@@ -3,3 +3,6 @@ node_modules/
 .webui-press/public/wasm
 .webui-press/generated/
 .webui-press/public/benchmarks/
+.webui-press/public/guide/
+.webui-press/public/tutorials/
+.webui-press/public/examples/

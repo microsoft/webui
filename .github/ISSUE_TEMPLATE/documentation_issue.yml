@@ -37,7 +37,7 @@ body:
     attributes:
       label: Page, section, or workflow
       description: Link to the page or name the workflow, if you know it.
-      placeholder: https://microsoft.github.io/webui/guide/...
+      placeholder: https://microsoft.github.io/webui/start/...
   - type: textarea
     id: problem
     attributes:

@@ -4,7 +4,7 @@ Build-time compiled router for [WebUI](https://github.com/microsoft/webui) apps.
 
 Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) for client-side transitions. The server provides the matched route chain; the client does not perform route matching.
 
-> 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/guide/concepts/routing) for setup and usage.
+> 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/build/routing) for setup and usage.
 
 ## How It Works
 
@@ -580,7 +580,7 @@ For speculative preloads, Chunk 1 is cached before reading continues; Chunk 2
 state is merged into that cached response before the entry becomes consumable.
 Failed commits cancel and unlock the unread stream.
 
-See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
+See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/build/routing.md) for complete server implementation examples.
 
 ## Architecture
 

@@ -3,8 +3,8 @@
 This is the internal contract shared by the Rust handler, host bindings, and
 browser coordinator. See [DESIGN.md](../DESIGN.md#progressive-streaming-hydration)
 for the architectural boundary, the
-[boundary guide](../docs/guide/concepts/directives/boundary.md) for authoring,
-and the [hydration guide](../docs/guide/concepts/hydration.md#progressive-streaming-hydration)
+[boundary guide](../docs/learn/directives/boundary.md) for authoring,
+and the [hydration guide](../docs/build/hydration.md#progressive-streaming-hydration)
 for browser integration. The [hydration contract](hydration.md) covers how
 complete streamed ranges adopt their SSR DOM. Streaming HTML is opt-in;
 normal rendering and JSON/NDJSON navigation do not acquire its records
@@ -39,7 +39,7 @@ state, then frozen parent state. Independent host bindings return writable
 segments rather than requiring callers to own a Rust writer. A separate
 versioned NDJSON API-proxy control stream drives this same session through
 the CLI; its `start`/`resume`/`update` commands are **not** browser hydration
-records. See the [CLI reference](../docs/guide/cli/index.md).
+records. See the [CLI reference](../docs/reference/cli/index.md).
 
 ## Browser record wire
 

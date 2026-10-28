@@ -11,7 +11,7 @@
     "README.md"
   ],
   "scripts": {
-    "build:test": "tsc --project tsconfig.test.json --noEmit && esbuild \"tests/**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=tests --outdir=dist-test --out-extension:.js=.mjs",
+    "build:test": "tsc --project tsconfig.test.json --noEmit && esbuild \"tests/**/*.test.ts\" \"../../docs/.webui-press/components/**/*.test.ts\" \"../../docs/.webui-press/regions/**/*.test.ts\" \"../../docs/.webui-press/scripts/**/*.test.ts\" \"../../docs/start/**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --entry-names=[name] --outdir=dist-test --out-extension:.js=.mjs",
     "test": "cargo build -p microsoft-webui-cli -p microsoft-webui-press && pnpm --filter @webui/docs... build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
   },
   "optionalDependencies": {

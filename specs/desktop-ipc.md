@@ -2,7 +2,7 @@
 
 This specification records the cross-language desktop **application IPC**
 boundary. It complements the [desktop architecture](../DESIGN.md#desktop-boundary)
-and [public usage guide](../docs/guide/concepts/desktop.md); it is not an
+and [public usage guide](../docs/build/desktop.md); it is not an
 application API reference. The Rust host and its packaged renderer runtime are
 built together. Application messages use generated proto3 codecs, while the
 framework envelope is a separate, version-3 fixed-layout binary format. Exact

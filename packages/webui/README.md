@@ -28,7 +28,7 @@ npx skills add microsoft/webui --skill webui-reference
 The loader reads `node_modules/@microsoft/webui/ai.md` from your application.
 Package upgrades update the reference without reinstalling the skill. The
 `@microsoft/webui/ai.md` subpath also supports package resolution for hoisted
-dependencies. See [AI Coding Agents](https://microsoft.github.io/webui/guide/installation#ai-coding-agents)
+dependencies. See [AI Coding Agents](https://microsoft.github.io/webui/start/installation#ai-coding-agents)
 for migration and setup details.
 
 ## Quick start
