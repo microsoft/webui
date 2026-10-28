@@ -89,6 +89,22 @@ function runIdle(): void {
   for (const callback of idleCallbacks.splice(0)) callback();
 }
 
+const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+
+async function until(check: () => unknown): Promise<void> {
+  for (let i = 0; i < 100 && !check(); i++) await tick();
+  assert.ok(check());
+}
+
+/** Hold a pack's install after its templates are published, until `release()`. */
+function holdResources(): { release(): void; restore(): void } {
+  let release!: () => void;
+  const prepared = new Promise<void>(resolve => { release = resolve; });
+  const target = browser as unknown as Window;
+  target.__webuiPrepareResources = () => prepared;
+  return { release, restore: () => { delete target.__webuiPrepareResources; } };
+}
+
 /** A compiled conditional entry for a lazy region with a prefetch trigger. */
 function lazyCondition(id: string, trigger: 1 | 2 | 3 | 4): CompiledConditionalMeta {
   return [[0, ['open']], id, [0, 0], trigger];
@@ -358,6 +374,28 @@ test('activation loads at high priority, re-enters its host, and rendered retrie
   assert.equal(mounted.length, 1, 'settled hosts have nothing left to render');
 });
 
+test('a pack that is still installing is joined rather than treated as ready', async () => {
+  const id = region('ready-owner');
+  const url = '_webui/packs/ready-owner.0015.json';
+  serve(url, pack('ready-owner'));
+  const resources = holdResources();
+  try {
+    requests.length = 0;
+    const first = runtime.prefetchPacks({ [id]: url });
+    await until(() => registry()[id]);
+    let joined = false;
+    const second = runtime.prefetchPacks({ [id]: url }).then(() => { joined = true; });
+    await tick();
+    assert.equal(joined, false, 'published templates still wait for their resources');
+    resources.release();
+    await Promise.all([first, second]);
+    assert.equal(joined, true);
+    assert.equal(requests.length, 1);
+  } finally {
+    resources.restore();
+  }
+});
+
 test('the element waits for a closed region condition and never mounts into a disposed owner', async () => {
   const { TemplateElement } = await import('./template-element.js');
   const id = region('glue-owner');
@@ -391,4 +429,36 @@ test('the element waits for a closed region condition and never mounts into a di
   await host.$prefetch();
   assert.deepEqual(requests.at(-1), { url: otherUrl, priority: 'auto' });
   assert.equal(typeof host.$rendered, 'function');
+});
+
+test('the element joins an installing pack instead of mounting before its resources', async () => {
+  const { TemplateElement } = await import('./template-element.js');
+  const id = region('join-owner');
+  const url = '_webui/packs/join-owner.0016.json';
+  serve(url, pack('join-owner'));
+  const resources = holdResources();
+  try {
+    const host = Object.assign(Object.create(TemplateElement.prototype) as object, {
+      localName: 'join-owner',
+      $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
+    }) as unknown as import('./lazy-runtime.js').LazyHost;
+    // Detached bindings never mount, so the core needs no DOM here.
+    const first = bindingFor(id, true);
+    const second = bindingFor(id, true);
+    for (const binding of [first, second]) Object.assign(binding, { condition: [() => true], anchor: { parentNode: {} } });
+    requests.length = 0;
+    host.$toggleCond(first);
+    await until(() => registry()[id]);
+    host.$toggleCond(second);
+    let settled = false;
+    const done = runtime.rendered(host).then(() => { settled = true; });
+    await tick();
+    assert.equal(settled, false, 'the second activation waits for the same install');
+    resources.release();
+    await done;
+    assert.deepEqual(requests, [{ url, priority: 'high' }]);
+    assert.equal(second.instance, null);
+  } finally {
+    resources.restore();
+  }
 });

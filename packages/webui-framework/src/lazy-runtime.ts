@@ -101,22 +101,28 @@ function revive(id: string): TemplateMeta | undefined {
 }
 
 function load(region: string, url: string, priority: Priority = 'auto'): Promise<void> {
-  if (resolve(region, undefined, true)) return RESOLVED;
+  // An installing pack has published its templates before their definitions
+  // and resources are ready, so every caller joins the in-flight load.
   let loading = loads.get(url);
-  if (!loading) {
-    // A stalled request must settle so the next activation can retry it.
-    loading = fetch(url, { priority, signal: AbortSignal.timeout?.(PACK_TIMEOUT_MS) } as RequestInit)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`[WebUI] Lazy region pack ${url} failed with HTTP ${response.status}.`);
-        }
-        return response.json() as Promise<TemplatePack>;
-      })
-      .then(pack => install(pack, region, url))
-      .finally(() => { loads.delete(url); });
-    loads.set(url, loading);
-  }
+  if (loading) return loading;
+  if (resolve(region, undefined, true)) return RESOLVED;
+  // A stalled request must settle so the next activation can retry it.
+  loading = fetch(url, { priority, signal: AbortSignal.timeout?.(PACK_TIMEOUT_MS) } as RequestInit)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`[WebUI] Lazy region pack ${url} failed with HTTP ${response.status}.`);
+      }
+      return response.json() as Promise<TemplatePack>;
+    })
+    .then(pack => install(pack, region, url))
+    .finally(() => { loads.delete(url); });
+  loads.set(url, loading);
   return loading;
+}
+
+/** Whether a pack is still loading or installing, so its region cannot mount yet. */
+export function installing(url: string): boolean {
+  return loads.has(url);
 }
 
 /** Register a pack's missing templates; resolves once they can mount. */

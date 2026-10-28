@@ -16,6 +16,7 @@ import {
   activate,
   blockOwner,
   disposed,
+  installing,
   opened,
   prefetchPacks,
   rendered,
@@ -71,10 +72,8 @@ element.$toggleCond = function (this: Host, c: CondBinding): void {
   }
   // A closed region needs its template only once its condition holds.
   if (!c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy)) return;
-  const url = c.anchor?.parentNode && !resolve(region, this.localName, true)
-    ? (c.owner.fragment ?? this.$meta)?.lp?.[region]
-    : undefined;
-  if (url) {
+  const url = c.anchor?.parentNode ? (c.owner.fragment ?? this.$meta)?.lp?.[region] : undefined;
+  if (url && (installing(url) || !resolve(region, this.localName, true))) {
     activate(this, c, url);
     return;
   }

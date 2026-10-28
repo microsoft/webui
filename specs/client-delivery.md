@@ -159,7 +159,10 @@ disposed cannot mount. Without the runtime, activation throws an error that
 names `lazy.js`.
 
 Activation and prefetch share one load per URL, with a 10 second deadline so a
-stalled request fails and the next activation retries. Installation validates
+stalled request fails and the next activation retries. A region whose pack is
+still loading or installing is not ready even after its templates are
+published: activation and prefetch join that load instead of mounting early.
+Installation validates
 the type, version, and region; registers only templates the document does not
 already hold (registered, still held by the template cache, which registers
 them again, or still alive after release); runs their condition closures with
