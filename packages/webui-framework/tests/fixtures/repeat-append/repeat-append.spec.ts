@@ -110,4 +110,15 @@ test.describe('unkeyed repeat reconciliation', () => {
     await page.locator('test-repeat-parent .remove-middle').click();
     await expect(marked).toHaveText('#Item 6#Item 1#Item 3#Item 4#Item 5');
   });
+
+  test('keeps inline separators after client-created items', async ({ page }) => {
+    const spaced = page.locator('test-repeat-parent .spaced');
+    await expect(spaced).toHaveJSProperty('textContent', 'Item 1 Item 2 Item 3 Item 4 Item 5 end');
+
+    await page.locator('test-repeat-parent .add').click();
+    await expect(spaced).toHaveJSProperty(
+      'textContent',
+      'Item 1 Item 2 Item 3 Item 4 Item 5 Item 6 end',
+    );
+  });
 });

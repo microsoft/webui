@@ -172,6 +172,18 @@ test.describe('conditional fixture', () => {
     expect(await labelText()).toBe(1);
   });
 
+  test('keeps inline separators at conditional edges when recreated', async ({ page }) => {
+    const host = page.locator('test-conditional-hydration-ranges');
+    const edges = host.locator('.inline-edges');
+    await expect(edges).toHaveJSProperty('textContent', 'Z A B');
+
+    await host.locator('.outer-toggle').click();
+    await expect(edges).toHaveJSProperty('textContent', 'ZB');
+
+    await host.locator('.outer-toggle').click();
+    await expect(edges).toHaveJSProperty('textContent', 'Z A B');
+  });
+
   test('compacts a resnapshotted root repeat when its condition hides', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const host = document.querySelector('test-conditional-hydration-ranges') as any;

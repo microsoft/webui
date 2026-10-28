@@ -104,9 +104,10 @@ whitespace within a binding's text node. State values are never trimmed.
 Static text parts follow browser HTML parsing: source CR/CRLF becomes LF,
 character references are decoded, and the initial LF after
 `pre`/`textarea`/`listing` is ignored before client text assignment.
-Whitespace-only formatting at the leading or trailing edge of a component,
-`<if>`, or `<for>` body, next to markup, is omitted from `h` just as SSR omits
-it, so client-created blocks start and end with the same nodes as adopted ones.
+SSR drops whitespace-only text that contains a line break and keeps inline
+spaces and tabs. The leading and trailing edges of a component, `<if>`, or
+`<for>` body follow the same rule in `h`, so client-created blocks start and
+end with the same nodes as adopted ones.
 
 Whole-value dynamic attributes omit missing and null values during SSR and
 client binding updates. Empty strings, zero, and false remain values; mixed
