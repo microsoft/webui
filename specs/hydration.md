@@ -228,8 +228,10 @@ binding slots also rule out that fast path, even when their text is absent
 from the static client HTML. Other repeat and conditional bodies are adopted as
 bounded live sibling ranges. Their root
 index refers to the actual insertion container, but root-level element, marker,
-and text-slot lookup cannot cross the range boundaries. No content is detached
-for indexing or wiring. After wiring and stale-marker removal, the instance
+and text-slot lookup cannot cross the range boundaries. Ref discovery also
+stays within the range, including its top-level elements and their descendants,
+rather than rescanning the live container for each fragment. No content is
+detached for indexing or wiring. After wiring and stale-marker removal, the instance
 owns every surviving top-level node in its range, including text and comments,
 for later reconciliation and teardown.
 

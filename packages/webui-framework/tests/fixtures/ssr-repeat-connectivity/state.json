@@ -19,6 +19,8 @@
       ]
     }
   ],
+  "smallItems": ["a", "b"],
+  "largeItems": ["a", "b", "c", "d"],
   "visible": true,
   "selected": ""
 }

@@ -16,9 +16,14 @@ export interface Capture {
   probes: Element[];
   repeatNodes: Node[];
   disconnects: string[];
+  refAssignments: Array<{ name: string; node: Element }>;
+  refNodes: Array<{ node: Element; parent: ParentNode | null }>;
 }
 
-const capture: Capture = { nodes: [], probes: [], repeatNodes: [], disconnects: [] };
+const capture: Capture = {
+  nodes: [], probes: [], repeatNodes: [], disconnects: [],
+  refAssignments: [], refNodes: [],
+};
 Reflect.set(window, '__connectivityCapture', capture);
 
 class ConnectivityProbe extends WebUIElement {
@@ -34,6 +39,17 @@ export class ConnectivityList extends WebUIElement {
   @observable selected = '';
 
   select(id: string): void { this.selected = id; }
+}
+
+export class ConnectivityRefs extends WebUIElement {
+  @observable smallItems: string[] = [];
+  @observable largeItems: string[] = [];
+  @observable visible = true;
+
+  set smallRef(node: Element) { capture.refAssignments.push({ name: 'small', node }); }
+  set largeRef(node: Element) { capture.refAssignments.push({ name: 'large', node }); }
+  set conditionalRef(node: Element) { capture.refAssignments.push({ name: 'conditional', node }); }
+  set neighborRef(node: Element) { capture.refAssignments.push({ name: 'neighbor', node }); }
 }
 
 // Upgrade children before their parent so synchronous hydration moves are observable.
@@ -67,4 +83,9 @@ while (stack.length > 0) {
   }
 }
 capture.repeatNodes = Array.from(repeatNodes);
+capture.refNodes = Array.from(
+  document.querySelector('connectivity-refs')!.shadowRoot!.querySelectorAll('[w-ref]'),
+  node => ({ node, parent: node.parentNode }),
+);
+ConnectivityRefs.define('connectivity-refs');
 ConnectivityList.define('connectivity-list');

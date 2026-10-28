@@ -48,6 +48,7 @@ import type {
   ScopeFrame,
   TemplateInstance,
 } from './element/types.js';
+import type { SSRRange } from './element/markers.js';
 
 type EventHandler = (...args: unknown[]) => unknown;
 
@@ -358,10 +359,11 @@ export class WebUIElement extends TemplateElement {
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
+    range?: SSRRange,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
     if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
-    this.$wireRefs(root);
+    this.$wireRefs(root, range);
   }
 
   /**
@@ -490,14 +492,25 @@ export class WebUIElement extends TemplateElement {
   }
 
   /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
-    if (root.nodeType !== 1 && root.nodeType !== 11) return;
-    const refs = (root as Element).querySelectorAll('[w-ref]');
-    for (let i = 0; i < refs.length; i++) {
-      const raw = refs[i].getAttribute('w-ref');
-      if (!raw || raw.charCodeAt(0) !== 123) continue;
-      const name = raw.slice(1, -1);
-      if (name) (this as Record<string, unknown>)[name] = refs[i];
+  private $wireRefs(root: Node, range?: SSRRange): void {
+    let node = range ? range.start.nextSibling : root;
+    while (node && (!range || node !== range.end)) {
+      if (range && node.nodeType === 1) this.$wireRef(node as Element);
+      if (node.nodeType === 1 || node.nodeType === 11) {
+        const refs = (node as Element).querySelectorAll('[w-ref]');
+        for (let i = 0; i < refs.length; i++) {
+          this.$wireRef(refs[i]);
+        }
+      }
+      if (!range) return;
+      node = node.nextSibling;
     }
+  }
+
+  private $wireRef(element: Element): void {
+    const raw = element.getAttribute('w-ref');
+    if (!raw || raw.charCodeAt(0) !== 123) return;
+    const name = raw.slice(1, -1);
+    if (name) (this as Record<string, unknown>)[name] = element;
   }
 }

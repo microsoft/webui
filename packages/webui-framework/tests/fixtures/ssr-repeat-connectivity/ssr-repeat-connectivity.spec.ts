@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { expect, test, type Page } from '@playwright/test';
-import type { Capture, ConnectivityList, Item } from './element.js';
+import type { Capture, ConnectivityList, ConnectivityRefs, Item } from './element.js';
 
 async function openFixture(page: Page): Promise<void> {
   await page.goto('/ssr-repeat-connectivity/fixture.html');
@@ -137,4 +137,60 @@ test('tears down and recreates conditional fragments without claiming neighborin
   await expect(page.locator('#structural connectivity-probe')).toHaveText(['Alpha', 'Beta']);
   await expect(page.locator('#conditional connectivity-probe')).toHaveText(['Alpha', 'Beta']);
   await expect(page.locator('#conditional .detail')).toHaveText('Conditional detail');
+});
+
+test('keeps repeat ref assignments linear without disconnecting their SSR nodes', async ({ page }) => {
+  for (const load of ['cold', 'warm']) {
+    await test.step(load, async () => {
+      await openFixture(page);
+      await page.waitForFunction(() => Reflect.get(document.querySelector('connectivity-refs')!, '$ready') === true);
+      expect(await page.evaluate(() => {
+        const capture = Reflect.get(window, '__connectivityCapture') as Capture;
+        const counts = (name: string) => capture.refAssignments.filter(ref => ref.name === name).length;
+        return {
+          small: counts('small'),
+          large: counts('large'),
+          sameNodesAndParents: capture.refNodes.every(({ node, parent }) =>
+            node.isConnected && node.parentNode === parent),
+          assignmentsPerNode: capture.refNodes.every(({ node }) =>
+            capture.refAssignments.filter(ref => ref.node === node).length
+              === (node.getAttribute('w-ref') === '{neighborRef}' ? 1 : 2)),
+        };
+      })).toEqual({
+        small: 8, large: 16, sameNodesAndParents: true, assignmentsPerNode: true,
+      });
+    });
+  }
+});
+
+test('bounds conditional ref discovery and preserves client-created ref wiring', async ({ page }) => {
+  await openFixture(page);
+  const refs = page.locator('connectivity-refs');
+  await page.waitForFunction(() => Reflect.get(document.querySelector('connectivity-refs')!, '$ready') === true);
+  expect(await page.evaluate(() => {
+    const capture = Reflect.get(window, '__connectivityCapture') as Capture;
+    return {
+      conditional: capture.refAssignments.filter(ref => ref.name === 'conditional').length,
+      neighbors: capture.refNodes
+        .filter(({ node }) => node.parentElement?.id === 'conditional-refs'
+          && node.getAttribute('w-ref') === '{neighborRef}')
+        .map(({ node }) => capture.refAssignments.filter(ref => ref.node === node).length),
+    };
+  })).toEqual({ conditional: 4, neighbors: [1, 1] });
+
+  await page.evaluate(() => {
+    (document.querySelector('connectivity-refs') as ConnectivityRefs).visible = false;
+  });
+  await expect(refs.locator('[w-ref="{conditionalRef}"]')).toHaveCount(0);
+  await page.evaluate(() => {
+    (document.querySelector('connectivity-refs') as ConnectivityRefs).visible = true;
+  });
+  await expect(refs.locator('[w-ref="{conditionalRef}"]')).toHaveCount(2);
+  expect(await page.evaluate(() => {
+    const capture = Reflect.get(window, '__connectivityCapture') as Capture;
+    return {
+      conditional: capture.refAssignments.filter(ref => ref.name === 'conditional').length,
+      neighbors: capture.refAssignments.filter(ref => ref.name === 'neighbor').length,
+    };
+  })).toEqual({ conditional: 6, neighbors: 4 });
 });

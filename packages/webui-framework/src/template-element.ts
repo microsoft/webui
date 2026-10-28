@@ -2204,7 +2204,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Events + refs - this is the last phase that reads the resolved index.
-    this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope);
+    this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope, range);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping. Repeat starts and starts
@@ -2425,6 +2425,7 @@ export class TemplateElement extends HTMLElement {
     _meta: TemplateBlockMeta,
     _resolver: (root: Node, index: TemplateNodeIndex) => Node | null,
     _scope?: ScopeFrame,
+    _range?: SSRRange,
   ): void {}
 
 

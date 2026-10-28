@@ -1,0 +1,24 @@
+<template shadowrootmode="open">
+  <section id="small-refs">
+    <for each="item in smallItems">
+      <span w-ref="{smallRef}">{{item}}</span>
+      <div><span w-ref="{smallRef}">{{item}}</span></div>
+    </for>
+    <span w-ref="{neighborRef}">Small tail</span>
+  </section>
+  <section id="large-refs">
+    <for each="item in largeItems">
+      <span w-ref="{largeRef}">{{item}}</span>
+      <div><span w-ref="{largeRef}">{{item}}</span></div>
+    </for>
+    <span w-ref="{neighborRef}">Large tail</span>
+  </section>
+  <section id="conditional-refs">
+    <span w-ref="{neighborRef}">Conditional head</span>
+    <if condition="visible">
+      <span w-ref="{conditionalRef}">Conditional root</span>
+      <div><span w-ref="{conditionalRef}">Conditional descendant</span></div>
+    </if>
+    <span w-ref="{neighborRef}">Conditional tail</span>
+  </section>
+</template>
