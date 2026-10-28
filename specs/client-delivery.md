@@ -191,12 +191,13 @@ templates from packs stay registered; ordinary template collection governs them.
 Collection in a new epoch leaves the runtime's earlier registrations to that
 collection.
 
-`lazy.js` adds `$rendered()` and `$prefetch()` to elements, and to their types
-through module augmentation. `$rendered()` flushes queued updates, then waits for
-the owner's pending regions, including nested regions activated by their mounts.
-It rejects with a pack failure and retries failed regions that remain active
-when called again. `$prefetch()` loads every region named by the owner
-template's `lp`.
+Setting a lazy condition is the whole activation API; prefetching is declared by
+the trigger, never requested imperatively. `lazy.js` adds one optional method,
+`$rendered()`, to elements and to their types through module augmentation, for
+code that needs a body's DOM immediately. It flushes queued updates, then waits
+for the owner's pending regions, including nested regions activated by their
+mounts. It rejects with a pack failure and retries failed regions that remain
+active when called again.
 
 The WebUI adapter uses metadata identity for parsed DOM caching and weak
 block-to-fragment ownership. Active views retain their fragment; disconnected

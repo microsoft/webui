@@ -100,7 +100,8 @@ function revive(id: string): TemplateMeta | undefined {
   return template;
 }
 
-function load(region: string, url: string, priority: Priority = 'auto'): Promise<void> {
+/** Load a region's pack once; every caller shares the same request until it installs. */
+export function load(region: string, url: string, priority: Priority = 'auto'): Promise<void> {
   // An installing pack has published its templates before their definitions
   // and resources are ready, so every caller joins the in-flight load.
   let loading = loads.get(url);
@@ -215,13 +216,6 @@ export async function rendered(host: LazyHost): Promise<void> {
 /** Disposing an instance empties its bindings, so a pack arriving later never mounts into it. */
 function attached(binding: CondBinding): boolean {
   return binding.owner.conds.includes(binding);
-}
-
-/** Load packs without rendering them. */
-export async function prefetchPacks(packs: Readonly<Record<string, string>> | undefined): Promise<void> {
-  const waits: Promise<void>[] = [];
-  if (packs) for (const region in packs) waits.push(load(region, packs[region]));
-  await Promise.all(waits);
 }
 
 /**

@@ -11,46 +11,50 @@ component: state, handlers, refs, and loop variables keep their existing owner.
 
 ```html
 <!-- app-shell.html -->
-<button @click="{openSettings()}">Settings</button>
+<button @click="{toggleSettings()}">Settings</button>
 
-<dialog w-ref="{settingsDialog}" @close="{onSettingsClosed()}">
-  <if condition="settingsReady" lazy>
+<if condition="settingsOpen" lazy>
+  <section>
     <h2>Settings</h2>
     <p>{{displayName}}</p>
-    <button @click="{saveSettings()}">Save</button>
-  </if>
-</dialog>
+  </section>
+</if>
 ```
 
-The build compiles each lazy body into a static, content-addressed **template
-pack**. The page only references it. When the condition becomes true, the
-framework fetches the pack, registers its templates, and renders the body. No
-server endpoint, region id, or loader code is involved.
+```typescript
+toggleSettings(): void {
+  this.settingsOpen = !this.settingsOpen;
+}
+```
+
+That is the whole API. The build compiles each lazy body into a static,
+content-addressed **template pack**, and the page only references it. When the
+condition becomes true, the framework fetches the pack if it is not loaded yet,
+registers its templates, and renders the body. No server endpoint, region id, or
+loader code is involved.
 
 This is different from `w-hydrate="lazy"` and `w-render="lazy"`, which postpone
 work on already server-rendered components. `<if lazy>` omits an inactive body's
 markup and templates from the initial document.
 
-## Choose when to prefetch
+## Choose when the template loads
 
-The optional value of `lazy` sets when the pack is fetched before the condition
-becomes true. Prefetching only fetches and registers templates; it never renders
-or requests application state.
+The optional value of `lazy` sets when the pack is fetched ahead of use.
+Prefetching only fetches and registers templates; it never renders or requests
+application state.
 
-| Declaration | Prefetches | Use for |
+| Declaration | Fetches the pack | Use for |
 | --- | --- | --- |
 | `lazy` or `lazy="intent"` | When a pointer moves over, focus enters, or a touch starts inside the owning component | Most dialogs, popovers, and panels behind a control |
 | `lazy="idle"` | When the browser is idle after the page loads | UI that is likely to be used soon |
 | `lazy="load"` | Right after startup hydration | UI that is needed almost immediately |
-| `lazy="demand"` | Never; it loads when activated or prefetched | Rare UI, and regions nested in other lazy regions |
+| `lazy="demand"` | Only when the condition becomes true | Rare UI, and regions nested in other lazy regions |
 
-Idle and load prefetch are skipped when the user has enabled data saving. Call
-`this.$prefetch()` to load all of a component's lazy regions on a signal of your
-own, such as a keyboard shortcut or a route change.
+Idle and load prefetch are skipped when the user has enabled data saving.
 
-Prefer `intent` for UI that opens from a control in the owner. A region that is
-fetched only on activation costs at least one extra network round trip after the
-click, even from the HTTP cache.
+Prefer `intent` for UI that opens from a control in the owner. With `demand`, the
+body appears at least one network round trip after the condition becomes true,
+even when the pack comes from the HTTP cache.
 
 ## Set up the runtime
 
@@ -67,49 +71,47 @@ startRuntime();
 
 Pages without lazy regions do not need this import and pay nothing for the
 feature: the rendering core contains no lazy code. The import also adds
-`$rendered()` and `$prefetch()` to your components, along with their TypeScript
-types. Activating a lazy region without it throws an error that names the
-import.
+`$rendered()` to your components, along with its TypeScript type. Activating a
+lazy region without it throws an error that names the import.
 
-## Load state and open
+## Data
 
-State remains owned by your application. Fetch it the way you fetch any other
-data, set the condition, and await `this.$rendered()` before you use anything
-inside the body:
+Lazy regions never fetch application state. Load data the way you normally do
+and assign it to the component. If you set the condition before awaiting your
+request, the body's pack downloads at the same time.
+
+## Dialogs, popovers, and focus
+
+Setting the condition is enough to show the body. Await `this.$rendered()` only
+when code needs the body's DOM right away. The common case is a native dialog:
+`showModal()` moves focus into the dialog immediately, so the body must exist
+before you call it.
+
+```html
+<dialog w-ref="{settingsDialog}" @close="{closeSettings()}">
+  <if condition="settingsOpen" lazy>
+    <h2>Settings</h2>
+    <input autofocus value="{{displayName}}">
+  </if>
+</dialog>
+```
 
 ```typescript
-private settingsRequest?: AbortController;
-
 async openSettings(): Promise<void> {
-  this.settingsRequest?.abort();
-  const request = new AbortController();
-  this.settingsRequest = request;
-  try {
-    // Fetch the template pack in parallel with the state.
-    const [state] = await Promise.all([
-      fetch('/api/settings', { signal: request.signal }).then(response => response.json()),
-      this.$prefetch(),
-    ]);
-    if (request.signal.aborted) return;
-    this.setState(state);
-    this.settingsReady = true;
-    await this.$rendered();
-    this.settingsDialog.showModal();
-  } catch (error) {
-    if (!request.signal.aborted) this.settingsError = String(error);
-  }
+  this.settingsOpen = true;
+  await this.$rendered();
+  this.settingsDialog.showModal();
 }
 
-onSettingsClosed(): void {
-  this.settingsRequest?.abort();
-  this.settingsReady = false;
+closeSettings(): void {
+  this.settingsOpen = false;
 }
 ```
 
 `$rendered()` applies queued updates, waits for every active lazy region of the
 component, including nested regions activated by that render, and then resolves.
 It rejects if a pack cannot be loaded, including a request that does not finish
-within 10 seconds. Calling it again, or activating the region again, retries.
+within 10 seconds. Calling it again, or setting the condition again, retries.
 If the condition turns false before the pack arrives, the body is not rendered.
 
 Refs inside a lazy body are valid while that view exists. Removing it clears

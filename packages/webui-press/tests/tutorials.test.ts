@@ -165,7 +165,7 @@ test('the lazy guide builds its documented region into a pack the CLI serves', a
     `<!doctype html><html><head></head><body><${owner}></${owner}></body></html>`);
   write(path.join(root, `src/${owner}.html`), template);
   write(path.join(root, `src/${owner}.ts`), 'export {};');
-  write(path.join(root, 'state.json'), JSON.stringify({ displayName: 'Ada', settingsReady: false }));
+  write(path.join(root, 'state.json'), JSON.stringify({ displayName: 'Ada', settingsOpen: false }));
   const server = await serve(root, 'webui serve ./src --state ./state.json --plugin webui');
   try {
     const html = await (await fetch(server.url)).text();

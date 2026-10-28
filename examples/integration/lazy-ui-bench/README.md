@@ -52,9 +52,11 @@ including eager, opened 15-30 ms slower than in the 2026-10-25 recording on the
 same machine, so compare variants within one run.
 
 Startup JavaScript, Brotli 11: eager 25,347 / 26,005 bytes for s1 / s30; with
-`lazy.js` 27,112 / 27,686 (**+1,765 / +1,681 bytes**). Each pack is about 1,155
+`lazy.js` 27,063 / 27,743 (**+1,716 / +1,738 bytes**). Each pack is about 1,155
 bytes. Apps without lazy regions do not include `lazy.js`, and the rendering core
-contains no lazy code, so they pay nothing for the feature.
+contains no lazy code, so they pay nothing for the feature. These script sizes
+are from the current revision; the tables below were recorded one revision
+earlier, when the lazy scripts differed by under 60 bytes.
 
 | Scenario | Variant | Cold startup bytes | Startup heap | Cold open (p90) | Pack wait | Warm open (p90) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -116,8 +118,9 @@ task.
 
 - **eager-local**: ordinary `<if>`, templates and state already local; no open request.
 - **eager-fresh**: ordinary `<if>`, templates local, fresh state fetched on every open.
-- **lazy**: `<if lazy="demand">`; opening fetches state and calls
-  `this.$prefetch()` in parallel, then awaits `this.$rendered()`.
+- **lazy**: `<if lazy="demand">`; opening starts the state request, sets the
+  condition so the pack downloads at the same time, then applies the state and
+  awaits `this.$rendered()`.
 
 `WEBUI_BENCH_SAMPLES` defaults to 20 (plus two discarded warmups);
 `WEBUI_BENCH_LATENCY_MS` defaults to 40 ms of state-provider delay. Fresh browser
@@ -125,27 +128,28 @@ contexts alternate execution order. Heap readings follow forced GC; closed-body
 weak-reference results are reported separately. Output:
 `target/lazy-browser-proof.json`.
 
-### Recorded result: 2026-10-27
+### Recorded result: 2026-10-28
 
 Same machine and addon, Playwright Chromium. Medians.
 
 | Controls | Mode | Startup HTML + JS gzip | Initial heap | Cold open | Warm open | Closed body retained |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 25 | eager-fresh | 21,837 | 1,859,348 | 51.2 ms | 54.7 ms | 20/20 |
-| 25 | lazy | 23,784 | 1,857,408 | 51.1 ms | 54.4 ms | 0/20 |
-| 250 | eager-fresh | 23,556 | 1,887,480 | 55.1 ms | 48.6 ms | 20/20 |
-| 250 | lazy | 23,785 | 1,857,408 | 53.7 ms | 48.7 ms | 0/20 |
-| 1,000 | eager-fresh | 29,317 | 1,980,568 | 56.4 ms | 47.4 ms | 20/20 |
-| 1,000 | lazy | 23,782 | 1,857,408 | 56.2 ms | 49.0 ms | 0/20 |
+| 25 | eager-fresh | 21,837 | 1,859,348 | 51.8 ms | 55.5 ms | 20/20 |
+| 25 | lazy | 23,721 | 1,857,248 | 47.2 ms | 50.7 ms | 0/20 |
+| 250 | eager-fresh | 23,556 | 1,887,480 | 53.2 ms | 51.0 ms | 20/20 |
+| 250 | lazy | 23,722 | 1,857,248 | 48.1 ms | 54.4 ms | 0/20 |
+| 1,000 | eager-fresh | 29,317 | 1,980,568 | 53.7 ms | 50.7 ms | 20/20 |
+| 1,000 | lazy | 23,719 | 1,857,248 | 45.0 ms | 50.2 ms | 0/20 |
 
 Lazy startup no longer grows with the body. The fixed cost at 25 controls is
-1,947 gzip bytes, against 4,152 with the earlier endpoint design. Since the
-2026-10-25 recording, applications without lazy regions became 247 gzip bytes
-smaller because the rendering core no longer carries lazy hooks, and the lazy
-runtime grew by 130 gzip bytes. Lazy delivery breaks even just above 250 controls
-(229 bytes more at 250), and 1,000 controls save 19% of startup bytes and 123 KB
-of heap. Because the pack loads in parallel with state, opening matches
-eager-fresh. Eager-local, which requests nothing, opens in 1.2-4.6 ms.
+1,884 gzip bytes, against 4,152 with the earlier endpoint design; applications
+without lazy regions pay nothing, because the rendering core carries no lazy
+code. Lazy delivery breaks even just above 250 controls (166 bytes more at 250),
+and 1,000 controls save 19% of startup bytes and 123 KB of heap. Cold opens are
+4-9 ms faster than eager-fresh because the lazy variant sets its condition before
+awaiting state, so the body renders while the state request is in flight;
+eager-fresh renders only after its state arrives. Eager-local, which requests
+nothing, opens in 1.1-4.6 ms.
 
 The release Rust benchmark (`lazy_bench`) compares closed and open SSR for 250
 controls and measures rendering one pack at build time.

@@ -144,7 +144,7 @@ test('a pack loads once, runs closures with the document nonce, and merges its i
   const id = region('pack-owner');
   const url = '_webui/packs/pack-owner.0001.json';
   serve(url, pack('pack-owner'));
-  await Promise.all([runtime.prefetchPacks({ [id]: url }), runtime.prefetchPacks({ [id]: url })]);
+  await Promise.all([runtime.load(id, url), runtime.load(id, url)]);
   assert.deepEqual(requests, [{ url, priority: 'auto' }]);
   const template = registry()[id];
   const condition = template.c![0][0][0] as unknown as (
@@ -154,7 +154,7 @@ test('a pack loads once, runs closures with the document nonce, and merges its i
   assert.equal(condition(path => path === 'open', undefined, Boolean), true);
   assert.equal(scripts.at(-1)?.nonce, 'pack-nonce');
   assert.equal(browser.__webui.inventory, '12');
-  await runtime.prefetchPacks({ [id]: url });
+  await runtime.load(id, url);
   assert.equal(requests.length, 1, 'a registered region needs no request');
 });
 
@@ -162,13 +162,13 @@ test('invalid or failed packs reject with guidance and the next load retries', a
   const id = region('retry-owner');
   const url = '_webui/packs/retry-owner.0002.json';
   requests.length = 0;
-  await assert.rejects(runtime.prefetchPacks({ [id]: url }), /failed with HTTP 404/);
+  await assert.rejects(runtime.load(id, url), /failed with HTTP 404/);
   serve(url, pack('retry-owner', { fragment: region('other-owner') }));
-  await assert.rejects(runtime.prefetchPacks({ [id]: url }), /is not the template pack for lazy region/);
+  await assert.rejects(runtime.load(id, url), /is not the template pack for lazy region/);
   serve(url, pack('retry-owner', { version: 2 }));
-  await assert.rejects(runtime.prefetchPacks({ [id]: url }), /Serve packs from the same build/);
+  await assert.rejects(runtime.load(id, url), /Serve packs from the same build/);
   serve(url, pack('retry-owner'));
-  await runtime.prefetchPacks({ [id]: url });
+  await runtime.load(id, url);
   assert.equal(requests.length, 4);
   assert.ok(registry()[id]);
 });
@@ -188,7 +188,7 @@ test('templates the page already owns are neither replaced nor re-executed', asy
       'shared-card': '[function(){throw new Error("page closures must not run twice")}]',
     },
   });
-  await runtime.prefetchPacks({ [id]: url });
+  await runtime.load(id, url);
   assert.equal(registry()['shared-card'], owned);
   assert.ok(registry()[id]);
   assert.equal(scripts.length, scriptCount + 1, 'only missing templates contribute closures');
@@ -215,7 +215,7 @@ test('templates only the template cache holds are registered again before their 
       'cached-card': '[function(){throw new Error("cached closures must not run twice")}]',
     },
   });
-  await runtime.prefetchPacks({ [id]: url });
+  await runtime.load(id, url);
   assert.deepEqual(retained, ['cached-card']);
   assert.equal(registry()['cached-card'], cached, 'the page strongly owns the template its bit names');
 });
@@ -381,10 +381,10 @@ test('a pack that is still installing is joined rather than treated as ready', a
   const resources = holdResources();
   try {
     requests.length = 0;
-    const first = runtime.prefetchPacks({ [id]: url });
+    const first = runtime.load(id, url);
     await until(() => registry()[id]);
     let joined = false;
-    const second = runtime.prefetchPacks({ [id]: url }).then(() => { joined = true; });
+    const second = runtime.load(id, url).then(() => { joined = true; });
     await tick();
     assert.equal(joined, false, 'published templates still wait for their resources');
     resources.release();
@@ -407,7 +407,6 @@ test('the element waits for a closed region condition and never mounts into a di
     $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
   }) as import('./lazy-runtime.js').LazyHost & {
     $meta?: TemplateMeta;
-    $prefetch(): Promise<void>;
     $rendered(): Promise<void>;
   };
   const binding = bindingFor(id, true);
@@ -421,14 +420,8 @@ test('the element waits for a closed region condition and never mounts into a di
   assert.deepEqual(requests, [{ url, priority: 'high' }]);
   assert.equal(binding.instance, null, 'the detached binding stays unmounted');
   assert.ok(registry()[id], 'the pack stays available for the next activation');
-
-  const other = region('glue-owner', 1);
-  const otherUrl = '_webui/packs/glue-owner.0013.json';
-  serve(otherUrl, pack('glue-owner', { fragment: other, templates: { [other]: { v: 3, f: other, o: 'glue-owner', h: '' } } }));
-  host.$meta!.lp = { [id]: url, [other]: otherUrl };
-  await host.$prefetch();
-  assert.deepEqual(requests.at(-1), { url: otherUrl, priority: 'auto' });
   assert.equal(typeof host.$rendered, 'function');
+  assert.equal('$prefetch' in host, false, 'prefetching is declared with the lazy trigger');
 });
 
 test('the element joins an installing pack instead of mounting before its resources', async () => {

@@ -59,21 +59,18 @@ export class LazyPopover extends WebUIElement {
     this.activityLoading = true;
     this.activityError = '';
     try {
-      // Hover or focus usually prefetched the template pack; this covers keyboard
-      // and programmatic opens by loading it in parallel with the state.
-      const [state] = await Promise.all([
-        fetchState('activity', this.slowData, request.signal),
-        this.$prefetch(),
-      ]);
+      const state = await fetchState('activity', this.slowData, request.signal);
       if (generation !== this.generation || request.signal.aborted) return;
       this.setState(state);
       this.activityReady = true;
+      // Show the popover once its body exists, so it never opens empty.
       await this.$rendered();
       if (generation !== this.generation) return;
       this.popoverElement.showPopover({ source: this.triggerElement });
     } catch (error) {
       if (generation === this.generation && !request.signal.aborted) {
-        console.error('Activity state failed:', error);
+        console.error('Activity failed to load:', error);
+        this.activityReady = false;
         this.activityError = 'Activity could not be loaded. Please try again.';
       }
     } finally {

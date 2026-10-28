@@ -70,9 +70,9 @@ for requirements and examples.
 `lazy.js` is the opt-in runtime for `<if lazy>` bodies. It loads each region's
 build-time template pack when the condition becomes true or its prefetch trigger
 fires, renders it in the existing owner and scope without creating a component,
-and releases closed regions at idle. The rendering core contains no lazy code;
-importing `lazy.js` extends components with `await this.$rendered()`, used after
-activating a region, and `this.$prefetch()` for custom prefetch signals.
+and releases closed regions at idle. The rendering core contains no lazy code.
+Setting the condition is all a component does; `await this.$rendered()`, added
+by `lazy.js`, is only for code that needs the body's DOM right away.
 See [Lazy UI](https://microsoft.github.io/webui/guide/concepts/lazy).
 
 1. Author a component class in TypeScript

@@ -57,7 +57,7 @@ test('a released region the template cache still holds is revived and tracked wh
     lookup: tag => cached.get(tag),
   });
   const runtime = await import('./lazy-runtime.js');
-  await runtime.prefetchPacks({ [id]: url });
+  await runtime.load(id, url);
   const registry = browser.__webui.templates!;
   const template = registry[id];
   assert.ok(template);

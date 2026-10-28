@@ -80,7 +80,7 @@ class BenchOwner extends WebUIElement {
   async open() {
     const start = performance.now();
     ${mode === 'lazy'
-      ? "const [state] = await Promise.all([fetchState(), this.$prefetch()]); this.setState(state); this.shown = true; await this.$rendered();"
+      ? "const state = fetchState(); this.shown = true; this.setState(await state); await this.$rendered();"
       : mode === 'eager-fresh'
         ? "this.setState(await fetchState()); this.shown = true; this.$flushUpdates();"
         : 'this.shown = true; this.$flushUpdates();'}

@@ -28,8 +28,9 @@ returns only state, at `/api/activity` and `/api/settings`.
 - Hover or focus **Recent activity** or **View settings**: the framework
   prefetches that overlay's template pack. No state is requested and nothing
   renders.
-- Clicking fetches fresh state and the pack in parallel, activates the body,
-  and waits for `this.$rendered()` before showing the overlay.
+- Clicking fetches fresh state and sets the overlay's condition; the framework
+  renders the body from the already prefetched pack. The component awaits
+  `this.$rendered()` only so the overlay never opens before its body exists.
 - Enable **Simulate slow data** to observe loading feedback and cancellation.
 - While loading, press Escape or click **Cancel activity load** / **Cancel settings
   load**. Loading and retry feedback stay beside the trigger, outside the overlay.

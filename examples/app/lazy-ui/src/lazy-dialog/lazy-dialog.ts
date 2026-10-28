@@ -59,22 +59,20 @@ export class LazyDialog extends WebUIElement {
     this.settingsLoading = true;
     this.settingsError = '';
     try {
-      // Load the template pack in parallel with the state; hover usually started it already.
-      const [state] = await Promise.all([
-        fetchState('settings', this.slowData, request.signal),
-        this.$prefetch(),
-      ]);
+      const state = await fetchState('settings', this.slowData, request.signal);
       if (generation !== this.generation || request.signal.aborted) return;
       this.setState(state);
       this.densityDraft = this.compactMode ? 'compact' : 'comfortable';
       this.highlightDraft = this.highlightPinned;
       this.settingsReady = true;
+      // showModal() moves focus into the dialog, so its body must exist first.
       await this.$rendered();
       if (generation !== this.generation) return;
       this.dialog.showModal();
     } catch (error) {
       if (generation === this.generation && !request.signal.aborted) {
-        console.error('Settings state failed:', error);
+        console.error('Settings failed to load:', error);
+        this.settingsReady = false;
         this.settingsError = 'Settings could not be loaded. Please try again.';
       }
     } finally {

@@ -18,7 +18,6 @@ import {
   disposed,
   installing,
   opened,
-  prefetchPacks,
   rendered,
   resolve,
   type LazyHost,
@@ -33,19 +32,14 @@ declare module './template-element.js' {
     /**
      * Resolve once every active lazy region of this component has rendered.
      *
-     * Applies queued updates first, so `this.open = true; await this.$rendered()`
+     * Setting a lazy condition is enough to show its body; await this only when
+     * code needs the body's DOM right away, such as before `showModal()`. It
+     * applies queued updates first, so `this.open = true; await this.$rendered()`
      * waits for the region that the assignment activated, including nested
      * regions that it activates. Rejects when a pack fails to load; calling
      * again, or the next activation, retries it.
      */
     $rendered(): Promise<void>;
-    /**
-     * Load this component's lazy regions without rendering them.
-     *
-     * Regions also prefetch on their compiled trigger; call this for custom
-     * signals such as a route change or a keyboard shortcut.
-     */
-    $prefetch(): Promise<void>;
   }
 }
 
@@ -55,9 +49,7 @@ interface Host extends LazyHost {
   $conditionResolver(): (path: string, scope?: unknown) => unknown;
   $disposeInstance(root: TemplateInstance, removeNodes: boolean, retainFragments?: boolean): void;
   $flushUpdates(): void;
-  $templateMeta(): TemplateMeta | undefined;
   $rendered(): Promise<void>;
-  $prefetch(): Promise<void>;
 }
 
 const element = TemplateElement.prototype as unknown as Host;
@@ -94,10 +86,6 @@ element.$disposeInstance = function (
 element.$rendered = function (this: Host): Promise<void> {
   this.$flushUpdates();
   return rendered(this);
-};
-
-element.$prefetch = function (this: Host): Promise<void> {
-  return prefetchPacks((this.$meta ?? this.$templateMeta())?.lp);
 };
 
 installLazyResolver(resolve, blockOwner);

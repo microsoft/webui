@@ -221,18 +221,18 @@ array or string does work: `<if condition="items.length > 3">`.
 ### Lazy conditional bodies
 
 ```html
-<if condition="settingsReady" lazy>
+<if condition="settingsOpen" lazy>
   <h2>Settings</h2>
   <p>{{displayName}}</p>
 </if>
 ```
 
 ```typescript
-// In the owning component: fetch state and the pack together, then render.
-const [state] = await Promise.all([fetchSettings(signal), this.$prefetch()]);
-this.setState(state);
-this.settingsReady = true;
-await this.$rendered(); // refs inside the body exist after this
+// Setting the condition is the whole API: the framework loads and renders the body.
+this.settingsOpen = true;
+
+// Only when code needs the body's DOM right away, such as before showModal():
+await this.$rendered();
 this.settingsDialog.showModal();
 ```
 
@@ -244,15 +244,16 @@ this.settingsDialog.showModal();
 - Import `@microsoft/webui-framework/lazy.js` once before `startRuntime()`.
   The framework loads a region's pack when its condition becomes true. There is
   no loader, endpoint, region id, or host API. The import also adds
-  `$rendered()`/`$prefetch()` and their types; without lazy regions, skip it and
-  the app ships no lazy code.
-- `lazy` (= `lazy="intent"`) prefetches on pointer/focus/touch in the owner;
-  `lazy="idle"` after load when idle; `lazy="load"` right after hydration;
-  `lazy="demand"` only on activation or `this.$prefetch()`. Prefetch never
-  renders or fetches state. Prefer `intent` for UI opened from a control.
-- State is application-owned: fetch it, `setState`, flip the condition, and
-  `await this.$rendered()` before touching body refs. `$rendered()` rejects on
-  a failed pack and retries on the next call.
+  `$rendered()` and its type; without lazy regions, skip it and the app ships no
+  lazy code.
+- Choose when the pack loads with the attribute value, not code: `lazy`
+  (= `lazy="intent"`) on pointer/focus/touch in the owner; `lazy="idle"` after
+  load when idle; `lazy="load"` right after hydration; `lazy="demand"` only when
+  the condition becomes true. Prefetch never renders or fetches state. Prefer
+  `intent` for UI opened from a control.
+- State is application-owned and loaded as usual; lazy regions never fetch it.
+  Await `this.$rendered()` only before touching body DOM, such as refs, focus, or
+  `showModal()`. It rejects on a failed pack and retries on the next call.
 - Shown regions release their body templates at idle once closed; reopening
   reuses or refetches them. Do not cache pack contents yourself.
 - `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
