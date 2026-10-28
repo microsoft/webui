@@ -77,27 +77,6 @@ export function collectItemMarkers(repeatStart: Comment): { items: Comment[]; en
 }
 
 /**
- * Get the next element sibling after a marker comment, skipping
- * whitespace text nodes and other comments.
- */
-export function nextElement(marker: Comment): Element | null {
-  let node: Node | null = marker.nextSibling;
-  while (node) {
-    if (node.nodeType === 1 /* ELEMENT_NODE */) return node as Element;
-    if (node.nodeType === 8 /* COMMENT_NODE */) {
-      const data = (node as Comment).data;
-      if (isRawStartMarker(data)) {
-        node = skipBlockRange(node as Comment, data);
-        continue;
-      }
-      if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM || data === MARKER_COND_END) return null;
-    }
-    node = node.nextSibling;
-  }
-  return null;
-}
-
-/**
  * Find the closing marker of a complete structural block range.
  *
  * `start` must be a `<!--wc-->`, `<!--wr-->`, or `<!--wN-->` comment. Walks forward with
