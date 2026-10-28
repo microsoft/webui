@@ -499,16 +499,16 @@ engineering another; they are not public application-authoring guides.
 | Protobuf fields and fragment shapes | `crates/webui-protocol/proto/webui.proto` |
 | Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `packages/webui/src/projection/{graph,manifest,diagnostics}.ts`, `crates/webui-protocol/src/projection_manifest.rs` |
 | Component asset ownership, registration, and publication | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
-| Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/guide/concepts/directives/` |
-| State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/guide/concepts/state-management/index.md`, `docs/guide/concepts/directives/if.md` |
+| Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/learn/directives/` |
+| State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/learn/state-management/index.md`, `docs/learn/directives/if.md` |
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |
 | Progressive response wire and host-step invariants | [`specs/streaming.md`](specs/streaming.md); `crates/webui-handler/src/streaming/`, `packages/webui-framework/src/streaming-protocol.ts` |
-| Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/guide/concepts/hydration.md` |
-| Browser routing | `packages/webui-router/`, `docs/guide/concepts/routing.md` |
+| Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/build/hydration.md` |
+| Browser routing | `packages/webui-router/`, `docs/build/routing.md` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
 | Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
-| Desktop app and window APIs | `docs/guide/concepts/desktop.md`, `crates/webui-desktop/src/` |
-| Host APIs and examples | `docs/guide/integrations/`, `docs/guide/cli/`, package READMEs, `examples/` |
+| Desktop app and window APIs | `docs/build/desktop.md`, `crates/webui-desktop/src/` |
+| Host APIs and examples | `docs/build/integrations/`, `docs/reference/cli/`, package READMEs, `examples/` |
 
 Tests at each boundary are the executable compatibility checks. Add focused
 tests when behavior changes, including producer/consumer parity for binary

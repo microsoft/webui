@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "prepare:benchmarks": "node .webui-press/scripts/prepare-benchmarks.mjs",
-    "build": "pnpm run prepare:benchmarks && webui press build",
-    "start": "pnpm run prepare:benchmarks && webui press serve"
+    "prepare:redirects": "node .webui-press/scripts/prepare-redirects.mjs",
+    "build": "pnpm run prepare:benchmarks && pnpm run prepare:redirects && webui press build",
+    "start": "pnpm run prepare:benchmarks && pnpm run prepare:redirects && webui press serve"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",

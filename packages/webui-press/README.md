@@ -101,7 +101,7 @@ Set `"outline": true` in `.webui-press/config.json` to enable the built-in
 sticky desktop outline and mobile disclosure. It is off by default; Markdown
 frontmatter and object-form custom pages can override it with `outline: false`
 or `outline: true`. Only eligible `doc`/`page` layouts load its assets.
-See the [page outline reference](https://microsoft.github.io/webui/guide/webui-press/#page-outlines)
+See the [page outline reference](https://microsoft.github.io/webui/reference/webui-press/#page-outlines)
 for heading eligibility, browser support, and theming.
 
 ---
@@ -151,7 +151,7 @@ no deadline. For example, `webui press serve --shutdown-timeout 10` allows ten
 seconds after a stop request before terminating the owned server process tree;
 a second stop request escalates sooner. Forced shutdown returns nonzero and can
 leave incomplete outputs. Supervised mode reserves stdin and cannot forward
-interactive build input. See the [bounded shutdown reference](https://microsoft.github.io/webui/guide/cli/#bounded-dev-server-shutdown)
+interactive build input. See the [bounded shutdown reference](https://microsoft.github.io/webui/reference/cli/#bounded-dev-server-shutdown)
 for platform limits.
 
 Use `webui press build --show=content` or `webui press serve --show=content`
@@ -245,7 +245,7 @@ Keep Markdown complex-property bindings aligned with their top-level state key
 and receiving observable, as in the example above.
 Invalid data and reserved top-level Press keys fail the build. `customPages`
 replaces Markdown entirely. See the
-[Markdown-local state reference](https://microsoft.github.io/webui/guide/webui-press#markdown-local-state).
+[Markdown-local state reference](https://microsoft.github.io/webui/reference/webui-press#markdown-local-state).
 
 ### Layouts
 
@@ -578,7 +578,7 @@ Components are:
 Native slots require the component's open Shadow wrapper. Markdown inside those
 slots is rendered as markdown, so you can mix prose and components freely.
 
-See the [WebUI Framework component guide](https://microsoft.github.io/webui/guide/concepts/components) for authoring details.
+See the [WebUI Framework component guide](https://microsoft.github.io/webui/learn/components) for authoring details.
 
 ### Per-page scripts
 
@@ -757,7 +757,7 @@ observable state are bound to the already-painted DOM. Page scripts import only
 the local component scripts and explicit bundled scripts needed by that page,
 with shared dependencies split into reusable chunks.
 
-This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
+This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/reference/plugins/) at work, and it is what makes the site feel instant on slow connections.
 
 ---
 

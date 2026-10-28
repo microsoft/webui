@@ -35,10 +35,9 @@
       </button>
     </div>
     <p class="feedback" role="status" aria-live="polite" aria-atomic="true" data-state="{{copyState}}">
-      <if condition="copyState == 'idle' || copyState == 'copying'">Project-local CLI. Node.js LTS. No Rust toolchain required.</if>
       <if condition="copyState == 'copied'">Copied. Run it in your project folder.</if>
       <if condition="copyState == 'failed'">Copy failed. Select the command and copy it manually.</if>
-      <if condition="copyState == 'unavailable'">Install commands are unavailable. <a href="{{site.base}}guide/installation/">Read the installation guide.</a></if>
+      <if condition="copyState == 'unavailable'">Install commands are unavailable. <a href="{{site.base}}start/installation/">Read the installation guide.</a></if>
     </p>
   </section>
 </template>

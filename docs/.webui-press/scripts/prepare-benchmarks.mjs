@@ -38,7 +38,7 @@ try {
     prepareBenchmarkCampaignDigestPayload,
     prepareBenchmarkEvidence,
   } = await import(compiled.href);
-  const { buildBenchmarkPreviews } = await import(compiledPreview.href);
+  const { buildBenchmarkPreviews, buildBenchmarkNotes } = await import(compiledPreview.href);
   let input;
   try {
     input = JSON.parse(await readFile(source, "utf8"));
@@ -58,11 +58,9 @@ try {
   }
   const fullView = buildBenchmarkView(evidence);
   const renderedState = { benchmarks: fullView };
-  const previewMetrics = buildBenchmarkPreviews(evidence);
   const previewState = {
-    previewMetrics,
-    previewCaseCount: previewMetrics[0].rows.length,
-    previewTotalCases: evidence.rows.length,
+    previewMetrics: buildBenchmarkPreviews(evidence),
+    benchmarkNotes: buildBenchmarkNotes(evidence),
   };
   for (const [file, content] of [[download, evidence], [state, renderedState], [homeState, previewState]]) {
     try {

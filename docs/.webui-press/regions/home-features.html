@@ -2,10 +2,10 @@
   <div>
     <h2 id="first-page-title">Start with HTML and data</h2>
     <p class="section-lead">
-      Render a page from a template and JSON state. Then add a component's
-      browser behavior. This counter shows that optional step.
+      Render a page from a template and JSON data. Then add a component and
+      its browser behavior.
     </p>
-    <a class="site-link" href="{{site.base}}tutorials/hello-world/">Build the first page</a>
+    <a class="site-link" href="{{site.base}}start/first-page/">Build the first page</a>
   </div>
   <figure class="specimen">
     <home-counter></home-counter>
@@ -23,7 +23,7 @@ increment(): void {
     </div>
     <figcaption>
       HTML arrives rendered. Browser code connects the button to the count.
-      <a href="{{site.base}}guide/concepts/interactivity/">See the complete component model.</a>
+      <a href="{{site.base}}start/add-interactivity/">Build this counter.</a>
     </figcaption>
   </figure>
 </section>
@@ -32,23 +32,23 @@ increment(): void {
   <h2 id="fit-title">Choose where rendering happens</h2>
   <dl class="delivery-list">
     <div>
-      <dt><a class="site-link" href="{{site.base}}guide/concepts/directives/boundary/">Streaming SSR</a></dt>
+      <dt><a class="site-link" href="{{site.base}}learn/directives/boundary/">Streaming SSR</a></dt>
       <dd>Stream ready HTML while slower data loads. Hydrate completed regions without waiting for the full response.</dd>
     </div>
     <div>
-      <dt><a class="site-link" href="{{site.base}}guide/serverless-architecture/">Service-worker rendering</a></dt>
+      <dt><a class="site-link" href="{{site.base}}build/serverless-architecture/">Service-worker rendering</a></dt>
       <dd>Cache the compiled UI, then stream rendered HTML fragments as data arrives. Your app owns the caching policy and first-load bootstrap.</dd>
     </div>
     <div>
-      <dt><a class="site-link" href="{{site.base}}guide/integrations/wasm/">WebAssembly (WASM)</a></dt>
+      <dt><a class="site-link" href="{{site.base}}build/integrations/wasm/">WebAssembly (WASM)</a></dt>
       <dd>Use the renderer or compiler in the browser. Choose handler-only, parser-only, or combined bundles.</dd>
     </div>
     <div>
-      <dt><a class="site-link" href="{{site.base}}guide/webui-press/">Static site generation</a></dt>
+      <dt><a class="site-link" href="{{site.base}}reference/webui-press/">Static site generation</a></dt>
       <dd>WebUI Press builds Markdown and Web Components into static HTML. Publish to a CDN or static host.</dd>
     </div>
   </dl>
-  <a class="site-link" href="{{site.base}}examples/">Explore runnable examples</a>
+  <a class="site-link" href="{{site.base}}reference/examples/">Explore runnable examples</a>
 </section>
 
 <section class="home-section" aria-labelledby="work-title">
@@ -58,7 +58,7 @@ increment(): void {
     ahead of time, leaving your server to supply data and render HTML.
   </p>
   <rendering-diagram></rendering-diagram>
-  <a class="site-link" href="{{site.base}}guide/concepts/how-it-works/">
+  <a class="site-link" href="{{site.base}}learn/how-it-works/">
     Follow the rendering model
     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h13m-5-5 5 5-5 5" /></svg>
   </a>
@@ -72,7 +72,7 @@ increment(): void {
       Load optional dialogs and panels when they are needed instead of
       shipping every template up front.
     </p>
-    <a class="site-link" href="{{site.base}}guide/concepts/interactivity/#loading-static-component-assets">
+    <a class="site-link" href="{{site.base}}learn/interactivity/#loading-static-component-assets">
       Build and load component assets
     </a>
   </div>
@@ -82,7 +82,7 @@ increment(): void {
     </div>
     <figcaption>
       For non-routed UI. Use
-      <a href="{{site.base}}guide/concepts/routing/#lazy-loading">router loaders</a>
+      <a href="{{site.base}}build/routing/#lazy-loading">router loaders</a>
       for routed components.
     </figcaption>
   </figure>
@@ -95,7 +95,7 @@ increment(): void {
       Components, state, events, and lists. Keep those ideas.
       Learn where HTML templates and native rendering change the way you work.
     </p>
-    <a class="site-link" href="{{site.base}}guide/concepts/react-comparison/">Coming from React</a>
+    <a class="site-link" href="{{site.base}}learn/react-comparison/">Coming from React</a>
   </div>
   <dl class="adoption-list">
     <div>
@@ -121,11 +121,11 @@ increment(): void {
     A JavaScript SSR engine is not required.
   </p>
   <ul class="host-list" aria-label="Backend integration guides">
-    <li><a href="{{site.base}}guide/integrations/rust/">Rust</a></li>
-    <li><a href="{{site.base}}guide/integrations/node/">Node / Bun</a></li>
-    <li><a href="{{site.base}}guide/integrations/python/">Python</a></li>
-    <li><a href="{{site.base}}guide/integrations/dotnet/">.NET</a></li>
-    <li><a href="{{site.base}}guide/integrations/ffi/">C / FFI</a></li>
+    <li><a href="{{site.base}}build/integrations/rust/">Rust</a></li>
+    <li><a href="{{site.base}}build/integrations/node/">Node / Bun</a></li>
+    <li><a href="{{site.base}}build/integrations/python/">Python</a></li>
+    <li><a href="{{site.base}}build/integrations/dotnet/">.NET</a></li>
+    <li><a href="{{site.base}}build/integrations/ffi/">C / FFI</a></li>
   </ul>
   <p class="evidence-note">Each guide covers the binding's installation and distribution status.</p>
 </section>
@@ -135,5 +135,25 @@ increment(): void {
     <h2 id="start-title">Make your first page</h2>
     <p>Start with a template and data. Add an interactive component when you need one.</p>
   </div>
-  <a class="site-button" href="{{site.base}}tutorials/hello-world/">Start building</a>
+  <a class="site-button" href="{{site.base}}start/first-page/">Start building</a>
+</section>
+
+<section class="benchmark-notes" aria-labelledby="benchmark-notes-title">
+  <h2 id="benchmark-notes-title">Benchmark notes</h2>
+  <p>
+    Official campaign results for a 100-todo app, not a current framework ranking.
+    The featured WebUI configuration uses Light DOM with Rust and Actix.
+  </p>
+  <ol>
+    <for each="note in benchmarkNotes">
+      <li id="benchmark-note-{{note.id}}" tabindex="-1">
+        <strong>{{note.label}}</strong>. {{note.description}} {{note.samplingLabel}}
+      </li>
+    </for>
+  </ol>
+  <p>
+    The campaign covers all 15 configurations from one clean source revision.
+    The download is a sanitized extract, not a complete raw-run archive.
+    <a href="{{site.base}}reference/benchmarks/">Full data and methodology</a>
+  </p>
 </section>

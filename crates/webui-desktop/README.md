@@ -80,14 +80,14 @@ For authenticated SHA-512 expectations, use `ExpectedUpdateSha512::new` and
 from the downloaded candidate is not an authenticated expected digest; do not
 wire product updates until provenance, archive/signature, and installer approval
 are separately established.
-See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop#staged-release-byte-integrity).
+See the [desktop guide](https://microsoft.github.io/webui/build/desktop#staged-release-byte-integrity).
 
 Consumers that own their HTTP server and sealed assets can use
 `package_precompiled_host` with the `packaging` feature instead of building a
 second WebUI desktop render bundle. Provide an already-compiled native host,
 target triple, identity, optional icon, and explicit file mappings for workers
 and opaque assets. Existing output directories are never removed or replaced.
-See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop#precompiled-host-layout)
+See the [desktop guide](https://microsoft.github.io/webui/build/desktop#precompiled-host-layout)
 for layout, validation, and Windows deployment requirements.
 
 Application IPC uses `ipc::IpcLimits::default()` with checked
@@ -95,7 +95,7 @@ Application IPC uses `ipc::IpcLimits::default()` with checked
 The SDK owns queue, callback, control-reservation, and aggregate memory budgets;
 applications cannot tune these independently.
 
-See the [desktop guide](https://microsoft.github.io/webui/guide/concepts/desktop)
+See the [desktop guide](https://microsoft.github.io/webui/build/desktop)
 for application setup and customization.
 
 ## Regenerating the Windows projection

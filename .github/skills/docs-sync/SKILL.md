@@ -11,21 +11,21 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 
 | What changed | Update |
 |-------------|--------|
-| CLI flags or commands | `docs/guide/cli/index.md` + `docs/ai.md` (Build and run section) |
-| Template syntax or directives | `docs/guide/concepts/directives/` + `docs/ai.md` |
-| Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/ai.md` |
-| Hydration markers or mechanism | `specs/hydration.md` + producer/consumer tests; update `docs/guide/concepts/hydration.md` if user-visible, `DESIGN.md` only if hydration architecture changes |
-| Routing behavior | `docs/guide/concepts/routing.md` + `docs/ai.md` |
-| State management or path resolution | `docs/guide/concepts/state-management/index.md` |
-| Handler API (Rust, Node, FFI) | `docs/guide/concepts/handlers/` + `docs/guide/integrations.md` |
+| CLI flags or commands | `docs/reference/cli/index.md` + `docs/ai.md` (Build and run section) |
+| Template syntax or directives | `docs/learn/directives/` + `docs/ai.md` |
+| Component authoring model | `docs/learn/interactivity.md` + `docs/ai.md` |
+| Hydration markers or mechanism | `specs/hydration.md` + producer/consumer tests; update `docs/build/hydration.md` if user-visible, `DESIGN.md` only if hydration architecture changes |
+| Routing behavior | `docs/build/routing.md` + `docs/ai.md` |
+| State management or path resolution | `docs/learn/state-management/index.md` |
+| Handler API (Rust, Node, FFI) | `docs/build/integrations/` |
 | Protocol fields or fragment types | `crates/webui-protocol/proto/webui.proto` + consumers/tests; `DESIGN.md` only if the graph or ownership model changes |
 | Internal subsystem or cross-language contract | Relevant `specs/` reference + producer/consumer tests; `DESIGN.md` only if the architecture changes |
-| Plugin system (parser or handler) | `docs/guide/concepts/plugins/index.md`; `DESIGN.md` if plugin responsibilities change |
-| Performance characteristics | `docs/guide/concepts/performance.md` |
+| Plugin system (parser or handler) | `docs/reference/plugins/index.md`; `DESIGN.md` if plugin responsibilities change |
+| Performance characteristics | `docs/build/performance.md` |
 | Public API (Rust crate, npm package) | Relevant handler/integration docs; `DESIGN.md` only if an architectural boundary changes |
 | Error variants or error messages | Defining source/tests and relevant public troubleshooting docs; `DESIGN.md` only if error-handling architecture changes |
-| `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
-| `@microsoft/webui-router` behavior | `docs/guide/concepts/routing.md` + `packages/webui-router/README.md` |
+| `@microsoft/webui-framework` decorators or API | `docs/learn/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
+| `@microsoft/webui-router` behavior | `docs/build/routing.md` + `packages/webui-router/README.md` |
 
 ## DESIGN.md rules
 

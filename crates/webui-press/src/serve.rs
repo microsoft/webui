@@ -234,6 +234,7 @@ fn source_watcher(
     let mut ignore = default_ignore_paths();
     ignore.push(PathBuf::from(&config.out_dir));
     ignore.push(PathBuf::from(".webui-press/cache"));
+    ignore.push(config_dir.join(crate::scratch::PROJECT_SCRATCH_DIR));
     let events = tx.clone();
     let watcher = spawn_watcher(
         WatchConfig {
@@ -360,6 +361,48 @@ fn clone_config_via_reparse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_ignores_project_scratch_but_rebuilds_authored_sources() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let config_dir = root.path().join(".webui-press");
+        let scratch_dir = config_dir.join(crate::scratch::PROJECT_SCRATCH_DIR);
+        std::fs::create_dir_all(&scratch_dir)?;
+        let generated = scratch_dir.join("index.html");
+        let authored = root.path().join("index.md");
+        std::fs::write(&generated, "generated")?;
+        std::fs::write(&authored, "# Home")?;
+        let mut config: DocsConfig = serde_json::from_str(
+            r#"{"site":{"title":"Test"},"basePath":"/","contentDir":".","nav":[],"sidebar":[]}"#,
+        )?;
+        config.content_dir = root.path().to_string_lossy().into_owned();
+        config.public_dir = config.content_dir.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let _watcher = source_watcher(
+            &config,
+            &config_dir,
+            &config_dir.join("config.json"),
+            &crate::state::StateLoader::new().into_dependencies(),
+            tx,
+        )?;
+
+        std::fs::write(&generated, "rebuilt")?;
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(500)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        std::fs::remove_file(&generated)?;
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(500)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        std::fs::write(&authored, "# Updated home")?;
+        let changed = rx.recv_timeout(Duration::from_secs(3))?;
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].canonicalize()?, authored.canonicalize()?);
+        Ok(())
+    }
 
     #[test]
     fn watcher_requeues_state_changed_after_the_render_read() -> Result<()> {

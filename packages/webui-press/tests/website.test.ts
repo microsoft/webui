@@ -21,10 +21,15 @@ test('the public homepage renders without JavaScript and enhances its real examp
   await expect(noScript.locator('home-counter output')).toHaveText('0');
   await expect(noScript.getByRole('button', { name: 'Add one', exact: true })).toBeDisabled();
   await expect(noScript.locator('rendering-diagram svg')).toHaveCount(3);
-  await expect(noScript.getByRole('link', { name: 'Build your first page', exact: true }))
-    .toHaveAttribute('href', '/webui/tutorials/hello-world/');
+  const entryPoints = noScript.getByRole('navigation', { name: 'Getting started', exact: true });
+  await expect(entryPoints.getByRole('link', { name: 'New to WebUI? Build your first page', exact: true }))
+    .toHaveAttribute('href', '/webui/start/first-page/');
+  await expect(entryPoints.getByRole('link', { name: 'Coming from React? Compare component models', exact: true }))
+    .toHaveAttribute('href', '/webui/learn/react-comparison/');
+  await expect(noScript.locator('.intro-resources').getByRole('link', { name: 'Try the playground', exact: true }))
+    .toHaveAttribute('href', '/webui/playground/');
   await expect(noScript.locator('.host-list').getByRole('link', { name: 'Node / Bun', exact: true }))
-    .toHaveAttribute('href', '/webui/guide/integrations/node/');
+    .toHaveAttribute('href', '/webui/build/integrations/node/');
   await expect(noScript.locator('.host-list')).not.toContainText(/deno/i);
   const ssrHeight = (await noScript.locator('home-counter').boundingBox())?.height;
   assert.ok(ssrHeight);
@@ -70,31 +75,27 @@ test('the homepage explains streaming, worker rendering, WASM, and static genera
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const capabilities = [
-    ['Streaming SSR', 'Streaming SSR', 'guide/concepts/directives/boundary/', 'Hydrate completed regions'],
-    ['Service workers', 'Service-worker rendering', 'guide/serverless-architecture/', 'caching policy and first-load bootstrap'],
-    ['WebAssembly', 'WebAssembly (WASM)', 'guide/integrations/wasm/', 'handler-only, parser-only'],
-    ['Static sites', 'Static site generation', 'guide/webui-press/', 'WebUI Press builds Markdown'],
+    ['Streaming SSR', 'learn/directives/boundary/', 'Hydrate completed regions'],
+    ['Service-worker rendering', 'build/serverless-architecture/', 'caching policy and first-load bootstrap'],
+    ['WebAssembly (WASM)', 'build/integrations/wasm/', 'handler-only, parser-only'],
+    ['Static site generation', 'reference/webui-press/', 'WebUI Press builds Markdown'],
   ];
   for (const width of [1440, 390, 320]) {
     const page = await browser.newPage({ javaScriptEnabled: false, viewport: { width, height: 900 } });
     await page.goto(`${server.origin}/webui/`);
-    const shortcuts = page.getByRole('navigation', { name: 'Rendering and deployment guides' });
-    await expect(shortcuts.getByRole('link')).toHaveCount(5);
+    await expect(page.getByRole('navigation', { name: 'Rendering and deployment guides' })).toHaveCount(0);
     await expect(page.locator('.delivery-list > div')).toHaveCount(4);
-    for (const [shortcut, label, target, detail] of capabilities) {
-      await expect(shortcuts.getByRole('link', { name: shortcut, exact: true })).toHaveAttribute('href', `/webui/${target}`);
+    for (const [label, target, detail] of capabilities) {
       const row = page.locator('.delivery-list > div').filter({ has: page.getByRole('link', { name: label, exact: true }) });
       await expect(row.locator('a')).toHaveAttribute('href', `/webui/${target}`);
       await expect(row.locator('dd')).toContainText(detail);
     }
-    await expect(shortcuts.getByRole('link', { name: 'Component assets', exact: true }))
-      .toHaveAttribute('href', '/webui/guide/concepts/interactivity/#loading-static-component-assets');
     const assets = page.locator('section[aria-labelledby="component-assets-title"]');
     await expect(assets.getByRole('heading')).toHaveText('Load component assets on demand');
     await expect(assets.locator('code')).toContainText('--emit-component-assets settings-dialog');
     await expect(assets.locator('figcaption')).toContainText('For non-routed UI');
     await expect(assets.getByRole('link', { name: 'Build and load component assets' }))
-      .toHaveAttribute('href', '/webui/guide/concepts/interactivity/#loading-static-component-assets');
+      .toHaveAttribute('href', '/webui/learn/interactivity/#loading-static-component-assets');
     const overflow = await page.locator('.main-content').evaluate(element => element.scrollWidth - element.clientWidth);
     assert.ok(overflow <= 1, `${width}px: capability descriptions must not overflow.`);
     await page.close();
@@ -107,14 +108,14 @@ test('current runtime guidance keeps Node.js and Bun without Deno recommendation
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ javaScriptEnabled: false });
-  await page.goto(`${server.origin}/webui/guide/integrations/node/`);
+  await page.goto(`${server.origin}/webui/build/integrations/node/`);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Node.js and Bun #');
   await expect(page.locator('#nodejs-bun-and-deno')).toHaveCount(1);
   await expect(page.locator('webui-press-tab[slot="tab"]')).toHaveText(['Node.js', 'Bun']);
   await expect(page.locator('webui-press-tab-panel')).toHaveCount(2);
   await expect(page.getByRole('link', { name: 'Node / Bun', exact: true })).toBeVisible();
   await expect(page.locator('.doc-content')).not.toContainText(/deno/i);
-  for (const pathname of ['guide/integrations/', 'guide/concepts/performance/']) {
+  for (const pathname of ['build/integrations/', 'build/performance/']) {
     await page.goto(`${server.origin}/webui/${pathname}`);
     await expect(page.locator('.doc-content')).not.toContainText(/deno/i);
   }
@@ -128,7 +129,7 @@ test('site navigation, skip links and reading layouts work at narrow widths', as
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await page.route('https://**', route => route.abort());
 
-  for (const pathname of ['guide/', 'tutorials/hello-world/', 'examples/']) {
+  for (const pathname of ['start/', 'start/first-page/', 'reference/examples/']) {
     await page.goto(`${server.origin}/webui/${pathname}`);
     const current = new URL(page.url());
     const skipTarget = await page.locator('.skip-link').evaluate(
@@ -157,7 +158,7 @@ test('benchmark evidence remains useful without JavaScript', async t => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
-  await page.goto(`${server.origin}/webui/benchmarks/`);
+  await page.goto(`${server.origin}/webui/reference/benchmarks/`);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await expect(page.locator('benchmark-explorer')).toBeVisible();
   assert.ok(await page.locator('benchmark-explorer svg').count() > 0, 'Measurements need an SSR SVG figure.');
@@ -171,6 +172,10 @@ test('benchmark evidence remains useful without JavaScript', async t => {
 });
 
 test('published pages retain clean headings, valid internal links, anchors and distinct metadata', async t => {
+  const redirects = new Set(Object.keys(JSON.parse(fs.readFileSync(
+    path.join(dist, '..', '.webui-press/redirects.json'), 'utf8',
+  ))));
+  const redirectFiles = new Set([...redirects].map(route => `${route.slice(1)}index.html`));
   const htmlFiles: string[] = [];
   const directories = [dist];
   while (directories.length) {
@@ -192,7 +197,7 @@ test('published pages retain clean headings, valid internal links, anchors and d
   const pages: { relative: string; links: string[] }[] = [];
   for (const file of htmlFiles) {
     const relative = path.relative(dist, file).split(path.sep).join('/');
-    if (relative === '404.html') continue;
+    if (relative === '404.html' || redirectFiles.has(relative)) continue;
     await page.goto(`${server.origin}/webui/${relative.replace(/index\.html$/, '')}`);
     const result = await page.evaluate(() => {
       const roots: (Document | ShadowRoot)[] = [document];
@@ -241,6 +246,10 @@ test('published pages retain clean headings, valid internal links, anchors and d
     for (const href of links) {
       const url = new URL(href);
       if (![server.origin, 'https://microsoft.github.io'].includes(url.origin) || !url.pathname.startsWith('/webui/')) continue;
+      const route = url.pathname.slice('/webui'.length);
+      if (redirects.has(route.endsWith('/') ? route : `${route}/`)) {
+        failures.add(`${relative}: replace the legacy link ${url.pathname}`);
+      }
       const target = path.join(dist, decodeURIComponent(url.pathname.slice('/webui/'.length)));
       const destination = path.extname(target) ? target : path.join(target, 'index.html');
       if (!fs.existsSync(destination)) {
