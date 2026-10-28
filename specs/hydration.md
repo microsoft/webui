@@ -104,6 +104,9 @@ whitespace within a binding's text node. State values are never trimmed.
 Static text parts follow browser HTML parsing: source CR/CRLF becomes LF,
 character references are decoded, and the initial LF after
 `pre`/`textarea`/`listing` is ignored before client text assignment.
+Whitespace-only formatting at the leading or trailing edge of a component,
+`<if>`, or `<for>` body, next to markup, is omitted from `h` just as SSR omits
+it, so client-created blocks start and end with the same nodes as adopted ones.
 
 Whole-value dynamic attributes omit missing and null values during SSR and
 client binding updates. Empty strings, zero, and false remain values; mixed
@@ -152,6 +155,18 @@ Server output:
 ```
 
 Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Pre-order element indices reach those.
+
+### Blocks adopt their marker ranges in place
+
+A visible conditional owns the SSR nodes between `<!--wc-->` and its matching
+`<!--/wc-->`; each repeat item owns the nodes from its `<!--wi-->` to the next
+`<!--wi-->` or `<!--/wr-->`. The block's walk and root-level slots are bounded
+by that range, so it cannot claim a following sibling's markers. Hydration
+binds the range where the parser placed it: adopted nodes never leave the
+document, so custom elements see no disconnect or reconnect. The instance owns
+every node in the range, including static text beside its elements, so later
+moves and removals take the whole range. An empty conditional range stays
+empty and keeps its start marker as the anchor.
 
 ### Marker removal is deferred
 
@@ -222,8 +237,9 @@ twice its direct static element-child count, plus an ownership bit. The bit
 allows marker collection inside ordinary elements and explicitly authored
 projected children, but not inside an otherwise empty child component.
 The root is index zero. Inert `<template>` contents are not numbered.
-`rootNodes` counts all static root child nodes, including text and comments,
-so single-root conditional and repeat adoption preserve their existing rules.
+`rootNodes` counts all static root child nodes, including text and comments.
+It is validated with the rest of the layout; SSR adoption bounds a block by its
+markers rather than by this count.
 
 Each `tx` tuple may carry a static successor as its fourth entry. Omission
 means no static successor; otherwise the low two bits encode element (1),

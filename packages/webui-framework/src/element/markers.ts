@@ -98,14 +98,13 @@ export function nextElement(marker: Comment): Element | null {
 }
 
 /**
- * Skip a complete structural block range and return the node that follows it.
+ * Find the closing marker of a complete structural block range.
  *
  * `start` must be a `<!--wc-->`, `<!--wr-->`, or `<!--wN-->` comment. Walks forward with
  * depth tracking over same-type markers so nested blocks of the same kind are
- * consumed as part of the range, and returns the sibling after the matching
- * closing marker (or `null` when the range is unterminated).
+ * consumed as part of the range. Returns `null` when the range is unterminated.
  */
-export function skipBlockRange(start: Comment, data: string): ChildNode | null {
+export function findBlockEnd(start: Comment, data: string): Comment | null {
   const endTag = data === MARKER_COND_START
     ? MARKER_COND_END
     : isRawStartMarker(data)
@@ -113,16 +112,39 @@ export function skipBlockRange(start: Comment, data: string): ChildNode | null {
       : MARKER_REPEAT_END;
   let depth = 1;
   let node: ChildNode | null = start.nextSibling;
-  while (node && depth > 0) {
+  while (node) {
     if (node.nodeType === 8 /* COMMENT_NODE */) {
       const d = (node as Comment).data;
       if (d === data) depth++;
-      else if (d === endTag) depth--;
+      else if (d === endTag && --depth === 0) return node as Comment;
     }
-    if (depth > 0) node = node.nextSibling;
+    node = node.nextSibling;
   }
-  // Advance past the closing marker itself
-  return node ? node.nextSibling : null;
+  return null;
+}
+
+/**
+ * Skip a complete structural block range and return the node that follows it,
+ * or `null` when the range is unterminated.
+ */
+export function skipBlockRange(start: Comment, data: string): ChildNode | null {
+  const end = findBlockEnd(start, data);
+  return end ? end.nextSibling : null;
+}
+
+/**
+ * Return the node `index` siblings after `first`, stopping at `end`.
+ *
+ * Yields `end` (or `null` past the parent's last child) when the range is
+ * shorter, which is the insertion point that appends to the range.
+ */
+export function rangeChildAt(first: ChildNode | null, end: Node | null, index: number): Node | null {
+  let node: ChildNode | null = first;
+  while (index > 0 && node && node !== end) {
+    node = node.nextSibling;
+    index--;
+  }
+  return node;
 }
 
 /**
@@ -188,6 +210,10 @@ export interface SSRIndex {
  *    `<!--/wr-->` ranges that the template does not contain, so those ranges
  *    are skipped whole - their contents belong to the block's own metadata.
  *
+ * A block section is hydrated in place: `ssrRoot` is its live parent and the
+ * walk covers only the siblings from `first` up to the exclusive `rangeEnd`
+ * boundary.  Index `0` is still the section root, so root-level slots resolve
+ * against that parent within the same bounds.
  *
  * Iterative by design - templates nest arbitrarily deep and recursion would put
  * that on the call stack.
@@ -204,36 +230,30 @@ export function buildSSRIndex(
   shape: readonly number[],
   ssrRoot: Node,
   needMarkers: boolean,
-  ssrIsSectionChild = false,
+  first: ChildNode | null = ssrRoot.firstChild,
+  rangeEnd: Node | null = null,
 ): SSRIndex {
-  // Hydrating a single-root block in place starts from the block's own root
-  // element, which the compiler numbered 1 rather than 0.  Entering the walk
-  // with that element as the first sibling keeps both numberings aligned; index
-  // 0 then has no single node, and callers fall back to the block range.
-  const elements: Array<Node | undefined> = [ssrIsSectionChild ? undefined : ssrRoot];
+  const elements: Array<Node | undefined> = [ssrRoot];
   const conds: Comment[] = [];
   const repeats: Comment[] = [];
   const raws: Array<[Comment, Comment]> = [];
-  // `solo` bounds a frame to the single element it was entered on.  In-place
-  // block hydration starts inside the block's own `<!--wc-->` range, so an
-  // unbounded frame would run past the closing marker once the template ran
-  // out and adopt a following sibling block's marker as its own.
-  const stack: Array<{ remaining: number; s: ChildNode | null; solo: boolean }> = [
-    {
-      remaining: shape[1] >> 1,
-      s: ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild,
-      solo: ssrIsSectionChild,
-    },
+  // Only the root frame is bounded.  A block range shares its parent with the
+  // following item or block, so an unbounded frame would run past the range's
+  // closing marker once the template ran out and adopt a following sibling
+  // block's marker as its own.
+  const stack: Array<{ remaining: number; s: ChildNode | null; end: Node | null }> = [
+    { remaining: shape[1] >> 1, s: first, end: rangeEnd },
   ];
   let index = 0;
 
   while (stack.length > 0) {
     const frame = stack[stack.length - 1];
+    const frameEnd = frame.end;
 
     // Advance the SSR cursor to the next element, recording block markers in
     // document order and stepping over their ranges.
     let s = frame.s;
-    while (s) {
+    while (s && s !== frameEnd) {
       const type = s.nodeType;
       if (type === 8 /* COMMENT_NODE */) {
         const data = (s as Comment).data;
@@ -277,6 +297,7 @@ export function buildSSRIndex(
       }
       s = s.nextSibling;
     }
+    if (s === frameEnd) s = null;
 
     if (frame.remaining === 0) {
       stack.pop();
@@ -289,7 +310,7 @@ export function buildSSRIndex(
     index++;
     if (s) {
       elements[index] = s;
-      frame.s = frame.solo ? null : s.nextSibling;
+      frame.s = s.nextSibling;
     }
     frame.remaining--;
 
@@ -303,7 +324,7 @@ export function buildSSRIndex(
     const childShape = shape[index + 1];
     const childCount = childShape >> 1;
     if (childCount > 0 || (needMarkers && (childShape & 1) && s?.firstChild)) {
-      stack.push({ remaining: childCount, s: s ? s.firstChild : null, solo: false });
+      stack.push({ remaining: childCount, s: s ? s.firstChild : null, end: null });
     }
   }
 
@@ -334,11 +355,20 @@ export function buildSSRIndex(
  * **Requires closing markers to still be in the DOM** - caller must retain
  * `<!--/wc-->`, `<!--/wr-->`, and paired raw-range end markers until all
  * resolution is done.
+ *
+ * A block range passes its first node and exclusive `end` boundary so ordinals
+ * count only that range rather than every child of the shared parent.
  */
-export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): Node | null {
+export function findByOrdinal(
+  parent: Node,
+  nodeType: number,
+  ordinal: number,
+  first: ChildNode | null = parent.firstChild,
+  end: Node | null = null,
+): Node | null {
   let count = 0;
-  let child = parent.firstChild;
-  while (child) {
+  let child = first;
+  while (child && child !== end) {
     // Detect a structural block opening marker and skip the entire range.
     if (child.nodeType === 8 /* COMMENT_NODE */) {
       const data = (child as Comment).data;

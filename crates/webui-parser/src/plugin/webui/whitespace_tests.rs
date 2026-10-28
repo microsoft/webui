@@ -187,3 +187,30 @@ fn closing_names_follow_html_matching() -> Result<()> {
         IF_CONTROL,
     )
 }
+
+#[test]
+fn trailing_formatting_after_closing_tags_matches_compact_sections() -> Result<()> {
+    for (name, attribute) in [
+        ("if", "condition=\"enabled\""),
+        ("for", "each=\"item in items\""),
+    ] {
+        let control = format!(
+            "<article><{name} {attribute}><button>{{{{label}}}}</button></{name}></article>"
+        );
+        for whitespace in [" ", "\t", "\n", "\r\n", "\n  "] {
+            let formatted = format!(
+                "<article><{name} {attribute}>{whitespace}<button>{{{{label}}}}</button>{whitespace}</{name}></article>"
+            );
+            assert_same_metadata(&formatted, &control)?;
+        }
+    }
+    assert_same_metadata("<p>{{label}}</p>\n", "<p>{{label}}</p>")?;
+    // Text after the last closing tag is content, not formatting.
+    let meta = compile_to_metadata(
+        "test-whitespace",
+        "<for each=\"item in items\"><b>{{item}}</b> tail\n</for>".into(),
+        Vec::new(),
+    )?;
+    assert_eq!(meta.blocks[0].html, "<b></b> tail\n");
+    Ok(())
+}

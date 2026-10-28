@@ -1682,9 +1682,8 @@ fn compile_section(
                 }
             }
 
-            let opening_name = parse_tag(remaining)
-                .filter(|tag| !tag.closing)
-                .map(|tag| tag.name);
+            let tag = parse_tag(remaining);
+            let opening_name = tag.as_ref().filter(|tag| !tag.closing).map(|tag| tag.name);
             if opening_name == Some("if") {
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
                     let block_index = blocks.reserve();
@@ -1739,6 +1738,21 @@ fn compile_section(
                 if let Some(consumed) = find_element_end(remaining, "outlet") {
                     meta.html.push_str("<outlet></outlet>");
                     i += consumed;
+                    last_markup_end = i;
+                    continue;
+                }
+            }
+
+            // An end tag (`</` + ASCII letter) also ends markup, so whitespace
+            // after the last one is boundary formatting that SSR never renders.
+            if let Some(end_tag) = tag.as_ref().filter(|tag| tag.closing) {
+                if remaining
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(u8::is_ascii_alphabetic)
+                {
+                    meta.html.push_str(&remaining[..=end_tag.close]);
+                    i += end_tag.close + 1;
                     last_markup_end = i;
                     continue;
                 }

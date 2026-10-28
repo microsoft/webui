@@ -99,4 +99,15 @@ test.describe('unkeyed repeat reconciliation', () => {
       'Item 5',
     ]);
   });
+
+  test('keeps root-level item text bound and owned by its SSR item', async ({ page }) => {
+    const marked = page.locator('test-repeat-parent .marked');
+    await expect(marked).toHaveText('#Item 1#Item 2#Item 3#Item 4#Item 5');
+
+    await page.locator('test-repeat-parent .prepend').click();
+    await expect(marked).toHaveText('#Item 6#Item 1#Item 2#Item 3#Item 4#Item 5');
+
+    await page.locator('test-repeat-parent .remove-middle').click();
+    await expect(marked).toHaveText('#Item 6#Item 1#Item 3#Item 4#Item 5');
+  });
 });

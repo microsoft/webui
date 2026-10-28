@@ -2,6 +2,13 @@
 // Licensed under the MIT license.
 
 import { expect, test } from '@playwright/test';
+import { hydrationRemovals, recordHydrationRemovals } from '../../hydration-removals.js';
+
+test('hydrates multi-node repeat items in place', async ({ page }) => {
+  await recordHydrationRemovals(page, 'test-list');
+  await page.goto('/list/fixture.html');
+  expect(await hydrationRemovals(page, 'test-list')).toEqual([]);
+});
 
 test.describe('list fixture', () => {
   test.beforeEach(async ({ page }) => {

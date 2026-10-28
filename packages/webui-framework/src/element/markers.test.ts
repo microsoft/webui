@@ -6,7 +6,9 @@ import { describe, test } from 'node:test';
 import {
   collectItemMarkers,
   nextElement,
+  findBlockEnd,
   findByOrdinal,
+  rangeChildAt,
   skipBlockRange,
   buildSSRIndex,
   collectTemplateElements,
@@ -440,6 +442,87 @@ describe('findByOrdinal', () => {
       'should return null for parent with no children',
     );
   });
+
+  test('counts only the block range it is given', () => {
+    // <!--wi--> text <b/> <!--wi--> text <b/>
+    const firstItem = comment('wi');
+    const firstText = text('Alpha');
+    const firstB = el('b');
+    const secondItem = comment('wi');
+    const secondText = text('Beta');
+    const secondB = el('b');
+    const parent = makeParent(firstItem, firstText, firstB, secondItem, secondText, secondB);
+
+    assert.strictEqual(
+      findByOrdinal(
+        parent as unknown as Node, ELEMENT, 0,
+        secondText as unknown as ChildNode, null,
+      ),
+      secondB,
+    );
+    assert.strictEqual(
+      findByOrdinal(
+        parent as unknown as Node, ELEMENT, 1,
+        firstText as unknown as ChildNode, secondItem as unknown as Node,
+      ),
+      null,
+      'must not count the next item',
+    );
+  });
+});
+
+// ── findBlockEnd / rangeChildAt ─────────────────────────────────
+
+describe('findBlockEnd', () => {
+  function chain(...nodes: MockNode[]): void {
+    for (let i = 0; i < nodes.length - 1; i++) nodes[i].nextSibling = nodes[i + 1];
+  }
+  const comment = (data: string): MockNode =>
+    ({ nodeType: COMMENT, data, nextSibling: null }) as MockNode;
+
+  test('returns the closing marker that matches a nested range', () => {
+    const start = comment('wc');
+    const nestedStart = comment('wc');
+    const nestedEnd = comment('/wc');
+    const end = comment('/wc');
+    chain(start, nestedStart, nestedEnd, end, comment('/wc'));
+
+    assert.strictEqual(findBlockEnd(start as unknown as Comment, 'wc'), end);
+  });
+
+  test('matches raw ranges by their own index', () => {
+    const start = comment('w2');
+    const end = comment('/w2');
+    chain(start, comment('/w1'), end);
+
+    assert.strictEqual(findBlockEnd(start as unknown as Comment, 'w2'), end);
+  });
+
+  test('returns null when the range is unterminated', () => {
+    const start = comment('wr');
+    chain(start, comment('wi'));
+
+    assert.strictEqual(findBlockEnd(start as unknown as Comment, 'wr'), null);
+  });
+});
+
+describe('rangeChildAt', () => {
+  const node = (): MockNode => ({ nodeType: ELEMENT, nextSibling: null }) as MockNode;
+
+  test('returns the indexed node, or the range end when the range is shorter', () => {
+    const a = node();
+    const b = node();
+    const end = node();
+    const after = node();
+    a.nextSibling = b;
+    b.nextSibling = end;
+    end.nextSibling = after;
+    const first = a as unknown as ChildNode;
+
+    assert.strictEqual(rangeChildAt(first, end as unknown as Node, 1), b);
+    assert.strictEqual(rangeChildAt(first, end as unknown as Node, 5), end);
+    assert.strictEqual(rangeChildAt(first, null, 10), null);
+  });
 });
 
 // ── skipBlockRange ──────────────────────────────────────────────
@@ -526,7 +609,13 @@ describe('buildSSRIndex', () => {
   function cmt(data: string): TreeNode {
     return { nodeType: COMMENT, data, firstChild: null, nextSibling: null };
   }
-  function build(t: TreeNode, s: TreeNode, markers = true) {
+  function build(
+    t: TreeNode,
+    s: TreeNode,
+    markers = true,
+    first?: TreeNode,
+    end?: TreeNode,
+  ) {
     const elements = collectTemplateElements(t as unknown as Node);
     const shape = elements.map(element => {
       let count = 0;
@@ -540,7 +629,13 @@ describe('buildSSRIndex', () => {
         || (element as Element).tagName.indexOf('-') < 0;
       return count * 2 + (ownsChildren ? 1 : 0);
     });
-    return buildSSRIndex([0, ...shape], s as unknown as Node, markers);
+    return buildSSRIndex(
+      [0, ...shape],
+      s as unknown as Node,
+      markers,
+      first as unknown as ChildNode | undefined,
+      end as unknown as Node | undefined,
+    );
   }
 
   test('pairs elements while ignoring whitespace the server dropped', () => {
@@ -718,5 +813,26 @@ describe('buildSSRIndex', () => {
     const ssr = el('ROOT', el('MY-CHILD', ssrSpan));
 
     assert.strictEqual(build(tpl, ssr).elements[2], ssrSpan);
+  });
+
+  test('bounds an in-place block range at its closing boundary', () => {
+    // <for><if/><a/></for>: each item renders <!--wc--><!--/wc--><a>.
+    const tpl = el('ROOT', el('A'));
+    const firstItem = cmt('wi');
+    const firstCond = cmt('wc');
+    const firstA = el('A');
+    const secondItem = cmt('wi');
+    const secondCond = cmt('wc');
+    const ssr = el(
+      'ROOT', firstItem, firstCond, cmt('/wc'), firstA,
+      secondItem, secondCond, cmt('/wc'), el('A'), cmt('/wr'),
+    );
+
+    const index = build(tpl, ssr, true, firstCond, secondItem);
+
+    // The section root is the live parent the range belongs to.
+    assert.strictEqual(index.elements[0], ssr);
+    assert.strictEqual(index.elements[1], firstA);
+    assert.deepStrictEqual(index.conds, [firstCond], 'must not claim the next item marker');
   });
 });
