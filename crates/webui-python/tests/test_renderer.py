@@ -162,7 +162,7 @@ def test_current_fixture_preserves_exact_v3_template_metadata(renderer: Renderer
     expected = {
         "v": 3,
         "h": '<p class="message"></p>',
-        "s": [1, 3, 1],
+        "l": [3, 1],
         "tx": [[[1, 0], ["Hello, ", ["name"], "!"]]],
         "sd": 1,
         "th": 1,

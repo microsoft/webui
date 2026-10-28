@@ -2,6 +2,25 @@
 // Licensed under the MIT license.
 
 import { expect, test } from '@playwright/test';
+import { hydrationRemovals, recordHydrationRemovals } from '../../hydration-removals.js';
+
+test('adopts formatted repeat items in place', async ({ page }) => {
+  await recordHydrationRemovals(page, 'adoption-library');
+  await page.goto('/ssr-adoption/fixture.html');
+  expect(await hydrationRemovals(page, 'adoption-library')).toEqual([]);
+});
+
+test('creates repeat items with the same formatting edges as SSR', async ({ page }) => {
+  await page.goto('/ssr-adoption/fixture.html');
+  const library = page.locator('adoption-library');
+  await expect(library).toHaveJSProperty('$ready', true);
+  await library.getByRole('button', { name: 'Add project' }).click();
+  await expect(library.locator('adoption-project')).toHaveCount(3);
+  const formatting = await library.locator('[aria-label="Projects"]').evaluate(section =>
+    Array.from(section.childNodes)
+      .filter(node => node.nodeType === Node.TEXT_NODE && !node.textContent!.trim()).length);
+  expect(formatting).toBe(0);
+});
 
 test('adopts SSR without parsing client templates, then materializes new content lazily', async ({ page }) => {
   await page.addInitScript(() => {

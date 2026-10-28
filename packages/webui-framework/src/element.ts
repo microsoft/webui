@@ -354,9 +354,9 @@ export class WebUIElement extends TemplateElement {
   /** Wire events + root events + refs (shared by $wire and $hydrate). */
   protected override $finalize(
     instance: TemplateInstance,
-    root: Node,
+    root: Node | null,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
+    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
@@ -374,9 +374,9 @@ export class WebUIElement extends TemplateElement {
    */
   private $wireEvents(
     instance: TemplateInstance,
-    root: Node,
+    root: Node | null,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
+    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     const groups = meta.eg;
@@ -492,9 +492,9 @@ export class WebUIElement extends TemplateElement {
   /** Wire compiler-owned refs and release them with their view. */
   private $wireRefs(
     instance: TemplateInstance,
-    root: Node,
+    root: Node | null,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
+    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
   ): void {
     const refs = meta.rf;
     if (!refs) return;

@@ -10,6 +10,8 @@
   </if>
   <div class="outer-details">Outer details</div>
 </if>
+<if condition="outerOpen"><strong class="outer-label">Outer label</strong> after label</if>
+<p class="inline-edges"><b>Z</b><if condition="outerOpen"> <b>A</b> </if><b>B</b></p>
 <if condition="snapshotOpen">
   <for each="snapshotItem in snapshotItems">
     <span class="snapshot-item">{{snapshotItem}}</span>

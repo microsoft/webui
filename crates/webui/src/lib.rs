@@ -1576,7 +1576,7 @@ mod tests {
                     .unwrap();
             assert_eq!(metadata["v"], 3);
             assert_eq!(metadata["rf"], serde_json::json!([["rootInput", 1]]));
-            assert_eq!(metadata["s"], serde_json::json!([1, 3, 1]));
+            assert_eq!(metadata["l"], serde_json::json!([3, 1]));
             let block = if lazy.is_empty() {
                 metadata["b"][0].clone()
             } else {
@@ -1586,7 +1586,7 @@ mod tests {
                 .unwrap()
             };
             assert_eq!(block["rf"], serde_json::json!([["action", 1]]));
-            assert_eq!(block["s"], serde_json::json!([1, 3, 1]));
+            assert_eq!(block["l"], serde_json::json!([3, 1]));
         }
     }
 

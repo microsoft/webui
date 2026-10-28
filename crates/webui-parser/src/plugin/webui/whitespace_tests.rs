@@ -187,3 +187,55 @@ fn closing_names_follow_html_matching() -> Result<()> {
         IF_CONTROL,
     )
 }
+
+#[test]
+fn boundary_formatting_follows_ssr_whitespace_rules() -> Result<()> {
+    for (name, attribute) in [
+        ("if", "condition=\"enabled\""),
+        ("for", "each=\"item in items\""),
+    ] {
+        let control = format!(
+            "<article><{name} {attribute}><button>{{{{label}}}}</button></{name}></article>"
+        );
+        // SSR drops whitespace-only text with a line break, so `h` does too.
+        for formatting in ["\n", "\r\n", "\n  ", " \n\t"] {
+            let formatted = format!(
+                "<article><{name} {attribute}>{formatting}<button>{{{{label}}}}</button>{formatting}</{name}></article>"
+            );
+            assert_same_metadata(&formatted, &control)?;
+        }
+        // SSR keeps inline spaces and tabs, so recreated blocks keep them too.
+        for inline in [" ", "\t"] {
+            let source =
+                format!("<{name} {attribute}>{inline}<b>{{{{label}}}}</b>{inline}</{name}>");
+            let meta = compile_to_metadata("test-whitespace", source.as_str().into(), Vec::new())?;
+            assert_eq!(
+                meta.blocks[0].html,
+                format!("{inline}<b></b>{inline}"),
+                "{source:?}"
+            );
+        }
+    }
+    assert_same_metadata("<p>{{label}}</p>\n", "<p>{{label}}</p>")?;
+    let component = " <p>{{label}}</p>\t";
+    let compiled = generate_compiled_template_with_root_source(
+        "test-whitespace",
+        component,
+        component,
+        false,
+        false,
+    )?;
+    assert!(
+        compiled.template_json.contains(r#""h":" <p></p>\t""#),
+        "{}",
+        compiled.template_json
+    );
+    // Text after the last closing tag is content, not formatting.
+    let meta = compile_to_metadata(
+        "test-whitespace",
+        "<for each=\"item in items\"><b>{{item}}</b> tail\n</for>".into(),
+        Vec::new(),
+    )?;
+    assert_eq!(meta.blocks[0].html, "<b></b> tail\n");
+    Ok(())
+}

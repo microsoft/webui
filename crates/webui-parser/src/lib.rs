@@ -583,6 +583,22 @@ fn strip_condition_braces(value: &str) -> &str {
         .map_or(value, str::trim)
 }
 
+/// Returns true for whitespace-only text that contains a line break.
+///
+/// SSR drops these formatting runs, while inline spaces and tabs remain
+/// content. Compiled block and component edges use the same rule, so
+/// client-created blocks keep exactly the edge text that SSR renders.
+fn is_formatting_whitespace(content: &str) -> bool {
+    let mut line_break = false;
+    for ch in content.chars() {
+        if !ch.is_whitespace() {
+            return false;
+        }
+        line_break |= matches!(ch, '\n' | '\r');
+    }
+    line_break
+}
+
 #[cold]
 #[inline(never)]
 fn locate_for_error(error: ParserError, element: &Element<'_>) -> ParserError {
@@ -2585,17 +2601,7 @@ impl HtmlParser {
     /// inline whitespace-only separators such as the spaces around `&gt;` in
     /// `{{sectionName}} &gt; {{topicName}}` must be preserved.
     fn should_emit_text_content(content: &str) -> bool {
-        if content.is_empty() {
-            return false;
-        }
-
-        if !content.trim().is_empty() {
-            return true;
-        }
-
-        content.chars().all(char::is_whitespace)
-            && !content.contains('\n')
-            && !content.contains('\r')
+        !content.is_empty() && !is_formatting_whitespace(content)
     }
 
     fn parse_range(
