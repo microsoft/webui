@@ -542,7 +542,7 @@ describe('buildSSRIndex', () => {
       return count * 2 + (ownsChildren ? 1 : 0);
     });
     return buildSSRIndex(
-      [0, ...shape],
+      shape,
       s as unknown as Node,
       markers,
       first as unknown as ChildNode | undefined,

@@ -221,7 +221,7 @@ export function buildSSRIndex(
   // closing marker once the template ran out and adopt a following sibling
   // block's marker as its own.
   const stack: Array<{ remaining: number; s: ChildNode | null; end: Node | null }> = [
-    { remaining: shape[1] >> 1, s: first, end: rangeEnd },
+    { remaining: shape[0] >> 1, s: first, end: rangeEnd },
   ];
   let index = 0;
 
@@ -300,7 +300,7 @@ export function buildSSRIndex(
     // element is the exception either way: with no template children it
     // contributes no projected content, and whatever the server rendered inside
     // belongs to that component, not to this one.
-    const childShape = shape[index + 1];
+    const childShape = shape[index];
     const childCount = childShape >> 1;
     if (childCount > 0 || (needMarkers && (childShape & 1) && s?.firstChild)) {
       stack.push({ remaining: childCount, s: s ? s.firstChild : null, end: null });

@@ -95,9 +95,12 @@ export type CompiledEventBindingMeta = [
 ];
 export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
-/** Root child-node count followed by the pre-order static element topology. */
+/**
+ * Pre-order static element topology, starting with the section root. Each
+ * shape is twice the element's direct static element-child count, plus an
+ * ownership bit.
+ */
 export type CompiledSSRLayout = [
-  rootNodes: number,
   rootShape: number,
   ...elements: number[],
 ];
@@ -105,7 +108,7 @@ export type CompiledSSRLayout = [
 export interface TemplateBlockMeta {
   h: string;
   /** Required for SSR adoption; client-only mounting does not use this layout. */
-  s?: CompiledSSRLayout;
+  l?: CompiledSSRLayout;
   tx?: CompiledTextRunMeta[];
   a?: CompiledAttrMeta[];
   ag?: CompiledAttrGroupMeta[];
