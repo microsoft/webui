@@ -22,4 +22,8 @@ state:
       label: Yarn
       command: "yarn add -D @microsoft/webui"
       selected: false
+    - id: bun
+      label: Bun
+      command: "bun add -D @microsoft/webui"
+      selected: false
 ---

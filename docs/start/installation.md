@@ -33,8 +33,8 @@ Create this file, or merge the scripts into your existing package file:
 }
 ```
 
-Choose a package manager. Your browser remembers the selection for package-manager
-tabs across these guides:
+Choose a package manager. Your browser remembers the selection for the homepage
+installer and package-manager tabs across these guides:
 
 <webui-press-tabs sync="package-manager" storage="local">
 <webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>

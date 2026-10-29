@@ -20,6 +20,7 @@ const commands = [
   ['npm', 'npm install -D @microsoft/webui'],
   ['pnpm', 'pnpm add -D @microsoft/webui'],
   ['Yarn', 'yarn add -D @microsoft/webui'],
+  ['Bun', 'bun add -D @microsoft/webui'],
 ] as const;
 
 test('the entry page serves the install command and qualified fixed-case preview without JavaScript', async t => {
@@ -122,6 +123,79 @@ test('install choices copy exact commands and support native keyboard selection'
   await expect(install.getByRole('radio', { name: 'pnpm', exact: true })).toBeFocused();
   await expect(install.getByText('pnpm', { exact: true })).toHaveCSS('outline-style', 'solid');
   await expect(install.locator('code')).toHaveText(commands[1][1]);
+});
+
+test('homepage package-manager choice shares the documentation category across navigation', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(`${server.origin}/webui/`);
+  const install = page.locator('install-command');
+  await expect(install.getByRole('button', { name: 'Copy install command' })).toBeEnabled();
+  await install.getByText('pnpm', { exact: true }).click();
+  expect(await page.evaluate(() => localStorage.getItem('webui-press:tabs:package-manager'))).toBe('pnpm');
+  await page.goto(`${server.origin}/webui/start/first-page/`);
+  const tabs = page.locator('webui-press-tabs[sync="package-manager"][storage="local"]');
+  await expect(tabs.locator('webui-press-tab[value="pnpm"][active]')).toHaveCount(1);
+  await tabs.getByRole('button', { name: 'Bun', exact: true }).click();
+  await page.goto(`${server.origin}/webui/`);
+  await expect(install.getByRole('radio', { name: 'Bun', exact: true })).toBeChecked();
+  await expect(install.locator('code')).toHaveText('bun add -D @microsoft/webui');
+  await page.reload();
+  await expect(install.getByRole('radio', { name: 'Bun', exact: true })).toBeChecked();
+  await install.getByText('Yarn', { exact: true }).click();
+  await page.goto(`${server.origin}/webui/start/installation/`);
+  await expect(page.locator('webui-press-tabs[sync="package-manager"] > webui-press-tab[value="yarn"][active]'))
+    .toHaveCount(3);
+});
+
+test('homepage package-manager preferences tolerate stale values and storage failures', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  for (const failure of ['read', 'write', 'stale'] as const) {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => {
+      if (message.type() === 'warning' && message.text().startsWith('[WebUI docs]')) {
+        warnings.push(message.text());
+      }
+    });
+    await page.addInitScript(mode => {
+      const key = 'webui-press:tabs:package-manager';
+      if (mode === 'stale') {
+        localStorage.setItem(key, 'removed-manager');
+      } else if (mode === 'read') {
+        const getItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function (name: string) {
+          if (name === key) throw new DOMException('Read blocked', 'SecurityError');
+          return getItem.call(this, name);
+        };
+      } else {
+        const setItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (name: string, value: string) {
+          if (name === key) throw new DOMException('Storage full', 'QuotaExceededError');
+          setItem.call(this, name, value);
+        };
+      }
+    }, failure);
+    await page.goto(`${server.origin}/webui/`);
+    const install = page.locator('install-command');
+    await expect(install.getByRole('button', { name: 'Copy install command' })).toBeEnabled();
+    await expect(install.locator('code')).toHaveText(commands[0][1]);
+    await install.getByText('pnpm', { exact: true }).click();
+    await expect(install.locator('code')).toHaveText(commands[1][1]);
+    await install.getByText('Yarn', { exact: true }).click();
+    await expect(install.locator('code')).toHaveText(commands[2][1]);
+    expect(warnings).toHaveLength(failure === 'stale' ? 0 : 1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }
 });
 
 test('clipboard denial and unavailable APIs show a manual-copy recovery instead of success', async t => {
