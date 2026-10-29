@@ -3,6 +3,7 @@
 
 import {
   templateHtmlMayContainLink,
+  templateHtmlMayContainStyles,
   getTemplateStylesheets,
   type TemplateStylesheetDescriptor,
 } from '../template-content.js';
@@ -26,8 +27,11 @@ interface TemplateLinkStyleState {
 interface SpeculativeStylesheetPreload {
   claimed: boolean;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  /** Preload result, recorded synchronously once `ready` settles. */
+  failure?: LinkStyleFailure;
   readonly link: HTMLLinkElement;
   readonly ready: Promise<LinkStyleFailure | undefined>;
+  settled: boolean;
   readonly startedAt: number;
 }
 
@@ -47,6 +51,56 @@ interface DeferredContentCallbacks {
   readonly hasAuthorHydrationLifecycle?: boolean;
 }
 
+/**
+ * One compiler-owned component stylesheet URL within a Document.
+ *
+ * The first root to mount the URL keeps its native link, so a component used
+ * once pays no CSSOM serialization or second parse. A later root promotes the
+ * authorized CSSOM of a loaded link once; every root after it adopts the
+ * shared sheet without a link, guard, or load wait.
+ */
+interface ComponentLinkRecord {
+  /** A native load of this URL passed `hasUnredirectedNativeTiming`. */
+  authorized: boolean;
+  /**
+   * Timing window opened by the first use. Concurrent roots share its fetch,
+   * so they authorize against it whichever load event settles first.
+   */
+  firstUseStartedAt: number;
+  sheet?: CSSStyleSheet;
+  /**
+   * Loaded, authorized link that can be promoted without a new load. Held
+   * weakly: the record lives as long as the Document, and the link would keep
+   * its removed root and host reachable when no later root needs this URL.
+   */
+  source?: WeakRef<HTMLLinkElement>;
+  /**
+   * Promotion failed for this Document's response: it is not authorized, or
+   * its CSS cannot be represented as a constructable sheet. Neither changes,
+   * because memory-cache hits add no new timing entry.
+   */
+  unpromotable: boolean;
+  /** Some root has already mounted this URL. */
+  used: boolean;
+}
+
+/**
+ * `installComponentLinkStyles` flag: promote a stylesheet on its first use.
+ *
+ * For roots whose cascade includes other author styles (a template's own
+ * `<style>` or `<link>`, server-rendered content, or Light descendants), so
+ * every instance adopts the same shared sheet.
+ */
+export const COMPONENT_LINKS_EAGER = 1;
+
+/**
+ * `installComponentLinkStyles` flag: the framework attached this ShadowRoot in
+ * the current mount, so it cannot hold adopted sheets yet. Synchronous
+ * adoption then writes `adoptedStyleSheets` without reading it; a read
+ * materializes a per-root wrapper that lives as long as the root.
+ */
+export const COMPONENT_ROOT_FRESH = 2;
+
 const READY = Promise.resolve();
 const NO_DESCRIPTORS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
 const NO_LINK_STYLE_STATE: TemplateLinkStyleState = {
@@ -60,6 +114,24 @@ const GUARD_CSS =
   '@layer{:host{transition:none!important;visibility:hidden!important}}';
 const templateLinkStyles = new WeakMap<TemplateBlockMeta, TemplateLinkStyleState>();
 const activeStyleMounts = new WeakMap<ShadowRoot, (discardRoot?: boolean) => void>();
+const authorStyleTemplates = new WeakMap<TemplateMeta, boolean>();
+/**
+ * Per-Document state for compiler-owned component links, keyed by resolved
+ * stylesheet URL. Component links carry no media or request attributes, so
+ * the URL is the whole parse input.
+ *
+ * Entries describe the Document's memory-cached response and live as long as
+ * its style catalog, which never removes a resource, so the map is bounded by
+ * the distinct Link resources the page has mounted. They hold no DOM strongly.
+ * Dropping an entry would send the next mount back to a native load that can
+ * no longer be authorized: memory cache hits add no new resource timing entry.
+ */
+const componentLinkRecords = new WeakMap<Document, Map<string, ComponentLinkRecord>>();
+/** Catalog hrefs resolved against one Document base URL; see {@link resolveComponentHref}. */
+const resolvedComponentHrefs = new WeakMap<
+  Document,
+  { readonly base: string; readonly hrefs: Map<string, string> }
+>();
 let speculativeStylesheetPreloads:
   | Map<string, SpeculativeStylesheetPreload | undefined>
   | undefined;
@@ -131,8 +203,14 @@ export function preloadComponentAssetStyles(
       claimed: false,
       link,
       ready: waitForStylesheetPreload(link, href),
+      settled: false,
       startedAt,
     };
+    // Registered first, so every awaiting caller observes the settled state.
+    void preload.ready.then(failure => {
+      preload.settled = true;
+      preload.failure = failure;
+    });
     preloads.set(href, preload);
     (pending ??= []).push(preload.ready);
     preload.cleanupTimer = setTimeout(() => {
@@ -143,31 +221,115 @@ export function preloadComponentAssetStyles(
 }
 
 /**
- * Promote compiler-owned component links after their native loads complete.
+ * Adopt shared sheets for every component link href a root still needs.
+ *
+ * An href qualifies once an earlier root mounted it and its sheet exists or
+ * can be promoted from that root's loaded, authorized link. Returns false
+ * without touching the root otherwise; the caller then installs native links.
+ */
+export function adoptPromotedComponentLinks(
+  root: ShadowRoot,
+  hrefs: readonly string[],
+  flags = 0,
+): boolean {
+  const owner = root.ownerDocument;
+  const records = componentLinkRecords.get(owner);
+  if (!records || hrefs.length === 0) return false;
+  const sheets = new Array<CSSStyleSheet>(hrefs.length);
+  for (let i = 0; i < hrefs.length; i++) {
+    const record = records.get(resolveComponentHref(owner, hrefs[i]));
+    const sheet = record && (record.sheet ?? promoteSource(record));
+    if (!sheet) return false;
+    sheets[i] = sheet;
+  }
+  return adoptPreparedSheets(root, sheets, (flags & COMPONENT_ROOT_FRESH) !== 0);
+}
+
+/**
+ * Resolve a catalog href the way a native link created now would, without
+ * parsing a URL for every mounted root. A base URL change, from a `<base>`
+ * edit or a soft navigation in a Document without one, starts a new cache.
+ */
+function resolveComponentHref(owner: Document, href: string): string {
+  const base = owner.baseURI;
+  let cache = resolvedComponentHrefs.get(owner);
+  if (cache === undefined || cache.base !== base) {
+    cache = { base, hrefs: new Map() };
+    resolvedComponentHrefs.set(owner, cache);
+  }
+  let resolved = cache.hrefs.get(href);
+  if (resolved === undefined) {
+    resolved = resolveHref(href, base);
+    cache.hrefs.set(href, resolved);
+  }
+  return resolved;
+}
+
+/**
+ * Settle compiler-owned component links for one client Shadow root.
  *
  * Component style links are installed before a client template is wired, so
- * they cannot use the staging-root path below. Keep the host guarded while
- * the cache-warmed native links become readable, then adopt their CSSOM and
- * disable the links just like template-owned styles.
+ * they cannot use the staging-root path below. The first root to use an href
+ * keeps its native link and only records whether that load is authorized,
+ * unless `flags` has {@link COMPONENT_LINKS_EAGER}. Later roots promote the
+ * authorized CSSOM once and adopt the shared sheet, disabling their links. A
+ * root is guarded until its native links load and never switches
+ * representation after it becomes visible.
  */
 export function installComponentLinkStyles(
   host: HTMLElement,
   root: ShadowRoot,
   links: readonly HTMLLinkElement[],
+  flags = 0,
 ): void {
   if (links.length === 0 || !supportsConstructableStylesheets()) return;
 
   const mountStartedAt = performanceNow();
   let timingStartedAt = mountStartedAt;
+  let preloadsSettled = true;
+  let preloadFailed = false;
   const preloads: SpeculativeStylesheetPreload[] = [];
   const pendingPreloads: Promise<LinkStyleFailure | undefined>[] = [];
   for (let i = 0; i < links.length; i++) {
-    const speculative = speculativeStylesheetPreloads?.get(resolveHref(links[i].href));
+    // `link.href` is already the absolute, serialized URL that keys the map.
+    const speculative = speculativeStylesheetPreloads?.get(links[i].href);
     if (!speculative) continue;
     speculative.claimed = true;
     preloads.push(speculative);
     pendingPreloads.push(speculative.ready);
     timingStartedAt = Math.min(timingStartedAt, speculative.startedAt);
+    if (!speculative.settled) preloadsSettled = false;
+    else if (speculative.failure) preloadFailed = true;
+  }
+
+  const records = componentLinkRecordsFor(root.ownerDocument, links);
+  let share = true;
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].used) continue;
+    records[i].used = true;
+    records[i].firstUseStartedAt = timingStartedAt;
+    share = false;
+  }
+  if ((flags & COMPONENT_LINKS_EAGER) !== 0) share = true;
+
+  const releasePreloads = (): void => {
+    for (let i = 0; i < preloads.length; i++) {
+      releaseStylesheetPreload(preloads[i].link);
+    }
+  };
+
+  // Memory-cached links expose their native sheets on insertion. Settle them
+  // before the template is wired: nothing paints in between, so no guard or
+  // load wait is needed, and later mounts in this pass can share the result.
+  if (preloadsSettled && hasLoadedSheets(links)) {
+    if (!preloadFailed) {
+      authorizeLoadedLinks(links, records, timingStartedAt);
+      if (share) {
+        shareLoadedLinks(root, links, records, (flags & COMPONENT_ROOT_FRESH) !== 0);
+      }
+    }
+    releasePreloads();
+    return;
   }
 
   const guard = installGuard(host, root);
@@ -177,11 +339,6 @@ export function installComponentLinkStyles(
   let remaining = 0;
   let cancelled = false;
 
-  const releasePreloads = (): void => {
-    for (let i = 0; i < preloads.length; i++) {
-      releaseStylesheetPreload(preloads[i].link);
-    }
-  };
   const cleanup = (): void => {
     for (let i = 0; i < links.length; i++) {
       const onLoad = loadHandlers[i];
@@ -191,7 +348,7 @@ export function installComponentLinkStyles(
     }
     releasePreloads();
   };
-  const fail = (): void => {
+  const reveal = (): void => {
     if (cancelled) return;
     cancelled = true;
     cleanup();
@@ -200,19 +357,15 @@ export function installComponentLinkStyles(
   const finish = (): void => {
     if (cancelled || remaining !== 0) return;
     void Promise.all(pendingPreloads).then(results => {
-      if (cancelled || results.some(result => result !== undefined)) {
-        fail();
-        return;
+      if (cancelled) return;
+      if (!results.some(result => result !== undefined)) {
+        authorizeLoadedLinks(links, records, timingStartedAt);
+        // Still hidden by the guard, so switching to the shared sheet is
+        // never visible. Author code may have adopted sheets meanwhile, so
+        // the list is read and preserved.
+        if (share) shareLoadedLinks(root, links, records, false);
       }
-      const sheets = constructComponentStylesheets(links, timingStartedAt);
-      if (!sheets || !adoptPreparedSheets(root, sheets)) {
-        fail();
-        return;
-      }
-      deactivatePromotedLinks(links);
-      cancelled = true;
-      cleanup();
-      guard.release();
+      reveal();
     });
   };
   const settle = (index: number): void => {
@@ -237,13 +390,35 @@ export function installComponentLinkStyles(
     }
     remaining += 1;
     const onLoad = (): void => settle(i);
-    const onError = (): void => fail();
+    const onError = (): void => reveal();
     loadHandlers[i] = onLoad;
     errorHandlers[i] = onError;
     links[i].addEventListener('load', onLoad, { once: true });
     links[i].addEventListener('error', onError, { once: true });
   }
   if (remaining === 0) finish();
+}
+
+/**
+ * Whether any block of a template may add its own `<style>` or `<link>`.
+ *
+ * Roots with such styles promote compiler-owned links on first use, so every
+ * instance adopts the shared sheet and cascades it after the tree's styles.
+ */
+export function templateMayContainAuthorStyles(meta: TemplateMeta): boolean {
+  let result = authorStyleTemplates.get(meta);
+  if (result !== undefined) return result;
+  result = templateHtmlMayContainStyles(meta.h);
+  const blocks = meta.b;
+  if (!result && blocks) {
+    for (let i = 0; i < blocks.length; i++) {
+      if (!templateHtmlMayContainStyles(blocks[i].h)) continue;
+      result = true;
+      break;
+    }
+  }
+  authorStyleTemplates.set(meta, result);
+  return result;
 }
 
 /** Return whether a template can create a stylesheet link after bindings run. */
@@ -505,6 +680,9 @@ export function rewriteCssUrls(
   cssText: string,
   stylesheetHref: string,
 ): string | undefined {
+  // Most rules contain neither a URL function nor an escape; the scan below
+  // could only return them unchanged.
+  if (!hasCssUrlCandidate(cssText)) return cssText;
   let quote = 0;
   let output = '';
   let copiedThrough = 0;
@@ -777,9 +955,9 @@ function unsupportedLinkReason(
   return undefined;
 }
 
-function resolveHref(href: string): string {
+function resolveHref(href: string, base: string = document.baseURI): string {
   try {
-    return new URL(href, document.baseURI).href;
+    return new URL(href, base).href;
   } catch {
     return href;
   }
@@ -893,23 +1071,126 @@ function constructNativeStylesheets(
   return sheets;
 }
 
-function constructComponentStylesheets(
-  links: readonly HTMLLinkElement[],
-  mountStartedAt: number,
-): CSSStyleSheet[] | undefined {
-  const sheets = new Array<CSSStyleSheet>(links.length);
+function hasLoadedSheets(links: readonly HTMLLinkElement[]): boolean {
   for (let i = 0; i < links.length; i++) {
-    const cssText = readNativeStylesheet(links[i], mountStartedAt);
-    if (cssText === undefined) return undefined;
-    try {
-      const sheet = new CSSStyleSheet({ baseURL: links[i].href });
-      sheet.replaceSync(cssText);
-      sheets[i] = sheet;
-    } catch {
-      return undefined;
+    if (requiresNativeLoad(links[i]) && !links[i].sheet) return false;
+  }
+  return true;
+}
+
+function componentLinkRecordsFor(
+  owner: Document,
+  links: readonly HTMLLinkElement[],
+): ComponentLinkRecord[] {
+  let records = componentLinkRecords.get(owner);
+  if (!records) {
+    records = new Map();
+    componentLinkRecords.set(owner, records);
+  }
+  const result = new Array<ComponentLinkRecord>(links.length);
+  for (let i = 0; i < links.length; i++) {
+    const href = links[i].href;
+    let record = records.get(href);
+    if (!record) {
+      record = {
+        authorized: false,
+        firstUseStartedAt: Number.POSITIVE_INFINITY,
+        unpromotable: false,
+        used: false,
+      };
+      records.set(href, record);
+    }
+    result[i] = record;
+  }
+  return result;
+}
+
+/** Record which loaded links prove their Document's response is promotable. */
+function authorizeLoadedLinks(
+  links: readonly HTMLLinkElement[],
+  records: readonly ComponentLinkRecord[],
+  timingStartedAt: number,
+): void {
+  for (let i = 0; i < links.length; i++) {
+    const record = records[i];
+    if (!record.authorized && !record.unpromotable) {
+      record.authorized = hasUnredirectedNativeTiming(
+        links[i],
+        Math.min(timingStartedAt, record.firstUseStartedAt),
+      );
+      // Later links reuse the same cached response, so they cannot pass either.
+      if (!record.authorized) record.unpromotable = true;
+    }
+    if (
+      record.authorized &&
+      !record.unpromotable &&
+      !record.sheet &&
+      !record.source?.deref()?.sheet &&
+      links[i].sheet
+    ) {
+      record.source = new WeakRef(links[i]);
     }
   }
-  return sheets;
+}
+
+/** Adopt the shared sheets for loaded links, promoting each URL at most once. */
+function shareLoadedLinks(
+  root: ShadowRoot,
+  links: readonly HTMLLinkElement[],
+  records: readonly ComponentLinkRecord[],
+  fresh: boolean,
+): boolean {
+  const sheets = new Array<CSSStyleSheet>(links.length);
+  for (let i = 0; i < links.length; i++) {
+    const record = records[i];
+    const sheet =
+      record.sheet ??
+      (links[i].sheet ? promoteLink(record, links[i]) : promoteSource(record));
+    if (!sheet) return false;
+    sheets[i] = sheet;
+  }
+  if (!adoptPreparedSheets(root, sheets, fresh)) return false;
+  deactivatePromotedLinks(links);
+  return true;
+}
+
+function promoteSource(record: ComponentLinkRecord): CSSStyleSheet | undefined {
+  const source = record.source?.deref();
+  if (!source?.sheet) {
+    // Collected, removed, or disabled since it loaded; a later load can
+    // replace it.
+    record.source = undefined;
+    return undefined;
+  }
+  return promoteLink(record, source);
+}
+
+/** Construct the shared sheet from an authorized link's native CSSOM. */
+function promoteLink(
+  record: ComponentLinkRecord,
+  link: HTMLLinkElement,
+): CSSStyleSheet | undefined {
+  if (record.sheet) return record.sheet;
+  if (!record.authorized || record.unpromotable) return undefined;
+  const cssText = readStylesheetText(link);
+  let sheet: CSSStyleSheet | undefined;
+  if (cssText !== undefined) {
+    try {
+      sheet = new CSSStyleSheet({ baseURL: link.href });
+      sheet.replaceSync(cssText);
+    } catch {
+      sheet = undefined;
+    }
+  }
+  record.source = undefined;
+  if (!sheet) {
+    // Imports, unreadable rules, and unrewritable URLs do not change for the
+    // same response, so later roots skip the CSSOM read.
+    record.unpromotable = true;
+    return undefined;
+  }
+  record.sheet = sheet;
+  return sheet;
 }
 
 function readNativeStylesheet(
@@ -917,6 +1198,10 @@ function readNativeStylesheet(
   mountStartedAt: number,
 ): string | undefined {
   if (!hasUnredirectedNativeTiming(link, mountStartedAt)) return undefined;
+  return readStylesheetText(link);
+}
+
+function readStylesheetText(link: HTMLLinkElement): string | undefined {
   const sheet = link.sheet;
   if (!sheet) return undefined;
 
@@ -978,10 +1263,11 @@ function hasUnredirectedNativeTiming(
 function adoptPreparedSheets(
   root: ShadowRoot,
   sheets: CSSStyleSheet[],
+  fresh = false,
 ): boolean {
   if (!('adoptedStyleSheets' in root)) return false;
-  const current = root.adoptedStyleSheets;
-  if (current.length === 0) {
+  const current = fresh ? undefined : root.adoptedStyleSheets;
+  if (current === undefined || current.length === 0) {
     try {
       root.adoptedStyleSheets = sheets;
       return true;
@@ -1102,6 +1388,40 @@ function installInlineGuard(host: HTMLElement): () => void {
       host.removeAttribute('style');
     }
   };
+}
+
+/**
+ * Whether `rewriteCssUrls` must scan: any escape, or any `(` preceded
+ * case-insensitively by `url` or `image-set` (covering `-webkit-image-set`),
+ * including false positives inside strings and comments.
+ */
+function hasCssUrlCandidate(cssText: string): boolean {
+  if (cssText.indexOf('\\') !== -1) return true;
+  for (
+    let open = cssText.indexOf('(');
+    open !== -1;
+    open = cssText.indexOf('(', open + 1)
+  ) {
+    if (
+      endsWithCssName(cssText, open, 'url') ||
+      endsWithCssName(cssText, open, 'image-set')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Compare the ASCII-lowercase name that ends at `end` without allocating. */
+function endsWithCssName(cssText: string, end: number, name: string): boolean {
+  const start = end - name.length;
+  if (start < 0) return false;
+  for (let i = 0; i < name.length; i++) {
+    let code = cssText.charCodeAt(start + i);
+    if (code >= 65 && code <= 90) code += 32;
+    if (code !== name.charCodeAt(i)) return false;
+  }
+  return true;
 }
 
 function skipComment(cssText: string, start: number): number {
