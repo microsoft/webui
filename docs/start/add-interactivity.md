@@ -16,10 +16,44 @@ Continue in the `hello-webui` project from
 The CLI renders HTML. Interactive components also need the browser runtime
 and a bundler for their TypeScript:
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm install @microsoft/webui-framework
 npm install --save-dev esbuild
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui-framework
+pnpm add -D esbuild
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui-framework
+yarn add --dev esbuild
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui-framework
+bun add --dev esbuild
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 Keep WebUI packages on matching releases.
 If your package manager reports blocked scripts for `esbuild`, review and
@@ -185,10 +219,44 @@ Keep your dependencies, script approvals, and other fields.
 
 ## Run the counter
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm run build
 npm run dev
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm run build
+pnpm run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn run build
+yarn run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun run build
+bun run dev
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 `dist/index.js` contains the counter and browser runtime. The WebUI build emits
 `dist/protocol.bin` and the paired component CSS. `--servedir ./dist` makes the

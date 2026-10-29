@@ -20,6 +20,7 @@ const commands = [
   ['npm', 'npm install -D @microsoft/webui'],
   ['pnpm', 'pnpm add -D @microsoft/webui'],
   ['Yarn', 'yarn add -D @microsoft/webui'],
+  ['Bun', 'bun add -D @microsoft/webui'],
 ] as const;
 
 test('the entry page serves the install command and qualified fixed-case preview without JavaScript', async t => {
@@ -50,19 +51,14 @@ test('the entry page serves the install command and qualified fixed-case preview
   await expect(preview.locator('tbody tr[data-webui]')).toHaveAttribute('data-case', 'webui-rust-actix');
   await expect(preview.locator('.chart-caption')).toContainText('Complete responses (req/s)');
   await expect(preview.locator('.direction')).toHaveText('Higher is better');
-  const notes = page.locator('.benchmark-notes');
-  await expect(notes).toContainText('Official campaign results for a 100-todo app');
-  await expect(notes).toContainText('1 measured round (20 s)');
-  await expect(notes).toContainText('variability is not established');
-  await expect(notes).toContainText('Some samples were unavailable');
-  await expect(notes).toContainText('not a complete raw-run archive');
+  await expect(page.locator('.benchmark-notes')).toHaveCount(0);
   await expect(preview.locator('.scale')).toContainText('1,741.15');
   const widths = await preview.locator('.bar').evaluateAll(elements =>
     elements.map(element => Number(element.getAttribute('width'))));
   for (const [index, expected] of [100, 28.173908049277774, 8.683915802774028].entries()) {
     assert.ok(Math.abs(widths[index] - expected) < 1e-10, 'SSR must preserve the full-view bar ratios.');
   }
-  const fullData = preview.getByRole('link', { name: 'Full data and methodology', exact: true });
+  const fullData = preview.getByRole('link', { name: 'More frameworks and methodology', exact: true });
   await expect(fullData).toHaveAttribute('href', '/webui/reference/benchmarks/');
   await expect(fullData).toBeVisible();
   await expect(preview.locator('details')).toHaveCount(0);
@@ -87,6 +83,12 @@ test('the entry page serves the install command and qualified fixed-case preview
   await expect(fullData).toHaveCSS('outline-style', 'solid');
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(`${server.origin}/webui/reference/benchmarks/`);
+  const notes = page.locator('.benchmark-notes');
+  await expect(notes).toContainText('Official campaign results for a 100-todo app');
+  await expect(notes).toContainText('1 measured round (20 s)');
+  await expect(notes).toContainText('variability is not established');
+  await expect(notes).toContainText('Some samples were unavailable');
+  await expect(notes).toContainText('not a complete raw-run archive');
 });
 
 test('install choices copy exact commands and support native keyboard selection', async t => {
@@ -121,6 +123,79 @@ test('install choices copy exact commands and support native keyboard selection'
   await expect(install.getByRole('radio', { name: 'pnpm', exact: true })).toBeFocused();
   await expect(install.getByText('pnpm', { exact: true })).toHaveCSS('outline-style', 'solid');
   await expect(install.locator('code')).toHaveText(commands[1][1]);
+});
+
+test('homepage package-manager choice shares the documentation category across navigation', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(`${server.origin}/webui/`);
+  const install = page.locator('install-command');
+  await expect(install.getByRole('button', { name: 'Copy install command' })).toBeEnabled();
+  await install.getByText('pnpm', { exact: true }).click();
+  expect(await page.evaluate(() => localStorage.getItem('webui-press:tabs:package-manager'))).toBe('pnpm');
+  await page.goto(`${server.origin}/webui/start/first-page/`);
+  const tabs = page.locator('webui-press-tabs[sync="package-manager"][storage="local"]');
+  await expect(tabs.locator('webui-press-tab[value="pnpm"][active]')).toHaveCount(1);
+  await tabs.getByRole('button', { name: 'Bun', exact: true }).click();
+  await page.goto(`${server.origin}/webui/`);
+  await expect(install.getByRole('radio', { name: 'Bun', exact: true })).toBeChecked();
+  await expect(install.locator('code')).toHaveText('bun add -D @microsoft/webui');
+  await page.reload();
+  await expect(install.getByRole('radio', { name: 'Bun', exact: true })).toBeChecked();
+  await install.getByText('Yarn', { exact: true }).click();
+  await page.goto(`${server.origin}/webui/start/installation/`);
+  await expect(page.locator('webui-press-tabs[sync="package-manager"] > webui-press-tab[value="yarn"][active]'))
+    .toHaveCount(3);
+});
+
+test('homepage package-manager preferences tolerate stale values and storage failures', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  for (const failure of ['read', 'write', 'stale'] as const) {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => {
+      if (message.type() === 'warning' && message.text().startsWith('[WebUI docs]')) {
+        warnings.push(message.text());
+      }
+    });
+    await page.addInitScript(mode => {
+      const key = 'webui-press:tabs:package-manager';
+      if (mode === 'stale') {
+        localStorage.setItem(key, 'removed-manager');
+      } else if (mode === 'read') {
+        const getItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function (name: string) {
+          if (name === key) throw new DOMException('Read blocked', 'SecurityError');
+          return getItem.call(this, name);
+        };
+      } else {
+        const setItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (name: string, value: string) {
+          if (name === key) throw new DOMException('Storage full', 'QuotaExceededError');
+          setItem.call(this, name, value);
+        };
+      }
+    }, failure);
+    await page.goto(`${server.origin}/webui/`);
+    const install = page.locator('install-command');
+    await expect(install.getByRole('button', { name: 'Copy install command' })).toBeEnabled();
+    await expect(install.locator('code')).toHaveText(commands[0][1]);
+    await install.getByText('pnpm', { exact: true }).click();
+    await expect(install.locator('code')).toHaveText(commands[1][1]);
+    await install.getByText('Yarn', { exact: true }).click();
+    await expect(install.locator('code')).toHaveText(commands[2][1]);
+    expect(warnings).toHaveLength(failure === 'stale' ? 0 : 1);
+    expect(errors).toEqual([]);
+    await page.close();
+  }
 });
 
 test('clipboard denial and unavailable APIs show a manual-copy recovery instead of success', async t => {

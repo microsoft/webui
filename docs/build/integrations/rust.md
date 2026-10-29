@@ -20,6 +20,14 @@ and `/`. Attribute names passed to `write_escaped_attribute` must be trusted.
 
 ## Installation
 
+To install the standalone compiler without npm, use Rust 1.99.1 or newer:
+
+```bash
+cargo install microsoft-webui-cli
+```
+
+For a Rust application host, add the rendering library:
+
 ```toml
 [dependencies]
 microsoft-webui = "*" # see https://crates.io/crates/microsoft-webui for latest version

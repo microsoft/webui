@@ -100,9 +100,40 @@ authored browser entry or a TypeScript class.
 
 ## Run it
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm run dev
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn run dev
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun run dev
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 Open **http://127.0.0.1:3000/**. Below the greeting, the page displays
 **Clicks: 0**. It still renders with browser JavaScript disabled.

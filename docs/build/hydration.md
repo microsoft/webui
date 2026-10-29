@@ -450,9 +450,40 @@ projection build reports an error rather than dropping inherited state.
 
 The supported esbuild plugin is exported from `@microsoft/webui/projection.js`:
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm install -D esbuild typescript
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add -D esbuild typescript
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add --dev esbuild typescript
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add --dev esbuild typescript
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 ```js
 // build-client.mjs

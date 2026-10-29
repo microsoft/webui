@@ -1609,6 +1609,11 @@ Install `@microsoft/webui-press` at the same version as `@microsoft/webui`.
 `webui press build` and `webui press serve` invoke the native Press sidecar;
 Press does not support `--format json`.
 
+For page-local synchronized tabs, give related `<webui-press-tabs>` controls
+the same `sync` name and their `<webui-press-tab>` children matching `value`
+attributes. Add `storage="local"` to remember a category across page loads.
+See [tabbed content](/reference/webui-press#tabbed-content).
+
 Set `"outline": true` in `.webui-press/config.json` for the built-in page
 outline; it is off by default. Markdown frontmatter and object-form custom
 pages can override it with the same boolean. Eligible `doc`/`page` layouts get

@@ -18,6 +18,25 @@ Browser metrics describe **10 isolated runs per configuration**.
 
 <benchmark-explorer :benchmarks="{{benchmarks}}"></benchmark-explorer>
 
+<section class="benchmark-notes" aria-labelledby="benchmark-notes-title">
+  <h2 id="benchmark-notes-title">Benchmark notes</h2>
+  <p>
+    Official campaign results for a 100-todo app, not a current framework ranking.
+    The featured WebUI configuration uses Light DOM with Rust and Actix.
+  </p>
+  <ol>
+    <for each="note in benchmarkNotes">
+      <li id="benchmark-note-{{note.id}}" tabindex="-1">
+        <strong>{{note.label}}</strong>. {{note.description}} {{note.samplingLabel}}
+      </li>
+    </for>
+  </ol>
+  <p>
+    The campaign covers all 15 configurations from one clean source revision.
+    The download is a sanitized extract, not a complete raw-run archive.
+  </p>
+</section>
+
 ## What this snapshot describes
 
 The recorded server workload uses 100 todos, 13 component types, 32 warm
