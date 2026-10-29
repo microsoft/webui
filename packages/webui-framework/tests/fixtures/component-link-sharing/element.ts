@@ -33,6 +33,7 @@ declare global {
     __mountLinkCards?: (tag: string, count: number) => void;
     __registerLinkCards?: (tag: string, prepare: boolean) => Promise<void> | undefined;
     __removeLinkCards?: (tag: string) => void;
+    __removedLinkCard?: WeakRef<Element>;
   }
 }
 

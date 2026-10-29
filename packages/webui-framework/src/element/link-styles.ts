@@ -68,8 +68,12 @@ interface ComponentLinkRecord {
    */
   firstUseStartedAt: number;
   sheet?: CSSStyleSheet;
-  /** Loaded, authorized link that can be promoted without a new load. */
-  source?: HTMLLinkElement;
+  /**
+   * Loaded, authorized link that can be promoted without a new load. Held
+   * weakly: the record lives as long as the Document, and the link would keep
+   * its removed root and host reachable when no later root needs this URL.
+   */
+  source?: WeakRef<HTMLLinkElement>;
   /**
    * Promotion failed for this Document's response: it is not authorized, or
    * its CSS cannot be represented as a constructable sheet. Neither changes,
@@ -118,9 +122,9 @@ const authorStyleTemplates = new WeakMap<TemplateMeta, boolean>();
  *
  * Entries describe the Document's memory-cached response and live as long as
  * its style catalog, which never removes a resource, so the map is bounded by
- * the distinct Link resources the page has mounted. Dropping an entry would
- * send the next mount back to a native load that can no longer be authorized:
- * memory cache hits add no new resource timing entry.
+ * the distinct Link resources the page has mounted. They hold no DOM strongly.
+ * Dropping an entry would send the next mount back to a native load that can
+ * no longer be authorized: memory cache hits add no new resource timing entry.
  */
 const componentLinkRecords = new WeakMap<Document, Map<string, ComponentLinkRecord>>();
 /** Catalog hrefs resolved against one Document base URL; see {@link resolveComponentHref}. */
@@ -1121,10 +1125,10 @@ function authorizeLoadedLinks(
       record.authorized &&
       !record.unpromotable &&
       !record.sheet &&
-      !record.source?.sheet &&
+      !record.source?.deref()?.sheet &&
       links[i].sheet
     ) {
-      record.source = links[i];
+      record.source = new WeakRef(links[i]);
     }
   }
 }
@@ -1151,10 +1155,10 @@ function shareLoadedLinks(
 }
 
 function promoteSource(record: ComponentLinkRecord): CSSStyleSheet | undefined {
-  const source = record.source;
-  if (!source) return undefined;
-  if (!source.sheet) {
-    // Removed or disabled since it loaded; a later load can replace it.
+  const source = record.source?.deref();
+  if (!source?.sheet) {
+    // Collected, removed, or disabled since it loaded; a later load can
+    // replace it.
     record.source = undefined;
     return undefined;
   }

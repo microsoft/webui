@@ -143,6 +143,33 @@ test.describe('component link sharing', () => {
     });
   });
 
+  test('releases a removed first root when no later root needs its stylesheet', async ({
+    page,
+  }) => {
+    await openFixture(page);
+    await register(page, SHARED_TAG, true);
+    // The lone first root's loaded link becomes the Document's promotion source.
+    await expect(mountNow(page, SHARED_TAG, 1)).resolves.toMatchObject({
+      activeLinks: 1,
+      adopted: 0,
+      cards: 1,
+    });
+
+    // The Document-lifetime record must not keep that link, and with it the
+    // removed root and host, reachable.
+    await page.evaluate(name => {
+      const card = document.querySelector(name);
+      if (!card) throw new Error(`Missing <${name}>`);
+      window.__removedLinkCard = new WeakRef(card);
+      window.__removeLinkCards?.(name);
+    }, SHARED_TAG);
+    const cdp = await page.context().newCDPSession(page);
+    await expect.poll(async () => {
+      await cdp.send('HeapProfiler.collectGarbage');
+      return page.evaluate(() => window.__removedLinkCard?.deref() === undefined);
+    }).toBe(true);
+  });
+
   test('shares one sheet among guarded cold mounts once they load', async ({ page }) => {
     let releaseStylesheet!: () => void;
     let stylesheetRequested!: () => void;
