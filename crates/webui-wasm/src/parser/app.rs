@@ -57,9 +57,10 @@ pub(crate) struct App {
 ///
 /// Returns `{ protocol, lazyPackFiles, lazyScriptsModule?, warnings }`.
 /// `protocol` is a `Uint8Array`. Each `lazyPackFiles` item has `fileName`,
-/// `content`, `path`, `region`, `owner`, `trigger`, `hash`, `bytes`, and
-/// `scripts`; publish its content at `path` in the output directory. WASM
-/// builds do not measure brotli sizes. `lazyScriptsModule` is
+/// `content`, `path`, `region`, `owner`, `trigger`, `hash`, `bytes`,
+/// `scripts`, and `stylesheets`; publish its content at `path` in the output
+/// directory. WASM builds inline component CSS, so `stylesheets` is always
+/// empty, and they do not measure brotli sizes. `lazyScriptsModule` is
 /// `{ fileName, content, declaration: { fileName, content } }`, the generated
 /// `lazy.webui.js` and its `lazy.webui.d.ts`, when the build has lazy regions.
 #[wasm_bindgen(js_name = buildApp)]
@@ -239,6 +240,7 @@ struct JsPack<'a> {
     hash: &'a str,
     bytes: usize,
     scripts: Vec<&'a str>,
+    stylesheets: &'a [String],
 }
 
 /// The generated module and its declarations as a JavaScript object.
@@ -276,6 +278,7 @@ fn to_js(app: &App) -> Result<JsValue, JsValue> {
                 .iter()
                 .map(|script| script.specifier.as_str())
                 .collect(),
+            stylesheets: &pack.stylesheets,
         })
         .collect();
     let result = js_sys::Object::new();
@@ -344,7 +347,12 @@ mod tests {
             asset_base: Some("https://cdn.example.com/app/".to_string()),
             ..AppOptions::default()
         };
-        let app = build_app_inner(&lazy_files(), "index.html", &options).unwrap();
+        let mut files = lazy_files();
+        files.insert(
+            "settings-panel.css".to_string(),
+            "p { margin: 0; }".to_string(),
+        );
+        let app = build_app_inner(&files, "index.html", &options).unwrap();
         assert_eq!(app.packs.len(), 2);
         let outer = app
             .packs
@@ -357,10 +365,15 @@ mod tests {
             outer.file_name
         );
         assert!(outer.content.starts_with(r#"{"type":"webui-pack""#));
+        assert!(outer.content.contains("p { margin: 0; }"));
         assert_eq!(outer.trigger, LazyTrigger::Intent);
         assert_eq!(
             outer.brotli_bytes, None,
             "WASM builds do not measure brotli"
+        );
+        assert!(
+            app.packs.iter().all(|pack| pack.stylesheets.is_empty()),
+            "WASM builds inline component CSS"
         );
         assert_eq!(
             outer.scripts,

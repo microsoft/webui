@@ -126,8 +126,10 @@ function revive(id: string): TemplateMeta | undefined {
  * Every caller shares one pack request until it installs, and one load per
  * custom element. The raw pack path stays the key; only the request resolves
  * it against the asset base. In link builds `styles` names the stylesheets the
- * pack registers, which every load of the pack starts at its own priority;
- * the pack's style registration joins those requests.
+ * pack registers. A load starts them at its own priority beside the pack, and
+ * a non-speculative load starts them even once the pack has installed, since
+ * a speculative install before the window loaded left them for later; the
+ * shared preload map deduplicates the requests.
  *
  * A bundler's `import()` takes no fetch priority, so a `low` load before the
  * window has loaded fetches only the pack and imports the scripts once it
@@ -161,7 +163,7 @@ export function load(
       .then(pack => install(pack, region, url, priority))
       .finally(() => { loads.delete(url); }));
   }
-  if (pack && styles) window.__webuiPreloadStyles?.(styles, priority);
+  if (styles && (pack || priority !== 'low')) window.__webuiPreloadStyles?.(styles, priority);
   return Promise.all([pack, scripts]);
 }
 

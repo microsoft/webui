@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! `lc`: the stylesheet paths a Link build lists beside each lazy pack path.
+//! `lc`: the stylesheet paths a Link build lists beside each lazy pack path,
+//! and reports as each pack's `stylesheets`.
 
 use super::*;
 use serde_json::Value;
@@ -129,6 +130,10 @@ fn link_builds_list_each_regions_stylesheets_where_its_condition_lives() {
     let outer: Value = serde_json::from_str(&pack(&result, ROOT).content).unwrap();
     assert_eq!(outer["templates"][ROOT]["lc"], region["lc"]);
 
+    // The pack report lists the same paths.
+    assert_eq!(pack(&result, ROOT).stylesheets, ["settings-form.css"]);
+    assert_eq!(pack(&result, NESTED).stylesheets, ["theme-picker.css"]);
+
     for (name, _) in &result.css_files {
         assert!(!name.contains('/'), "stylesheet paths are base-relative");
     }
@@ -161,6 +166,7 @@ fn bundled_link_builds_list_the_chunks_each_pack_registers() {
     let listed: Vec<String> =
         serde_json::from_value(metadata(&result, "app-shell")["lc"][ROOT].clone()).unwrap();
     assert_eq!(listed, registered_stylesheets(pack(&result, ROOT)));
+    assert_eq!(listed, pack(&result, ROOT).stylesheets);
     let merged = result
         .protocol
         .style_chunks
@@ -184,7 +190,9 @@ fn bundled_link_builds_list_the_chunks_each_pack_registers() {
 fn style_and_module_builds_carry_css_in_packs_and_list_no_stylesheets() {
     let app = styled_regions_app();
     for css in [CssStrategy::Style, CssStrategy::Module] {
-        let result = build(options(app.path(), css)).unwrap();
+        let mut options = options(app.path(), css);
+        options.metafile = true;
+        let result = build(options).unwrap();
         assert!(pack(&result, ROOT)
             .content
             .contains("form { display: grid; }"));
@@ -192,7 +200,46 @@ fn style_and_module_builds_carry_css_in_packs_and_list_no_stylesheets() {
             assert!(!json.contains(r#""lc""#), "{json}");
         }
         assert!(metadata(&result, "app-shell")["lp"].get(ROOT).is_some());
+        // The report keeps the field, empty, like `scripts`.
+        assert!(result
+            .lazy_pack_files
+            .iter()
+            .all(|pack| pack.stylesheets.is_empty()));
+        let report: Value = serde_json::from_str(result.metafile.as_deref().unwrap()).unwrap();
+        for entry in report["lazyPacks"].as_array().unwrap() {
+            assert_eq!(entry["stylesheets"], serde_json::json!([]), "{entry}");
+        }
     }
+}
+
+#[test]
+fn metafile_reports_the_stylesheets_each_region_loads() {
+    let app = styled_regions_app();
+    let mut options = options(app.path(), CssStrategy::Link);
+    options.metafile = true;
+    let result = build(options).unwrap();
+    let report: Value = serde_json::from_str(result.metafile.as_deref().unwrap()).unwrap();
+    let entries = report["lazyPacks"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        let region = entry["region"].as_str().unwrap();
+        let pack = pack(&result, region);
+        assert_eq!(entry["stylesheets"], serde_json::json!(pack.stylesheets));
+        // The same list the template holding the region's condition carries.
+        let holder = if region == ROOT { "app-shell" } else { ROOT };
+        assert_eq!(
+            metadata(&result, holder)["lc"][region],
+            entry["stylesheets"]
+        );
+    }
+    let outer = entries
+        .iter()
+        .find(|entry| entry["region"] == ROOT)
+        .unwrap();
+    assert_eq!(
+        outer["stylesheets"],
+        serde_json::json!(["settings-form.css"])
+    );
 }
 
 #[test]

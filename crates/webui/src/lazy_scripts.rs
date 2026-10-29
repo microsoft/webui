@@ -248,6 +248,7 @@ mod tests {
             owner: "app-shell".to_owned(),
             trigger: LazyTrigger::Intent,
             components: components.iter().map(|tag| (*tag).to_owned()).collect(),
+            stylesheets: Vec::new(),
             scripts: Vec::new(),
             brotli_bytes: None,
         }

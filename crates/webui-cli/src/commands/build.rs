@@ -1016,6 +1016,7 @@ mod tests {
             ),
             ("settings-panel/settings-panel.html", "<p>Settings</p>"),
             ("settings-panel/settings-panel.ts", "export {};"),
+            ("settings-panel/settings-panel.css", "p { margin: 0; }"),
         ])
     }
 
@@ -1104,6 +1105,12 @@ mod tests {
         assert_eq!(pack["bytes"], written.len());
         assert!(pack["brotliBytes"].as_u64().unwrap() > 0);
         assert!(path.contains(pack["hash"].as_str().unwrap()));
+        // Everything a region loads besides its scripts is in the build output.
+        assert_eq!(
+            pack["stylesheets"],
+            serde_json::json!(["settings-panel.css"])
+        );
+        assert!(out_dir.path().join("settings-panel.css").is_file());
     }
 
     #[test]

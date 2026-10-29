@@ -9,7 +9,9 @@
 //! references; prefetch triggers stay in the condition entries. In Link builds
 //! the same template carries an `lc` map from region identity to the
 //! stylesheet paths the region's pack registers, so the browser can fetch them
-//! in parallel with the pack. Packs are rendered in dependency passes: a
+//! in parallel with the pack. Both maps are written from the rendered
+//! [`LazyPackFile`]s, so `lp` matches [`LazyPackFile::path`] and `lc` matches
+//! [`LazyPackFile::stylesheets`]. Packs are rendered in dependency passes: a
 //! region renders once every region referenced by its templates has a path.
 //! Build identity is assigned afterwards, over final metadata.
 //!
@@ -29,7 +31,7 @@ mod scripts;
 mod startup;
 
 use crate::{HandlerError, Protocol, Result};
-use references::{collect_references, encode_stylesheets, finalize, References, Rendered};
+use references::{collect_references, finalize, References, Rendered};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -108,6 +110,16 @@ pub struct LazyPackFile {
     /// Component tags whose templates the pack carries, sorted: the
     /// components the region introduces beyond those its owner guarantees.
     pub components: Vec<String>,
+    /// Stylesheet paths, relative to the asset base, that the pack registers
+    /// in a Link build, in the order its style closures first name them,
+    /// without duplicates: the files the browser fetches for the region
+    /// besides its pack and scripts.
+    ///
+    /// The template that holds the region's condition lists the same paths in
+    /// its `lc` metadata, written from this field. Empty in Style and Module
+    /// builds, whose packs carry CSS text, and for regions without
+    /// stylesheets.
+    pub stylesheets: Vec<String>,
     /// Modules of the scripted components the region introduces, sorted by
     /// tag, except the [`startup_components`] the page already loads.
     ///
@@ -170,9 +182,8 @@ pub fn emit(protocol: &mut WebUIProtocol) -> Result<Vec<LazyPackFile>> {
     }
     drop(initial);
 
-    let mut rendered: HashMap<String, Rendered> = HashMap::with_capacity(regions.len());
+    let mut rendered = Rendered::with_capacity(regions.len());
     let mut finalized = HashSet::new();
-    let mut files = Vec::with_capacity(regions.len());
     let mut pending: Vec<&str> = regions.iter().map(String::as_str).collect();
     while !pending.is_empty() {
         let (ready, blocked): (Vec<&str>, Vec<&str>) = std::mem::take(&mut pending)
@@ -181,7 +192,7 @@ pub fn emit(protocol: &mut WebUIProtocol) -> Result<Vec<LazyPackFile>> {
                 contents[region].iter().all(|template| {
                     children
                         .get(template)
-                        .is_none_or(|refs| refs.iter().all(|child| rendered.contains_key(child)))
+                        .is_none_or(|refs| refs.iter().all(|child| rendered.contains(child)))
                 })
             });
         if ready.is_empty() {
@@ -202,20 +213,14 @@ pub fn emit(protocol: &mut WebUIProtocol) -> Result<Vec<LazyPackFile>> {
                 .filter(|id| protocol.components.contains_key(id.as_str()))
                 .cloned()
                 .collect();
-            rendered.insert(
-                region.to_owned(),
-                Rendered {
-                    path: pack_path(&file_name),
-                    stylesheets: encode_stylesheets(&stylesheets),
-                },
-            );
-            files.push(LazyPackFile {
+            rendered.push(LazyPackFile {
                 file_name,
                 content,
                 region: region.to_owned(),
                 owner,
                 trigger,
                 components,
+                stylesheets: stylesheets.into_iter().map(str::to_owned).collect(),
                 scripts: Vec::new(),
                 brotli_bytes: None,
             });
@@ -223,6 +228,7 @@ pub fn emit(protocol: &mut WebUIProtocol) -> Result<Vec<LazyPackFile>> {
         pending = blocked;
     }
     finalize(protocol, &children, &rendered, &mut finalized)?;
+    let mut files = rendered.into_packs();
     files.sort_unstable_by(|left, right| left.file_name.cmp(&right.file_name));
     Ok(files)
 }
@@ -379,6 +385,7 @@ mod tests {
         assert!(nested.components.is_empty());
         for pack in &packs {
             assert!(pack.scripts.is_empty());
+            assert!(pack.stylesheets.is_empty(), "the fixture has no styles");
             assert_eq!(pack.brotli_bytes, None);
             assert_eq!(pack.path(), format!("_webui/packs/{}", pack.file_name));
             assert_eq!(pack.bytes(), pack.content.len());
@@ -469,7 +476,14 @@ mod tests {
         let owner: serde_json::Value = serde_json::from_str(owner).unwrap();
         assert_eq!(owner["lc"][&root], serde_json::json!(["settings-form.css"]));
 
-        // The listed paths are the hrefs the pack itself registers.
+        // The report lists the same paths as `lc`, which are the hrefs the
+        // pack itself registers.
+        assert_eq!(pack(&root).stylesheets, ["settings-form.css"]);
+        assert_eq!(pack(&nested).stylesheets, ["theme-picker.css"]);
+        assert_eq!(
+            owner["lc"][&root],
+            serde_json::json!(pack(&root).stylesheets)
+        );
         let outer: serde_json::Value = serde_json::from_str(&pack(&root).content).unwrap();
         let resources = &outer["componentStyles"]["resources"];
         assert_eq!(resources["settings-form"]["href"], "settings-form.css");
@@ -486,7 +500,15 @@ mod tests {
         let root = lazy_fragment_id("app-shell", 0);
         let nested = lazy_fragment_id("app-shell", 1);
         let mut protocol = styled_fixture(CssStrategy::Link, &["theme-picker"]);
-        emit(&mut protocol).unwrap();
+        let packs = emit(&mut protocol).unwrap();
+        let reported = |region: &str| {
+            packs
+                .iter()
+                .find(|pack| pack.region == region)
+                .map(|pack| pack.stylesheets.clone())
+        };
+        assert_eq!(reported(&root), Some(Vec::new()));
+        assert_eq!(reported(&nested), Some(vec!["theme-picker.css".to_owned()]));
         let owner = template_json(&protocol, "app-shell");
         assert!(
             owner.contains(r#""lp":"#) && !owner.contains(r#""lc""#),
@@ -519,6 +541,10 @@ mod tests {
             assert!(packs
                 .iter()
                 .any(|pack| pack.content.contains(".settings-form { color: red; }")));
+            assert!(
+                packs.iter().all(|pack| pack.stylesheets.is_empty()),
+                "{strategy:?} packs carry CSS text, so they report no stylesheets"
+            );
             let templates = protocol
                 .components
                 .values()

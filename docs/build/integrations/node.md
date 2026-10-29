@@ -185,6 +185,10 @@ Each `lazyPackFiles` item reports its pack:
 | `bytes` | `number` | Size of `content` in bytes |
 | `brotliBytes` | `number` | Brotli size at quality 11; present only when `metafile: true` |
 | `scripts` | `string[]` | Module specifiers `lazy.webui.js` loads with the region |
+| `stylesheets` | `string[]` | Stylesheet paths, relative to the asset base, that the region loads with its pack in a `css: "link"` build: entries of `cssFiles`, including bundled chunks. Always present; empty for `"style"` and `"module"` builds, whose packs carry the CSS |
+
+To precache a region in a service worker, cache its `path`, its `stylesheets`,
+and the bundler outputs for its `scripts`.
 
 Templates reference packs by the path `_webui/packs/<file>`, relative to the
 asset base. To publish the output elsewhere, such as a CDN, pass `assetBase`
@@ -207,13 +211,17 @@ your bundler before the WebUI runtime starts. The region scripts that
 `lazy.webui.js` imports then load from the same base. With rspack or webpack,
 run this first in your entry module:
 
-```js
-__webpack_public_path__ = document.querySelector('meta[name="webui-asset-base"]')?.content ?? __webpack_public_path__;
+```ts
+__webpack_public_path__ =
+  document.querySelector<HTMLMetaElement>('meta[name="webui-asset-base"]')?.content
+  ?? __webpack_public_path__;
 ```
 
 Static imports run before the statements of the module that imports them, so
 if your entry has static imports, put the line in its own module and import
-that module first.
+that module first. This steers chunks that the bundler's runtime loads. With
+native ES module output, chunks load relative to the entry script's URL
+instead, so serve the entry script from the same base.
 
 ## Reusing Protocol
 

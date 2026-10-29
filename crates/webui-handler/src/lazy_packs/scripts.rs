@@ -278,6 +278,7 @@ mod tests {
             owner: region.split("::").next().unwrap_or_default().to_owned(),
             trigger: LazyTrigger::Intent,
             components: scripts.iter().map(|(tag, _)| (*tag).to_owned()).collect(),
+            stylesheets: Vec::new(),
             scripts: scripts
                 .iter()
                 .map(|(tag, specifier)| LazyScript {

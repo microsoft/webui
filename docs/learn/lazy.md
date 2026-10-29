@@ -300,6 +300,9 @@ beside the page:
   request. Cross-origin packs need CORS. Document responses also carry the base
   in `<meta name="webui-asset-base">`, so the first lines of your entry can point
   your bundler's runtime public path at the same host before `startRuntime()`.
+  That steers chunks your bundler's runtime loads; with native ES module output,
+  chunks load relative to the entry script, so serve the entry from the same
+  base.
 
 Packs contain only compiled templates, condition functions, styles, and
 inventory data. Hosts render pages with the usual APIs; there is no lazy-specific
@@ -309,10 +312,11 @@ write the returned loader module where your bundler imports it:
 `build()`, `lazy_pack_files` and `lazy_scripts_module` from the
 [Rust](../build/integrations/rust) `build()` (or call `webui::write_lazy_packs`),
 and the same fields from `buildApp()` in the [WASM](../build/integrations/wasm)
-build. Each pack entry also names its region, owner, trigger, size, and the
-component scripts it loads. `--metafile` writes that report as `lazyPacks`, with
-brotli-compressed sizes, so your deployment can upload and precache the packs,
-for example in a service worker, and CI can budget each region.
+build. Each pack entry also names its region, owner, trigger, size, the
+component scripts it loads, and, in link builds, its stylesheets. `--metafile`
+writes that report as `lazyPacks`, with brotli-compressed sizes, so your
+deployment can upload and precache everything a region loads, for example in a
+service worker, and CI can budget each region.
 
 Condition functions in a pack run with the page's CSP nonce and the `webui`
 Trusted Types policy, as in SSR. Allow the policy name `webui` when you enforce

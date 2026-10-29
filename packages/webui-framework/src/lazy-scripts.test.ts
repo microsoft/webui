@@ -554,6 +554,39 @@ test('an install waits for the stylesheets that styles.js prepares', async () =>
   }
 });
 
+test('an activation after a speculative install starts its stylesheets with its scripts', async () => {
+  const id = region(53);
+  const url = '_webui/packs/test-shell.0053.json';
+  const card = deferredLoader('styled-card');
+  defineLazyScripts({ [id]: { 'styled-card': card.load } });
+  const styles = captureStyles();
+  const host = styledShell(id, url);
+  page.readyState = 'interactive';
+  try {
+    mounts.length = 0;
+    host.$prefetch();
+    serve(id, url);
+    await tick();
+    assert.ok(browser.__webui.templates?.[id], 'the speculative load installed the pack');
+    assert.equal(card.calls, 0, 'its scripts wait for the window load event');
+    host.$prefetch();
+    const preloads = (): number => styles.calls.filter(([hook]) => hook === 'preload').length;
+    assert.equal(preloads(), 1, 'another speculative load starts nothing for an installed pack');
+
+    host.$toggleCond(binding(id));
+    assert.equal(card.calls, 1);
+    assert.deepEqual(styles.calls.at(-1), ['preload', ['region.css'], 'high'], 'the stylesheets start with the scripts');
+    assert.equal(mounts.length, 0, 'the body waits for its scripts');
+    card.release();
+    await host.$rendered();
+    assert.equal(mounts.length, 1);
+    assert.equal(preloads(), 2);
+  } finally {
+    page.readyState = 'complete';
+    styles.restore();
+  }
+});
+
 test('development warns once when a pack registers scripted components nothing loads or declares', async () => {
   const warnings: string[] = [];
   const previousWarn = console.warn;

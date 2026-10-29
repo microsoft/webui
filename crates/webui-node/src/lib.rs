@@ -112,6 +112,9 @@ pub struct JsLazyPackFile {
     pub brotli_bytes: Option<u32>,
     /// Module specifiers of the scripted components the region introduces.
     pub scripts: Vec<String>,
+    /// Stylesheet paths, relative to the asset base, that the pack registers
+    /// in a Link build; empty in Style and Module builds.
+    pub stylesheets: Vec<String>,
 }
 
 /// A generated ES module for the application bundler.
@@ -329,6 +332,7 @@ fn js_lazy_pack_file(pack: webui::LazyPackFile) -> JsLazyPackFile {
             .into_iter()
             .map(|script| script.specifier)
             .collect(),
+        stylesheets: pack.stylesheets,
         trigger: pack.trigger.as_str().to_string(),
         file_name: pack.file_name,
         content: pack.content,
@@ -1626,6 +1630,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("settings-panel.html"), "<p>Settings</p>").unwrap();
         std::fs::write(dir.path().join("settings-panel.js"), "export {};").unwrap();
+        std::fs::write(dir.path().join("settings-panel.css"), "p { margin: 0; }").unwrap();
 
         let options = |metafile: bool, modules: Option<HashMap<String, String>>| JsBuildOptions {
             app_dir: dir.path().to_string_lossy().to_string(),
@@ -1659,6 +1664,7 @@ mod tests {
         assert_eq!(pack.bytes as usize, pack.content.len());
         assert!(pack.brotli_bytes.is_some_and(|bytes| bytes > 0));
         assert_eq!(pack.scripts, ["../settings-panel.js"]);
+        assert_eq!(pack.stylesheets, ["settings-panel.css"]);
         let module = result.lazy_scripts_module.as_ref().unwrap();
         assert_eq!(module.file_name, "lazy.webui.js");
         assert!(module
@@ -1672,6 +1678,17 @@ mod tests {
         let metafile: serde_json::Value =
             serde_json::from_str(result.metafile.as_deref().unwrap()).unwrap();
         assert_eq!(metafile["lazyPacks"][0]["path"], pack.path.as_str());
+        assert_eq!(
+            metafile["lazyPacks"][0]["stylesheets"],
+            serde_json::json!(["settings-panel.css"])
+        );
+        let mut inline = options(false, None);
+        inline.css = Some("style".to_string());
+        let inline = build(inline).unwrap();
+        assert!(
+            inline.lazy_pack_files[0].stylesheets.is_empty(),
+            "style packs carry CSS text"
+        );
 
         let mapped = build(options(
             false,

@@ -333,6 +333,8 @@ fn metafile_reports_lazy_packs_without_component_assets() {
             .map(|script| script.specifier.as_str())
             .collect();
         assert_eq!(entry["scripts"], serde_json::json!(scripts));
+        // Present even when the region has no stylesheets.
+        assert_eq!(entry["stylesheets"], serde_json::json!([]));
     }
     let outer = entries
         .iter()

@@ -26,7 +26,7 @@ pub(crate) struct AssetGraphMetafile {
     outputs: BTreeMap<String, MetafileOutput>,
 }
 
-/// One lazy-region pack: its cost and the scripts it loads with.
+/// One lazy-region pack: its cost and the other files the region loads.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LazyPackEntry<'a> {
@@ -39,6 +39,8 @@ struct LazyPackEntry<'a> {
     brotli_bytes: Option<usize>,
     hash: &'a str,
     scripts: Vec<&'a str>,
+    // Always present: empty unless a Link build's pack registers stylesheets.
+    stylesheets: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -120,6 +122,7 @@ pub(crate) fn render_metafile(
                 .iter()
                 .map(|script| script.specifier.as_str())
                 .collect(),
+            stylesheets: &pack.stylesheets,
         })
         .collect();
     lazy_packs.sort_unstable_by(|left, right| left.path.cmp(&right.path));

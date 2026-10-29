@@ -97,6 +97,7 @@ mod tests {
             owner: "app-shell".to_owned(),
             trigger: LazyTrigger::Idle,
             components: Vec::new(),
+            stylesheets: Vec::new(),
             scripts: Vec::new(),
             brotli_bytes: None,
         }];

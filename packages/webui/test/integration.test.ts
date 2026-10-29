@@ -645,7 +645,7 @@ describe('lazy template packs', () => {
       `);
       const result = build({ appDir: directory, plugin: 'webui', assetBase: '/static/' });
       assert.equal(result.lazyPackFiles.length, 1);
-      const [{ fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes, scripts }] =
+      const [{ fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes, scripts, stylesheets }] =
         result.lazyPackFiles;
       assert.match(fileName, /^test-owner\.[0-9a-f]{16}\.json$/);
       assert.equal(path, `_webui/packs/${fileName}`);
@@ -656,6 +656,7 @@ describe('lazy template packs', () => {
       assert.equal(bytes, Buffer.byteLength(content));
       assert.equal(brotliBytes, undefined, 'brotli sizes are measured only for a metafile');
       assert.deepEqual(scripts, []);
+      assert.deepEqual(stylesheets, [], 'an unstyled region loads no stylesheets');
       assert.match(result.lazyScriptsModule?.content ?? '', /defineLazyScripts\(\{\}\);/);
       const pack = JSON.parse(content) as Record<string, unknown>;
       assert.equal(pack.type, 'webui-pack');
@@ -749,8 +750,11 @@ describe('lazy template packs', () => {
       const packs = new Map(result.lazyPackFiles.map(pack => [pack.region, pack]));
       assert.deepEqual(packs.get('app-shell::lazy:@0')?.scripts, ['../settings-panel.ts']);
       assert.equal(packs.get('app-shell::lazy:@1')?.trigger, 'demand');
+      // The report lists the stylesheets each region loads, for precaching.
+      assert.deepEqual(packs.get('app-shell::lazy:@0')?.stylesheets, ['settings-panel.css']);
+      assert.deepEqual(packs.get('app-shell::lazy:@1')?.stylesheets, []);
       // Link builds list a region's stylesheets beside its pack path, so the
-      // browser fetches them in parallel with the pack.
+      // browser fetches them in parallel with the pack: the same paths.
       const html = new Protocol(result.protocol, { plugin: 'webui' })
         .render({ open: false })
         .toString('utf8');
@@ -778,11 +782,24 @@ describe('lazy template packs', () => {
           brotliBytes: pack.brotliBytes,
           hash: pack.hash,
           scripts: pack.scripts,
+          stylesheets: pack.stylesheets,
         });
         assert.ok((pack.brotliBytes ?? 0) > 0 && (pack.brotliBytes ?? 0) < pack.bytes);
       }
       // The pack report stays compatible with esbuild metafile tooling.
       assert.equal(typeof (await analyzeMetafile(metafile)), 'string');
+
+      // Style packs carry CSS text, so they report no stylesheets.
+      const inline = build({ appDir: directory, plugin: 'webui', css: 'style', metafile: true });
+      assert.ok(inline.lazyPackFiles.every(pack => pack.stylesheets.length === 0));
+      assert.ok(inline.metafile);
+      const inlineReport = JSON.parse(inline.metafile) as {
+        lazyPacks: Array<Record<string, unknown>>;
+      };
+      assert.equal(inlineReport.lazyPacks.length, 2);
+      for (const entry of inlineReport.lazyPacks) {
+        assert.deepEqual(entry.stylesheets, []);
+      }
 
       const mapped = build({
         appDir: directory,

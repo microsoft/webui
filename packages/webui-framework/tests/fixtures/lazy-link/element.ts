@@ -3,8 +3,16 @@
 
 import { startRuntime } from '../../../src/runtime.js';
 import '../../../src/styles-entry.js';
-import '../../../src/lazy-entry.js';
+import { defineLazyScripts } from '../../../src/lazy-entry.js';
 import { observable, WebUIElement } from '../../../src/index.js';
+
+// Stands in for the generated `lazy.webui.js`. The region's script is a chunk
+// the server sends on its own, so a test can hold it like a slow bundler chunk.
+defineLazyScripts({
+  'test-link-owner::lazy:@0': {
+    'test-link-script': () => import(new URL('chip.js', document.baseURI).href),
+  },
+});
 
 startRuntime();
 

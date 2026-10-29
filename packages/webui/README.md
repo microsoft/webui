@@ -72,7 +72,7 @@ const result = build({
 // result.protocol  - Buffer containing the compiled protocol
 // result.cssFiles  - Array of [filename, content, ...] pairs
 // result.componentAssetFiles - Array of [filename, ESM content, ...] pairs
-// result.lazyPackFiles - Lazy template packs: { fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes?, scripts }
+// result.lazyPackFiles - Lazy template packs: { fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes?, scripts, stylesheets }
 // result.lazyScriptsModule - Optional { fileName: "lazy.webui.js", content, declaration: { fileName: "lazy.webui.d.ts", content } } loader for lazy region scripts
 // result.metafile - Optional metafile JSON: esbuild-compatible graph plus lazyPacks
 // result.warnings  - Array of non-fatal build advisory diagnostics

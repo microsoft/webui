@@ -70,6 +70,7 @@ try {
   const app = combined.buildApp(files, 'index.html');
   assert.deepEqual(app.lazyPackFiles.map(portable), native.lazyPackFiles.map(portable));
   assert.equal(app.lazyPackFiles[0].brotliBytes, undefined);
+  assert.deepEqual(app.lazyPackFiles[0].stylesheets, [], 'WASM builds inline component CSS');
   assert.deepEqual(app.lazyScriptsModule, native.lazyScriptsModule);
   assert.equal(app.lazyScriptsModule.declaration.fileName, 'lazy.webui.d.ts');
   assert.deepEqual(app.warnings, []);

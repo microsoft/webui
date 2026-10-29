@@ -116,6 +116,13 @@ export interface LazyPackFile {
   brotliBytes?: number;
   /** Module specifiers of the scripted components the region introduces. */
   scripts: string[];
+  /**
+   * Stylesheet paths, relative to the asset base, that the pack registers in a
+   * `css: "link"` build: the files the region fetches besides its pack and
+   * scripts. Always present; empty for `"style"` and `"module"` builds, whose
+   * packs carry CSS text.
+   */
+  stylesheets: string[];
 }
 
 /** A generated ES module for the application bundler. */

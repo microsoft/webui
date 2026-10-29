@@ -54,10 +54,15 @@ loads that code. Its `declaration` is `lazy.webui.d.ts`
 runtime's types without `allowJs`; write it next to the module. Relative
 specifiers start at `BuildOptions::modules_out`, or at `app_dir` without one.
 `build_to_disk()` writes both files to `modules_out`, defaulting to the output
-directory. Each
-`LazyPackFile` also reports its `region`, `owner`, `trigger`, `components`,
-`scripts`, and, when `metafile` is set, `brotli_bytes`; `path()`, `bytes()`, and
-`hash()` return its asset-base path, raw size, and content hash.
+directory. Each `LazyPackFile` also reports its `region`, `owner`, `trigger`,
+`components`, `scripts`, `stylesheets`, and, when `metafile` is set,
+`brotli_bytes`; `path()`, `bytes()`, and `hash()` return its asset-base path,
+raw size, and content hash. `stylesheets` holds the paths, relative to the
+asset base, of the stylesheets the region loads with its pack in a
+`CssStrategy::Link` build (entries of `BuildResult::css_files`, including
+bundled chunks); it is empty for `Style` and `Module` builds, whose packs carry
+the CSS. A service worker that precaches a region needs its `path()`, its
+`stylesheets`, and the bundler outputs for its `scripts`.
 
 ## Examples
 

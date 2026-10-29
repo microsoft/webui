@@ -280,7 +280,8 @@ service worker precaching, and size budgets in CI:
       "bytes": 2481,
       "brotliBytes": 742,
       "hash": "3f9a1c0d2b4e6f70",
-      "scripts": ["../src/settings-panel/settings-panel.ts"]
+      "scripts": ["../src/settings-panel/settings-panel.ts"],
+      "stylesheets": ["settings-panel-36c58ce5.css"]
     }
   ]
 }
@@ -289,8 +290,16 @@ service worker precaching, and size budgets in CI:
 `path` is relative to the asset base, `trigger` is the region's `lazy` value,
 `bytes` is the raw pack size, `brotliBytes` is the brotli size at quality 11,
 `hash` is the content hash in the file name, and `scripts` are the module
-specifiers `lazy.webui.js` loads with the region. The metafile path is
-collision-checked with the other outputs before any file is written.
+specifiers `lazy.webui.js` loads with the region. `stylesheets` are the
+stylesheets the region loads with its pack, in a `--css link` build: paths
+relative to the asset base, such as the emitted file names or bundled chunk
+files, which WebUI also wrote to `--out`. The rendered page gives the lazy
+runtime the same paths, so it fetches them in parallel with the pack. The
+field is always present, like `scripts`, and empty with `--css style` or
+`--css module`, whose packs carry the CSS, and for regions without stylesheets.
+To precache a region, take its `path`, its `stylesheets`, and the output files
+your bundler produced for its `scripts`. The metafile path is collision-checked
+with the other outputs before any file is written.
 
 **Asset base:**
 
@@ -338,13 +347,17 @@ scripts that `lazy.webui.js` imports. To load them from the same per-request
 base, set the bundler's runtime public path from the meta tag first thing in
 your entry module. With rspack or webpack:
 
-```js
-__webpack_public_path__ = document.querySelector('meta[name="webui-asset-base"]')?.content ?? __webpack_public_path__;
+```ts
+__webpack_public_path__ =
+  document.querySelector<HTMLMetaElement>('meta[name="webui-asset-base"]')?.content
+  ?? __webpack_public_path__;
 ```
 
 A module's static imports run before its own statements, so if your entry has
 static imports, put this line in a separate module and import that module
-first.
+first. This steers chunks that the bundler's runtime loads. With native ES
+module output, chunks load relative to the entry script's URL instead, so serve
+the entry script from the same base.
 
 **CSS bundling:**
 

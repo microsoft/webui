@@ -5,10 +5,12 @@
 //!
 //! Reads the condition entries that name lazy regions, and writes the `lp`
 //! (pack path) and `lc` (Link stylesheet paths) maps into the templates that
-//! hold those conditions once every region they name has been rendered.
+//! hold those conditions once every region they name has been rendered. Both
+//! maps are written from the rendered packs themselves, so template metadata
+//! always matches the pack report a build returns.
 
 use super::scripts::push_json_string;
-use super::{invalid_metadata, LazyTrigger};
+use super::{invalid_metadata, LazyPackFile, LazyTrigger, PACK_OUTPUT_DIR};
 use crate::Result;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
@@ -16,13 +18,41 @@ use webui_protocol::WebUIProtocol;
 /// Lazy regions referenced by one template, sorted.
 pub(super) type Children = BTreeSet<String>;
 
-/// What templates record about one rendered region.
+/// The packs rendered so far, found by region.
 pub(super) struct Rendered {
-    /// `lp` value: the pack's path relative to the asset base.
-    pub(super) path: String,
-    /// `lc` value: a JSON array of the stylesheet paths the pack registers in
-    /// a Link build, or `None` when it registers none.
-    pub(super) stylesheets: Option<String>,
+    packs: Vec<LazyPackFile>,
+    regions: HashMap<String, usize>,
+}
+
+impl Rendered {
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            packs: Vec::with_capacity(capacity),
+            regions: HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// Whether `region` has been rendered.
+    pub(super) fn contains(&self, region: &str) -> bool {
+        self.regions.contains_key(region)
+    }
+
+    fn get(&self, region: &str) -> Option<&LazyPackFile> {
+        self.regions
+            .get(region)
+            .and_then(|&index| self.packs.get(index))
+    }
+
+    /// Record a rendered pack under its region.
+    pub(super) fn push(&mut self, pack: LazyPackFile) {
+        self.regions.insert(pack.region.clone(), self.packs.len());
+        self.packs.push(pack);
+    }
+
+    /// The rendered packs, in rendering order.
+    pub(super) fn into_packs(self) -> Vec<LazyPackFile> {
+        self.packs
+    }
 }
 
 /// Lazy-region references found in compiled template metadata.
@@ -93,31 +123,12 @@ fn lazy_children(
     Ok(children)
 }
 
-/// A region's `lc` value: its stylesheet paths as a JSON array, or `None`
-/// without any.
-pub(super) fn encode_stylesheets(paths: &[&str]) -> Option<String> {
-    if paths.is_empty() {
-        return None;
-    }
-    let mut encoded =
-        String::with_capacity(2 + paths.iter().map(|path| path.len() + 3).sum::<usize>());
-    encoded.push('[');
-    for (position, path) in paths.iter().enumerate() {
-        if position != 0 {
-            encoded.push(',');
-        }
-        push_json_string(&mut encoded, path);
-    }
-    encoded.push(']');
-    Some(encoded)
-}
-
 /// Append `lp`, and `lc` when a referenced pack registers stylesheets, to
 /// every template whose referenced regions have all been rendered.
 pub(super) fn finalize(
     protocol: &mut WebUIProtocol,
     children: &HashMap<String, Children>,
-    rendered: &HashMap<String, Rendered>,
+    rendered: &Rendered,
     finalized: &mut HashSet<String>,
 ) -> Result<()> {
     for (template, refs) in children {
@@ -125,9 +136,9 @@ pub(super) fn finalize(
             continue;
         }
         // `refs` is sorted, so both maps are written in region order.
-        let Some(references) = refs
+        let Some(packs) = refs
             .iter()
-            .map(|region| Some((region.as_str(), rendered.get(region)?)))
+            .map(|region| rendered.get(region))
             .collect::<Option<Vec<_>>>()
         else {
             continue;
@@ -143,43 +154,57 @@ pub(super) fn finalize(
             return Err(invalid_metadata(template, "metadata is not a JSON object"));
         }
         json.pop();
-        append_references(json, &references);
+        append_references(json, &packs);
         json.push('}');
         finalized.insert(template.clone());
     }
     Ok(())
 }
 
-/// Write `,"lp":{...}` and, when any referenced pack registers stylesheets,
-/// `,"lc":{...}` listing only those regions.
-fn append_references(json: &mut String, references: &[(&str, &Rendered)]) {
-    let additional: usize = references
+/// Write `,"lp":{...}` from each pack's path and, when any pack registers
+/// stylesheets, `,"lc":{...}` from the [`LazyPackFile::stylesheets`] of only
+/// those packs.
+fn append_references(json: &mut String, packs: &[&LazyPackFile]) {
+    let additional: usize = packs
         .iter()
-        .map(|(region, pack)| {
-            2 * region.len() + pack.path.len() + pack.stylesheets.as_ref().map_or(0, String::len)
+        .map(|pack| {
+            2 * pack.region.len()
+                + PACK_OUTPUT_DIR.len()
+                + pack.file_name.len()
+                + pack
+                    .stylesheets
+                    .iter()
+                    .map(|path| path.len() + 3)
+                    .sum::<usize>()
         })
         .sum();
-    json.reserve(16 + 8 * references.len() + additional);
+    json.reserve(16 + 8 * packs.len() + additional);
     json.push_str(",\"lp\":{");
-    for (position, (region, pack)) in references.iter().enumerate() {
+    for (position, pack) in packs.iter().enumerate() {
         if position != 0 {
             json.push(',');
         }
-        push_json_string(json, region);
+        push_json_string(json, &pack.region);
         json.push(':');
-        push_json_string(json, &pack.path);
+        push_json_string(json, &pack.path());
     }
     json.push('}');
     let mut wrote = false;
-    for (region, pack) in references {
-        let Some(stylesheets) = &pack.stylesheets else {
+    for pack in packs {
+        if pack.stylesheets.is_empty() {
             continue;
-        };
+        }
         json.push_str(if wrote { "," } else { ",\"lc\":{" });
         wrote = true;
-        push_json_string(json, region);
-        json.push(':');
-        json.push_str(stylesheets);
+        push_json_string(json, &pack.region);
+        json.push_str(":[");
+        for (position, path) in pack.stylesheets.iter().enumerate() {
+            if position != 0 {
+                json.push(',');
+            }
+            push_json_string(json, path);
+        }
+        json.push(']');
     }
     if wrote {
         json.push('}');
@@ -205,44 +230,46 @@ mod tests {
     }
 
     #[test]
-    fn stylesheet_lists_are_json_arrays_in_the_given_order() {
-        assert_eq!(encode_stylesheets(&[]), None);
-        assert_eq!(
-            encode_stylesheets(&["b.css", "a.css", "q\"uote.css"]).as_deref(),
-            Some(r#"["b.css","a.css","q\"uote.css"]"#)
-        );
-    }
-
-    #[test]
     fn references_list_every_path_and_only_regions_with_stylesheets() {
-        let rendered = [
-            Rendered {
-                path: "_webui/packs/a.json".to_owned(),
-                stylesheets: None,
-            },
-            Rendered {
-                path: "_webui/packs/b.json".to_owned(),
-                stylesheets: encode_stylesheets(&["b.css", "chunk.css"]),
-            },
-        ];
-        let mut json = r#"{"v":3"#.to_owned();
-        append_references(
-            &mut json,
-            &[("o::lazy:@0", &rendered[0]), ("o::lazy:@1", &rendered[1])],
+        let pack = |region: &str, file_name: &str, stylesheets: &[&str]| LazyPackFile {
+            file_name: file_name.to_owned(),
+            content: "{}".to_owned(),
+            region: region.to_owned(),
+            owner: "o".to_owned(),
+            trigger: LazyTrigger::Intent,
+            components: Vec::new(),
+            stylesheets: stylesheets.iter().map(|path| (*path).to_owned()).collect(),
+            scripts: Vec::new(),
+            brotli_bytes: None,
+        };
+        let unstyled = pack("o::lazy:@0", "o.0000000000000000.json", &[]);
+        let styled = pack(
+            "o::lazy:@1",
+            "o.1111111111111111.json",
+            &["b.css", "q\"uote.css"],
         );
+        let mut json = r#"{"v":3"#.to_owned();
+        append_references(&mut json, &[&unstyled, &styled]);
         assert_eq!(
             json,
             concat!(
-                r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/a.json","o::lazy:@1":"_webui/packs/b.json"}"#,
-                r#","lc":{"o::lazy:@1":["b.css","chunk.css"]}"#,
+                r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json","#,
+                r#""o::lazy:@1":"_webui/packs/o.1111111111111111.json"}"#,
+                r#","lc":{"o::lazy:@1":["b.css","q\"uote.css"]}"#,
             )
         );
-
-        let mut unstyled = r#"{"v":3"#.to_owned();
-        append_references(&mut unstyled, &[("o::lazy:@0", &rendered[0])]);
+        let metadata: serde_json::Value = serde_json::from_str(&format!("{json}}}")).unwrap();
+        assert_eq!(metadata["lp"]["o::lazy:@1"], styled.path());
         assert_eq!(
-            unstyled,
-            r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/a.json"}"#
+            metadata["lc"]["o::lazy:@1"],
+            serde_json::json!(styled.stylesheets)
+        );
+
+        let mut plain = r#"{"v":3"#.to_owned();
+        append_references(&mut plain, &[&unstyled]);
+        assert_eq!(
+            plain,
+            r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json"}"#
         );
     }
 }

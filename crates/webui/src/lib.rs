@@ -290,9 +290,10 @@ pub struct BuildOptions {
     ///
     /// The metafile describes the component asset graph in esbuild's
     /// `inputs`/`outputs` format and lists every lazy-region pack with its
-    /// region, owner, trigger, raw and brotli sizes, hash, and scripts. It is
-    /// produced only when the build emits component assets or lazy packs.
-    /// Brotli sizes are measured, at quality 11, only when this is set.
+    /// region, owner, trigger, raw and brotli sizes, hash, scripts, and
+    /// [`LazyPackFile::stylesheets`]. It is produced only when the build emits
+    /// component assets or lazy packs. Brotli sizes are measured, at quality
+    /// 11, only when this is set.
     pub metafile: bool,
     /// Emitted Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
     pub css_file_name_template: String,

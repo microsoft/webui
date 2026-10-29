@@ -148,6 +148,7 @@ bundled chunks, in the order the pack's `closures` (sorted by root) first name
 them, without duplicates. Regions whose packs register no link resource are
 left out, and `lc` is omitted when none remains. Style and module builds never
 emit it: their packs carry CSS text. Keys and order are deterministic, like `lp`.
+The build report lists the same paths as each pack's `stylesheets`.
 
 The browser resolves pack and stylesheet paths against `window.__webui.assetBase`
 when the document has one, else against the document base URL. The handler
@@ -213,9 +214,14 @@ generated directory may sit outside it. Both files are published together and
 rewritten only when their content changes.
 
 The build reports every pack with its path, region, owner, trigger, raw size,
-content hash, and script specifiers, in the build results and, with brotli
-sizes, as `lazyPacks` in the metafile, so deployments can upload, precache, and
-budget packs without reading them.
+content hash, script specifiers, and stylesheet paths, in the build results
+and, with brotli sizes, as `lazyPacks` in the metafile, so deployments can
+upload, precache, and budget packs without reading them. A pack's
+`stylesheets` is the `lc` list of its region; the build writes both from one
+value, so they cannot differ. The field is always present: empty in style and
+module builds, and for regions whose packs register no link resource, like
+`scripts` for regions without scripts. Precaching a region needs its pack path,
+its stylesheets, and the bundler's outputs for its scripts.
 
 ### Runtime
 

@@ -130,6 +130,33 @@ test('an activation before the window loads styles a region that installed witho
   finishLoading();
 });
 
+test('an activation before the window loads starts the stylesheet with its script, not after it', async ({ page }) => {
+  const network = await probe(page);
+  const finishLoading = await holdWindowLoad(page);
+  const script = Promise.withResolvers<void>();
+  await page.route('**/lazy-link/chip.js', async route => {
+    await script.promise;
+    await route.fallback();
+  });
+  await page.goto('/lazy-link/fixture.html', { waitUntil: 'commit' });
+  await ready(page);
+  // The hover installs the pack; its script and stylesheet wait for the load event.
+  await prefetch(page);
+  const scriptRequested = page.waitForRequest('**/lazy-link/chip.js');
+  const stylesheetRequested = page.waitForRequest(`**${STYLESHEET}`);
+  await page.locator('test-link-owner .open').click();
+  // The script is still held, so the stylesheet started with the activation.
+  await Promise.all([scriptRequested, stylesheetRequested]);
+  expect(await page.evaluate(() => document.readyState)).not.toBe('complete');
+  expect(network.requests.filter(([path]) => path === STYLESHEET)).toEqual([[STYLESHEET, 'VeryHigh']]);
+  await expect(page.locator('test-link-chip'), 'the body waits for its script').toHaveCount(0);
+
+  script.resolve();
+  await expect(page.locator('test-link-chip .chip')).toHaveCSS('color', 'rgb(170, 0, 0)');
+  expect(network.stylesheets()).toBe(1);
+  finishLoading();
+});
+
 test('activation preloads the region stylesheets beside its pack at the default priority', async ({ page }) => {
   const network = await probe(page);
   await page.goto('/lazy-link/fixture.html');
