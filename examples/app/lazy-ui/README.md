@@ -41,14 +41,19 @@ returns only state, at `/api/activity` and `/api/settings`.
   ```
 
   `$prefetch('settingsReady')` covers the regions whose condition reads
-  `settingsReady`. Before the window `load` event it fetches at low priority,
-  afterwards at high priority.
+  `settingsReady`. After the window `load` event it fetches the settings pack at
+  high priority and starts the preview's script and stylesheet with it. Before
+  the event, it fetches only the pack, at low priority, and starts the script
+  and stylesheet once the page has loaded: a bundler's `import()` takes no
+  priority hint, and browsers raise stylesheet preloads to high priority.
 - Neither prefetch runs while the browser prerenders the page, and the idle
   prefetch is skipped when the user has turned on data saving.
 - Clicking fetches fresh state and sets the overlay's condition. The framework
   renders the body from the prefetched pack, or fetches the pack first at high
-  priority. The component awaits `this.$rendered()` only so the overlay never
-  opens before its body exists.
+  priority. Opening never waits for the `load` event: it starts the pack, the
+  script, and the stylesheet immediately, including any that a low-priority
+  prefetch has not started yet. The component awaits `this.$rendered()` only so
+  the overlay never opens before its body exists.
 - Enable **Simulate slow data** to observe loading feedback and cancellation.
 - While loading, press Escape or click **Cancel activity load** / **Cancel settings
   load**. Loading and retry feedback stay beside the trigger, outside the overlay.
@@ -91,20 +96,29 @@ into a separate `layout-preview-<hash>.js` chunk. Pointing at or focusing
 mounts only after both have arrived, so the preview is already defined when it
 is inserted. For `/?open=dialog`, the chunk loads while the page hydrates.
 
+Next to the module, the build writes `.webui/lazy.webui.d.ts`, which imports the
+runtime's types. TypeScript reads it for the import in `src/index.ts`, so
+`$rendered()` and `$prefetch()` type-check without `allowJs`, and declaration
+files are exempt from `tsconfig.json`'s `rootDir: "src"`.
+
+The preview's stylesheet, `layout-preview.css`, is a Link-mode stylesheet. The
+settings pack names it, and the dialog's template data also lists it for the
+region (`lc`), so the browser requests it together with the pack instead of
+after it.
+
 After building the workspace packages, `pnpm run build` runs `webui build`
 twice around the client bundle, then type-checks:
 
 1. `build:modules` builds without the projection manifest and writes
-   `.webui/lazy.webui.js` (`--modules-out ./.webui`).
+   `.webui/lazy.webui.js` and `.webui/lazy.webui.d.ts` (`--modules-out ./.webui`).
 2. `build:client` bundles `src/index.ts` with `../../build-client.mjs`, which
    also writes `dist/webui-projection.json`.
 3. `build:protocol` builds `dist/` with that manifest. The generated module
    does not depend on the projection, so it stays the same.
 
 `start:server` passes `--modules-out ./.webui` as well, so `webui serve --watch`
-keeps the module current after each rebuild, and the esbuild watcher picks up
-any change. `src/index.ts` cannot be bundled or type-checked until the module
-exists.
+keeps both files current after each rebuild, and the esbuild watcher picks up
+any change. `src/index.ts` cannot be bundled or type-checked until they exist.
 
 ## Failures
 
@@ -134,11 +148,18 @@ whose path is known per request, sets the reserved state member:
 ```
 
 `webui build --asset-base <BASE>` sets a build-wide default instead. Packs on
-another origin need CORS. `./index.js` in `src/index.html` is an authored URL,
-so it and the bundler chunks it imports still load from the page's origin.
-State requests resolve against the document's base URL. The tests serve
-`dist/` from a second origin this way and check that the stylesheets and packs
-come from there.
+another origin need CORS. The page head also carries the base as
+`<meta name="webui-asset-base">`, for code that runs before the WebUI runtime.
+
+`./index.js` in `src/index.html` is an authored URL, and the module preload
+hints that the server adds for its static imports keep their paths, so the
+script and every bundler chunk, including the preview's, load once, from the
+page's origin. esbuild's chunks load relative to `index.js`; a bundler with a
+runtime public path, such as webpack or rspack, can read the meta tag to load
+its chunks from the asset base instead. State requests resolve against the
+document's base URL. The tests serve `dist/` from a second origin this way and
+check that the stylesheets and packs come from there and no script downloads
+twice.
 
 ## Tests
 
@@ -148,10 +169,11 @@ pnpm --dir examples/app/lazy-ui test
 ```
 
 The tests cover initial omission, the idle prefetch without rendering or state,
-the scoped prefetch from **View settings** fetching only the settings pack,
-loading the preview's chunk with the body and inserting it already upgraded,
-warm packs with fresh state, native anchoring and dismissal, component
-attributes and events, cancellation, pack and state failures with retry,
-`lazyerror` handling without uncaught errors, SSR, cache collection and reopen,
-the base path, low-priority speculative requests before the `load` event, an
-asset base on a second origin, and narrow viewports.
+the scoped prefetch from **View settings** fetching only the settings pack with
+the preview's stylesheet in parallel, loading the preview's chunk with the body
+and inserting it already upgraded, warm packs with fresh state, native
+anchoring and dismissal, component attributes and events, cancellation, pack
+and state failures with retry, `lazyerror` handling without uncaught errors,
+SSR, cache collection and reopen, the base path, a prefetch before the `load`
+event that fetches only the pack at low priority, opening before the `load`
+event, an asset base on a second origin, and narrow viewports.

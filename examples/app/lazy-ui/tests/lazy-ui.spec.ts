@@ -58,6 +58,54 @@ function isPreviewScript(url: string): boolean {
   return /\/layout-preview-[A-Z0-9]+\.js$/.test(new URL(url).pathname);
 }
 
+/** The stylesheet of `<layout-preview>`, which only the settings region needs. */
+function isPreviewStylesheet(url: string): boolean {
+  return new URL(url).pathname.endsWith('/layout-preview.css');
+}
+
+interface HeldLoad {
+  /** Pack, preview script, and preview stylesheet requests, in the order they started. */
+  readonly requests: readonly { kind: 'pack' | 'script' | 'stylesheet'; path: string; priority: string }[];
+  /** Whether the window `load` event has fired. */
+  loaded(): boolean;
+  /** Let the window `load` event fire. */
+  release(): void;
+}
+
+/**
+ * Keep the window `load` event pending with an image that the test releases,
+ * as a slow resource would, so the page is used before it has loaded.
+ */
+async function holdLoad(page: Page): Promise<HeldLoad> {
+  const cdp = await page.context().newCDPSession(page);
+  const requests: { kind: 'pack' | 'script' | 'stylesheet'; path: string; priority: string }[] = [];
+  let loaded = false;
+  cdp.on('Network.requestWillBeSent', ({ request }) => {
+    const kind = isPack(request.url) ? 'pack'
+      : isPreviewScript(request.url) ? 'script'
+        : isPreviewStylesheet(request.url) ? 'stylesheet' : undefined;
+    if (kind) requests.push({ kind, path: new URL(request.url).pathname, priority: request.initialPriority });
+  });
+  cdp.on('Page.loadEventFired', () => { loaded = true; });
+  await cdp.send('Network.enable');
+  await cdp.send('Page.enable');
+  let release = (): void => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/hold-load.gif', async route => {
+    await held;
+    await route.fulfill({ status: 204 });
+  });
+  await page.addInitScript(() => {
+    addEventListener('DOMContentLoaded', () => {
+      const image = new Image();
+      image.alt = '';
+      image.src = '/hold-load.gif';
+      document.body.append(image);
+    }, { once: true });
+  });
+  return { requests, loaded: () => loaded, release: () => release() };
+}
+
 /** Uncaught errors, including errors passed to `reportError()`. */
 function collectPageErrors(page: Page): Error[] {
   const errors: Error[] = [];
@@ -104,8 +152,10 @@ test('initial SSR omits overlay contents and only references their packs', async
   expect(html).not.toContain('Close activity');
   expect(html).not.toContain('Close settings');
   expect(html).not.toContain('Make this workspace easier to read.');
-  // Only the settings body uses the preview: no template, stylesheet, or script for it.
-  expect(html).not.toContain('layout-preview');
+  // Only the settings body uses the preview. The page lists its stylesheet path,
+  // so the stylesheet can load with the pack, but has no template, link, or script for it.
+  expect(html).toContain('"lc":{"lazy-dialog::lazy:@0":["layout-preview.css"]}');
+  expect(html.split('layout-preview').length - 1).toBe(1);
   await hydrated(page);
   await expect(page.locator('lazy-popover')).toHaveCount(1);
   await expect(page.locator('lazy-dialog')).toHaveCount(1);
@@ -170,24 +220,39 @@ test('native popover light-dismiss removes the lazy body', async ({ page }) => {
 });
 
 for (const intent of ['pointer', 'keyboard'] as const) {
-  test(`${intent} intent on View settings prefetches only the settings pack`, async ({ page }) => {
+  test(`${intent} intent on View settings prefetches only the settings region, with its stylesheet`, async ({ page }) => {
     await settled(page);
     const packs: string[] = [];
-    page.on('request', request => { if (isPack(request.url())) packs.push(new URL(request.url()).pathname); });
+    const stylesheets: string[] = [];
+    page.on('request', request => {
+      if (isPack(request.url())) packs.push(new URL(request.url()).pathname);
+      if (isPreviewStylesheet(request.url())) stylesheets.push(request.url());
+    });
+    // The page lists the region's stylesheet in `lc`, so its request starts with
+    // the pack's. Hold the pack until it does: the stylesheet cannot wait for it.
+    const stylesheet = page.waitForRequest(request => isPreviewStylesheet(request.url()), { timeout: 5_000 })
+      .catch(() => undefined);
+    await page.route('**/_webui/packs/lazy-dialog.*', async route => {
+      await stylesheet;
+      await route.continue();
+    });
     // The settings region is `lazy="demand"`, so the rest of the page prefetches nothing.
     await page.getByRole('heading', { name: 'Saved for later' }).hover();
     await page.getByRole('button', { name: 'Recent activity', exact: true }).hover();
     await page.getByLabel('Simulate slow data').focus();
+    expect(stylesheets).toEqual([]);
     const trigger = page.getByRole('button', { name: 'View settings', exact: true });
     const prefetched = page.waitForResponse(response => isPackOf('lazy-dialog', response.url()));
     if (intent === 'pointer') await trigger.hover();
     else await trigger.focus();
     expect((await prefetched).ok()).toBe(true);
+    expect(stylesheets).not.toEqual([]);
     await expect(page.locator('.settings-body')).toHaveCount(0);
     if (intent === 'pointer') await trigger.click();
     else await page.keyboard.press('Enter');
     await expect(page.getByRole('dialog', { name: 'View settings' })).toBeVisible();
     await expect(page.locator('.settings-body')).toBeVisible();
+    await expect(page.locator('layout-preview .viewport')).toHaveCSS('height', '132px');
     expect(packs).toEqual([expect.stringMatching(/^\/_webui\/packs\/lazy-dialog\.[0-9a-f]{16}\.json$/)]);
   });
 }
@@ -245,12 +310,13 @@ test('the preview script loads on demand and the preview is upgraded when its bo
   await expect(caption).not.toHaveText(`Preview: ${comfortable} items fit in this space.`);
   expect(countIn(await caption.textContent())).toBeGreaterThan(comfortable);
 
-  // Reopening reuses the definition, and nothing reported a startup definition.
+  // Reopening reuses the definition. Neither development warning fired: no lazy-only
+  // component was defined at startup, and every component the pack registered has a loader.
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'View settings', exact: true }).click();
   await expect(caption).toHaveText(PREVIEW_CAPTION);
   expect(scripts).toHaveLength(1);
-  expect(warnings.filter(text => text.includes('only used inside lazy regions'))).toEqual([]);
+  expect(warnings.filter(text => text.startsWith('[WebUI]'))).toEqual([]);
 });
 
 test('the dialog emits preferences to the workspace and receives updated attributes', async ({ page }) => {
@@ -580,55 +646,66 @@ test('resource and state requests respect the demo catalog base path', async ({ 
   expect(outsideBase).toEqual([]);
 });
 
-test('speculative pack requests use low priority, and none is high before the load event', async ({ page }) => {
-  const cdp = await page.context().newCDPSession(page);
-  const packs: { path: string; priority: string; at: number }[] = [];
-  let loadedAt = Number.POSITIVE_INFINITY;
-  cdp.on('Network.requestWillBeSent', event => {
-    if (!isPack(event.request.url)) return;
-    packs.push({ path: new URL(event.request.url).pathname, priority: event.request.initialPriority, at: event.timestamp });
-  });
-  cdp.on('Page.loadEventFired', event => { loadedAt = event.timestamp; });
-  await cdp.send('Network.enable');
-  await cdp.send('Page.enable');
-  // An image that the test releases keeps the window load event pending, as a
-  // slow resource would, so the page is used before it has loaded.
-  let release = (): void => {};
-  const held = new Promise<void>(resolve => { release = resolve; });
-  await page.route('**/hold-load.gif', async route => {
-    await held;
-    await route.fulfill({ status: 204 });
-  });
-  await page.addInitScript(() => {
-    addEventListener('DOMContentLoaded', () => {
-      const image = new Image();
-      image.alt = '';
-      image.src = '/hold-load.gif';
-      document.body.append(image);
-    }, { once: true });
-  });
+test('before the load event a prefetch fetches only the pack, at low priority', async ({ page }) => {
+  const loading = await holdLoad(page);
   try {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await hydrated(page);
     expect(await page.evaluate(() => document.readyState)).toBe('interactive');
-    const settings = page.waitForRequest(request => isPackOf('lazy-dialog', request.url()));
+    const pack = page.waitForResponse(response => isPackOf('lazy-dialog', response.url()));
     await page.getByRole('button', { name: 'View settings', exact: true }).hover();
-    await settings;
-    const activity = page.waitForRequest(request => isPackOf('lazy-popover', request.url()));
-    release();
-    await activity;
+    expect((await pack).ok()).toBe(true);
+    // The preview's script and stylesheet wait for the load event.
+    await page.waitForTimeout(300);
+    expect(loading.requests).toEqual([
+      { kind: 'pack', path: expect.stringMatching(/\/lazy-dialog\./), priority: 'Low' },
+    ]);
+    const afterLoad = Promise.all([
+      page.waitForResponse(response => isPreviewScript(response.url())),
+      page.waitForResponse(response => isPreviewStylesheet(response.url())),
+      page.waitForResponse(response => isPackOf('lazy-popover', response.url())),
+    ]);
+    loading.release();
+    await afterLoad;
   } finally {
-    release();
+    loading.release();
   }
-  await expect.poll(() => loadedAt).toBeLessThan(Number.POSITIVE_INFINITY);
-  // `$prefetch()` before the load event, then the idle prefetch after it: both low.
-  expect(packs).toEqual([
-    { path: expect.stringMatching(/^\/_webui\/packs\/lazy-dialog\./), priority: 'Low', at: expect.any(Number) },
-    { path: expect.stringMatching(/^\/_webui\/packs\/lazy-popover\./), priority: 'Low', at: expect.any(Number) },
+  // Once the load event began, the script and stylesheet started, and the idle
+  // prefetch fetched the activity pack, also at low priority.
+  const timing = await page.evaluate(() => {
+    const [navigation] = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    const resources = performance.getEntriesByType('resource').map(({ name, startTime }) => ({ name, startTime }));
+    return { loadEventStart: navigation.loadEventStart, resources };
+  });
+  const startOf = (matches: (url: string) => boolean): number | undefined =>
+    timing.resources.find(({ name }) => matches(name))?.startTime;
+  expect(startOf(url => isPackOf('lazy-dialog', url))).toBeLessThan(timing.loadEventStart);
+  for (const matches of [isPreviewScript, isPreviewStylesheet, (url: string) => isPackOf('lazy-popover', url)]) {
+    expect(startOf(matches)).toBeGreaterThanOrEqual(timing.loadEventStart);
+  }
+  expect(loading.requests.filter(({ kind }) => kind === 'pack').map(({ path, priority }) => [path, priority])).toEqual([
+    [expect.stringMatching(/\/lazy-dialog\./), 'Low'],
+    [expect.stringMatching(/\/lazy-popover\./), 'Low'],
   ]);
-  expect(packs[0].at).toBeLessThan(loadedAt);
-  expect(packs[1].at).toBeGreaterThan(loadedAt);
-  expect(packs.filter(pack => pack.at < loadedAt && pack.priority !== 'Low')).toEqual([]);
+});
+
+test('opening a region before the load event starts its pack, script, and stylesheet at once', async ({ page }) => {
+  const loading = await holdLoad(page);
+  try {
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await hydrated(page);
+    // Pointing at the trigger starts only the pack; the click activates the region.
+    await page.getByRole('button', { name: 'View settings', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'View settings' })).toBeVisible();
+    await expect(page.locator('layout-preview figcaption')).toHaveText(PREVIEW_CAPTION);
+    await expect(page.locator('layout-preview .viewport')).toHaveCSS('height', '132px');
+    // The dialog opened, styled and with its preview defined, while the window was still loading.
+    expect(await page.evaluate(() => document.readyState)).toBe('interactive');
+    expect(loading.loaded()).toBe(false);
+    expect([...new Set(loading.requests.map(({ kind }) => kind))].sort()).toEqual(['pack', 'script', 'stylesheet']);
+  } finally {
+    loading.release();
+  }
 });
 
 test.describe('a per-request asset base on another origin', () => {
@@ -653,9 +730,11 @@ test.describe('a per-request asset base on another origin', () => {
     const cdn = assets!;
     const origin = app!.origin;
     const fromPage: string[] = [];
+    const scripts: string[] = [];
     page.on('request', request => {
       const url = new URL(request.url());
       if (url.origin === origin) fromPage.push(url.pathname);
+      if (url.pathname.endsWith('.js')) scripts.push(url.href);
     });
     // This server renders from a state file; the sample API still supplies overlay state.
     await page.route(`${origin}/api/**`, async route => {
@@ -665,13 +744,20 @@ test.describe('a per-request asset base on another origin', () => {
     const response = await page.goto(`${origin}/`);
     expect(await response!.text()).toContain(`"assetBase":"${cdn.origin}/"`);
     await hydrated(page);
+    // The head publishes the base for code that runs before the runtime starts.
+    await expect(page.locator('head > meta[name="webui-asset-base"]')).toHaveAttribute('content', `${cdn.origin}/`);
     const stylesheet = await page.locator('lazy-dialog').evaluate(host =>
       host.shadowRoot?.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')?.href);
     expect(stylesheet).toBe(`${cdn.origin}/lazy-dialog.css`);
+    // Module preload hints name the entry's own imports, so they stay with `./index.js`.
+    const hints = await page.locator('link[rel="modulepreload"]').evaluateAll(links =>
+      links.map(link => (link as HTMLLinkElement).href));
+    expect(hints).not.toEqual([]);
+    expect(hints.filter(href => !href.startsWith(`${origin}/`))).toEqual([]);
 
     await page.getByRole('button', { name: 'View settings', exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'View settings' })).toBeVisible();
-    // Styles from the startup stylesheet and from the stylesheet the pack names.
+    // Styles from the startup stylesheet and from the stylesheet the region lists.
     await expect(page.locator('.settings-body')).toHaveCSS('padding-top', '24px');
     await expect(page.locator('layout-preview .viewport')).toHaveCSS('height', '132px');
     await expect(page.locator('layout-preview figcaption')).toHaveText(PREVIEW_CAPTION);
@@ -683,5 +769,10 @@ test.describe('a per-request asset base on another origin', () => {
       '/lazy-workspace.css', '/lazy-popover.css', '/lazy-dialog.css', '/layout-preview.css',
     ]));
     expect(fromPage.filter(path => path.endsWith('.css') || path.startsWith('/_webui/'))).toEqual([]);
+    // Every script, including the preview's chunk, downloaded once, from the page's origin.
+    expect(scripts).toContainEqual(expect.stringMatching(/\/layout-preview-[A-Z0-9]+\.js$/));
+    expect(scripts.filter(href => !href.startsWith(`${origin}/`))).toEqual([]);
+    expect(scripts.filter((href, index) => scripts.indexOf(href) !== index)).toEqual([]);
+    expect(cdn.requests.filter(path => path.endsWith('.js'))).toEqual([]);
   });
 });
