@@ -34,7 +34,8 @@ use webui_dev_server::path::normalize_base_path;
 use webui_dev_server::shutdown::Control;
 use webui_dev_server::{
     default_ignore_paths, serve_static_file, spawn_rebuild_worker, spawn_watcher, sse_handler,
-    LiveReload, NotFoundStrategy, StaticServeConfig, TickSender, WatchConfig, WatcherHandle,
+    LiveReload, NotFoundStrategy, StaticServeConfig, TickSender, WatchConfig, WatchTargets,
+    WatcherHandle,
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
@@ -137,17 +138,21 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
             let tx = sender
                 .get()
                 .ok_or_else(|| "Press watcher sender is unavailable".to_string())?;
-            let next = source_watcher(
-                &cfg,
-                &config_dir,
-                &config_path,
-                &guard.dependencies,
-                tx.clone(),
-            )
-            .map_err(|error| format!("Cannot refresh Press input watches: {error}"))?;
-            *watcher
-                .lock()
-                .map_err(|error| format!("Press watcher lock failed: {error}"))? = Some(next);
+            {
+                let mut slot = watcher
+                    .lock()
+                    .map_err(|error| format!("Press watcher lock failed: {error}"))?;
+                let handle = slot
+                    .as_mut()
+                    .ok_or_else(|| "Press watcher is unavailable".to_string())?;
+                refresh_source_watcher(
+                    handle,
+                    source_targets(&cfg, &config_dir, &config_path, &guard.dependencies),
+                    &guard.dependencies,
+                    tx,
+                )
+                .map_err(|error| format!("Cannot refresh Press input watches: {error}"))?;
+            }
             result.map_err(|e| format!("{e}"))?;
             // webui-press has no per-rebuild advisories to surface.
             Ok(Vec::new())
@@ -216,6 +221,7 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
     Ok(())
 }
 
+/// Start the input watcher for the build that produced `dependencies`.
 fn source_watcher(
     config: &DocsConfig,
     config_dir: &Path,
@@ -223,6 +229,61 @@ fn source_watcher(
     dependencies: &StateDependencies,
     tx: TickSender,
 ) -> Result<WatcherHandle> {
+    let events = tx.clone();
+    let mut watcher = spawn_watcher(
+        WatchConfig {
+            paths: Vec::new(),
+            explicit_files: Vec::new(),
+            ignore: Vec::new(),
+            debounce: DEBOUNCE_DURATION,
+            retry_unchanged_when: None,
+        },
+        move |paths| {
+            let _ = events.try_send(paths);
+        },
+    )?;
+    refresh_source_watcher(
+        &mut watcher,
+        source_targets(config, config_dir, config_path, dependencies),
+        dependencies,
+        &tx,
+    )?;
+    Ok(watcher)
+}
+
+/// Point the running watcher at the inputs of the build that just finished.
+///
+/// The watcher is retargeted rather than replaced: dropping it would discard
+/// source edits it observed during the build but had not debounced yet.
+fn refresh_source_watcher(
+    watcher: &mut WatcherHandle,
+    targets: WatchTargets,
+    dependencies: &StateDependencies,
+    tx: &TickSender,
+) -> Result<()> {
+    watcher.retarget(targets)?;
+    // The previous targets may exclude a newly discovered include. Compare with
+    // the bytes used for rendering only after the new subscriptions are active.
+    let changed = dependencies.changed_paths();
+    if !changed.is_empty() {
+        match tx.try_send(changed) {
+            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                return Err(anyhow!("Press rebuild worker disconnected"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inputs that contribute to a build: source roots, generated includes, and
+/// projection manifests.
+fn source_targets(
+    config: &DocsConfig,
+    config_dir: &Path,
+    config_path: &Path,
+    dependencies: &StateDependencies,
+) -> WatchTargets {
     let mut explicit_files = projection_manifest_paths(
         config_dir,
         config
@@ -235,36 +296,16 @@ fn source_watcher(
     ignore.push(PathBuf::from(&config.out_dir));
     ignore.push(PathBuf::from(".webui-press/cache"));
     ignore.push(config_dir.join(crate::scratch::PROJECT_SCRATCH_DIR));
-    let events = tx.clone();
-    let watcher = spawn_watcher(
-        WatchConfig {
-            paths: watch_paths(
-                config_dir,
-                config_path,
-                Path::new(&config.content_dir),
-                Path::new(&config.public_dir),
-            ),
-            explicit_files,
-            ignore,
-            debounce: DEBOUNCE_DURATION,
-            retry_unchanged_when: None,
-        },
-        move |paths| {
-            let _ = events.try_send(paths);
-        },
-    )?;
-    // The old watcher may exclude a newly discovered include. Compare with the
-    // bytes used for rendering only after the replacement watch is active.
-    let changed = dependencies.changed_paths();
-    if !changed.is_empty() {
-        match tx.try_send(changed) {
-            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                return Err(anyhow!("Press rebuild worker disconnected"));
-            }
-        }
+    WatchTargets {
+        paths: watch_paths(
+            config_dir,
+            config_path,
+            Path::new(&config.content_dir),
+            Path::new(&config.public_dir),
+        ),
+        explicit_files,
+        ignore,
     }
-    Ok(watcher)
 }
 
 /// Default actix handler — delegates to the shared static-file
@@ -433,6 +474,46 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(200))?,
             dependencies.paths
         );
+        Ok(())
+    }
+
+    #[test]
+    fn source_edits_during_a_watch_refresh_still_rebuild() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let content = root.path().join("content");
+        std::fs::create_dir(&content)?;
+        let page = content.join("page.md");
+        std::fs::write(&page, "# One")?;
+        let config_dir = root.path().join(".webui-press");
+        std::fs::create_dir(&config_dir)?;
+        let mut config: DocsConfig = serde_json::from_str(
+            r#"{"site":{"title":"Test"},"basePath":"/","contentDir":".","nav":[],"sidebar":[]}"#,
+        )?;
+        config.content_dir = content.to_string_lossy().into_owned();
+        config.public_dir = config.content_dir.clone();
+        let dependencies = crate::state::StateLoader::new().into_dependencies();
+        let config_path = config_dir.join("config.json");
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let mut watcher = source_watcher(
+            &config,
+            &config_dir,
+            &config_path,
+            &dependencies,
+            tx.clone(),
+        )?;
+
+        // A rebuild that read the old page finishes and refreshes its watches
+        // before the debounce window reports this edit.
+        std::fs::write(&page, "# Two")?;
+        refresh_source_watcher(
+            &mut watcher,
+            source_targets(&config, &config_dir, &config_path, &dependencies),
+            &dependencies,
+            &tx,
+        )?;
+        let changed = rx.recv_timeout(Duration::from_secs(5))?;
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].canonicalize()?, page.canonicalize()?);
         Ok(())
     }
 

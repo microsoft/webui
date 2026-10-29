@@ -8,7 +8,9 @@ This crate provides primitives that any WebUI dev server can compose:
   its own actix handler, generates the matching browser-side `<script>`,
   and injects it before `</body>`.
 - **`watch::spawn_watcher`** — Debounced filesystem watcher backed by
-  `notify`. Calls a closure once per debounce window.
+  `notify`. Calls a closure once per debounce window. When watched inputs
+  change, call `WatcherHandle::retarget` instead of replacing the watcher:
+  dropping a watcher discards events still inside its debounce window.
 - **`spawn_rebuild_worker`** — Coalesces watcher ticks and runs rebuilds on an
   owned `RebuildWorker`. Give the watcher a sender from `worker.sender()`, keep
   the worker alive while serving, then stop the watcher and call
