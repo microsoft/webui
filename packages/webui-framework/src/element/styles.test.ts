@@ -725,4 +725,231 @@ describe('component style resources', () => {
     );
     assert.equal(importMaps.length, 0);
   });
+
+  test('remembers every closure completed in one target', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    registerComponentStyles(styles({ first: ['first'], second: ['second'] }), document);
+
+    await installComponentStyles('first', root);
+    await installComponentStyles('second', root);
+    (root as unknown as FakeParent).children[0].remove();
+    await installComponentStyles('first', root);
+    await installComponentStyles('second', root);
+
+    assert.deepEqual(
+      (root as unknown as FakeParent).children.map(child =>
+        child.getAttribute('data-webui-resource')
+      ),
+      ['second'],
+      'completed closures must not reinstall a resource removed afterward',
+    );
+  });
+});
+
+describe('shared component link sheets', () => {
+  const BASE = 'https://example.test/app/';
+  type GlobalName = 'CSSStyleSheet' | 'ShadowRoot' | 'document';
+
+  /** A `<link>` whose sheet is readable only while connected and enabled. */
+  class FakeLink {
+    readonly localName = 'link';
+    rel = '';
+    type = '';
+    disabled = false;
+    parent?: FakeParent;
+    private resolvedHref = '';
+    private readonly attributes = new Map<string, string>();
+
+    get href(): string {
+      return this.resolvedHref;
+    }
+
+    set href(value: string) {
+      this.resolvedHref = new URL(value, BASE).href;
+      this.attributes.set('href', value);
+    }
+
+    get relList(): { contains(token: string): boolean } {
+      return { contains: token => this.rel.split(' ').includes(token) };
+    }
+
+    get sheet(): { cssRules: Array<{ cssText: string; type: number }> } | null {
+      if (this.disabled || !this.parent) return null;
+      return { cssRules: [{ cssText: '.card { color: red; }', type: 1 }] };
+    }
+
+    setAttribute(name: string, value: string): void {
+      this.attributes.set(name, value);
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes.get(name) ?? null;
+    }
+
+    hasAttribute(name: string): boolean {
+      return this.attributes.has(name);
+    }
+
+    remove(): void {
+      this.parent?.detach(this as unknown as FakeElement);
+    }
+  }
+
+  class FakeConstructedSheet {
+    cssText = '';
+
+    replaceSync(cssText: string): void {
+      this.cssText = cssText;
+    }
+  }
+
+  class FakeShadowRoot {}
+
+  function linkDocument(): Document {
+    const document = fakeDocument();
+    Object.assign(document, {
+      baseURI: BASE,
+      createElement: (name: string) => name === 'link' ? new FakeLink() : new FakeElement(name),
+    });
+    return document;
+  }
+
+  function linkStyles(): ComponentStyles {
+    return {
+      version: 1,
+      strategy: 'link',
+      resources: { card: { kind: 'link', href: '/card.css' } },
+      closures: { card: ['card'] },
+    };
+  }
+
+  function withBrowserGlobals(run: () => void): void {
+    const previous = new Map<GlobalName, PropertyDescriptor | undefined>();
+    const define = (name: GlobalName, value: unknown): void => {
+      previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+      Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+    };
+    Object.defineProperty(FakeShadowRoot.prototype, 'adoptedStyleSheets', {
+      configurable: true,
+      value: [],
+      writable: true,
+    });
+    define('CSSStyleSheet', FakeConstructedSheet);
+    define('ShadowRoot', FakeShadowRoot);
+    define('document', {
+      baseURI: BASE,
+      head: {},
+      createElement() {
+        throw new Error('a promoted or native-loaded root must not install a guard');
+      },
+    });
+    // One authorized, unredirected native load for every stylesheet URL.
+    Object.defineProperty(performance, 'getEntriesByName', {
+      configurable: true,
+      value: () => [{
+        initiatorType: 'link',
+        redirectEnd: 0,
+        redirectStart: 0,
+        responseStatus: 200,
+        startTime: Number.MAX_SAFE_INTEGER,
+        workerStart: 0,
+      }],
+    });
+    try {
+      run();
+    } finally {
+      Reflect.deleteProperty(performance, 'getEntriesByName');
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+  }
+
+  function links(root: ShadowRoot): FakeLink[] {
+    return (root as unknown as FakeParent).children as unknown as FakeLink[];
+  }
+
+  test('keeps the first root native and shares one promoted sheet after it', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+
+      const first = fakeShadow(document);
+      installComponentStyles('card', first, host);
+      assert.equal(links(first).length, 1);
+      assert.equal(links(first)[0].disabled, false);
+      assert.deepEqual(first.adoptedStyleSheets, []);
+
+      const second = fakeShadow(document);
+      const third = fakeShadow(document);
+      installComponentStyles('card', second, host);
+      installComponentStyles('card', third, host);
+      assert.equal(links(second).length, 0, 'later roots need no link of their own');
+      assert.equal(links(third).length, 0);
+      assert.equal(second.adoptedStyleSheets.length, 1);
+      assert.equal(third.adoptedStyleSheets[0], second.adoptedStyleSheets[0]);
+      assert.equal(
+        (second.adoptedStyleSheets[0] as unknown as FakeConstructedSheet).cssText,
+        '.card { color: red; }',
+      );
+      assert.equal(links(first)[0].disabled, false, 'a visible root is never switched');
+    });
+  });
+
+  test('promotes from a later root after the first root is removed', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+      const first = fakeShadow(document);
+      installComponentStyles('card', first, host);
+      links(first)[0].remove();
+
+      const second = fakeShadow(document);
+      installComponentStyles('card', second, host);
+      assert.equal(links(second).length, 1);
+      assert.equal(links(second)[0].disabled, true);
+      assert.equal(second.adoptedStyleSheets.length, 1);
+
+      const third = fakeShadow(document);
+      installComponentStyles('card', third, host);
+      assert.equal(links(third).length, 0);
+      assert.equal(third.adoptedStyleSheets[0], second.adoptedStyleSheets[0]);
+    });
+  });
+
+  test('keeps roots with other author styles native', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+      installComponentStyles('card', fakeShadow(document), host);
+
+      const styled = fakeShadow(document);
+      installComponentStyles('card', styled, host, true);
+      assert.equal(links(styled).length, 1);
+      assert.equal(links(styled)[0].disabled, false);
+      assert.deepEqual(styled.adoptedStyleSheets, []);
+    });
+  });
+
+  test('shares promoted sheets only within one Document', () => {
+    withBrowserGlobals(() => {
+      const host = {} as HTMLElement;
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      installComponentStyles('card', fakeShadow(document), host);
+      installComponentStyles('card', fakeShadow(document), host);
+
+      const other = linkDocument();
+      registerComponentStyles(linkStyles(), other);
+      const first = fakeShadow(other);
+      installComponentStyles('card', first, host);
+      assert.equal(links(first).length, 1);
+      assert.deepEqual(first.adoptedStyleSheets, []);
+    });
+  });
 });

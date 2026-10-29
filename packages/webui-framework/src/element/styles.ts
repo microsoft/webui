@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { installComponentLinkStyles } from './link-styles.js';
+import {
+  adoptPromotedComponentLinks,
+  installComponentLinkStyles,
+} from './link-styles.js';
 import { setImportMapContent } from '../trusted-types-policy.js';
 import { catalogFor } from './style-catalog.js';
 import type { ComponentStyleResource, DocumentCatalog } from './style-catalog.js';
@@ -36,10 +39,11 @@ interface SsrStyleMarkerState {
  *
  * Three CSS strategies are supported:
  *
- * - **Link**: The first client shadow mount authorizes external CSS through its
- *   native links, then promotes their CSSOM into shared constructable sheets.
- *   Warm mounts adopt those sheets synchronously; guarded native links remain
- *   the compatibility and failure path.
+ * - **Link**: A client Shadow root keeps the native links of a stylesheet's
+ *   first mount in the Document and records whether that load is authorized.
+ *   The next root to need the stylesheet promotes the authorized CSSOM once;
+ *   later roots adopt that shared constructable sheet synchronously. Guarded
+ *   native links remain the cold-load and failure path.
  *
  * - **Style**: Inline `<style>` tags inside each shadow template.
  *
@@ -97,7 +101,7 @@ interface WebUIStyleGlobal {
 }
 
 const installed = new WeakMap<StyleTarget, Set<string>>();
-const completedClosures = new WeakMap<StyleTarget, Set<string>>();
+const completedClosures = new WeakMap<StyleTarget, string | Set<string>>();
 const pending = new WeakMap<StyleTarget, Map<string, Promise<CSSStyleSheet>>>();
 const ssrMarkers = new WeakMap<StyleTarget, SsrStyleMarkerState>();
 const resourceMarkers = new WeakMap<StyleTarget, ResourceMarkerCache>();
@@ -275,6 +279,12 @@ function directResourceMarkers(
   if (cached && cached.count === scope.childElementCount) {
     return cached.markers.size > 0 ? cached.markers : undefined;
   }
+  if (!isDocument(target) && scope.childElementCount === 0) {
+    // A fresh client root has nothing to anchor, and its template content
+    // invalidates any count cached now, so keep no per-root cache.
+    if (cached) resourceMarkers.delete(target);
+    return undefined;
+  }
   const candidates = scope.children;
   const markers = new Map<string, Element>();
   for (let i = 0; i < candidates.length; i++) {
@@ -393,12 +403,20 @@ function loadModule(
 }
 
 function markClosureComplete(target: StyleTarget, rootId: string): void {
-  let roots = completedClosures.get(target);
-  if (!roots) {
-    roots = new Set();
-    completedClosures.set(target, roots);
+  const roots = completedClosures.get(target);
+  if (roots === undefined) {
+    // Most targets complete exactly one closure: their own host's.
+    completedClosures.set(target, rootId);
+  } else if (typeof roots !== 'string') {
+    roots.add(rootId);
+  } else if (roots !== rootId) {
+    completedClosures.set(target, new Set([roots, rootId]));
   }
-  roots.add(rootId);
+}
+
+function isClosureComplete(target: StyleTarget, rootId: string): boolean {
+  const roots = completedClosures.get(target);
+  return typeof roots === 'string' ? roots === rootId : roots?.has(rootId) === true;
 }
 
 function installElementRange(
@@ -505,6 +523,46 @@ function installElements(
     before,
     linkElements,
   );
+}
+
+/**
+ * Adopt shared sheets for every Link resource a ShadowRoot closure still needs.
+ *
+ * Applies only when earlier roots mounted all of them and each shared sheet
+ * exists or can be promoted from a loaded link. Any other pending element
+ * resource keeps the native install path, so cascade order and the native-link
+ * fallback stay exactly as they were.
+ */
+function adoptPromotedLinkClosure(
+  target: ShadowRoot,
+  catalog: DocumentCatalog,
+  closure: readonly string[],
+  targetInstalled: Set<string>,
+): boolean {
+  let ids: string[] | undefined;
+  let hrefs: string[] | undefined;
+  let covered: Set<string> | undefined;
+  for (let i = 0; i < closure.length; i++) {
+    const id = closure[i];
+    if (targetInstalled.has(id) || covered?.has(id)) continue;
+    const resource = catalog.resources.get(id);
+    if (!resource || resource.kind === 'module') continue;
+    if (resource.kind !== 'link') return false;
+    (ids ??= []).push(id);
+    (hrefs ??= []).push(resource.href);
+    // Mirror installElementRange: a bundle's members count as installed for
+    // the rest of this closure.
+    const members = resource.members;
+    if (!members) continue;
+    covered ??= new Set();
+    for (let m = 0; m < members.length; m++) covered.add(members[m]);
+  }
+  if (!ids || !hrefs || !adoptPromotedComponentLinks(target, hrefs)) return false;
+  for (let i = 0; i < ids.length; i++) {
+    const resource = catalog.resources.get(ids[i]);
+    if (resource) markResourceInstalled(targetInstalled, ids[i], resource);
+  }
+  return true;
 }
 
 function moduleAdoptionState(target: StyleTarget): ModuleAdoptionState {
@@ -627,6 +685,11 @@ async function finishModuleLoads(
  * resources return a promise that rejects on import failure; failed pending
  * entries are removed for retry.
  *
+ * For a ShadowRoot with a `host`, Link resources an earlier root already
+ * mounted are shared as constructable sheets instead of per-root links. Pass
+ * `nativeLinks` when the root's cascade includes other author styles, such as
+ * a template's own `<style>` or `<link>`, so every instance keeps one order.
+ *
  * Failure policy — the two outcomes are deliberately different:
  *
  * - **An unknown `rootId` returns quietly.** A component with no CSS has no
@@ -641,10 +704,11 @@ export function installComponentStyles(
   rootId: string,
   target: StyleTarget,
   host?: HTMLElement,
+  nativeLinks = false,
 ): Promise<void> | undefined {
   const catalog = catalogFor(owningDocument(target));
   const closure = catalog.closures.get(rootId);
-  if (!closure || completedClosures.get(target)?.has(rootId)) return undefined;
+  if (!closure || isClosureComplete(target, rootId)) return undefined;
 
   const targetInstalled = targetInstalledResources(target);
   const markerState = ensureSsrMarkers(target, catalog, targetInstalled);
@@ -678,18 +742,29 @@ export function installComponentStyles(
   }
 
   if (hasElementWork) {
-    const linkElements: HTMLLinkElement[] = [];
-    installElements(
-      target,
-      catalog,
-      closure,
-      targetInstalled,
-      directResourceMarkers(target, catalog),
-      rootId,
-      linkElements,
-    );
-    if (host && !isDocument(target)) {
-      installComponentLinkStyles(host, target, linkElements);
+    const markers = directResourceMarkers(target, catalog);
+    // Existing markers anchor native insertion order, so only an unmarked
+    // root may replace its links with already promoted shared sheets.
+    const adopted =
+      host !== undefined &&
+      !nativeLinks &&
+      !isDocument(target) &&
+      markers === undefined &&
+      adoptPromotedLinkClosure(target, catalog, closure, targetInstalled);
+    if (!adopted) {
+      const linkElements: HTMLLinkElement[] = [];
+      installElements(
+        target,
+        catalog,
+        closure,
+        targetInstalled,
+        markers,
+        rootId,
+        linkElements,
+      );
+      if (host && !isDocument(target)) {
+        installComponentLinkStyles(host, target, linkElements, nativeLinks);
+      }
     }
   }
 

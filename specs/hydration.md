@@ -528,6 +528,16 @@ required `componentStyles` catalog. Module resources carry their CSS directly;
 the catalog installs each specifier's import map once per owning Document
 before importing it, then reuses the cached parsed sheet for every target.
 
+Client Shadow roots share Link resources per owning Document and resolved URL.
+The first root to mount a stylesheet keeps its native link and records whether
+that load is authorized: unredirected, not served by a service worker, and
+successful. The next root promotes the authorized CSSOM of a loaded link once
+into a constructable sheet, and every later root adopts it before its template
+is appended. A root switches only while hidden by its loading guard, never after
+it is visible. Roots whose template adds its own `<style>` or `<link>`, and
+Light descendants installing into a containing root, keep native links so a
+component's instances never cascade differently.
+
 ---
 
 ## Light DOM vs Shadow DOM

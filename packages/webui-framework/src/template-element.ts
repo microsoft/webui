@@ -97,6 +97,7 @@ import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
   prepareTemplateLinkStyles,
+  templateMayContainAuthorStyles,
   templateMayContainLinkStyles,
 } from './element/link-styles.js';
 import {
@@ -926,7 +927,15 @@ export class TemplateElement extends HTMLElement {
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
     claimSsrComponentStyles(this, styleTarget);
-    const installation = installComponentStyles(this.localName, styleTarget, this);
+    // Shared Link sheets cascade after tree styles, so only a root holding
+    // nothing but this component's catalog CSS may adopt them.
+    const nativeLinks = !wantShadow || templateMayContainAuthorStyles(meta);
+    const installation = installComponentStyles(
+      this.localName,
+      styleTarget,
+      this,
+      nativeLinks,
+    );
     if (installation) {
       void installation.catch((error) => {
         console.error(error);

@@ -39,6 +39,19 @@ async function loadedTemplateNames(page: Page): Promise<string[]> {
   });
 }
 
+function lazyPanelStylesheets(
+  page: Page,
+): Promise<{ adopted: number; disabled: boolean; links: number }> {
+  return page.locator('lazy-panel').evaluate((panel) => ({
+    adopted: panel.shadowRoot?.adoptedStyleSheets.length ?? 0,
+    disabled:
+      (panel.shadowRoot?.querySelector(
+        'link[rel~="stylesheet"]',
+      ) as HTMLLinkElement | null)?.disabled ?? false,
+    links: panel.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
+  }));
+}
+
 test.describe('static component assets', () => {
   test('recovers a failed speculative native import through an explicit reload', async ({ page }) => {
     let assetRequests = 0;
@@ -150,14 +163,43 @@ test.describe('static component assets', () => {
 
     releaseCss();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
-    await expect(page.locator('lazy-panel').evaluate((panel) => ({
-      adopted: panel.shadowRoot?.adoptedStyleSheets.length ?? 0,
-      disabled:
-        (panel.shadowRoot?.querySelector(
-          'link[rel~="stylesheet"]',
-        ) as HTMLLinkElement | null)?.disabled ?? false,
-      links: panel.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
-    }))).resolves.toEqual({ adopted: 1, disabled: true, links: 1 });
+    // A component used once stays on its native stylesheet link. Promoting it
+    // would serialize and reparse CSS that no other root shares; the next
+    // instance promotes instead (see the reopen test below).
+    await expect(lazyPanelStylesheets(page)).resolves.toEqual({
+      adopted: 0,
+      disabled: false,
+      links: 1,
+    });
+  });
+
+  test('shares the promoted Link stylesheet with a reopened lazy component', async ({ page }) => {
+    await page.goto('/');
+    const button = page.getByRole('button', { name: 'Load lazy panel' });
+    await expect(button).toBeVisible();
+    await button.click();
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    await expect(lazyPanelStylesheets(page)).resolves.toEqual({
+      adopted: 0,
+      disabled: false,
+      links: 1,
+    });
+    await page.locator('lazy-panel').evaluate((panel) => {
+      (panel as HTMLElement & { firstInstance?: boolean }).firstInstance = true;
+    });
+
+    // The second instance promotes the CSSOM that the first native load
+    // authorized, adopts that shared sheet, and keeps its own link disabled.
+    // Every later instance adopts the same sheet without a link.
+    await button.click();
+    await expect.poll(() => page.locator('lazy-panel').evaluate((panel) => {
+      return (panel as HTMLElement & { firstInstance?: boolean }).firstInstance ?? false;
+    })).toBe(false);
+    await expect.poll(() => lazyPanelStylesheets(page)).toEqual({
+      adopted: 1,
+      disabled: true,
+      links: 1,
+    });
   });
 
   test('lets the application bundler split and reuse the lazy graph', async ({ page }) => {
