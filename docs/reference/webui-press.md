@@ -8,9 +8,40 @@ output that can be deployed to GitHub Pages, a CDN, or any static host.
 
 Install the native CLI package:
 
+<webui-press-tabs sync="package-manager" storage="local">
+<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
+<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
+<webui-press-tab-panel active>
+
 ```bash
 npm install @microsoft/webui @microsoft/webui-press
 ```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm add @microsoft/webui @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn add @microsoft/webui @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+bun add @microsoft/webui @microsoft/webui-press
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 The package installs the matching platform-specific binary automatically for
 Windows, macOS, or Linux on x64 and arm64. After installation, run
@@ -33,6 +64,55 @@ second-stop behavior, stdin restrictions, and platform limits.
 `webui press serve` rebuilds the site and reloads connected browsers when its
 watched inputs change. Reading source files, including test discovery and
 component imports, does not trigger a rebuild or browser reload.
+
+## Tabbed content
+
+Use the built-in tab controls around Markdown or HTML content. Mark the initial
+tab and its panel `active` so that content is visible before JavaScript loads:
+
+```html
+<webui-press-tabs sync="package-manager">
+  <webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
+  <webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
+  <webui-press-tab-panel active>
+
+    npm install @microsoft/webui
+
+  </webui-press-tab-panel>
+  <webui-press-tab-panel>
+
+    pnpm add @microsoft/webui
+
+  </webui-press-tab-panel>
+</webui-press-tabs>
+```
+
+Give related groups the same `sync` name and each tab a unique, nonempty `value`.
+Selecting `pnpm` in one group selects that value in the other groups on the
+page, even when their tabs are in a different order. A group without the
+selected value keeps its current tab. Groups without `sync`, or with another
+name, remain independent.
+
+By default, the selection belongs to the current document and is not saved
+across page loads. The first connected group supplies the initial selection;
+groups connected later adopt the current value.
+
+Add `storage="local"` to opt a category into browser persistence:
+
+```html
+<webui-press-tabs sync="package-manager" storage="local">
+```
+
+The category uses `webui-press:tabs:<sync>` in localStorage on the current
+origin. Later page loads restore that value, including in another browser tab;
+already-open documents keep their own selection until reloaded. If a group
+does not offer the saved value, it keeps its authored active tab. A new
+selection replaces the saved value for that category only.
+
+Set the storage option consistently on related groups. A group that enables
+storage later does not overwrite a choice already made on that page.
+If browser policy or storage limits prevent reading or saving preferences,
+Press logs a warning and the controls continue with page-local selection.
 
 ## Content-only sites
 
