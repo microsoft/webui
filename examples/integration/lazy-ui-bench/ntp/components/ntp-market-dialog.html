@@ -1,0 +1,39 @@
+<template shadowrootmode="open">
+  <div class="sheet" @keydown="{onKeydown(e)}">
+    <header class="head">
+      <h2 class="title" data-ready>Language and region</h2>
+      <button type="button" class="icon" aria-label="Close" @click="{dismiss()}">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+      </button>
+    </header>
+    <p class="intro">Choose the language and region for news, weather, and search results. Your choice applies on every device where you sign in.</p>
+    <label class="search">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
+      <input type="search" placeholder="Search languages and regions" aria-label="Search languages and regions"
+        aria-controls="markets" value="{{query}}" @input="{onInput(e)}" w-ref="{searchInput}">
+    </label>
+    <if condition="recent.length">
+      <section class="recent" aria-label="Recently used">
+        <h3>Recently used</h3>
+        <div class="chips">
+          <for each="item in recent"><button type="button" class="chip" data-code="{{item.code}}" @click="{choose(e)}">{{item.label}}</button></for>
+        </div>
+      </section>
+    </if>
+    <p class="detected">Suggested for this device: <strong>{{detected}}</strong></p>
+    <ul id="markets" class="list" role="listbox" aria-label="Languages and regions" w-ref="{list}">
+      <for each="row in results">
+        <li class="row" role="option" data-code="{{row.code}}" ?data-active="{{row.active}}" ?data-current="{{row.current}}" @click="{choose(e)}">
+          <span class="lang">{{row.label}}</span>
+          <span class="native">{{row.native}}</span>
+          <span class="code">{{row.code}}</span>
+        </li>
+      </for>
+    </ul>
+    <p class="count" role="status">{{status}}</p>
+    <footer class="foot">
+      <button type="button" class="secondary" @click="{dismiss()}">Cancel</button>
+      <button type="button" class="primary" ?disabled="{{unchanged}}" @click="{apply()}">Apply</button>
+    </footer>
+  </div>
+</template>

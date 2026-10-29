@@ -50,6 +50,11 @@ export class LazyPopover extends WebUIElement {
     }
   }
 
+  /** `load()` reports a body that fails to load, so the runtime does not report it again. */
+  onLazyError(event: CustomEvent<{ error: unknown }>): void {
+    event.preventDefault();
+  }
+
   async load(): Promise<void> {
     this.triggerElement.focus();
     const generation = ++this.generation;
@@ -63,7 +68,8 @@ export class LazyPopover extends WebUIElement {
       if (generation !== this.generation || request.signal.aborted) return;
       this.setState(state);
       this.activityReady = true;
-      // Show the popover once its body exists, so it never opens empty.
+      // Show the popover once its body exists, so it never opens empty. This
+      // rejects when the body cannot load, and the catch below reports it.
       await this.$rendered();
       if (generation !== this.generation) return;
       this.popoverElement.showPopover({ source: this.triggerElement });

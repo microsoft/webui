@@ -1,7 +1,9 @@
-<template shadowrootmode="open" @keydown="{onKeydown(e)}">
+<template shadowrootmode="open" @keydown="{onKeydown(e)}" @lazyerror="{onLazyError(e)}">
   <button class="button primary settings-trigger"
     w-ref="{triggerElement}" aria-busy="{{settingsLoading}}"
-    @click="{onTrigger()}">
+    @click="{onTrigger()}"
+    @pointerenter="{$prefetch('settingsReady')}"
+    @focus="{$prefetch('settingsReady')}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6" /></svg>
     <if condition="settingsLoading">Cancel settings load</if>
     <if condition="!settingsLoading">View settings</if>
@@ -19,7 +21,7 @@
 
   <dialog class="settings-dialog" w-ref="{dialog}" aria-labelledby="settings-title"
     aria-describedby="settings-intro" @close="{onClosed()}">
-    <if condition="settingsReady" lazy>
+    <if condition="settingsReady" lazy="demand">
       <header class="overlay-header">
         <h2 id="settings-title">View settings</h2>
         <button class="icon-button" @click="{dismiss()}" aria-label="Close settings">
@@ -41,6 +43,7 @@
             <input type="checkbox" ?checked="{{highlightDraft}}" @change="{changeHighlight(e)}" />
             <span><strong>Highlight pinned items</strong><small>Keep your next read easy to spot.</small></span>
           </label>
+          <layout-preview density="{{densityDraft}}" ?highlight="{{highlightDraft}}"></layout-preview>
         </fieldset>
         <p class="settings-note">{{settingsNote}}</p>
         <footer class="dialog-actions">

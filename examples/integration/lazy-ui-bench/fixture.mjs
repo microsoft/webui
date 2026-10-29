@@ -144,8 +144,8 @@ export async function startFixtures(counts, latencyMs, interactive = false) {
         const protocol = new Protocol(built.protocol, { plugin: 'webui' });
         const document = Buffer.from(protocol.render(initial, { entry: 'index.html' }));
         const packs = new Map();
-        for (let i = 0; i + 1 < built.lazyPackFiles.length; i += 2) {
-          packs.set(built.lazyPackFiles[i], gzipSync(built.lazyPackFiles[i + 1]));
+        for (const pack of built.lazyPackFiles) {
+          packs.set(pack.fileName, gzipSync(pack.content));
         }
         fixtures.set(base, {
           protocol, document, script, packs, gzipDocument: gzipSync(document), gzipScript: gzipSync(script),

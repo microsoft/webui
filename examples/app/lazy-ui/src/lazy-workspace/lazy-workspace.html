@@ -46,10 +46,12 @@
       <summary>How this example works</summary>
       <p>The workspace is sample data. All content inside each native overlay is an inline
         <code>&lt;if lazy&gt;</code> body, including its heading and close button.
-        Hover or focus warms resources; clicking requests fresh state before opening.
+        The activity body loads once the page has loaded and the browser is idle. The
+        settings body loads when you point at or focus View settings, together with the
+        script of its layout preview. Clicking requests fresh state before opening.
         Cancel loading at the trigger or press Escape. Closing removes the lazy view.</p>
       <p>The popover and dialog are separate components. Their lazy bodies stay
-        inline; no route or extra component is created for either body.</p>
+        inline; neither body becomes a route or a component of its own.</p>
       <div class="ssr-links">
         <span>Try initial SSR:</span>
         <a href="./?open=popover">Open popover</a>

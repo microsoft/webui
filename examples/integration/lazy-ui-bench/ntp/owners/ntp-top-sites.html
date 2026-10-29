@@ -1,0 +1,31 @@
+<template shadowrootmode="open">
+  <section class="sites" aria-labelledby="sites-title">
+    <header class="sites-head">
+      <h2 id="sites-title">Quick links</h2>
+      <button type="button" class="edit" data-trigger="edit" @click="{openEdit()}" data-prefetch="edit">Edit</button>
+    </header>
+    <ul class="grid">
+      <for each="site in sites">
+        <li class="tile">
+          <a class="tile-link" href="{{site.url}}">
+            <span class="favicon" style="--tile: {{site.color}}">{{site.letter}}</span>
+            <span class="tile-title">{{site.title}}</span>
+          </a>
+          <button type="button" class="more" data-trigger="context" data-title="{{site.title}}" aria-label="More options for {{site.title}}" aria-haspopup="menu" @click="{openMenu(e)}" data-prefetch="context">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01 M12 12h.01 M18 12h.01" /></svg>
+          </button>
+        </li>
+      </for>
+      <li class="tile add">
+        <button type="button" class="add-button" aria-label="Add a quick link" @click="{openEdit()}" data-prefetch="edit">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14 M5 12h14" /></svg>
+        </button>
+      </li>
+    </ul>
+  </section>
+  <!--ui:context-->
+  <!--ui:toast-->
+  <dialog class="modal" w-ref="{editDialog}" aria-label="Edit quick links" @close="{onEditClosed()}">
+    <!--ui:edit-->
+  </dialog>
+</template>

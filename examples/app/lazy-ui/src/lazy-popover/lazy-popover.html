@@ -1,4 +1,4 @@
-<template shadowrootmode="open" @keydown="{onKeydown(e)}">
+<template shadowrootmode="open" @keydown="{onKeydown(e)}" @lazyerror="{onLazyError(e)}">
   <button class="button activity-trigger" popovertarget="activity-popover"
     w-ref="{triggerElement}" aria-busy="{{activityLoading}}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l3 2M4.2 8A8 8 0 1 1 4 16M4 3v5h5" /></svg>
@@ -19,7 +19,7 @@
   <div id="activity-popover" class="activity-popover" popover="auto" role="region"
     aria-labelledby="activity-title" w-ref="{popoverElement}"
     @beforetoggle="{onToggle(e)}" @toggle="{onToggled(e)}">
-    <if condition="activityReady" lazy>
+    <if condition="activityReady" lazy="idle">
       <header class="overlay-header">
         <h2 id="activity-title">Recent activity</h2>
         <button class="icon-button" popovertarget="activity-popover" popovertargetaction="hide" aria-label="Close activity">

@@ -1,0 +1,9 @@
+<template shadowrootmode="open">
+  <button type="button" class="trigger" data-trigger="market" aria-label="Language and region: {{marketLabel}}" aria-haspopup="dialog" @click="{openMarket()}" data-prefetch="market">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M3 12h18 M12 3a14 14 0 0 1 0 18 M12 3a14 14 0 0 0 0 18" /></svg>
+    <span>{{marketCode}}</span>
+  </button>
+  <dialog class="modal" w-ref="{marketDialog}" aria-label="Language and region" @close="{onMarketClosed()}">
+    <!--ui:market-->
+  </dialog>
+</template>

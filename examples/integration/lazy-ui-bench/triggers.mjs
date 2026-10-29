@@ -5,12 +5,13 @@
 // compiler, framework runtime, and build-time template packs.
 //
 // Each variant is the same app compiled with a different body declaration:
-// eager `<if>` or `<if lazy="demand|intent|idle|load">`. The driver measures
+// plain `<if>` or `<if lazy="demand|intent|idle|eager">`. Lazy variants import
+// the generated `lazy.webui.js`, as applications do. The driver measures
 // startup bytes, JS heap, and blocking time, click-to-paint for one dialog,
 // a second open, and heap after closed regions are released.
 //
 //   node examples/integration/lazy-ui-bench/triggers.mjs [--samples 20] [--profile mobile|none]
-//        [--scenarios s1,s30] [--variants eager,demand,intent,idle,load] [--caches cold,warm]
+//        [--scenarios s1,s30] [--variants plain,demand,intent,idle,eager] [--caches cold,warm]
 //        [--memory-samples 5] [--out target/lazy-triggers.json]
 
 import assert from 'node:assert/strict';
@@ -54,7 +55,7 @@ const SCENARIOS = {
   s30: { dialogs: 30, fields: 24, rows: 5, target: 17 },
 };
 const scenarios = list(args.scenarios, 's1,s30');
-const variants = list(args.variants, 'eager,demand,intent,idle,load');
+const variants = list(args.variants, 'plain,demand,intent,idle,eager');
 const caches = list(args.caches, 'cold,warm');
 const OUTPUT = resolve(args.out ?? join(root, 'target', 'lazy-triggers.json'));
 // Package specifiers let the projection plugin recognize the framework's decorators.
@@ -63,7 +64,6 @@ const FRAMEWORK = {
   'runtime.ts': '@microsoft/webui-framework/runtime.js',
   'styles-entry.ts': '@microsoft/webui-framework/styles.js',
   'template-cache-entry.ts': '@microsoft/webui-framework/template-cache.js',
-  'lazy-entry.ts': '@microsoft/webui-framework/lazy.js',
 };
 const framework = file => JSON.stringify(FRAMEWORK[file]);
 
@@ -144,7 +144,7 @@ export const bench = {
     const start = performance.now();
     try {
       element.ready = true;
-      // Eager pages do not import lazy.js, which adds $rendered(); their body renders on flush.
+      // Plain pages do not import lazy.js, which adds $rendered(); their body renders on flush.
       await (element.$rendered?.() ?? element.$flushUpdates());
       const rendered = performance.now();
       if (!element.dialog.open) element.dialog.showModal();
@@ -205,7 +205,7 @@ function writeApp(dir, scenario, variant) {
     + 'grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); } .card { background: #fff; padding: 16px; }\n');
   write('bench-badge.html', '<template shadowrootmode="open"><span class="badge">{{label}}</span></template>\n');
   write('bench-badge.css', '.badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: #e7f0ff; }\n');
-  const lazy = variant === 'eager' ? '' : ` lazy="${variant}"`;
+  const lazy = variant === 'plain' ? '' : ` lazy="${variant}"`;
   const header = `import { WebUIElement, attr, observable } from ${framework('index.ts')};\nimport { bench } from './bench_client.js';\n`;
   write('bench_client.ts', CLIENT);
   write('bench_data.ts', 'export const OPTIONS = [{ value: "a", label: "Automatic" }, { value: "b", label: "Balanced" }, '
@@ -243,7 +243,7 @@ BenchDialog${n}.define('${tag}');\n`);
   write('main.ts', `import { startRuntime } from ${framework('runtime.ts')};
 import ${framework('styles-entry.ts')};
 import ${framework('template-cache-entry.ts')};
-${variant === 'eager' ? '' : `import ${framework('lazy-entry.ts')};\n`}import { bench } from './bench_client.js';
+${variant === 'plain' ? '' : `import './.webui/lazy.webui.js';\n`}import { bench } from './bench_client.js';
 import './bench-badge.js';
 import './bench-app.js';
 ${imports}bench.configure(${JSON.stringify(owners)}, '${ownerTag(scenario.target)}');
@@ -269,6 +269,14 @@ async function generate() {
       for (const variant of variants) {
         const dir = join(scratch, id, variant);
         const owners = writeApp(dir, scenario, variant);
+        const options = { appDir: dir, plugin: 'webui', css: 'style', modulesOut: join(dir, '.webui') };
+        // The generated loader never depends on the projection, so it is built
+        // first and bundled like application code.
+        const generated = variant === 'plain' ? undefined : build(options).lazyScriptsModule;
+        if (generated) {
+          mkdirSync(options.modulesOut, { recursive: true });
+          writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
+        }
         const manifest = join(dir, 'webui-projection.json');
         const outfile = join(dir, 'dist', 'app.js');
         await bundle({
@@ -282,12 +290,13 @@ async function generate() {
           const notes = (error.errors ?? []).flatMap(entry => entry.notes ?? []).map(note => note.text);
           throw new Error(`${error.message}\n${notes.join('\n')}`);
         });
-        const built = build({ appDir: dir, plugin: 'webui', css: 'style', projectionManifests: [manifest] });
+        const built = build({ ...options, projectionManifests: [manifest] });
+        assert.equal(built.lazyScriptsModule?.content, generated?.content, 'lazy.webui.js is stable across builds');
         const packs = new Map();
-        for (let i = 0; i + 1 < built.lazyPackFiles.length; i += 2) {
-          packs.set(built.lazyPackFiles[i], compress(Buffer.from(built.lazyPackFiles[i + 1])));
+        for (const pack of built.lazyPackFiles) {
+          packs.set(pack.fileName, compress(Buffer.from(pack.content)));
         }
-        assert.equal(packs.size, variant === 'eager' ? 0 : scenario.dialogs);
+        assert.equal(packs.size, variant === 'plain' ? 0 : scenario.dialogs);
         fixtures.set(`${id}/${variant}`, {
           id, variant, owners, target: ownerTag(scenario.target),
           protocol: new Protocol(built.protocol, { plugin: 'webui' }),
@@ -372,8 +381,8 @@ function network(requests, phase) {
 async function prepare(page, url, variant) {
   await page.goto(url, { waitUntil: 'commit' });
   await waitFor(page, 'window.__bench?.hydrated === true || !!window.__bench?.error');
-  // Idle and load triggers count as part of startup until every pack is registered.
-  if (variant === 'idle' || variant === 'load') await waitFor(page, 'window.__bench.loaded() === window.__bench.owners.length');
+  // Idle and eager triggers count as part of startup until every pack is registered.
+  if (variant === 'idle' || variant === 'eager') await waitFor(page, 'window.__bench.loaded() === window.__bench.owners.length');
   await page.waitForTimeout(300);
 }
 
@@ -518,7 +527,7 @@ try {
     report.results.push({ scenario: fixture.id, variant: fixture.variant, cache, errors, summary: samples.length ? summarize(samples) : undefined, samples });
   }
   if (scenarios.includes('s30')) {
-    for (const variant of variants.filter(name => name === 'eager' || name === 'demand')) {
+    for (const variant of variants.filter(name => name === 'plain' || name === 'demand')) {
       const runs = [];
       for (let i = 0; i < MEMORY_SAMPLES; i++) runs.push(await memory(browser, origin, fixtures.get(`s30/${variant}`)));
       report.memory.push({

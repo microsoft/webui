@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "paths": {
+      "@microsoft/webui-framework": ["../../../../packages/webui-framework/src/index.ts"]
+    }
+  },
+  "include": ["components/*.ts", "bench-client.ts"]
+}

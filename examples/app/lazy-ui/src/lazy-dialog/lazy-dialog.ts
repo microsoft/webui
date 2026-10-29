@@ -66,6 +66,7 @@ export class LazyDialog extends WebUIElement {
       this.highlightDraft = this.highlightPinned;
       this.settingsReady = true;
       // showModal() moves focus into the dialog, so its body must exist first.
+      // If the body cannot load, onLazyError() resets the dialog before this rejects.
       await this.$rendered();
       if (generation !== this.generation) return;
       this.dialog.showModal();
@@ -83,6 +84,22 @@ export class LazyDialog extends WebUIElement {
   dismiss(): void {
     this.dialog.close();
     this.clear();
+  }
+
+  /**
+   * The settings body could not load its pack or the preview's script.
+   *
+   * This also covers a dialog rendered open by the server, whose preview
+   * script loads during hydration rather than from `open()`.
+   */
+  onLazyError(event: CustomEvent<{ error: unknown }>): void {
+    // Handled here, so the runtime does not report it as an uncaught error.
+    event.preventDefault();
+    console.error('Settings view failed to load:', event.detail.error);
+    // The user dismissed the dialog while its body was loading.
+    if (!this.settingsReady) return;
+    this.dismiss();
+    this.settingsError = 'Settings could not be loaded. Please try again.';
   }
 
   onClosed(): void {

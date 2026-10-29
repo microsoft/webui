@@ -1,0 +1,40 @@
+<template shadowrootmode="open">
+  <div class="sheet" @keydown="{onKeydown(e)}">
+    <header class="head">
+      <h2 class="title" data-ready>Edit quick links</h2>
+      <button type="button" class="icon" aria-label="Close" @click="{dismiss()}">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+      </button>
+    </header>
+    <p class="intro">Drag a site to reorder it. Up to {{limit}} sites appear on the new tab page.</p>
+    <ol class="list" w-ref="{list}" @pointermove="{onDrag(e)}" @pointerup="{endDrag(e)}" @pointercancel="{endDrag(e)}">
+      <for each="row in rows">
+        <li class="row" data-index="{{row.index}}" ?data-dragging="{{row.dragging}}" ?data-target="{{row.target}}">
+          <span class="handle" aria-hidden="true" @pointerdown="{startDrag(e)}">&#8942;&#8942;</span>
+          <span class="favicon" style="--tile: {{row.color}}">{{row.letter}}</span>
+          <span class="text"><strong>{{row.title}}</strong><small>{{row.host}}</small></span>
+          <button type="button" class="icon" aria-label="Move {{row.title}} up" data-index="{{row.index}}" ?disabled="{{row.first}}" @click="{moveUp(e)}">&#8593;</button>
+          <button type="button" class="icon" aria-label="Move {{row.title}} down" data-index="{{row.index}}" ?disabled="{{row.last}}" @click="{moveDown(e)}">&#8595;</button>
+          <button type="button" class="icon danger" aria-label="Remove {{row.title}}" data-index="{{row.index}}" @click="{removeSite(e)}">&#215;</button>
+        </li>
+      </for>
+    </ol>
+    <form class="add" @submit="{add(e)}">
+      <h3>Add a site</h3>
+      <label class="field"><span>Name</span>
+        <input name="title" value="{{newTitle}}" placeholder="Optional" maxlength="40" @input="{onTitle(e)}"></label>
+      <label class="field"><span>URL</span>
+        <input name="url" value="{{newUrl}}" placeholder="example.com" inputmode="url" ?aria-invalid="{{error}}" @input="{onUrl(e)}"></label>
+      <if condition="error"><p class="error" role="alert">{{error}}</p></if>
+      <button type="submit" class="secondary" ?disabled="{{full}}">Add</button>
+    </form>
+    <p class="status" role="status">{{status}}</p>
+    <footer class="foot">
+      <button type="button" class="link" ?disabled="{{noUndo}}" @click="{undo()}">Undo</button>
+      <button type="button" class="link" @click="{restoreDefaults()}">Restore defaults</button>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" @click="{dismiss()}">Cancel</button>
+      <button type="button" class="primary" ?disabled="{{pristine}}" @click="{save()}">Save</button>
+    </footer>
+  </div>
+</template>

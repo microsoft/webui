@@ -1,0 +1,31 @@
+<template shadowrootmode="open">
+  <div class="sheet" @keydown="{onKeydown(e)}">
+    <header class="head">
+      <h2 class="title" data-ready>Choose a background</h2>
+      <button type="button" class="icon" aria-label="Close" @click="{dismiss()}">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+      </button>
+    </header>
+    <div class="tabs" role="tablist" aria-label="Collections" @keydown="{onTabKey(e)}">
+      <for each="tab in tabs">
+        <button type="button" role="tab" class="tab" data-id="{{tab.id}}" ?data-selected="{{tab.id == category}}" @click="{selectCategory(e)}">{{tab.label}}</button>
+      </for>
+    </div>
+    <div class="content">
+      <figure class="preview" style="--preview: {{preview}}; --ink: {{ink}}">
+        <div class="art" aria-hidden="true"><i></i><i></i><i></i></div>
+        <figcaption><strong>{{imageTitle}}</strong><span>{{imageCredit}}</span></figcaption>
+      </figure>
+      <ntp-swatch-grid label="Backgrounds" selected="{{selected}}" :items="{{swatches}}" @select="{chooseImage(e)}"></ntp-swatch-grid>
+    </div>
+    <label class="toggle"><span><strong>Refresh daily</strong><small>Show a new image from this collection every day.</small></span>
+      <input type="checkbox" role="switch" ?checked="{{daily}}" @change="{toggleDaily(e)}"></label>
+    <p class="status" role="status">{{status}}</p>
+    <footer class="foot">
+      <button type="button" class="link" @click="{shuffle()}">Surprise me</button>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" @click="{dismiss()}">Cancel</button>
+      <button type="button" class="primary" @click="{apply()}">Use this image</button>
+    </footer>
+  </div>
+</template>
