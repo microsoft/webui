@@ -2019,6 +2019,7 @@ name = "microsoft-webui"
 version = "3.0.4"
 dependencies = [
  "actix-web",
+ "brotli",
  "bytes",
  "crc32fast",
  "criterion",
@@ -2321,6 +2322,7 @@ dependencies = [
  "microsoft-webui-handler",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",
+ "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "thiserror",

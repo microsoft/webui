@@ -7,6 +7,7 @@ import { claimSsrComponentStyles, installComponentStyles } from './element/style
 import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
+  preloadComponentAssetStyles,
   prepareComponentStyleLinks,
   prepareComponentStyleRoots,
   prepareRegisteredLinkStyles,
@@ -31,6 +32,7 @@ installComponentStyleRuntime({
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.__webuiPrepareResources = prepareComponentStyleRoots;
+  window.__webuiPreloadStyles = preloadComponentAssetStyles;
   installTemplateResourcePreparation(prepareRegisteredLinkStyles);
   window.__webuiRegisterComponentStyles = (value: unknown): Promise<void> | undefined => {
     const styles = requireComponentStyles(value);

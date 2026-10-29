@@ -221,7 +221,7 @@ tuples once before hydration.
 | `l` | Pre-order static element shapes, starting with the section root. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` load, or `4` demand. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` eager, or `4` demand. |
 | `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
@@ -231,7 +231,8 @@ tuples once before hydration.
 | `d` | Sorted direct ordinary resource dependencies. Absence is empty. Route activation and nested lazy edges are excluded. |
 | `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
 | `e` | `1` for a lazy region's root section; absent on internal shared sections. |
-| `lp` | Pack URLs for the lazy regions whose conditions this template contains, keyed by region identity. |
+| `lp` | Pack paths, relative to the asset base, for the lazy regions whose conditions this template contains, keyed by region identity. |
+| `lc` | Link builds only: for the same regions, the stylesheet paths, relative to the asset base, that each region's pack registers, in closure order without duplicates. Regions without any are left out, and the field is absent when none remain. The lazy runtime preloads them in parallel with the pack. |
 | `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
 
 The same metadata serves both paths:

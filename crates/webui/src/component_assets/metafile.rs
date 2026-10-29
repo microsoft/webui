@@ -3,15 +3,42 @@
 
 use serde::Serialize;
 use std::collections::BTreeMap;
+use webui_handler::lazy_packs::LazyPackFile;
 use webui_protocol::WebUIProtocol;
 
 use super::serialize::RenderedOutput;
 use crate::WebUIError;
 
+/// A build metafile: esbuild-compatible `inputs`/`outputs` for component
+/// assets, plus the lazy-region pack report.
 #[derive(Serialize)]
-struct Metafile {
+#[serde(rename_all = "camelCase")]
+struct Metafile<'a> {
+    inputs: &'a BTreeMap<String, MetafileInput>,
+    outputs: &'a BTreeMap<String, MetafileOutput>,
+    lazy_packs: Vec<LazyPackEntry<'a>>,
+}
+
+/// The component asset graph half of a build metafile.
+#[derive(Default)]
+pub(crate) struct AssetGraphMetafile {
     inputs: BTreeMap<String, MetafileInput>,
     outputs: BTreeMap<String, MetafileOutput>,
+}
+
+/// One lazy-region pack: its cost and the scripts it loads with.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LazyPackEntry<'a> {
+    path: String,
+    region: &'a str,
+    owner: &'a str,
+    trigger: &'static str,
+    bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    brotli_bytes: Option<usize>,
+    hash: &'a str,
+    scripts: Vec<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -55,20 +82,54 @@ struct MetafileOutputImport {
     external: bool,
 }
 
-pub(super) fn render_metafile(
+/// Collect the esbuild-compatible description of rendered component assets.
+pub(super) fn collect_asset_graph(
     protocol: &WebUIProtocol,
     rendered: &[RenderedOutput],
-) -> Result<String, WebUIError> {
-    let mut inputs = BTreeMap::new();
-    let mut outputs = BTreeMap::new();
+) -> AssetGraphMetafile {
+    let mut graph = AssetGraphMetafile::default();
     for output in rendered {
-        add_output_inputs(protocol, output, &mut inputs);
-        outputs.insert(output.name.clone(), metafile_output(output));
+        add_output_inputs(protocol, output, &mut graph.inputs);
+        graph
+            .outputs
+            .insert(output.name.clone(), metafile_output(output));
     }
-    serde_json::to_string_pretty(&Metafile { inputs, outputs }).map_err(|error| {
-        WebUIError::Serialization(format!(
-            "Failed to serialize component asset metafile: {error}"
-        ))
+    graph
+}
+
+/// Serialize a build metafile from an optional component asset graph and the
+/// build's lazy-region packs, sorted by path.
+pub(crate) fn render_metafile(
+    graph: Option<&AssetGraphMetafile>,
+    packs: &[LazyPackFile],
+) -> Result<String, WebUIError> {
+    let empty = AssetGraphMetafile::default();
+    let graph = graph.unwrap_or(&empty);
+    let mut lazy_packs: Vec<LazyPackEntry<'_>> = packs
+        .iter()
+        .map(|pack| LazyPackEntry {
+            path: pack.path(),
+            region: &pack.region,
+            owner: &pack.owner,
+            trigger: pack.trigger.as_str(),
+            bytes: pack.bytes(),
+            brotli_bytes: pack.brotli_bytes,
+            hash: pack.hash(),
+            scripts: pack
+                .scripts
+                .iter()
+                .map(|script| script.specifier.as_str())
+                .collect(),
+        })
+        .collect();
+    lazy_packs.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    serde_json::to_string_pretty(&Metafile {
+        inputs: &graph.inputs,
+        outputs: &graph.outputs,
+        lazy_packs,
+    })
+    .map_err(|error| {
+        WebUIError::Serialization(format!("Failed to serialize the build metafile: {error}"))
     })
 }
 

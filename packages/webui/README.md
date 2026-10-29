@@ -61,19 +61,33 @@ const result = build({
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
   componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots
-  metafile: true, // Return an esbuild-compatible asset graph
+  metafile: true, // Return the asset graph and lazy pack cost report
+  componentModules: { "chart-panel": "@contoso/charts/panel.js" }, // Modules without a .ts/.js sibling
+  modulesOut: "./.webui", // Where lazy.webui.js will be written; relative imports start here
   cssFileNameTemplate: "[name]-[hash].[ext]", // CSS/component asset filename template
-  cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
+  assetBase: "https://cdn.example.com/assets/", // Optional public URL or path for the output
   theme: "./themes/brand.json", // Optional design-token theme validation
 });
 
 // result.protocol  - Buffer containing the compiled protocol
 // result.cssFiles  - Array of [filename, content, ...] pairs
 // result.componentAssetFiles - Array of [filename, ESM content, ...] pairs
-// result.metafile - Optional esbuild-compatible graph JSON
+// result.lazyPackFiles - Lazy template packs: { fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes?, scripts }
+// result.lazyScriptsModule - Optional { fileName: "lazy.webui.js", content, declaration: { fileName: "lazy.webui.d.ts", content } } loader for lazy region scripts
+// result.metafile - Optional metafile JSON: esbuild-compatible graph plus lazyPacks
 // result.warnings  - Array of non-fatal build advisory diagnostics
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
+
+When the application has `<if lazy>` regions, write each `lazyPackFiles` item's
+`content` to its `path` under the output directory, and write
+`lazyScriptsModule` and its `declaration` to `modulesOut`. Import
+`lazy.webui.js` from your entry module: it registers a dynamic import for each
+scripted component a region introduces and the page does not already load at
+startup, so your bundler splits and loads that code. The `lazy.webui.d.ts`
+declaration types that import for TypeScript without `allowJs`. A component's
+module is its `.ts` sibling, else its `.js` sibling; `componentModules`
+overrides both.
 
 Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
 to render unwrapped components as global Light DOM. A sole bare `<template>` is

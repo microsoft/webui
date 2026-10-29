@@ -241,19 +241,31 @@ this.settingsDialog.showModal();
 - The build emits each body as a static, content-addressed template pack under
   `_webui/packs/`. Initially false omits the body and references its pack;
   initially true renders normally, inlines its templates, and hydrates.
-- Import `@microsoft/webui-framework/lazy.js` once before `startRuntime()`.
-  The framework loads a region's pack when its condition becomes true. There is
-  no loader, endpoint, region id, or host API. The import also adds
-  `$rendered()` and its type; without lazy regions, skip it and the app ships no
-  lazy code.
-- Choose when the pack loads with the attribute value, not code: `lazy`
+- Import the generated `lazy.webui.js` (written by `webui build` to
+  `--modules-out`, default `--out`) once before `startRuntime()`, instead of
+  `@microsoft/webui-framework/lazy.js`. It registers a dynamic `import()` of
+  every scripted component each region introduces that the page does not
+  already load at startup (outside lazy regions and routes), so your bundler
+  splits and serves that code; never import those components statically. A
+  region loads its pack and scripts in parallel and renders after both. Map
+  components without a sibling `.ts`/`.js` module with
+  `--component-module tag=specifier`. The import also adds `$rendered()` and
+  `$prefetch()`; the generated `lazy.webui.d.ts` beside it types them for
+  TypeScript without `allowJs`. Without lazy regions, skip it and the app ships
+  no lazy code.
+- Choose when the pack loads with the attribute value: `lazy`
   (= `lazy="intent"`) on pointer/focus/touch in the owner; `lazy="idle"` after
-  load when idle; `lazy="load"` right after hydration; `lazy="demand"` only when
-  the condition becomes true. Prefetch never renders or fetches state. Prefer
-  `intent` for UI opened from a control.
+  load when idle; `lazy="eager"` right after hydration; `lazy="demand"` only when
+  the condition becomes true or code calls `this.$prefetch(path?)`. Prefetch never
+  renders or fetches state, uses low fetch priority before the window `load`
+  event, and waits while the page is prerendering. Prefer `intent` for UI opened
+  from a control; inside a large owner, use `lazy="demand"` plus
+  `@pointerenter="{$prefetch('settingsOpen')}"` on the specific button.
 - State is application-owned and loaded as usual; lazy regions never fetch it.
   Await `this.$rendered()` only before touching body DOM, such as refs, focus, or
-  `showModal()`. It rejects on a failed pack and retries on the next call.
+  `showModal()`. It rejects on a failed pack or script and retries on the next
+  call. Failures also dispatch a cancelable, bubbling `lazyerror` event on the
+  owner with `detail.error`; uncanceled errors go to `reportError()`.
 - Shown regions release their body templates at idle once closed; reopening
   reuses or refetches them. Do not cache pack contents yourself.
 - `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
@@ -1082,7 +1094,7 @@ Without `@microsoft/webui-delivery`, prebuild the asset and mount it into a
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog \
-  --component-assets-out ./.webui \
+  --modules-out ./.webui \
   --metafile ./dist/component-assets-meta.json
 ```
 
@@ -1228,24 +1240,30 @@ bandwidth and render time.
 
 ### Reserved `$webui` state
 
-The top-level `"$webui"` object is reserved for trusted host HTML emitted at
-document boundaries:
+The top-level `"$webui"` object is reserved for trusted host metadata: HTML
+emitted at document boundaries and the response's asset base:
 
 ```json
 {
   "$webui": {
     "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
     "bodyStart": "<!-- immediately after <body> -->",
-    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+    "bodyEnd": "<script src=\"/livereload.js\"></script>",
+    "assetBase": "https://cdn.example.com/b123/"
   }
 }
 ```
 
-All three members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
+All members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
 are emitted raw immediately before `</head>`, after `<body>`, and before
-`</body>`, respectively. Missing, empty, `null`, or non-string members are
-ignored. WebUI strips the reserved object from hydration and partial-navigation
-state, so client-side templates and code cannot read it.
+`</body>`, respectively. Missing, empty, `null`, or non-string HTML members are
+ignored. `assetBase` overrides the build's `--asset-base` for this response
+(see [CLI reference](/reference/cli/)); `null` keeps the build value, and an
+invalid value fails the render. WebUI strips the reserved object from hydration
+and partial-navigation state, so client-side templates and code cannot read it.
+The response's asset base is the exception: the rendered head carries it as
+`<meta name="webui-asset-base" content="...">`, so an entry module can set its
+bundler's public path from it.
 
 **Never put request-derived or otherwise untrusted content in `$webui`.** The
 values are not escaped and can create an XSS vulnerability. See
@@ -1475,7 +1493,8 @@ Common flags on `build` and `serve`: `--entry`, `--css <link|style|module>`,
 `--css-bundle` (merge component stylesheets into shared chunks; not valid with
 `--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
-`--format json`.
+`--asset-base <BASE>` (public URL or path ending in `/` for the build output;
+override per request with `$webui.assetBase`), `--format json`.
 
 WebUI overwrites current component roots but does not delete older generated
 payloads or unrelated files from a developer-owned output directory. Remove and

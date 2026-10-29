@@ -4,36 +4,144 @@
 //! Content-addressed template packs for lazy regions.
 //!
 //! Each lazy region becomes one immutable JSON file. A template containing a
-//! lazy condition carries an `lp` map from region identity to pack URL, so a
-//! pack that serializes such a template depends on the URLs of the packs it
-//! references; prefetch triggers stay in the condition entries. Packs are
-//! rendered in dependency passes: a region renders once every region
-//! referenced by its templates has a URL. Build identity is assigned
-//! afterwards, over final metadata.
+//! lazy condition carries an `lp` map from region identity to pack path, so a
+//! pack that serializes such a template depends on the paths of the packs it
+//! references; prefetch triggers stay in the condition entries. In Link builds
+//! the same template carries an `lc` map from region identity to the
+//! stylesheet paths the region's pack registers, so the browser can fetch them
+//! in parallel with the pack. Packs are rendered in dependency passes: a
+//! region renders once every region referenced by its templates has a path.
+//! Build identity is assigned afterwards, over final metadata.
+//!
+//! Pack paths are `_webui/packs/<file>`, relative to the asset base, which maps
+//! to the build output directory. The browser resolves them against the base it
+//! receives with the document.
+//!
+//! Packs carry templates and styles, never JavaScript. Custom elements that a
+//! region introduces load through the application's bundler instead: builds
+//! record each region's component modules in [`LazyPackFile::scripts`],
+//! leaving out the [`startup_components`] the page already loads, and
+//! [`render_scripts_module`] writes them as dynamic imports in
+//! [`LAZY_SCRIPTS_MODULE`].
+
+mod references;
+mod scripts;
+mod startup;
 
 use crate::{HandlerError, Protocol, Result};
+use references::{collect_references, encode_stylesheets, finalize, References, Rendered};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use webui_protocol::WebUIProtocol;
 
-/// Default public URL prefix for lazy-region packs, relative to the document base.
-pub const DEFAULT_PACK_PUBLIC_BASE: &str = "_webui/packs/";
+pub use scripts::{
+    module_specifier, render_scripts_module, LAZY_SCRIPTS_DECLARATION,
+    LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
+};
+pub use startup::startup_components;
 
 /// Output directory for pack files, relative to the build output directory.
+///
+/// Pack paths in template metadata are this directory plus the file name.
 pub const PACK_OUTPUT_DIR: &str = "_webui/packs";
 
-/// One immutable lazy-region pack.
+/// When a lazy region's pack may be fetched before its condition is true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LazyTrigger {
+    /// Pointer, focus, or touch intent inside the owner (`lazy`).
+    Intent,
+    /// The first idle period after the owner mounts (`lazy="idle"`).
+    Idle,
+    /// Right after the owner hydrates or mounts (`lazy="eager"`).
+    Eager,
+    /// Only when the condition becomes true (`lazy="demand"`).
+    Demand,
+}
+
+impl LazyTrigger {
+    /// The authored trigger name: `intent`, `idle`, `eager`, or `demand`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Intent => "intent",
+            Self::Idle => "idle",
+            Self::Eager => "eager",
+            Self::Demand => "demand",
+        }
+    }
+
+    /// Decode the trigger code of a compiled condition entry.
+    const fn from_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Intent),
+            2 => Some(Self::Idle),
+            3 => Some(Self::Eager),
+            4 => Some(Self::Demand),
+            _ => None,
+        }
+    }
+}
+
+/// The module that defines a custom element a lazy region introduces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LazyScript {
+    /// Custom element tag the module defines.
+    pub tag: String,
+    /// Module specifier, written verbatim as a dynamic import.
+    pub specifier: String,
+}
+
+/// One immutable lazy-region pack and its cost report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LazyPackFile {
     /// Content-addressed file name inside [`PACK_OUTPUT_DIR`].
     pub file_name: String,
-    /// JSON pack content.
+    /// JSON pack content. Its length is the pack's raw size in bytes.
     pub content: String,
+    /// Region identity, `<owner>::lazy:@<n>`.
+    pub region: String,
+    /// Component whose template declares the region.
+    pub owner: String,
+    /// When the pack may be fetched before the region opens.
+    pub trigger: LazyTrigger,
+    /// Component tags whose templates the pack carries, sorted: the
+    /// components the region introduces beyond those its owner guarantees.
+    pub components: Vec<String>,
+    /// Modules of the scripted components the region introduces, sorted by
+    /// tag, except the [`startup_components`] the page already loads.
+    ///
+    /// [`emit`] leaves this empty. Builds fill it from discovered component
+    /// modules and explicit module mappings.
+    pub scripts: Vec<LazyScript>,
+    /// Brotli size of `content` at quality 11, when the build computed a cost
+    /// report. [`emit`] leaves this `None`.
+    pub brotli_bytes: Option<usize>,
 }
 
-/// Lazy regions referenced by one template.
-type Children = BTreeSet<String>;
+impl LazyPackFile {
+    /// The pack's path relative to the asset base: `_webui/packs/<file>`.
+    #[must_use]
+    pub fn path(&self) -> String {
+        pack_path(&self.file_name)
+    }
+
+    /// The pack's raw size in bytes.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.content.len()
+    }
+
+    /// The content hash in the file name: the first 16 hex digits of the
+    /// SHA-256 of `content`.
+    #[must_use]
+    pub fn hash(&self) -> &str {
+        self.file_name
+            .strip_suffix(".json")
+            .and_then(|stem| stem.rsplit_once('.'))
+            .map_or("", |(_, hash)| hash)
+    }
+}
 
 /// Render every lazy-region pack and reference it from final template metadata.
 ///
@@ -43,7 +151,7 @@ type Children = BTreeSet<String>;
 ///
 /// Returns [`HandlerError::Rendering`] when lazy regions reference each other
 /// in a cycle and [`HandlerError::Invariant`] for malformed compiled metadata.
-pub fn emit(protocol: &mut WebUIProtocol, public_base: &str) -> Result<Vec<LazyPackFile>> {
+pub fn emit(protocol: &mut WebUIProtocol) -> Result<Vec<LazyPackFile>> {
     let mut regions: Vec<String> = protocol
         .client_fragments
         .iter()
@@ -54,7 +162,7 @@ pub fn emit(protocol: &mut WebUIProtocol, public_base: &str) -> Result<Vec<LazyP
         return Ok(Vec::new());
     }
     regions.sort_unstable();
-    let children = collect_children(protocol)?;
+    let References { children, triggers } = collect_references(protocol)?;
     let initial = Protocol::new(protocol.clone());
     let mut contents = HashMap::with_capacity(regions.len());
     for region in &regions {
@@ -62,7 +170,7 @@ pub fn emit(protocol: &mut WebUIProtocol, public_base: &str) -> Result<Vec<LazyP
     }
     drop(initial);
 
-    let mut urls: HashMap<String, String> = HashMap::with_capacity(regions.len());
+    let mut rendered: HashMap<String, Rendered> = HashMap::with_capacity(regions.len());
     let mut finalized = HashSet::new();
     let mut files = Vec::with_capacity(regions.len());
     let mut pending: Vec<&str> = regions.iter().map(String::as_str).collect();
@@ -73,125 +181,59 @@ pub fn emit(protocol: &mut WebUIProtocol, public_base: &str) -> Result<Vec<LazyP
                 contents[region].iter().all(|template| {
                     children
                         .get(template)
-                        .is_none_or(|refs| refs.iter().all(|child| urls.contains_key(child)))
+                        .is_none_or(|refs| refs.iter().all(|child| rendered.contains_key(child)))
                 })
             });
         if ready.is_empty() {
             return Err(cyclic_packs(&blocked));
         }
-        finalize(protocol, &children, &urls, &mut finalized)?;
+        finalize(protocol, &children, &rendered, &mut finalized)?;
         let view = Protocol::new(protocol.clone());
         for region in ready {
-            let content = view.render_lazy_pack(region)?;
-            let file_name = file_name(&protocol.client_fragments[region].owner, &content);
-            urls.insert(region.to_owned(), format!("{public_base}{file_name}"));
-            files.push(LazyPackFile { file_name, content });
+            let (content, stylesheets) = view.render_lazy_pack_with_stylesheets(region)?;
+            let owner = protocol.client_fragments[region].owner.clone();
+            let file_name = file_name(&owner, &content);
+            let trigger = triggers
+                .get(region)
+                .copied()
+                .ok_or_else(|| invalid_metadata(region, "no template declares this region"))?;
+            let components = contents[region]
+                .iter()
+                .filter(|id| protocol.components.contains_key(id.as_str()))
+                .cloned()
+                .collect();
+            rendered.insert(
+                region.to_owned(),
+                Rendered {
+                    path: pack_path(&file_name),
+                    stylesheets: encode_stylesheets(&stylesheets),
+                },
+            );
+            files.push(LazyPackFile {
+                file_name,
+                content,
+                region: region.to_owned(),
+                owner,
+                trigger,
+                components,
+                scripts: Vec::new(),
+                brotli_bytes: None,
+            });
         }
         pending = blocked;
     }
-    finalize(protocol, &children, &urls, &mut finalized)?;
+    finalize(protocol, &children, &rendered, &mut finalized)?;
     files.sort_unstable_by(|left, right| left.file_name.cmp(&right.file_name));
     Ok(files)
 }
 
-/// Explain why a pack public base cannot be embedded in JSON and HTML.
-///
-/// Returns `None` for a usable base.
-#[must_use]
-pub fn public_base_error(base: &str) -> Option<String> {
-    let valid = base.ends_with('/')
-        && !base.chars().any(|ch| {
-            ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>' | '"' | '\\')
-        });
-    (!valid).then(|| invalid_public_base(base))
-}
-
-/// Map each template to the lazy regions whose conditions it contains.
-fn collect_children(protocol: &WebUIProtocol) -> Result<HashMap<String, Children>> {
-    let mut result = HashMap::new();
-    let templates = protocol
-        .components
-        .iter()
-        .map(|(id, component)| (id, component.template_json.as_str()))
-        .chain(
-            protocol
-                .client_fragments
-                .iter()
-                .map(|(id, fragment)| (id, fragment.template_json.as_str())),
-        );
-    for (id, json) in templates {
-        if json.is_empty() || !json.contains("::lazy:@") {
-            continue;
-        }
-        let children = lazy_children(json).map_err(|error| invalid_metadata(id, &error))?;
-        if !children.is_empty() {
-            result.insert(id.clone(), children);
-        }
-    }
-    Ok(result)
-}
-
-/// Read `[condition, region, slot, trigger]` entries from a template and its blocks.
-fn lazy_children(json: &str) -> std::result::Result<Children, String> {
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
-    let mut children = Children::new();
-    let blocks = value.get("b").and_then(serde_json::Value::as_array);
-    let sections = std::iter::once(&value).chain(blocks.into_iter().flatten());
-    for section in sections {
-        let Some(conditions) = section.get("c").and_then(serde_json::Value::as_array) else {
-            continue;
-        };
-        for entry in conditions {
-            let (Some(region), Some(trigger)) = (
-                entry.get(1).and_then(serde_json::Value::as_str),
-                entry.get(3).and_then(serde_json::Value::as_u64),
-            ) else {
-                continue;
-            };
-            if !(1..=4).contains(&trigger) {
-                return Err(format!("unknown lazy trigger {trigger} for {region}"));
-            }
-            children.insert(region.to_owned());
-        }
-    }
-    Ok(children)
-}
-
-/// Append `lp` to every template whose referenced regions now all have URLs.
-fn finalize(
-    protocol: &mut WebUIProtocol,
-    children: &HashMap<String, Children>,
-    urls: &HashMap<String, String>,
-    finalized: &mut HashSet<String>,
-) -> Result<()> {
-    for (template, refs) in children {
-        if finalized.contains(template) || !refs.iter().all(|region| urls.contains_key(region)) {
-            continue;
-        }
-        let entries: BTreeMap<&str, &str> = refs
-            .iter()
-            .map(|region| (region.as_str(), urls[region].as_str()))
-            .collect();
-        let encoded = serde_json::to_string(&entries)
-            .map_err(|error| HandlerError::Rendering(error.to_string()))?;
-        let json = if let Some(component) = protocol.components.get_mut(template) {
-            &mut component.template_json
-        } else if let Some(fragment) = protocol.client_fragments.get_mut(template) {
-            &mut fragment.template_json
-        } else {
-            continue;
-        };
-        if !json.ends_with('}') {
-            return Err(invalid_metadata(template, "metadata is not a JSON object"));
-        }
-        json.pop();
-        json.reserve(encoded.len() + 8);
-        json.push_str(",\"lp\":");
-        json.push_str(&encoded);
-        json.push('}');
-        finalized.insert(template.clone());
-    }
-    Ok(())
+/// `_webui/packs/<file>`: the pack's path relative to the asset base.
+fn pack_path(file_name: &str) -> String {
+    let mut path = String::with_capacity(PACK_OUTPUT_DIR.len() + 1 + file_name.len());
+    path.push_str(PACK_OUTPUT_DIR);
+    path.push('/');
+    path.push_str(file_name);
+    path
 }
 
 /// `<owner>.<first 16 hex digits of SHA-256>.json`, safe on every filesystem.
@@ -232,27 +274,278 @@ fn invalid_metadata(template: &str, error: &str) -> HandlerError {
     ))
 }
 
-#[cold]
-#[inline(never)]
-fn invalid_public_base(base: &str) -> String {
-    format!(
-        "invalid pack public base '{base}'. Use a URL or path ending in '/', without spaces, quotes, angle brackets, or backslashes, e.g. '_webui/packs/' or 'https://cdn.example.com/app/packs/'."
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webui_protocol::{
+        lazy_fragment_id, ClientFragmentData, ComponentData, ConditionExpr, CssStrategy,
+        FragmentList, WebUIFragment,
+    };
 
     #[test]
-    fn lazy_children_read_root_and_block_conditions_only_when_lazy() {
-        let json = r#"{"h":"","c":[[0,"o::lazy:@0",[0,0,0],2],[0,1,[0,0,0]]],"b":[{"h":"","c":[[0,"o::lazy:@1",[0,0,0],1],[0,"o::block:3",[0,0,0]]]}],"v":3}"#;
-        let children = lazy_children(json).unwrap();
+    fn trigger_codes_match_the_authored_names() {
+        let decoded =
+            [1, 2, 3, 4].map(|code| LazyTrigger::from_code(code).map(LazyTrigger::as_str));
         assert_eq!(
-            children.into_iter().collect::<Vec<_>>(),
-            ["o::lazy:@0", "o::lazy:@1"]
+            decoded,
+            [Some("intent"), Some("idle"), Some("eager"), Some("demand")]
         );
-        assert!(lazy_children(r#"{"c":[[0,"o::lazy:@0",[0,0,0],9]]}"#).is_err());
+        assert_eq!(LazyTrigger::from_code(0), None);
+        assert_eq!(LazyTrigger::from_code(5), None);
+    }
+
+    /// `app-shell` owns an eager `shared-badge`, an intent region that adds
+    /// `settings-form`, and a nested demand region inside it.
+    fn fixture() -> WebUIProtocol {
+        let root = lazy_fragment_id("app-shell", 0);
+        let nested = lazy_fragment_id("app-shell", 1);
+        let mut document = WebUIProtocol::new(HashMap::from([
+            (
+                "app-shell".to_owned(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::component("shared-badge"),
+                        WebUIFragment::lazy_if(ConditionExpr::identifier("open"), &root),
+                    ],
+                    ..Default::default()
+                },
+            ),
+            (
+                root.clone(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::component("shared-badge"),
+                        WebUIFragment::component("settings-form"),
+                        WebUIFragment::lazy_if(ConditionExpr::identifier("advanced"), &nested),
+                    ],
+                    ..Default::default()
+                },
+            ),
+            (nested.clone(), FragmentList::default()),
+            ("shared-badge".to_owned(), FragmentList::default()),
+            ("settings-form".to_owned(), FragmentList::default()),
+        ]));
+        for (tag, json) in [
+            (
+                "app-shell",
+                format!(r#"{{"h":"<p></p>","c":[[0,"{root}",[0,0,0],1]],"v":3}}"#),
+            ),
+            ("shared-badge", r#"{"h":"<p>Badge</p>","v":3}"#.to_owned()),
+            ("settings-form", r#"{"h":"<form></form>","v":3}"#.to_owned()),
+        ] {
+            document.components.insert(
+                tag.to_owned(),
+                ComponentData {
+                    template_json: json,
+                    ..Default::default()
+                },
+            );
+        }
+        for (id, json) in [
+            (
+                root.clone(),
+                format!(r#"{{"h":"<p></p>","c":[[0,"{nested}",[0,0,0],4]],"v":3}}"#),
+            ),
+            (nested, r#"{"h":"<p>Deep</p>","v":3}"#.to_owned()),
+        ] {
+            document.client_fragments.insert(
+                id,
+                ClientFragmentData {
+                    owner: "app-shell".into(),
+                    entry: true,
+                    template_json: json,
+                    ..Default::default()
+                },
+            );
+        }
+        document
+    }
+
+    #[test]
+    fn packs_report_their_region_owner_trigger_and_components() {
+        let mut protocol = fixture();
+        let mut packs = emit(&mut protocol).unwrap();
+        packs.sort_unstable_by(|left, right| left.region.cmp(&right.region));
+        let [outer, nested] = packs.as_slice() else {
+            panic!("expected two packs, got {packs:?}");
+        };
+        assert_eq!(outer.region, "app-shell::lazy:@0");
+        assert_eq!(outer.owner, "app-shell");
+        assert_eq!(outer.trigger, LazyTrigger::Intent);
+        // The owner already mounts `shared-badge`, so only the form is new.
+        assert_eq!(outer.components, ["settings-form"]);
+        assert_eq!(nested.region, "app-shell::lazy:@1");
+        assert_eq!(nested.trigger, LazyTrigger::Demand);
+        assert!(nested.components.is_empty());
+        for pack in &packs {
+            assert!(pack.scripts.is_empty());
+            assert_eq!(pack.brotli_bytes, None);
+            assert_eq!(pack.path(), format!("_webui/packs/{}", pack.file_name));
+            assert_eq!(pack.bytes(), pack.content.len());
+            assert_eq!(pack.hash().len(), 16);
+            assert!(pack.file_name.ends_with(&format!(".{}.json", pack.hash())));
+        }
+    }
+
+    /// [`fixture`] with a nested region that adds `theme-picker`, compiled
+    /// with `strategy` and a stylesheet on each of the `styled` components.
+    fn styled_fixture(strategy: CssStrategy, styled: &[&str]) -> WebUIProtocol {
+        let mut document = fixture();
+        document.fragments.insert(
+            lazy_fragment_id("app-shell", 1),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("theme-picker")],
+                ..Default::default()
+            },
+        );
+        document
+            .fragments
+            .insert("theme-picker".to_owned(), FragmentList::default());
+        document.components.insert(
+            "theme-picker".to_owned(),
+            ComponentData {
+                template_json: r#"{"h":"<select></select>","v":3}"#.to_owned(),
+                ..Default::default()
+            },
+        );
+        document.set_css_strategy(strategy);
+        for tag in styled {
+            let component = document.components.get_mut(*tag).unwrap();
+            // Shadow, the build default: each component is its own CSS tree,
+            // installed at the hook the compiler places in its template.
+            component.uses_shadow_dom = true;
+            match strategy {
+                CssStrategy::Link => component.css_href = format!("{tag}.css"),
+                CssStrategy::Style | CssStrategy::Module => {
+                    component.css = format!(".{tag} {{ color: red; }}");
+                }
+            }
+            document.fragments.insert(
+                (*tag).to_owned(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::signal(
+                        format!("{}shadow_styles:{tag}", crate::STRUCTURAL_SIGNAL_PREFIX),
+                        true,
+                    )],
+                    ..Default::default()
+                },
+            );
+        }
+        document.populate_style_closures(&["app-shell"]);
+        document
+    }
+
+    fn template_json<'a>(protocol: &'a WebUIProtocol, id: &str) -> &'a str {
+        protocol.components.get(id).map_or_else(
+            || protocol.client_fragments[id].template_json.as_str(),
+            |component| component.template_json.as_str(),
+        )
+    }
+
+    #[test]
+    fn link_builds_list_the_stylesheets_each_pack_registers_beside_its_path() {
+        let styled = ["shared-badge", "settings-form", "theme-picker"];
+        let mut protocol = styled_fixture(CssStrategy::Link, &styled);
+        let packs = emit(&mut protocol).unwrap();
+        let root = lazy_fragment_id("app-shell", 0);
+        let nested = lazy_fragment_id("app-shell", 1);
+        let pack = |region: &str| packs.iter().find(|pack| pack.region == region).unwrap();
+
+        // The owner already loads the badge, so only the form's stylesheet is
+        // the outer region's own. The nested region is listed where its
+        // condition lives: in the outer region's template.
+        let owner = template_json(&protocol, "app-shell");
+        let expected = format!(
+            r#","lp":{{"{root}":"{}"}},"lc":{{"{root}":["settings-form.css"]}}}}"#,
+            pack(&root).path()
+        );
+        assert!(owner.ends_with(&expected), "{owner}");
+        let region = template_json(&protocol, &root);
+        let expected = format!(
+            r#","lp":{{"{nested}":"{}"}},"lc":{{"{nested}":["theme-picker.css"]}}}}"#,
+            pack(&nested).path()
+        );
+        assert!(region.ends_with(&expected), "{region}");
+        let owner: serde_json::Value = serde_json::from_str(owner).unwrap();
+        assert_eq!(owner["lc"][&root], serde_json::json!(["settings-form.css"]));
+
+        // The listed paths are the hrefs the pack itself registers.
+        let outer: serde_json::Value = serde_json::from_str(&pack(&root).content).unwrap();
+        let resources = &outer["componentStyles"]["resources"];
+        assert_eq!(resources["settings-form"]["href"], "settings-form.css");
+        assert!(resources.get("shared-badge").is_none(), "{resources}");
+
+        let mut again = styled_fixture(CssStrategy::Link, &styled);
+        assert_eq!(emit(&mut again).unwrap(), packs);
+        assert_eq!(again.components, protocol.components);
+        assert_eq!(again.client_fragments, protocol.client_fragments);
+    }
+
+    #[test]
+    fn regions_without_link_stylesheets_are_left_out_of_lc() {
+        let root = lazy_fragment_id("app-shell", 0);
+        let nested = lazy_fragment_id("app-shell", 1);
+        let mut protocol = styled_fixture(CssStrategy::Link, &["theme-picker"]);
+        emit(&mut protocol).unwrap();
+        let owner = template_json(&protocol, "app-shell");
+        assert!(
+            owner.contains(r#""lp":"#) && !owner.contains(r#""lc""#),
+            "{owner}"
+        );
+        let region = template_json(&protocol, &root);
+        assert!(
+            region.contains(&format!(r#""lc":{{"{nested}":["theme-picker.css"]}}"#)),
+            "{region}"
+        );
+
+        let mut unstyled = fixture();
+        emit(&mut unstyled).unwrap();
+        for id in ["app-shell", root.as_str()] {
+            let json = template_json(&unstyled, id);
+            assert!(
+                json.contains(r#""lp":"#) && !json.contains(r#""lc""#),
+                "{json}"
+            );
+        }
+    }
+
+    #[test]
+    fn style_and_module_packs_carry_css_text_and_list_no_stylesheets() {
+        let styled = ["shared-badge", "settings-form", "theme-picker"];
+        for strategy in [CssStrategy::Style, CssStrategy::Module] {
+            let mut protocol = styled_fixture(strategy, &styled);
+            let packs = emit(&mut protocol).unwrap();
+            assert_eq!(packs.len(), 2);
+            assert!(packs
+                .iter()
+                .any(|pack| pack.content.contains(".settings-form { color: red; }")));
+            let templates = protocol
+                .components
+                .values()
+                .map(|component| &component.template_json)
+                .chain(
+                    protocol
+                        .client_fragments
+                        .values()
+                        .map(|fragment| &fragment.template_json),
+                );
+            for json in templates {
+                assert!(!json.contains(r#""lc""#), "{json}");
+            }
+        }
+    }
+
+    #[test]
+    fn regions_without_a_declaring_condition_are_invalid_metadata() {
+        let mut protocol = fixture();
+        protocol
+            .components
+            .get_mut("app-shell")
+            .unwrap()
+            .template_json = r#"{"h":"<p></p>","v":3}"#.to_owned();
+        let error = emit(&mut protocol).unwrap_err();
+        assert!(matches!(error, HandlerError::Invariant(_)), "{error}");
+        assert!(error.to_string().contains("app-shell::lazy:@0"), "{error}");
     }
 
     #[test]
@@ -266,16 +559,10 @@ mod tests {
     }
 
     #[test]
-    fn public_bases_must_be_safe_directory_prefixes() {
-        for base in [
-            "_webui/packs/",
-            "/static/packs/",
-            "https://cdn.example.com/app/",
-        ] {
-            assert!(public_base_error(base).is_none(), "{base}");
-        }
-        for base in ["packs", "a b/", "x\"/", "<script>/", "a\\b/", ""] {
-            assert!(public_base_error(base).is_some(), "{base}");
-        }
+    fn pack_paths_are_relative_to_the_output_directory() {
+        let name = file_name("app-shell", "{}");
+        let path = pack_path(&name);
+        assert_eq!(path, format!("_webui/packs/{name}"));
+        assert!(!path.starts_with('/'));
     }
 }

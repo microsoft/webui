@@ -1,6 +1,8 @@
 {
   "initialOpen": true,
   "dialogPage": false,
+  "searchPage": false,
+  "suggesting": false,
   "message": "Server state",
   "count": 2,
   "items": [{ "id": "first", "label": "First row" }],

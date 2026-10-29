@@ -6,6 +6,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 mod asset_filename;
 mod comment_policy;
+pub mod component_modules;
 mod component_policy;
 mod component_registry;
 mod condition_parser;
@@ -323,14 +324,10 @@ impl ParserOptions {
         css_strategy: CssStrategy,
         dom_strategy: DomStrategy,
         css_file_name_template: &str,
-        css_public_base: Option<&str>,
         legal_comments: LegalComments,
     ) -> Result<Self> {
         let css_link_options = if css_strategy == CssStrategy::Link {
-            CssLinkOptions::try_new(
-                css_file_name_template.to_string(),
-                css_public_base.map(std::string::ToString::to_string),
-            )?
+            CssLinkOptions::try_new(css_file_name_template.to_string())?
         } else {
             CssLinkOptions::default()
         };
@@ -5032,9 +5029,12 @@ impl HtmlParser {
     ) -> Option<OwnedComponentStyle> {
         let css = css_content?;
         Some(match self.options.css_strategy {
-            CssStrategy::Link => {
-                OwnedComponentStyle::Link(self.options.css_link_options.resolve(tag_name, css).href)
-            }
+            CssStrategy::Link => OwnedComponentStyle::Link(
+                self.options
+                    .css_link_options
+                    .resolve(tag_name, css)
+                    .filename,
+            ),
             CssStrategy::Style => OwnedComponentStyle::Inline(css.trim().to_string()),
             CssStrategy::Module => OwnedComponentStyle::Adopted(tag_name.to_string()),
         })

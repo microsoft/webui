@@ -10,6 +10,8 @@ const initialState = {
   expanded: true, advanced: false, loading: false, error: '', chosen: '',
   single: false,
   dialogPage: false,
+  searchPage: false,
+  suggesting: false,
 };
 
 const PACK_PREFIX = '/lazy-ui/_webui/packs/';
@@ -28,6 +30,7 @@ export function lazyFixtureHandler(fixture: RenderedFixture | undefined): (conte
         initialOpen: url.searchParams.get('initial') !== '0',
         single: url.searchParams.get('single') === '1',
         dialogPage: url.searchParams.get('dialog') === '1',
+        searchPage: url.searchParams.get('search') === '1',
       })), 'text/html; charset=utf-8');
       return true;
     }

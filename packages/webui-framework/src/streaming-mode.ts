@@ -14,8 +14,8 @@
  * detection, activation and optional resume seams, the single `data-ws` dormancy
  * marker, and the numeric activation-outcome codes both sides of the
  * `STREAMING_BOUNDARY_ACTIVATE` contract speak. Everything span-shaped — the
- * `data-ws-span` / `data-ws-enclosing` attribute names and the open-span
- * registry that resolves them — lives in the opt-in streaming graph
+ * compiler's span attribute names and the open-span registry that resolves
+ * them — lives in the opt-in streaming graph
  * (`streaming-dom.ts`, `streaming-spans.ts`), so a non-streaming app never
  * downloads a byte of it.
  */

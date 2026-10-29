@@ -119,7 +119,7 @@ parser rejects invalid structure and unsupported syntax with source-located
 diagnostics, rather than trying to repair arbitrary browser HTML.
 
 A lazy `<if>` is an ordinary conditional with a delivery annotation and an
-optional prefetch trigger (intent, idle, load, or demand). Its body retains the
+optional prefetch trigger (intent, idle, eager, or demand). Its body retains the
 enclosing template's state, lexical scope, refs, and event ownership; identities
 are compiler-owned. Compilation separates that body's client payload from eager
 owner metadata without introducing a custom-element host. The protocol retains
@@ -129,10 +129,21 @@ sub-blocks travel together, while genuinely shared blocks remain reusable.
 At build time each lazy region becomes an immutable, content-addressed template
 pack: its client closure minus what the owner already guarantees, plus the
 inventory bits that closure sets. Nested regions are separate packs. The
-template containing a region's condition records the pack URL, so packs that
-reference other packs are rendered in dependency order and build identity is
+template containing a region's condition records the pack's path, and in link
+builds the stylesheets the pack registers, so the browser can fetch them in
+parallel instead of discovering them inside the pack. Packs that reference
+other packs are therefore rendered in dependency order and build identity is
 assigned afterwards over final metadata. Packs are static files with no
 per-request rendering, state, or host API.
+
+Packs carry template data only. The code of the components a region introduces
+belongs to the application's bundler: the build emits a loader module, which
+the application imports in place of the lazy runtime, mapping each region to
+dynamic imports of the component modules the startup page does not already
+load. Region scripts therefore follow the bundler's splitting, public path,
+fingerprinting, and manifests, while template data stays a JSON artifact the
+browser can free when the region closes. WebUI never fetches or evaluates
+application JavaScript itself.
 
 Component templates may share named loop bodies without expanding them at each
 callsite. Structural recursion through component templates is invalid; finite
@@ -268,6 +279,20 @@ Browser-executable condition closures are carried separately from JSON-safe
 template metadata. Server output is useful without these extras when no
 client plugin is selected.
 
+Build output does not depend on where it is deployed. Compiled asset
+references, such as stylesheet files and lazy packs, are paths relative to one
+asset base that maps to the output directory. The protocol stores an optional
+default base, and a request can override it through reserved host state, so a
+host that learns its CDN or build path at request time needs no rebuild. The
+handler prefixes the stylesheet links it writes with the effective base and
+hands the base to the browser, in the document head, where application code
+can read it before any runtime starts, and in the bootstrap data. The browser
+resolves runtime asset fetches against it; serialized metadata, packs, and
+partial responses never embed it. The base covers WebUI's own outputs only:
+application scripts and their module preload hints stay where the application
+put them, and the bundler's public path, which the application may set from the
+same base, decides where its code loads from.
+
 Rendering targets a `ResponseWriter`, allowing buffered HTML or bounded,
 backpressured transport writers. Writer failures and disconnects propagate;
 the handler does not finish rendering into an abandoned channel. Host entry
@@ -276,11 +301,16 @@ or a host-paced streaming session from the same loaded protocol.
 
 Lazy regions add no server request path. Closed regions render no body and only
 reference their pack; initially active regions use ordinary SSR, inline their
-templates, and hydrate that DOM. In the browser, a region loads its pack when
-its condition becomes true or its trigger fires, then mounts through normal
-conditional rendering in the existing owner. That loading lives in an opt-in
-runtime that extends the renderer; the rendering core holds no lazy logic, so
-pages without lazy regions ship none. State remains
+templates, and hydrate that DOM. In the browser, a region loads its pack, its
+linked stylesheets, and its components' scripts in parallel when its condition
+becomes true, its trigger fires, or its owner prefetches it, then mounts through
+normal conditional rendering in the existing owner once the pack and scripts
+have arrived. Speculative loading never competes with startup: it uses low
+fetch priority until the page has loaded and waits while the document is
+prerendering, while activation never waits.
+Failures surface as a cancelable event on the owner. That loading lives in an
+opt-in runtime that extends the renderer; the rendering core holds no lazy
+logic, so pages without lazy regions ship none. State remains
 application-owned. Inactive regions release their templates and inventory bits
 at idle; a reopened region reuses live metadata or reloads its pack.
 

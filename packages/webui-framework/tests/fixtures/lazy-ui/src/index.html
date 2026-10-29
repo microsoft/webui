@@ -9,5 +9,9 @@
   <if condition="dialogPage">
     <test-lazy-dialog ?opened="{{initialOpen}}" label="Dialog"></test-lazy-dialog>
   </if>
+  <if condition="searchPage">
+    <test-lazy-search></test-lazy-search>
+    <img class="slow" src="/lazy-ui/slow.gif" alt="">
+  </if>
 </body>
 </html>

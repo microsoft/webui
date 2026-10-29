@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use webui_protocol::{ComponentAssetStylePreload, WebUIProtocol};
 
 use crate::WebUIError;
+pub(crate) use metafile::{render_metafile, AssetGraphMetafile};
 
 /// A generated component or root ESM input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +120,8 @@ impl ComponentAssetGraph {
 /// Entry-reachable components remain external prerequisites. Each asset-owned
 /// component is emitted once, and roots statically import their full closure.
 /// The application bundler chooses final chunks, filenames, and delivery.
+/// With `emit_metafile`, a graph with roots also returns its esbuild-compatible
+/// metafile, with an empty `lazyPacks` report.
 ///
 /// # Errors
 ///
@@ -131,38 +134,51 @@ pub fn render_component_assets(
     roots: &[String],
     emit_metafile: bool,
 ) -> Result<ComponentAssetGraph, WebUIError> {
+    let (mut graph, metafile) = render_graph(protocol, entry, roots, emit_metafile)?;
+    graph.metafile = metafile
+        .map(|metafile| metafile::render_metafile(Some(&metafile), &[]))
+        .transpose()?;
+    Ok(graph)
+}
+
+/// Render a component asset graph and, with `emit_metafile`, the description
+/// of its outputs for the build metafile. Neither exists without roots.
+pub(crate) fn render_graph(
+    protocol: &WebUIProtocol,
+    entry: &str,
+    roots: &[String],
+    emit_metafile: bool,
+) -> Result<(ComponentAssetGraph, Option<AssetGraphMetafile>), WebUIError> {
     if roots.is_empty() {
-        if emit_metafile {
-            return Err(WebUIError::InvalidBuildOptions(
-                "metafile requires at least one component_asset_root".to_string(),
-            ));
-        }
-        return Ok(ComponentAssetGraph {
-            files: Vec::new(),
-            metafile: None,
-            style_preloads: Vec::new(),
-            entry_fragments: Vec::new(),
-            entry_components: Vec::new(),
-        });
+        return Ok((
+            ComponentAssetGraph {
+                files: Vec::new(),
+                metafile: None,
+                style_preloads: Vec::new(),
+                entry_fragments: Vec::new(),
+                entry_components: Vec::new(),
+            },
+            None,
+        ));
     }
 
     let plan = graph::plan_component_assets(protocol, entry, roots)?;
     let rendered = render::render_component_asset_graph(protocol, &plan, emit_metafile)?;
     let style_preloads = collect_component_asset_style_preloads(protocol, &plan);
     validate_unique_asset_file_names(&rendered.files)?;
-    let metafile = if emit_metafile {
-        Some(metafile::render_metafile(protocol, &rendered.outputs)?)
-    } else {
-        None
-    };
+    let metafile =
+        emit_metafile.then(|| metafile::collect_asset_graph(protocol, &rendered.outputs));
 
-    Ok(ComponentAssetGraph {
-        files: rendered.files,
+    Ok((
+        ComponentAssetGraph {
+            files: rendered.files,
+            metafile: None,
+            style_preloads,
+            entry_fragments: plan.entry_fragments,
+            entry_components: plan.entry_components,
+        },
         metafile,
-        style_preloads,
-        entry_fragments: plan.entry_fragments,
-        entry_components: plan.entry_components,
-    })
+    ))
 }
 
 fn collect_component_asset_style_preloads(

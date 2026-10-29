@@ -35,6 +35,7 @@ crossbeam-queue = { workspace = true }
 crc32fast = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+brotli = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

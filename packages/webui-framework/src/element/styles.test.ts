@@ -155,6 +155,26 @@ describe('component style resources', () => {
     );
   });
 
+  test('link resources resolve compiler paths against the runtime asset base', async () => {
+    const document = Object.assign(fakeDocument(), {
+      baseURI: 'https://site.example/news/',
+      defaultView: { __webui: { assetBase: 'https://cdn.example/assets/' } },
+    });
+    registerComponentStyles({
+      version: 1,
+      strategy: 'link',
+      resources: { card: { kind: 'link', href: 'app-card.css' } },
+      closures: { root: ['card'] },
+    }, document);
+
+    await installComponentStyles('root', document);
+
+    const [link] = (document.head as unknown as FakeParent).children;
+    assert.equal(link.rel, 'stylesheet');
+    assert.equal(link.href, 'https://cdn.example/assets/app-card.css');
+    assert.equal(link.getAttribute('data-webui-resource'), 'card');
+  });
+
   test('a bundled resource covers its member component closures', async () => {
     const document = fakeDocument();
     registerComponentStyles({

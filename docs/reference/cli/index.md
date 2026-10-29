@@ -138,7 +138,7 @@ See [WebUI Press](/reference/webui-press) for configuration.
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--component-assets-out <DIR>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--pack-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--modules-out <DIR>] [--component-module <TAG=SPECIFIER>]... [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--asset-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -155,16 +155,16 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as stable ESM inputs for the application bundler | *(none)* |
-| `--component-assets-out <DIR>` | Directory for generated component ESM inputs. Requires `--emit-component-assets`. | `--out` |
-| `--metafile <PATH>` | Write an esbuild-compatible component asset graph. Requires `--emit-component-assets`. | *(none)* |
+| `--modules-out <DIR>` | Directory for generated modules that the application bundler imports: component asset inputs, `lazy.webui.js`, and `lazy.webui.d.ts` | `--out` |
+| `--component-module <TAG=SPECIFIER>` | Module that defines the custom element `TAG`, for components without a usable `.ts` or `.js` sibling. `lazy.webui.js` imports `SPECIFIER` verbatim, overriding a discovered sibling. Repeatable. | *(none)* |
+| `--metafile <PATH>` | Write the build metafile: the component asset graph in esbuild's format and a `lazyPacks` cost report. Written when the build emits component assets or lazy packs. | *(none)* |
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
-| `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
-| `--pack-public-base <BASE>` | URL/path prefix ending in `/` for `<if lazy>` template packs, relative to the document base | `_webui/packs/` |
+| `--asset-base <BASE>` | Public URL or path ending in `/` that maps to `--out`. WebUI writes base-relative paths into the protocol, packs and payloads; the handler prefixes SSR stylesheet links with it and passes it to the browser, which resolves pack and stylesheet paths against it. Module preload hints keep their paths. Hosts override it per request with the reserved state key `$webui.assetBase`, for example when the CDN host or build ID is only known at runtime. | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 Path inputs for `APP`, `--state`, `--servedir`, `--projection-manifest`,
-`--component-assets-out`, and `--metafile` support absolute paths, relative
+`--modules-out`, and `--metafile` support absolute paths, relative
 paths, `~/...`, and `file://...` URI-style values.
 
 **CSS Modes:**
@@ -188,17 +188,163 @@ its declarative root.
 
 For long-lived CDN/browser caching, include `[hash]` in
 `--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
-truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
-`--css-public-base` only changes the CSS href stored in `protocol.bin` and
-emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
+truncated to 8 hex characters. Templates must be ASCII filenames. URL delimiters
 (`#`, `%`, and `?`), path separators, whitespace, control characters, and
 Windows-reserved filename characters are rejected.
 
 `webui build` writes the template pack of each `<if lazy>` region to
 `<out>/_webui/packs/<owner>.<hash>.json`. Pack names are content hashes; serve
-them with long-lived immutable caching. `--pack-public-base` changes only the
-pack URLs compiled into `protocol.bin`, for example to serve packs from a CDN
-with CORS.
+them with long-lived immutable caching.
+
+**Lazy region scripts:**
+
+Packs carry templates and styles, not JavaScript. When a build has lazy
+regions, `webui build` also writes `lazy.webui.js` to `--modules-out`. For each
+region it lists, as dynamic imports, the scripted components the region
+introduces that neither its owner nor the page at startup already loads:
+
+```js
+// Generated by WebUI. Do not edit.
+import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';
+
+defineLazyScripts({
+  "app-shell::lazy:@0": {
+    "settings-panel": () => import("../src/settings-panel/settings-panel.ts"),
+  },
+});
+```
+
+The page at startup is every component your entry page reaches outside lazy
+regions and routes; your entry already loads their code, so regions leave them
+out even when they use them. Components that only routes reach stay listed,
+because they load with route partials.
+
+Import this module once from your entry module, instead of
+`@microsoft/webui-framework/lazy.js`, and before `startRuntime()`. Your bundler
+then splits, fingerprints, and loads each component's code the way it loads
+any other dynamic import, using its own public path and caching. A region loads
+its scripts in parallel with its pack and renders once both are ready. Builds
+whose regions list no scripts still get the module, with an empty map; builds
+without lazy regions get none.
+
+Next to it, WebUI writes `lazy.webui.d.ts`, which is always:
+
+```ts
+// Generated by WebUI. Do not edit.
+import '@microsoft/webui-framework/lazy.js';
+```
+
+TypeScript reads it for `import './lazy.webui.js'`, so your entry gets the
+element methods the lazy runtime adds, `$rendered()` and `$prefetch()`, without
+`allowJs`. Declaration files are exempt from `rootDir`, so `--modules-out` can
+sit outside it. WebUI rewrites both files only when their content changes.
+
+A component's module is its `.ts` sibling, or its `.js` sibling when there is no
+`.ts` file, written as a path relative to `--modules-out` with `/`
+separators. For a package component without a usable sibling module, map its
+tag to a module specifier, which is written verbatim:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --component-module settings-panel=@contoso/settings/panel.js
+```
+
+A tag must be a custom element name, and a specifier cannot contain whitespace,
+quotes, or backslashes. A mapping for a tag that no component uses is an
+`unknown-component-module` warning. A client-owned component that a lazy region
+introduces without a known module is a `lazy-component-without-module`
+warning; add a `--component-module` for it, or import it statically if it must
+be defined at startup. A component module on another Windows drive than
+`--modules-out` has no relative path and fails the build with
+`unreachable-component-module`; write the generated modules on the same drive
+or map the component.
+
+**Build metafile:**
+
+`--metafile <PATH>` writes one JSON file when the build emits component assets
+or lazy packs. `inputs` and `outputs` describe component assets in esbuild's
+metafile format (empty objects without component assets), so bundle analyzers
+can read the file. `lazyPacks` lists every pack, sorted by path, for upload,
+service worker precaching, and size budgets in CI:
+
+```json
+{
+  "inputs": {},
+  "outputs": {},
+  "lazyPacks": [
+    {
+      "path": "_webui/packs/app-shell.3f9a1c0d2b4e6f70.json",
+      "region": "app-shell::lazy:@0",
+      "owner": "app-shell",
+      "trigger": "intent",
+      "bytes": 2481,
+      "brotliBytes": 742,
+      "hash": "3f9a1c0d2b4e6f70",
+      "scripts": ["../src/settings-panel/settings-panel.ts"]
+    }
+  ]
+}
+```
+
+`path` is relative to the asset base, `trigger` is the region's `lazy` value,
+`bytes` is the raw pack size, `brotliBytes` is the brotli size at quality 11,
+`hash` is the content hash in the file name, and `scripts` are the module
+specifiers `lazy.webui.js` loads with the region. The metafile path is
+collision-checked with the other outputs before any file is written.
+
+**Asset base:**
+
+Every asset path WebUI writes is relative to the asset base, which maps to
+`--out`. A Link-mode stylesheet href is the emitted file name, such as
+`my-card-36c58ce5.css`, and a lazy pack path is
+`_webui/packs/<owner>.<hash>.json`. Without an asset base, the browser resolves
+these paths against the document's base URL. With
+`--asset-base https://cdn.example.com/app/`:
+
+- Server-rendered stylesheet links point at
+  `https://cdn.example.com/app/my-card-36c58ce5.css`. Hrefs you author in
+  templates are not changed, and neither are module preload hints: they name
+  the static imports of your own entry scripts, which stay where you put them.
+- The browser receives the base and resolves stylesheet and lazy pack paths
+  against it.
+- The document head carries the base as
+  `<meta name="webui-asset-base" content="https://cdn.example.com/app/">`, so
+  your code can read it before the WebUI runtime starts.
+- `protocol.bin`, packs, and partial-navigation responses keep base-relative
+  paths, so the same build output can be published under any base.
+
+When the base is only known per request, such as a market-specific CDN host or
+a build ID in the path, set it in the render state. The request value overrides
+`--asset-base`:
+
+```json
+{ "$webui": { "assetBase": "https://cdn.example.com/b123/" } }
+```
+
+A base must end with `/` and be an `http://` or `https://` URL, an absolute path
+such as `/static/`, or a relative path such as `static/`. It cannot contain
+whitespace, control characters, quotes, `<`, `>`, `\`, `?`, or `#`. An invalid
+`--asset-base` fails the build; an invalid `$webui.assetBase` fails the render
+before any output is written. Publish the packs and stylesheets where the base
+points; a base on another origin needs CORS for pack requests. FAST
+`<f-template>` payloads keep relative stylesheet hrefs, which FAST resolves
+against the document, so FAST builds that publish Link-mode CSS on another host
+should also serve it from the document's origin or use `--css style`.
+
+**Bundler public path:**
+
+Your bundler decides where your own scripts load from, including the region
+scripts that `lazy.webui.js` imports. To load them from the same per-request
+base, set the bundler's runtime public path from the meta tag first thing in
+your entry module. With rspack or webpack:
+
+```js
+__webpack_public_path__ = document.querySelector('meta[name="webui-asset-base"]')?.content ?? __webpack_public_path__;
+```
+
+A module's static imports run before its own statements, so if your entry has
+static imports, put this line in a separate module and import that module
+first.
 
 **CSS bundling:**
 
@@ -255,7 +401,7 @@ inputs for deferred UI such as dialogs loaded without `@microsoft/webui-delivery
 ```bash
 webui build ./my-app --out ./dist --plugin=webui \
   --emit-component-assets mail-thread,compose-page \
-  --component-assets-out ./.webui \
+  --modules-out ./.webui \
   --metafile ./dist/component-assets-meta.json
 ```
 
@@ -282,9 +428,9 @@ and recreate your disposable `dist` or component input directory when you need
 a clean build.
 
 `--metafile` writes esbuild-compatible `inputs` and `outputs`, including static
-`import-statement` edges and exact byte attribution. It can be opened directly
-in an esbuild bundle analyzer or consumed by build tooling. The metafile path is
-collision-checked with protocol and CSS outputs before any files are written.
+`import-statement` edges and exact byte attribution, beside the `lazyPacks`
+report described above. It can be opened directly in an esbuild bundle analyzer
+or consumed by build tooling.
 
 Configure content hashing and long-lived JavaScript caching in the application
 bundler. Link-mode CSS
@@ -377,10 +523,10 @@ webui build ./my-app --out ./dist --css style
 # Build link-mode CSS with content-hashed filenames
 webui build ./my-app --out ./dist --asset-file-name-template "[name]-[hash].[ext]"
 
-# Point generated stylesheet hrefs at a CDN/public asset root
+# Publish the build output on a CDN
 webui build ./my-app --out ./dist \
   --asset-file-name-template "[name]-[hash].[ext]" \
-  --css-public-base "https://cdn.example.com/assets"
+  --asset-base "https://cdn.example.com/assets/"
 
 # Build with the WebUI Framework plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=webui
@@ -450,7 +596,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--allowed-host <HOST[:PORT]>]... [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--pack-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--allowed-host <HOST[:PORT]>]... [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--modules-out <DIR>] [--component-module <TAG=SPECIFIER>]... [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--asset-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -473,12 +619,12 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build. Roots are served from memory and immutable dependencies from disk. | *(none)* |
-| `--component-assets-out <DIR>` | Directory refreshed with stable generated ESM inputs after each successful build. Requires `--emit-component-assets`. With `--watch`, it cannot equal or contain the app or another watched source path. | *(none)* |
-| `--metafile <PATH>` | Atomically replace an esbuild-compatible component asset graph after each successful build. Requires `--emit-component-assets`. | *(none)* |
+| `--modules-out <DIR>` | Directory refreshed after each successful build with the generated modules your bundler imports: component asset inputs, `lazy.webui.js`, and `lazy.webui.d.ts`. With `--watch`, it cannot equal or contain the app or another watched source path. | *(none)* |
+| `--component-module <TAG=SPECIFIER>` | Module that defines the custom element `TAG`, as for `webui build`. Repeatable. | *(none)* |
+| `--metafile <PATH>` | Atomically replace the build metafile after each successful build, as for `webui build`. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
-| `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
-| `--pack-public-base <BASE>` | URL/path prefix ending in `/` for `<if lazy>` template packs, relative to the document base | `_webui/packs/` |
+| `--asset-base <BASE>` | Public URL or path ending in `/` for the build output, as for `webui build`. A path such as `/static/` also serves the build output under that prefix. A URL on another host prints a hint, and the server keeps serving the build output at its usual paths. | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
@@ -653,15 +799,20 @@ for HTML and theme-token errors even though the component is not part of the
 initial SSR tree - so authoring mistakes in lazily loaded components fail the
 dev build instead of being silently skipped. Generated stable roots are served
 from memory and immutable dependencies from disk. Without
-`--component-assets-out`, the server owns a temporary input directory for its
-lifetime. With `--component-assets-out`, successful
+`--modules-out`, the server owns a temporary input directory for its
+lifetime. With `--modules-out`, successful
 rebuilds also refresh the stable inputs consumed by an application bundler
 watcher. In `serve --watch`, the output directory may be inside a watched source
 root, such as `./.webui`, but cannot equal or contain one because generated
 writes are excluded from source watching. With `--metafile`, a successful
-rebuild atomically replaces the graph; a failed rebuild leaves the last valid
+rebuild atomically replaces the metafile; a failed rebuild leaves the last valid
 metafile and generated inputs untouched. The metafile itself is ignored by the
 watcher to prevent rebuild loops.
+
+For apps with lazy regions, pass `--modules-out` so every successful rebuild
+writes `lazy.webui.js` and `lazy.webui.d.ts` where your bundler's watcher
+imports them. Without `--modules-out`, `webui serve` does not write them and
+prints a hint.
 
 Unchanged graph inputs keep their modification times. Older generated payloads
 remain in persistent output directories; WebUI does not delete files from a
@@ -689,9 +840,11 @@ successful rebuild clears the error and reloads connected browsers.
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
 Packs are served with `Cache-Control: no-cache` so rebuilds are picked up
-immediately. Serve them at the default pack base; `--pack-public-base` affects
-only the URLs a build writes. See [lazy template bodies](/learn/lazy) for
-authoring and hosting packs in production.
+immediately. When `--asset-base` is a path such as `/static/`, stylesheets,
+packs, generated modules, and `--servedir` files are also served under that
+prefix, so `/static/my-card.css` and `/static/_webui/packs/<file>` work
+locally. See [lazy template bodies](/learn/lazy) for authoring and hosting packs
+in production.
 
 ### `webui desktop`
 
@@ -747,7 +900,7 @@ instead of silently running incompatible commands.
 webui desktop init [APP_ROOT] [--force]
 webui desktop ipc generate <SCHEMA>... --rust-out <DIR> --ts-out <DIR> [--include <DIR>]... [--lock <FILE>] [--protoc <PATH>] [--check]
 webui desktop run [APP] [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--projection-manifest <PATH>]... [WINDOW_OPTIONS]
-webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [WINDOW_OPTIONS]
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--asset-base <BASE>] [WINDOW_OPTIONS]
 webui desktop package <APP_ROOT|BUNDLE_DIR> --out <OUT_DIR> [--target <TARGET>] [APP_OPTIONS] [WINDOW_OPTIONS]
 ```
 
@@ -773,6 +926,7 @@ is not supported.
 | `--state <FILE>` | Startup state JSON copied into the bundle | *(optional)* |
 | `--servedir <DIR>` | Static assets copied into the bundle | *(optional)* |
 | `--theme <VALUE>` | Design token theme, as a file path or npm package name | *(optional)* |
+| `--asset-base <BASE>` | Public URL or path ending in `/` for the build output, as for `webui build`. Bundles normally omit it, so assets load from the bundle. | *(none)* |
 | `--app-id <ID>` | Reverse-DNS app identifier | `com.microsoft.webui.app` |
 | `--app-name <NAME>` | Human-readable app name | `WebUI App` |
 | `--app-version <VERSION>` | App version stored in the bundle manifest | `0.0.0` |

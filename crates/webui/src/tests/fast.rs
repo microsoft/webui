@@ -228,7 +228,7 @@ fn build_discovers_fast_npm_package_layout() {
 }
 
 #[test]
-fn css_public_base_keeps_shadow_template_styled() {
+fn asset_base_keeps_fast_shadow_template_links_relative() {
     let app = create_app_dir(&[
         ("index.html", "<my-card>Hello</my-card>"),
         (
@@ -240,17 +240,17 @@ fn css_public_base_keeps_shadow_template_styled() {
     let mut options = default_options(app.path());
     options.plugin = Some(Plugin::FastV3);
     options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-    options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+    options.asset_base = Some("https://cdn.example.com/assets/".to_string());
     let result = build(options).unwrap();
 
     let filename = &result.css_files[0].0;
-    let expected_href = format!("https://cdn.example.com/assets/{filename}");
     let template = &result.protocol.components["my-card"].template;
     assert_eq!(
         result.protocol.component_style_resource("my-card"),
-        Some(expected_href.as_str())
+        Some(filename.as_str())
     );
-    assert!(template.contains(&expected_href));
+    assert!(template.contains(&format!(r#"<link rel="stylesheet" href="{filename}">"#)));
+    assert!(!template.contains("cdn.example.com"));
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn authored_template_light_build_is_rejected() {
     options.dom = DomStrategy::Light;
     options.plugin = Some(Plugin::FastV3);
     options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-    options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+    options.asset_base = Some("https://cdn.example.com/assets/".to_string());
     let error = build(options).expect_err("FAST Light build must fail");
     assert!(matches!(
         error,

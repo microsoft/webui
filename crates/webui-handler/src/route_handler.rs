@@ -69,6 +69,7 @@ pub struct Protocol {
     lazy_index: Option<crate::lazy::LazyIndex>,
     component_asset_style_manifest: std::result::Result<String, String>,
     component_asset_style_links: String,
+    component_asset_style_hrefs: Vec<String>,
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
     style_resources_requiring_escape: HashSet<String>,
@@ -142,11 +143,13 @@ impl Protocol {
             std::mem::take(&mut protocol.component_asset_style_preloads);
         let (shadow_preloads, light_preloads) =
             partition_component_asset_style_preloads(&protocol, &component_asset_style_preloads);
-        let component_asset_style_links = if css_strategy == CssStrategy::Link {
-            crate::serialize_component_asset_style_links(&light_preloads)
+        let component_asset_style_hrefs = if css_strategy == CssStrategy::Link {
+            crate::collect_component_asset_style_hrefs(&light_preloads)
         } else {
-            String::new()
+            Vec::new()
         };
+        let component_asset_style_links =
+            crate::serialize_component_asset_style_links(&component_asset_style_hrefs);
         let component_asset_style_manifest = if css_strategy == CssStrategy::Link {
             crate::serialize_component_asset_style_manifest(&shadow_preloads).map_err(|error| {
                 format!("failed to serialize component asset style metadata: {error}")
@@ -184,6 +187,7 @@ impl Protocol {
             lazy_index,
             component_asset_style_manifest,
             component_asset_style_links,
+            component_asset_style_hrefs,
             component_index,
             style_resource_index,
             style_resources_requiring_escape,
@@ -229,6 +233,12 @@ impl Protocol {
 
     pub(crate) fn component_asset_style_links(&self) -> &str {
         &self.component_asset_style_links
+    }
+
+    /// Hrefs behind [`Self::component_asset_style_links`], for renders that
+    /// prefix them with an asset base.
+    pub(crate) fn component_asset_style_hrefs(&self) -> &[String] {
+        &self.component_asset_style_hrefs
     }
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
@@ -663,7 +673,7 @@ struct BorrowedStyleClosure<'a> {
     end: usize,
 }
 
-impl BorrowedComponentStyleDelta<'_> {
+impl<'a> BorrowedComponentStyleDelta<'a> {
     pub(crate) fn resource_names(&self) -> impl Iterator<Item = &str> {
         self.resources.iter().map(|resource| resource.name)
     }
@@ -671,6 +681,33 @@ impl BorrowedComponentStyleDelta<'_> {
     /// Whether the delta carries no style resources or closures.
     pub(crate) fn is_empty(&self) -> bool {
         self.resources.is_empty() && self.closures.is_empty()
+    }
+
+    /// The `href` of every link resource the delta registers, in the order
+    /// its serialized closures first name them. Empty unless the protocol
+    /// uses the Link strategy.
+    #[cfg(feature = "packs")]
+    pub(crate) fn link_hrefs(&self) -> Vec<&'a str> {
+        if self.strategy != webui_protocol::CssStrategy::Link || self.resources.is_empty() {
+            return Vec::new();
+        }
+        let mut listed = vec![false; self.resources.len()];
+        let mut hrefs = Vec::with_capacity(self.resources.len());
+        for closure in &self.closures {
+            for name in &self.ordered[closure.start..closure.end] {
+                // Resources are sorted by their unique names.
+                let Ok(index) = self
+                    .resources
+                    .binary_search_by(|resource| resource.name.cmp(name))
+                else {
+                    continue;
+                };
+                if !std::mem::replace(&mut listed[index], true) {
+                    hrefs.push(self.resources[index].resource);
+                }
+            }
+        }
+        hrefs
     }
 }
 
@@ -4152,6 +4189,7 @@ mod tests {
             r#"{"lazy-panel":["/lazy-panel.css"]}"#
         );
         assert!(prepared.component_asset_style_links().is_empty());
+        assert!(prepared.component_asset_style_hrefs().is_empty());
     }
 
     #[test]
@@ -4201,6 +4239,14 @@ mod tests {
                 r#"<link rel="stylesheet" href="/shared.css?theme=a&amp;mode=&quot;dark&quot;">"#,
                 r#"<link rel="stylesheet" href="/secondary-panel.css">"#,
             )
+        );
+        assert_eq!(
+            prepared.component_asset_style_hrefs(),
+            [
+                "/lazy-panel.css",
+                "/shared.css?theme=a&mode=\"dark\"",
+                "/secondary-panel.css",
+            ]
         );
     }
 
@@ -6343,6 +6389,57 @@ mod tests {
             wire["state"],
             serde_json::json!({"value": 1, "dynamicField": [2, 3]})
         );
+    }
+
+    #[test]
+    fn partial_navigation_keeps_style_paths_relative_to_the_asset_base() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/items".into(),
+                        fragment_id: "items-page".into(),
+                        exact: true,
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "items-page".into(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                    ..Default::default()
+                },
+            ),
+        ]));
+        protocol.set_css_strategy(CssStrategy::Link);
+        protocol.components.insert(
+            "items-page".into(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                css_href: "items-page.css".into(),
+                ..Default::default()
+            },
+        );
+        protocol.asset_base = "https://cdn.example.com/default/".into();
+        protocol.populate_style_closures(&["index.html"]);
+        let protocol = Protocol::new(protocol);
+
+        let json = protocol
+            .render_partial(
+                serde_json::json!({"$webui": {"assetBase": "https://cdn.example.com/b42/"}}),
+                "index.html",
+                "/items",
+                "",
+            )
+            .unwrap();
+
+        // The browser resolves partial paths against the document's base.
+        assert!(json.contains(r#""items-page.css""#), "{json}");
+        assert!(!json.contains("cdn.example.com"), "{json}");
+        assert!(!json.contains("assetBase"), "{json}");
     }
 
     #[test]

@@ -47,6 +47,13 @@ struct Content<'a> {
     style_chunks: &'a [StyleChunk],
     component_asset_style_preloads: &'a [ComponentAssetStylePreload],
     client_fragments: SortedMap<'a, ClientFragmentData>,
+    // Omitted when unset, so builds without an asset base keep their identity.
+    #[serde(skip_serializing_if = "is_empty")]
+    asset_base: &'a str,
+}
+
+fn is_empty(value: &&str) -> bool {
+    value.is_empty()
 }
 
 impl<'a> Content<'a> {
@@ -63,6 +70,7 @@ impl<'a> Content<'a> {
             style_chunks: &protocol.style_chunks,
             component_asset_style_preloads: &protocol.component_asset_style_preloads,
             client_fragments: SortedMap::new(&protocol.client_fragments),
+            asset_base: &protocol.asset_base,
         }
     }
 }
@@ -123,12 +131,23 @@ mod tests {
 
     #[test]
     fn identity_covers_every_protocol_field_except_itself() {
-        let protocol = WebUIProtocol::new(HashMap::new());
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.asset_base = "https://cdn.example.com/app/".into();
         let mut expected = serde_json::to_value(&protocol).unwrap();
         expected.as_object_mut().unwrap().remove("build_id");
         assert_eq!(
             serde_json::to_value(Content::new(&protocol)).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn an_unset_asset_base_keeps_existing_identities() {
+        let protocol = WebUIProtocol::new(HashMap::new());
+        let content = serde_json::to_value(Content::new(&protocol)).unwrap();
+        assert!(content.get("asset_base").is_none(), "{content}");
+        let mut based = protocol.clone();
+        based.asset_base = "/static/".into();
+        assert_ne!(compute(&protocol).unwrap(), compute(&based).unwrap());
     }
 }

@@ -27,6 +27,7 @@ interface Bundle {
   chunks: number;
   inputs: Set<string>;
   initialInputs: Set<string>;
+  initialText: string;
 }
 
 const entries = {
@@ -39,7 +40,7 @@ const entries = {
   fullRouter: `import { WebUIRouter, navigationCache, routeActions, routePreload, routeBoundaries, viewTransitions, routeDiagnostics } from '@microsoft/webui-delivery/router.js'; import { ndjson } from '@microsoft/webui-delivery/resources.js'; new WebUIRouter().start({ transport: ndjson(), cache: navigationCache(), actions: routeActions(), preload: routePreload(), boundaries: routeBoundaries, transitions: viewTransitions, diagnostics: routeDiagnostics });`,
   resources: `export { fetchComponentTemplates, readJsonPartial } from '@microsoft/webui-delivery/resources.js';`,
   records: `export { ndjson } from '@microsoft/webui-delivery/resources.js';`,
-  lazyRegions: `import '@microsoft/webui-framework/lazy.js'; ${renderer}`,
+  lazyRegions: `import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js'; defineLazyScripts({}); ${renderer}`,
   combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import '@microsoft/webui-framework/lazy.js'; ${renderer} new WebUIRouter().start();`,
   queryHelper: `export { parseQuery } from '@microsoft/webui-delivery/router.js';`,
   decoratorOnly: `export { observable } from '@microsoft/webui-framework';`,
@@ -98,7 +99,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
   const measured: Bundle = {
     initialBytes: 0, initialGzip: 0, totalBytes: 0, totalGzip: 0,
     initialBrotli: 0, totalBrotli: 0, initialRequests: initial.size, chunks: Object.keys(outputs).length,
-    inputs: new Set(), initialInputs: new Set(),
+    inputs: new Set(), initialInputs: new Set(), initialText: '',
   };
   for (const [path, output] of Object.entries(outputs)) {
     const bytes = files.get(resolve(root, path));
@@ -112,6 +113,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
       measured.initialBytes += bytes.byteLength;
       measured.initialGzip += gzip;
       measured.initialBrotli += brotli;
+      measured.initialText += new TextDecoder().decode(bytes);
     }
     for (const [input, contribution] of Object.entries(output.inputs)) {
       if (contribution.bytesInOutput === 0) continue;
@@ -148,12 +150,14 @@ test('public helper imports do not retain navigation or rendering implementation
 test('buffered core excludes CSS preparation and optional coordinators with a measured size reduction', async () => {
   const [core, styled] = await Promise.all([bundle('buffered'), bundle('styled')]);
   excludes(core.inputs, [
-    'element/styles.js', 'element/link-styles.js', 'styles-entry.js',
+    'element/styles.js', 'element/link-styles.js', 'styles-entry.js', 'asset-base.js',
     'template-cache.js', 'streaming-coordinator.js', 'lazy-hydration-coordinator.js',
   ]);
   assert.ok(core.initialBytes <= 66_000, `core startup: ${core.initialBytes} bytes`);
   assert.ok(core.initialGzip <= 22_000, `core startup gzip: ${core.initialGzip} bytes`);
   assert.ok(core.initialBytes < styled.initialBytes * 0.85, 'core should save at least 15% versus full style installation');
+  // The CSS module loader imports a runtime specifier; bundling must leave it native.
+  assert.match(styled.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
 });
 
 test('JSON-only routing excludes streaming and unselected policies from all emitted chunks', async () => {
@@ -197,10 +201,13 @@ test('lazy regions add one small framework runtime and no delivery code', async 
     'lazy regions must not depend on routing delivery',
   );
   assert.ok([...lazy.initialInputs].some(input => input.endsWith('/lazy-entry.js')));
-  excludes(core.inputs, ['lazy-entry.js', 'lazy-runtime.js']);
-  // The rendering core holds no lazy logic, so this is the whole cost of the feature.
+  excludes(core.inputs, ['lazy-entry.js', 'lazy-runtime.js', 'lazy-scripts.js', 'asset-base.js', 'speculation.js']);
+  assert.equal(lazy.initialText.includes('defined at startup'), false, 'the startup guard is development-only');
+  assert.equal(lazy.initialText.includes('no script defines'), false, 'the missing-script warning is development-only');
+  // The rendering core holds no lazy logic, so this is the whole cost of the
+  // feature, including script loading through `defineLazyScripts()`.
   const added = lazy.initialBrotli - core.initialBrotli;
-  assert.ok(added <= 1_900, `lazy runtime adds ${added} brotli bytes`);
+  assert.ok(added <= 2_550, `lazy runtime adds ${added} brotli bytes`);
 });
 test('early progressive HTML remains separate from network partial decoding and authored rendering', async () => {
   const progressive = await bundle('progressive');
@@ -221,7 +228,7 @@ test('combined delivery reuses shared code and records public bundle measurement
     ? 'delivery-packed-public.json' : 'delivery-public-after.json');
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, JSON.stringify(Object.fromEntries(names.map((name, index) => {
-    const { inputs, initialInputs, ...sizes } = profiles[index];
+    const { inputs, initialInputs, initialText: _text, ...sizes } = profiles[index];
     return [name, { ...sizes, inputs: [...inputs], initialInputs: [...initialInputs] }];
   })), null, 2));
 });

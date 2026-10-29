@@ -181,8 +181,8 @@ impl ParserPlugin for FastV3ParserPlugin {
 /// that weren't encountered during initial parsing.
 ///
 /// This uses default Link-mode CSS filenames. Call
-/// [`generate_f_template_with_css_options`] when the build uses custom CSS
-/// filename templates or a public CSS base.
+/// [`generate_f_template_with_css_options`] when the build uses a custom CSS
+/// filename template.
 pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,
@@ -342,7 +342,7 @@ pub(super) fn f_template_style_injection<'a>(
 ) -> (Option<String>, Option<&'a str>) {
     let css_injection = css_content.and_then(|css| match css_strategy {
         CssStrategy::Link => style_injection_snippet(ComponentStyleDelivery::Link {
-            href: &css_link_options.resolve(tag_name, css).href,
+            href: &css_link_options.resolve(tag_name, css).filename,
         }),
         CssStrategy::Style => style_injection_snippet(ComponentStyleDelivery::Inline { css }),
         CssStrategy::Module => None,
@@ -745,6 +745,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned: false,
+            script_path: None,
         }
     }
 

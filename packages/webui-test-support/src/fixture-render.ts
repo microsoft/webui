@@ -140,8 +140,8 @@ function renderOne(
   }
 
   let packs: Map<string, string> | undefined;
-  for (let i = 0; i + 1 < result.lazyPackFiles.length; i += 2) {
-    (packs ??= new Map()).set(result.lazyPackFiles[i], result.lazyPackFiles[i + 1]);
+  for (const pack of result.lazyPackFiles) {
+    (packs ??= new Map()).set(pack.fileName, pack.content);
   }
   if (rerender) return { name, html, protocol, render: rerender, packs };
   return packs ? { name, html, packs } : { name, html };

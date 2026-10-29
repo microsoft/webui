@@ -70,6 +70,17 @@ startFixtureServer({
       }
     }
 
+    // Serve other fixtures' lazy-region packs beside their page.
+    // URL pattern: /<fixture-name>/_webui/packs/<file>
+    const pack = url.pathname.match(/^\/([^/]+)\/_webui\/packs\/([^/]+)$/);
+    if (pack) {
+      const content = rendered.get(pack[1])?.packs?.get(pack[2]);
+      if (content !== undefined) {
+        send(200, content, 'application/json');
+        return true;
+      }
+    }
+
     // Serve static files for bundled JS, authored fixture HTML, and assets.
     return serveStatic(url.pathname);
   },

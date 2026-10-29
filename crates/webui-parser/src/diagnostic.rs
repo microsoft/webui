@@ -199,6 +199,19 @@ pub mod codes {
     pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
     /// Deferred protocol-backed bodies cannot be pruned into static-only assets.
     pub const COMPONENT_ASSETS_WITH_LAZY: &str = "component-assets-with-lazy";
+    /// A component module mapping (`--component-module`, `componentModules`)
+    /// names an invalid custom element tag or an unusable module specifier.
+    pub const INVALID_COMPONENT_MODULE: &str = "invalid-component-module";
+    /// A component module mapping names a tag that no registered component
+    /// uses, so the build never needs it. Severity: warning.
+    pub const UNKNOWN_COMPONENT_MODULE: &str = "unknown-component-module";
+    /// A lazy region introduces a client-owned component whose module is
+    /// unknown, so the generated `lazy.webui.js` cannot load its code with the
+    /// region. Severity: warning.
+    pub const LAZY_COMPONENT_WITHOUT_MODULE: &str = "lazy-component-without-module";
+    /// A component's module has no path relative to the generated-modules
+    /// directory, for example because it is on another Windows drive.
+    pub const UNREACHABLE_COMPONENT_MODULE: &str = "unreachable-component-module";
     /// A component's root rendering or hydration policy is malformed.
     pub const INVALID_COMPONENT_RENDER_POLICY: &str = "invalid-component-render-policy";
     /// Lazy rendering omitted the intrinsic block-size estimate needed to

@@ -17,6 +17,7 @@ const responses = new Map<string, () => Response>();
 const idleCallbacks: (() => void)[] = [];
 const scripts: FakeScript[] = [];
 const documentListeners = new Map<string, (event: Event) => void>();
+const reported: unknown[] = [];
 const restore: [string, PropertyDescriptor | undefined][] = [];
 
 function setGlobal(name: string, value: unknown): void {
@@ -51,6 +52,7 @@ setGlobal('fetch', async (url: string, init?: { priority?: string; signal?: unkn
   return responses.get(url)?.() ?? new Response('missing', { status: 404 });
 });
 setGlobal('requestIdleCallback', (callback: () => void): number => idleCallbacks.push(callback));
+setGlobal('reportError', (error: unknown): void => { reported.push(error); });
 
 after(() => {
   for (const [name, descriptor] of restore.reverse()) {
@@ -125,7 +127,10 @@ test('the core needs lazy.js and the runtime owns hostless fragments and their b
   const contract = await import('./lazy-contract.js');
   assert.equal(contract.findLazyFragment('x::lazy:@0', 'x'), undefined);
   assert.equal(contract.lazyBlockOwner({ h: '' }), undefined);
-  assert.throws(() => contract.requireLazyFragment('x::lazy:@0', 'x'), /webui-framework\/lazy\.js/);
+  assert.throws(
+    () => contract.requireLazyFragment('x::lazy:@0', 'x'),
+    /Import the generated lazy\.webui\.js \(it loads @microsoft\/webui-framework\/lazy\.js\)/,
+  );
   await import('./lazy-entry.js');
   runtime = await import('./lazy-runtime.js');
   const id = region('app-shell');
@@ -290,46 +295,46 @@ test('intent prefetches the waiting regions of every owner on the event path onc
   assert.deepEqual(requests, [{ url, priority: 'high' }], 'only rendered blocks arm, demand never does');
 });
 
-test('idle and load triggers prefetch after startup unless the user saves data', async () => {
+test('idle and eager triggers prefetch at low priority after startup unless the user saves data', async () => {
   const idleId = region('idle-owner');
-  const loadId = region('load-owner');
+  const eagerId = region('eager-owner');
   const idleUrl = '_webui/packs/idle-owner.0007.json';
-  const loadUrl = '_webui/packs/load-owner.0008.json';
+  const eagerUrl = '_webui/packs/eager-owner.0008.json';
   serve(idleUrl, pack('idle-owner'));
-  serve(loadUrl, pack('load-owner'));
+  serve(eagerUrl, pack('eager-owner'));
   requests.length = 0;
   runtime.blockOwner({
     v: 3,
     h: '',
-    c: [lazyCondition(idleId, 2), lazyCondition(loadId, 3)],
-    lp: { [idleId]: idleUrl, [loadId]: loadUrl },
+    c: [lazyCondition(idleId, 2), lazyCondition(eagerId, 3)],
+    lp: { [idleId]: idleUrl, [eagerId]: eagerUrl },
   } as TemplateMeta);
   assert.equal(requests.length, 0);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(requests, [{ url: loadUrl, priority: 'auto' }]);
+  assert.deepEqual(requests, [{ url: eagerUrl, priority: 'low' }]);
   runIdle();
   assert.deepEqual(requests.at(-1), { url: idleUrl, priority: 'low' });
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  // Show, close, and release the load region; rendering its block again must not re-pin it.
-  const binding = bindingFor(loadId);
+  // Show, close, and release the eager region; rendering its block again must not re-pin it.
+  const binding = bindingFor(eagerId);
   binding.instance = {} as TemplateInstance;
-  runtime.opened(loadId, binding);
+  runtime.opened(eagerId, binding);
   binding.instance = null;
   runtime.disposed();
   runIdle();
-  assert.equal(registry()[loadId], undefined);
+  assert.equal(registry()[eagerId], undefined);
   requests.length = 0;
   runtime.blockOwner({
     v: 3,
     h: '',
-    c: [lazyCondition(loadId, 3)],
-    lp: { [loadId]: loadUrl },
+    c: [lazyCondition(eagerId, 3)],
+    lp: { [eagerId]: eagerUrl },
   } as TemplateMeta);
   await new Promise(resolve => setTimeout(resolve, 0));
   runIdle();
   assert.equal(requests.length, 0);
-  assert.equal(registry()[loadId], undefined, 'speculative prefetch runs once per region');
+  assert.equal(registry()[eagerId], undefined, 'speculative prefetch runs once per region');
 
   Object.defineProperty(navigator, 'connection', { configurable: true, value: { saveData: true } });
   try {
@@ -366,6 +371,8 @@ test('activation loads at high priority, re-enters its host, and rendered retrie
   host.$toggleCond(binding);
   await assert.rejects(runtime.rendered(host), /failed with HTTP 404/);
   assert.deepEqual(mounted, []);
+  assert.equal(reported.length, 1, 'the failed activation is reported once');
+  assert.match(String(reported[0]), /failed with HTTP 404/);
   serve(url, pack('active-owner'));
   await runtime.rendered(host);
   assert.deepEqual(mounted, [binding]);
@@ -415,6 +422,32 @@ test('resources that fail after a pack publishes keep its region unready until a
     assert.equal(runtime.installing(url), false);
     assert.equal(requests.length, 2);
   } finally {
+    delete target.__webuiPrepareResources;
+  }
+});
+
+test('a speculative install marks its templates and prepares style roots at low priority', async () => {
+  const { speculativeTemplates } = await import('./speculation.js');
+  const target = browser as unknown as Window;
+  const prepared: [readonly string[], RequestPriority | undefined][] = [];
+  target.__webuiPrepareResources = (ids, priority) => { prepared.push([ids, priority]); return undefined; };
+  const published: Record<string, TemplateMeta>[] = [];
+  const listener = (event: Event): void => {
+    published.push((event as CustomEvent<{ templates: Record<string, TemplateMeta> }>).detail.templates);
+  };
+  browser.addEventListener('webui:templates-registered', listener);
+  try {
+    const low = region('low-owner');
+    const high = region('high-owner');
+    serve('_webui/packs/low-owner.0020.json', pack('low-owner'));
+    serve('_webui/packs/high-owner.0021.json', pack('high-owner'));
+    await runtime.load(low, '_webui/packs/low-owner.0020.json', 'low');
+    await runtime.load(high, '_webui/packs/high-owner.0021.json', 'high');
+    assert.deepEqual(prepared, [[[low], 'low'], [[high], 'high']]);
+    assert.equal(speculativeTemplates.has(published[0][low]), true, 'its stylesheets preload at low priority');
+    assert.equal(speculativeTemplates.has(published[1][high]), false, 'activation keeps the default');
+  } finally {
+    browser.removeEventListener('webui:templates-registered', listener);
     delete target.__webuiPrepareResources;
   }
 });
@@ -496,7 +529,7 @@ test('the element waits for a closed region condition and never mounts into a di
   assert.equal(binding.instance, null, 'the detached binding stays unmounted');
   assert.ok(registry()[id], 'the pack stays available for the next activation');
   assert.equal(typeof host.$rendered, 'function');
-  assert.equal('$prefetch' in host, false, 'prefetching is declared with the lazy trigger');
+  assert.equal(typeof (host as { $prefetch?: unknown }).$prefetch, 'function');
 });
 
 test('the element joins an installing pack instead of mounting before its resources', async () => {

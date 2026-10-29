@@ -35,14 +35,38 @@ export interface BuildOptions {
   components?: string[];
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
-  /** Generate and return an esbuild-compatible component asset metafile. */
+  /**
+   * Return the build metafile: the component asset graph in esbuild's
+   * `inputs`/`outputs` format and a `lazyPacks` cost report. Returned only
+   * when the build emits component assets or lazy packs. Also measures each
+   * lazy pack's `brotliBytes`.
+   */
   metafile?: boolean;
   /** Emitted Link-mode CSS filename template. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
-  /** Optional base URL/path prefix for Link-mode CSS hrefs. */
-  cssPublicBase?: string;
-  /** URL prefix for lazy-region packs, ending in "/" (default: "_webui/packs/"). */
-  packPublicBase?: string;
+  /**
+   * Public URL or path ending in "/" that maps to the output directory, such
+   * as `"https://cdn.example.com/app/"` or `"/static/"`.
+   *
+   * Build output keeps base-relative paths. The base is stored in the
+   * protocol: rendering prefixes stylesheet links with it and passes it to the
+   * browser, including as `<meta name="webui-asset-base">` in the document
+   * head. Module preload hints keep their paths. Override it per request with
+   * the reserved `{ $webui: { assetBase } }` state member.
+   */
+  assetBase?: string;
+  /**
+   * Module specifiers for custom elements, keyed by tag, for components
+   * without a usable `.ts` or `.js` sibling. `lazy.webui.js` imports each
+   * specifier verbatim, overriding a discovered sibling module.
+   */
+  componentModules?: Record<string, string>;
+  /**
+   * Directory you will write generated modules to, such as
+   * `lazyScriptsModule`. Relative module specifiers start here; without it
+   * they are relative to `appDir`.
+   */
+  modulesOut?: string;
   /** Design token theme: a JSON file path or npm package name. */
   theme?: string;
   /** Projection manifest file paths, merged in order. */
@@ -70,6 +94,52 @@ export interface BuildStats {
   tokenCount: number;
 }
 
+/** One lazy-region template pack and its cost report. */
+export interface LazyPackFile {
+  /** Content-addressed file name; publish it under `_webui/packs/`. */
+  fileName: string;
+  /** JSON pack content. */
+  content: string;
+  /** Path relative to the asset base: `_webui/packs/<fileName>`. */
+  path: string;
+  /** Region identity, `<owner>::lazy:@<n>`. */
+  region: string;
+  /** Component whose template declares the region. */
+  owner: string;
+  /** When the pack may be fetched before the region opens. */
+  trigger: "intent" | "idle" | "eager" | "demand";
+  /** Content hash from the file name. */
+  hash: string;
+  /** Size of `content` in bytes. */
+  bytes: number;
+  /** Brotli size at quality 11, present when `metafile` is requested. */
+  brotliBytes?: number;
+  /** Module specifiers of the scripted components the region introduces. */
+  scripts: string[];
+}
+
+/** A generated ES module for the application bundler. */
+export interface GeneratedModule {
+  /** File name to write in the generated-modules directory. */
+  fileName: string;
+  /** JavaScript module source. */
+  content: string;
+  /**
+   * TypeScript declarations to write next to the module, such as
+   * `lazy.webui.d.ts`, so TypeScript entries can import the module without
+   * `allowJs`.
+   */
+  declaration: GeneratedDeclaration;
+}
+
+/** TypeScript declarations for a generated module. */
+export interface GeneratedDeclaration {
+  /** File name to write in the generated-modules directory. */
+  fileName: string;
+  /** TypeScript declaration source. */
+  content: string;
+}
+
 /** Result of a successful build operation. */
 export interface BuildResult {
   /** Serialized protocol (protobuf binary). */
@@ -78,12 +148,15 @@ export interface BuildResult {
   cssFiles: string[];
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
+  /** Lazy-region template packs. Publish each under `_webui/packs/`. */
+  lazyPackFiles: LazyPackFile[];
   /**
-   * Lazy-region template packs as alternating [filename, content, ...].
-   * Publish them under `_webui/packs/` in the build output.
+   * Generated `lazy.webui.js`, present when the build has lazy regions. Write
+   * it and its `declaration` to `modulesOut` and import the module from your
+   * entry module.
    */
-  lazyPackFiles: string[];
-  /** Esbuild-compatible component asset metafile JSON when requested. */
+  lazyScriptsModule?: GeneratedModule;
+  /** Build metafile JSON when requested; see `BuildOptions.metafile`. */
   metafile?: string;
   /** Non-fatal build advisories as plain diagnostic strings. */
   warnings: string[];
@@ -222,8 +295,9 @@ interface NativeAddon {
     componentAssetRoots?: string[];
     metafile?: boolean;
     cssFileNameTemplate?: string;
-    cssPublicBase?: string;
-    packPublicBase?: string;
+    assetBase?: string;
+    componentModules?: Record<string, string>;
+    modulesOut?: string;
     projectionManifests?: string[];
     projectionManifestObjects?: Array<{
       path: string;

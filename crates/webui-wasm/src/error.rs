@@ -26,6 +26,17 @@ pub(crate) enum WasmError {
     #[error("{0}")]
     LazyPacks(String),
 
+    /// A build option, such as the asset base or DOM strategy, was invalid.
+    #[cfg(feature = "all")]
+    #[error("{0}")]
+    InvalidBuild(String),
+
+    /// A component module mapping was invalid, or a component module has no
+    /// path relative to the generated-modules directory.
+    #[cfg(feature = "all")]
+    #[error("{0}")]
+    ComponentModules(Box<webui_parser::Diagnostic>),
+
     /// Protocol protobuf bytes could not be decoded or encoded.
     #[error("Protocol error: {0}")]
     Protocol(#[from] webui_protocol::ProtocolError),

@@ -3,6 +3,7 @@
 
 import { installComponentLinkStyles } from './link-styles.js';
 import { setImportMapContent } from '../trusted-types-policy.js';
+import { resolveAsset } from '../asset-base.js';
 import { catalogFor } from './style-catalog.js';
 import type { ComponentStyleResource, DocumentCatalog } from './style-catalog.js';
 export { isComponentStyleMarker, isComponentStyleResourceMarker } from './style-markers.js';
@@ -105,8 +106,10 @@ const resourceMarkers = new WeakMap<StyleTarget, ResourceMarkerCache>();
 const moduleAdoption = new WeakMap<StyleTarget, ModuleAdoptionState>();
 const moduleImportsInstalled = new WeakMap<Document, Set<string>>();
 const moduleImportsSeeded = new WeakSet<Document>();
+// The specifier names an import map entry that `loadModule()` installs, never
+// a module an application bundler can resolve.
 const defaultCssModuleLoader: CssModuleLoader = (specifier) =>
-  import(specifier, { with: { type: 'css' } });
+  import(/* webpackIgnore: true */ /* @vite-ignore */ specifier, { with: { type: 'css' } });
 let loadCssModule = defaultCssModuleLoader;
 
 /** Override CSS module loading in unit tests. */
@@ -293,7 +296,7 @@ function appendResource(
   if (resource.kind === 'link') {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = resource.href;
+    link.href = resolveAsset(resource.href, document);
     link.setAttribute('data-webui-resource', id);
     link.setAttribute('data-webui-strategy', 'link');
     parent.insertBefore(link, before ?? null);

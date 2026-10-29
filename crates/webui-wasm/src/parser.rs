@@ -8,9 +8,14 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::{ParserPluginArtifacts, StateSurface};
-use webui_parser::{CssStrategy, DomStrategy, HtmlParser};
+use webui_parser::{CssStrategy, Diagnostic, DomStrategy, HtmlParser};
 use webui_protocol::projection_manifest::{ProjectionComponent, ProjectionManifest};
 use webui_protocol::{InitialStateStrategy, StateProjectionMode, WebUIProtocol};
+
+#[cfg(feature = "all")]
+mod app;
+#[cfg(feature = "all")]
+pub use app::build_app;
 
 /// Build protocol protobuf bytes from virtual files without rendering.
 ///
@@ -32,50 +37,6 @@ pub fn build_protocol(
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// Build protocol bytes plus content-addressed lazy-region template packs.
-///
-/// Returns `{ protocol: Uint8Array, lazyPackFiles: string[] }`, where
-/// `lazyPackFiles` alternates file names and JSON content. Serve them under
-/// `packPublicBase` (default `_webui/packs/`, relative to the document base).
-#[cfg(feature = "all")]
-#[wasm_bindgen(js_name = buildApp)]
-pub fn build_app(
-    files: JsValue,
-    entry: &str,
-    projection_manifests: Option<JsValue>,
-    dom: Option<String>,
-    pack_public_base: Option<String>,
-) -> Result<JsValue, JsValue> {
-    let (files_map, manifests, dom) = build_inputs(files, projection_manifests, dom)?;
-    let base = pack_public_base
-        .as_deref()
-        .unwrap_or(DEFAULT_PACK_PUBLIC_BASE);
-    if let Some(message) = webui_handler::lazy_packs::public_base_error(base) {
-        return Err(JsValue::from_str(&message));
-    }
-    let (protocol, packs) = compile(&files_map, entry, &manifests, dom, base)
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    let bytes = protocol
-        .to_protobuf()
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    let files = js_sys::Array::new_with_length(u32::try_from(packs.len() * 2).unwrap_or(u32::MAX));
-    for (index, (name, content)) in packs.iter().enumerate() {
-        let position = u32::try_from(index * 2).unwrap_or(u32::MAX);
-        files.set(position, JsValue::from_str(name));
-        files.set(position + 1, JsValue::from_str(content));
-    }
-    let result = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &result,
-        &"protocol".into(),
-        &js_sys::Uint8Array::from(bytes.as_slice()),
-    )?;
-    js_sys::Reflect::set(&result, &"lazyPackFiles".into(), &files)?;
-    Ok(result.into())
-}
-
-const DEFAULT_PACK_PUBLIC_BASE: &str = "_webui/packs/";
-
 type BuildInputs = (
     HashMap<String, String>,
     Vec<ProjectionManifest>,
@@ -94,12 +55,15 @@ fn build_inputs(
         .transpose()
         .map_err(|error| JsValue::from_str(&format!("invalid projection manifests: {error}")))?
         .unwrap_or_default();
-    let dom = dom
-        .map(|value| value.parse::<DomStrategy>())
-        .transpose()
-        .map_err(|error| JsValue::from_str(&error))?
-        .unwrap_or_default();
+    let dom = parse_dom(dom).map_err(|error| JsValue::from_str(&error))?;
     Ok((files_map, manifests, dom))
+}
+
+fn parse_dom(dom: Option<String>) -> Result<DomStrategy, String> {
+    Ok(dom
+        .map(|value| value.parse::<DomStrategy>())
+        .transpose()?
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -117,44 +81,16 @@ fn build_protocol_inner_with_dom(
     projection_manifests: &[ProjectionManifest],
     dom: DomStrategy,
 ) -> Result<Vec<u8>, WasmError> {
-    let (protocol, packs) = compile(
-        files,
-        entry,
-        projection_manifests,
-        dom,
-        DEFAULT_PACK_PUBLIC_BASE,
-    )?;
-    if !packs.is_empty() {
+    let (mut protocol, _) = compile(files, entry, projection_manifests, dom, String::new())?;
+    if protocol
+        .client_fragments
+        .values()
+        .any(|fragment| fragment.entry)
+    {
         return Err(lazy_packs_unavailable());
     }
-    protocol.to_protobuf().map_err(WasmError::Protocol)
-}
-
-/// Emit lazy-region packs when supported, then assign identity over final metadata.
-fn finish(
-    protocol: &mut WebUIProtocol,
-    pack_public_base: &str,
-) -> Result<Vec<(String, String)>, WasmError> {
-    #[cfg(feature = "all")]
-    let packs = webui_handler::lazy_packs::emit(protocol, pack_public_base)
-        .map_err(|error| WasmError::LazyPacks(error.to_string()))?
-        .into_iter()
-        .map(|pack| (pack.file_name, pack.content))
-        .collect();
-    #[cfg(not(feature = "all"))]
-    let packs = {
-        let _ = pack_public_base;
-        if protocol
-            .client_fragments
-            .values()
-            .any(|fragment| fragment.entry)
-        {
-            return Err(lazy_packs_unavailable());
-        }
-        Vec::new()
-    };
     protocol.assign_build_id().map_err(WasmError::Protocol)?;
-    Ok(packs)
+    protocol.to_protobuf().map_err(WasmError::Protocol)
 }
 
 #[cold]
@@ -181,12 +117,14 @@ fn register_components(
                 // A sibling module marks an authored client component. Rust
                 // never analyzes its source; optional projection manifests
                 // provide exact client state surfaces.
+                let script = component_script(files, tag_name);
                 parser.component_registry_mut().register_component(
                     webui_parser::ComponentRegistration {
                         tag_name,
                         html_content: content,
                         css_content: css,
-                        is_client_owned: has_component_script(files, tag_name),
+                        is_client_owned: script.is_some(),
+                        script_path: script.map(std::path::Path::new),
                     },
                 )?;
             }
@@ -195,9 +133,14 @@ fn register_components(
     Ok(())
 }
 
-/// Return whether the virtual file map contains an authored component module.
-fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool {
-    files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
+/// Return the virtual file name of a component's authored module, preferring
+/// `.ts` over `.js`.
+fn component_script<'a>(files: &'a HashMap<String, String>, tag_name: &str) -> Option<&'a str> {
+    ["ts", "js"].into_iter().find_map(|extension| {
+        files
+            .get_key_value(&format!("{tag_name}.{extension}"))
+            .map(|(name, _)| name.as_str())
+    })
 }
 
 type ComponentDeliverySnapshot = (
@@ -276,23 +219,22 @@ pub(crate) fn parse_to_protocol_with_dom(
     projection_manifests: &[ProjectionManifest],
     dom: DomStrategy,
 ) -> Result<WebUIProtocol, WasmError> {
-    compile(
-        files,
-        entry,
-        projection_manifests,
-        dom,
-        DEFAULT_PACK_PUBLIC_BASE,
-    )
-    .map(|(protocol, _)| protocol)
+    let (mut protocol, _) = compile(files, entry, projection_manifests, dom, String::new())?;
+    protocol.assign_build_id().map_err(WasmError::Protocol)?;
+    Ok(protocol)
 }
 
+/// Compile virtual files into a protocol and parser warnings.
+///
+/// Lazy-region packs and build identity are assigned by the caller, after the
+/// final metadata exists.
 fn compile(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
     dom: DomStrategy,
-    pack_public_base: &str,
-) -> Result<(WebUIProtocol, Vec<(String, String)>), WasmError> {
+    asset_base: String,
+) -> Result<(WebUIProtocol, Vec<Diagnostic>), WasmError> {
     let entry_html = files
         .get(entry)
         .ok_or_else(|| WasmError::MissingEntry(entry.to_string()))?;
@@ -315,6 +257,7 @@ fn compile(
             .filter(|component| parser.has_fragment(&component.tag_name))
             .map(|component| component.tag_name.as_str()),
     );
+    let warnings = parser.take_warnings();
 
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
     protocol.component_render_css = component_render_css;
@@ -373,7 +316,7 @@ fn compile(
         }
     }
     apply_component_delivery(&mut protocol, component_delivery, entry);
-    let packs = finish(&mut protocol, pack_public_base)?;
+    protocol.asset_base = asset_base;
 
     fn merge_projection_manifests(
         manifests: &[ProjectionManifest],
@@ -413,7 +356,7 @@ fn compile(
         keys.dedup();
         keys
     }
-    Ok((protocol, packs))
+    Ok((protocol, warnings))
 }
 
 fn encode_state_surface(surface: StateSurface) -> (i32, Vec<String>) {
@@ -436,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_regions_emit_packs_and_protocol_only_builds_explain_how_to_get_them() {
+    fn protocol_only_builds_explain_how_to_get_lazy_packs() {
         let files = HashMap::from([
             (
                 "index.html".to_string(),
@@ -449,28 +392,18 @@ mod tests {
         ]);
         let error = build_protocol_inner(&files, "index.html", &[]).unwrap_err();
         assert!(error.to_string().contains("buildApp()"), "{error}");
-        #[cfg(feature = "all")]
-        {
-            let (protocol, packs) = compile(
-                &files,
-                "index.html",
-                &[],
-                DomStrategy::Shadow,
-                DEFAULT_PACK_PUBLIC_BASE,
-            )
-            .unwrap();
-            assert_eq!(packs.len(), 1);
-            assert!(packs[0].0.starts_with("app-owner."), "{}", packs[0].0);
-            assert!(packs[0].1.starts_with(r#"{"type":"webui-pack""#));
-            let reference = format!(
-                r#""lp":{{"app-owner::lazy:@0":"_webui/packs/{}"}}"#,
-                packs[0].0
-            );
-            assert!(protocol.components["app-owner"]
-                .template_json
-                .contains(&reference));
-            assert!(protocol.build_id.starts_with("sha256:"));
-        }
+    }
+
+    #[test]
+    fn virtual_component_modules_prefer_typescript() {
+        let files = HashMap::from([
+            ("a-card.ts".to_string(), String::new()),
+            ("a-card.js".to_string(), String::new()),
+            ("b-card.js".to_string(), String::new()),
+        ]);
+        assert_eq!(component_script(&files, "a-card"), Some("a-card.ts"));
+        assert_eq!(component_script(&files, "b-card"), Some("b-card.js"));
+        assert_eq!(component_script(&files, "c-card"), None);
     }
 
     #[test]

@@ -212,6 +212,11 @@ export function installTemplateRegistry(): void {
 
 declare global {
   interface WebUIRuntimeGlobal {
+    /**
+     * Base URL or path, ending in `/`, of compiler-emitted assets when they are
+     * not served relative to the document. It may be relative to the document.
+     */
+    assetBase?: string;
     buildId?: string;
     /** Hex bitset of compiled templates this document holds. */
     inventory?: string;
@@ -233,7 +238,24 @@ declare global {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
     __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
-    __webuiPrepareResources?: (ids: readonly string[]) => Promise<void> | undefined;
+    /**
+     * Installed by `styles.js`: prepare the stylesheets of component style
+     * roots. `priority: 'low'` prepares them speculatively, once the window
+     * has loaded; until then the result has nothing to wait for.
+     */
+    __webuiPrepareResources?: (
+      ids: readonly string[],
+      priority?: RequestPriority,
+    ) => Promise<void> | undefined;
+    /**
+     * Installed by `styles.js`: preload base-relative stylesheet paths, shared
+     * with later style registration. `priority: 'low'` preloads speculatively,
+     * once the window has loaded; until then the result has nothing to wait for.
+     */
+    __webuiPreloadStyles?: (
+      hrefs: readonly string[],
+      priority?: RequestPriority,
+    ) => Promise<void> | undefined;
     __webuiCollectTemplates?: (keep?: readonly string[]) => number;
     __webuiRetainTemplate?: (tag: string) => unknown;
   }
@@ -330,6 +352,14 @@ export function deferTemplateDefinition(
       : 'already has a pending authored definition.'}`);
   }
   pendingTemplateDefinitions.set(tagName, { ctor, define });
+}
+
+/**
+ * Whether an authored definition for this tag is waiting for rendering or its
+ * compiled metadata, so it is declared but not yet a custom element.
+ */
+export function hasPendingTemplateDefinition(tagName: string): boolean {
+  return pendingTemplateDefinitions.has(tagName);
 }
 
 function loadWebUIDataBlock(): void {

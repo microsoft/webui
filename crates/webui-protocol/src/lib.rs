@@ -21,8 +21,10 @@ pub mod plugin;
 #[cfg(feature = "projection-manifest")]
 pub mod projection_manifest;
 
+mod asset_base;
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
+pub use asset_base::{validate_asset_base, AssetBaseError, AssetBaseProblem};
 mod lazy;
 pub use lazy::{lazy_block_id, lazy_fragment_id};
 
@@ -810,6 +812,7 @@ impl WebUiProtocol {
             component_asset_style_preloads: Vec::new(),
             build_id: String::new(),
             client_fragments: HashMap::new(),
+            asset_base: String::new(),
         }
     }
 
@@ -828,6 +831,7 @@ impl WebUiProtocol {
             component_asset_style_preloads: Vec::new(),
             build_id: String::new(),
             client_fragments: HashMap::new(),
+            asset_base: String::new(),
         }
     }
 }
@@ -843,6 +847,10 @@ impl WebUiProtocol {
                 protocol.css_strategy
             ))
         })?;
+        if !protocol.asset_base.is_empty() {
+            validate_asset_base(&protocol.asset_base)
+                .map_err(|error| ProtocolError::Validation(error.to_string()))?;
+        }
         let fragments = &protocol.fragments;
 
         let invalid_ref = fragments.iter().find_map(|(_, fragment_list)| {
@@ -1716,6 +1724,39 @@ mod tests {
             !bytes.windows(2).any(|w| w == [0x3a, 0x00]),
             "an empty repeated field must not be encoded"
         );
+    }
+
+    #[test]
+    fn test_protobuf_asset_base_roundtrips_and_is_free_when_unset() {
+        let mut protocol = sample_protocol();
+        let without = protocol.to_protobuf().expect("encode failed");
+        assert!(WebUIProtocol::from_protobuf(&without)
+            .expect("decode failed")
+            .asset_base
+            .is_empty());
+
+        protocol.asset_base = "https://cdn.example.com/app/".to_string();
+        let with = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&with).expect("decode failed");
+        assert_eq!(decoded.asset_base, "https://cdn.example.com/app/");
+        assert_eq!(protocol, decoded);
+        // One tag byte and one length byte: an unset base costs nothing.
+        assert_eq!(with.len(), without.len() + 2 + protocol.asset_base.len());
+    }
+
+    #[test]
+    fn test_protobuf_decode_rejects_an_invalid_asset_base() {
+        for (base, rule) in [
+            ("https://cdn.example.com/app", "must end with '/'"),
+            ("/static\"><script>/", "must not contain"),
+            ("javascript:alert(1)/", "only http:// and https://"),
+        ] {
+            let mut protocol = sample_protocol();
+            protocol.asset_base = base.to_string();
+            let bytes = protocol.to_protobuf().expect("encode failed");
+            let error = WebUIProtocol::from_protobuf(&bytes).expect_err(base);
+            assert!(error.to_string().contains(rule), "{error}");
+        }
     }
 
     #[test]

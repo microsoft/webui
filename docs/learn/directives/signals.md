@@ -85,7 +85,9 @@ Example:
 
 Hosts can add trusted HTML at document boundaries through the reserved
 `$webui` state object. Authors do not write `body_start` or `body_end` bindings
-in their templates.
+in their templates. The same object can also carry `assetBase`, the public URL
+or path the response loads stylesheets and lazy packs from (see the
+[CLI reference](/reference/cli/)).
 
 ### Example
 

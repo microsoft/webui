@@ -244,7 +244,13 @@ function validateTemplatePayload(
   }
 }
 
-/** Inject CSS stylesheet links from a partial response. */
+/**
+ * Inject stylesheet links from a response's `css` list.
+ *
+ * Compiler-emitted hrefs are relative to the asset base, which the server
+ * publishes as `window.__webui.assetBase` when assets are not served relative
+ * to the document. The raw href stays the deduplication key.
+ */
 export function injectCssLinks(
   data: { css?: string[] },
   injectedCss: Set<string>,
@@ -255,10 +261,19 @@ export function injectCssLinks(
         injectedCss.add(href);
         const link = document.createElement('link');
         link.rel = 'stylesheet';
-        link.href = href;
+        link.href = resolveAssetHref(href);
         document.head.appendChild(link);
       }
     }
+  }
+}
+
+function resolveAssetHref(href: string): string {
+  try {
+    const base = window.__webui?.assetBase;
+    return new URL(href, base ? new URL(base, document.baseURI) : document.baseURI).href;
+  } catch {
+    return href;
   }
 }
 

@@ -157,6 +157,15 @@ pub struct WebUiProtocol {
         ::prost::alloc::string::String,
         ClientFragmentData,
     >,
+    /// Build-default public URL or path for the build output directory, ending
+    /// in "/". Empty when the build set none. Every asset path in this protocol
+    /// (stylesheet hrefs, lazy pack paths) is relative to it. Handlers prefix
+    /// compiler-emitted stylesheet links and style preload hints with it and pass
+    /// it to the browser, unless the request state supplies its own
+    /// `$webui.assetBase`. Module preload hints are never prefixed: they name the
+    /// application's own scripts, which stay where the application put them.
+    #[prost(string, tag = "15")]
+    pub asset_base: ::prost::alloc::string::String,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]

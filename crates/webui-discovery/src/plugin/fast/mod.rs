@@ -12,7 +12,7 @@ use crate::npm::{
     validate_package_asset_path, ComponentDeclaration, PackageContext,
 };
 use crate::{
-    has_sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent, PreparedPackage,
+    sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent, PreparedPackage,
 };
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
@@ -115,6 +115,9 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                 html: ComponentFile::new(Arc::clone(template_root), &template_path)?,
                 css,
                 is_client_owned: source_is_client_owned || module.is_client_owned,
+                // A manifest module is not a template sibling; packages map
+                // these tags to modules explicitly when they need one.
+                script_path: None,
             });
         }
         Ok(PreparedPackage::Files(components))
@@ -374,11 +377,13 @@ fn discover_local_templates(
         sibling.push(path);
         let css_content =
             read_optional_file(resolve_local_styles(path).as_deref(), "component styles")?;
+        let script_path = sibling_script(&mut sibling, None)?;
         components.push(DiscoveredComponent {
             tag_name: tag_name.to_string(),
             html_content,
             css_content,
-            is_client_owned: has_sibling_script(&mut sibling, None)?,
+            is_client_owned: script_path.is_some(),
+            script_path,
             source: source.clone(),
         });
     }

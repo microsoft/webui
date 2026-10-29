@@ -386,6 +386,11 @@ impl WebUIHandler {
             WebUiBootstrap {
                 build_id: &context.protocol.build_id,
                 style_inventory: &style_inventory,
+                // Response-wide, like the route chain: the first record
+                // carries it to the browser before any range activates.
+                asset_base: first_checkpoint
+                    .then(|| context.state_inject.effective_asset_base(context.protocol))
+                    .flatten(),
                 declaration_id,
                 enclosing_span_instance_id,
                 state: bootstrap_state,

@@ -284,7 +284,10 @@ renderer.render(b'{"title":"Home"}')              # bytes fast path
 
 `head_inject`, `body_inject`, and the reserved `$webui` state channel's
 `headEnd` / `bodyStart` / `bodyEnd` members are written **verbatim** at their
-structural boundary, exactly like every other host binding.
+structural boundary, exactly like every other host binding. The channel's
+`assetBase` member overrides the build's asset base for one response (see the
+[CLI reference](/reference/cli/)); an invalid value raises the binding's state
+error before any output is produced.
 
 <webui-blockquote appearance="warning" title="Trusted HTML, not escaped input" icon="⚠️">
 

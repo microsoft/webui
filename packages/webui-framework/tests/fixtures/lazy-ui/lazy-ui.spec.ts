@@ -278,3 +278,64 @@ test('a closed native dialog loads its body and Escape releases its state', asyn
   await expect(page.locator('test-lazy-dialog .message')).toHaveCount(0);
   expect(await page.locator('test-lazy-dialog').evaluate(element => (element as LazyOwner).message)).toBe('');
 });
+
+/** Keep the window loading until the returned function runs, by holding the search page's image. */
+async function holdWindowLoad(page: Page): Promise<() => void> {
+  const image = Promise.withResolvers<void>();
+  await page.route('**/lazy-ui/slow.gif', async route => {
+    await image.promise;
+    await route.fulfill({ status: 204 });
+  });
+  return image.resolve;
+}
+
+test('focus inside an intent owner before the runtime listens prefetches only its pack until load', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const sent: [url: string, priority: string][] = [];
+  const session = await page.context().newCDPSession(page);
+  await session.send('Network.enable');
+  session.on('Network.requestWillBeSent', event => { sent.push([event.request.url, event.request.initialPriority]); });
+  const finishLoading = await holdWindowLoad(page);
+  const runtime = Promise.withResolvers<void>();
+  await page.route('**/dist/lazy-ui/element.js', async route => {
+    await runtime.promise;
+    await route.continue();
+  });
+  await page.goto('/lazy-ui/fixture.html?initial=0&search=1', { waitUntil: 'commit' });
+  // Like autofocus, focus lands in the owner before the runtime listens for it.
+  await page.locator('test-lazy-search .query').focus();
+  const started = sent.length;
+  runtime.resolve();
+  await ready(page, ['test-lazy-search']);
+  await page.waitForFunction(() => window.__lazyFixture.registered('test-lazy-search'));
+  expect(await page.evaluate(() => document.readyState)).not.toBe('complete');
+  // Everything the runtime requested before the window loaded was speculative.
+  const speculative = sent.slice(started).filter(([url]) => !url.endsWith('/favicon.ico'));
+  expect(speculative.filter(([, priority]) => priority === 'High' || priority === 'VeryHigh')).toEqual([]);
+  expect(speculative).toEqual([[await packUrl(page, 'test-lazy-search'), 'Low']]);
+  expect(await page.evaluate(() => window.__lazyFixture.imports()), 'scripts wait for the load event').toEqual([]);
+  expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-shadow'))).toBe(false);
+
+  finishLoading();
+  await page.waitForFunction(() => window.__lazyFixture.imports().length > 0);
+  expect(await page.evaluate(() => window.__lazyFixture.imports())).toEqual(['complete']);
+  await page.locator('test-lazy-search .query').fill('w');
+  await expect(page.locator('test-lazy-search .suggestions')).toHaveCount(1);
+  expect(await page.evaluate(() => window.__lazyFixture.imports())).toHaveLength(1);
+  expect(errors).toEqual([]);
+  await session.detach();
+});
+
+test('activating a region before the window loads imports its scripts at once', async ({ page }) => {
+  const finishLoading = await holdWindowLoad(page);
+  await page.goto('/lazy-ui/fixture.html?initial=0&search=1', { waitUntil: 'commit' });
+  await ready(page, ['test-lazy-search']);
+  await page.locator('test-lazy-search .query').fill('w');
+  await expect(page.locator('test-lazy-search .suggestions')).toHaveCount(1);
+  expect(await page.evaluate(() => window.__lazyFixture.imports())).toEqual(['interactive']);
+  finishLoading();
+  await page.waitForFunction(() => document.readyState === 'complete');
+  await page.evaluate(() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+  expect(await page.evaluate(() => window.__lazyFixture.imports()), 'the deferred import finds it loaded').toHaveLength(1);
+});

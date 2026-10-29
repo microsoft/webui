@@ -42,6 +42,17 @@ impl Protocol {
     pub fn render_lazy_pack(&self, region: &str) -> Result<String> {
         serialization::write(&Pack::select(self, region)?)
     }
+
+    /// Render a region's pack along with the stylesheet paths its
+    /// `componentStyles` registers in a Link build, in closure order.
+    #[cfg(feature = "packs")]
+    pub(crate) fn render_lazy_pack_with_stylesheets(
+        &self,
+        region: &str,
+    ) -> Result<(String, Vec<&str>)> {
+        let pack = Pack::select(self, region)?;
+        Ok((serialization::write(&pack)?, pack.styles.link_hrefs()))
+    }
 }
 
 struct Pack<'a> {

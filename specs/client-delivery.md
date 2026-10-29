@@ -20,10 +20,12 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
   constructor/start duplication, or hidden optional dynamic import remains.
 - Lazy regions are not a delivery consumer. The framework's optional `lazy.js`
   runtime fetches static template packs and registers them through the renderer
-  bridge; it imports no router, transport, or NDJSON reader. The rendering core
-  contains no lazy code beyond resolving string block references through an
-  installable resolver; `lazy.js` extends the element itself, so pages without
-  lazy regions ship nothing for them.
+  bridge; it imports no router, transport, or NDJSON reader. Region component
+  scripts are application code: a compiler-generated module registers them as
+  dynamic imports that the application's bundler splits and serves. The
+  rendering core contains no lazy code beyond resolving string block references
+  through an installable resolver; `lazy.js` extends the element itself, so
+  pages without lazy regions ship nothing for them.
 - JSON partial consumers import resource registration but not the NDJSON reader.
   Selecting NDJSON changes content negotiation and makes the decoder available
   before the first response.
@@ -130,11 +132,36 @@ created for the deferred body.
 ### Compiled metadata
 
 A lazy condition entry is `[condition, region, slot, trigger]`, where trigger
-`1` is intent (the default for bare `lazy`), `2` idle, `3` load, and `4` demand.
+`1` is intent (the default for bare `lazy`), `2` idle, `3` eager, and `4` demand.
+The author-facing name `load` is rejected with a hint to use `eager`.
 The template JSON containing that entry, whether a component, a region, or a
-shared block, carries `"lp": { region: url }` for the regions its conditions name.
-URLs are the pack public base (default `_webui/packs/`, resolved against the
-document base) plus `<owner>.<16 hex digits of SHA-256>.json`.
+shared block, carries `"lp": { region: path }` for the regions its conditions name.
+Paths are `_webui/packs/<owner>.<16 hex digits of SHA-256>.json`, relative to the
+asset base.
+
+In link builds the same template also carries
+`"lc": { region: [stylesheet path, ...] }`, for example
+`"lc":{"app-shell::lazy:@0":["settings-form.css","theme-picker.css"]}`.
+A region's list holds the `href` of every link resource its pack registers in
+`componentStyles`, the same base-relative paths the pack carries, including
+bundled chunks, in the order the pack's `closures` (sorted by root) first name
+them, without duplicates. Regions whose packs register no link resource are
+left out, and `lc` is omitted when none remains. Style and module builds never
+emit it: their packs carry CSS text. Keys and order are deterministic, like `lp`.
+
+The browser resolves pack and stylesheet paths against `window.__webui.assetBase`
+when the document has one, else against the document base URL. The handler
+sends the response's asset base (the request's `$webui.assetBase`, else the
+protocol's build default) as `assetBase` in the `#webui-data` object, or in the
+first checkpoint record of a streamed response, and omits it when there is none.
+Document renders, buffered or streamed, also write it at the head-end boundary,
+right after `<meta name="webui-nonce">`, as
+`<meta name="webui-asset-base" content="...">`. The attribute value is
+HTML-escaped like the nonce (`/` becomes `&#x2F;`), so the element's `content`
+reads back the base, and application code can read it before the runtime
+parses `#webui-data`, for example to set a bundler's public path. Neither is
+written without a base. Module preload hints never take the base: they name
+the application's own entry-script imports, which WebUI does not relocate.
 
 ### Packs
 
@@ -144,8 +171,51 @@ templateFunctions? }`. `templates` is the region's resource closure minus the
 owner's eager closure; nested regions are separate packs. `required` lists
 everything the region needs, including owner-provided resources. `bits` maps
 each serialized template to its inventory bit. `componentStyles` is omitted
-when the region adds no style resources or closures. Packs contain no state and
-no build identity.
+when the region adds no style resources or closures. Packs follow the build's
+CSS strategy and DOM fallback like route partials: link builds name stylesheet
+paths, which the browser resolves against the asset base and which the
+template holding the region's condition also lists in `lc`; style and module
+builds carry CSS text. Packs contain no state, no build identity, and no
+JavaScript.
+
+### Region scripts
+
+Custom elements a region introduces are application code, delivered by the
+application's bundler. When a build has lazy regions it emits `lazy.webui.js`
+into the generated-modules directory:
+
+```javascript
+import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';
+defineLazyScripts({ "<region>": { "<tag>": () => import("<specifier>") } });
+```
+
+A region's tags are the scripted components among the templates its pack
+serializes (the same closure), except those the entry page loads at startup:
+components the entry fragment reaches without crossing a lazy region or a
+`<route>`. Packs still carry those templates. Components reached only through
+routes stay listed, because they load with route partials. A component's
+specifier is its sibling `.ts` or `.js` module, relative to the generated
+module, or an explicit component-module mapping. Regions left without tags are
+omitted; the call still runs, so applications import this module instead of
+`lazy.js`.
+
+Next to it the build writes `lazy.webui.d.ts`, which is always:
+
+```typescript
+// Generated by WebUI. Do not edit.
+import '@microsoft/webui-framework/lazy.js';
+```
+
+TypeScript resolves an import of `./lazy.webui.js` to this declaration, which
+brings in the runtime's module augmentation (`$rendered()`, `$prefetch()`)
+without `allowJs`. Declaration files are exempt from `rootDir`, so the
+generated directory may sit outside it. Both files are published together and
+rewritten only when their content changes.
+
+The build reports every pack with its path, region, owner, trigger, raw size,
+content hash, and script specifiers, in the build results and, with brotli
+sizes, as `lazyPacks` in the metafile, so deployments can upload, precache, and
+budget packs without reading them.
 
 ### Runtime
 
@@ -156,10 +226,19 @@ registered, it loads the pack its container's `lp` names and re-enters the owner
 once the pack is registered, which re-evaluates the condition. A region that
 closed meanwhile stays unmounted, and a binding whose owner instance was
 disposed cannot mount. Without the runtime, activation throws an error that
-names `lazy.js`.
+names the generated `lazy.webui.js`, which loads `lazy.js`.
 
 Activation and prefetch share one load per URL, with a 10 second deadline so a
-stalled request fails and the next activation retries. A region whose pack is
+stalled request fails and the next activation retries. Every load also starts
+the region's scripts: one in-flight import per tag, skipped for tags already
+defined, forgotten after a failure so the next load retries. In link builds it
+also preloads the stylesheets the container's `lc` lists for the region,
+resolved against the asset base, at the load's fetch priority, so they download
+in parallel with the pack instead of after it arrives. A region mounts
+only after its pack is installed and its scripts have resolved, so its custom
+elements are defined before the body is inserted. A body that arrives open, in
+SSR or a route partial, has its templates but not its scripts; they start while
+it hydrates, and a later toggle waits for them. A region whose pack is
 still loading or installing is not ready even after its templates are
 published: activation and prefetch join that load instead of mounting early.
 An install that fails after publishing leaves the region not ready and keeps
@@ -178,10 +257,21 @@ so its bits are safe to merge in any inventory epoch.
 Triggers arm when the block containing a closed region renders or hydrates:
 intent through one delegated document listener for pointer, focus, and touch
 events whose composed path includes an element with the owner's tag; idle in an
-idle callback after the window load event; load in the task after hydration.
-Demand regions load only on activation or explicit prefetch. Idle and load
+idle callback after the window load event; eager in the task after hydration.
+Demand regions load only on activation or explicit prefetch. Intent also fires
+when arming finds the focused element (followed through shadow roots) already
+inside an element with the owner's tag, so focus that predates the runtime, such
+as `autofocus`, counts. Idle and eager
 prefetch yield to `navigator.connection.saveData` and skip regions that were
-already released. Prefetch failures are silent; activation surfaces errors and
+already released. Every speculative load (eager, idle, intent, and `$prefetch`)
+waits while `document.prerendering` is true and runs on `prerenderingchange`;
+activation never waits. Eager and idle use fetch priority `low`; intent and
+`$prefetch` use `low` until the document is complete and `high` after it;
+activation uses `high`. Bundler `import()` takes no priority and Chromium
+raises stylesheet preloads to at least high, so a speculative load before the
+document is complete fetches only its pack and starts the region's scripts and
+stylesheets at the window `load` event; its readiness does not wait for that
+deferred work. Prefetch failures are silent; activation surfaces errors and
 retries.
 
 The runtime remembers, weakly, the bindings that mounted each region it
@@ -195,13 +285,30 @@ templates from packs stay registered; ordinary template collection governs them.
 Collection in a new epoch leaves the runtime's earlier registrations to that
 collection.
 
-Setting a lazy condition is the whole activation API; prefetching is declared by
-the trigger, never requested imperatively. `lazy.js` adds one optional method,
-`$rendered()`, to elements and to their types through module augmentation, for
-code that needs a body's DOM immediately. It flushes queued updates, then waits
-for the owner's pending regions, including nested regions activated by their
-mounts. It rejects with a pack failure and retries failed regions that remain
-active when called again.
+Setting a lazy condition is the whole activation API. `lazy.js` adds two
+optional methods to elements and to their types through module augmentation.
+`$prefetch(path?)` loads, without rendering, the regions whose conditions are in
+the element's own template, all of them (including demand regions) or only
+those whose compiled condition paths equal `path` or lie below it; it returns
+nothing and its failures are silent. `$rendered()` is for code that needs a
+body's DOM immediately. It flushes queued updates, then waits for the owner's
+pending regions, including nested regions activated by their mounts and the
+scripts of open bodies. It rejects with a pack or script failure and retries
+failed regions that remain active when called again.
+
+A failed activation dispatches `lazyerror` on the owner: bubbling, composed,
+cancelable, with `detail.error`. If no listener cancels it, the error goes to
+`reportError` (or `console.error`). Internal promises never become unhandled
+rejections. Development builds add two warnings, each issued once. After the
+page loads and goes idle, the runtime warns for each tag in the script map that
+is already defined or declared (waiting for its template) although no region
+that lists it has requested its scripts, which indicates a static import in the
+startup bundle. When a pack registers scripted components that have no loader
+and are neither defined nor declared, it warns that the application imported
+`lazy.js` instead of the generated module.
+
+`resolveAsset` reads the base from `window.__webui.assetBase`, else from the
+document's `<meta name="webui-asset-base">`, else uses the document base URL.
 
 The WebUI adapter uses metadata identity for parsed DOM caching and weak
 block-to-fragment ownership. Active views retain their fragment; disconnected

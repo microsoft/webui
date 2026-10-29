@@ -67,13 +67,30 @@ declarations wait for startup and their metadata before registering. See
 [Runtime entrypoints](https://microsoft.github.io/webui/learn/interactivity#runtime-entrypoints)
 for requirements and examples.
 
-`lazy.js` is the opt-in runtime for `<if lazy>` bodies. It loads each region's
-build-time template pack when the condition becomes true or its prefetch trigger
-fires, renders it in the existing owner and scope without creating a component,
-and releases closed regions at idle. The rendering core contains no lazy code.
+`lazy.js` is the opt-in runtime for `<if lazy>` bodies. When the condition
+becomes true or its prefetch trigger fires, it loads the region's build-time
+template pack together with the scripts of the custom elements the region
+introduces, renders the body in the existing owner and scope once both are
+ready, and releases closed regions at idle. Import the generated
+`lazy.webui.js`, which registers those scripts with `defineLazyScripts()`, so
+your bundler splits them. The rendering core contains no lazy code.
 Setting the condition is all a component does; `await this.$rendered()`, added
-by `lazy.js`, is only for code that needs the body's DOM right away.
-See [Lazy UI](https://microsoft.github.io/webui/learn/lazy).
+by `lazy.js`, is only for code that needs the body's DOM right away, and
+`this.$prefetch(path?)` starts loading from a specific control, such as
+`@pointerenter="{$prefetch('settingsOpen')}"` beside a `lazy="demand"` region.
+Speculative loads use low fetch priority until the page has loaded and wait
+while it is prerendering. Before the page loads they fetch only the pack; the
+region's scripts and stylesheets start once it has, because neither a bundler's
+`import()` nor a stylesheet preload fetches at low priority, and nothing waits
+for the stylesheets until then. An activation starts both at once. Link builds
+otherwise start a region's stylesheets beside its pack at the load's priority.
+Focus already inside an owner, such as an autofocused search box, counts as
+intent. A failed activation dispatches a cancelable `lazyerror` event on the
+owner and otherwise goes to `reportError()`. Packs and component stylesheets
+resolve against the asset base the server publishes, as
+`window.__webui.assetBase` or, before the runtime reads its data,
+`<meta name="webui-asset-base">`. See
+[Lazy UI](https://microsoft.github.io/webui/learn/lazy).
 
 1. Author a component class in TypeScript
 2. Author a WebUI template in HTML
@@ -424,7 +441,7 @@ Generate stable ESM inputs separately from deployable output:
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog \
-  --component-assets-out ./.webui
+  --modules-out ./.webui
 ```
 
 ```typescript

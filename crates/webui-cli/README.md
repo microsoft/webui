@@ -17,7 +17,7 @@ This installs the `webui` binary.
 Build a WebUI application into a compiled protocol and CSS files.
 
 ```bash
-webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
+webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--asset-file-name-template <TEMPLATE>] [--asset-base <BASE>] [--modules-out <DIR>] [--component-module <TAG=SPECIFIER>]... [--metafile <PATH>]
 ```
 
 | Option | Default | Description |
@@ -28,22 +28,33 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/reference/plugins/) for available identifiers) |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
-| `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
+| `--asset-base` | *(none)* | Public URL or path ending in `/` that maps to the output directory. Rendered stylesheet links are prefixed with it, and the browser resolves stylesheet and lazy pack paths against it. Module preload hints keep their paths. Override per request with the `$webui.assetBase` state member |
+| `--modules-out` | `--out` | Directory for generated modules the application bundler imports: component asset inputs, `lazy.webui.js`, and `lazy.webui.d.ts` |
+| `--component-module` | *(none)* | `TAG=SPECIFIER` module for a custom element without a usable `.ts` or `.js` sibling; repeatable |
+| `--metafile` | *(none)* | Write the build metafile: the component asset graph and a cost report for every lazy pack |
 
 ```bash
 webui build ./src --out ./dist
 webui build ./src --out ./dist --plugin webui --css style
 webui build ./src --out ./dist/app1.bin
 webui build ./src --out ./dist --asset-file-name-template "[name]-[hash].[ext]"
-webui build ./src --out ./dist --asset-file-name-template "[name]-[hash].[ext]" --css-public-base "https://cdn.example.com/assets"
+webui build ./src --out ./dist --asset-file-name-template "[name]-[hash].[ext]" --asset-base "https://cdn.example.com/assets/"
+webui build ./src --out ./dist --plugin webui --modules-out ./.webui --metafile ./dist/meta.json
 ```
+
+A build with `<if lazy>` regions writes their template packs under
+`<out>/_webui/packs/`, and `lazy.webui.js` with its `lazy.webui.d.ts` to
+`--modules-out`. Import `lazy.webui.js` from your entry module: it registers a
+dynamic import for each scripted component a region introduces and the page
+does not already load at startup, so your bundler loads that code. The
+declaration file types the import for TypeScript without `allowJs`.
 
 ### `webui serve`
 
 Start a development server with live rebuild and HMR.
 
 ```bash
-webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-port <PORT>] [--plugin <NAME>] [--watch] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
+webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-port <PORT>] [--plugin <NAME>] [--watch] [--asset-file-name-template <TEMPLATE>] [--asset-base <BASE>] [--modules-out <DIR>]
 ```
 
 | Option | Default | Description |
@@ -57,7 +68,8 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--watch` | off | Enable file watching + HMR |
 | `--shutdown-timeout <SECONDS>` | *(none)* | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
-| `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
+| `--asset-base` | *(none)* | Public URL or path ending in `/` that maps to the build output. A path such as `/static/` also serves the build output under that prefix; a URL on another host prints a hint and leaves outputs at their usual paths |
+| `--modules-out` | *(none)* | Directory refreshed after each successful build with generated modules, including `lazy.webui.js` and `lazy.webui.d.ts`, for the application bundler's watcher |
 
 ```bash
 webui serve ./src --state ./data/state.json --port 3000 --watch

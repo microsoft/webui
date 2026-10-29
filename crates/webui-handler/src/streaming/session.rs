@@ -670,6 +670,7 @@ impl SessionCore {
             ..
         } = call;
         let component_asset_style_manifest = protocol.component_asset_style_manifest()?;
+        let state_inject = crate::StateInject::resolve(state)?;
         let progress = self.streaming.take().ok_or_else(missing_progress_error)?;
         let mut streaming =
             StreamingRenderState::from_progress(progress, protocol.component_reachability());
@@ -679,6 +680,7 @@ impl SessionCore {
             lazy_index: protocol.lazy_index(),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
+            component_asset_style_hrefs: protocol.component_asset_style_hrefs(),
             state,
             writer,
             local_vars: std::mem::take(&mut self.local_vars),
@@ -705,7 +707,7 @@ impl SessionCore {
             css_strategy: protocol.css_strategy(),
             head_inject: options.head_inject.filter(|html| !html.is_empty()),
             body_inject: options.body_inject.filter(|html| !html.is_empty()),
-            state_inject: crate::StateInject::resolve(state),
+            state_inject,
             head_end_emitted: self.head_end_emitted,
             body_start_emitted: self.body_start_emitted,
             component_asset_styles_emitted: self.component_asset_styles_emitted,

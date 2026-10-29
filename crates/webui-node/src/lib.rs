@@ -27,6 +27,7 @@
 //! protocol.renderStream(state, 'index.html', '/', (chunk) => process.stdout.write(chunk));
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Either, External, Function};
@@ -73,16 +74,64 @@ pub struct JsBuildResult {
     pub css_files: Vec<String>,
     /// Static component asset files as alternating [filename, content, filename, content, ...].
     pub component_asset_files: Vec<String>,
-    /// Lazy-region packs as alternating [filename, content, ...]; publish them
-    /// under `_webui/packs/` in the build output.
-    pub lazy_pack_files: Vec<String>,
-    /// Esbuild-compatible component asset metafile JSON when requested.
+    /// Lazy-region packs; publish each under `_webui/packs/` in the build output.
+    pub lazy_pack_files: Vec<JsLazyPackFile>,
+    /// Generated `lazy.webui.js` and its `lazy.webui.d.ts`, present when the
+    /// build has lazy regions.
+    pub lazy_scripts_module: Option<JsGeneratedModule>,
+    /// Build metafile JSON when requested and the build emits component assets
+    /// or lazy packs.
     pub metafile: Option<String>,
     /// Non-fatal build advisories (plain text), e.g. CSS tokens used only with a
     /// literal `var()` fallback and absent from every theme.
     pub warnings: Vec<String>,
     /// Build statistics.
     pub stats: JsBuildStats,
+}
+
+/// One lazy-region template pack and its cost report.
+#[napi(object)]
+pub struct JsLazyPackFile {
+    /// Content-addressed file name inside `_webui/packs/`.
+    pub file_name: String,
+    /// JSON pack content.
+    pub content: String,
+    /// Path relative to the asset base: `_webui/packs/<fileName>`.
+    pub path: String,
+    /// Region identity, `<owner>::lazy:@<n>`.
+    pub region: String,
+    /// Component whose template declares the region.
+    pub owner: String,
+    /// Prefetch trigger: `intent`, `idle`, `eager`, or `demand`.
+    pub trigger: String,
+    /// Content hash from the file name.
+    pub hash: String,
+    /// Size of `content` in bytes.
+    pub bytes: u32,
+    /// Brotli size at quality 11, present when `metafile` is requested.
+    pub brotli_bytes: Option<u32>,
+    /// Module specifiers of the scripted components the region introduces.
+    pub scripts: Vec<String>,
+}
+
+/// A generated ES module for the application bundler.
+#[napi(object)]
+pub struct JsGeneratedModule {
+    /// File name to write in the generated-modules directory.
+    pub file_name: String,
+    /// JavaScript module source.
+    pub content: String,
+    /// TypeScript declarations to write next to the module.
+    pub declaration: JsGeneratedDeclaration,
+}
+
+/// TypeScript declarations for a generated module, such as `lazy.webui.d.ts`.
+#[napi(object)]
+pub struct JsGeneratedDeclaration {
+    /// File name to write in the generated-modules directory.
+    pub file_name: String,
+    /// TypeScript declaration source.
+    pub content: String,
 }
 
 /// Inline projection manifest transported through N-API.
@@ -116,14 +165,20 @@ pub struct JsBuildOptions {
     pub components: Option<Vec<String>>,
     /// Root component tags emitted as static `.webui.js` ESM assets.
     pub component_asset_roots: Option<Vec<String>>,
-    /// Generate and return an esbuild-compatible component asset metafile.
+    /// Generate and return the build metafile: the component asset graph and
+    /// the lazy-region pack report.
     pub metafile: Option<bool>,
     /// Link-mode CSS filename template using [name], [hash], [ext].
     pub css_file_name_template: Option<String>,
-    /// Optional base URL/path prefix for Link-mode css hrefs.
-    pub css_public_base: Option<String>,
-    /// URL prefix for lazy-region packs, ending in "/" (default "_webui/packs/").
-    pub pack_public_base: Option<String>,
+    /// Public URL or path ending in "/" that maps to the output directory.
+    /// Requests override it with the `$webui.assetBase` state member.
+    pub asset_base: Option<String>,
+    /// Module specifiers for custom elements without a usable sibling module,
+    /// keyed by tag; written verbatim in `lazy.webui.js`.
+    pub component_modules: Option<HashMap<String, String>>,
+    /// Directory the generated modules will be written to. Relative module
+    /// specifiers in `lazy.webui.js` start here; defaults to `appDir`.
+    pub modules_out: Option<String>,
     /// Legal comment handling: "inline" (default) or "none".
     pub legal_comments: Option<String>,
     /// Design token theme: a JSON file path or npm package name.
@@ -203,8 +258,13 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         css_file_name_template: options
             .css_file_name_template
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
-        css_public_base: options.css_public_base,
-        pack_public_base: options.pack_public_base,
+        asset_base: options.asset_base,
+        component_modules: options
+            .component_modules
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+        modules_out: options.modules_out.map(std::path::PathBuf::from),
         legal_comments,
         theme,
         projection_manifests,
@@ -224,10 +284,10 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .into_iter()
         .flat_map(|file| [file.name, file.content])
         .collect();
-    let lazy_pack_files: Vec<String> = result
+    let lazy_pack_files: Vec<JsLazyPackFile> = result
         .lazy_pack_files
         .into_iter()
-        .flat_map(|pack| [pack.file_name, pack.content])
+        .map(js_lazy_pack_file)
         .collect();
     let warnings: Vec<String> = result.warnings.iter().map(|d| d.to_string()).collect();
 
@@ -236,6 +296,14 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         css_files,
         component_asset_files,
         lazy_pack_files,
+        lazy_scripts_module: result.lazy_scripts_module.map(|module| JsGeneratedModule {
+            file_name: module.file_name,
+            content: module.content,
+            declaration: JsGeneratedDeclaration {
+                file_name: module.declaration.file_name,
+                content: module.declaration.content,
+            },
+        }),
         metafile: result.metafile,
         warnings,
         stats: JsBuildStats {
@@ -247,6 +315,28 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             token_count: result.stats.token_count as u32,
         },
     })
+}
+
+fn js_lazy_pack_file(pack: webui::LazyPackFile) -> JsLazyPackFile {
+    let path = pack.path();
+    let hash = pack.hash().to_string();
+    let to_u32 = |bytes: usize| u32::try_from(bytes).unwrap_or(u32::MAX);
+    JsLazyPackFile {
+        bytes: to_u32(pack.bytes()),
+        brotli_bytes: pack.brotli_bytes.map(to_u32),
+        scripts: pack
+            .scripts
+            .into_iter()
+            .map(|script| script.specifier)
+            .collect(),
+        trigger: pack.trigger.as_str().to_string(),
+        file_name: pack.file_name,
+        content: pack.content,
+        path,
+        region: pack.region,
+        owner: pack.owner,
+        hash,
+    }
 }
 
 fn load_theme(theme: &str, search_root: &std::path::Path) -> napi::Result<webui::TokenFile> {
@@ -1261,8 +1351,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1320,8 +1411,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1351,8 +1443,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1376,8 +1469,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1404,8 +1498,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1432,8 +1527,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1461,8 +1557,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1501,8 +1598,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: Some(theme_path.to_string_lossy().to_string()),
             projection_manifests: None,
@@ -1515,6 +1613,92 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("missing-theme-token"), "msg: {message}");
         assert!(message.contains("--token-c"), "msg: {message}");
+    }
+
+    #[test]
+    fn test_build_reports_lazy_packs_and_the_generated_scripts_module() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<app-shell></app-shell>").unwrap();
+        std::fs::write(
+            dir.path().join("app-shell.html"),
+            r#"<if condition="open" lazy="eager"><settings-panel></settings-panel></if>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("settings-panel.html"), "<p>Settings</p>").unwrap();
+        std::fs::write(dir.path().join("settings-panel.js"), "export {};").unwrap();
+
+        let options = |metafile: bool, modules: Option<HashMap<String, String>>| JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: None,
+            css_bundle: None,
+            plugin: Some("webui".to_string()),
+            components: None,
+            component_asset_roots: None,
+            metafile: Some(metafile),
+            css_file_name_template: None,
+            asset_base: None,
+            component_modules: modules,
+            modules_out: Some(dir.path().join("generated").to_string_lossy().to_string()),
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        };
+
+        let result = build(options(true, None)).unwrap();
+        let [pack] = result.lazy_pack_files.as_slice() else {
+            panic!("expected one lazy pack");
+        };
+        assert_eq!(pack.region, "app-shell::lazy:@0");
+        assert_eq!(pack.owner, "app-shell");
+        assert_eq!(pack.trigger, "eager");
+        assert_eq!(pack.path, format!("_webui/packs/{}", pack.file_name));
+        assert!(pack.file_name.contains(&pack.hash));
+        assert_eq!(pack.bytes as usize, pack.content.len());
+        assert!(pack.brotli_bytes.is_some_and(|bytes| bytes > 0));
+        assert_eq!(pack.scripts, ["../settings-panel.js"]);
+        let module = result.lazy_scripts_module.as_ref().unwrap();
+        assert_eq!(module.file_name, "lazy.webui.js");
+        assert!(module
+            .content
+            .contains(r#""settings-panel": () => import("../settings-panel.js"),"#));
+        assert_eq!(module.declaration.file_name, "lazy.webui.d.ts");
+        assert_eq!(
+            module.declaration.content,
+            "// Generated by WebUI. Do not edit.\nimport '@microsoft/webui-framework/lazy.js';\n"
+        );
+        let metafile: serde_json::Value =
+            serde_json::from_str(result.metafile.as_deref().unwrap()).unwrap();
+        assert_eq!(metafile["lazyPacks"][0]["path"], pack.path.as_str());
+
+        let mapped = build(options(
+            false,
+            Some(HashMap::from([(
+                "settings-panel".to_string(),
+                "@contoso/settings.js".to_string(),
+            )])),
+        ))
+        .unwrap();
+        assert_eq!(mapped.lazy_pack_files[0].brotli_bytes, None);
+        assert_eq!(mapped.lazy_pack_files[0].scripts, ["@contoso/settings.js"]);
+        assert!(mapped.metafile.is_none());
+
+        let invalid = build(options(
+            false,
+            Some(HashMap::from([(
+                "settings-panel".to_string(),
+                "./has space.js".to_string(),
+            )])),
+        ));
+        let Err(error) = invalid else {
+            panic!("invalid component module must fail");
+        };
+        assert!(
+            error.to_string().contains("invalid-component-module"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1536,8 +1720,9 @@ mod tests {
             component_asset_roots: Some(vec!["lazy-panel".to_string()]),
             metafile: Some(true),
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1589,8 +1774,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: Some("none".to_string()),
             theme: None,
             projection_manifests: None,
@@ -1617,8 +1803,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: Some("linked".to_string()),
             theme: None,
             projection_manifests: None,
@@ -1646,8 +1833,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1676,8 +1864,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1710,8 +1899,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,
@@ -1747,8 +1937,9 @@ mod tests {
             component_asset_roots: None,
             metafile: None,
             css_file_name_template: None,
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: None,
+            modules_out: None,
             legal_comments: None,
             theme: None,
             projection_manifests: None,

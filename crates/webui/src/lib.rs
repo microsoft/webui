@@ -24,6 +24,8 @@ mod chunking;
 pub mod component_asset_output;
 mod component_assets;
 mod error;
+mod lazy_report;
+mod lazy_scripts;
 mod module_preload;
 mod projection;
 pub mod server;
@@ -32,7 +34,13 @@ mod style_bundle;
 
 pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
-pub use webui_handler::lazy_packs::{LazyPackFile, DEFAULT_PACK_PUBLIC_BASE, PACK_OUTPUT_DIR};
+pub use lazy_scripts::{GeneratedDeclaration, GeneratedModule};
+pub use webui_handler::lazy_packs::{
+    LazyPackFile, LazyScript, LazyTrigger, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
+    PACK_OUTPUT_DIR,
+};
+pub use webui_parser::component_modules::validate_component_module;
+pub use webui_protocol::{validate_asset_base, AssetBaseError, AssetBaseProblem};
 
 // Re-export core types from downstream crates
 pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
@@ -59,10 +67,10 @@ pub use webui_parser::{Diagnostic, Severity};
 pub use webui_protocol::WebUIProtocol;
 pub use webui_tokens::{load_token_file, resolve_theme_path, TokenFile};
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use webui_discovery::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
 use webui_parser::plugin::fast_v2::FastV2ParserPlugin;
@@ -278,19 +286,46 @@ pub struct BuildOptions {
     /// dependency closures can be emitted later, but they are not connected to
     /// the entry fragment and therefore are not rendered during initial SSR.
     pub component_asset_roots: Vec<String>,
-    /// Whether to serialize an esbuild-compatible component asset metafile.
+    /// Whether to produce [`BuildResult::metafile`].
+    ///
+    /// The metafile describes the component asset graph in esbuild's
+    /// `inputs`/`outputs` format and lists every lazy-region pack with its
+    /// region, owner, trigger, raw and brotli sizes, hash, and scripts. It is
+    /// produced only when the build emits component assets or lazy packs.
+    /// Brotli sizes are measured, at quality 11, only when this is set.
     pub metafile: bool,
     /// Emitted Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
     pub css_file_name_template: String,
-    /// Optional URL/base-path prefix for Link-mode `css_href` values.
-    /// When set, emitted protocol hrefs become `<base>/<filename>`.
-    pub css_public_base: Option<String>,
-    /// URL prefix for lazy-region template packs, ending in `/`.
+    /// Default public URL or path for the output directory, ending in `/`.
     ///
-    /// Relative values resolve against the document base. Defaults to
-    /// [`DEFAULT_PACK_PUBLIC_BASE`]; pack files are written to
-    /// [`PACK_OUTPUT_DIR`] inside the output directory either way.
-    pub pack_public_base: Option<String>,
+    /// Build output stays base-relative either way: stylesheet hrefs are
+    /// emitted file names and lazy pack paths are under [`PACK_OUTPUT_DIR`].
+    /// The base is stored in the protocol; the handler prefixes compiler-emitted
+    /// stylesheet links with it and passes it to the browser, in a
+    /// `<meta name="webui-asset-base">` tag and the bootstrap data. Module
+    /// preload hints keep their paths, because they name the application's own
+    /// scripts. A request can override the base with the reserved
+    /// `$webui.assetBase` state member. Validated by [`validate_asset_base`].
+    pub asset_base: Option<String>,
+    /// Module specifiers for custom elements, keyed by tag.
+    ///
+    /// The generated [`LAZY_SCRIPTS_MODULE`] imports a scripted component that
+    /// a lazy region introduces from its discovered `.ts` or `.js` sibling. A
+    /// mapping overrides that module, or supplies one for packages without a
+    /// usable sibling; it is written verbatim, so use a package specifier or a
+    /// path relative to [`BuildOptions::modules_out`]. Tags must be custom
+    /// element names and specifiers must not contain whitespace, quotes, or
+    /// backslashes. A mapping for a tag no component uses is a warning.
+    pub component_modules: BTreeMap<String, String>,
+    /// Directory that receives generated modules for the application bundler:
+    /// component asset inputs, [`LAZY_SCRIPTS_MODULE`], and its
+    /// [`LAZY_SCRIPTS_DECLARATION`].
+    ///
+    /// Relative module specifiers in the generated module start here.
+    /// [`build`] writes nothing, so when this is `None` they are relative to
+    /// [`BuildOptions::app_dir`]. [`build_to_disk`] defaults it to its output
+    /// directory. Relative paths resolve against the current directory.
+    pub modules_out: Option<PathBuf>,
     /// Legal comment preservation strategy.
     pub legal_comments: LegalComments,
     /// Optional loaded design-token theme used to validate discovered CSS tokens.
@@ -337,8 +372,9 @@ impl Default for BuildOptions {
             component_asset_roots: Vec::new(),
             metafile: false,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-            css_public_base: None,
-            pack_public_base: None,
+            asset_base: None,
+            component_modules: BTreeMap::new(),
+            modules_out: None,
             legal_comments: LegalComments::default(),
             theme: None,
             projection_manifests: Vec::new(),
@@ -376,10 +412,23 @@ pub struct BuildResult {
     ///
     /// Populated when [`BuildOptions::component_asset_roots`] is non-empty.
     pub component_asset_files: Vec<ComponentAssetFile>,
-    /// Esbuild-compatible component asset metafile JSON when requested.
+    /// Build metafile JSON, when [`BuildOptions::metafile`] is set and the
+    /// build emits component assets or lazy packs.
+    ///
+    /// Top-level `inputs` and `outputs` describe the component asset graph in
+    /// esbuild's format; `lazyPacks` lists every lazy-region pack, sorted by
+    /// path.
     pub metafile: Option<String>,
     /// Immutable lazy-region template packs, written under [`PACK_OUTPUT_DIR`].
     pub lazy_pack_files: Vec<LazyPackFile>,
+    /// Generated [`LAZY_SCRIPTS_MODULE`], present when the build has lazy
+    /// regions, with its [`LAZY_SCRIPTS_DECLARATION`] in
+    /// [`GeneratedModule::declaration`].
+    ///
+    /// It registers a dynamic import for each scripted component a region
+    /// introduces. Write both files to [`BuildOptions::modules_out`] and import
+    /// the module from the application entry through the bundler.
+    pub lazy_scripts_module: Option<GeneratedModule>,
     /// Component client template payloads.
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
@@ -392,6 +441,13 @@ pub struct BuildResult {
     pub warnings: Vec<Diagnostic>,
     /// Build statistics.
     pub stats: BuildStats,
+}
+
+/// Reject an invalid build-default asset base before any build work.
+#[cold]
+#[inline(never)]
+fn invalid_asset_base_option(error: AssetBaseError) -> WebUIError {
+    WebUIError::InvalidBuildOptions(error.to_string())
 }
 
 /// Advisory for a streaming entry compiled without a state-projection
@@ -417,29 +473,55 @@ fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> D
 /// Build a WebUI application from an app directory.
 ///
 /// Parses templates, discovers components, and produces a compiled protocol
-/// with build statistics.
+/// with build statistics. Nothing is written to disk; module specifiers in
+/// [`BuildResult::lazy_scripts_module`] are relative to
+/// [`BuildOptions::modules_out`], or to [`BuildOptions::app_dir`] without one.
 ///
 /// # Errors
 ///
 /// Returns [`WebUIError`] if the app directory is invalid, templates fail
-/// to parse, theme tokens are incomplete, or the protocol cannot be serialized.
+/// to parse, theme tokens are incomplete, a component module mapping is
+/// invalid, or the protocol cannot be serialized.
 #[must_use = "BuildResult contains the compiled protocol and statistics"]
 pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
     let started = Instant::now();
 
-    let pack_public_base = options
-        .pack_public_base
-        .as_deref()
-        .unwrap_or(DEFAULT_PACK_PUBLIC_BASE);
-    if let Some(message) = webui_handler::lazy_packs::public_base_error(pack_public_base) {
-        return Err(WebUIError::InvalidBuildOptions(message));
+    if let Some(base) = options.asset_base.as_deref() {
+        validate_asset_base(base).map_err(invalid_asset_base_option)?;
     }
+    lazy_scripts::validate_mappings(&options.component_modules)?;
     let mut raw = build_protocol_inner(&options)?;
     // Packs are referenced from final metadata, so identity is assigned last.
-    let lazy_pack_files = webui_handler::lazy_packs::emit(&mut raw.protocol, pack_public_base)?;
+    let mut lazy_pack_files = webui_handler::lazy_packs::emit(&mut raw.protocol)?;
+    raw.protocol.asset_base = options.asset_base.unwrap_or_default();
     raw.protocol.assign_build_id()?;
 
     let protocol_bytes = raw.protocol.to_protobuf()?;
+    let startup = if lazy_pack_files.is_empty() {
+        HashSet::new()
+    } else {
+        webui_handler::lazy_packs::startup_components(&raw.protocol, &options.entry)
+    };
+    let lazy_scripts_module = lazy_scripts::resolve(
+        &mut lazy_pack_files,
+        &lazy_scripts::ScriptSources {
+            scripts: &raw.component_scripts,
+            mappings: &options.component_modules,
+            modules_dir: options.modules_out.as_deref().unwrap_or(&options.app_dir),
+            startup: &startup,
+        },
+        &mut raw.warnings,
+    )?;
+    let metafile =
+        if options.metafile && (raw.asset_metafile.is_some() || !lazy_pack_files.is_empty()) {
+            lazy_report::measure(&mut lazy_pack_files)?;
+            Some(component_assets::render_metafile(
+                raw.asset_metafile.as_ref(),
+                &lazy_pack_files,
+            )?)
+        } else {
+            None
+        };
 
     let stats = BuildStats {
         duration: started.elapsed(),
@@ -455,8 +537,9 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         protocol_bytes,
         css_files: raw.css_files,
         component_asset_files: raw.component_asset_files,
-        metafile: raw.metafile,
+        metafile,
         lazy_pack_files,
+        lazy_scripts_module,
         component_templates: raw.component_templates,
         warnings: raw.warnings,
         stats,
@@ -465,16 +548,22 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 
 /// Build a WebUI application and write output files to disk.
 ///
-/// Writes `protocol.bin`, any external CSS files, and static component assets
-/// to `out_dir`.
-/// Creates `out_dir` if it does not exist. Component dependencies publish before
-/// roots, unchanged component inputs keep their modification times, and existing
-/// files outside the current build are left alone.
+/// Writes `protocol.bin`, any external CSS files, and lazy-region packs to
+/// `out_dir`, and static component assets, [`LAZY_SCRIPTS_MODULE`], and
+/// [`LAZY_SCRIPTS_DECLARATION`] to [`BuildOptions::modules_out`], which
+/// defaults to `out_dir`.
+/// Creates the directories if they do not exist. Component dependencies
+/// publish before roots, unchanged generated modules keep their modification
+/// times, and existing files outside the current build are left alone.
 ///
 /// # Errors
 ///
 /// Returns [`WebUIError`] on build failure or if output files cannot be written.
-pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats, WebUIError> {
+pub fn build_to_disk(mut options: BuildOptions, out_dir: &Path) -> Result<BuildStats, WebUIError> {
+    let modules_dir = options
+        .modules_out
+        .get_or_insert_with(|| out_dir.to_path_buf())
+        .clone();
     let result = build(options)?;
     validate_output_file_names(OsStr::new("protocol.bin"), &result)?;
 
@@ -496,8 +585,13 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
             source,
         })?;
     }
-    if !result.component_asset_files.is_empty() {
-        component_asset_output::publish(out_dir, &result.component_asset_files)?;
+    if !result.component_asset_files.is_empty() || result.lazy_scripts_module.is_some() {
+        component_asset_output::publish_modules_with(
+            &modules_dir,
+            &result.component_asset_files,
+            result.lazy_scripts_module.as_slice(),
+            || Ok(()),
+        )?;
     }
     write_lazy_packs(out_dir, &result.lazy_pack_files)?;
 
@@ -556,7 +650,10 @@ struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
     component_asset_files: Vec<ComponentAssetFile>,
-    metafile: Option<String>,
+    /// Component asset half of the metafile, when requested and assets exist.
+    asset_metafile: Option<component_assets::AssetGraphMetafile>,
+    /// Modules of client-owned components, captured when lazy regions exist.
+    component_scripts: lazy_scripts::ComponentScripts,
     component_templates: Vec<ComponentTemplateArtifact>,
     warnings: Vec<Diagnostic>,
     fragment_count: usize,
@@ -583,7 +680,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         options.css,
         options.dom,
         &options.css_file_name_template,
-        options.css_public_base.as_deref(),
         options.legal_comments,
     )
     .map_err(|e| WebUIError::InvalidBuildOptions(e.to_string()))?;
@@ -624,6 +720,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 html_content: &component.html_content,
                 css_content: component.css_content.as_deref(),
                 is_client_owned: component.is_client_owned,
+                script_path: component.script_path.as_deref(),
             })
             .map_err(|source| WebUIError::ComponentRegistration {
                 context: format!(
@@ -656,6 +753,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     html_content: &comp.html_content,
                     css_content: comp.css_content.as_deref(),
                     is_client_owned: comp.is_client_owned,
+                    script_path: comp.script_path.as_deref(),
                 })
                 .map_err(|source| WebUIError::ComponentRegistration {
                     context: format!(
@@ -747,6 +845,20 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ParserPluginArtifacts::None => Vec::new(),
             ParserPluginArtifacts::ComponentTemplates(templates) => templates,
         };
+    lazy_scripts::unknown_mapping_warnings(
+        parser.component_registry(),
+        &options.component_modules,
+        &mut warnings,
+    );
+    // Only lazy regions load component modules through the generated module.
+    let component_scripts = if component_templates
+        .iter()
+        .any(|artifact| !artifact.lazy_templates.is_empty())
+    {
+        lazy_scripts::capture(parser.component_registry())
+    } else {
+        lazy_scripts::ComponentScripts::new()
+    };
     // Build protocol (consumes parser)
     let mut fragment_records = parser.into_fragment_records();
     for fragment_id in synthetic_asset_fragments {
@@ -841,7 +953,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     resolved.filename
                 )));
             }
-            protocol.components.entry(tag).or_default().css_href = resolved.href;
+            // The file name is also the href: a path relative to the asset base.
+            protocol.components.entry(tag).or_default().css_href = resolved.filename.clone();
             css_files.push((resolved.filename, css));
         }
     }
@@ -931,7 +1044,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         }
     }
 
-    let mut component_asset_graph = component_assets::render_component_assets(
+    let (mut component_asset_graph, asset_metafile) = component_assets::render_graph(
         &protocol,
         &options.entry,
         &options.component_asset_roots,
@@ -963,7 +1076,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         protocol,
         css_files,
         component_asset_files,
-        metafile: component_asset_graph.metafile,
+        asset_metafile,
+        component_scripts,
         component_templates,
         warnings,
         fragment_count,
@@ -1038,7 +1152,7 @@ fn validate_output_file_names(
     result: &BuildResult,
 ) -> Result<(), WebUIError> {
     let mut names =
-        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
+        HashSet::with_capacity(2 + result.css_files.len() + result.component_asset_files.len());
     names.insert(protocol_name.to_os_string());
     for (name, _) in &result.css_files {
         let file_name = OsString::from(name);
@@ -1046,8 +1160,18 @@ fn validate_output_file_names(
             return Err(output_file_collision_error(&file_name));
         }
     }
-    for file in &result.component_asset_files {
-        let file_name = OsString::from(&file.name);
+    let modules = result
+        .component_asset_files
+        .iter()
+        .map(|file| file.name.as_str())
+        .chain(result.lazy_scripts_module.iter().flat_map(|module| {
+            [
+                module.file_name.as_str(),
+                module.declaration.file_name.as_str(),
+            ]
+        }));
+    for name in modules {
+        let file_name = OsString::from(name);
         if !names.insert(file_name.clone()) {
             return Err(output_file_collision_error(&file_name));
         }
@@ -1140,6 +1264,8 @@ mod tests {
     }
 
     mod fast;
+    mod lazy_modules;
+    mod lazy_stylesheets;
 
     #[test]
     fn lazy_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
@@ -1183,7 +1309,17 @@ mod tests {
                 writer.buf
             );
             assert_eq!(writer.buf.contains("Nested settings content"), shown);
-            assert_eq!(writer.buf.contains("settings-panel.css"), shown);
+            // A closed region's stylesheet is only listed beside its pack path
+            // for preloading; nothing links or registers it.
+            assert!(
+                writer
+                    .buf
+                    .contains(r#""lc":{"app-shell::lazy:@0":["settings-panel.css"]}"#),
+                "{}",
+                writer.buf
+            );
+            assert_eq!(writer.buf.contains(r#"href="settings-panel.css""#), shown);
+            assert_eq!(writer.buf.contains(r#""href":"settings-panel.css""#), shown);
             assert_eq!(writer.buf.contains(r#""settings-panel":{"h":"#), shown);
             assert_eq!(writer.buf.contains(r#""settings-child":{"h":"#), shown);
             let head = writer.buf.split("</head>").next().expect("document head");
@@ -1247,11 +1383,11 @@ mod tests {
             assert!(owner["lp"].get(nested).is_none());
             assert_eq!(built.lazy_pack_files.len(), 2);
             // Nested packs are referenced by their parent region, not the owner.
-            for url in [&owner["lp"][root], &region["lp"][nested]] {
-                let name = url
+            for path in [&owner["lp"][root], &region["lp"][nested]] {
+                let name = path
                     .as_str()
                     .unwrap()
-                    .strip_prefix(DEFAULT_PACK_PUBLIC_BASE)
+                    .strip_prefix("_webui/packs/")
                     .unwrap();
                 assert!(built
                     .lazy_pack_files
@@ -1475,30 +1611,65 @@ mod tests {
     }
 
     #[test]
-    fn pack_public_base_is_validated_and_embedded() {
+    fn asset_base_is_validated_and_kept_out_of_build_output() {
         let app = create_app_dir(&[
             ("index.html", "<app-owner></app-owner>"),
             (
                 "app-owner.html",
                 r#"<if condition="show" lazy><p>Body</p></if>"#,
             ),
+            ("app-owner.css", "p { color: red; }"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
-        options.pack_public_base = Some("https://cdn.example.com/app/packs/".into());
+        let without = build(options.clone()).unwrap();
+        options.asset_base = Some("https://cdn.example.com/app/".into());
         let built = build(options.clone()).unwrap();
+
+        assert_eq!(built.protocol.asset_base, "https://cdn.example.com/app/");
+        assert!(without.protocol.asset_base.is_empty());
+        // Every emitted path is relative to the base, so the output only
+        // differs by the stored default and the identity that covers it.
+        assert_eq!(built.lazy_pack_files, without.lazy_pack_files);
+        assert_eq!(built.css_files, without.css_files);
+        assert_ne!(built.protocol.build_id, without.protocol.build_id);
         let owner: serde_json::Value =
             serde_json::from_str(&built.protocol.components["app-owner"].template_json).unwrap();
-        assert!(owner["lp"]["app-owner::lazy:@0"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://cdn.example.com/app/packs/app-owner."));
-        options.pack_public_base = Some("packs".into());
-        let error = build(options).err().expect("base must end with a slash");
-        assert!(
-            error.chain_message().contains("pack public base"),
-            "{error}"
+        assert_eq!(
+            owner["lp"]["app-owner::lazy:@0"],
+            format!("_webui/packs/{}", built.lazy_pack_files[0].file_name)
         );
+        assert_eq!(
+            built.protocol.components["app-owner"].css_href,
+            "app-owner.css"
+        );
+        for pack in &built.lazy_pack_files {
+            assert!(
+                !pack.content.contains("cdn.example.com"),
+                "{}",
+                pack.content
+            );
+        }
+        let decoded = WebUIProtocol::from_protobuf(&built.protocol_bytes).unwrap();
+        assert_eq!(decoded.asset_base, "https://cdn.example.com/app/");
+
+        for invalid in [
+            "packs",
+            "https://cdn.example.com/app",
+            "//cdn.example.com/",
+            "a b/",
+        ] {
+            options.asset_base = Some(invalid.into());
+            let error = build(options.clone()).expect_err("invalid asset base");
+            assert!(
+                matches!(error, WebUIError::InvalidBuildOptions(_)),
+                "{error}"
+            );
+            assert!(
+                error.chain_message().contains("invalid asset base"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1605,9 +1776,14 @@ mod tests {
         let error = build(options)
             .err()
             .expect("incompatible asset delivery mode");
-        assert!(error
-            .chain_message()
-            .contains(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY));
+        let message = error.chain_message();
+        assert!(message.contains(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY));
+        assert!(
+            message.contains("lazy regions cannot be used inside static component assets"),
+            "{message}"
+        );
+        assert!(message.contains("<if lazy>"), "{message}");
+        assert!(!message.contains("inventory API"), "{message}");
     }
 
     #[test]
@@ -2258,13 +2434,11 @@ mod tests {
 
             let actual = match strategy {
                 CssStrategy::Link => {
-                    let expected_name = webui_parser::CssLinkOptions::try_new(
-                        "[name]-[hash].[ext]".to_string(),
-                        None,
-                    )
-                    .unwrap()
-                    .resolve("my-card", expected)
-                    .filename;
+                    let expected_name =
+                        webui_parser::CssLinkOptions::try_new("[name]-[hash].[ext]".to_string())
+                            .unwrap()
+                            .resolve("my-card", expected)
+                            .filename;
                     assert_eq!(result.css_files[0].0, expected_name);
                     result.css_files[0].1.clone()
                 }
@@ -2514,6 +2688,56 @@ mod tests {
                 "Link chunks ship their CSS as a file, not inline"
             );
         }
+    }
+
+    #[test]
+    fn bundling_link_chunks_take_the_asset_base_only_when_rendered() {
+        let app = bundling_app();
+        let mut options = light_options(app.path());
+        options.css_bundle = true;
+        options.asset_base = Some("https://cdn.example.com/app/".to_string());
+        let result = build(options).unwrap();
+
+        assert!(!result.protocol.style_chunks.is_empty());
+        for chunk in &result.protocol.style_chunks {
+            assert!(
+                result
+                    .css_files
+                    .iter()
+                    .any(|(name, _)| *name == chunk.css_href),
+                "chunk hrefs are emitted file names: {}",
+                chunk.css_href
+            );
+        }
+
+        let protocol = Protocol::new(result.protocol.clone());
+        let mut writer = StringWriter { buf: String::new() };
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &serde_json::json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let escaped_base = webui_handler::encode_safe("https://cdn.example.com/app/");
+        let opening = r#"<link rel="stylesheet" href=""#;
+        let hrefs: Vec<&str> = writer
+            .buf
+            .match_indices(opening)
+            .map(|(index, _)| &writer.buf[index + opening.len()..])
+            .collect();
+        assert!(!hrefs.is_empty(), "{}", writer.buf);
+        for href in &hrefs {
+            assert!(href.starts_with(escaped_base.as_ref()), "{}", writer.buf);
+        }
+        assert!(
+            result.protocol.style_chunks.iter().any(|chunk| writer
+                .buf
+                .contains(&format!("{escaped_base}{}", chunk.css_href))),
+            "a bundled chunk link must be rendered with the base: {}",
+            writer.buf
+        );
     }
 
     #[test]
@@ -2961,7 +3185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_css_public_base_prefixes_css_href_only() {
+    fn test_asset_base_keeps_css_href_relative() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             (
@@ -2972,24 +3196,27 @@ mod tests {
         ]);
         let mut options = default_options(app.path());
         options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        options.asset_base = Some("https://cdn.example.com/assets/".to_string());
         let result = build(options).unwrap();
 
         let filename = &result.css_files[0].0;
         assert!(filename.starts_with("my-card-"));
-        let expected_href = format!("https://cdn.example.com/assets/{filename}");
         assert_eq!(
             result
                 .protocol
                 .components
                 .get("my-card")
                 .map(|c| c.css_href.as_str()),
-            Some(expected_href.as_str())
+            Some(filename.as_str())
+        );
+        assert_eq!(
+            result.protocol.asset_base,
+            "https://cdn.example.com/assets/"
         );
     }
 
     #[test]
-    fn test_css_public_base_emits_protocol_handler_and_payload_resources() {
+    fn test_asset_base_prefixes_handler_links_but_not_payload_resources() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -3003,14 +3230,13 @@ mod tests {
         ]);
         let mut options = default_options(app.path());
         options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        options.asset_base = Some("https://cdn.example.com/assets/".to_string());
         let result = build(options).unwrap();
 
         let filename = &result.css_files[0].0;
-        let expected_href = format!("https://cdn.example.com/assets/{filename}");
         assert_eq!(
             result.protocol.component_style_resource("my-card"),
-            Some(expected_href.as_str())
+            Some(filename.as_str())
         );
         assert_eq!(
             result
@@ -3031,12 +3257,13 @@ mod tests {
                 &mut writer,
             )
             .unwrap();
+        let prefixed = format!("https://cdn.example.com/assets/{filename}");
         assert!(
             writer.buf.contains(&format!(
                 r#"<link rel="stylesheet" href="{}" data-webui-resource="my-card" data-webui-strategy="link">"#,
-                expected_href.replace('/', "&#x2F;")
+                prefixed.replace('/', "&#x2F;")
             )),
-            "handler Shadow-root resource should use CDN href: {}",
+            "handler Shadow-root resource should use the asset base: {}",
             writer.buf
         );
         let payload = protocol
@@ -3044,12 +3271,12 @@ mod tests {
             .expect("component resource payload");
         assert_eq!(
             payload["componentStyles"]["resources"]["my-card"]["href"],
-            expected_href
+            filename.as_str()
         );
     }
 
     #[test]
-    fn test_css_public_base_keeps_webui_template_style_free() {
+    fn test_asset_base_keeps_webui_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             (
@@ -3062,18 +3289,17 @@ mod tests {
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
         options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        options.asset_base = Some("https://cdn.example.com/assets/".to_string());
         let result = build(options).unwrap();
 
         let filename = &result.css_files[0].0;
-        let expected_href = format!("https://cdn.example.com/assets/{filename}");
         let template = &result.protocol.components["my-card"].template_json;
         assert_eq!(
             result.protocol.component_style_resource("my-card"),
-            Some(expected_href.as_str())
+            Some(filename.as_str())
         );
         assert!(
-            !template.contains(&expected_href),
+            !template.contains(filename.as_str()) && !template.contains("cdn.example.com"),
             "WebUI templates must not duplicate handler-owned CSS links: {template}"
         );
     }
@@ -3450,14 +3676,15 @@ mod tests {
         options.plugin = Some(Plugin::WebUI);
         options.component_asset_roots = vec!["lazy-panel".to_string()];
         options.css_file_name_template = "[name]-[hash].[ext]".to_string();
-        options.css_public_base = Some("https://cdn.example.com/webui".to_string());
+        options.asset_base = Some("https://cdn.example.com/webui/".to_string());
 
         let result = build(options).unwrap();
         let preload = &result.protocol.component_asset_style_preloads[0];
 
         assert_eq!(preload.root, "lazy-panel");
         assert_eq!(preload.style_hrefs.len(), 1);
-        assert!(preload.style_hrefs[0].starts_with("https://cdn.example.com/webui/lazy-panel-"));
+        assert_eq!(preload.style_hrefs[0], result.css_files[0].0);
+        assert!(preload.style_hrefs[0].starts_with("lazy-panel-"));
         assert!(preload.style_hrefs[0].ends_with(".css"));
     }
 
@@ -3535,6 +3762,7 @@ mod tests {
             value["outputs"][&shared.name]["bytes"],
             shared.content.len()
         );
+        assert_eq!(value["lazyPacks"], serde_json::json!([]));
     }
 
     #[test]

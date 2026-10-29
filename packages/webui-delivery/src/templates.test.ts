@@ -15,9 +15,41 @@ import {
 import { ndjson } from './ndjson.js';
 import {
   fetchComponentTemplates,
+  injectCssLinks,
   registerTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
+
+test('injected stylesheet links resolve against the runtime asset base', t => {
+  const appended: { rel?: string; href?: string }[] = [];
+  t.mock.method(document.head, 'appendChild', (link: { rel?: string; href?: string }) => {
+    appended.push(link);
+    return link;
+  });
+  const runtime = window.__webui ??= {};
+  const previousBase = runtime.assetBase;
+  Object.defineProperty(document, 'baseURI', { configurable: true, value: 'https://site.example/news/' });
+  runtime.assetBase = 'https://cdn.example/assets/';
+  try {
+    const injected = new Set<string>();
+    injectCssLinks({ css: ['app-shell.css', 'app-shell.css', 'https://fonts.example/a.css'] }, injected);
+    assert.deepEqual(appended.map(link => [link.rel, link.href]), [
+      ['stylesheet', 'https://cdn.example/assets/app-shell.css'],
+      ['stylesheet', 'https://fonts.example/a.css'],
+    ]);
+    assert.deepEqual([...injected], ['app-shell.css', 'https://fonts.example/a.css'], 'raw hrefs stay the keys');
+    runtime.assetBase = '/static/';
+    injectCssLinks({ css: ['page.css'] }, injected);
+    assert.equal(appended.at(-1)?.href, 'https://site.example/static/page.css');
+    delete runtime.assetBase;
+    injectCssLinks({ css: ['local.css'] }, injected);
+    assert.equal(appended.at(-1)?.href, 'https://site.example/news/local.css');
+  } finally {
+    Reflect.deleteProperty(document, 'baseURI');
+    if (previousBase === undefined) delete runtime.assetBase;
+    else runtime.assetBase = previousBase;
+  }
+});
 
 test('a failed template request cancels its unread response', async t => {
   let signal: AbortSignal | null | undefined;

@@ -180,9 +180,13 @@ fn routes_unsupported(owner: &str) -> WebUIError {
 #[cold]
 #[inline(never)]
 fn deferred_unsupported(owner: &str) -> WebUIError {
-    WebUIError::ComponentAssets(Box::new(webui_parser::Diagnostic::error(
-        "deferred template bodies require protocol-backed delivery",
-    ).code(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY)
-        .component(owner).element("if")
-        .help("remove --emit-component-assets for this build; load deferred regions through the shared resource/inventory API")))
+    WebUIError::ComponentAssets(Box::new(
+        webui_parser::Diagnostic::error("lazy regions cannot be used inside static component assets")
+            .code(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY)
+            .component(owner)
+            .element("if")
+            .help(
+                "remove lazy from this <if>, or render this UI from a template with <if lazy> instead of a component asset; component assets are for UI that application code creates outside templates",
+            ),
+    ))
 }

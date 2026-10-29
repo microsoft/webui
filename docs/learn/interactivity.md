@@ -51,7 +51,7 @@ wait for it to arrive. Repeated startup calls do not repeat installation.
 | `styles.js` | Component stylesheet installation and readiness |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
-| `lazy.js` | Loads `<if lazy>` template packs, runs their prefetch triggers, and releases inactive regions |
+| `lazy.js` | Loads `<if lazy>` template packs, runs their prefetch triggers, and releases inactive regions; import it through the generated `lazy.webui.js` |
 | `streaming.js` | Progressive HTML streaming hydration |
 | `lazy-hydration.js` | Visibility-based hydration coordination |
 | `interaction-hydration.js` | Interaction-based activation |
@@ -88,7 +88,8 @@ explicitly.
 
 [Lazy template bodies](./lazy) let an ordinary `<if>` keep complex UI out
 of initial delivery until it is needed. The build emits each body as a static
-template pack, and `lazy.js` loads it in the existing owner.
+template pack and a loader module for the components the body introduces;
+`lazy.js` loads both in the existing owner.
 
 ## Component Files
 
@@ -605,7 +606,7 @@ loaded from static files. Build the root components as assets:
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread \
-  --component-assets-out ./.webui
+  --modules-out ./.webui
 ```
 
 WebUI writes stable intermediate ESM inputs into `.webui`: one module for each
@@ -626,7 +627,7 @@ validated and served without a separate build step:
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread \
-  --component-assets-out ./.webui \
+  --modules-out ./.webui \
   --metafile ./component-assets-meta.json --watch
 ```
 

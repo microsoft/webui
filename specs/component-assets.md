@@ -45,6 +45,15 @@ failure restores stable roots changed by that publication. Immutable payloads
 already made visible remain available to concurrent readers. Hosts must
 serialize publishers targeting the same generated input directory.
 
+Generated modules that are not component assets, such as `lazy.webui.js`, share
+the generated input directory and the same publication, each with its
+TypeScript declaration file, such as `lazy.webui.d.ts`. They are stable roots:
+published after content-addressed payloads, declarations before their modules,
+untouched when their bytes are unchanged, and restored with the other roots
+when finalization fails. They import application sources through specifiers
+relative to that directory, so the build computes them for the directory it
+publishes to.
+
 The generated input directory is owned by the application build. Publication
 overwrites current stable roots and writes required content-addressed payloads,
 but never deletes older generated inputs or unrelated files. Build pipelines
@@ -53,4 +62,6 @@ before building.
 
 The development HTTP server retains current root descriptors in memory and
 reads payloads from the generated input directory. Without an explicit output
-directory, a server-owned temporary directory lasts until shutdown.
+directory, a server-owned temporary directory lasts until shutdown; it never
+receives `lazy.webui.js` or its declarations, because no application bundler
+reads it.

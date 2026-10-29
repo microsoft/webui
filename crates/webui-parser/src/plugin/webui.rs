@@ -4073,6 +4073,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned,
+            script_path: None,
         }
     }
 

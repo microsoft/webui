@@ -4,9 +4,21 @@
 import { startRuntime } from '../../../src/runtime.js';
 import '../../../src/styles-entry.js';
 import '../../../src/template-cache-entry.js';
-import '../../../src/lazy-entry.js';
+import { defineLazyScripts } from '../../../src/lazy-entry.js';
 import { attr, getTemplate, observable, WebUIElement } from '../../../src/index.js';
 import { collectTemplates } from '../../../src/template-cache.js';
+
+/** The document readiness each time the search region's script loader ran. */
+const imports: DocumentReadyState[] = [];
+// Stands in for the generated `lazy.webui.js`: the loader only records when it runs.
+defineLazyScripts({
+  'test-lazy-search::lazy:@0': {
+    'test-lazy-search-chip': () => {
+      imports.push(document.readyState);
+      return Promise.resolve();
+    },
+  },
+});
 
 startRuntime();
 
@@ -26,6 +38,12 @@ export class LazyOwner extends WebUIElement {
   singleEl?: HTMLInputElement;
   private generation = 0;
   private request: AbortController | undefined;
+
+  constructor() {
+    super();
+    // `open()` shows load failures in `.error`, so the runtime does not report them.
+    this.addEventListener('lazyerror', event => event.preventDefault());
+  }
 
   /** Fetch application state and activate the body; the framework loads its pack. */
   async open(): Promise<void> {
@@ -94,6 +112,13 @@ LazyShadow.define('test-lazy-shadow');
 LazyLight.define('test-lazy-light');
 LazyDialog.define('test-lazy-dialog');
 
+export class LazySearch extends WebUIElement {
+  @observable suggesting = false;
+
+  suggest(): void { this.suggesting = true; }
+}
+LazySearch.define('test-lazy-search');
+
 declare global {
   interface Window {
     __lazyFixture: {
@@ -103,6 +128,7 @@ declare global {
       inventory(): string;
       track(owner: string): void;
       retained(): boolean;
+      imports(): DocumentReadyState[];
     };
   }
 }
@@ -126,4 +152,5 @@ window.__lazyFixture = {
     observed = new WeakRef(metadata);
   },
   retained: () => observed?.deref() !== undefined,
+  imports: () => [...imports],
 };

@@ -12,8 +12,8 @@ pub(crate) enum Trigger {
     Intent = 1,
     /// The first idle period after the owner mounts.
     Idle = 2,
-    /// As soon as the owner mounts.
-    Load = 3,
+    /// Right after the owner hydrates or mounts.
+    Eager = 3,
     /// Only when the condition becomes true.
     Demand = 4,
 }
@@ -21,9 +21,12 @@ pub(crate) enum Trigger {
 const TRIGGERS: [(&str, Trigger); 4] = [
     ("intent", Trigger::Intent),
     ("idle", Trigger::Idle),
-    ("load", Trigger::Load),
+    ("eager", Trigger::Eager),
     ("demand", Trigger::Demand),
 ];
+
+/// The trigger name `eager` replaced, kept only to point authors at the new name.
+const RENAMED_LOAD_TRIGGER: &str = "load";
 
 impl Trigger {
     /// Parse the `lazy` attribute value; a bare attribute means [`Trigger::Intent`].
@@ -56,7 +59,7 @@ fn invalid_if_attribute(name: &str) -> crate::Diagnostic {
     let help = if name == "id" {
         "remove id: the framework loads a lazy region when its condition becomes true"
     } else {
-        "use condition and an optional lazy, lazy=\"idle\", lazy=\"load\", or lazy=\"demand\""
+        "use condition and an optional lazy, lazy=\"idle\", lazy=\"eager\", or lazy=\"demand\""
     };
     crate::Diagnostic::error(format!("unsupported attribute '{name}' on <if>"))
         .code(crate::codes::INVALID_IF_ATTRIBUTE)
@@ -69,12 +72,19 @@ fn invalid_if_attribute(name: &str) -> crate::Diagnostic {
 #[cold]
 #[inline(never)]
 pub(crate) fn invalid_trigger(value: &str) -> crate::Diagnostic {
-    let help = match crate::suggest::closest_match(value, TRIGGERS.iter().map(|(name, _)| *name)) {
-        Some(name) => {
-            format!("did you mean lazy=\"{name}\"? Use intent (the default), idle, load, or demand")
+    let help = if value == RENAMED_LOAD_TRIGGER {
+        "did you mean lazy=\"eager\"? The load trigger is now named eager; it still prefetches right after hydration"
+            .to_owned()
+    } else {
+        match crate::suggest::closest_match(value, TRIGGERS.iter().map(|(name, _)| *name)) {
+            Some(name) => format!(
+                "did you mean lazy=\"{name}\"? Use intent (the default), idle, eager, or demand"
+            ),
+            None => {
+                "use lazy (prefetch on intent), lazy=\"idle\", lazy=\"eager\", or lazy=\"demand\""
+                    .to_owned()
+            }
         }
-        None => "use lazy (prefetch on intent), lazy=\"idle\", lazy=\"load\", or lazy=\"demand\""
-            .to_owned(),
     };
     crate::Diagnostic::error(format!("unsupported lazy trigger '{value}'"))
         .code(crate::codes::INVALID_LAZY_ATTRIBUTE)
@@ -103,21 +113,31 @@ mod tests {
         assert_eq!(Trigger::parse(Some("")), Some(Trigger::Intent));
         assert_eq!(Trigger::parse(Some("intent")), Some(Trigger::Intent));
         assert_eq!(Trigger::parse(Some("idle")), Some(Trigger::Idle));
-        assert_eq!(Trigger::parse(Some("load")), Some(Trigger::Load));
+        assert_eq!(Trigger::parse(Some("eager")), Some(Trigger::Eager));
         assert_eq!(Trigger::parse(Some("demand")), Some(Trigger::Demand));
-        for value in ["true", "Idle", "{{trigger}}", "hover"] {
+        for value in ["true", "Idle", "{{trigger}}", "hover", "load"] {
             assert_eq!(Trigger::parse(Some(value)), None, "{value}");
         }
         assert_eq!(
             [
                 Trigger::Intent,
                 Trigger::Idle,
-                Trigger::Load,
+                Trigger::Eager,
                 Trigger::Demand
             ]
             .map(Trigger::code),
             [1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn the_renamed_load_trigger_points_at_eager() {
+        let diagnostic = invalid_trigger("load").to_string();
+        assert!(
+            diagnostic.contains("did you mean lazy=\"eager\""),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("now named eager"), "{diagnostic}");
     }
 
     #[test]

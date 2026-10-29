@@ -2,17 +2,29 @@
 // Licensed under the MIT license.
 
 /**
- * Pack loading, prefetch triggers, activation, and release for lazy regions.
+ * Pack and script loading, prefetch triggers, activation, and release for lazy regions.
  *
  * `lazy-entry.ts` connects this module to the element. It has no element
  * dependency of its own, so it can be tested without a DOM.
  */
 
-import { getTemplate, getTemplateRegistry, installTemplateRegistry } from './template-registry.js';
+import {
+  getTemplate,
+  getTemplateRegistry,
+  hasPendingTemplateDefinition,
+  installTemplateRegistry,
+} from './template-registry.js';
 import { TEMPLATES_REGISTERED_EVENT } from './template-events.js';
 import { runCompilerScript } from './trusted-types-policy.js';
+import { resolveAsset } from './asset-base.js';
+import { loadScripts, warnUnscriptedComponents } from './lazy-scripts.js';
+import { speculativeTemplates } from './speculation.js';
 import type { CondBinding } from './element/types.js';
-import type { TemplateBlockMeta, TemplateMeta } from './template-types.js';
+import type { CompiledConditionalMeta, TemplateBlockMeta, TemplateMeta } from './template-types.js';
+
+// A compile-time constant (see `lazy-entry.ts`): checks use the define
+// expression itself so production builds drop development-only code.
+declare const __WEBUI_DEV__: boolean;
 
 /** The element surface the runtime re-enters once a region's pack loads. */
 export interface LazyHost extends Element {
@@ -41,16 +53,19 @@ interface Registration {
   epoch: number;
 }
 
-/** A region with a prefetch trigger: identity, pack URL, and trigger code. */
-type Armed = readonly [region: string, url: string, trigger: number];
+/**
+ * A region with a prefetch trigger: identity, pack URL, trigger code, and in
+ * link builds the stylesheet paths its pack registers.
+ */
+type Armed = readonly [region: string, url: string, trigger: number, styles?: readonly string[]];
 
 const INTENT = 1;
-const IDLE = 2;
+const EAGER = 3;
 const DEMAND = 4;
 const INTENT_EVENTS = ['pointerover', 'focusin', 'touchstart', 'pointerdown'];
 /** Matches the delivery request deadline. */
 const PACK_TIMEOUT_MS = 10_000;
-const RESOLVED = Promise.resolve();
+const noop = (): void => {};
 const owners = new WeakMap<TemplateBlockMeta, TemplateMeta>();
 const scanned = new WeakSet<TemplateMeta>();
 /** Regions with a prefetch trigger, by the block that contains their condition. */
@@ -62,13 +77,16 @@ const registered = new Map<string, Registration>();
 const released = new Map<string, Registration & { template: WeakRef<TemplateMeta> }>();
 /** Bindings that mounted each region this runtime registered. */
 const views = new Map<string, Set<WeakRef<CondBinding>>>();
-/** Active regions per host whose packs are loading or failed to load. */
-const pending = new WeakMap<Element, Set<CondBinding>>();
-const activations = new WeakMap<CondBinding, Promise<void>>();
-/** Intent regions waiting for interaction, by owner tag. */
-let intent: Map<string, Map<string, string>> | undefined;
-/** Idle and load prefetch queues, by trigger. */
-const queues = new Map<number, Map<string, string>>();
+/**
+ * Work each host's active regions wait for: a binding's activation, or the
+ * scripts of a region that hydrated open. The value is the in-flight load,
+ * or `undefined` after it failed until `$rendered()` retries it.
+ */
+const pending = new WeakMap<Element, Map<CondBinding | string, Promise<void> | undefined>>();
+/** Intent regions waiting for interaction, by owner tag and pack URL. */
+let intent: Map<string, Map<string, Armed>> | undefined;
+/** Idle and eager prefetch queues, by trigger and pack URL. */
+const queues = new Map<number, Map<string, Armed>>();
 let releasing = false;
 
 /** A loaded region or shared block, validated against its owner when given. */
@@ -102,26 +120,49 @@ function revive(id: string): TemplateMeta | undefined {
   return template;
 }
 
-/** Load a region's pack once; every caller shares the same request until it installs. */
-export function load(region: string, url: string, priority: Priority = 'auto'): Promise<void> {
+/**
+ * Load a region's pack and the scripts of its custom elements in parallel.
+ *
+ * Every caller shares one pack request until it installs, and one load per
+ * custom element. The raw pack path stays the key; only the request resolves
+ * it against the asset base. In link builds `styles` names the stylesheets the
+ * pack registers, which every load of the pack starts at its own priority;
+ * the pack's style registration joins those requests.
+ *
+ * A bundler's `import()` takes no fetch priority, so a `low` load before the
+ * window has loaded fetches only the pack and imports the scripts once it
+ * has; `styles.js` holds its stylesheets the same way. An activation starts
+ * both at once, also when it joins such a load.
+ */
+export function load(
+  region: string,
+  url: string,
+  priority: Priority = 'auto',
+  styles?: readonly string[],
+): Promise<unknown> {
+  let scripts: Promise<unknown> | undefined;
+  if (priority !== 'low' || document.readyState === 'complete') scripts = loadScripts(region);
+  else window.addEventListener('load', () => loadScripts(region)?.catch(noop), { once: true });
   // An installing pack has published its templates before their definitions
-  // and resources are ready, so every caller joins the in-flight load.
-  let loading = loads.get(url);
-  if (loading) return loading;
-  // A failed install may have published templates whose resources never became ready.
-  if (!unready.has(url) && resolve(region, undefined, true)) return RESOLVED;
-  // A stalled request must settle so the next activation can retry it.
-  loading = fetch(url, { priority, signal: AbortSignal.timeout?.(PACK_TIMEOUT_MS) } as RequestInit)
-    .then(response => {
-      if (!response.ok) {
-        throw new Error(`[WebUI] Lazy region pack ${url} failed with HTTP ${response.status}.`);
-      }
-      return response.json() as Promise<TemplatePack>;
-    })
-    .then(pack => install(pack, region, url))
-    .finally(() => { loads.delete(url); });
-  loads.set(url, loading);
-  return loading;
+  // and resources are ready, so every caller joins the in-flight load. A
+  // failed install may have published templates whose resources never became ready.
+  let pack = loads.get(url);
+  if (!pack && (unready.has(url) || !resolve(region, undefined, true))) {
+    // A stalled request must settle so the next activation can retry it.
+    loads.set(url, pack = fetch(resolveAsset(url), {
+      priority, signal: AbortSignal.timeout?.(PACK_TIMEOUT_MS),
+    } as RequestInit)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`[WebUI] Lazy region pack ${url} failed with HTTP ${response.status}.`);
+        }
+        return response.json() as Promise<TemplatePack>;
+      })
+      .then(pack => install(pack, region, url, priority))
+      .finally(() => { loads.delete(url); }));
+  }
+  if (pack && styles) window.__webuiPreloadStyles?.(styles, priority);
+  return Promise.all([pack, scripts]);
 }
 
 /** Whether a pack has not finished installing, so its region cannot mount yet. */
@@ -129,8 +170,18 @@ export function installing(url: string): boolean {
   return loads.has(url) || unready.has(url);
 }
 
+/**
+ * Whether an active region still needs its pack or scripts before it mounts.
+ *
+ * A pack that is still installing has published templates that are not ready,
+ * and a body's custom elements must be defined before it is inserted.
+ */
+export function unloaded(region: string, url: string, owner: string): boolean {
+  return installing(url) || !resolve(region, owner, true) || !!loadScripts(region)?.catch(noop);
+}
+
 /** Register a pack's missing templates; resolves once they can mount. */
-async function install(pack: TemplatePack, region: string, url: string): Promise<void> {
+async function install(pack: TemplatePack, region: string, url: string, priority: Priority): Promise<void> {
   if (pack?.type !== 'webui-pack' || pack.version !== 1 || pack.fragment !== region) throw mismatch(url, region);
   const runtime = window.__webui ??= {};
   const registry = getTemplateRegistry();
@@ -147,6 +198,9 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
       && (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id))
     ) continue;
     (fresh ??= {})[id] = templates[id];
+    // Registering prepares a template's own stylesheets on paths that pass
+    // styles.js only the template, so the template carries the speculation.
+    if (priority === 'low') speculativeTemplates.add(templates[id]);
     const source = pack.templateFunctions?.[id];
     if (source) closures += `f[${JSON.stringify(id)}]=${source};`;
   }
@@ -172,6 +226,9 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
     }));
     // Registration failures surface here rather than as a missing region.
     if (waits.length > 0) await Promise.all(waits);
+    if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+      warnUnscriptedComponents(region, fresh, hasPendingTemplateDefinition);
+    }
     if (fresh[region]) {
       registered.set(region, { url, bit: pack.bits?.[region], epoch: runtime.inventoryEpoch ?? 0 });
     }
@@ -180,7 +237,9 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
   // Every template a pack names is present now, so its bits are safe to merge.
   runtime.inventory = mergeBits(runtime.inventory ?? '', pack.inventory ?? '');
   runtime.styleInventory = mergeBits(runtime.styleInventory ?? '', pack.styleInventory ?? '');
-  await window.__webuiPrepareResources?.(pack.required ?? []);
+  // `styles.js` returns nothing to wait for while it holds a speculative
+  // install's stylesheets for the window load event.
+  await window.__webuiPrepareResources?.(pack.required ?? [], priority);
   unready.delete(url);
 }
 
@@ -191,33 +250,58 @@ function mismatch(url: string, region: string): Error {
 }
 
 /** Load an active region, then let its host re-evaluate it; a closed region stays unmounted. */
-export function activate(host: LazyHost, binding: CondBinding, url: string): void {
-  if (activations.has(binding)) return;
-  const loading: Promise<void> = load(binding.blockIndex as string, url, 'high').then(() => {
-    if (activations.get(binding) !== loading) return;
-    activations.delete(binding);
-    pending.get(host)?.delete(binding);
-    if (attached(binding)) host.$toggleCond(binding);
+export function activate(host: LazyHost, binding: CondBinding, url: string, styles?: readonly string[]): void {
+  if (!pending.get(host)?.get(binding)) {
+    track(host, binding, load(binding.blockIndex as string, url, 'high', styles));
+  }
+}
+
+/** Load the scripts of a region whose templates arrived with its open body. */
+export function hydrated(host: LazyHost, region: string): void {
+  if (pending.get(host)?.get(region)) return;
+  const scripts = loadScripts(region);
+  if (scripts) track(host, region, scripts);
+}
+
+/**
+ * Record work that an active region waits for: a binding's activation, which
+ * re-enters its host once loaded, or the scripts of a body that hydrated open.
+ * A failure is reported unless a `lazyerror` listener handles it.
+ */
+function track(host: LazyHost, key: CondBinding | string, work: Promise<unknown>): void {
+  const entries = pending.get(host) ?? new Map<CondBinding | string, Promise<void> | undefined>();
+  pending.set(host, entries);
+  // Only one load per key is in flight, so each settles its own entry.
+  const loading: Promise<void> = work.then(() => {
+    entries.delete(key);
+    if (typeof key !== 'string' && attached(key)) host.$toggleCond(key);
   }, (error: unknown) => {
-    if (activations.get(binding) === loading) activations.delete(binding);
+    entries.set(key, undefined);
+    if (host.dispatchEvent(new CustomEvent('lazyerror', {
+      bubbles: true, composed: true, cancelable: true, detail: { error },
+    }))) {
+      (globalThis.reportError ?? console.error)(error);
+    }
     throw error;
   });
-  activations.set(binding, loading);
-  let bindings = pending.get(host);
-  if (!bindings) pending.set(host, bindings = new Set());
-  bindings.add(binding);
+  // Only `$rendered()` callers observe the rejection.
+  loading.catch(noop);
+  entries.set(key, loading);
 }
 
 /** Wait for the host's active regions, including nested ones they activate; retry failures. */
 export async function rendered(host: LazyHost): Promise<void> {
-  const bindings = pending.get(host);
-  while (bindings && bindings.size > 0) {
+  const entries = pending.get(host);
+  while (entries && entries.size > 0) {
     const waits: Promise<void>[] = [];
-    for (const binding of bindings) {
-      if (!activations.has(binding) && attached(binding)) host.$toggleCond(binding);
-      const loading = activations.get(binding);
-      if (loading) waits.push(loading);
-      else bindings.delete(binding);
+    for (const [key, loading] of entries) {
+      if (!loading) {
+        if (typeof key === 'string') hydrated(host, key);
+        else if (attached(key)) host.$toggleCond(key);
+      }
+      const next = entries.get(key);
+      if (next) waits.push(next);
+      else entries.delete(key);
     }
     if (waits.length === 0) return;
     await Promise.all(waits);
@@ -236,35 +320,61 @@ function attached(binding: CondBinding): boolean {
  * triggers of the lazy regions it contains.
  */
 export function blockOwner(meta: TemplateBlockMeta): TemplateMeta | undefined {
-  const packs = (meta as TemplateMeta).lp;
-  if (packs && !scanned.has(meta as TemplateMeta)) scan(meta as TemplateMeta, packs);
+  if ((meta as TemplateMeta).lp && !scanned.has(meta as TemplateMeta)) scan(meta as TemplateMeta);
   const regions = armable.get(meta);
   if (regions) arm(regions);
   return owners.get(meta);
 }
 
-/** Index a template's triggered regions by the block that contains each condition. */
-function scan(template: TemplateMeta, packs: Readonly<Record<string, string>>): void {
-  scanned.add(template);
-  const blocks = template.b;
+/** Visit each lazy region whose condition a template or one of its local blocks contains. */
+function regions(
+  template: TemplateMeta | undefined,
+  visit: (block: TemplateBlockMeta, entry: CompiledConditionalMeta, url: string, styles?: readonly string[]) => void,
+): void {
+  const packs = template?.lp;
+  if (!packs) return;
+  const blocks = template!.b;
   for (let i = -1; i < (blocks?.length ?? 0); i++) {
-    const block = i < 0 ? template : blocks![i];
+    const block = i < 0 ? template! : blocks![i];
     const conds = block.c;
-    let regions: Armed[] | undefined;
+    // Numeric block references never name a pack.
     if (conds) {
       for (let j = 0; j < conds.length; j++) {
-        const [, region, , trigger] = conds[j];
-        const url = trigger && trigger !== DEMAND && typeof region === 'string' ? packs[region] : undefined;
-        if (url) (regions ??= []).push([region as string, url, trigger!]);
+        const region = conds[j][1];
+        if (packs[region]) visit(block, conds[j], packs[region], template!.lc?.[region]);
       }
     }
-    if (regions) armable.set(block, regions);
   }
+}
+
+/** Index a template's triggered regions by the block that contains each condition. */
+function scan(template: TemplateMeta): void {
+  scanned.add(template);
+  regions(template, (block, [, region, , trigger], url, styles) => {
+    if (!trigger || trigger === DEMAND) return;
+    let armed = armable.get(block);
+    if (!armed) armable.set(block, armed = []);
+    armed.push([region as string, url, trigger, styles]);
+  });
+}
+
+/**
+ * Prefetch the regions whose conditions a component's own template contains,
+ * including demand regions, or only those whose condition reads `path` or a
+ * path below it.
+ */
+export function prefetchRegions(template: TemplateMeta | undefined, path?: string): void {
+  regions(template, (_block, [[, paths], region], url, styles) => {
+    if (path === undefined || paths.some(read => read.startsWith(path) && (read[path.length] ?? '.') === '.')) {
+      prefetch(region as string, url, styles);
+    }
+  });
 }
 
 function arm(regions: readonly Armed[]): void {
   for (let i = 0; i < regions.length; i++) {
-    const [region, url, trigger] = regions[i];
+    const armed = regions[i];
+    const [region, url, trigger, styles] = armed;
     if (resolve(region)) continue;
     if (trigger === INTENT) {
       if (!intent) {
@@ -276,34 +386,44 @@ function arm(regions: readonly Armed[]): void {
       // Region identities start with their owner's tag.
       const owner = region.slice(0, region.indexOf('::'));
       const waiting = intent.get(owner);
-      if (waiting) waiting.set(url, region);
-      else intent.set(owner, new Map([[url, region]]));
+      if (waiting) waiting.set(url, armed);
+      // Focus that entered the owner before anything listened, such as
+      // autofocus, is intent that no event will report.
+      else if (focusWithin(owner)) prefetch(region, url, styles);
+      else intent.set(owner, new Map([[url, armed]]));
     } else if (
       // A region shown and released before is not speculatively pinned again.
       !released.has(region)
       // Speculative page-level prefetch yields to the user's data-saving preference.
       && !(navigator as { connection?: { saveData?: boolean } }).connection?.saveData
     ) {
-      speculate(trigger, url, region);
+      speculate(armed);
     }
   }
 }
 
-function speculate(trigger: number, url: string, region: string): void {
+/** Whether focus is inside an element with this tag, following open shadow roots. */
+function focusWithin(tag: string): boolean {
+  let focused: Element | null | undefined = document.activeElement;
+  for (; focused; focused = focused.shadowRoot?.activeElement) if (focused.closest(tag)) return true;
+  return false;
+}
+
+function speculate(armed: Armed): void {
+  const trigger = armed[2];
   let queue = queues.get(trigger);
   if (!queue) {
     const waiting = queue = new Map();
     queues.set(trigger, waiting);
     const flush = (): void => {
       queues.delete(trigger);
-      prefetchAll(waiting, trigger === IDLE ? 'low' : 'auto');
+      prefetchAll(waiting, true);
     };
-    // Load prefetch runs after the current hydration task; idle prefetch after the page loads.
-    if (trigger !== IDLE) setTimeout(flush, 0);
-    else if (document.readyState === 'complete') idle(flush);
-    else window.addEventListener('load', () => idle(flush), { once: true });
+    // Eager prefetch runs after the current hydration task; idle prefetch once the loaded page is idle.
+    if (trigger === EAGER) setTimeout(flush, 0);
+    else afterLoad(flush);
   }
-  queue.set(url, region);
+  queue.set(armed[1], armed);
 }
 
 /** One delegated listener prefetches the waiting regions of every owner on the event path. */
@@ -314,13 +434,28 @@ function onIntent(event: Event): void {
     const regions = owner ? intent!.get(owner) : undefined;
     if (!regions) continue;
     intent!.delete(owner!);
-    prefetchAll(regions, 'high');
+    prefetchAll(regions);
   }
 }
 
-function prefetchAll(regions: Map<string, string>, priority: Priority): void {
-  // Activation reports failures and retries.
-  for (const [url, region] of regions) load(region, url, priority).catch(() => {});
+function prefetchAll(regions: Map<string, Armed>, background?: boolean): void {
+  for (const [region, url, , styles] of regions.values()) prefetch(region, url, styles, background);
+}
+
+/**
+ * Load a region speculatively, never while the page is prerendering.
+ *
+ * Background (eager and idle) loads always use low fetch priority. Intent and
+ * explicit prefetch stay low until the window has loaded so they never
+ * compete with the critical path. Failures are silent: activation reports
+ * them and retries.
+ */
+function prefetch(region: string, url: string, styles?: readonly string[], background?: boolean): void {
+  if ((document as { prerendering?: boolean }).prerendering) {
+    document.addEventListener('prerenderingchange', () => prefetch(region, url, styles, background), { once: true });
+  } else {
+    load(region, url, background || document.readyState !== 'complete' ? 'low' : 'high', styles).catch(noop);
+  }
 }
 
 /** Remember a binding that mounted a region this runtime registered. */
@@ -364,6 +499,12 @@ function releaseInactive(): void {
 function idle(callback: () => void): void {
   if (typeof requestIdleCallback === 'function') requestIdleCallback(callback, { timeout: 5000 });
   else setTimeout(callback, 200);
+}
+
+/** Run once the window has loaded and the browser is idle. */
+export function afterLoad(callback: () => void): void {
+  if (document.readyState === 'complete') idle(callback);
+  else window.addEventListener('load', () => idle(callback), { once: true });
 }
 
 function mergeBits(current: string, next: string): string {
