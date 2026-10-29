@@ -70,11 +70,32 @@ interface ComponentLinkRecord {
   sheet?: CSSStyleSheet;
   /** Loaded, authorized link that can be promoted without a new load. */
   source?: HTMLLinkElement;
-  /** Its CSS cannot be represented as a constructable sheet. */
+  /**
+   * Promotion failed for this Document's response: it is not authorized, or
+   * its CSS cannot be represented as a constructable sheet. Neither changes,
+   * because memory-cache hits add no new timing entry.
+   */
   unpromotable: boolean;
   /** Some root has already mounted this URL. */
   used: boolean;
 }
+
+/**
+ * `installComponentLinkStyles` flag: promote a stylesheet on its first use.
+ *
+ * For roots whose cascade includes other author styles (a template's own
+ * `<style>` or `<link>`, server-rendered content, or Light descendants), so
+ * every instance adopts the same shared sheet.
+ */
+export const COMPONENT_LINKS_EAGER = 1;
+
+/**
+ * `installComponentLinkStyles` flag: the framework attached this ShadowRoot in
+ * the current mount, so it cannot hold adopted sheets yet. Synchronous
+ * adoption then writes `adoptedStyleSheets` without reading it; a read
+ * materializes a per-root wrapper that lives as long as the root.
+ */
+export const COMPONENT_ROOT_FRESH = 2;
 
 const READY = Promise.resolve();
 const NO_DESCRIPTORS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
@@ -102,6 +123,11 @@ const authorStyleTemplates = new WeakMap<TemplateMeta, boolean>();
  * memory cache hits add no new resource timing entry.
  */
 const componentLinkRecords = new WeakMap<Document, Map<string, ComponentLinkRecord>>();
+/** Catalog hrefs resolved against one Document base URL; see {@link resolveComponentHref}. */
+const resolvedComponentHrefs = new WeakMap<
+  Document,
+  { readonly base: string; readonly hrefs: Map<string, string> }
+>();
 let speculativeStylesheetPreloads:
   | Map<string, SpeculativeStylesheetPreload | undefined>
   | undefined;
@@ -200,19 +226,39 @@ export function preloadComponentAssetStyles(
 export function adoptPromotedComponentLinks(
   root: ShadowRoot,
   hrefs: readonly string[],
+  flags = 0,
 ): boolean {
   const owner = root.ownerDocument;
   const records = componentLinkRecords.get(owner);
   if (!records || hrefs.length === 0) return false;
-  const base = owner.baseURI;
   const sheets = new Array<CSSStyleSheet>(hrefs.length);
   for (let i = 0; i < hrefs.length; i++) {
-    const record = records.get(resolveHref(hrefs[i], base));
+    const record = records.get(resolveComponentHref(owner, hrefs[i]));
     const sheet = record && (record.sheet ?? promoteSource(record));
     if (!sheet) return false;
     sheets[i] = sheet;
   }
-  return adoptPreparedSheets(root, sheets);
+  return adoptPreparedSheets(root, sheets, (flags & COMPONENT_ROOT_FRESH) !== 0);
+}
+
+/**
+ * Resolve a catalog href the way a native link created now would, without
+ * parsing a URL for every mounted root. A base URL change, from a `<base>`
+ * edit or a soft navigation in a Document without one, starts a new cache.
+ */
+function resolveComponentHref(owner: Document, href: string): string {
+  const base = owner.baseURI;
+  let cache = resolvedComponentHrefs.get(owner);
+  if (cache === undefined || cache.base !== base) {
+    cache = { base, hrefs: new Map() };
+    resolvedComponentHrefs.set(owner, cache);
+  }
+  let resolved = cache.hrefs.get(href);
+  if (resolved === undefined) {
+    resolved = resolveHref(href, base);
+    cache.hrefs.set(href, resolved);
+  }
+  return resolved;
 }
 
 /**
@@ -220,17 +266,17 @@ export function adoptPromotedComponentLinks(
  *
  * Component style links are installed before a client template is wired, so
  * they cannot use the staging-root path below. The first root to use an href
- * keeps its native link and only records whether that load is authorized.
- * Later roots promote the authorized CSSOM once and adopt the shared sheet,
- * disabling their links. A root is guarded until its native links load and
- * never switches representation after it becomes visible. `nativeLinks`
- * keeps roots whose cascade includes other author styles on native links.
+ * keeps its native link and only records whether that load is authorized,
+ * unless `flags` has {@link COMPONENT_LINKS_EAGER}. Later roots promote the
+ * authorized CSSOM once and adopt the shared sheet, disabling their links. A
+ * root is guarded until its native links load and never switches
+ * representation after it becomes visible.
  */
 export function installComponentLinkStyles(
   host: HTMLElement,
   root: ShadowRoot,
   links: readonly HTMLLinkElement[],
-  nativeLinks = false,
+  flags = 0,
 ): void {
   if (links.length === 0 || !supportsConstructableStylesheets()) return;
 
@@ -241,7 +287,8 @@ export function installComponentLinkStyles(
   const preloads: SpeculativeStylesheetPreload[] = [];
   const pendingPreloads: Promise<LinkStyleFailure | undefined>[] = [];
   for (let i = 0; i < links.length; i++) {
-    const speculative = speculativeStylesheetPreloads?.get(resolveHref(links[i].href));
+    // `link.href` is already the absolute, serialized URL that keys the map.
+    const speculative = speculativeStylesheetPreloads?.get(links[i].href);
     if (!speculative) continue;
     speculative.claimed = true;
     preloads.push(speculative);
@@ -252,13 +299,14 @@ export function installComponentLinkStyles(
   }
 
   const records = componentLinkRecordsFor(root.ownerDocument, links);
-  let share = !nativeLinks;
+  let share = true;
   for (let i = 0; i < records.length; i++) {
     if (records[i].used) continue;
     records[i].used = true;
     records[i].firstUseStartedAt = timingStartedAt;
     share = false;
   }
+  if ((flags & COMPONENT_LINKS_EAGER) !== 0) share = true;
 
   const releasePreloads = (): void => {
     for (let i = 0; i < preloads.length; i++) {
@@ -272,7 +320,9 @@ export function installComponentLinkStyles(
   if (preloadsSettled && hasLoadedSheets(links)) {
     if (!preloadFailed) {
       authorizeLoadedLinks(links, records, timingStartedAt);
-      if (share) shareLoadedLinks(root, links, records);
+      if (share) {
+        shareLoadedLinks(root, links, records, (flags & COMPONENT_ROOT_FRESH) !== 0);
+      }
     }
     releasePreloads();
     return;
@@ -307,8 +357,9 @@ export function installComponentLinkStyles(
       if (!results.some(result => result !== undefined)) {
         authorizeLoadedLinks(links, records, timingStartedAt);
         // Still hidden by the guard, so switching to the shared sheet is
-        // never visible.
-        if (share) shareLoadedLinks(root, links, records);
+        // never visible. Author code may have adopted sheets meanwhile, so
+        // the list is read and preserved.
+        if (share) shareLoadedLinks(root, links, records, false);
       }
       reveal();
     });
@@ -347,9 +398,8 @@ export function installComponentLinkStyles(
 /**
  * Whether any block of a template may add its own `<style>` or `<link>`.
  *
- * Compiler-owned links stay native in such roots: an adopted catalog sheet
- * cascades after tree styles, so instances that shared it would order their
- * rules differently from an instance still on its native link.
+ * Roots with such styles promote compiler-owned links on first use, so every
+ * instance adopts the shared sheet and cascades it after the tree's styles.
  */
 export function templateMayContainAuthorStyles(meta: TemplateMeta): boolean {
   let result = authorStyleTemplates.get(meta);
@@ -1059,11 +1109,13 @@ function authorizeLoadedLinks(
 ): void {
   for (let i = 0; i < links.length; i++) {
     const record = records[i];
-    if (!record.authorized) {
+    if (!record.authorized && !record.unpromotable) {
       record.authorized = hasUnredirectedNativeTiming(
         links[i],
         Math.min(timingStartedAt, record.firstUseStartedAt),
       );
+      // Later links reuse the same cached response, so they cannot pass either.
+      if (!record.authorized) record.unpromotable = true;
     }
     if (
       record.authorized &&
@@ -1082,6 +1134,7 @@ function shareLoadedLinks(
   root: ShadowRoot,
   links: readonly HTMLLinkElement[],
   records: readonly ComponentLinkRecord[],
+  fresh: boolean,
 ): boolean {
   const sheets = new Array<CSSStyleSheet>(links.length);
   for (let i = 0; i < links.length; i++) {
@@ -1092,7 +1145,7 @@ function shareLoadedLinks(
     if (!sheet) return false;
     sheets[i] = sheet;
   }
-  if (!adoptPreparedSheets(root, sheets)) return false;
+  if (!adoptPreparedSheets(root, sheets, fresh)) return false;
   deactivatePromotedLinks(links);
   return true;
 }
@@ -1206,10 +1259,11 @@ function hasUnredirectedNativeTiming(
 function adoptPreparedSheets(
   root: ShadowRoot,
   sheets: CSSStyleSheet[],
+  fresh = false,
 ): boolean {
   if (!('adoptedStyleSheets' in root)) return false;
-  const current = root.adoptedStyleSheets;
-  if (current.length === 0) {
+  const current = fresh ? undefined : root.adoptedStyleSheets;
+  if (current === undefined || current.length === 0) {
     try {
       root.adoptedStyleSheets = sheets;
       return true;

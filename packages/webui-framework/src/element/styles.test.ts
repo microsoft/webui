@@ -5,7 +5,10 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import {
   claimSsrComponentStyles,
+  COMPONENT_LINKS_EAGER,
+  COMPONENT_ROOT_FRESH,
   installComponentStyles,
+  installMountedComponentStyles,
   registerComponentStyles,
   setCssModuleLoaderForTests,
   type ComponentStyles,
@@ -761,12 +764,15 @@ describe('shared component link sheets', () => {
     private resolvedHref = '';
     private readonly attributes = new Map<string, string>();
 
+    constructor(private readonly owner: { readonly baseURI: string }) {}
+
     get href(): string {
       return this.resolvedHref;
     }
 
     set href(value: string) {
-      this.resolvedHref = new URL(value, BASE).href;
+      // Like a native link, resolve against the owner's current base URL.
+      this.resolvedHref = new URL(value, this.owner.baseURI).href;
       this.attributes.set('href', value);
     }
 
@@ -810,21 +816,33 @@ describe('shared component link sheets', () => {
     const document = fakeDocument();
     Object.assign(document, {
       baseURI: BASE,
-      createElement: (name: string) => name === 'link' ? new FakeLink() : new FakeElement(name),
+      createElement: (name: string) =>
+        name === 'link' ? new FakeLink(document) : new FakeElement(name),
     });
     return document;
   }
 
-  function linkStyles(): ComponentStyles {
+  function linkStyles(href = '/card.css'): ComponentStyles {
     return {
       version: 1,
       strategy: 'link',
-      resources: { card: { kind: 'link', href: '/card.css' } },
+      resources: { card: { kind: 'link', href } },
       closures: { card: ['card'] },
     };
   }
 
-  function withBrowserGlobals(run: () => void): void {
+  /** One unredirected, non-service-worker native load inside every mount window. */
+  const AUTHORIZED_LOAD = {
+    initiatorType: 'link',
+    redirectEnd: 0,
+    redirectStart: 0,
+    responseStatus: 200,
+    startTime: Number.MAX_SAFE_INTEGER,
+    workerStart: 0,
+  };
+  let timingLookups = 0;
+
+  function withBrowserGlobals(run: () => void, load: object = AUTHORIZED_LOAD): void {
     const previous = new Map<GlobalName, PropertyDescriptor | undefined>();
     const define = (name: GlobalName, value: unknown): void => {
       previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -844,17 +862,13 @@ describe('shared component link sheets', () => {
         throw new Error('a promoted or native-loaded root must not install a guard');
       },
     });
-    // One authorized, unredirected native load for every stylesheet URL.
+    timingLookups = 0;
     Object.defineProperty(performance, 'getEntriesByName', {
       configurable: true,
-      value: () => [{
-        initiatorType: 'link',
-        redirectEnd: 0,
-        redirectStart: 0,
-        responseStatus: 200,
-        startTime: Number.MAX_SAFE_INTEGER,
-        workerStart: 0,
-      }],
+      value: () => {
+        timingLookups += 1;
+        return [load];
+      },
     });
     try {
       run();
@@ -921,18 +935,101 @@ describe('shared component link sheets', () => {
     });
   });
 
-  test('keeps roots with other author styles native', () => {
+  test('promotes eagerly when the root has other author styles', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+
+      const styled = fakeShadow(document);
+      installMountedComponentStyles('card', styled, host, COMPONENT_LINKS_EAGER);
+      assert.equal(links(styled).length, 1);
+      assert.equal(links(styled)[0].disabled, true, 'the first eager root adopts too');
+      assert.equal(styled.adoptedStyleSheets.length, 1);
+
+      const plain = fakeShadow(document);
+      installComponentStyles('card', plain, host);
+      assert.equal(links(plain).length, 0);
+      assert.equal(plain.adoptedStyleSheets[0], styled.adoptedStyleSheets[0]);
+    });
+  });
+
+  test('adopts into a root attached in this mount without reading its sheets', () => {
     withBrowserGlobals(() => {
       const document = linkDocument();
       registerComponentStyles(linkStyles(), document);
       const host = {} as HTMLElement;
       installComponentStyles('card', fakeShadow(document), host);
 
-      const styled = fakeShadow(document);
-      installComponentStyles('card', styled, host, true);
-      assert.equal(links(styled).length, 1);
-      assert.equal(links(styled)[0].disabled, false);
-      assert.deepEqual(styled.adoptedStyleSheets, []);
+      const fresh = fakeShadow(document);
+      let reads = 0;
+      let assigned: CSSStyleSheet[] = [];
+      Object.defineProperty(fresh, 'adoptedStyleSheets', {
+        configurable: true,
+        get() {
+          reads += 1;
+          return assigned;
+        },
+        set(value: CSSStyleSheet[]) {
+          assigned = value;
+        },
+      });
+      installMountedComponentStyles('card', fresh, host, COMPONENT_ROOT_FRESH);
+      assert.equal(reads, 0, 'a read would materialize a per-root wrapper');
+      assert.equal(assigned.length, 1);
+      assert.equal(links(fresh).length, 0);
+    });
+  });
+
+  test('keeps sheets a root already adopted', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+      installComponentStyles('card', fakeShadow(document), host);
+
+      const root = fakeShadow(document);
+      const author = new FakeConstructedSheet() as unknown as CSSStyleSheet;
+      root.adoptedStyleSheets = [author];
+      installComponentStyles('card', root, host);
+      assert.equal(root.adoptedStyleSheets.length, 2);
+      assert.equal(root.adoptedStyleSheets[1], author);
+    });
+  });
+
+  test('checks resource timing once for a response that cannot be promoted', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+      const roots = [fakeShadow(document), fakeShadow(document), fakeShadow(document)];
+      for (const root of roots) installComponentStyles('card', root, host);
+
+      assert.equal(timingLookups, 1);
+      for (const root of roots) {
+        assert.equal(links(root).length, 1);
+        assert.equal(links(root)[0].disabled, false);
+        assert.deepEqual(root.adoptedStyleSheets, []);
+      }
+    }, { ...AUTHORIZED_LOAD, redirectEnd: 2, redirectStart: 1 });
+  });
+
+  test('re-resolves catalog hrefs when the Document base URL changes', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      registerComponentStyles(linkStyles('card.css'), document);
+      const host = {} as HTMLElement;
+      installComponentStyles('card', fakeShadow(document), host);
+      const shared = fakeShadow(document);
+      installComponentStyles('card', shared, host);
+      assert.equal(links(shared).length, 0);
+
+      (document as { baseURI: string }).baseURI = 'https://example.test/other/';
+      const moved = fakeShadow(document);
+      installComponentStyles('card', moved, host);
+      assert.equal(links(moved).length, 1, 'a different stylesheet URL is a first use');
+      assert.equal(links(moved)[0].href, 'https://example.test/other/card.css');
+      assert.deepEqual(moved.adoptedStyleSheets, []);
     });
   });
 

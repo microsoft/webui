@@ -90,11 +90,13 @@ import {
 } from './element/markers.js';
 import {
   claimSsrComponentStyles,
-  installComponentStyles,
+  installMountedComponentStyles,
   isComponentStyleMarker,
 } from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
+  COMPONENT_LINKS_EAGER,
+  COMPONENT_ROOT_FRESH,
   installTemplateLinkStyles,
   prepareTemplateLinkStyles,
   templateMayContainAuthorStyles,
@@ -733,6 +735,7 @@ export class TemplateElement extends HTMLElement {
     let root: Node;
     let isSSR: boolean;
     let clientRoot: HTMLElement | null = null;
+    let freshShadow = false;
 
     if (remountStructuralTemplate) {
       const renderRoot = wantShadow
@@ -762,6 +765,7 @@ export class TemplateElement extends HTMLElement {
       // Shadow DOM client-created (or SPA partial with slot content).
       // Existing children are slot content — they stay in light DOM
       // and project through the template's <slot>.
+      freshShadow = this.shadowRoot === null;
       const renderRoot = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
       if (resetClientShadow) renderRoot.replaceChildren();
       root = renderRoot;
@@ -774,7 +778,7 @@ export class TemplateElement extends HTMLElement {
 
     // Styles are required even when a compiler-owned SSR host remains dormant.
     // Install them after root selection but before the hydration deferral.
-    this.$installStyles(meta);
+    this.$installStyles(meta, freshShadow);
 
     if (isSSR && !forceSSR && !reconnecting) {
       const ancestor = this.$nearestHydrationBarrier();
@@ -918,7 +922,7 @@ export class TemplateElement extends HTMLElement {
     }
   }
 
-  private $installStyles(meta: TemplateMeta): void {
+  private $installStyles(meta: TemplateMeta, freshShadow = false): void {
     const wantShadow = !!this.shadowRoot || !!meta.sd;
     const containingRoot = this.getRootNode();
     const styleTarget = wantShadow
@@ -927,14 +931,20 @@ export class TemplateElement extends HTMLElement {
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
     claimSsrComponentStyles(this, styleTarget);
-    // Shared Link sheets cascade after tree styles, so only a root holding
-    // nothing but this component's catalog CSS may adopt them.
-    const nativeLinks = !wantShadow || templateMayContainAuthorStyles(meta);
-    const installation = installComponentStyles(
+    // A shadow root attached in this mount holds nothing yet, so it can keep
+    // its first Link stylesheet native and adopt shared sheets later. Roots
+    // whose cascade has other author styles promote eagerly instead, so every
+    // instance cascades the same way.
+    const flags = !freshShadow
+      ? COMPONENT_LINKS_EAGER
+      : templateMayContainAuthorStyles(meta)
+        ? COMPONENT_ROOT_FRESH | COMPONENT_LINKS_EAGER
+        : COMPONENT_ROOT_FRESH;
+    const installation = installMountedComponentStyles(
       this.localName,
       styleTarget,
       this,
-      nativeLinks,
+      flags,
     );
     if (installation) {
       void installation.catch((error) => {

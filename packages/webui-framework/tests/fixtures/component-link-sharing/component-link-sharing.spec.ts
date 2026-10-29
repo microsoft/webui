@@ -222,24 +222,24 @@ test.describe('component link sharing', () => {
     })).toBe('italic');
   });
 
-  test('keeps components with their own template styles on native links', async ({
+  test('promotes eagerly for components with their own template styles', async ({
     page,
   }) => {
     await openFixture(page);
     await register(page, 'test-styled-link-card', true);
 
-    // An adopted catalog sheet would cascade after the template's <style> in
-    // some instances only, so every instance keeps the authored order.
+    // The adopted catalog sheet cascades after the template's <style>, so the
+    // first instance adopts it too and every instance keeps the same order.
     await mountNow(page, 'test-styled-link-card', 3);
     await expect.poll(() => inspect(page, 'test-styled-link-card')).toEqual({
-      activeLinks: 3,
-      adopted: 0,
+      activeLinks: 0,
+      adopted: 3,
       cards: 3,
       colors: ['rgb(101, 102, 103)'],
-      distinctSheets: 0,
+      distinctSheets: 1,
       guards: 0,
       hidden: 0,
-      links: 3,
+      links: 1,
       sameSheetAsFirstBatch: true,
     });
   });
