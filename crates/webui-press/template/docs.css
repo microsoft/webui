@@ -302,6 +302,11 @@ body {
   font-size: var(--docs-font-size-s);
 }
 
+.doc-content webui-press-tab-panel > code-block:only-child > pre {
+  margin: 0;
+  border-radius: 0;
+}
+
 .hl-keyword {
   color: var(--docs-hl-keyword);
 }

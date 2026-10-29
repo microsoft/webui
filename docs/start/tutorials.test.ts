@@ -174,6 +174,38 @@ test('package-manager command tabs render and switch across the documentation', 
   assert.deepEqual(errors, []);
 });
 
+test('code-only tabs have no outer code-block gaps while standalone blocks retain their spacing', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  for (const javaScriptEnabled of [false, true]) {
+    for (const colorScheme of ['light', 'dark'] as const) {
+      const page = await browser.newPage({ javaScriptEnabled, colorScheme, viewport: { width: 390, height: 844 } });
+      await page.goto(`${server.origin}/webui/start/installation/`);
+      const group = page.locator('webui-press-tabs').first();
+      const pre = group.locator('webui-press-tab-panel[active] > code-block:only-child > pre');
+      await expect(pre).toHaveCSS('margin-top', '0px');
+      await expect(pre).toHaveCSS('margin-bottom', '0px');
+      await expect(pre).toHaveCSS('border-radius', '0px');
+      await expect(pre).toHaveCSS('padding-top', '16px');
+      const gaps = await group.evaluate(element => {
+        const bar = element.shadowRoot?.querySelector('.tab-bar');
+        const code = element.querySelector('webui-press-tab-panel[active] pre');
+        if (!bar || !code) throw new Error('Missing tab geometry');
+        return {
+          top: code.getBoundingClientRect().top - bar.getBoundingClientRect().bottom,
+          bottom: element.getBoundingClientRect().bottom - code.getBoundingClientRect().bottom,
+        };
+      });
+      assert.ok(Math.abs(gaps.top) < 0.1, 'code must meet the tab bar without an empty strip');
+      assert.ok(Math.abs(gaps.bottom - 1) < 0.1, 'only the tab container border may follow the code');
+      await expect(page.locator('.doc-content > code-block > pre').first()).toHaveCSS('margin-bottom', '16px');
+      await page.close();
+    }
+  }
+});
+
 test('installation keeps first-page setup separate from deep integrations', async t => {
   const server = await startWebsite();
   t.after(() => server.close());
