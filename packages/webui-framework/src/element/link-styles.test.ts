@@ -11,6 +11,7 @@ import {
   prepareTemplateLinkStyles,
   preloadComponentAssetStyles,
   rewriteCssUrls,
+  templateMayContainAuthorStyles,
   templateMayContainLinkStyles,
 } from './link-styles.js';
 import { registerPreparedComponentStyles } from './style-catalog.js';
@@ -47,6 +48,53 @@ describe('Link stylesheet scanning', () => {
       templateMayContainLinkStyles({ h: '<link-card></link-card>' }),
       false,
     );
+  });
+
+  test('finds author styles in any template block', () => {
+    assert.equal(
+      templateMayContainAuthorStyles({ v: 3, h: '<p class="card">Ready</p>' }),
+      false,
+    );
+    assert.equal(
+      templateMayContainAuthorStyles({ v: 3, h: '<style-card></style-card><link-card></link-card>' }),
+      false,
+    );
+    assert.equal(
+      templateMayContainAuthorStyles({ v: 3, h: '<STYLE>.a{}</STYLE><p></p>' }),
+      true,
+    );
+    assert.equal(
+      templateMayContainAuthorStyles({
+        v: 3,
+        h: '<p></p>',
+        b: [{ h: '<span></span>' }, { h: '<link rel="stylesheet" href="x.css">' }],
+      }),
+      true,
+    );
+  });
+
+  test('returns rules without URL candidates unchanged', () => {
+    const href = 'https://cdn.example.test/components/card.css';
+    const css = '.a{color:rgb(1,2,3);margin:calc(1px + 2px);width:var(--w)}';
+    assert.equal(rewriteCssUrls(css, href), css);
+    assert.equal(rewriteCssUrls('.a{content:"\\2014"}', href), '.a{content:"\\2014"}');
+    assert.equal(
+      rewriteCssUrls('/* url(old.svg) */.a{color:red}', href),
+      '/* url(old.svg) */.a{color:red}',
+    );
+  });
+
+  test('still scans mixed-case URL functions and escapes', () => {
+    const href = 'https://cdn.example.test/components/card.css';
+    assert.equal(
+      rewriteCssUrls('.a{width:calc(1px);--icon:URL(icons/a.svg)}', href),
+      '.a{width:calc(1px);--icon:URL("https://cdn.example.test/components/icons/a.svg")}',
+    );
+    assert.equal(
+      rewriteCssUrls('.a{background:-WEBKIT-IMAGE-SET("a.png" 1x)}', href),
+      undefined,
+    );
+    assert.equal(rewriteCssUrls('.a\\:hover{color:red}', href), undefined);
   });
 
   test('resolves quoted and unquoted URLs against the stylesheet', () => {

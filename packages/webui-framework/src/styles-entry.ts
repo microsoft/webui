@@ -3,15 +3,18 @@
 
 import { installTemplateRegistry, installTemplateResourcePreparation } from './template-registry.js';
 import { installComponentStyleRuntime } from './element/style-runtime.js';
-import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
+import { claimSsrComponentStyles, installMountedComponentStyles } from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
+  COMPONENT_LINKS_EAGER,
+  COMPONENT_ROOT_FRESH,
   installTemplateLinkStyles,
   preloadComponentAssetStyles,
   prepareComponentStyleLinks,
   prepareComponentStyleRoots,
   prepareRegisteredLinkStyles,
   prepareTemplateLinkStyles,
+  templateMayContainAuthorStyles,
   templateMayContainLinkStyles,
 } from './element/link-styles.js';
 import {
@@ -23,7 +26,20 @@ import {
 installTemplateRegistry();
 installComponentStyleRuntime({
   claimSsr: claimSsrComponentStyles,
-  install: installComponentStyles,
+  // A shadow root attached in this mount holds nothing yet, so it can keep
+  // its first Link stylesheet native and adopt shared sheets later. Roots
+  // whose cascade has other author styles promote eagerly instead, so every
+  // instance cascades the same way.
+  install: (tag, target, host, freshShadow, meta) => installMountedComponentStyles(
+    tag,
+    target,
+    host,
+    !freshShadow
+      ? COMPONENT_LINKS_EAGER
+      : templateMayContainAuthorStyles(meta)
+        ? COMPONENT_ROOT_FRESH | COMPONENT_LINKS_EAGER
+        : COMPONENT_ROOT_FRESH,
+  ),
   prepareTemplate: prepareTemplateLinkStyles,
   hasTemplateLinks: templateMayContainLinkStyles,
   installTemplateLinks: installTemplateLinkStyles,

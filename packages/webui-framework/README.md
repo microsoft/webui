@@ -1038,6 +1038,23 @@ guard, and completes deferred hydration. The component may be unstyled after a
 definitive stylesheet failure, but it remains visible and usable. SSR hydration,
 Style, Module, and authored/global Light DOM behavior are unchanged.
 
+Compiler-owned component stylesheets follow the same authority rules but
+promote on their second use. The first newly attached client Shadow root to
+mount a stylesheet in a Document keeps its native link and only records whether
+that load is authorized, so a component used once costs no CSSOM serialization
+or second parse. The next root promotes the authorized CSSOM of a loaded link
+once; every later root adopts that shared sheet before its template is
+appended, with no link, guard, or load wait. Memory-cached links promote during
+the mount, so every root created in one pass after `assets.preload()` or router
+preparation shares one sheet. A root still hidden by its guard may switch to
+the shared sheet before it is revealed; a visible root never switches.
+Roots whose cascade includes other author styles (a template's own `<style>`
+or `<link>`, server-rendered or reused roots, and Light descendants) promote on
+first use instead, so every instance adopts the same sheet. A response that
+fails authorization is remembered, so later roots keep native links without
+another timing lookup. Shared sheets and authorization results live as long as
+the Document's style catalog.
+
 ### Intent-time Link preloading for component assets
 
 In a Shadow build, call `assets.preload(tag)` from pointer, focus, or other

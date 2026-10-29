@@ -77,19 +77,29 @@ export function getTemplateStylesheets(
 
 /** Return whether template HTML may contain a `<link>` start tag. */
 export function templateHtmlMayContainLink(html: string): boolean {
-  for (let i = 0; i <= html.length - 5; i++) {
+  return htmlMayContainStartTag(html, 'link');
+}
+
+/** Return whether template HTML may contain a `<link>` or `<style>` start tag. */
+export function templateHtmlMayContainStyles(html: string): boolean {
+  return htmlMayContainStartTag(html, 'link') || htmlMayContainStartTag(html, 'style');
+}
+
+/** Find an ASCII case-insensitive start tag; `name` must be lowercase. */
+function htmlMayContainStartTag(html: string, name: string): boolean {
+  const nextOffset = name.length + 1;
+  for (let i = 0; i <= html.length - nextOffset; i++) {
     if (html.charCodeAt(i) !== 60) continue;
-    if (
-      asciiLower(html.charCodeAt(i + 1)) !== 108 ||
-      asciiLower(html.charCodeAt(i + 2)) !== 105 ||
-      asciiLower(html.charCodeAt(i + 3)) !== 110 ||
-      asciiLower(html.charCodeAt(i + 4)) !== 107
-    ) {
-      continue;
+    let matches = true;
+    for (let j = 0; j < name.length; j++) {
+      if (asciiLower(html.charCodeAt(i + 1 + j)) === name.charCodeAt(j)) continue;
+      matches = false;
+      break;
     }
-    const next = html.charCodeAt(i + 5);
+    if (!matches) continue;
+    const next = html.charCodeAt(i + nextOffset);
     if (
-      i + 5 === html.length ||
+      i + nextOffset === html.length ||
       next === 9 ||
       next === 10 ||
       next === 12 ||

@@ -696,6 +696,7 @@ export class TemplateElement extends HTMLElement {
     let root: Node;
     let isSSR: boolean;
     let clientRoot: HTMLElement | null = null;
+    let freshShadow = false;
 
     if (remountStructuralTemplate) {
       const renderRoot = wantShadow
@@ -725,6 +726,7 @@ export class TemplateElement extends HTMLElement {
       // Shadow DOM client-created (or SPA partial with slot content).
       // Existing children are slot content — they stay in light DOM
       // and project through the template's <slot>.
+      freshShadow = this.shadowRoot === null;
       const renderRoot = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
       if (resetClientShadow) renderRoot.replaceChildren();
       root = renderRoot;
@@ -737,7 +739,7 @@ export class TemplateElement extends HTMLElement {
 
     // Styles are required even when a compiler-owned SSR host remains dormant.
     // Install them after root selection but before the hydration deferral.
-    this.$installStyles(meta);
+    this.$installStyles(meta, freshShadow);
 
     if (isSSR && !forceSSR && !reconnecting) {
       const ancestor = this.$nearestHydrationBarrier();
@@ -881,7 +883,7 @@ export class TemplateElement extends HTMLElement {
     }
   }
 
-  private $installStyles(meta: TemplateMeta): void {
+  private $installStyles(meta: TemplateMeta, freshShadow = false): void {
     const styles = requireComponentStyleRuntime(this.localName, meta, this.ownerDocument);
     if (!styles) return;
     const wantShadow = !!this.shadowRoot || !!meta.sd;
@@ -892,7 +894,7 @@ export class TemplateElement extends HTMLElement {
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
     styles.claimSsr(this, styleTarget);
-    const installation = styles.install(this.localName, styleTarget, this);
+    const installation = styles.install(this.localName, styleTarget, this, freshShadow, meta);
     if (installation) {
       void installation.catch((error) => {
         console.error(error);

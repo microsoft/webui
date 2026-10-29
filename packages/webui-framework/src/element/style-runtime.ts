@@ -7,7 +7,17 @@ import { hasComponentStyleWork } from './style-catalog.js';
 
 export interface ComponentStyleRuntime {
   readonly claimSsr: typeof import('./styles.js').claimSsrComponentStyles;
-  readonly install: typeof import('./styles.js').installComponentStyles;
+  /**
+   * Install a mounting component's style closure into `target`. `freshShadow`
+   * is true when the host attached that shadow root in this mount.
+   */
+  readonly install: (
+    tag: string,
+    target: Document | ShadowRoot,
+    host: HTMLElement,
+    freshShadow: boolean,
+    meta: TemplateMeta,
+  ) => Promise<void> | undefined;
   readonly prepareTemplate: typeof import('./link-styles.js').prepareTemplateLinkStyles;
   readonly hasTemplateLinks: typeof import('./link-styles.js').templateMayContainLinkStyles;
   readonly installTemplateLinks: typeof import('./link-styles.js').installTemplateLinkStyles;
