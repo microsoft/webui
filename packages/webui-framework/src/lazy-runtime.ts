@@ -56,8 +56,8 @@ const scanned = new WeakSet<TemplateMeta>();
 /** Regions with a prefetch trigger, by the block that contains their condition. */
 const armable = new WeakMap<TemplateBlockMeta, Armed[]>();
 const loads = new Map<string, Promise<void>>();
-/** Templates each pack published before its install last failed; absent once it succeeds. */
-const unready = new Map<string, Record<string, TemplateMeta>>();
+/** IDs of the templates each pack published before its install last failed; absent once it succeeds. */
+const unready = new Map<string, readonly string[]>();
 const registered = new Map<string, Registration>();
 const released = new Map<string, Registration & { template: WeakRef<TemplateMeta> }>();
 /** Bindings that mounted each region this runtime registered. */
@@ -135,21 +135,24 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
   const runtime = window.__webui ??= {};
   const registry = getTemplateRegistry();
   const templates = pack.templates ?? {};
-  // A failed install's templates are registered again so their readiness reruns.
-  const retry = unready.get(url);
   let fresh: Record<string, TemplateMeta> | undefined;
   let closures = '';
   for (const id in templates) {
     // Packs are coarse; the page may already own shared templates. Ones only
     // the template cache still holds weakly are registered again, so the
-    // merged inventory never names a template the page can lose.
-    if (!retry?.[id] && (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id))) continue;
+    // merged inventory never names a template the page can lose. A failed
+    // install's templates are registered again so their readiness reruns.
+    if (
+      !unready.get(url)?.includes(id)
+      && (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id))
+    ) continue;
     (fresh ??= {})[id] = templates[id];
     const source = pack.templateFunctions?.[id];
     if (source) closures += `f[${JSON.stringify(id)}]=${source};`;
   }
-  // Published templates are present but not ready until every step below succeeds.
-  unready.set(url, fresh ?? {});
+  // Published templates are present but not ready until every step below
+  // succeeds. Only their IDs are kept, so template collection can still free them.
+  unready.set(url, Object.keys(fresh || 0));
   const waits: PromiseLike<unknown>[] = [];
   if (fresh) {
     if (closures) {

@@ -445,6 +445,32 @@ test('registration readiness that fails runs again when the region retries', asy
   }
 });
 
+test('a failed install keeps no template that collection releases', async () => {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const id = region('collected-owner');
+  const url = '_webui/packs/collected-owner.0019.json';
+  serve(url, pack('collected-owner'));
+  const target = browser as unknown as Window;
+  target.__webuiPrepareResources = () => Promise.reject(new Error('styles failed'));
+  let template: WeakRef<TemplateMeta>;
+  try {
+    await assert.rejects(runtime.load(id, url), /styles failed/);
+    template = new WeakRef(registry()[id]);
+    // Template collection deletes registry entries nothing retains.
+    delete registry()[id];
+  } finally {
+    delete target.__webuiPrepareResources;
+  }
+  // A WeakRef keeps its target alive until the job that created it ends.
+  await tick();
+  gc();
+  assert.equal(template.deref(), undefined, 'the failed install must not pin its templates');
+  assert.equal(runtime.installing(url), true, 'the region still retries');
+});
+
 test('the element waits for a closed region condition and never mounts into a disposed owner', async () => {
   const { TemplateElement } = await import('./template-element.js');
   const id = region('glue-owner');
