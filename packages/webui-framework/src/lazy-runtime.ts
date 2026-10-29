@@ -57,7 +57,7 @@ const scanned = new WeakSet<TemplateMeta>();
 const armable = new WeakMap<TemplateBlockMeta, Armed[]>();
 const loads = new Map<string, Promise<void>>();
 /** IDs of the templates each pack published before its install last failed; absent once it succeeds. */
-const unready = new Map<string, readonly string[]>();
+const unready = new Map<string, ReadonlySet<string>>();
 const registered = new Map<string, Registration>();
 const released = new Map<string, Registration & { template: WeakRef<TemplateMeta> }>();
 /** Bindings that mounted each region this runtime registered. */
@@ -143,7 +143,7 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
     // merged inventory never names a template the page can lose. A failed
     // install's templates are registered again so their readiness reruns.
     if (
-      !unready.get(url)?.includes(id)
+      !unready.get(url)?.has(id)
       && (registry?.[id] || revive(id) || window.__webuiRetainTemplate?.(id))
     ) continue;
     (fresh ??= {})[id] = templates[id];
@@ -152,7 +152,7 @@ async function install(pack: TemplatePack, region: string, url: string): Promise
   }
   // Published templates are present but not ready until every step below
   // succeeds. Only their IDs are kept, so template collection can still free them.
-  unready.set(url, Object.keys(fresh || 0));
+  unready.set(url, new Set(Object.keys(fresh || 0)));
   const waits: PromiseLike<unknown>[] = [];
   if (fresh) {
     if (closures) {
