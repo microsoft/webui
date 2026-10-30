@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { chromium, expect } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -26,8 +26,23 @@ declare global {
   }
 }
 
-async function appearanceSite(t: TestContext, options: { customHeader?: boolean; csp?: boolean } = {}) {
-  const { customHeader = false, csp = false } = options;
+async function inlineScriptHashes(browser: Browser, html: string, bootstrap: string): Promise<string[]> {
+  const page = await browser.newPage({ javaScriptEnabled: false });
+  try {
+    await page.route('**/*', route => route.abort());
+    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    const scripts = await page.evaluate(() => Array.from(document.scripts)
+      .filter(script => !script.hasAttribute('src') && script.type.trim().toLowerCase() !== 'application/json')
+      .map(script => script.textContent ?? ''));
+    return scripts.filter(script => script.trim() !== bootstrap)
+      .map(script => `'sha256-${createHash('sha256').update(script).digest('base64')}'`);
+  } finally {
+    await page.close();
+  }
+}
+
+async function appearanceSite(t: TestContext, options: { customHeader?: boolean; csp?: Browser } = {}) {
+  const { customHeader = false, csp } = options;
   const f = fixture();
   t.after(() => removeFixtureRoot(f.root));
   const probe = path.join(f.site, 'content/local/appearance-probe/appearance-probe');
@@ -69,11 +84,7 @@ window.stopAppearance = press.subscribeAppearance(value => window.updates.push(v
     const bootstrap = fs.readFileSync(
       path.resolve(import.meta.dirname, '../../../crates/webui-press/template/appearance-bootstrap.js'), 'utf8',
     ).trim();
-    const hashes = [];
-    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-      if (/\bsrc\s*=|type=["']application\/json/i.test(match[1]) || match[2].trim() === bootstrap) continue;
-      hashes.push(`'sha256-${createHash('sha256').update(match[2]).digest('base64')}'`);
-    }
+    const hashes = await inlineScriptHashes(csp, html, bootstrap);
     headers['content-security-policy'] = `script-src 'self' ${hashes.join(' ')}`;
   }
   const server = await startWebsite(root, '/fixture/', headers);
@@ -136,10 +147,31 @@ test('full-shell sourced families validate bundled and authored CSS without chan
   });
 });
 
-test('same-origin appearance initialization works under CSP without authorizing inline bootstrap', async t => {
-  const f = await appearanceSite(t, { csp: true });
+test('CSP fixture hashes browser-parsed inline scripts without executing them', async t => {
   const browser = await chromium.launch();
   t.after(() => browser.close());
+  const scripts = [
+    'document.querySelectorAll("script").forEach(script => script.remove());',
+    'window.second = true;',
+    'window.third = true;',
+  ];
+  const bootstrap = 'window.bootstrap = true;';
+  const html = `<!doctype html>
+<script data-label=">">${scripts[0]}</script >
+<script data-src="/not-external.js">${scripts[1]}</SCRIPT\t>
+<script>${scripts[2]}</script
+>
+<script src="/external.js">window.external = true;</script>
+<script type=" application/JSON ">{"inert":true}</script>
+<script>${bootstrap}</script>`;
+  assert.deepEqual(await inlineScriptHashes(browser, html, bootstrap),
+    scripts.map(script => `'sha256-${createHash('sha256').update(script).digest('base64')}'`));
+});
+
+test('same-origin appearance initialization works under CSP without authorizing inline bootstrap', async t => {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const f = await appearanceSite(t, { csp: browser });
   const context = await browser.newContext({
     colorScheme: 'light', reducedMotion: 'reduce', storageState: {
       cookies: [], origins: [{ origin: new URL(f.url).origin, localStorage: [
