@@ -7,7 +7,8 @@
 //!
 //! - [`LiveReload`] / [`livereload::sse_handler`] — Server-Sent Events
 //!   broadcaster and actix handler for browser auto-reload.
-//! - [`watch::spawn_watcher`] — debounced filesystem watcher.
+//! - [`watch::spawn_watcher`] — debounced filesystem watcher, retargeted in
+//!   place with [`watch::WatcherHandle::retarget`].
 //! - [`path`] — segment-aware basePath stripping and traversal-safe path
 //!   resolution.
 //! - [`reporter::RebuildReporter`] — terminal UX for rebuild loops
@@ -32,5 +33,5 @@ pub mod worker;
 pub use livereload::{sse_handler, LiveReload, ReloadEvent};
 pub use reporter::{local_hms, RebuildReporter};
 pub use serve::{serve_file_response, serve_static_file, NotFoundStrategy, StaticServeConfig};
-pub use watch::{default_ignore_paths, spawn_watcher, WatchConfig, WatcherHandle};
+pub use watch::{default_ignore_paths, spawn_watcher, WatchConfig, WatchTargets, WatcherHandle};
 pub use worker::{spawn_rebuild_worker, RebuildError, RebuildWorker, TickSender};

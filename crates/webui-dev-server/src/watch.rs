@@ -10,66 +10,88 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{
     event::{AccessKind, AccessMode},
-    Event, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind,
+    Event, EventKind,
 };
 use notify_debouncer_mini::{
-    new_debouncer_opt, Config as DebouncerConfig, DebounceEventResult, Debouncer,
+    new_debouncer_opt, Config as DebouncerConfig, DebounceEventResult, DebouncedEvent, Debouncer,
 };
 
+#[path = "watch_backend.rs"]
+mod backend;
 #[path = "watch_hash.rs"]
 mod hash;
+#[path = "watch_subscriptions.rs"]
+mod subscriptions;
 
 #[cfg(test)]
 #[path = "watch_hash_tests.rs"]
 mod hash_tests;
 
+use backend::ContentChangeWatcher;
 use hash::{hash_file, HASH_BUFFER_SIZE};
+use subscriptions::Subscriptions;
 
 /// Owns the watcher background thread. Drop to stop watching.
 ///
 /// `notify-debouncer-mini` spawns its background thread inside the
-/// debouncer struct; dropping the struct kills the thread. Consumers
-/// should hold this handle for the lifetime of their server.
+/// debouncer struct; dropping the struct kills the thread and discards
+/// events still inside the debounce window. Consumers should hold this
+/// handle for the lifetime of their server and call
+/// [`WatcherHandle::retarget`] when their inputs change instead of
+/// replacing it.
 pub struct WatcherHandle {
-    _debouncer: Debouncer<ContentChangeWatcher>,
+    debouncer: Debouncer<ContentChangeWatcher>,
+    filter: Arc<Mutex<EventFilter>>,
+    subscriptions: Subscriptions,
 }
 
-struct ContentChangeWatcher(RecommendedWatcher);
-
-impl Watcher for ContentChangeWatcher {
-    fn new<F: EventHandler>(mut event_handler: F, config: notify::Config) -> notify::Result<Self> {
-        RecommendedWatcher::new(
-            move |event| {
-                if matches!(&event, Ok(event) if is_read_only_access_event(event)) {
-                    return;
-                }
-                event_handler.handle_event(event);
-            },
-            config,
-        )
-        .map(Self)
-    }
-
-    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> notify::Result<()> {
-        self.0.watch(path, recursive_mode)
-    }
-
-    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
-        self.0.unwatch(path)
-    }
-
-    fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
-        self.0.configure(config)
-    }
-
-    fn kind() -> WatcherKind {
-        RecommendedWatcher::kind()
+impl WatcherHandle {
+    /// Replace the watched roots, exact files, and ignored subtrees in place.
+    ///
+    /// A replacement watcher would discard events this one has observed but
+    /// not yet debounced, losing edits made while a host refreshes its inputs.
+    /// Retargeting keeps the debouncer and unchanged roots registered, so those
+    /// events are still delivered. Content baselines restart as they would for
+    /// a new watcher: exact files are re-hashed and other paths forward their
+    /// next event.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from a path that exists but cannot be watched.
+    /// The remaining paths are still registered, including requested roots
+    /// nested inside the failed path, and the failed path is retried on the
+    /// next retarget.
+    pub fn retarget(&mut self, targets: WatchTargets) -> Result<()> {
+        let WatchTargets {
+            paths,
+            explicit_files,
+            ignore,
+        } = targets;
+        // Canonicalize ignore paths once. Non-existent entries are kept as-is
+        // so they still match if the path appears mid-session (e.g. a fresh
+        // `dist/` created by the first build).
+        let ignore = ignore
+            .into_iter()
+            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+            .collect();
+        let explicit_files: Vec<PathBuf> = explicit_files
+            .iter()
+            .filter_map(|path| normalize_explicit_file(path))
+            .collect();
+        // Install the new filter before subscribing so events from new
+        // subscriptions are judged against the new targets.
+        self.filter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reset(ignore, explicit_files.clone());
+        self.subscriptions
+            .retarget(self.debouncer.watcher(), &paths, &explicit_files)
     }
 }
 
@@ -117,6 +139,89 @@ pub struct WatchConfig {
     pub retry_unchanged_when: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+/// Inputs that [`WatcherHandle::retarget`] replaces on a running watcher.
+///
+/// Fields mean the same as their [`WatchConfig`] counterparts.
+pub struct WatchTargets {
+    /// Roots to watch recursively. Non-existent entries are skipped until a
+    /// later retarget finds them.
+    pub paths: Vec<PathBuf>,
+    /// Exact files to watch through their parent directories, bypassing
+    /// `ignore`.
+    pub explicit_files: Vec<PathBuf>,
+    /// Subtrees whose events are suppressed.
+    pub ignore: Vec<PathBuf>,
+}
+
+/// Event filtering state shared by the debouncer thread and
+/// [`WatcherHandle::retarget`].
+struct EventFilter {
+    ignore: Vec<PathBuf>,
+    explicit_files: Vec<PathBuf>,
+    content_hashes: HashMap<PathBuf, u64>,
+    hash_buffer: [u8; HASH_BUFFER_SIZE],
+}
+
+impl EventFilter {
+    fn new() -> Self {
+        Self {
+            ignore: Vec::new(),
+            explicit_files: Vec::new(),
+            content_hashes: HashMap::new(),
+            hash_buffer: [0; HASH_BUFFER_SIZE],
+        }
+    }
+
+    /// Filter by new targets and restart content baselines, as a new watcher
+    /// would: exact files compare with their current bytes.
+    fn reset(&mut self, ignore: Vec<PathBuf>, explicit_files: Vec<PathBuf>) {
+        self.ignore = ignore;
+        self.explicit_files = explicit_files;
+        self.content_hashes.clear();
+        for file in &self.explicit_files {
+            content_changed(&mut self.content_hashes, file, &mut self.hash_buffer);
+        }
+    }
+
+    /// Changed source paths in one debounce window.
+    fn changed_paths(&mut self, events: &[DebouncedEvent], retry_unchanged: bool) -> Vec<PathBuf> {
+        // Filter out ignored paths and dedupe (notify can emit
+        // duplicate events for the same path within a window).
+        let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
+        let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
+        for event in events {
+            collect_event_paths(
+                &event.path,
+                &self.ignore,
+                &self.explicit_files,
+                &mut seen,
+                &mut paths,
+            );
+        }
+        // Recursive backends emit directory metadata events alongside
+        // file writes. Existing directories are not source changes and
+        // would otherwise retrigger a rebuild after every build; keep
+        // missing paths so directory/file deletions still rebuild.
+        paths.retain(|path| !path.is_dir());
+        // Drop paths whose content is byte-identical to the last event.
+        // Editors fire a write on every Ctrl+S even when nothing changed;
+        // rebuilding then is pure wasted work, so a no-op save triggers no
+        // rebuild at all in the clean state. When the caller reports that a
+        // rebuild error is active, unchanged events are allowed through so a
+        // no-op save can retry transient failures. Deletions and oversized
+        // files always count as changed (see `content_changed`).
+        paths.retain(|path| {
+            should_forward_path(
+                &mut self.content_hashes,
+                path,
+                retry_unchanged,
+                &mut self.hash_buffer,
+            )
+        });
+        paths
+    }
+}
+
 /// Start a debounced recursive watcher.
 ///
 /// The closure `on_event` is invoked once per debounce window with the
@@ -132,7 +237,8 @@ pub struct WatchConfig {
 ///
 /// Non-existent paths in `cfg.paths` are silently skipped; this matches
 /// the dev-server use case where some watched directories (e.g. an
-/// optional `public/`) may not exist yet.
+/// optional `public/`) may not exist yet. Use [`WatcherHandle::retarget`]
+/// to change the watched paths later.
 ///
 /// # Errors
 ///
@@ -142,65 +248,31 @@ pub fn spawn_watcher<F>(cfg: WatchConfig, on_event: F) -> Result<WatcherHandle>
 where
     F: Fn(Vec<PathBuf>) + Send + 'static,
 {
-    // Canonicalize ignore paths once, up front. Non-existent ignore
-    // entries are kept as-is so they still match if the path appears
-    // mid-session (e.g. a fresh `dist/` created by the first build).
-    let ignore: Vec<PathBuf> = cfg
-        .ignore
-        .iter()
-        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
-        .collect();
-    let explicit_files: Vec<PathBuf> = cfg
-        .explicit_files
-        .iter()
-        .filter_map(|path| normalize_explicit_file(path))
-        .collect();
-
-    let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
-    let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
-    for file in &explicit_files {
-        content_changed(&mut content_hashes, file, &mut hash_buffer);
-    }
-    let retry_unchanged_when = cfg.retry_unchanged_when.clone();
-    let explicit_filter = explicit_files.clone();
+    let WatchConfig {
+        paths,
+        explicit_files,
+        ignore,
+        debounce,
+        retry_unchanged_when,
+    } = cfg;
+    let filter = Arc::new(Mutex::new(EventFilter::new()));
+    let events_filter = Arc::clone(&filter);
     let notify_config = notify::Config::default().with_follow_symlinks(false);
     let debouncer_config = DebouncerConfig::default()
-        .with_timeout(cfg.debounce)
+        .with_timeout(debounce)
         .with_notify_config(notify_config);
-    let mut debouncer = new_debouncer_opt::<_, ContentChangeWatcher>(
+    let debouncer = new_debouncer_opt::<_, ContentChangeWatcher>(
         debouncer_config,
         move |res: DebounceEventResult| match res {
             Ok(events) => {
-                // Filter out ignored paths and dedupe (notify can emit
-                // duplicate events for the same path within a window).
-                let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
-                let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
-                for e in events {
-                    collect_event_paths(&e.path, &ignore, &explicit_filter, &mut seen, &mut paths);
-                }
-                // Recursive backends emit directory metadata events alongside
-                // file writes. Existing directories are not source changes and
-                // would otherwise retrigger a rebuild after every build; keep
-                // missing paths so directory/file deletions still rebuild.
-                paths.retain(|path| !path.is_dir());
-                // Drop paths whose content is byte-identical to the last event.
-                // Editors fire a write on every Ctrl+S even when nothing changed;
-                // rebuilding then is pure wasted work, so a no-op save triggers no
-                // rebuild at all in the clean state. When the caller reports that a
-                // rebuild error is active, unchanged events are allowed through so a
-                // no-op save can retry transient failures. Deletions and oversized
-                // files always count as changed (see `content_changed`).
+                // Ask the host before taking the filter lock.
                 let retry_unchanged = retry_unchanged_when
                     .as_ref()
                     .is_some_and(|predicate| predicate());
-                paths.retain(|path| {
-                    should_forward_path(
-                        &mut content_hashes,
-                        path,
-                        retry_unchanged,
-                        &mut hash_buffer,
-                    )
-                });
+                let paths = events_filter
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .changed_paths(&events, retry_unchanged);
                 if !paths.is_empty() {
                     on_event(paths);
                 }
@@ -212,46 +284,17 @@ where
     )
     .context("Cannot start file watcher")?;
 
-    let mut watched_roots = Vec::with_capacity(cfg.paths.len());
-    for p in &cfg.paths {
-        if p.exists() {
-            watched_roots.push(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
-            debouncer
-                .watcher()
-                .watch(p, RecursiveMode::Recursive)
-                .with_context(|| format!("Cannot watch {}", p.display()))?;
-        }
-    }
-    watch_explicit_parents(debouncer.watcher(), &explicit_files, &watched_roots)?;
-
-    Ok(WatcherHandle {
-        _debouncer: debouncer,
-    })
-}
-
-fn watch_explicit_parents(
-    watcher: &mut dyn Watcher,
-    explicit_files: &[PathBuf],
-    watched_roots: &[PathBuf],
-) -> Result<()> {
-    let mut explicit_parents = HashSet::new();
-    for file in explicit_files {
-        if watched_roots.iter().any(|root| file.starts_with(root)) {
-            continue;
-        }
-        while let Some(parent) = file.ancestors().skip(1).find(|parent| parent.is_dir()) {
-            if !explicit_parents.insert(parent.to_path_buf()) {
-                break;
-            }
-            watcher
-                .watch(parent, RecursiveMode::NonRecursive)
-                .with_context(|| format!("Cannot watch {}", parent.display()))?;
-            // A generator can create more parents during registration. Advance
-            // before returning without subscribing to unrelated descendants.
-        }
-    }
-
-    Ok(())
+    let mut handle = WatcherHandle {
+        debouncer,
+        filter,
+        subscriptions: Subscriptions::default(),
+    };
+    handle.retarget(WatchTargets {
+        paths,
+        explicit_files,
+        ignore,
+    })?;
+    Ok(handle)
 }
 
 fn normalize_explicit_file(path: &Path) -> Option<PathBuf> {
@@ -401,46 +444,115 @@ fn should_forward_path(
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use notify_debouncer_mini::DebouncedEventKind;
+    use std::sync::mpsc::{self, RecvTimeoutError};
 
-    #[derive(Default)]
-    struct RecordingWatcher {
-        paths: Vec<(PathBuf, RecursiveMode)>,
-    }
-
-    impl Watcher for RecordingWatcher {
-        fn new<F: EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
-            Ok(Self::default())
-        }
-
-        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
-            self.paths.push((path.to_path_buf(), mode));
-            Ok(())
-        }
-
-        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
-            Ok(())
-        }
-
-        fn kind() -> WatcherKind {
-            RecommendedWatcher::kind()
-        }
+    fn event(path: &Path) -> DebouncedEvent {
+        DebouncedEvent::new(path.to_path_buf(), DebouncedEventKind::Any)
     }
 
     #[test]
-    fn missing_include_does_not_recursively_watch_ignored_ancestor() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("target");
-        std::fs::create_dir_all(target.join("debug/build/unrelated")).unwrap();
-        let file = normalize_explicit_file(&target.join("generated/new/state.json")).unwrap();
-        let mut watcher = RecordingWatcher::default();
-        watch_explicit_parents(&mut watcher, &[file], &[]).unwrap();
+    fn reset_restarts_content_baselines_like_a_new_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let exact = dir.path().join("state.json");
+        let source = dir.path().join("page.md");
+        std::fs::write(&exact, "1").unwrap();
+        std::fs::write(&source, "# Page").unwrap();
+        let mut filter = EventFilter::new();
+        filter.reset(Vec::new(), vec![exact.clone()]);
+
+        assert!(filter.changed_paths(&[event(&exact)], false).is_empty());
         assert_eq!(
-            watcher.paths,
-            vec![(
-                std::fs::canonicalize(target).unwrap(),
-                RecursiveMode::NonRecursive
-            )]
+            filter.changed_paths(&[event(&source)], false),
+            std::slice::from_ref(&source)
         );
+        assert!(filter.changed_paths(&[event(&source)], false).is_empty());
+
+        std::fs::write(&exact, "2").unwrap();
+        filter.reset(Vec::new(), vec![exact.clone()]);
+        assert!(filter.changed_paths(&[event(&exact)], false).is_empty());
+        assert_eq!(filter.changed_paths(&[event(&source)], false), [source]);
+    }
+
+    #[test]
+    fn retarget_delivers_edits_observed_before_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("page.md");
+        std::fs::write(&source, "# One")?;
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher = spawn_watcher(
+            WatchConfig {
+                paths: vec![dir.path().to_path_buf()],
+                explicit_files: Vec::new(),
+                ignore: Vec::new(),
+                debounce: Duration::from_millis(50),
+                retry_unchanged_when: None,
+            },
+            move |paths| {
+                let _ = sender.send(paths);
+            },
+        )?;
+
+        std::fs::write(&source, "# Two")?;
+        // A host refreshing its inputs right after the edit must not drop it.
+        watcher.retarget(WatchTargets {
+            paths: vec![dir.path().to_path_buf()],
+            explicit_files: Vec::new(),
+            ignore: Vec::new(),
+        })?;
+        let changed = receiver.recv_timeout(Duration::from_secs(5))?;
+        let source = std::fs::canonicalize(&source)?;
+        assert!(
+            changed
+                .iter()
+                .any(|path| std::fs::canonicalize(path).is_ok_and(|path| path == source)),
+            "missing {} in {changed:?}",
+            source.display()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retarget_moves_exact_file_subscriptions() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let first = dir.path().join("target/first/state.json");
+        let second = dir.path().join("target/second/state.json");
+        for file in [&first, &second] {
+            std::fs::create_dir_all(file.parent().context("state parent")?)?;
+            std::fs::write(file, "1")?;
+        }
+        let ignore = || vec![PathBuf::from("target")];
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher = spawn_watcher(
+            WatchConfig {
+                paths: Vec::new(),
+                explicit_files: vec![first.clone()],
+                ignore: ignore(),
+                debounce: Duration::from_millis(25),
+                retry_unchanged_when: None,
+            },
+            move |paths| {
+                let _ = sender.send(paths);
+            },
+        )?;
+
+        watcher.retarget(WatchTargets {
+            paths: Vec::new(),
+            explicit_files: vec![second.clone()],
+            ignore: ignore(),
+        })?;
+        std::fs::write(&first, "2")?;
+        let stale = receiver.recv_timeout(Duration::from_millis(500));
+        assert!(
+            matches!(stale, Err(RecvTimeoutError::Timeout)),
+            "a released include must not rebuild: {stale:?}"
+        );
+        std::fs::write(&second, "2")?;
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5))?,
+            [std::fs::canonicalize(&second)?]
+        );
+        Ok(())
     }
 
     #[test]
