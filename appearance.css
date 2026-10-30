@@ -1,0 +1,11 @@
+:root {
+color-scheme: light;
+}
+:root:where([data-theme-mode="dark"], [data-theme="dark"]:not([data-theme-mode])) {
+color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+:root:where([data-theme-mode="system"], :not([data-theme-mode]):not([data-theme])) {
+color-scheme: dark;
+}
+}

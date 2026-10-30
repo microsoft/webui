@@ -3,7 +3,7 @@
 
 /* ── Cross-document view transitions ──────────────────
    Cross-fade main content while navigation stays interactive.
-   Chromium-only; gracefully ignored elsewhere. */
+   Progressively enhanced in supporting browsers. */
 @view-transition {
   navigation: auto;
 }
@@ -23,6 +23,21 @@
 ::view-transition-group(docs-content),
 ::view-transition-old(docs-content),
 ::view-transition-new(docs-content) {
+  animation-duration: 180ms;
+  animation-timing-function: ease;
+}
+
+:root[data-press-transition="appearance"] {
+  view-transition-name: root;
+}
+
+:root[data-press-transition="appearance"] .doc-content {
+  view-transition-name: none;
+}
+
+::view-transition-group(root),
+::view-transition-old(root),
+::view-transition-new(root) {
   animation-duration: 180ms;
   animation-timing-function: ease;
 }
@@ -160,7 +175,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:where(:not([data-theme="light"])) {
     --docs-color-bg: #1a1a2e;
     --docs-color-bg-alt: #0e0e1a;
     --docs-color-text: #e2e8f0;
@@ -588,6 +603,10 @@ body {
 }
 
 .main-content .doc-content {
+  view-transition-name: none;
+}
+
+:root[data-press-transition="appearance"] .main-content {
   view-transition-name: none;
 }
 
