@@ -88,10 +88,12 @@ test('benchmark controls switch metrics with a compact mobile select and retain 
   await expect(explorer.locator('.benchmark-row')).toHaveCount(15);
 
   await select.focus();
-  await select.press('Home');
+  await select.press('j');
   await expect(select).toHaveValue('jsHeapUsedBytes');
-  await select.press('ArrowDown');
-  await select.press('Enter');
+  await select.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(select).toBeFocused();
+  await select.press('r');
   await expect(select).toHaveValue('rendererPrivateBytes');
   await expect(select).toBeFocused();
   await expect(explorer.locator('.benchmark-figure-heading h3')).toContainText('Renderer private bytes');

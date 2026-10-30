@@ -1,0 +1,9 @@
+<label>
+  <span>Design theme</span>
+  <select value="{{appearance.theme}}" ?disabled="{{!ready}}" @change="{change(e)}">
+    <for each="family in appearance.themes">
+      <option value="{{family.id}}" ?selected="{{family.id == appearance.theme}}">{{family.label}}</option>
+    </for>
+  </select>
+</label>
+<if condition="error"><span role="alert">{{error}}</span></if>

@@ -6,6 +6,8 @@
 //! Builds static HTML documentation sites from markdown content using the
 //! WebUI template engine and parallel rendering.
 
+mod appearance;
+mod appearance_css;
 pub mod build;
 mod bundler;
 pub mod content;

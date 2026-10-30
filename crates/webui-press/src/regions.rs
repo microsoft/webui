@@ -24,11 +24,15 @@ const REGION_STATE_ROOT: &str = "regions";
 struct Region {
     start: usize,
     end: usize,
+    content_start: usize,
+    content_end: usize,
+    parent: Option<usize>,
     name: String,
     layout: Option<String>,
     html: Option<String>,
     state: Option<Value>,
     script_file: Option<String>,
+    inactive: bool,
 }
 
 /// Parsed template declarations plus site-owned region content.
@@ -41,6 +45,14 @@ pub(crate) struct RegionSet {
 impl RegionSet {
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.regions.iter().any(|region| region.name == name)
+    }
+
+    pub(crate) fn deactivate(&mut self, name: &str) {
+        for region in &mut self.regions {
+            if region.name == name {
+                region.inactive = true;
+            }
+        }
     }
 
     pub(crate) fn load(
@@ -77,34 +89,18 @@ impl RegionSet {
     }
 
     pub(crate) fn render(&self, layout: &str, omitted: Option<&str>) -> String {
-        if self.regions.is_empty() {
-            return self.template.clone();
+        let fragments = self.html_fragments(layout, omitted);
+        let mut output = String::with_capacity(fragments.iter().map(|html| html.len()).sum());
+        for fragment in fragments {
+            output.push_str(fragment);
         }
-
-        let extra = self
-            .active_regions(layout, omitted)
-            .filter_map(|region| region.html.as_ref())
-            .map(String::len)
-            .sum();
-        let mut output = String::with_capacity(self.template.len().saturating_add(extra));
-        let mut cursor = 0;
-        for region in &self.regions {
-            output.push_str(&self.template[cursor..region.start]);
-            if region_applies(region, layout, omitted) {
-                if let Some(html) = &region.html {
-                    output.push_str(html);
-                }
-            }
-            cursor = region.end;
-        }
-        output.push_str(&self.template[cursor..]);
         output
     }
 
     pub(crate) fn template_shell(&self) -> String {
         let mut output = String::with_capacity(self.template.len());
         let mut cursor = 0;
-        for region in &self.regions {
+        for region in self.regions.iter().filter(|region| region.parent.is_none()) {
             output.push_str(&self.template[cursor..region.start]);
             cursor = region.end;
         }
@@ -117,9 +113,42 @@ impl RegionSet {
         layout: &'a str,
         omitted: Option<&'a str>,
     ) -> Vec<&'a str> {
-        self.active_regions(layout, omitted)
-            .filter_map(|region| region.html.as_deref())
-            .collect()
+        let mut fragments = Vec::with_capacity(self.regions.len() * 2 + 1);
+        let mut parents: Vec<&Region> = Vec::new();
+        let mut cursor = 0;
+        for region in &self.regions {
+            if region.start < cursor {
+                continue;
+            }
+            while let Some(parent) = parents.last() {
+                if parent.content_end > region.start {
+                    break;
+                }
+                push_fragment(&mut fragments, &self.template[cursor..parent.content_end]);
+                cursor = parent.end;
+                parents.pop();
+            }
+            push_fragment(&mut fragments, &self.template[cursor..region.start]);
+            if !region_applies(region, layout, omitted) {
+                cursor = region.end;
+            } else if region.html.is_some() {
+                if let Some(html) = &region.html {
+                    push_fragment(&mut fragments, html);
+                }
+                cursor = region.end;
+            } else {
+                cursor = region.content_start;
+                if region.content_end < region.end {
+                    parents.push(region);
+                }
+            }
+        }
+        while let Some(parent) = parents.pop() {
+            push_fragment(&mut fragments, &self.template[cursor..parent.content_end]);
+            cursor = parent.end;
+        }
+        push_fragment(&mut fragments, &self.template[cursor..]);
+        fragments
     }
 
     pub(crate) fn script_files<'a>(
@@ -137,10 +166,7 @@ impl RegionSet {
         state: &mut Value,
         omitted: Option<&str>,
     ) -> Result<()> {
-        for region in &self.regions {
-            if !region_applies(region, layout, omitted) {
-                continue;
-            }
+        for region in self.active_regions(layout, omitted) {
             if let Some(region_state) = &region.state {
                 insert_region_state(state, &region.name, region_state.clone())?;
             }
@@ -153,14 +179,29 @@ impl RegionSet {
         layout: &'a str,
         omitted: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Region> + 'a {
-        self.regions
-            .iter()
-            .filter(move |region| region_applies(region, layout, omitted))
+        let mut skip_until = 0;
+        self.regions.iter().filter(move |region| {
+            if region.start < skip_until {
+                return false;
+            }
+            let active = region_applies(region, layout, omitted);
+            if !active || region.html.is_some() {
+                skip_until = region.end;
+            }
+            active
+        })
+    }
+}
+
+fn push_fragment<'a>(fragments: &mut Vec<&'a str>, html: &'a str) {
+    if !html.is_empty() {
+        fragments.push(html);
     }
 }
 
 fn region_applies(region: &Region, layout: &str, omitted: Option<&str>) -> bool {
-    omitted != Some(region.name.as_str())
+    !region.inactive
+        && omitted != Some(region.name.as_str())
         && region.layout.as_deref().is_none_or(|value| {
             value == layout || value.split_ascii_whitespace().any(|name| name == layout)
         })

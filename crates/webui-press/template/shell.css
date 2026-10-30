@@ -137,6 +137,10 @@ body {
   view-transition-name: none;
 }
 
+:root[data-press-transition="appearance"] .main-content {
+  view-transition-name: none;
+}
+
 .mobile-page-context {
   display: none;
 }

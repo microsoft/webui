@@ -11,7 +11,9 @@
       ?home="{{page.isHome}}"
       ?full-layout="{{page.layout == 'full'}}"
       :open="{{page.mobileNavigationOpen}}"
-    ></docs-site-navigation>
+    >
+      <div slot="appearance"><docs-appearance><docs-theme-toggle :appearance="{{webuiPress.appearance}}"></docs-theme-toggle></docs-appearance></div>
+    </docs-site-navigation>
   </if>
   <if condition="page.section != 'learn' && page.section != 'build' && page.section != 'reference'">
     <docs-site-navigation
@@ -21,6 +23,8 @@
       ?home="{{page.isHome}}"
       ?full-layout="{{page.layout == 'full'}}"
       :open="{{page.mobileNavigationOpen}}"
-    ></docs-site-navigation>
+    >
+      <div slot="appearance"><docs-appearance><docs-theme-toggle :appearance="{{webuiPress.appearance}}"></docs-theme-toggle></docs-appearance></div>
+    </docs-site-navigation>
   </if>
 </header>

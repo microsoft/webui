@@ -1,0 +1,36 @@
+:host { display: block; min-width: 0; }
+label { display: grid; gap: var(--docs-space-s); min-width: 0; font-size: var(--docs-font-size-m); }
+select {
+  box-sizing: border-box;
+  min-height: var(--docs-appearance-control-height, var(--docs-header-control-height, 36px));
+  width: 100%;
+  max-width: min(100%, var(--docs-appearance-theme-width, 100%));
+  padding: 6px 10px;
+  font: inherit;
+  color: var(--docs-appearance-color, var(--docs-color-text, CanvasText));
+  background: var(--docs-appearance-background, var(--docs-color-bg, Canvas));
+  border: 1px solid var(--docs-appearance-border-color, var(--docs-color-border, ButtonBorder));
+  border-radius: var(--docs-appearance-radius, var(--docs-radius-m, 6px));
+  cursor: pointer;
+}
+select:focus-visible { outline: 2px solid var(--docs-color-brand); outline-offset: 2px; }
+select:disabled { cursor: default; opacity: 0.65; }
+[role="alert"] { font-size: var(--docs-font-size-m); }
+@supports (appearance: base-select) {
+  select, select::picker(select) { appearance: base-select; }
+  select::picker(select) {
+    color: var(--docs-appearance-color, var(--docs-color-text, CanvasText));
+    background: var(--docs-appearance-background, var(--docs-color-bg, Canvas));
+    border: 1px solid var(--docs-appearance-border-color, var(--docs-color-border, ButtonBorder));
+    border-radius: var(--docs-appearance-radius, var(--docs-radius-m, 6px));
+    padding: 4px;
+    max-inline-size: calc(100vw - 32px);
+  }
+  option { padding: 8px 12px; overflow-wrap: anywhere; }
+  option:checked { font-weight: 600; }
+  option:hover, option:focus-visible { background: var(--docs-color-bg-alt); }
+}
+@media (max-width: 1024px) {
+  :host, label { width: 100%; }
+  select { min-height: 44px; min-width: 0; font-size: var(--docs-font-size-base); }
+}

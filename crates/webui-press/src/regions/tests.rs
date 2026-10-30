@@ -112,6 +112,12 @@ fn bundled_template_exposes_stable_regions() -> TestResult {
         names,
         [
             "site.navigation",
+            "header.beforeNavigation",
+            "header.beforeActions",
+            "header.appearance",
+            "header.themePicker",
+            "header.modePicker",
+            "header.afterActions",
             "site.announcement",
             "home.hero",
             "home.afterHero",
@@ -137,8 +143,9 @@ fn bundled_template_exposes_stable_regions() -> TestResult {
         .regions
         .iter()
         .find(|region| region.name == "home.hero")
-        .and_then(|region| region.html.as_deref())
-        .is_some_and(|html| html.contains("home-hero")));
+        .is_some_and(
+            |region| template[region.content_start..region.content_end].contains("home-hero")
+        ));
     Ok(())
 }
 
@@ -228,12 +235,8 @@ fn rejects_invalid_declarations() {
             "unsupported attribute",
         ),
         (
-            concat!(
-                "<webui-press-region name=\"outer\">",
-                "<webui-press-region name=\"inner\"></webui-press-region>",
-                "</webui-press-region>"
-            ),
-            "cannot be nested",
+            "<webui-press-region name=\"outer\"><webui-press-region name=\"inner\" />",
+            "has no closing tag",
         ),
     ];
     for (template, expected) in cases {
@@ -243,6 +246,99 @@ fn rejects_invalid_declarations() {
             "expected {expected:?} for {template:?}"
         );
     }
+}
+
+#[test]
+fn nested_fallbacks_share_render_state_and_script_ownership() -> TestResult {
+    let template = concat!(
+        "<main><webui-press-region name=\"header\" layout=\"doc\">",
+        "<nav><webui-press-region name=\"controls\">",
+        "<webui-press-region name=\"picker\">Default</webui-press-region>",
+        "</webui-press-region></nav></webui-press-region></main>"
+    );
+    let configs = BTreeMap::from([(
+        "picker".to_string(),
+        RegionConfig {
+            state: Some(serde_json::from_str(r#"{"label":"Theme"}"#)?),
+            script_file: Some("picker.ts".to_string()),
+            ..region("<custom-picker></custom-picker>")
+        },
+    )]);
+    let mut regions = RegionSet::load(&configs, Path::new("."), template.to_string())?;
+    assert_eq!(
+        regions.render("doc", None),
+        "<main><nav><custom-picker></custom-picker></nav></main>"
+    );
+    assert_eq!(regions.template_shell(), "<main></main>");
+    assert_eq!(regions.render("home", None), "<main></main>");
+    assert_eq!(regions.script_files("home", None).count(), 0);
+    assert_eq!(regions.script_files("doc", Some("header")).count(), 0);
+    let mut state = serde_json::json!({});
+    regions.apply_state("doc", &mut state, None)?;
+    assert_eq!(state["regions"]["picker"]["label"], "Theme");
+    regions.deactivate("controls");
+    assert_eq!(regions.render("doc", None), "<main><nav></nav></main>");
+    assert_eq!(regions.script_files("doc", None).count(), 0);
+    let mut state = serde_json::json!({});
+    regions.apply_state("doc", &mut state, None)?;
+    assert!(state.get("regions").is_none());
+    Ok(())
+}
+
+#[test]
+fn replaced_parent_suppresses_fallback_descendant_assets() -> TestResult {
+    let template = concat!(
+        "<webui-press-region name=\"header\">before",
+        "<webui-press-region name=\"picker\">old</webui-press-region>",
+        "after</webui-press-region>",
+        "<webui-press-region name=\"footer\">Footer</webui-press-region>"
+    );
+    for replacement in ["", "<custom-header></custom-header>"] {
+        let configs = BTreeMap::from([
+            ("header".to_string(), region(replacement)),
+            (
+                "picker".to_string(),
+                RegionConfig {
+                    script_file: Some("inactive.ts".to_string()),
+                    state: Some(serde_json::from_str(r#"{"value":1}"#)?),
+                    ..region("<inactive-picker></inactive-picker>")
+                },
+            ),
+        ]);
+        let regions = RegionSet::load(&configs, Path::new("."), template.to_string())?;
+        assert_eq!(regions.render("doc", None), format!("{replacement}Footer"));
+        assert_eq!(regions.script_files("doc", None).count(), 0);
+        assert!(!regions
+            .html_fragments("doc", None)
+            .join("")
+            .contains("inactive"));
+        let mut state = serde_json::json!({});
+        regions.apply_state("doc", &mut state, None)?;
+        assert!(state.get("regions").is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn parent_state_only_preserves_nested_defaults_and_adjacent_regions() -> TestResult {
+    let template = concat!(
+        "<webui-press-region name=\"parent\">A",
+        "<webui-press-region name=\"child\">B</webui-press-region>C",
+        "</webui-press-region>",
+        "<webui-press-region name=\"sibling\">D</webui-press-region>"
+    );
+    let configs = BTreeMap::from([(
+        "parent".to_string(),
+        RegionConfig {
+            html: None,
+            state: Some(serde_json::json!({"enabled": true})),
+            ..region("")
+        },
+    )]);
+    let regions = RegionSet::load(&configs, Path::new("."), template.to_string())?;
+    assert_eq!(regions.render("doc", None), "ABCD");
+    assert_eq!(regions.render("doc", Some("child")), "ACD");
+    Ok(())
 }
 
 #[test]

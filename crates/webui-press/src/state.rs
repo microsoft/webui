@@ -64,6 +64,7 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "regions",
     "headTags",
     "tokens",
+    "webuiPress",
     "label",
     "icon",
     "__proto__",
@@ -148,6 +149,35 @@ pub(crate) struct StateDependencies {
 }
 
 impl StateDependencies {
+    /// Retain explicit inputs and the exact bytes observed during preparation.
+    pub(crate) fn record_input(&mut self, path: PathBuf, content: Option<&[u8]>) {
+        // Match the bounded version probe below: larger explicit inputs still
+        // receive filesystem events, but cannot trigger an endless race retry
+        // by comparing a stored hash with the probe's unavailable sentinel.
+        let version = content
+            .filter(|bytes| bytes.len() as u64 <= MAX_STATE_BYTES)
+            .map(|bytes| {
+                let mut hasher = DefaultHasher::new();
+                hasher.write(bytes);
+                hasher.finish()
+            });
+        if !self.paths.contains(&path) {
+            self.paths.push(path.clone());
+        }
+        self.versions.insert(path, version);
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.paths.extend(other.paths);
+        self.paths.sort();
+        self.paths.dedup();
+        self.versions.extend(other.versions);
+    }
+
+    pub(crate) fn retain_current_paths(&mut self) {
+        self.paths.retain(|path| self.versions.contains_key(path));
+    }
+
     pub(crate) fn begin_build(&mut self) {
         self.versions.clear();
     }
@@ -318,6 +348,7 @@ impl StateLoader {
         }
 
         if let Some(value) = inline {
+            validate_press_namespace(value, label)?;
             return Ok(Some(value.clone()));
         }
 
@@ -351,6 +382,7 @@ impl StateLoader {
                 abs.display()
             ))
         })?;
+        validate_press_namespace(&parsed, label)?;
         self.cache.insert(key, parsed.clone());
         Ok(Some(parsed))
     }
@@ -399,6 +431,15 @@ impl StateLoader {
 
         Ok(out)
     }
+}
+
+fn validate_press_namespace(value: &Value, label: &str) -> Result<()> {
+    if value.get("webuiPress").is_some() {
+        return Err(Error::Build(format!(
+            "{label}: top-level key 'webuiPress' is reserved by Press.\nhelp: Move application state under an application-specific key."
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn load_render_states(config: &DocsConfig, config_dir: &Path) -> Result<LoadedStates> {
@@ -468,6 +509,7 @@ mod tests {
             public_dir: "./public".to_string(),
             css: None,
             theme: None,
+            appearance: None,
             components: None,
             head: Vec::new(),
             nav: Vec::new(),

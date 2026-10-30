@@ -1,0 +1,54 @@
+:host { display: inline-flex; min-width: 0; }
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--docs-appearance-control-height, var(--docs-header-control-height, 36px));
+  height: var(--docs-appearance-control-height, var(--docs-header-control-height, 36px));
+  padding: 7px;
+  color: var(--docs-appearance-color, var(--docs-color-text, CanvasText));
+  background: var(--docs-appearance-background, var(--docs-color-bg, Canvas));
+  border: 1px solid var(--docs-appearance-border-color, var(--docs-color-border, ButtonBorder));
+  border-radius: var(--docs-appearance-radius, var(--docs-radius-m, 6px));
+  cursor: pointer;
+  anchor-name: --press-appearance-trigger;
+}
+.trigger[hidden] { display: none; }
+.trigger:hover:enabled { background: var(--docs-color-bg-alt); }
+.trigger:focus-visible { outline: 2px solid var(--docs-color-brand); outline-offset: 2px; }
+.trigger:disabled { cursor: default; opacity: 0.65; }
+.trigger svg { width: 20px; height: 20px; }
+.panel {
+  box-sizing: border-box;
+  width: 296px;
+  max-width: calc(100vw - 32px);
+  padding: var(--docs-space-m);
+  font: inherit;
+  color: var(--docs-appearance-color, var(--docs-color-text, CanvasText));
+  background: var(--docs-appearance-background, var(--docs-color-bg, Canvas));
+  border: 1px solid var(--docs-appearance-border-color, var(--docs-color-border, ButtonBorder));
+  border-radius: var(--docs-radius-l);
+}
+.panel[popover] {
+  position: fixed;
+  inset: calc(var(--docs-nav-height) + 8px) 24px auto auto;
+  margin: 0;
+  box-shadow: var(--docs-shadow-l);
+}
+.panel:popover-open { display: grid; gap: var(--docs-space-m); }
+.panel:not([popover]) { display: grid; gap: var(--docs-space-m); }
+h2 { margin: 0; font-size: var(--docs-font-size-m); font-weight: var(--docs-font-weight-semibold); }
+::slotted(*) { width: 100%; }
+@supports (position-area: bottom span-left) {
+  .panel[popover] {
+    position-anchor: --press-appearance-trigger;
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-inline, flip-block;
+    inset: auto;
+    margin-block-start: 8px;
+  }
+}
+@media (max-width: 1024px) {
+  :host { width: 100%; }
+  .panel:not([popover]) { width: 100%; max-width: none; padding: 0; border: 0; box-shadow: none; }
+}

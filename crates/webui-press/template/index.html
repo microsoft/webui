@@ -1,21 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-press-theme="{{webuiPress.appearance.theme}}" data-theme-mode="{{webuiPress.appearance.mode}}">
 
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <script>
-    /* Apply theme synchronously before first paint to prevent
-       flash-of-wrong-theme on cross-document navigation. */
-    (function () {
-      try {
-        var t = localStorage.getItem('theme');
-        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        document.documentElement.setAttribute('data-theme', t);
-      } catch (e) {}
-    })();
-  </script>
   <base href="{{site.base}}" />
   <meta name="base" content="{{site.base}}" />
   <title>{{page.documentTitle}}</title>
@@ -115,6 +104,7 @@
         <img src="{{site.base}}logo.svg" alt="{{site.title}}" />
         <span>{{site.title}}</span>
       </a>
+      <webui-press-region name="header.beforeNavigation" />
       <docs-site-navigation
         :navigation="{{navigation}}"
         :sections="{{sidebar.sections}}"
@@ -122,7 +112,26 @@
         ?home="{{page.isHome}}"
         ?full-layout="{{page.layout == 'full'}}"
         :open="{{page.mobileNavigationOpen}}"
-      ></docs-site-navigation>
+      >
+        <div slot="before-actions">
+          <webui-press-region name="header.beforeActions" />
+        </div>
+        <div slot="appearance" class="press-appearance">
+          <webui-press-region name="header.appearance">
+            <docs-appearance>
+              <webui-press-region name="header.themePicker">
+                <docs-theme-picker :appearance="{{webuiPress.appearance}}"></docs-theme-picker>
+              </webui-press-region>
+              <webui-press-region name="header.modePicker">
+                <docs-theme-toggle :appearance="{{webuiPress.appearance}}"></docs-theme-toggle>
+              </webui-press-region>
+            </docs-appearance>
+          </webui-press-region>
+        </div>
+        <div slot="after-actions">
+          <webui-press-region name="header.afterActions" />
+        </div>
+      </docs-site-navigation>
     </header>
   </webui-press-region>
   <webui-press-region name="site.announcement" />

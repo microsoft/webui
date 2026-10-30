@@ -1,0 +1,22 @@
+<button
+  class="trigger"
+  type="button"
+  aria-label="Appearance"
+  title="Appearance"
+  popovertarget="appearance-panel"
+  w-ref="{trigger}"
+  ?disabled="{{!ready}}"
+  ?hidden="{{mobile}}"
+>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 3a9 9 0 1 0 0 18h1.3a2.1 2.1 0 0 0 1.5-3.6 1.6 1.6 0 0 1 1.1-2.7h1.4A3.7 3.7 0 0 0 21 11c0-4.4-4-8-9-8Z"></path>
+    <circle cx="7.5" cy="10" r=".8"></circle>
+    <circle cx="10.5" cy="6.8" r=".8"></circle>
+    <circle cx="15" cy="7.3" r=".8"></circle>
+    <circle cx="6.8" cy="14.5" r=".8"></circle>
+  </svg>
+</button>
+<div id="appearance-panel" class="panel" role="group" aria-label="Appearance settings" ?popover="{{!mobile}}" w-ref="{panel}" @toggle="{onToggle(e)}">
+  <h2>Appearance</h2>
+  <slot></slot>
+</div>

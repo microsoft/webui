@@ -17,6 +17,7 @@ use webui::BuildOptions;
 use webui_handler::{Protocol, RenderOptions, WebUIHandler};
 use webui_tokens::TokenFile;
 
+use crate::appearance::{PreparedAppearance, BOOTSTRAP_SCRIPT};
 use crate::bundler::{
     bundle_assets, collect_component_scripts_for_html, discover_component_scripts,
     extract_bundle_scripts, inject_module_script_tags, inject_script_tag, module_script_tag,
@@ -110,20 +111,6 @@ impl BuildCache {
         self.skip_clean = true;
         self.dev_mode = true;
     }
-}
-
-fn load_theme(theme: &str, config_dir: &Path) -> Result<TokenFile> {
-    let config_relative = config_dir.join(theme);
-    let resolved = if config_relative.exists() {
-        config_relative
-            .canonicalize()
-            .map_err(|e| Error::Build(format!("Failed to canonicalize {theme}: {e}")))?
-    } else {
-        webui_tokens::resolve_theme_path(theme, config_dir)
-            .map_err(|e| Error::Build(format!("Failed to resolve theme {theme}: {e}")))?
-    };
-    webui_tokens::load_token_file(&resolved)
-        .map_err(|e| Error::Build(format!("Failed to load theme {}: {e}", resolved.display())))
 }
 
 fn inject_theme_tokens(
@@ -334,10 +321,8 @@ pub fn build_docs_with_cache(
         .as_ref()
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
-    let token_file = match &config.theme {
-        Some(theme) => Some(load_theme(theme, config_dir)?),
-        None => None,
-    };
+    let mut appearance = PreparedAppearance::prepare(config, config_dir, &mut cache.dependencies)?;
+    let appearance_bootstrap = format!("appearance-init-{:x}.js", fxhash(BOOTSTRAP_SCRIPT));
 
     print_header(cache, &config.site.title);
     eprintln!();
@@ -351,6 +336,9 @@ pub fn build_docs_with_cache(
     // happens after content processing succeeds, so a content failure
     // can't corrupt the previous valid output.
     let base_css = template_css(template_dir, config.show)?;
+    appearance.add_css_validation_context(&base_css)?;
+    appearance.add_css_validation_context(&custom_css)?;
+    let token_file = appearance.legacy_tokens();
     let has_base_css = !base_css.is_empty();
     let base_css_link = if has_base_css {
         format!("<link rel=\"stylesheet\" href=\"{base_path}docs.css\">")
@@ -364,10 +352,18 @@ pub fn build_docs_with_cache(
         String::new()
     };
     let head_injection = {
-        let mut parts: Vec<String> = Vec::with_capacity(2 + config.head.len());
+        let mut parts: Vec<String> = Vec::with_capacity(4 + config.head.len());
+        let appearance_head =
+            appearance.head_tags(config.show, &format!("{base_path}{appearance_bootstrap}"))?;
+        if !appearance_head.is_empty() {
+            parts.push(appearance_head);
+        }
         if !base_css_link.is_empty() {
             parts.push(base_css_link.clone());
         }
+        parts.push(format!(
+            "<link rel=\"stylesheet\" href=\"{base_path}appearance.css\">"
+        ));
         if !theme_css_link.is_empty() {
             parts.push(theme_css_link.clone());
         }
@@ -394,12 +390,19 @@ pub fn build_docs_with_cache(
         dependencies.paths.append(&mut cache.dependencies.paths);
         dependencies.paths.sort();
         dependencies.paths.dedup();
+    } else {
+        cache.dependencies.retain_current_paths();
     }
+    dependencies.extend(std::mem::take(&mut cache.dependencies));
     cache.dependencies = dependencies;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
     let mut pages = content?;
+    let press_state = json_obj([("appearance", appearance.state(config.show))]);
+    for page in &mut pages {
+        page.state["webuiPress"] = press_state.clone();
+    }
     let search_entries = prepare_page_search(&mut pages);
 
     // Step 2: Resolve component sources for the per-page builds
@@ -429,7 +432,7 @@ pub fn build_docs_with_cache(
     let regions = RegionSet::load(&config.regions, config_dir, template_html)?;
     // Validate configured region names even when the selected presentation
     // makes every shell region inactive. Authored page content is never filtered.
-    let regions = if config.show == ShowMode::Content {
+    let mut regions = if config.show == ShowMode::Content {
         RegionSet::load(
             &Default::default(),
             config_dir,
@@ -438,6 +441,9 @@ pub fn build_docs_with_cache(
     } else {
         regions
     };
+    if !appearance.has_multiple_themes() {
+        regions.deactivate("header.themePicker");
+    }
     crate::outline::prepare(&mut pages, config, regions.contains(crate::outline::REGION))?;
     let component_script_index = discover_component_scripts(&component_sources)?;
 
@@ -463,6 +469,12 @@ pub fn build_docs_with_cache(
     if has_theme_css {
         fs::write(site_dir.join("theme.css"), &custom_css)
             .map_err(|e| Error::Io(format!("Cannot write theme.css: {e}")))?;
+    }
+    fs::write(site_dir.join("appearance.css"), &appearance.css)
+        .map_err(|e| Error::Io(format!("Cannot write appearance.css: {e}")))?;
+    if config.show != ShowMode::Content {
+        fs::write(site_dir.join(&appearance_bootstrap), BOOTSTRAP_SCRIPT)
+            .map_err(|e| Error::Io(format!("Cannot write appearance bootstrap: {e}")))?;
     }
 
     let handler = WebUIHandler::with_plugin(|| {
@@ -741,7 +753,7 @@ pub fn build_docs_with_cache(
             entry: "index.html".to_string(),
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
-            theme: token_file.clone(),
+            theme: appearance.validation_tokens(),
             projection_manifests: vec![projection_source.clone()],
             ..BuildOptions::default()
         })
@@ -776,7 +788,7 @@ pub fn build_docs_with_cache(
 
         let layout = region_layout(page).to_string();
         regions.apply_state(&layout, &mut page.state, omitted)?;
-        if let Some(token_file) = token_file.as_ref() {
+        if let Some(token_file) = token_file {
             inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
         }
 
@@ -853,6 +865,7 @@ pub fn build_docs_with_cache(
         head_injection: &head_injection,
         global_state: render_states.global(),
     });
+    not_found_state["webuiPress"] = press_state;
     regions.apply_state("doc", &mut not_found_state, not_found_omitted)?;
 
     let (protected_not_found, not_found_pre_blocks) = protect_pre_blocks(&not_found_content);
@@ -875,7 +888,7 @@ pub fn build_docs_with_cache(
         entry: "index.html".to_string(),
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
-        theme: token_file.clone(),
+        theme: appearance.validation_tokens(),
         projection_manifests: vec![projection_source],
         ..BuildOptions::default()
     })
@@ -888,7 +901,7 @@ pub fn build_docs_with_cache(
     nf_build.protocol.module_preloads = hrefs;
     nf_build.warnings.append(&mut preload_warnings);
 
-    if let Some(token_file) = token_file.as_ref() {
+    if let Some(token_file) = token_file {
         inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;
     }
 
@@ -1541,7 +1554,7 @@ fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
     out
 }
 
-/// Cheap deterministic hash for building unique temp directory names.
+/// Cheap deterministic hash for build-time artifact and temporary-file identities.
 fn fxhash(s: &str) -> u64 {
     fxhash_bytes(s.as_bytes())
 }

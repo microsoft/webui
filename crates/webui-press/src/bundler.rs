@@ -28,10 +28,25 @@ const require = createRequire(pathToFileURL(path.join(config.resolveDir, "__webu
 const esbuild = require(require.resolve("esbuild"));
 const projectionUrl = pathToFileURL(config.projectionEntry).href;
 const { esbuildProjection } = await import(projectionUrl);
+// A stable virtual identity keeps esbuild's chunk hashes independent of the
+// per-build scratch directory, without introducing shared filesystem writes.
+const appearance = {
+  name: "webui-press-appearance",
+  setup(build) {
+    build.onResolve({ filter: /^(@microsoft\/webui-press\/appearance\.js|webui-press:appearance)$/ }, () => ({
+      path: "appearance.ts",
+      namespace: "webui-press",
+    }));
+    build.onLoad({ filter: /^appearance\.ts$/, namespace: "webui-press" }, () => ({
+      contents: config.appearanceSource,
+      loader: "ts",
+    }));
+  },
+};
 try {
   await esbuild.build({
     ...config.build,
-    plugins: [esbuildProjection({ manifest: config.manifest })],
+    plugins: [appearance, esbuildProjection({ manifest: config.manifest })],
   });
 } catch (error) {
   // esbuild's own summary message drops note text, which is where projection
@@ -470,6 +485,7 @@ struct EsbuildRunnerConfig {
     resolve_dir: String,
     projection_entry: String,
     manifest: String,
+    appearance_source: &'static str,
     build: EsbuildJsOptions,
 }
 
@@ -1223,9 +1239,20 @@ fn build_aliases(opts: &BundleOptions<'_>) -> Result<BTreeMap<String, String>> {
 
     if let Some(cfg) = opts.bundler_config {
         for (from, to) in &cfg.alias {
+            if from == "@microsoft/webui-press/appearance.js" {
+                return Err(Error::Build(
+                    "The Press appearance API alias is reserved. Import \
+                     @microsoft/webui-press/appearance.js without overriding its alias."
+                        .to_string(),
+                ));
+            }
             aliases.insert(from.clone(), normalized_alias_target(&config_dir, to));
         }
     }
+    aliases.insert(
+        "@microsoft/webui-press/appearance.js".to_string(),
+        "webui-press:appearance".to_string(),
+    );
 
     Ok(aliases)
 }
@@ -1334,6 +1361,7 @@ fn esbuild_build_config(
         resolve_dir: path_for_js(&working_dir),
         projection_entry,
         manifest: path_for_js(&manifest_path),
+        appearance_source: include_str!("../template/appearance.ts"),
         build: EsbuildJsOptions {
             abs_working_dir: path_for_js(&working_dir),
             entry_points: entry_files
@@ -1997,7 +2025,7 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_command_resolves_from_node_modules() {
+    fn esbuild_command_resolves_from_node_modules() -> TestResult {
         let tmp = std::env::temp_dir().join("webui-press-esbuild-test");
         let bin_path = if cfg!(windows) {
             tmp.join("node_modules/esbuild/bin/esbuild")
@@ -2005,8 +2033,12 @@ mod tests {
             tmp.join("node_modules/.bin/esbuild")
         };
         fs::remove_dir_all(&tmp).ok();
-        fs::create_dir_all(bin_path.parent().unwrap()).unwrap();
-        fs::write(&bin_path, "").unwrap();
+        fs::create_dir_all(
+            bin_path
+                .parent()
+                .ok_or("Missing esbuild parent directory")?,
+        )?;
+        fs::write(&bin_path, "")?;
         let resolved = esbuild_command(&tmp.join("node_modules"));
         if cfg!(windows) {
             assert_eq!(resolved.program, PathBuf::from("node"));
@@ -2016,6 +2048,7 @@ mod tests {
             assert!(resolved.prefix_args.is_empty());
         }
         fs::remove_dir_all(&tmp).ok();
+        Ok(())
     }
 
     #[test]
