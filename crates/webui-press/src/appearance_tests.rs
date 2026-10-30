@@ -238,66 +238,29 @@ fn build_emits_shared_artifacts_and_metadata_for_pages_and_404() -> TestResult {
 }
 
 #[test]
-fn full_shell_sourced_families_use_external_css_validation_context() -> TestResult {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/webui-press/target");
-    fs::create_dir_all(&fixtures)?;
-    let dir = tempfile::tempdir_in(fixtures)?;
-    let content = dir.path().join("content");
-    fs::create_dir_all(&content)?;
-    let page = content.join("index.md");
-    fs::write(&page, "# Sourced family")?;
+fn sourced_families_use_external_css_validation_context() -> TestResult {
+    let dir = tempfile::tempdir()?;
     fs::write(
         dir.path().join("tokens.json"),
         r##"{"themes":{"light":{"surface":"#fff"},"dark":{"surface":"#000"}}}"##,
     )?;
-    let custom_css = dir.path().join("custom.css");
-    fs::write(&custom_css, ":root { --consumer-surface: var(--surface); }")?;
-    let mut config = config(
+    let config = config(
         r#"{"defaultTheme":"official","themes":[{"id":"official","label":"Official","source":"./tokens.json"}]}"#,
     )?;
-    config.content_dir = content.to_string_lossy().into_owned();
-    config.out_dir = dir.path().join("output").to_string_lossy().into_owned();
-    config.public_dir = dir.path().join("no-public").to_string_lossy().into_owned();
-    config.css = Some(custom_css.to_string_lossy().into_owned());
-    let mut bundler: crate::types::BundlerConfig = serde_json::from_str("{}")?;
-    bundler.alias.insert(
-        "@microsoft/webui-framework".into(),
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packages/webui-framework/src/index.ts")
-            .canonicalize()?
-            .to_string_lossy()
-            .into_owned(),
+    let mut appearance =
+        PreparedAppearance::prepare(&config, dir.path(), &mut StateDependencies::default())?;
+    let required = ["docs-color-bg-alt".into(), "consumer-surface".into()];
+    let before = appearance.validation_tokens().ok_or("missing validation")?;
+    assert!(webui_tokens::validate_required_tokens(&required, &before).is_err());
+    appearance.add_css_validation_context(include_str!("../template/docs.css"))?;
+    appearance.add_css_validation_context(":root { --consumer-surface: var(--surface); }")?;
+    let validation = appearance.validation_tokens().ok_or("missing validation")?;
+    webui_tokens::validate_required_tokens(&required, &validation)?;
+    assert!(
+        webui_tokens::validate_required_tokens(&["consumer-surfac".into()], &validation).is_err()
     );
-    config.bundler = Some(bundler);
-    // Match native CLI extraction: the real bundled templates live alongside
-    // the consumer's node_modules, not beneath the Rust source tree.
-    static TEMPLATE: include_dir::Dir<'_> =
-        include_dir::include_dir!("$CARGO_MANIFEST_DIR/template");
-    let template = dir.path().join("template");
-    fs::create_dir_all(&template)?;
-    TEMPLATE.extract(&template)?;
-    crate::build::build_docs(&config, dir.path(), &template)?;
-    let css = fs::read_to_string(Path::new(&config.out_dir).join("appearance.css"))?;
-    assert!(!css.contains("--docs-color-bg-alt:"));
-    assert!(!css.contains("--consumer-surface:"));
-    assert!(css.contains("--surface: #fff;"));
-    assert!(Path::new(&config.out_dir).join("404.html").is_file());
-
-    fs::write(
-        &page,
-        "# Consumer CSS\n\n<style>.sample { color: var(--consumer-surface); }</style>",
-    )?;
-    crate::build::build_docs(&config, dir.path(), &template)?;
-
-    fs::write(
-        &page,
-        "# Typo\n\n<style>.sample { color: var(--consumer-surfac); }</style>",
-    )?;
-    let error = crate::build::build_docs(&config, dir.path(), &template)
-        .err()
-        .ok_or("misspelled token was accepted")?
-        .to_string();
-    assert!(error.contains("consumer-surfac"), "{error}");
-    assert!(error.contains("help:"), "{error}");
+    assert!(!appearance.css.contains("--docs-color-bg-alt:"));
+    assert!(!appearance.css.contains("--consumer-surface:"));
+    assert!(appearance.css.contains("--surface: #fff;"));
     Ok(())
 }

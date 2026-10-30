@@ -72,6 +72,41 @@ async function ready(page: Page, url: string): Promise<void> {
   await expect(page.getByRole('group', { name: 'Color mode' }).getByRole('button', { name: 'Light', exact: true })).toBeEnabled();
 }
 
+test('full-shell sourced families validate bundled and authored CSS without changing snapshots', t => {
+  const f = fixture();
+  t.after(() => removeFixtureRoot(f.root));
+  const page = path.join(f.site, 'content/index.md');
+  write(page, '# Sourced family');
+  write(path.join(f.site, '.webui-press/tokens.json'), JSON.stringify({
+    themes: { light: { surface: '#fff' }, dark: { surface: '#000' } },
+  }));
+  write(path.join(f.site, 'theme.css'), ':root { --consumer-surface: var(--surface); }');
+  write(f.configFile, JSON.stringify({
+    ...f.config, regions: {},
+    appearance: {
+      defaultTheme: 'official',
+      themes: [{ id: 'official', label: 'Official', source: './tokens.json' }],
+    },
+  }));
+  build(f.site);
+  const output = path.join(f.site, 'dist');
+  const css = fs.readFileSync(path.join(output, 'appearance.css'), 'utf8');
+  assert.ok(!css.includes('--docs-color-bg-alt:'));
+  assert.ok(!css.includes('--consumer-surface:'));
+  assert.ok(css.includes('--surface: #fff;'));
+  assert.ok(fs.existsSync(path.join(output, '404.html')));
+
+  write(page, '# Consumer CSS\n\n<style>.sample { color: var(--consumer-surface); }</style>');
+  build(f.site);
+  write(page, '# Typo\n\n<style>.sample { color: var(--consumer-surfac); }</style>');
+  assert.throws(() => build(f.site), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /consumer-surfac/);
+    assert.match(error.message, /help:/);
+    return true;
+  });
+});
+
 test('shared appearance controls, prepaint restore, cross-tab state, OS changes and packed API', async t => {
   const f = await appearanceSite(t);
   const browser = await chromium.launch();
