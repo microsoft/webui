@@ -207,7 +207,8 @@ native select behavior. Color mode uses labeled monitor, sun, and moon buttons,
 with the current preference exposed as pressed. The popover uses native
 light-dismiss and Escape behavior. Without Popover API support, the controls
 remain inline. On narrow screens the same controls appear directly inside the
-navigation menu, without a second popover.
+full-height navigation drawer, which covers the header and slides in from the
+right without a second popover. Reduced-motion preferences disable the slide.
 
 The controls inherit the `--docs-*` color, font, spacing, and radius tokens, so a
 site can theme them without depending on a UI library.
