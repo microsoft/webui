@@ -64,8 +64,9 @@ impl WatcherHandle {
     /// # Errors
     ///
     /// Returns the first error from a path that exists but cannot be watched.
-    /// The remaining paths are still registered, and the failed path is retried
-    /// on the next retarget.
+    /// The remaining paths are still registered, including requested roots
+    /// nested inside the failed path, and the failed path is retried on the
+    /// next retarget.
     pub fn retarget(&mut self, targets: WatchTargets) -> Result<()> {
         let WatchTargets {
             paths,

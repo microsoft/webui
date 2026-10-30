@@ -28,9 +28,11 @@ impl Subscriptions {
     /// longer needed.
     ///
     /// Unchanged roots stay registered so events already observed under them
-    /// are still delivered. Exact-file parents are always re-registered: some
-    /// backends drop a subscription without an event when its directory is
-    /// deleted, and generated directories are routinely recreated.
+    /// are still delivered. A requested root nested inside another requested
+    /// root is registered only when that ancestor cannot be watched. Exact-file
+    /// parents are always re-registered: some backends drop a subscription
+    /// without an event when its directory is deleted, and generated
+    /// directories are routinely recreated.
     ///
     /// A path that cannot be watched does not stop the others from being
     /// registered; the first failure is returned afterwards.
@@ -44,33 +46,33 @@ impl Subscriptions {
             // A deleted directory may already have released its subscription.
             let _ = watcher.unwatch(&parent);
         }
-        let desired = existing_roots(paths);
+        let requested = existing_roots(paths);
         // Release roots before adding new ones: removing a recursive root also
         // removes subscriptions a new nested root would share with it.
-        let mut index = 0;
-        while index < self.roots.len() {
-            if desired
-                .iter()
-                .any(|root| root.canonical == self.roots[index].canonical)
-            {
-                index += 1;
-                continue;
+        self.roots.retain(|root| {
+            let keep = is_outermost(&requested, &root.canonical);
+            if !keep {
+                let _ = watcher.unwatch(&root.path);
             }
-            let root = self.roots.swap_remove(index);
-            let _ = watcher.unwatch(&root.path);
-        }
+            keep
+        });
         let mut failure = None;
-        for root in desired {
+        // Ancestors come first, so nested roots are reached only when none of
+        // their requested ancestors could be watched.
+        for root in requested {
             if self
                 .roots
                 .iter()
-                .any(|current| current.canonical == root.canonical)
+                .any(|current| root.canonical.starts_with(&current.canonical))
             {
                 continue;
             }
             let watched = watcher.watch(&root.path, RecursiveMode::Recursive);
             if keep_first_failure(&mut failure, watched, &root.path) {
                 self.roots.push(root);
+            } else {
+                // Release what a partial recursive registration left behind.
+                let _ = watcher.unwatch(&root.path);
             }
         }
         watch_explicit_parents(
@@ -100,7 +102,7 @@ fn keep_first_failure(
     false
 }
 
-/// Existing `paths` without entries nested inside another root.
+/// Existing `paths` without duplicates, ancestors before their descendants.
 fn existing_roots(paths: &[PathBuf]) -> Vec<Root> {
     let mut roots: Vec<Root> = Vec::with_capacity(paths.len());
     for path in paths {
@@ -108,19 +110,24 @@ fn existing_roots(paths: &[PathBuf]) -> Vec<Root> {
             continue;
         }
         let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        if roots
-            .iter()
-            .any(|root| canonical.starts_with(&root.canonical))
-        {
+        if roots.iter().any(|root| root.canonical == canonical) {
             continue;
         }
-        roots.retain(|root| !root.canonical.starts_with(&canonical));
         roots.push(Root {
             path: path.clone(),
             canonical,
         });
     }
+    roots.sort_by_key(|root| root.canonical.components().count());
     roots
+}
+
+/// Whether `path` is requested and not nested inside another requested root.
+fn is_outermost(requested: &[Root], path: &Path) -> bool {
+    requested.iter().any(|root| root.canonical == path)
+        && !requested
+            .iter()
+            .any(|root| root.canonical != path && path.starts_with(&root.canonical))
 }
 
 fn watch_explicit_parents(
@@ -236,6 +243,8 @@ mod tests {
         assert_eq!(
             watcher.calls,
             vec![
+                // Releases anything a partial recursive registration left.
+                Call::Unwatch(denied.clone()),
                 Call::Watch(content, RecursiveMode::Recursive),
                 Call::Watch(
                     std::fs::canonicalize(&state).unwrap(),
@@ -327,6 +336,49 @@ mod tests {
                 Call::Watch(parent, RecursiveMode::Recursive),
             ]
         );
+    }
+
+    /// Subscriptions left active by the recorded calls.
+    fn active(calls: &[Call]) -> Vec<&Path> {
+        let mut active: Vec<&Path> = Vec::new();
+        for call in calls {
+            match call {
+                Call::Watch(path, _) => active.push(path.as_path()),
+                Call::Unwatch(path) => active.retain(|current| *current != path.as_path()),
+            }
+        }
+        active
+    }
+
+    #[test]
+    fn retarget_keeps_nested_roots_when_their_ancestor_cannot_be_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("docs");
+        let content = docs.join("content");
+        std::fs::create_dir_all(&content).unwrap();
+        let requested = [content.clone(), docs.clone()];
+        let mut watcher = RecordingWatcher::default();
+        let mut subscriptions = Subscriptions::default();
+        subscriptions
+            .retarget(&mut watcher, std::slice::from_ref(&content), &[])
+            .unwrap();
+
+        watcher.denied = Some(docs.clone());
+        let error = subscriptions
+            .retarget(&mut watcher, &requested, &[])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("Cannot watch {}", docs.display())
+        );
+        assert_eq!(active(&watcher.calls), [content.as_path()]);
+
+        // The ancestor is retried and replaces its fallback once it is watchable.
+        watcher.denied = None;
+        subscriptions
+            .retarget(&mut watcher, &requested, &[])
+            .unwrap();
+        assert_eq!(active(&watcher.calls), [docs.as_path()]);
     }
 
     #[test]
