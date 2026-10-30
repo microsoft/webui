@@ -288,7 +288,7 @@ test('the lazy guide builds its documented region into a pack the CLI serves', a
   const guide = fs.readFileSync(path.join(workspace, 'docs/learn/lazy.md'), 'utf8');
   const template = guide.match(/```html\r?\n<!-- app-shell\.html -->\r?\n([\s\S]*?)```/)?.[1];
   assert.ok(template, 'the guide must contain its component template');
-  assert.match(guide, /import '@microsoft\/webui-framework\/lazy\.js';/);
+  assert.match(guide, /import '\.\.\/dist\/lazy\.webui\.js';/);
   assert.match(guide, /await this\.\$rendered\(\);/);
   const owner = 'app-shell';
   const region = `${owner}::lazy:@0`;
