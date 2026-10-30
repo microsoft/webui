@@ -363,6 +363,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn watcher_tracks_external_appearance_sources() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        let external = tempfile::tempdir()?;
+        let file = external.path().join("node_modules/theme/tokens.json");
+        std::fs::create_dir_all(file.parent().context("theme parent")?)?;
+        std::fs::write(
+            &file,
+            r#"{"themes":{"light":{"size":"1px"},"dark":{"size":"2px"}}}"#,
+        )?;
+        let mut config: DocsConfig = serde_json::from_str(
+            r#"{"site":{"title":"Test"},"basePath":"/","contentDir":"missing","nav":[],"sidebar":[],"appearance":{"defaultTheme":"official","themes":[{"id":"official","label":"Official"}]}}"#,
+        )?;
+        config
+            .appearance
+            .as_mut()
+            .context("appearance config")?
+            .themes[0]
+            .source = Some(file.to_string_lossy().into_owned());
+        let mut dependencies = StateDependencies::default();
+        crate::appearance::PreparedAppearance::prepare(&config, project.path(), &mut dependencies)?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let _watcher = source_watcher(
+            &config,
+            project.path(),
+            &project.path().join("config.json"),
+            &dependencies,
+            tx,
+        )?;
+        std::fs::write(
+            &file,
+            r#"{"themes":{"light":{"size":"3px"},"dark":{"size":"4px"}}}"#,
+        )?;
+        let changed = rx.recv_timeout(Duration::from_secs(3))?;
+        assert!(changed.contains(&file.canonicalize()?));
+        Ok(())
+    }
+
+    #[test]
     fn watcher_ignores_project_scratch_but_rebuilds_authored_sources() -> Result<()> {
         let root = tempfile::tempdir()?;
         let config_dir = root.path().join(".webui-press");

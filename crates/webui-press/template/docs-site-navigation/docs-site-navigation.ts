@@ -4,7 +4,6 @@
 import { WebUIElement, attr, observable } from "@microsoft/webui-framework";
 
 import "../docs-search/docs-search.js";
-import "../docs-theme-toggle/docs-theme-toggle.js";
 
 interface NavigationLink {
   text: string;
@@ -33,6 +32,7 @@ export class DocsSiteNavigation extends WebUIElement {
   @attr({ attribute: "full-layout", mode: "boolean" }) fullLayout = false;
   @observable navigation: NavigationLink[] = [];
   @observable open = false;
+  @attr({ mode: "boolean" }) mobile = false;
 
   declare sections: SidebarSection[];
   dialog!: HTMLDialogElement;
@@ -40,7 +40,8 @@ export class DocsSiteNavigation extends WebUIElement {
   private skipNextTransition = false;
 
   private resizeHandler = (): void => {
-    if (window.innerWidth > 768) {
+    this.mobile = window.matchMedia("(max-width: 1024px)").matches;
+    if (!this.mobile) {
       this.closeMenu();
     }
   };
@@ -67,11 +68,16 @@ export class DocsSiteNavigation extends WebUIElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    if (this.dialog) this.resizeHandler();
     window.addEventListener("resize", this.resizeHandler);
     if (!this.pageSwapAttached) {
       window.addEventListener("pageswap", this.pageSwapHandler);
       this.pageSwapAttached = true;
     }
+  }
+
+  protected override hydratedCallback(): void {
+    this.resizeHandler();
   }
 
   disconnectedCallback(): void {

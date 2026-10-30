@@ -7,8 +7,12 @@
       @click="{onNavigate(link.fullLayout, e)}"
     >{{link.text}}</a>
   </for>
+  <slot name="before-actions"></slot>
   <docs-search></docs-search>
-  <docs-theme-toggle></docs-theme-toggle>
+  <if condition="!mobile">
+    <slot name="appearance"></slot>
+  </if>
+  <slot name="after-actions"></slot>
   <button
     class="mobile-menu-btn"
     type="button"
@@ -46,6 +50,11 @@
         >{{link.text}}</a>
       </for>
     </nav>
+    <if condition="mobile">
+      <div class="mobile-appearance">
+        <slot name="appearance"></slot>
+      </div>
+    </if>
     <if condition="!home">
       <div class="mobile-section-nav">
         <docs-sidebar-navigation

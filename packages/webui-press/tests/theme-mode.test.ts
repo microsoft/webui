@@ -11,9 +11,9 @@ import path from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { build, fixture, removeFixtureRoot, write } from './native-fixture.js';
-import { contrastRatio } from './website-fixture.js';
+import { contrastRatio, openAppearance, setColorMode } from './website-fixture.js';
 
-async function themedSite(t: TestContext, mode: 'all' | 'content') {
+async function themedSite(t: TestContext, mode: 'all' | 'content', families = false) {
   const f = fixture();
   const root = path.join(f.site, 'dist');
   let server: http.Server | undefined;
@@ -45,18 +45,38 @@ async function themedSite(t: TestContext, mode: 'all' | 'content') {
   // Reuse Press's own palette; the fixture authors only its component tokens.
   const light = declarations(css.slice(0, darkStart));
   const dark = { ...light, ...declarations(css.slice(darkStart)) };
-  write(path.join(f.site, '.webui-press/tokens.json'), JSON.stringify({
+  const tokens = {
     themes: {
       light: { ...light, 'fixture-text': '#111111', 'fixture-surface': '#ffffff' },
       dark: { ...dark, 'fixture-text': '#eeeeee', 'fixture-surface': '#171717' },
     },
-  }));
+  };
+  if (families) {
+    Object.assign(tokens.themes.light, { 'docs-color-bg': '#fafafa' });
+    Object.assign(tokens.themes.dark, { 'docs-color-bg': '#181818' });
+    write(path.join(f.site, '.webui-press/ocean.json'), JSON.stringify({
+      themes: {
+        light: { ...tokens.themes.light, 'docs-color-bg': '#f0f8ff' },
+        dark: { ...tokens.themes.dark, 'docs-color-bg': '#001a33' },
+      },
+    }));
+  }
+  write(path.join(f.site, '.webui-press/tokens.json'), JSON.stringify(tokens));
   write(path.join(f.site, 'theme.css'), `
+    :root { --docs-nav-height: 4.5rem; }
     @media (forced-colors: active) {
       :root { --fixture-text: CanvasText; --fixture-surface: Canvas; }
     }
   `);
-  write(f.configFile, JSON.stringify({ ...f.config, regions: {}, theme: './tokens.json' }));
+  write(f.configFile, JSON.stringify({ ...f.config, regions: {}, ...(families ? {
+    appearance: {
+      defaultTheme: 'neutral',
+      themes: [
+        { id: 'neutral', label: 'Neutral', source: './tokens.json' },
+        { id: 'ocean', label: 'Ocean', source: './ocean.json' },
+      ],
+    },
+  } : { theme: './tokens.json' }) }));
   build(f.site, `--show=${mode}`);
   const mime: Record<string, string> = {
     '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.svg': 'image/svg+xml',
@@ -125,20 +145,20 @@ test('full manual themes override OS token colors without overriding forced colo
     image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0,
   )).toBe(true);
   await expectTheme(page, 'dark');
-  await expect(page.locator('docs-theme-toggle .sun-icon')).toBeVisible();
-  await expect(page.locator('docs-theme-toggle button')).not.toContainText('☀️');
-  await page.locator('docs-theme-toggle button').click();
+  await openAppearance(page);
+  await expect(page.getByRole('group', { name: 'Color mode' }).getByRole('button', { name: 'System' })).toHaveAttribute('aria-pressed', 'true');
+  await setColorMode(page, 'light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expectTheme(page, 'light');
-  await expect(page.locator('docs-theme-toggle .moon-icon')).toBeVisible();
-  await expect(page.locator('docs-theme-toggle button')).not.toContainText('🌙');
+  await expect(page.getByRole('group', { name: 'Color mode' }).getByRole('button', { name: 'Light', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('theme-probe input')).toHaveCSS('color-scheme', 'light');
   await page.reload();
   await expectTheme(page, 'light');
   await capture(page, 'theme-full-light-os-dark');
   await expectForcedColors(page);
   await page.emulateMedia({ forcedColors: 'none', colorScheme: 'light' });
-  await page.locator('docs-theme-toggle button').click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setColorMode(page, 'dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expectTheme(page, 'dark');
   await expectForcedColors(page);
@@ -172,4 +192,37 @@ test('content themes ignore stored shell preferences and follow OS changes', asy
   await expectTheme(noJs, 'dark');
   await noJs.emulateMedia({ colorScheme: 'light' });
   await expectTheme(noJs, 'light');
+});
+
+test('sourced family colors override shell defaults while authored aliases retain precedence', async t => {
+  const { url } = await themedSite(t, 'all', true);
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({ colorScheme: 'dark', reducedMotion: 'reduce' });
+  await page.goto(url);
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 24, 24)');
+  const family = page.getByRole('combobox', { name: 'Design theme' });
+  await openAppearance(page);
+  for (const [id, light, dark] of [
+    ['neutral', 'rgb(250, 250, 250)', 'rgb(24, 24, 24)'],
+    ['ocean', 'rgb(240, 248, 255)', 'rgb(0, 26, 51)'],
+  ]) {
+    await family.selectOption(id);
+    for (const preference of ['system', 'light', 'dark'] as const) {
+      await setColorMode(page, preference);
+      for (const colorScheme of ['light', 'dark'] as const) {
+        await page.emulateMedia({ colorScheme });
+        const resolved = preference === 'system' ? colorScheme : preference;
+        await expect(page.locator('body')).toHaveCSS('background-color', resolved === 'light' ? light : dark);
+        assert.equal(await page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--docs-nav-height').trim()), '4.5rem');
+      }
+    }
+  }
+  await expectForcedColors(page);
+  const noJs = await browser.newPage({ javaScriptEnabled: false, colorScheme: 'dark' });
+  await noJs.goto(url);
+  await expect(noJs.locator('body')).toHaveCSS('background-color', 'rgb(24, 24, 24)');
+  await noJs.emulateMedia({ colorScheme: 'light' });
+  await expect(noJs.locator('body')).toHaveCSS('background-color', 'rgb(250, 250, 250)');
 });

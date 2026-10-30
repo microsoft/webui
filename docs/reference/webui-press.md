@@ -134,8 +134,9 @@ API panels, custom-page HTML, and bundled page scripts remain. Home Markdown is
 rendered too. All layouts and the 404 page use ordinary document scrolling,
 without reserved sidebar columns, header offsets, or full-layout viewport fill.
 
-Full mode remembers the theme control's light/dark selection and applies it to
-native theme tokens and browser controls regardless of the OS preference.
+Full mode remembers independent design-theme and System/Light/Dark preferences.
+Explicit Light or Dark applies to theme tokens and browser controls regardless
+of the OS preference; System follows OS changes.
 Content mode has no shell theme control: it ignores the saved full-site choice
 without changing it, follows OS light/dark changes through CSS, and works without
 JavaScript. Forced-colors styles retain precedence over manual theme overrides.
@@ -147,16 +148,155 @@ validated, but region state and scripts are inactive.
 
 Even with `--template`, content mode uses the bundled shell-free scaffold and
 content typography, not the full template's CSS or entry script. Configured
-`head`, `css`, `theme`, `components`, and page scripts still apply. Put shared
-assets there rather than in shell regions. Component discovery continues to
-accept npm packages alongside local roots; browser registration imports can use
-the existing `<script type="module" bundle>` syntax and bundler aliases.
-Native npm discovery names components from `<tag>.html` files beneath the
-package's `components/` directory by default. Package `webui.components` metadata
-selects alternate roots, for example `["./src/components"]`. Folder names,
-template exports, and CEM names do not determine native component names. Use
-package module exports for browser registrations. See
+`head`, `css`, `theme`, `appearance`, `components`, and page scripts still apply.
+Put shared assets there rather than in shell regions. Component discovery
+continues to accept npm packages alongside local roots; browser registration
+imports can use the existing `<script type="module" bundle>` syntax and bundler
+aliases. Native npm discovery names components from `<tag>.html` files beneath
+the package's `components/` directory by default. Package `webui.components`
+metadata selects alternate roots, for example `["./src/components"]`.
+Folder names, template exports, and CEM names do not determine native component
+names. Use package module exports for browser registrations. See
 [External components](/learn/components#external-component-sources).
+
+## Theme families and appearance
+
+The default header has a palette button that opens an **Appearance** popover,
+with System, Light, and Dark icon buttons. Configure multiple design themes to
+also show a **Design theme** select:
+
+```json
+{
+  "appearance": {
+    "defaultTheme": "neutral",
+    "defaultMode": "system",
+    "themes": [
+      { "id": "neutral", "label": "Neutral", "source": "./themes/neutral.json" },
+      { "id": "brand", "label": "Brand", "source": "./themes/brand.json" }
+    ]
+  }
+}
+```
+
+Each `source` is relative to `config.json`, or a supported npm token source.
+It contains independent light and dark token maps:
+
+```json
+{
+  "themes": {
+    "light": { "surface": "#ffffff", "foreground": "#111111" },
+    "dark": { "surface": "#171717", "foreground": "#eeeeee" }
+  }
+}
+```
+
+Use the token names required by your components. Theme families can change
+spacing, typography, corners, and shadows as well as color. Token values remain
+CSS values, including `initial`. A family may omit `source` when its styles are
+authored in the site's configured CSS instead.
+
+IDs must be unique, and `defaultTheme` must identify a configured family.
+`defaultMode` defaults to `system`. Keep the existing `theme` configuration for
+single-source sites; do not combine `theme` and `appearance`.
+With one family, including a legacy `theme`, Press does not generate a Design
+theme control or its region assets. Color mode remains available.
+
+The family control is a native select. Supporting browsers use customizable
+select rendering, including its picker surface; other browsers retain their
+native select behavior. Color mode uses labeled monitor, sun, and moon buttons,
+with the current preference exposed as pressed. The popover uses native
+light-dismiss and Escape behavior. Without Popover API support, the controls
+remain inline. On narrow screens the same controls appear directly inside the
+navigation menu, without a second popover.
+
+The controls inherit the `--docs-*` color, font, spacing, and radius tokens, so a
+site can theme them without depending on a UI library.
+
+Override `--docs-appearance-color`, `--docs-appearance-background`,
+`--docs-appearance-border-color`, `--docs-appearance-radius`,
+`--docs-appearance-control-height`, or `--docs-appearance-theme-width` in your
+site CSS for control-specific styling.
+
+Press restores saved preferences before external scripts load. Choosing System
+resumes OS tracking without changing the selected design theme. Already-open
+tabs on the same origin using the same storage keys adopt preference changes.
+Storage failures produce a warning while selection continues in the current
+page. Unknown saved family IDs use the configured default.
+
+To preserve preferences from an existing integration, configure its keys:
+
+```json
+{
+  "appearance": {
+    "defaultTheme": "neutral",
+    "themes": [{ "id": "neutral", "label": "Neutral", "source": "./tokens.json" }],
+    "storage": { "theme": "my-design-theme", "mode": "theme" }
+  }
+}
+```
+
+Full pages without JavaScript still show the default family's CSS and readable
+content. Content-only builds use the configured default family and OS appearance
+without reading or overwriting saved shell preferences.
+
+User-initiated theme changes use a native view-transition crossfade where
+supported. Initial restoration, OS updates, and cross-tab updates do not animate.
+Reduced-motion and forced-colors preferences disable the theme animation.
+Page navigation keeps its separate content transition.
+
+### Custom appearance controls
+
+Use a header region when a site needs a custom control or additional actions,
+rather than querying or replacing Press's header DOM. Replace
+`header.themePicker` to customize only the family control, leaving Color mode
+in place:
+
+```json
+{
+  "regions": {
+    "header.themePicker": {
+      "html": "<brand-theme-picker :appearance=\"{{webuiPress.appearance}}\"></brand-theme-picker>"
+    }
+  }
+}
+```
+
+Include the component in the site's normal `components` sources. Render state
+`webuiPress.appearance` supplies `themes` (ordered `{ id, label }` entries), `theme`,
+`mode`, and `resolvedMode` for SSR. Its `selected` object contains boolean
+`system`, `light`, and `dark` values for accessible control bindings. Token maps
+are not browser state.
+
+Browser integrations import the public appearance API:
+
+```typescript
+import {
+  getAppearance,
+  getThemeFamilies,
+  setAppearance,
+  subscribeAppearance,
+} from '@microsoft/webui-press/appearance.js';
+
+const families = getThemeFamilies();
+const current = getAppearance();
+await setAppearance({ theme: families[0].id, mode: 'system' });
+const unsubscribe = subscribeAppearance(appearance => {
+  // Update your control's selected value from this canonical state.
+  console.log(appearance.theme, appearance.mode, appearance.resolvedMode);
+});
+// Call unsubscribe when the integration disconnects.
+unsubscribe();
+```
+
+`setAppearance` accepts a partial selection and rejects invalid family IDs or
+modes. Subscribers receive applied changes from controls, API calls, OS updates,
+and storage synchronization. Do not duplicate storage, media-query tracking, or
+view transitions in a custom control.
+
+CSS-authored themes select the family with `:root[data-press-theme="brand"]`.
+After initialization, `data-theme` is the resolved `light` or `dark` appearance;
+`data-theme-mode` records `system`, `light`, or `dark`. Provide OS-based CSS for
+the pre-script/no-JavaScript case. Forced-colors styles must retain precedence.
 
 ## Page titles and canonical URLs
 
@@ -385,7 +525,7 @@ its nested fields are not deep-merged. Other global keys remain available,
 and local data never flows into other Markdown pages or the generated 404.
 
 Press owns these top-level keys: `site`, `navigation`, `sidebar`, `page`,
-`hero`, `footer`, `prev`, `next`, `pageData`, `regions`, `headTags`, `tokens`,
+`hero`, `footer`, `prev`, `next`, `pageData`, `regions`, `headTags`, `tokens`, `webuiPress`,
 `label`, and `icon`. Prototype-related keys `__proto__`, `prototype`, and
 `constructor` are also reserved. Using any of them directly under Markdown `state`,
 or at the top level of the included JSON object fails
@@ -460,6 +600,12 @@ overlap as dotted prefixes, because one JSON value cannot own both `summary` and
 | Region | Layout | Default |
 | --- | --- | --- |
 | `site.navigation` | all | Logo and site navigation |
+| `header.beforeNavigation` | all | Empty slot after the brand |
+| `header.beforeActions` | all | Empty slot before Search and appearance |
+| `header.appearance` | all | Family and color-mode controls |
+| `header.themePicker` | all, multiple families only | Design theme control |
+| `header.modePicker` | all | System/Light/Dark control |
+| `header.afterActions` | all | Empty slot after header actions |
 | `site.announcement` | all | Empty announcement/banner slot |
 | `home.hero` | `home` | Hero, actions, and manifesto |
 | `home.afterHero` | `home` | Empty slot after the hero |
@@ -483,3 +629,20 @@ overlap as dotted prefixes, because one JSON value cannot own both `summary` and
 For complete template replacement, use
 `webui press build --template <TEMPLATE_DIR>` or the equivalent `serve`
 subcommand.
+
+Regions can be nested in template fallback markup. Replacing, clearing, or
+deactivating a parent also deactivates its fallback descendants, including their
+state, scripts, and component assets. Adding only state or a script to a parent
+keeps its fallback children. Replacement fragments do not introduce new region
+declarations.
+
+The `header.*` regions belong to the default `site.navigation` fallback.
+Replacing `site.navigation` replaces those insertion points too. A custom
+header can compose `docs-site-navigation` with a child carrying
+`slot="appearance"`; Press presents that same child in the desktop header or
+mobile menu. Wrap controls in `docs-appearance` to use the palette popover and
+inline mobile presentation. The reusable `docs-theme-toggle` supplies Color
+mode, and `docs-theme-picker` supplies family selection. Pass
+`:appearance="{{webuiPress.appearance}}"` to either control for its initial
+render state. Custom headers own whether to include a family picker; automatic
+single-family omission applies to the built-in `header.themePicker` region.

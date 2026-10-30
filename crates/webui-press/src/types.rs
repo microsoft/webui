@@ -34,6 +34,8 @@ pub struct DocsConfig {
     pub public_dir: String,
     pub css: Option<String>,
     pub theme: Option<String>,
+    /// Named theme families and independent color-scheme preferences.
+    pub appearance: Option<AppearanceConfig>,
     pub components: Option<Vec<String>>,
     #[serde(default)]
     pub head: Vec<HeadTag>,
@@ -57,6 +59,56 @@ pub struct DocsConfig {
     pub footer: Option<FooterConfig>,
     /// Optional JavaScript bundler configuration (overrides defaults).
     pub bundler: Option<BundlerConfig>,
+}
+
+/// Build-time appearance configuration. Token sources are never sent to browsers.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearanceConfig {
+    /// Initial family; must identify one of `themes`.
+    pub default_theme: String,
+    /// Requested color scheme, independent of the family.
+    #[serde(default)]
+    pub default_mode: AppearanceMode,
+    /// Ordered family choices.
+    pub themes: Vec<ThemeFamilyConfig>,
+    /// Optional established preference keys.
+    pub storage: Option<AppearanceStorage>,
+}
+
+/// Supported requested color schemes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceMode {
+    /// Follow the operating system.
+    #[default]
+    System,
+    /// Always use light colors.
+    Light,
+    /// Always use dark colors.
+    Dark,
+}
+
+/// A theme family backed by token JSON or consumer-authored CSS.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFamilyConfig {
+    /// Stable ASCII identifier used in CSS and stored preferences.
+    pub id: String,
+    /// Human-readable picker label.
+    pub label: String,
+    /// Config-relative file or npm theme package supplying light/dark maps.
+    pub source: Option<String>,
+}
+
+/// Storage keys used by the document-owned preference controller.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppearanceStorage {
+    /// Family preference key.
+    pub theme: String,
+    /// Requested mode preference key.
+    pub mode: String,
 }
 
 /// Site-owned content for one compile-time template region.

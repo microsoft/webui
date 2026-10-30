@@ -2,12 +2,32 @@
 // Licensed under the MIT license.
 
 import assert from 'node:assert/strict';
+import { expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
 export const docsDist = path.resolve(import.meta.dirname, '../../../docs/dist');
+
+export async function openAppearance(page: Page): Promise<void> {
+  const trigger = page.getByRole('button', { name: 'Appearance', exact: true });
+  const group = page.getByRole('group', { name: 'Color mode' });
+  await expect.poll(async () => await group.isVisible() ||
+    (await trigger.isVisible() && await trigger.isEnabled())).toBe(true);
+  if (!await group.isVisible()) {
+    await trigger.click();
+  }
+}
+
+export async function setColorMode(page: Page, mode: 'system' | 'light' | 'dark'): Promise<void> {
+  await openAppearance(page);
+  const name = mode[0].toUpperCase() + mode.slice(1);
+  const control = page.getByRole('group', { name: 'Color mode' }).getByRole('button', { name, exact: true });
+  await control.click();
+  await expect(control).toHaveAttribute('aria-pressed', 'true');
+}
 
 const contentTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

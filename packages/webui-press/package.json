@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-press",
-  "description": "Opt-in native WebUI Press sidecar",
+  "description": "Native WebUI Press documentation builder and shared browser appearance API",
   "license": "MIT",
   "version": "3.0.4",
   "publishConfig": {
@@ -8,9 +8,18 @@
   },
   "type": "module",
   "files": [
-    "README.md"
+    "README.md",
+    "dist/"
   ],
+  "exports": {
+    "./appearance.js": {
+      "types": "./dist/appearance.d.ts",
+      "import": "./dist/appearance.js"
+    }
+  },
   "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "prepack": "pnpm run build",
     "build:test": "tsc --project tsconfig.test.json --noEmit && esbuild \"tests/**/*.test.ts\" \"../../docs/.webui-press/components/**/*.test.ts\" \"../../docs/.webui-press/regions/**/*.test.ts\" \"../../docs/.webui-press/scripts/**/*.test.ts\" \"../../docs/start/**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --entry-names=[name] --outdir=dist-test --out-extension:.js=.mjs",
     "test": "cargo build -p microsoft-webui-cli -p microsoft-webui-press && pnpm --filter @webui/docs... build && pnpm run build:test && node --test dist-test/**/*.test.mjs"
   },

@@ -11,6 +11,8 @@
 //! webui-press serve --port 4000              # custom port
 //! ```
 
+mod appearance;
+mod appearance_css;
 mod build;
 mod bundler;
 mod content;
